@@ -389,6 +389,13 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // social:reply (rail 1) is unaffected. Owner-authority does not consume a
   // parking-watermark slot. Count 33 → 34.
   "papercusp-social-auto-publish",
+  // 2026-08-23 (work-on-everything-goal-2026-08-23 P-011) — the operator-boot
+  // arm for STANDING goals (retirement doc open loss #3: cold-start autonomy
+  // "should be a choice rather than a discovery" — this flag is that choice).
+  // It spawns unattended GOAL-mode sessions at operator start, so the owner
+  // personally arms it. Owner-authority does not consume a parking-watermark
+  // slot. Count 34 → 35.
+  "papercusp-standing-goal-boot-arm",
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -695,7 +702,11 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // posting to the owner's real public social identity. case:
     // 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK
     // both stay 14 and no graduation trade is owed. Count 33 → 34.
-    expect(offCount).toBe(34);
+    // 2026-08-23 (work-on-everything-goal-2026-08-23 P-011) —
+    // papercusp-standing-goal-boot-arm, the owner-armed operator-boot holder
+    // respawn for standing goals. case: 'owner-authority', so the parking
+    // subset and DARK_FLAGS_HIGH_WATERMARK both stay 14. Count 34 → 35.
+    expect(offCount).toBe(35);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {

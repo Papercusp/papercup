@@ -155,6 +155,8 @@ export interface GoalRowLike {
   installSlug?: string | null;
   /** Parsed, schema-valid launch settings; invalid stored JSON is fail-dark as null. */
   launchSettings?: GoalLaunchSettings | null;
+  /** P-011 (work-on-everything): goals.standing — TRUE for a stewardship goal. */
+  standing?: boolean | null;
 }
 
 /**
@@ -388,10 +390,11 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
         status: string;
         install_slug: string | null;
         launch_settings: unknown;
+        standing: boolean;
         updated_ms: string;
       }[]
     >`
-      SELECT id, workspace_id, title, status, install_slug, launch_settings,
+      SELECT id, workspace_id, title, status, install_slug, launch_settings, standing,
              (extract(epoch FROM updated_at) * 1000)::bigint AS updated_ms
         FROM harness_shared.goals
        WHERE status = ANY(${[...GOAL_LIVENESS_SWEEP_STATUSES]}::text[])`;
@@ -416,6 +419,7 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
           status: r.status,
           installSlug: r.install_slug,
           launchSettings: parsed.settings,
+          standing: r.standing,
           updatedAtMs: Number(r.updated_ms),
         };
       }),
@@ -929,6 +933,132 @@ export async function runGoalHolderRespawnOnce(
   }
 
   return summary;
+}
+
+/* ── work-on-everything-goal-2026-08-23 P-011: the operator-boot arm ──────────
+ *
+ * Retirement doc open loss #3 (`agent-insights/mug-kettle-cup-tier-is-retired`):
+ * the Mug was minted BY THE SYSTEM, so the system recovered from the su
+ * population reaching zero; now the owner restarts it by hand. The doc's own
+ * verdict is that this "should be a choice rather than a discovery" — and this
+ * actor IS that choice, armed only by the owner (dark owner-authority flag
+ * STANDING_GOAL_BOOT_ARM).
+ *
+ * Deliberately a THIN reuse of the P-009 respawner engine, not a new actor:
+ * same eligibility floor (active + requireLive + onLoss='respawn' — respawn
+ * stays EARNED per goal-live-holder-guarantee D-001), same 'unheld' exclusion
+ * (install ≠ start, D-002), same 'unknown' conservatism, same flap damping,
+ * same launch/attach seams, same escalation stack (work-on-everything D-008:
+ * NO bespoke wedged-steward surface). The deltas are exactly three:
+ *  1. SCOPE — standing goals only (`goals.standing = true`).
+ *  2. LIFETIME — a bounded boot window (first pass ~60s after start, then
+ *     every 60s, self-stop after 10 passes). The window, not a single t=0
+ *     pass, because a holder hard-killed WITH the box can still read alive
+ *     until its presence heartbeat goes stale; one immediate pass would miss
+ *     it forever, while a bounded window catches the verdict settling.
+ *  3. DEFERENCE — a hard no-op while GOAL_HOLDER_RESPAWN is ON: the runtime
+ *     60s respawner already recovers every respawn-policy goal (standing
+ *     included), and running both invites a same-tick double launch.
+ */
+
+/** P-011 eligibility: the P-009 floor, narrowed to standing goals. */
+export function standingGoalEligibleForBootArm(goal: GoalRowLike): boolean {
+  return goal.standing === true && goalEligibleForHolderRespawn(goal);
+}
+
+async function defaultBootArmFlagEnabled(): Promise<boolean> {
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    if (!(await getFlag(FLAGS.STANDING_GOAL_BOOT_ARM, 'system'))) return false;
+    // DEFER while the runtime respawner is armed — it owns recovery then.
+    if (await getFlag(FLAGS.GOAL_HOLDER_RESPAWN, 'system')) return false;
+    return true;
+  } catch {
+    // Unattended spend path — flag uncertainty is a hard no-op.
+    return false;
+  }
+}
+
+export const STANDING_GOAL_BOOT_ARM_INTERVAL_MS = 60_000;
+export const STANDING_GOAL_BOOT_ARM_MAX_PASSES = 10;
+
+/**
+ * NEVER the runtime respawner's map: each pass prunes damping keys outside its
+ * own eligible set, and the boot pass's standing-only set is narrower — sharing
+ * would erase the runtime actor's give-up latches every boot pass.
+ */
+const bootArmStates = new Map<string, FlapDampingState>();
+
+/**
+ * One boot-arm pass. The P-009 engine under boot-arm gating and scope.
+ *
+ * The standing filter wraps WHATEVER `readGoals` is in effect — the default or
+ * an injected one — so the scope cannot be bypassed by dependency injection
+ * and is unit-testable without PG.
+ */
+export async function runStandingGoalBootArmOnce(
+  sql: Sql,
+  overrides: Partial<GoalHolderRespawnDeps> = {},
+): Promise<GoalHolderRespawnSummary> {
+  const deps: Partial<GoalHolderRespawnDeps> = {
+    flagEnabled: defaultBootArmFlagEnabled,
+    states: bootArmStates,
+    ...overrides,
+  };
+  const read = deps.readGoals ?? makeReadGoals(sql);
+  deps.readGoals = async () => {
+    const { goals, holders } = await read();
+    return { goals: goals.filter((g) => g.standing === true), holders };
+  };
+  return await runGoalHolderRespawnOnce(sql, deps);
+}
+
+let bootArmTimer: ManagedHandle | null = null;
+
+/**
+ * Start P-011's bounded boot window. Idempotent; self-stops after
+ * `maxPasses` fires. Both flags are re-read per pass, so arming or disarming
+ * mid-window takes effect on the next pass.
+ */
+export function startStandingGoalBootArm(
+  sql: Sql,
+  opts: { intervalMs?: number; maxPasses?: number } = {},
+): void {
+  const intervalMs = opts.intervalMs ?? STANDING_GOAL_BOOT_ARM_INTERVAL_MS;
+  const maxPasses = opts.maxPasses ?? STANDING_GOAL_BOOT_ARM_MAX_PASSES;
+  if (bootArmTimer) bootArmTimer.stop();
+  bootArmStates.clear();
+  let passes = 0;
+  let sweeping = false;
+  bootArmTimer = managedSetInterval(
+    'standing-goal-boot-arm',
+    intervalMs,
+    () => {
+      if (sweeping) return;
+      passes += 1;
+      if (passes > maxPasses) {
+        bootArmTimer?.stop();
+        bootArmTimer = null;
+        return;
+      }
+      sweeping = true;
+      void runStandingGoalBootArmOnce(sql)
+        .catch((error) => {
+          console.warn(
+            `[standing-goal-boot-arm] pass failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
+          );
+        })
+        .finally(() => {
+          sweeping = false;
+        });
+    },
+    // Same classification as its siblings: the trigger is elapsed time after
+    // boot with no live holder — absence has no publisher to subscribe to.
+    { category: 'watchdog', classification: 'timeout-reaper' },
+  );
 }
 
 let watchdogTimer: ManagedHandle | null = null;

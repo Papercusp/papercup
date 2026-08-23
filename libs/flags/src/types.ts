@@ -1639,6 +1639,18 @@ export const FLAGS = {
   // owner-authority surface. OFF is a pure no-op before the goals table read;
   // deterministic read-time deactivation and liveness reporting remain live.
   GOAL_HOLDER_RESPAWN: "papercusp-goal-holder-respawn",
+  // work-on-everything-goal-2026-08-23 P-011 (retirement doc open loss #3,
+  // owner:Avi 2026-08-23): the operator-boot arm — a BOUNDED window at operator
+  // start that respawns the LOST holder of an ACTIVE, un-paused STANDING goal
+  // (goals.standing=true) that earned recovery via holder.onLoss='respawn'.
+  // Restores the retired Mug's cold-start autonomy as an owner CHOICE.
+  // POLARITY: OFF (default) = the retirement doc's correct-by-design reading —
+  // recovery from the su population reaching zero is the OWNER's restart, by
+  // hand; ON = the operator self-heals standing stewardship at boot. Bounded:
+  // ~10 passes × 60s then self-stop; 'unheld' NEVER spawns (install ≠ start,
+  // D-002); DEFERS entirely while GOAL_HOLDER_RESPAWN is ON (the runtime 60s
+  // respawner owns recovery then — no same-tick double-launch race).
+  STANDING_GOAL_BOOT_ARM: "papercusp-standing-goal-boot-arm",
   // EI-19919820196426791 (half 2): gates the unservable-critical watchdog — a
   // deduped escalation per issue that is simultaneously `critical` and
   // structurally UNCLAIMABLE (lane='observation' or state='needs-human'), past a
@@ -3228,6 +3240,14 @@ export const DARK_FLAGS: ReadonlyMap<
       case: "owner-authority",
       reason:
         "goal-live-holder-guarantee-2026-08-18 P-009 / D-002: automatically launching a replacement GOAL-mode holder spends money and creates unattended agent sessions. The actor is bounded to active goals that opt into holder.onLoss=respawn, uses the shared flap-damping/give-up policy, and is independently kill-switched from the report-only liveness watchdog. OFF is a pure no-op before reading goals; deterministic deactivation and reporting remain enabled. Owner flips ON after reviewing the bounded recovery behavior.",
+    },
+  ],
+  [
+    FLAGS.STANDING_GOAL_BOOT_ARM,
+    {
+      case: "owner-authority",
+      reason:
+        "work-on-everything-goal-2026-08-23 P-011 (retirement doc open loss #3): at operator boot, respawns the lost holder of an active un-paused STANDING goal that opted into holder.onLoss=respawn — an unattended agent spawn + spend at every operator start. The retirement doc records cold-start autonomy as something that 'should be a choice rather than a discovery'; this flag IS that choice, so only the owner arms it. Bounded: a ~10-minute boot window then self-stop, standing goals only, 'unheld' never spawns (install≠start D-002), and it defers to GOAL_HOLDER_RESPAWN whenever the runtime respawner is armed. OFF = today's behavior — the owner restarts the system by hand.",
     },
   ],
 ]);
