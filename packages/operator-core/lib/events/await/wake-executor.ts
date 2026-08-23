@@ -59,7 +59,7 @@ import {
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
-import { getAdvSession, reactivateAdvSession } from '../../adv-sessions';
+import { getAdvSession, claimAdvSessionResume } from '../../adv-sessions';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
   collectSessionFiles as defaultCollectSessionFiles,
@@ -1827,7 +1827,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     deps.isLoopArmed ??
     (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
   const forceResume = deps.forceResume ?? ((pid: number) => defaultForceResume(pid, alive));
-  const claimResume = deps.claimResume ?? reactivateAdvSession;
+  const claimResume = deps.claimResume ?? claimAdvSessionResume;
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
@@ -2155,11 +2155,25 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // Channel 2: process gone → resume. The manual psu resume path claims the
     // same ended row before spawning; this atomic predicate makes exactly one
     // of the two competing resume writers proceed.
-    const claimed = await claimResume(handle.advSessionId).catch(() => false);
+    // A claim that could not be EVALUATED is not a claim that was LOST: reporting
+    // a datastore fault as a lost race sends the operator hunting a competing
+    // resumer that never existed. Park either way (never risk a second writer),
+    // but say which happened.
+    let claimed: boolean;
+    try {
+      claimed = await claimResume(handle.advSessionId);
+    } catch (err) {
+      return {
+        kind: 'park',
+        reason:
+          `resume claim for adv session #${handle.advSessionId} could not be evaluated ` +
+          `(${err instanceof Error ? err.message : String(err)}); parked before Channel 2 spawn`,
+      };
+    }
     if (!claimed) {
       return {
         kind: 'park',
-        reason: `resume claim for adv session #${handle.advSessionId} was lost or unavailable; parked before Channel 2 spawn`,
+        reason: `resume claim for adv session #${handle.advSessionId} was won by another resumer; parked before Channel 2 spawn`,
       };
     }
     const resumeAgent = fresh?.agent ?? handle.agent;
