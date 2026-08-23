@@ -542,7 +542,17 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
    * parse. To add one: don't — mask the source instead.
    */
   const SCANS_UNMASKED_SOURCE = new Set([
+    // check-bundled-cli-entry-guards.mjs delegates the source-token scan to findGuards(),
+    // whose shared implementation masks comments and strings before matching. The cheap
+    // census cannot follow that imported helper, so keep this justified exposure here rather
+    // than forcing a redundant second mask into the wrapper.
+    'check-bundled-cli-entry-guards.mjs',
     'check-constant-conditional.mjs',
+    // check-declared-deps-extracted.mjs reads package.json/package-lock.json and package-local
+    // manifests, then imports runtime entrypoints in child processes. It never reads JS/TS
+    // source to text-match code tokens; the census prefilter is fooled by its documented .mjs
+    // paths plus generic readFileSync/.test usage, so masking would add no protection.
+    'check-declared-deps-extracted.mjs',
     // check-format.mjs is a RANGE PARSER, not a source-token guard. Its only regex
     // parses @@ hunk metadata from `git diff`; the source file itself is read solely
     // to translate those line ranges into character offsets for Prettier. Masking
