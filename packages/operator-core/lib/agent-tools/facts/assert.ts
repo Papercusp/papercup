@@ -285,7 +285,13 @@ export default defineTool({
     scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
     scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef; accepted so a snake_case call still resolves the ref instead of silently dropping it.'),
     ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
-    harness: z.string().max(120).optional().describe('Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef.'),
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef. For shareable:true, also pass a concrete harness here when the caller context is not already harness-scoped.',
+      ),
     key: z.string().min(1).max(120).describe('Stable slug — upsert + retract target (e.g. "wi-1439-owner-residue").'),
     // Transport ceiling 4000 ≫ the stored cap: the store TRUNCATES to FACT_BODY_MAX_CHARS
     // (code-run-self-state-adoption-2026-07-03 P-007 — the hard zod reject cost the WHOLE
@@ -380,7 +386,6 @@ export default defineTool({
           `When subjectVolatile:true, ttlSec must be ≤${FACT_VOLATILE_MAX_TTL_SEC} seconds (15 minutes); ` +
           `subjectVolatile:true also requires measuredAt.`,
       ),
-    shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
     dryRun: z
       .boolean()
       .optional()
@@ -407,29 +412,75 @@ export default defineTool({
       "P-008: the claim MODALITY — 'conclusion' (a settled finding), 'assumption' (provisional; pair it with dependsOn so it goes stale on its own terms), 'convention' (normative: \"we do X here\"), or 'undecidable' (NOT determinable from the available evidence — recorded so peers STOP RE-DERIVING it; REQUIRES settledBy). This is NOT `scope`: scope says who the fact is ABOUT, kind says what kind of claim it is. Omit = not declared (never rewritten to 'conclusion' — a modality nobody stated is not one).";
     const settledByDescription =
       "P-002: what evidence WOULD settle this question. REQUIRED for kind:'undecidable', and REFUSED on any other kind (on a settled claim it has no referent). Name a concrete probe — a query, a tool, a measurement — not \"more investigation\". The rule mirrors the required insteadRead on refuseAnswer(): an UNKNOWN with no stated exit does not stop re-derivation, it INVITES it, because the next reader cannot distinguish \"nobody COULD determine this\" from \"nobody has tried lately\" and the cheapest way to tell them apart is to try again — which is the exact cost this modality exists to eliminate.";
+    const shareableDescription =
+      'OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. A shareable fact MUST have a resolvable federation harness: pass a concrete `harness` for workspace, role, owner, or work_item scopes, or pass `scope:"harness"` with its canonical `scopeRef`. Omit or set false to keep the fact pot-private.';
+    const modalityBranches = <T extends z.ZodRawShape>(fields: T) => {
+      const undecidableArgs = z.object({
+        ...fields,
+        kind: z.literal('undecidable').describe(kindDescription),
+        settledBy: z.string().min(1).max(500).describe(settledByDescription),
+      });
+      const declaredArgs = z.object({
+        ...fields,
+        kind: z
+          .enum(['conclusion', 'assumption', 'convention'])
+          .optional()
+          .describe(kindDescription),
+        settledBy: z
+          .never()
+          .optional()
+          .describe('Only valid when kind is "undecidable"; omit it for conclusions, assumptions, and conventions.'),
+      });
+      return [undecidableArgs, declaredArgs] as const;
+    };
 
-    const undecidableArgs = z.object({
+    // Keep both runtime-valid federation routes visible to clients. Most calls
+    // should name the federation harness explicitly. A harness-scoped fact may
+    // instead use its canonical scopeRef (the handler already accepts this
+    // route, including from an operator context with no harness on ctx).
+    const explicitFederationHarness = {
       ...base,
-      kind: z.literal('undecidable').describe(kindDescription),
-      settledBy: z.string().min(1).max(500).describe(settledByDescription),
-    });
-    const declaredArgs = z.object({
+      harness: z
+        .string()
+        .min(1)
+        .max(120)
+        .describe('Concrete federation harness required when shareable:true is used outside an explicit harness scope.'),
+      shareable: z.literal(true).describe(shareableDescription),
+    };
+    const explicitHarnessScope = {
       ...base,
-      kind: z
-        .enum(['conclusion', 'assumption', 'convention'])
+      scope: z.literal('harness').describe('Harness-scoped fact; its scopeRef is also the federation context.'),
+      scopeRef: z
+        .string()
+        .min(1)
+        .max(120)
+        .describe('Canonical harness slug used both as the fact scopeRef and federation context.'),
+      shareable: z.literal(true).describe(shareableDescription),
+    };
+    const privateFact = {
+      ...base,
+      shareable: z
+        .literal(false)
         .optional()
-        .describe(kindDescription),
-      settledBy: z
-        .never()
-        .optional()
-        .describe('Only valid when kind is "undecidable"; omit it for conclusions, assumptions, and conventions.'),
-    });
-    return z.union([undecidableArgs, declaredArgs]);
+        .describe('Private by default. Omit or set false unless a resolvable federation harness is supplied.'),
+    };
+    const [shareableUndecidable, shareableDeclared] = modalityBranches(explicitFederationHarness);
+    const [harnessScopeUndecidable, harnessScopeDeclared] = modalityBranches(explicitHarnessScope);
+    const [privateUndecidable, privateDeclared] = modalityBranches(privateFact);
+
+    return z.union([
+      shareableUndecidable,
+      shareableDeclared,
+      harnessScopeUndecidable,
+      harnessScopeDeclared,
+      privateUndecidable,
+      privateDeclared,
+    ]);
   })(),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
     const identity = resolveAgentIdentity(ctx);
-    const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+    const concreteHarnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     // EI-7517: default an OMITTED scopeRef from the caller's context for the
     // self-scoped cases (owner = me, harness = this harness, role = my role), so
     // the common "assert a fact about just myself" doesn't error on a missing

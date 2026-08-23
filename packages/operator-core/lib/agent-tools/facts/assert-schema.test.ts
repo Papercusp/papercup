@@ -41,19 +41,53 @@ describe('facts:assert settledBy modality contract', () => {
       anyOf?: Array<{
         required?: string[];
         properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }>;
+        anyOf?: unknown[];
+        oneOf?: unknown[];
       }>;
       oneOf?: Array<{
         required?: string[];
         properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }>;
+        anyOf?: unknown[];
+        oneOf?: unknown[];
       }>;
     };
-    const branches = json.anyOf ?? json.oneOf ?? [];
-    expect(branches).toHaveLength(2);
+    const unionLeaves = (node: {
+      anyOf?: Array<unknown>;
+      oneOf?: Array<unknown>;
+    }): Array<{ required?: string[]; properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }> }> => {
+      const nested = node.anyOf ?? node.oneOf;
+      if (!nested) return [node as { required?: string[]; properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }> }];
+      return nested.flatMap((branch) => unionLeaves(branch as { anyOf?: Array<unknown>; oneOf?: Array<unknown> }));
+    };
+    const branches = unionLeaves(json);
 
     const undecidable = branches.find((branch) => branch.properties?.kind?.const === 'undecidable');
     const other = branches.find((branch) => branch.properties?.kind?.enum?.includes('conclusion'));
     expect(undecidable?.required).toContain('settledBy');
     expect(other?.required ?? []).not.toContain('settledBy');
     expect(other?.properties?.settledBy).toMatchObject({ not: expect.anything() });
+  });
+});
+
+describe('facts:assert shareable federation contract', () => {
+  it('requires a federation harness, while preserving explicit harness scopeRef', () => {
+    expect(assertTool.args.safeParse({ ...base, shareable: true }).success).toBe(false);
+    expect(assertTool.args.safeParse({ ...base, shareable: true, harness: 'papercusp' }).success).toBe(true);
+    expect(
+      assertTool.args.safeParse({
+        ...base,
+        scope: 'harness',
+        scopeRef: 'papercusp',
+        shareable: true,
+      }).success,
+    ).toBe(true);
+    expect(assertTool.args.safeParse({ ...base, shareable: false }).success).toBe(true);
+  });
+
+  it('publishes the shareable discriminator and harness prerequisite', () => {
+    const json = JSON.stringify(z.toJSONSchema(assertTool.args as never));
+    expect(json).toContain('shareable');
+    expect(json).toContain('Concrete federation harness required');
+    expect(json).toContain('const":true');
   });
 });
