@@ -1295,6 +1295,53 @@ export async function captureImprovement(
     }
   }
 
+  // P-013: a direct-evidence re-report can carry a different message
+  // fingerprint (and therefore a different watchdogKey) from the original
+  // probation report. When the caller's title is exactly the same, promote the
+  // existing probation row in place instead of letting the key-aware dedup net
+  // treat the two fingerprints as distinct work. The exact-title + probation
+  // + origin/scope rails keep this fallback narrower than ordinary fuzzy dedup.
+  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
+  if (!isObservation && incomingProbation?.state === 'promoted') {
+    const exactTitleProbation = candidates.find((candidate) => {
+      const payload = (candidate.payload as Record<string, unknown> | null) ?? {};
+      return (
+        candidate.state === 'open' &&
+        candidate.title === input.title &&
+        issueWatchdogLane(candidate) === 'observation' &&
+        toolFailureProbationOf(payload)?.state === 'probation' &&
+        effectiveOrigin(candidate.signalOrigin) === origin &&
+        issueScopeMatchesCapture(candidate, input.scope)
+      );
+    });
+    if (exactTitleProbation) {
+      const promoted = await promoteToolFailureProbation(exactTitleProbation, input, deps);
+      if (promoted) {
+        await appendCaptureOccurrence(
+          deps,
+          input,
+          identity,
+          'promoted',
+          promoted.id,
+          [],
+          skippedDedupCoverage,
+          harnessFromScope(promoted.scope),
+        );
+        return {
+          ok: true,
+          created: false,
+          reason: 'promoted',
+          kind: promoted.kind as 'bug' | 'change',
+          improvementKind: input.kind,
+          issue: promoted,
+          topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
+          possibleDuplicates: [],
+          dedupCoverage: skippedDedupCoverage,
+        };
+      }
+    }
+  }
+
   const possibleDuplicates: PossibleDuplicate[] = candidates
     .map((i) => {
       const lexical = Math.round(titleSimilarity(input.title, i.title) * 100) / 100;
