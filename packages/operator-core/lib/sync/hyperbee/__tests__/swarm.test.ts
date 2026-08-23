@@ -623,6 +623,39 @@ describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
     expect(ch.sent).toEqual([ourAnnounce]);
   });
 
+  it('pushes a fresh signed writer high-water on refreshAnnounce instead of waiting for the periodic sweep', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    const logKey = 'ac'.repeat(32);
+    let logLength = 26;
+    const buildOurAnnounce = vi.fn(async () =>
+      announceFixture({ log_core_key: logKey, log_length: logLength }),
+    );
+    const h = await joinHarnessSwarm({
+      store,
+      topic: topic32(),
+      swarm,
+      ourAnnounce: announceFixture({ log_core_key: logKey, log_length: logLength }),
+      buildOurAnnounce,
+      onAnnounce: vi.fn(),
+    });
+
+    const socket = { __muxId: 'writer-progress', pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+    const ch = fakeChannels.get(socket)!;
+    await vi.waitFor(() => expect(ch.sent.at(-1)?.log_length).toBe(26));
+
+    // The WI-40905 edge: the receiver cursor is at 26, then the writer appends
+    // post-revoke content. The pushed frame must make length 27 visible now;
+    // otherwise the frozen detector reads caught-up until the five-minute sweep.
+    logLength = 27;
+    h.refreshAnnounce?.();
+    await vi.waitFor(() => expect(ch.sent.at(-1)?.log_length).toBe(27));
+    expect(buildOurAnnounce).toHaveBeenCalledTimes(2);
+
+    await h.close();
+  });
+
   it('uses the Hypercore noiseStream muxer when a Hyperswarm socket wraps one', async () => {
     const { swarm, emit } = fakeSwarm();
     const { store, replicateArgs } = fakeStore();

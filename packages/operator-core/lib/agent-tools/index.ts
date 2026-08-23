@@ -624,6 +624,10 @@ import './computer/list-desktops';
 // action vocabulary verbatim so the model's grounding priors fire, and a near-miss of
 // that vocabulary would be worse than an honestly separate surface.
 import './computer/observe';
+// P-009: action-sampled trajectory recording (frames + the P-008 action stream) with
+// webm/GIF export, parked on the driving work-item. Frames go to DISK — never into a
+// tool result, which is what keeps P-008's token hygiene from being quietly undone.
+import './computer/record-trajectory';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './dev/service_health';

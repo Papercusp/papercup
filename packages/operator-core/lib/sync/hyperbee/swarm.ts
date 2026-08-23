@@ -81,6 +81,16 @@ export interface SwarmHandle {
    */
   forceRejoin(): Promise<void>;
   /**
+   * Re-send this harness's signed announce on every currently-open peer
+   * connection, rebuilding it first so `log_length` reflects the latest own-log
+   * append. Receivers use that verified high-water to distinguish caught-up from
+   * attached-but-frozen replication and drive repair-on-detect.
+   *
+   * Optional for structural test/sidecar handles that predate writer-progress
+   * announces. The production `joinHarnessSwarm` handle always implements it.
+   */
+  refreshAnnounce?(): void;
+  /**
    * EI-18682571591024156: per-live-socket DATA-PATH evidence for this topic —
    * hyperdht's signalling outcome plus the UDX wire counters, with an explicit
    * tri-state `proven`.
@@ -964,6 +974,22 @@ function announceTopicStatesFor(mux: object): Map<string, TopicAnnounceState> {
     announceTopicStateByMuxer.set(mux, m);
   }
   return m;
+}
+
+/**
+ * Resolve the already-created announce state for one live swarm socket without
+ * creating a second Protomux wrapper. `openAnnounceChannel` stores the mux in
+ * `userData`; the WeakMap check keeps this safe for minimal test streams whose
+ * `userData` may hold something unrelated.
+ */
+function announceStateForSocket(socket: unknown, topicHex: string): TopicAnnounceState | null {
+  const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
+    userData?: unknown;
+  } | null;
+  if (!muxStream || typeof muxStream !== 'object') return null;
+  const mux = muxStream.userData;
+  if (!mux || typeof mux !== 'object') return null;
+  return announceTopicStateByMuxer.get(mux)?.get(topicHex) ?? null;
 }
 
 /** Create + open the announce channel on a muxer (returns silently when the
@@ -3277,6 +3303,18 @@ export async function joinHarnessSwarm(
     },
     async forceRejoin() {
       await forceRejoinNow();
+    },
+    refreshAnnounce() {
+      const logKey = opts.ourAnnounce?.log_core_key;
+      if (!logKey) return;
+      for (const socket of mySockets) {
+        const state = announceStateForSocket(socket, topicHex);
+        if (!state) continue;
+        // Clear ONLY this harness's log. A same-topic sibling has its own
+        // writer length and must not be re-signed merely because we appended.
+        state.sentKeys.delete(logKey);
+        flushTopicAnnounces(state);
+      }
     },
     dataPathSnapshot() {
       const out: DataPathSnapshotEntry[] = [];

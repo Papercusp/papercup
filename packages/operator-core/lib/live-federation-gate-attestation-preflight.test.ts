@@ -198,7 +198,10 @@ describe('live-federation gate attestation write preflight', () => {
   });
 
   it('keeps the inner content-matrix write probe as defense-in-depth', () => {
-    expect(matrix).toContain('probeGistWriteCapability(token)');
+    expect(matrix).toContain(
+      'fed_preflight_attestation_account "$1" "$2" "$REPO_DIR" "$MACHINE_IDENTITY_DIR"',
+    );
+    expect(federationAsserts).toContain('probeGistWriteCapability(token)');
     expect(matrix).toContain('preflight_attestation "$P_A_USER" "$A_TOKEN"');
     expect(matrix).toContain('preflight_attestation "$P_B_USER" "$B_TOKEN"');
   });

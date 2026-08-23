@@ -217,6 +217,14 @@ function peerLabel(keyHex?: string, ip?: string): string {
  *  re-merged on this cadence in addition to the on-admit + initial passes. */
 const MERGE_POLL_MS = 1000;
 /**
+ * Coalesce adjacent own-log appends into one fresh signed writer-progress
+ * announce. Outbox drains append sequentially and may carry hundreds of rows;
+ * re-signing once per row would turn the liveness signal into avoidable crypto
+ * load, while a 25ms edge is still effectively immediate compared with the
+ * 1s merge poll and the prior five-minute periodic reflush fallback.
+ */
+const WRITER_PROGRESS_ANNOUNCE_DEBOUNCE_MS = 25;
+/**
  * WI-183: default grace window (ms) for the replication-stall detector — how
  * long an admitted remote log may show zero live replicator peers, after
  * having shown at least one before, before it's treated as a genuine stall
@@ -4547,6 +4555,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // resolution failures don't fail the boot — the harness still works as a
   // single-peer substrate.
   let swarmHandle: SwarmHandle | null = null;
+  let writerProgressAnnounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * A local append changes the signed writer high-water. Push that change while
+   * the peer connection is live so an attached-but-frozen receiver can arm its
+   * existing `replication_frozen` detector immediately instead of waiting for
+   * the five-minute loss-recovery sweep. Best-effort: Hypercore replication is
+   * still the transport; this announce is the liveness/repair witness.
+   */
+  function scheduleWriterProgressAnnounce(): void {
+    if (stopped || writerProgressAnnounceTimer) return;
+    writerProgressAnnounceTimer = setTimeout(() => {
+      writerProgressAnnounceTimer = null;
+      if (stopped) return;
+      try {
+        swarmHandle?.refreshAnnounce?.();
+      } catch {
+        // Best-effort liveness signal; periodic reflush remains the fallback.
+      }
+    }, WRITER_PROGRESS_ANNOUNCE_DEBOUNCE_MS);
+    writerProgressAnnounceTimer.unref?.();
+  }
   // ── P-006 scoped-log federation state (P-108). The REGISTRY is boot-scoped
   // (own/admitted scoped cores survive a rekey — the store stays open); the
   // COORDINATOR is rebuilt per joinForBinding because it binds the resolved
@@ -5193,6 +5223,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // encrypted content op. Absent on plaintext ops (json omits undefined).
         epoch: stamped.epoch,
       });
+      scheduleWriterProgressAnnounce();
     },
     admitted,
     mergeNow,
@@ -5342,6 +5373,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     async close() {
       stopped = true;
+      if (writerProgressAnnounceTimer) {
+        clearTimeout(writerProgressAnnounceTimer);
+        writerProgressAnnounceTimer = null;
+      }
       // P-004 (WI-1840): drop this harness's replication-liveness tracking so a
       // closed handle never reads as 'sampling_stale' on a status surface.
       try {
