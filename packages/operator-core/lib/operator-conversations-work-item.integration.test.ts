@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
@@ -95,9 +95,17 @@ beforeAll(async () => {
   await rootSql.unsafe(
     readFileSync(resolve(SQL_DIR, '168-operator-conversation-summary.sql'), 'utf8'),
   );
-  await rootSql.unsafe(
-    readFileSync(resolve(SQL_DIR, '901-work-item-papercup-conversations.sql.DRAFT'), 'utf8'),
+  // postgres.js rejects explicit BEGIN/COMMIT on a pooled client. Mirror the
+  // established migration-test pattern: strip only that wrapper and execute
+  // the unchanged multi-statement body over the simple protocol (implicit
+  // transaction), preserving atomicity while keeping max>1 for the race test.
+  const armed901 = resolve(SQL_DIR, '901-work-item-papercup-conversations.sql');
+  const migration901Path = existsSync(armed901) ? armed901 : `${armed901}.DRAFT`;
+  const migration901 = readFileSync(migration901Path, 'utf8').replace(
+    /^\s*(BEGIN|COMMIT)\s*;\s*$/gim,
+    '',
   );
+  await rootSql.unsafe(migration901).simple();
   h.sql = rootSql;
   h.db = drizzle(rootSql);
 }, 90_000);
@@ -210,4 +218,3 @@ describe('work-item Papercup conversations (real Postgres)', () => {
     ).toBe(conversation.id);
   });
 });
-

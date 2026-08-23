@@ -178,6 +178,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'goals.detail': null, // a specific goalId (from goals.list)
   'hiveFromRepo.progress': null,
   'operatorTurns.page': null,
+  // Requires a concrete canonical work-item id. A fabricated id would measure
+  // an empty miss rather than the persisted discussion identity payload.
+  'operatorConversations.byWorkItem': null,
   'planItems.byPlan': null,
   'plans.attentionItem': null, // a specific attention item id (slim-plans-attention-sync-payload-2026-07-26 P-004) — no stable fixture
   'plansDrafts.bySlug': null,

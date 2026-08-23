@@ -197,6 +197,7 @@ describe('projectDeltaRow — attributing a moved row to filter vs states', () =
     delta_kind: 'bug',
     title: 't',
     status: 'open',
+    delta_origin: null,
     delta_severity: 'major',
     delta_plan: null,
     feature_order: '3',

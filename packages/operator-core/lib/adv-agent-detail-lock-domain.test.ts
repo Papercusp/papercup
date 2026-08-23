@@ -67,6 +67,7 @@ describe('getAgentLocks lock-domain scope (WI-5979)', () => {
           path: 'packages/operator-core/lib/sync-resolver/index.ts',
           owner: 'su-1',
           owner_label: 'su · su-1',
+          goal_ref: null,
           intent: 'editing the resolver',
           acquired_ts: new Date('2026-07-26T06:00:00Z'),
           expires_ts: new Date('2026-07-26T06:20:00Z'),

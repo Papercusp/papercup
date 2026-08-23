@@ -111,6 +111,11 @@ export type {
   WorkspaceHostInitializationPlan,
   WorkspaceHostInitializationStepReceipt,
   WorkspaceHostInitializationExecutor,
+  WorkspaceHostInitializationHostOperationResult,
+  WorkspaceHostInitializationHostOperations,
+  WorkspaceHostInitializationReplayIdentity,
+  WorkspaceHostInitializationReplayStore,
+  ReplaySafeWorkspaceHostInitializationExecutorDeps,
   WorkspaceHostBackupCredentialManifest,
   WorkspaceHostCredentialLifecycleRequest,
   WorkspaceHostCredentialLifecycleStepKind,
@@ -121,8 +126,11 @@ export type {
 } from "./workspace-host-initialization";
 export {
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+  WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_IMPORT_UNITS,
+  ReplaySafeWorkspaceHostInitializationExecutor,
+  workspaceHostInitializationStepFingerprint,
   planWorkspaceHostInitialization,
   executeWorkspaceHostInitialization,
   buildWorkspaceHostBackupCredentialManifest,

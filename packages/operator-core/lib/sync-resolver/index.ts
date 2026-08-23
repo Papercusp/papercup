@@ -6642,6 +6642,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // host. Creation stays an explicit POST mutation; a cache refetch can never
   // mint a conversation as a side effect.
   'operatorConversations.byWorkItem': {
+    backingTables: ['harness_shared.operator_conversations'],
     argsSchema: z.object({
       workspaceId: z.string().optional(),
       harness: z.string().trim().min(1),

@@ -111,6 +111,7 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
     path,
     owner,
     owner_label: 'Me',
+    goal_ref: null,
     intent: 'test',
     acquired_ts: new Date(0),
     expires_ts: new Date(Date.now() + 60_000),

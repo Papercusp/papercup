@@ -2,14 +2,19 @@ import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+  ReplaySafeWorkspaceHostInitializationExecutor,
   buildWorkspaceHostBackupCredentialManifest,
   executeWorkspaceHostInitialization,
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
   validateWorkspaceHostInitializationCanary,
+  workspaceHostInitializationStepFingerprint,
   type WorkspaceHostCredentialDeliverySet,
   type WorkspaceHostInitializationCanaryEvidence,
+  type WorkspaceHostInitializationReplayIdentity,
+  type WorkspaceHostInitializationReplayStore,
   type WorkspaceHostInitializationRequest,
+  type WorkspaceHostInitializationStepReceipt,
 } from "./workspace-host-initialization";
 import type { WorkspaceHostCredentialRefs } from "./workspace-host-types";
 
@@ -247,6 +252,141 @@ describe("executeWorkspaceHostInitialization", () => {
         }),
       }),
     ).rejects.toThrow(/Secret-shaped field/);
+  });
+});
+
+describe("ReplaySafeWorkspaceHostInitializationExecutor", () => {
+  function memoryReplayStore(): WorkspaceHostInitializationReplayStore {
+    const records = new Map<
+      string,
+      {
+        fingerprint: string;
+        receipt: WorkspaceHostInitializationStepReceipt;
+      }
+    >();
+    return {
+      async runOnce(
+        identity: WorkspaceHostInitializationReplayIdentity,
+        run: () => Promise<WorkspaceHostInitializationStepReceipt>,
+      ) {
+        const prior = records.get(identity.idempotencyKey);
+        if (prior) {
+          if (prior.fingerprint !== identity.stepFingerprint) {
+            throw new Error("idempotency key reused for different initialization input");
+          }
+          return prior.receipt;
+        }
+        const receipt = await run();
+        records.set(identity.idempotencyKey, {
+          fingerprint: identity.stepFingerprint,
+          receipt,
+        });
+        return receipt;
+      },
+    };
+  }
+
+  it("executes one declared host operation and replays its persisted receipt", async () => {
+    const step = planWorkspaceHostInitialization(request()).steps[0]!;
+    const seen: string[] = [];
+    const executor = new ReplaySafeWorkspaceHostInitializationExecutor({
+      operations: {
+        supportedStepKinds: ["create-workspace"],
+        async execute(current) {
+          seen.push(current.idempotencyKey);
+          return {
+            observedAt: "2026-08-22T10:05:00Z",
+            publicEvidence: { workspaceCreated: true },
+          };
+        },
+      },
+      replayStore: memoryReplayStore(),
+    });
+
+    const first = await executor.execute(step);
+    const replay = await executor.execute(step);
+
+    expect(first).toEqual(replay);
+    expect(seen).toEqual([step.idempotencyKey]);
+  });
+
+  it("fails closed before execution when a host adapter does not declare the step kind", async () => {
+    const clone = planWorkspaceHostInitialization(
+      request({
+        source: {
+          kind: "git",
+          repositoryUrl: "https://github.com/papercusp/public.git",
+          visibility: "public",
+          destination: "repositories/public",
+        },
+      }),
+    ).steps.find((step) => step.kind === "clone-repository")!;
+    let called = false;
+    const executor = new ReplaySafeWorkspaceHostInitializationExecutor({
+      operations: {
+        supportedStepKinds: ["create-workspace"],
+        async execute() {
+          called = true;
+          return { observedAt: "2026-08-22T10:05:00Z" };
+        },
+      },
+      replayStore: memoryReplayStore(),
+    });
+
+    await expect(executor.execute(clone)).rejects.toThrow(/not supported/);
+    expect(called).toBe(false);
+  });
+
+  it("rejects secret-shaped evidence from both fresh operations and replay storage", async () => {
+    const step = planWorkspaceHostInitialization(request()).steps[0]!;
+    const fresh = new ReplaySafeWorkspaceHostInitializationExecutor({
+      operations: {
+        supportedStepKinds: ["create-workspace"],
+        async execute() {
+          return {
+            observedAt: "2026-08-22T10:05:00Z",
+            publicEvidence: { accessToken: "must-never-persist" },
+          };
+        },
+      },
+      replayStore: memoryReplayStore(),
+    });
+    await expect(fresh.execute(step)).rejects.toThrow(/Secret-shaped field/);
+
+    const replayed = new ReplaySafeWorkspaceHostInitializationExecutor({
+      operations: {
+        supportedStepKinds: ["create-workspace"],
+        async execute() {
+          throw new Error("replay store should not execute the operation");
+        },
+      },
+      replayStore: {
+        async runOnce() {
+          return {
+            stepId: step.id,
+            status: "succeeded",
+            observedAt: "2026-08-22T10:05:00Z",
+            publicEvidence: { privateKey: "must-never-replay" },
+          };
+        },
+      },
+    });
+    await expect(replayed.execute(step)).rejects.toThrow(/Secret-shaped field/);
+  });
+
+  it("fingerprints equivalent step input independently of object key order", () => {
+    const step = planWorkspaceHostInitialization(request()).steps[0]!;
+    expect(
+      workspaceHostInitializationStepFingerprint({
+        ...step,
+        input: { hostId: "host-1", workspaceId: "workspace-1" },
+      }),
+    ).toBe(
+      workspaceHostInitializationStepFingerprint({
+        ...step,
+        input: { workspaceId: "workspace-1", hostId: "host-1" },
+      }),
+    );
   });
 });
 

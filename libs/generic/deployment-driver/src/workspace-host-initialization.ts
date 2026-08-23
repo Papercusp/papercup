@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 import type {
   AgentCredentialRef,
@@ -94,13 +96,16 @@ export interface WorkspaceHostInitializationRequest {
   publicMetadata?: Readonly<Record<string, unknown>>;
 }
 
+export const WORKSPACE_HOST_INITIALIZATION_STEP_KINDS = [
+  "create-workspace",
+  "clone-repository",
+  "pair-workspace",
+  "import-workspace",
+  "bind-credential",
+  "verify-initialization",
+] as const;
 export type WorkspaceHostInitializationStepKind =
-  | "create-workspace"
-  | "clone-repository"
-  | "pair-workspace"
-  | "import-workspace"
-  | "bind-credential"
-  | "verify-initialization";
+  (typeof WORKSPACE_HOST_INITIALIZATION_STEP_KINDS)[number];
 
 export interface WorkspaceHostInitializationStep {
   id: string;
@@ -133,6 +138,168 @@ export interface WorkspaceHostInitializationExecutor {
   execute(
     step: WorkspaceHostInitializationStep,
   ): Promise<WorkspaceHostInitializationStepReceipt>;
+}
+
+export interface WorkspaceHostInitializationHostOperationResult {
+  observedAt: string;
+  /** Persistable, redacted evidence only. Raw streams and resolved authorization are forbidden. */
+  publicEvidence?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Concrete host adapters must declare the exact initialization operations they
+ * implement. A transport kind never implies command, transfer, pairing, or
+ * credential-delivery parity.
+ */
+export interface WorkspaceHostInitializationHostOperations {
+  readonly supportedStepKinds: readonly WorkspaceHostInitializationStepKind[];
+  execute(
+    step: WorkspaceHostInitializationStep,
+  ): Promise<WorkspaceHostInitializationHostOperationResult>;
+}
+
+export interface WorkspaceHostInitializationReplayIdentity {
+  idempotencyKey: string;
+  /** SHA-256 over canonical step JSON; detects same-key/different-input reuse. */
+  stepFingerprint: string;
+}
+
+/**
+ * Durable controller seam. Implementations atomically return the prior receipt
+ * for a completed identity or own and persist exactly one execution of `run`.
+ */
+export interface WorkspaceHostInitializationReplayStore {
+  runOnce(
+    identity: WorkspaceHostInitializationReplayIdentity,
+    run: () => Promise<WorkspaceHostInitializationStepReceipt>,
+  ): Promise<WorkspaceHostInitializationStepReceipt>;
+}
+
+export interface ReplaySafeWorkspaceHostInitializationExecutorDeps {
+  operations: WorkspaceHostInitializationHostOperations;
+  replayStore: WorkspaceHostInitializationReplayStore;
+}
+
+function canonicalInitializationJson(value: unknown, path: string): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    requireCondition(Number.isFinite(value), `${path} must contain finite numbers`);
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value
+      .map((entry, index) => canonicalInitializationJson(entry, `${path}[${index}]`))
+      .join(",")}]`;
+  }
+  requireCondition(
+    typeof value === "object" && value !== undefined,
+    `${path} must contain JSON-compatible values`,
+  );
+  const prototype = Object.getPrototypeOf(value);
+  requireCondition(
+    prototype === Object.prototype || prototype === null,
+    `${path} must contain plain JSON objects`,
+  );
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => {
+      requireCondition(
+        entry !== undefined,
+        `${path}.${key} must not be undefined`,
+      );
+      return `${JSON.stringify(key)}:${canonicalInitializationJson(entry, `${path}.${key}`)}`;
+    })
+    .join(",")}}`;
+}
+
+/** Stable identity for replay collision detection, independent of object key order. */
+export function workspaceHostInitializationStepFingerprint(
+  step: WorkspaceHostInitializationStep,
+): string {
+  assertWorkspaceHostSecretIsolation(step, "workspaceHost.initialization.step");
+  return createHash("sha256")
+    .update(canonicalInitializationJson(step, "workspaceHost.initialization.step"), "utf8")
+    .digest("hex");
+}
+
+/**
+ * Production executor for the provider-neutral plan. The durable controller
+ * owns replay serialization while the host adapter owns only declared step
+ * kinds; every fresh or replayed receipt crosses the same secret-safe boundary.
+ */
+export class ReplaySafeWorkspaceHostInitializationExecutor
+  implements WorkspaceHostInitializationExecutor
+{
+  private readonly operations: WorkspaceHostInitializationHostOperations;
+  private readonly replayStore: WorkspaceHostInitializationReplayStore;
+  private readonly supportedStepKinds: ReadonlySet<WorkspaceHostInitializationStepKind>;
+
+  constructor(deps: ReplaySafeWorkspaceHostInitializationExecutorDeps) {
+    requireCondition(
+      deps.operations.supportedStepKinds.length > 0,
+      "Workspace-host initialization operations must declare at least one supported step kind",
+    );
+    const supported = new Set(deps.operations.supportedStepKinds);
+    requireCondition(
+      supported.size === deps.operations.supportedStepKinds.length,
+      "Workspace-host initialization operations must not declare duplicate step kinds",
+    );
+    for (const kind of supported) {
+      requireCondition(
+        WORKSPACE_HOST_INITIALIZATION_STEP_KINDS.includes(kind),
+        `Unsupported workspace-host initialization step kind '${kind}'`,
+      );
+    }
+    this.operations = deps.operations;
+    this.replayStore = deps.replayStore;
+    this.supportedStepKinds = supported;
+  }
+
+  async execute(
+    step: WorkspaceHostInitializationStep,
+  ): Promise<WorkspaceHostInitializationStepReceipt> {
+    requireId(step.id, "step.id");
+    requireReference(step.idempotencyKey, "step.idempotencyKey");
+    requireCondition(
+      this.supportedStepKinds.has(step.kind),
+      `Workspace-host initialization operation '${step.kind}' is not supported by this adapter`,
+    );
+    assertWorkspaceHostSecretIsolation(step, `workspaceHost.initialization.step.${step.id}`);
+
+    const receipt = await this.replayStore.runOnce(
+      {
+        idempotencyKey: step.idempotencyKey,
+        stepFingerprint: workspaceHostInitializationStepFingerprint(step),
+      },
+      async () => {
+        const result = await this.operations.execute(step);
+        requireTimestamp(result.observedAt, `receipt.${step.id}.observedAt`);
+        assertWorkspaceHostSecretIsolation(
+          result.publicEvidence ?? {},
+          `workspaceHost.initialization.receipt.${step.id}`,
+        );
+        return {
+          stepId: step.id,
+          status: "succeeded",
+          observedAt: result.observedAt,
+          ...(result.publicEvidence ? { publicEvidence: result.publicEvidence } : {}),
+        };
+      },
+    );
+
+    requireCondition(
+      receipt.stepId === step.id && receipt.status === "succeeded",
+      `Initialization replay for '${step.id}' returned an invalid receipt`,
+    );
+    requireTimestamp(receipt.observedAt, `receipt.${step.id}.observedAt`);
+    assertWorkspaceHostSecretIsolation(
+      receipt.publicEvidence ?? {},
+      `workspaceHost.initialization.receipt.${step.id}`,
+    );
+    return receipt;
+  }
 }
 
 type AnyCredentialRef =
