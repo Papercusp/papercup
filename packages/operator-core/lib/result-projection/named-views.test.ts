@@ -51,6 +51,95 @@ const SAMPLE_PIPELINE_POSITION = {
   summary: 'WAITING AT GATE (nothing to do — this leg is advancing on its own).',
 };
 
+const SAMPLE_COORD_ORIENT = {
+  self: {
+    ownerId: 'su-42b2e04c-7d24-4a0b-b763-ab19ad5b3525',
+    ownerLabel: 'su · su-42b2e',
+  },
+  recovery: {
+    selfRecall: "sessions:search { session:'self', mode:'verbatim' }",
+    selfSession: { sourceKind: 'codex', sessionId: '01a02fac-0b42-7873-b869-dc6ee6e88ff4' },
+    control: {
+      schemaVersion: 'ctrl-v1',
+      generation: 3,
+      state: {
+        modes: ['auto'],
+        loop: { active: true, intervalSec: 60 },
+        wakeSource: 'loop',
+        carry: 'warm',
+        route: { kind: 'fleet', fleet: 'ox-alpha-sol-replacements-2026-08-23', role: 'member' },
+        scope: { workspace: 'papercusp-workspace', harness: 'papercusp', plan: null, items: [] },
+      },
+      provenance: {
+        source: 'harness_shared.session_briefs.control_state',
+        ownerId: 'su-42b2e04c-7d24-4a0b-b763-ab19ad5b3525',
+        updatedAt: '2026-08-23T17:33:39.744Z',
+      },
+      resync: {
+        on: ['missing-base', 'schema-mismatch', 'generation-mismatch'],
+        verb: 'coord:orient',
+        args: { afterCompaction: true },
+        rule: 'replace-full-never-merge-behind',
+      },
+      budget: { estimatedTokens: 175, maxTokens: 384 },
+    },
+    loop: { active: true, intervalSec: 60 },
+    checkpoints: [
+      {
+        id: 'WI-39919',
+        title: 'Adopt named result views on recovery-critical reads',
+        body: 'Publish stable recovery views.',
+        checkpoint: 'Captured the real afterCompaction payload; next edit the named-view registry.',
+      },
+    ],
+  },
+  me: {
+    summary: {
+      agents: 1,
+      alive: 1,
+      claims: 1,
+      orphaned_claims: 0,
+      stalled_claims: 0,
+      monitoring: 1,
+      waiting: 0,
+      unanswered_directed: 0,
+    },
+    agents: [
+      {
+        agentId: 'su-42b2e04c-7d24-4a0b-b763-ab19ad5b3525',
+        alive: true,
+        sessionState: 'live',
+        selfWake: 'loop',
+        verdict: 'monitoring',
+        fleet: 'ox-alpha-sol-replacements-2026-08-23',
+        claims: 1,
+        doing: 'WI-39919 Adopt named recovery views',
+        isSelf: true,
+      },
+    ],
+  },
+  inbox: { summary: { total: 478, returned: 25, truncated: 260 } },
+  instructionPrecedence: {
+    schemaVersion: 'instruction-precedence-v1',
+    watermark: 'af80f8b75c99c441753452c0',
+    effectiveMission: {
+      constraint: 'execute-fleet-plan-only',
+      source: 'fleet:ox-alpha-sol-replacements-2026-08-23:member',
+      explanation: 'Pull only work admitted by the fleet scope/spec.',
+    },
+  },
+  codexLocks: {
+    lockMode: 'manual',
+    hookHealth: 'configured-unverified',
+    runtimeProbed: false,
+    ownerId: 'su-42b2e04c-7d24-4a0b-b763-ab19ad5b3525',
+    hooksConfigured: true,
+    generation: 1,
+    reason: 'Hooks are configured, but this exact Codex owner has not produced a successful runtime decision yet.',
+    effectiveInstruction: 'Before every file edit, explicitly call locks:acquire and release it.',
+  },
+};
+
 const SAMPLE_WORK_ITEMS_GET = {
   ok: true,
   results: [
@@ -64,8 +153,21 @@ const SAMPLE_WORK_ITEMS_GET = {
         title: 'Named result views — schema-stable recovery capsules',
         state: 'open',
         assignee: 'su-659a7da9-428f-4c8d-b456-d66a6611c51d',
+        lastProgressAt: '2026-08-23T17:40:39.626Z',
+        updatedAt: '2026-08-23T17:33:57.511Z',
+      },
+      holder: {
+        goalRef: 'WI-39401',
+        goalText: null,
+        assumptions: { count: 1, keys: ['launch-provenance'] },
+        declaredAt: '2026-08-23 13:33:57.50878-04',
+        stale: false,
+        agreement: 'sole',
+        competing: [],
       },
       checkpoint: '## Re-claimed after my own release',
+      checkpointAgeMs: 106_146,
+      checkpointUpdatedAtMs: 1_787_506_839_606,
     },
   ],
   counts: { ok: 1, failed: 0 },
@@ -87,6 +189,7 @@ const SAMPLE_PLANS_GET = {
 
 const SAMPLES: Record<string, unknown> = {
   'dev:pipeline_position': SAMPLE_PIPELINE_POSITION,
+  'coord:orient': SAMPLE_COORD_ORIENT,
   'work_items:get': SAMPLE_WORK_ITEMS_GET,
   'plans:get': SAMPLE_PLANS_GET,
 };
@@ -116,6 +219,15 @@ describe('named result views — resolution', () => {
     expect(r.validNames).toEqual(viewNamesFor('work_items:get'));
     // And it must NOT be a fallback that quietly returns everything.
     expect(r.error).toMatch(/view_unknown/);
+  });
+
+  it('a version-stale view spelling fails loudly with the current names', () => {
+    const r = resolveNamedView('work_items:get', 'capsule@v0');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('unknown_view');
+    expect(r.error).toContain('capsule');
+    expect(r.validNames).toEqual(viewNamesFor('work_items:get'));
   });
 
   it('a tool with no registered views says so instead of guessing', () => {
@@ -152,6 +264,9 @@ describe('named result views — the Design falsifiable check', () => {
     const { text, receipt } = applyNamedView(oversized, resolved);
 
     expect(receipt.applied).toBe(true);
+    expect(receipt.view).toBe('capsule');
+    expect(receipt.sourceChars).toBe(JSON.stringify(oversized).length);
+    expect(receipt.sourceChars).toBeGreaterThan(receipt.returnedChars);
     // "returnedChars under the declared budget" — the budget is a guarantee.
     expect(receipt.returnedChars).toBeLessThanOrEqual(receipt.budgetChars);
     expect(text.length).toBe(receipt.returnedChars);
@@ -200,6 +315,59 @@ describe('named result views — the Design falsifiable check', () => {
 });
 
 describe('named result views — seeded registry integrity', () => {
+  it('publishes recovery-critical and monitor on both recovery reads', () => {
+    for (const tool of ['coord:orient', 'work_items:get']) {
+      expect(viewNamesFor(tool)).toEqual(expect.arrayContaining(['recovery-critical', 'monitor']));
+    }
+  });
+
+  it('recovery-critical capsules preserve the cold-successor anchors under budget', () => {
+    const orientView = resolveNamedView('coord:orient', 'recovery-critical');
+    const itemView = resolveNamedView('work_items:get', 'recovery-critical');
+    expect(orientView.ok && itemView.ok).toBe(true);
+    if (!orientView.ok || !itemView.ok) return;
+
+    const orient = applyNamedView(SAMPLE_COORD_ORIENT, orientView);
+    const item = applyNamedView(SAMPLE_WORK_ITEMS_GET, itemView);
+    expect(orient.receipt.unmatchedFields ?? []).toEqual([]);
+    expect(item.receipt.unmatchedFields ?? []).toEqual([]);
+    expect(orient.receipt.budgetEnforced).toBeUndefined();
+    expect(item.receipt.budgetEnforced).toBeUndefined();
+    expect(orient.receipt.returnedChars).toBeLessThanOrEqual(orient.receipt.budgetChars);
+    expect(item.receipt.returnedChars).toBeLessThanOrEqual(item.receipt.budgetChars);
+
+    const orientBody = JSON.parse(orient.text) as Record<string, unknown>;
+    const itemBody = JSON.parse(item.text) as Record<string, unknown>;
+    expect(orientBody).toHaveProperty('recovery.control.state.loop.active', true);
+    expect(orientBody).toHaveProperty('recovery.checkpoints.0.id', 'WI-39919');
+    expect(orientBody).toHaveProperty('codexLocks.lockMode', 'manual');
+    expect(itemBody).toHaveProperty('results.0.holder.agreement', 'sole');
+    expect(itemBody).toHaveProperty('results.0.checkpoint', '## Re-claimed after my own release');
+    expect(itemBody).toHaveProperty('results.0.checkpointAgeMs', 106_146);
+  });
+
+  it('monitor capsules expose freshness without carrying checkpoint prose', () => {
+    const orientView = resolveNamedView('coord:orient', 'monitor');
+    const itemView = resolveNamedView('work_items:get', 'monitor');
+    expect(orientView.ok && itemView.ok).toBe(true);
+    if (!orientView.ok || !itemView.ok) return;
+
+    const orient = JSON.parse(applyNamedView(SAMPLE_COORD_ORIENT, orientView).text) as Record<
+      string,
+      unknown
+    >;
+    const item = JSON.parse(applyNamedView(SAMPLE_WORK_ITEMS_GET, itemView).text) as Record<
+      string,
+      unknown
+    >;
+    expect(orient).toHaveProperty('me.summary.claims', 1);
+    expect(orient).toHaveProperty('me.agents.0.sessionState', 'live');
+    expect(orient).not.toHaveProperty('recovery.checkpoints');
+    expect(item).toHaveProperty('results.0.holder.stale', false);
+    expect(item).toHaveProperty('results.0.checkpointAgeMs', 106_146);
+    expect(item).not.toHaveProperty('results.0.checkpoint');
+  });
+
   /**
    * The guard the module comment promises. A seeded view is only useful if its
    * paths match the tool's REAL output; when they drift, `applyPick` reports
@@ -339,9 +507,22 @@ describe('named result views — dispatch seam', () => {
     if (!resolved.ok) return;
 
     const out = applyNamedViewToResult(wrap(SAMPLE_WORK_ITEMS_GET), resolved);
-    const receipt = (out._meta as { namedView?: { name?: string; version?: number } }).namedView;
-    expect(receipt?.name).toBe('capsule');
+    const receipt = (out._meta as {
+      namedView?: {
+        view?: string;
+        version?: number;
+        applied?: boolean;
+        sourceChars?: number;
+        returnedChars?: number;
+        fields?: string[];
+      };
+    }).namedView;
+    expect(receipt?.view).toBe('capsule');
     expect(receipt?.version).toBe(resolved.def.version);
+    expect(receipt?.applied).toBe(true);
+    expect(receipt?.sourceChars).toBe(JSON.stringify(SAMPLE_WORK_ITEMS_GET).length);
+    expect(receipt?.returnedChars).toBeGreaterThan(0);
+    expect(receipt?.fields).toEqual(resolved.def.fields);
 
     const text = (out.content[0] as { text: string }).text;
     // The footer is the copy the agent actually reads.
@@ -351,20 +532,42 @@ describe('named result views — dispatch seam', () => {
     expect(text).not.toContain('"kind"');
   });
 
-  it('FAIL-SOFT: a non-JSON body returns the original result untouched', () => {
+  it('FAIL-SOFT: a non-JSON body stays intact and carries an unapplied receipt', () => {
     const resolved = resolveNamedView('work_items:get', 'capsule');
     if (!resolved.ok) return;
-    const original = { content: [{ type: 'text' as const, text: 'not json at all' }] };
-    expect(applyNamedViewToResult(original, resolved)).toBe(original);
+    const original: ViewableResult = {
+      content: [{ type: 'text' as const, text: 'not json at all' }],
+    };
+    const out = applyNamedViewToResult(original, resolved);
+    expect((out.content[0] as { text: string }).text).toContain('not json at all');
+    expect((out.content[0] as { text: string }).text).toContain('did NOT apply');
+    expect(out._meta?.namedView).toMatchObject({
+      view: 'capsule',
+      version: resolved.def.version,
+      applied: false,
+      sourceChars: 'not json at all'.length,
+      returnedChars: 'not json at all'.length,
+      fields: resolved.def.fields,
+    });
   });
 
-  it('FAIL-SOFT: an error envelope is never reduced', () => {
+  it('FAIL-SOFT: an error envelope is preserved and carries an unapplied receipt', () => {
     const resolved = resolveNamedView('work_items:get', 'capsule');
     if (!resolved.ok) return;
-    const errEnvelope = {
-      isError: true as const,
+    const errEnvelope: ViewableResult = {
+      isError: true,
       content: [{ type: 'text' as const, text: JSON.stringify({ results: [] }) }],
     };
-    expect(applyNamedViewToResult(errEnvelope, resolved)).toBe(errEnvelope);
+    const out = applyNamedViewToResult(errEnvelope, resolved);
+    expect(out.isError).toBe(true);
+    expect((out.content[0] as { text: string }).text).toContain('{"results":[]}');
+    expect(out._meta?.namedView).toMatchObject({
+      view: 'capsule',
+      version: resolved.def.version,
+      applied: false,
+      sourceChars: JSON.stringify({ results: [] }).length,
+      returnedChars: JSON.stringify({ results: [] }).length,
+      fields: resolved.def.fields,
+    });
   });
 });

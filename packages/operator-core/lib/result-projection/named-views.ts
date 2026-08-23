@@ -98,7 +98,78 @@ export const NAMED_VIEWS: Readonly<Record<string, Readonly<Record<string, NamedV
       }),
     }),
 
+    'coord:orient': Object.freeze({
+      'recovery-critical': Object.freeze({
+        version: 1,
+        purpose:
+          'Cold-successor capsule: authoritative control/loop/checkpoint recovery, effective mission, and Codex lock mode.',
+        budgetChars: 4800,
+        fields: [
+          'self',
+          'recovery',
+          'instructionPrecedence.schemaVersion',
+          'instructionPrecedence.watermark',
+          'instructionPrecedence.effectiveMission',
+          'codexLocks',
+        ],
+      }),
+      monitor: Object.freeze({
+        version: 1,
+        purpose:
+          'Lean live monitor: loop wake source, assignment/liveness summary, inbox pressure, and current lock generation.',
+        budgetChars: 2800,
+        fields: [
+          'self',
+          'recovery.loop',
+          'me.summary',
+          'me.agents',
+          'inbox.summary',
+          'codexLocks.lockMode',
+          'codexLocks.generation',
+        ],
+      }),
+    }),
+
     'work_items:get': Object.freeze({
+      'recovery-critical': Object.freeze({
+        version: 1,
+        purpose:
+          'Cold-successor item capsule: identity/state, live holder agreement, complete checkpoint, and checkpoint freshness.',
+        budgetChars: 3800,
+        fields: [
+          'ok',
+          'results[].ok',
+          'results[].id',
+          'results[].workItem.state',
+          'results[].workItem.title',
+          'results[].workItem.assignee',
+          'results[].workItem.harness',
+          'results[].holder',
+          'results[].checkpoint',
+          'results[].checkpointAgeMs',
+          'results[].checkpointUpdatedAtMs',
+          'counts',
+        ],
+      }),
+      monitor: Object.freeze({
+        version: 1,
+        purpose:
+          'Item monitor without checkpoint prose: state, assignee, holder agreement, progress time, and checkpoint age.',
+        budgetChars: 1400,
+        fields: [
+          'ok',
+          'results[].ok',
+          'results[].id',
+          'results[].workItem.state',
+          'results[].workItem.assignee',
+          'results[].workItem.lastProgressAt',
+          'results[].workItem.updatedAt',
+          'results[].holder',
+          'results[].checkpointAgeMs',
+          'results[].checkpointUpdatedAtMs',
+          'counts',
+        ],
+      }),
       capsule: Object.freeze({
         version: 1,
         purpose:
@@ -224,13 +295,16 @@ export function resolveNamedView(tool: string, name: unknown): ViewResolution {
 
 /** The receipt emitted alongside a view-projected payload. */
 export interface NamedViewReceipt {
-  name: string;
+  /** The stable registry name the caller requested. */
+  view: string;
   version: number;
   /** True when the selection ran. */
   applied: boolean;
   /** The exact field set the version declares — what the successor actually got. */
   fields: string[];
   budgetChars: number;
+  /** Serialized size BEFORE the view selected any fields. */
+  sourceChars: number;
   /** Rendered size AFTER selection and any budget enforcement. */
   returnedChars: number;
   /**
@@ -252,6 +326,31 @@ export interface AppliedNamedView {
   receipt: NamedViewReceipt;
 }
 
+function serializedChars(value: unknown): number {
+  try {
+    return (JSON.stringify(value) ?? String(value)).length;
+  } catch {
+    return 0;
+  }
+}
+
+function namedViewReceipt(
+  resolved: Extract<ViewResolution, { ok: true }>,
+  applied: boolean,
+  sourceChars: number,
+  returnedChars: number,
+): NamedViewReceipt {
+  return {
+    view: resolved.name,
+    version: resolved.def.version,
+    applied,
+    fields: [...resolved.def.fields],
+    budgetChars: resolved.def.budgetChars,
+    sourceChars,
+    returnedChars,
+  };
+}
+
 /**
  * Apply a resolved view to a parsed result body: select, render, then enforce
  * the byte budget.
@@ -260,8 +359,12 @@ export interface AppliedNamedView {
  * fields the caller asked for, not on whatever happened to sort first), budget
  * second (so the declared ceiling is a real guarantee rather than a hope).
  */
-export function applyNamedView(body: unknown, resolved: Extract<ViewResolution, { ok: true }>): AppliedNamedView {
-  const { def, name } = resolved;
+export function applyNamedView(
+  body: unknown,
+  resolved: Extract<ViewResolution, { ok: true }>,
+  sourceChars = serializedChars(body),
+): AppliedNamedView {
+  const { def } = resolved;
   const { picked, unmatched } = applyPick(body, def.fields);
 
   let text: string;
@@ -272,25 +375,11 @@ export function applyNamedView(body: unknown, resolved: Extract<ViewResolution, 
     // it as an unapplied view and let the caller see the ordinary payload.
     return {
       text: '',
-      receipt: {
-        name,
-        version: def.version,
-        applied: false,
-        fields: [...def.fields],
-        budgetChars: def.budgetChars,
-        returnedChars: 0,
-      },
+      receipt: namedViewReceipt(resolved, false, sourceChars, sourceChars),
     };
   }
 
-  const receipt: NamedViewReceipt = {
-    name,
-    version: def.version,
-    applied: true,
-    fields: [...def.fields],
-    budgetChars: def.budgetChars,
-    returnedChars: text.length,
-  };
+  const receipt = namedViewReceipt(resolved, true, sourceChars, text.length);
   if (unmatched.length) receipt.unmatchedFields = [...unmatched];
 
   if (text.length > def.budgetChars) {
@@ -370,47 +459,90 @@ function firstTextIndex(content: ViewableResult['content']): number {
   );
 }
 
+function attachNamedViewReceipt<T extends ViewableResult>(
+  result: T,
+  receipt: NamedViewReceipt,
+  textIndex: number,
+  bodyText?: string,
+): T {
+  const footer = describeNamedView(receipt);
+  const content = [...result.content];
+  if (textIndex >= 0) {
+    const original = content[textIndex] as Record<string, unknown>;
+    const originalText = (original.text as string | undefined) ?? '';
+    content[textIndex] = {
+      ...original,
+      type: 'text' as const,
+      text: `${bodyText ?? originalText}\n${footer}`,
+    };
+  } else {
+    // A caller asked for a view but the result had no text body to select.
+    // Add the receipt in-band so `_meta`-blind clients can still distinguish
+    // "ignored" from "applied" rather than silently receiving a no-op.
+    content.push({ type: 'text' as const, text: footer });
+  }
+  return {
+    ...result,
+    content,
+    _meta: { ...result._meta, namedView: receipt },
+  };
+}
+
 /**
  * Apply a resolved view to a dispatched result: select, enforce the budget,
  * attach the receipt to `_meta.namedView`, and append the in-band footer.
  *
- * FAIL-SOFT, like every other stage at this seam: a body that will not parse,
- * or anything that throws, returns the ORIGINAL result untouched. This stage
- * must never turn a good result into a failure — an unknown view name already
- * failed closed earlier, at resolution, which is where a caller bug belongs.
+ * FAIL-SOFT, like every other stage at this seam: a body that will not parse or
+ * an error envelope keeps its ORIGINAL payload. It still receives an
+ * `applied:false` receipt, because R3 requires callers to distinguish "the view
+ * was ignored" from "the view applied". An unknown view name already fails
+ * closed earlier, at resolution, which is where a caller bug belongs.
  */
 export function applyNamedViewToResult<T extends ViewableResult>(
   result: T,
   resolved: Extract<ViewResolution, { ok: true }>,
 ): T {
   try {
-    // An error envelope is not a result being reduced — leave it whole.
-    if (result.isError) return result;
-
     const idx = firstTextIndex(result.content);
-    if (idx < 0) return result;
-    const raw = (result.content[idx] as { text: string }).text;
+    const raw = idx >= 0 ? (result.content[idx] as { text: string }).text : '';
+
+    // An error envelope is not a result being reduced. Preserve it whole, but
+    // make the requested view's no-op explicit in both receipt channels.
+    if (result.isError) {
+      return attachNamedViewReceipt(
+        result,
+        namedViewReceipt(resolved, false, raw.length, raw.length),
+        idx,
+      );
+    }
+    if (idx < 0) {
+      return attachNamedViewReceipt(result, namedViewReceipt(resolved, false, 0, 0), idx);
+    }
 
     let body: unknown;
     try {
       body = JSON.parse(raw);
     } catch {
-      return result; // not a JSON body; a field selection cannot apply.
+      return attachNamedViewReceipt(
+        result,
+        namedViewReceipt(resolved, false, raw.length, raw.length),
+        idx,
+      );
     }
 
-    const { text, receipt } = applyNamedView(body, resolved);
-    if (!receipt.applied) return result;
-
-    const content = [...result.content];
-    content[idx] = { type: 'text' as const, text: `${text}\n${describeNamedView(receipt)}` };
-
+    const { text, receipt } = applyNamedView(body, resolved, raw.length);
+    return attachNamedViewReceipt(result, receipt, idx, receipt.applied ? text : undefined);
+  } catch {
+    // Preserve fail-soft behavior even for an unexpected presentation error,
+    // but never lose the R3 receipt: metadata-only is still distinguishable
+    // from a silently ignored view for clients that inspect the envelope.
     return {
       ...result,
-      content,
-      _meta: { ...result._meta, namedView: receipt },
+      _meta: {
+        ...result._meta,
+        namedView: namedViewReceipt(resolved, false, 0, 0),
+      },
     };
-  } catch {
-    return result;
   }
 }
 
@@ -421,11 +553,11 @@ export function applyNamedViewToResult<T extends ViewableResult>(
  */
 export function describeNamedView(receipt: NamedViewReceipt): string {
   if (!receipt.applied) {
-    return `ⓘ view "${receipt.name}" v${receipt.version} did NOT apply — the full result is shown.`;
+    return `ⓘ view "${receipt.view}" v${receipt.version} did NOT apply — the full result is shown.`;
   }
   const parts = [
-    `ⓘ view "${receipt.name}" v${receipt.version} applied — ${receipt.fields.length} field(s), ` +
-      `${receipt.returnedChars}/${receipt.budgetChars} chars`,
+    `ⓘ view "${receipt.view}" v${receipt.version} applied — ${receipt.fields.length} field(s), ` +
+      `${receipt.sourceChars}→${receipt.returnedChars}/${receipt.budgetChars} chars`,
   ];
   if (receipt.budgetEnforced) {
     parts.push(`TRIMMED at the byte budget (was ${receipt.charsBeforeBudget})`);
