@@ -375,7 +375,15 @@ export default defineTool({
     // A dry-run (confirm absent/false) does NOT commit — it only previews.
     // Reuse the bounded read above; a second unbounded read would both redeclare `status`
     // and recreate the transport-timeout failure this guard is meant to prevent.
-    if ((args as { confirm?: boolean }).confirm === true) {
+    // An explicit force commit is already an immutable deploy target. Running git-sync before
+    // that launch cannot change what will ship; it only delays systemd-run behind an unrelated,
+    // potentially long git pipeline. EI-21235497883261126 reproduced the concrete failure:
+    // two exact-SHA force calls exhausted the caller's 30s transport budget inside this step
+    // and never reached launchDetachedDeploy. Keep the freshness step for trigger and for an
+    // implicit force target (where staging HEAD is the target), but launch an explicit commit
+    // immediately.
+    const explicitForceCommit = args.op === 'force' && args.commit !== undefined;
+    if ((args as { confirm?: boolean }).confirm === true && !explicitForceCommit) {
       // Wrap the WHOLE step (slug resolution + fire + re-read) — it must NEVER fail the deploy.
       try {
         await fireGitSyncNow(operatorHomeHarnessSlug(), activeWorkspaceId());

@@ -54,8 +54,10 @@ vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
 }));
 
 import { readDeployStatus, launchDetachedDeploy } from '../../release-deploy-launch';
+import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
 const statusM = vi.mocked(readDeployStatus);
 const launchM = vi.mocked(launchDetachedDeploy);
+const fireGitSyncM = vi.mocked(fireGitSyncNow);
 const deployModule = await import('./deploy');
 const tool = deployModule.default;
 const RELEASE_STATUS_READ_TIMEOUT_MS = deployModule.RELEASE_STATUS_READ_TIMEOUT_MS;
@@ -143,6 +145,7 @@ function checkpointRun(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fireGitSyncM.mockResolvedValue(undefined as never);
   auditUnsafeM.mockResolvedValue(undefined);
   launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log' });
 });
@@ -491,6 +494,30 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(b).toMatchObject({ ok: true, launched: true, op: 'force', commit: 'feedface' });
     expect(launchM).toHaveBeenCalledWith({ force: true, commit: 'feedface' });
     expect(notifyM).toHaveBeenCalledTimes(1); // loud owner notification
+  });
+
+  it('an explicit immutable force commit launches without waiting for git-sync', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red' }));
+    fireGitSyncM.mockImplementation(() => new Promise(() => {}));
+    launchM.mockResolvedValue({
+      launched: true,
+      unit: 'papercup-auto-deploy',
+      mode: 'force',
+      commit: 'bb694a6af028',
+      argv: [],
+      logPath: '/tmp/x.log',
+    });
+
+    const b = body(
+      await tool.handler(
+        { ...forceArgs, commit: 'bb694a6af028' } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+
+    expect(b).toMatchObject({ ok: true, launched: true, op: 'force', commit: 'bb694a6af028' });
+    expect(fireGitSyncM).not.toHaveBeenCalled();
+    expect(launchM).toHaveBeenCalledWith({ force: true, commit: 'bb694a6af028' });
   });
 });
 
