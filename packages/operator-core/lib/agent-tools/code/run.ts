@@ -777,6 +777,87 @@ function clipCodeRunSummaryString(
   return value.slice(0, maxChars - suffix.length) + suffix;
 }
 
+// EI-21238514286678666: a raw MCP tool result is commonly nested under a code:run
+// summary row as `{ content: [{ type: 'text', text: '...' }] }`. When the summary
+// needs the more aggressive projection rung, that envelope lands exactly at the
+// depth boundary and the old projector replaced it with `{}`. In particular,
+// capability:inspect's background launch handles live inside the text block, so
+// dropping the envelope makes a successfully-started job impossible to reattach.
+const CODE_RUN_SUMMARY_HANDLE_KEYS = new Set(['bash_id', 'task_id']);
+const CODE_RUN_SUMMARY_HANDLE_CONTEXT_KEYS = new Set(['ok', 'status', 'state', 'reason', 'error']);
+
+function projectCodeRunSummaryTextContent(
+  value: unknown,
+  path: string,
+  options: CodeRunSummaryProjectionOptions,
+  stats: CodeRunSummaryProjectionStats,
+): unknown | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const limit = Math.min(value.length, options.arrayLimit);
+  const projected: unknown[] = [];
+  let hasText = false;
+  for (let index = 0; index < limit; index += 1) {
+    const entry = value[index];
+    if (!isCodeRunSummaryRecord(entry) || typeof entry.text !== 'string') continue;
+    hasText = true;
+    const text = clipCodeRunSummaryString(entry.text, `${path}[${index}].text`, options.stringChars, stats);
+    const item: Record<string, unknown> = { text };
+    if (typeof entry.type === 'string') item.type = entry.type;
+    projected.push(item);
+  }
+  if (!hasText) return undefined;
+  if (value.length > options.arrayLimit) {
+    stats.arraysTruncated++;
+    stats.omittedItems += value.length - options.arrayLimit;
+    noteCodeRunSummaryPath(stats, path);
+  }
+  return projected;
+}
+
+function projectCodeRunSummaryDepthBoundary(
+  value: unknown,
+  path: string,
+  options: CodeRunSummaryProjectionOptions,
+  stats: CodeRunSummaryProjectionStats,
+): unknown | undefined {
+  // `content` itself is one level below the raw MCP result object, so the array
+  // can be the value that hits the boundary on the least aggressive projection
+  // rung. Recognize it here as well as when the containing result object is at
+  // the boundary.
+  if (Array.isArray(value)) {
+    const content = projectCodeRunSummaryTextContent(value, path, options, stats);
+    if (content === undefined) return undefined;
+    stats.valuesTruncated++;
+    stats.omittedItems++;
+    noteCodeRunSummaryPath(stats, path);
+    return content;
+  }
+  if (!isCodeRunSummaryRecord(value)) return undefined;
+
+  const projected: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (CODE_RUN_SUMMARY_HANDLE_KEYS.has(key) || CODE_RUN_SUMMARY_HANDLE_CONTEXT_KEYS.has(key)) {
+      if (!isCodeRunSummaryScalar(entry)) continue;
+      projected[key] =
+        typeof entry === 'string'
+          ? clipCodeRunSummaryString(entry, `${path}.${key}`, options.stringChars, stats)
+          : entry;
+    }
+  }
+
+  const content = projectCodeRunSummaryTextContent(value.content, `${path}.content`, options, stats);
+  if (content !== undefined) projected.content = content;
+  if (Object.keys(projected).length === 0) return undefined;
+
+  // The boundary projection is intentionally selective. Keep the omission visible so a
+  // caller does not mistake the compact envelope for the complete child result.
+  stats.valuesTruncated++;
+  stats.omittedItems++;
+  noteCodeRunSummaryPath(stats, path);
+  return projected;
+}
+
 function projectCodeRunSummaryValue(
   value: unknown,
   path: string,
@@ -790,6 +871,8 @@ function projectCodeRunSummaryValue(
   if (isCodeRunSummaryScalar(value)) return value;
 
   if (depth >= options.maxDepth) {
+    const boundaryProjection = projectCodeRunSummaryDepthBoundary(value, path, options, stats);
+    if (boundaryProjection !== undefined) return boundaryProjection;
     stats.valuesTruncated++;
     stats.omittedItems++;
     noteCodeRunSummaryPath(stats, path);
