@@ -9,10 +9,17 @@ export function characterRangeForLines(source: any, range: any): {
     start: number;
     end: any;
 };
+/**
+ * Apply range formatting without ever publishing an unparseable intermediate.
+ * Prettier may need the enclosing statement's terminator even when the requested
+ * range ends earlier; use its first parse error to expand the range and retry.
+ */
+export function applyPrettierRangeWrites(source: any, lineRanges: any, formatRange: any, repoPath?: string): any;
 /** Validate and normalize explicit in-repository file paths. */
 export function normalizeScopedPaths(args: any): any;
 export function buildPrettierCheckArgs(cli: any, repoPath: any, range: any): any[];
 export function buildPrettierArgs(cli: any, repoPath: any, range: any, mode?: string): any[];
+export function buildPrettierStdinArgs(cli: any, repoPath: any, range: any): any[];
 export function parseFormatCliArgs(args: any): {
     mode: string;
     paths: any;
