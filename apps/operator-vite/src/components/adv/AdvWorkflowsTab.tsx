@@ -129,7 +129,7 @@ function inlinePlanContent(outcome: string, triggerLabel: string): string {
     '',
     '## Background',
     '',
-    `Created in place from Automations for a real ${triggerLabel.toLocaleLowerCase()} trigger.`,
+    `Created in place from Workflows for a real ${triggerLabel.toLocaleLowerCase()} trigger.`,
     '',
     '## Delivery',
     '',
@@ -354,7 +354,7 @@ export default function AdvWorkflowsTab() {
       toast.success(success);
       refreshAll();
     } catch (error) {
-      toast.error('Automation control failed', {
+      toast.error('Workflow control failed', {
         description: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -388,17 +388,17 @@ export default function AdvWorkflowsTab() {
     if (!next && !(await confirm({
       title: `Pause ${item.label}?`,
       body: 'Its schedule remains visible, but it will stop firing until resumed.',
-      confirmLabel: 'Pause automation',
+      confirmLabel: 'Pause workflow',
       destructive: true,
     }))) return;
     setBusy(`routine:${item.id}`);
     try {
       if (routine.control === 'flag') {
-        if (!routine.flagKey) throw new Error('Flag-controlled automation has no flag key');
+        if (!routine.flagKey) throw new Error('Flag-controlled workflow has no flag key');
         const result = await runScheduleTool('flags:set', {
           key: routine.flagKey,
           enabled: next,
-          reason: `Changed from the Automations tab`,
+          reason: `Changed from the Workflows tab`,
         });
         if (!result.ok) throw new Error(result.message ?? 'Flag update failed');
       } else {
@@ -407,15 +407,15 @@ export default function AdvWorkflowsTab() {
             name: routine.name,
             installSlug,
             active: next,
-            ...(next ? {} : { reason: 'Paused from the Automations tab' }),
+            ...(next ? {} : { reason: 'Paused from the Workflows tab' }),
           });
           if (!result.ok) throw new Error(result.message ?? `Routine update failed for ${installSlug}`);
         }
       }
-      toast.success(next ? 'Automation resumed' : 'Automation paused');
+      toast.success(next ? 'Workflow resumed' : 'Workflow paused');
       refreshAll();
     } catch (error) {
-      toast.error('Automation control failed', { description: error instanceof Error ? error.message : String(error) });
+      toast.error('Workflow control failed', { description: error instanceof Error ? error.message : String(error) });
     } finally {
       setBusy(null);
     }
@@ -544,17 +544,17 @@ export default function AdvWorkflowsTab() {
           <p>Everything that can run in the background—what starts it, whether it is running, what it can spend, and how to stop it.</p>
         </div>
         <div className="pc-workflows__mast-actions">
-          <button type="button" className="pc-workflows__ghost" onClick={refreshAll} aria-label="Refresh automations">
+          <button type="button" className="pc-workflows__ghost" onClick={refreshAll} aria-label="Refresh workflows">
             <span className="pc-workflows__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
           <button type="button" className="pc-workflows__primary" onClick={() => setCreateOpen(true)}>
-            <span className="pc-workflows__button-inner"><Plus size={14} aria-hidden /> New automation</span>
+            <span className="pc-workflows__button-inner"><Plus size={14} aria-hidden /> New workflow</span>
           </button>
         </div>
       </header>
 
       <div className="pc-workflows__viewbar">
-        <nav aria-label="Automation views">
+        <nav aria-label="Workflow views">
           {VIEW_TABS.map(({ id, label }) => (
             <button key={id} type="button" data-active={view === id} onClick={() => void setView(id)}>
               <span className="pc-workflows__viewtab-inner">
@@ -574,7 +574,7 @@ export default function AdvWorkflowsTab() {
       ) : null}
 
       {view === 'flow' || view === 'catalog' ? (
-        <div className="pc-workflows__metrics" aria-label="Automation summary">
+        <div className="pc-workflows__metrics" aria-label="Workflow summary">
           <Metric icon={AlertTriangle} label="Needs attention" value={String(attentionCount)} tone={attentionCount > 0 ? 'warn' : 'good'} />
           <Metric icon={Play} label="Running now" value={String(runningCount)} tone={runningCount > 0 ? 'blue' : 'neutral'} />
           <Metric icon={CalendarClock} label="Next run" value={nextAt == null ? '—' : relativeTime(nextAt)} tone="neutral" />
@@ -664,7 +664,7 @@ export default function AdvWorkflowsTab() {
       ) : view === 'catalog' ? (
         <>
           <div className="pc-workflows__filters">
-            <div role="group" aria-label="Filter automations">
+            <div role="group" aria-label="Filter workflows">
               {FILTERS.map((candidate) => (
                 <button key={candidate.id} type="button" data-active={filter === candidate.id} onClick={() => void setFilter(candidate.id)}>
                   {candidate.label}
@@ -673,18 +673,18 @@ export default function AdvWorkflowsTab() {
             </div>
             <label>
               <Search size={13} aria-hidden />
-              <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search automations" aria-label="Search automations" />
+              <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search workflows" aria-label="Search workflows" />
             </label>
           </div>
 
           <div className="pc-workflows__workspace">
             <div className="pc-workflows__catalog">
               <div className="pc-workflows__panelhead">
-                <strong>Automation catalog</strong>
+                <strong>Workflow catalog</strong>
                 <span>{visibleItems.length} shown · attention first, then next run</span>
               </div>
-              {loading && items.length === 0 ? <div className="pc-workflows__list-empty">Loading automations…</div> : null}
-              {!loading && visibleItems.length === 0 ? <div className="pc-workflows__list-empty">No automations match this filter.</div> : null}
+              {loading && items.length === 0 ? <div className="pc-workflows__list-empty">Loading workflows…</div> : null}
+              {!loading && visibleItems.length === 0 ? <div className="pc-workflows__list-empty">No workflows match this filter.</div> : null}
               <div className="pc-workflows__rows">
                 {visibleItems.map((item) => (
                   <AutomationRow key={item.id} item={item} selected={selected?.id === item.id} onSelect={() => void setSelectedId(item.id)} />
@@ -872,7 +872,7 @@ function CreateAutomationModal({
         if (!defaultHarness) throw new Error('Select an owning pot before creating a plan in place.');
         const title = planName.trim();
         const delivery = outcome.trim();
-        if (!title || !delivery) throw new Error('Name the automation and describe the plan outcome.');
+        if (!title || !delivery) throw new Error('Name the workflow and describe the plan outcome.');
         const slug = uniqueDatedPlanSlug(title, plans);
         setStep('Creating plan…');
         const created = await runScheduleTool('plans:new', {
@@ -880,7 +880,7 @@ function CreateAutomationModal({
           title,
           harness: defaultHarness,
           status: 'ready',
-          rationale: 'Created in place from the Automations production surface.',
+          rationale: 'Created in place from the Workflows production surface.',
           content: inlinePlanContent(delivery, triggerKind === 'schedule' ? 'Schedule' : 'External event'),
         });
         if (!created.ok) throw new Error(created.message ?? 'Plan creation failed.');
@@ -952,7 +952,7 @@ function CreateAutomationModal({
     <Modal
       open
       onOpenChange={(next) => { if (!next && !submitting) onClose(); }}
-      title="Create an automation"
+      title="Create a workflow"
       description="Choose a real automatic trigger and the plan it will run."
       srOnlyTitle
       closeOnEscape={!submitting}
@@ -963,11 +963,11 @@ function CreateAutomationModal({
       <form onSubmit={submit}>
         <header className="pc-workflows-create__head">
           <div>
-            <div className="pc-workflows-create__eyebrow">New automation</div>
-            <h2>Create an automation</h2>
+            <div className="pc-workflows-create__eyebrow">New workflow</div>
+            <h2>Create a workflow</h2>
             <p>Choose a real automatic trigger and the plan it will run. Nothing leaves this popup.</p>
           </div>
-          <button type="button" aria-label="Close create automation dialog" disabled={submitting} onClick={onClose}>
+          <button type="button" aria-label="Close create workflow dialog" disabled={submitting} onClick={onClose}>
             <span className="pc-workflows-create__close-inner"><X size={18} aria-hidden /></span>
           </button>
         </header>
@@ -976,7 +976,7 @@ function CreateAutomationModal({
           <div className="pc-workflows-create__success" role="status">
             <div className="pc-workflows-create__success-icon" aria-hidden>✓</div>
             <div>
-              <h3>Automation armed</h3>
+              <h3>Workflow armed</h3>
               <p><strong>{result.plan.title}</strong> is attached to {result.sourceLabel}.</p>
               <dl>
                 <div><dt>Plan</dt><dd>{result.plan.harness} · {result.plan.slug}</dd></div>
@@ -1083,8 +1083,8 @@ function CreateAutomationModal({
                 ) : (
                   <div className="pc-workflows-create__new-plan-grid">
                     <label className="pc-workflows-create__field is-full">
-                      <span>Automation name</span>
-                      <input aria-label="Automation name" value={planName} maxLength={160} onChange={(event) => setPlanName(event.target.value)} placeholder="e.g. Summarize support escalations" required />
+                      <span>Workflow name</span>
+                      <input aria-label="Workflow name" value={planName} maxLength={160} onChange={(event) => setPlanName(event.target.value)} placeholder="e.g. Summarize support escalations" required />
                     </label>
                     <label className="pc-workflows-create__field is-full">
                       <span>What should the plan produce?</span>
@@ -1102,18 +1102,18 @@ function CreateAutomationModal({
               </div>
               {error ? (
                 <div className="pc-workflows-create__error" role="alert">
-                  <div><strong>Couldn’t finish creating the automation</strong><p>{error}</p></div>
+                  <div><strong>Couldn’t finish creating the workflow</strong><p>{error}</p></div>
                   {pendingArm ? <button type="button" disabled={submitting} onClick={() => void retryArm()}>Retry arming</button> : null}
                 </div>
               ) : null}
             </div>
 
             <footer className="pc-workflows-create__foot">
-              <span aria-live="polite">{step ?? 'The final action explicitly creates and arms the automation.'}</span>
+              <span aria-live="polite">{step ?? 'The final action explicitly creates and arms the workflow.'}</span>
               <div>
                 <button type="button" disabled={submitting} onClick={onClose}>Cancel</button>
                 <button type="submit" className="pc-workflows-create__primary" disabled={submitting || !canSubmit}>
-                  {submitting ? step ?? 'Working…' : 'Create & arm automation'}
+                  {submitting ? step ?? 'Working…' : 'Create & arm workflow'}
                 </button>
               </div>
             </footer>
@@ -1254,12 +1254,12 @@ function AutomationDetail({
   onEditSchedule: () => void;
   onViewActivity: () => void;
 }) {
-  if (!item) return <aside className="pc-workflows__detail"><div className="pc-workflows__list-empty">Select an automation.</div></aside>;
+  if (!item) return <aside className="pc-workflows__detail"><div className="pc-workflows__list-empty">Select a workflow.</div></aside>;
   const automatic = item.triggers;
   const runRows = runs?.runs.slice(0, 5) ?? [];
   return (
-    <aside className="pc-workflows__detail" aria-label="Automation details">
-      <div className="pc-workflows__panelhead"><strong>{variant === 'flow' ? 'Flow inspector' : 'Automation details'}</strong><span>one identity across every view</span></div>
+    <aside className="pc-workflows__detail" aria-label="Workflow details">
+      <div className="pc-workflows__panelhead"><strong>{variant === 'flow' ? 'Flow inspector' : 'Workflow details'}</strong><span>one identity across every view</span></div>
       <div className="pc-workflows__detailbody">
         <div className="pc-workflows__detail-kicker">{kindLabel(item.kind)} · {itemState(item)}</div>
         <h2>{item.label}</h2>
@@ -1350,14 +1350,14 @@ function ActivityView({
   return (
     <div className="pc-workflows__activity-layout">
       <div className="pc-workflows__widepanel">
-        <div className="pc-workflows__panelhead"><strong>Automation activity</strong><span>external runs and routine fires · newest first</span></div>
+        <div className="pc-workflows__panelhead"><strong>Workflow activity</strong><span>external runs and routine fires · newest first</span></div>
         <div className="pc-workflows__activity">
           {activity.map((item) => (
             <button type="button" key={item.id} onClick={() => onOpen(item)}>
               <span className="pc-workflows__activity-row-layout"><i data-status={item.status} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><em>{item.status}</em><time>{relativeTime(item.at)}</time></span>
             </button>
           ))}
-          {activity.length === 0 ? <div className="pc-workflows__list-empty">No automation activity has been recorded yet.</div> : null}
+          {activity.length === 0 ? <div className="pc-workflows__list-empty">No workflow activity has been recorded yet.</div> : null}
         </div>
       </div>
       <div className="pc-workflows__widepanel pc-workflows__spend-panel">

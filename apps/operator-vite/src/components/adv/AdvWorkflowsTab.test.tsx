@@ -168,7 +168,7 @@ describe('<AdvWorkflowsTab>', () => {
     expect(within(planRow).getByText('2 installed triggers')).toBeTruthy();
     expect(screen.queryByText('Rubric ratification')).toBeNull();
     fireEvent.click(planRow);
-    const details = screen.getByLabelText('Automation details');
+    const details = screen.getByLabelText('Workflow details');
     expect(within(details).getByText('Flow inspector')).toBeTruthy();
     expect(within(details).getByText('Causal path')).toBeTruthy();
     expect(within(details).getAllByText('Turns feedback into a prioritized brief').length).toBeGreaterThanOrEqual(2);
@@ -193,7 +193,7 @@ describe('<AdvWorkflowsTab>', () => {
     expect(screen.queryByText('Customer feedback digest')).toBeNull();
     expect(screen.queryByText('git-sync')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Catalog/ }));
-    expect(screen.getByText('No automations match this filter.')).toBeTruthy();
+    expect(screen.getByText('No workflows match this filter.')).toBeTruthy();
   });
 
   it('fires Run manually through plans:run-now and keeps role spend inside Activity', async () => {
@@ -210,7 +210,7 @@ describe('<AdvWorkflowsTab>', () => {
   it('toggles an external binding through the audited trigger admin route', async () => {
     renderTabOnFlows();
     fireEvent.click(await screen.findByRole('button', { name: /Customer feedback digest/ }));
-    const details = await screen.findByLabelText('Automation details');
+    const details = await screen.findByLabelText('Workflow details');
     const armed = within(details).getAllByRole('button', { name: 'Armed' });
     fireEvent.click(armed[1]);
     await waitFor(() => {
@@ -221,12 +221,12 @@ describe('<AdvWorkflowsTab>', () => {
 
   it('creates and arms a schedule in place instead of redirecting to Plans', async () => {
     renderTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'New automation' }));
-    const dialog = screen.getByRole('dialog', { name: 'Create an automation' });
+    fireEvent.click(await screen.findByRole('button', { name: 'New workflow' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create a workflow' });
     expect(within(dialog).getByRole('button', { name: /Schedule/ }).getAttribute('aria-pressed')).toBe('true');
     expect(within(dialog).getByRole('button', { name: 'Use an existing plan' }).getAttribute('aria-pressed')).toBe('true');
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm automation' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm workflow' }));
     await waitFor(() => {
       expect(H.runTool).toHaveBeenCalledWith('plans:set-schedule', expect.objectContaining({
         slug: 'customer-digest',
@@ -235,20 +235,20 @@ describe('<AdvWorkflowsTab>', () => {
       }));
       expect(H.runTool).toHaveBeenCalledWith('plans:arm-schedule', { slug: 'customer-digest', harness: 'papercusp' });
     });
-    expect(await within(dialog).findByText('Automation armed')).toBeTruthy();
+    expect(await within(dialog).findByText('Workflow armed')).toBeTruthy();
     expect(within(dialog).getByText('Armed')).toBeTruthy();
   });
 
   it('creates a plan inline, attaches an external binding, and explicitly arms it', async () => {
     renderTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'New automation' }));
-    const dialog = screen.getByRole('dialog', { name: 'Create an automation' });
+    fireEvent.click(await screen.findByRole('button', { name: 'New workflow' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create a workflow' });
     fireEvent.click(within(dialog).getByRole('button', { name: /External event/ }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create the plan here' }));
-    fireEvent.change(within(dialog).getByLabelText('Automation name'), { target: { value: 'Summarize support escalations' } });
+    fireEvent.change(within(dialog).getByLabelText('Workflow name'), { target: { value: 'Summarize support escalations' } });
     fireEvent.change(within(dialog).getByLabelText('What should the plan produce?'), { target: { value: 'Publish a prioritized escalation brief' } });
     fireEvent.change(within(dialog).getByLabelText('Event pattern'), { target: { value: 'ext:slack:mention' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm automation' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm workflow' }));
 
     await waitFor(() => {
       expect(H.runTool).toHaveBeenCalledWith('plans:new', expect.objectContaining({
@@ -265,7 +265,7 @@ describe('<AdvWorkflowsTab>', () => {
         expect.objectContaining({ op: 'set-armed', armed: true }),
       ]));
     });
-    expect(await within(dialog).findByText('Automation armed')).toBeTruthy();
+    expect(await within(dialog).findByText('Workflow armed')).toBeTruthy();
   });
 
   it('reports a saved-but-unarmed schedule and retries only the arm step', async () => {
@@ -274,14 +274,14 @@ describe('<AdvWorkflowsTab>', () => {
       .mockResolvedValueOnce({ ok: false, message: 'Set required plan inputs first' })
       .mockResolvedValueOnce({ ok: true });
     renderTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'New automation' }));
-    const dialog = screen.getByRole('dialog', { name: 'Create an automation' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm automation' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'New workflow' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create a workflow' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm workflow' }));
 
     const alert = await within(dialog).findByRole('alert');
     expect(alert.textContent).toContain('Schedule saved for Customer feedback digest, but it is not armed.');
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry arming' }));
-    expect(await within(dialog).findByText('Automation armed')).toBeTruthy();
+    expect(await within(dialog).findByText('Workflow armed')).toBeTruthy();
     expect(H.runTool.mock.calls.map(([name]) => name)).toEqual([
       'plans:set-schedule',
       'plans:arm-schedule',

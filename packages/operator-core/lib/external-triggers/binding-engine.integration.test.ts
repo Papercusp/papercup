@@ -373,3 +373,142 @@ describe('start-goal trigger dispatch (P-020)', () => {
     await expect(seedGoalBinding(null)).rejects.toThrow(/trigger_bindings_exactly_one_target/);
   });
 });
+
+/**
+ * P-028 simulated acceptance for the SOCIAL platforms.
+ *
+ * Every other case in this file drives gmail/calendar. Before this block, no
+ * test anywhere asserted a social `ext:<platform>:` pattern reaching a plan run
+ * — the adapters, the registry and the admin surfaces were all covered, but the
+ * span between an inbound social event and the delivery ledger was not. That is
+ * the half of P-028's acceptance chain a fixture CAN prove; the live half ("the
+ * reply lands on the platform") is owner-walled at every wave (D-052), so this
+ * deliberately stops at the ledger.
+ *
+ * It is a distinct block rather than another gmail case because the thing under
+ * test is that the dispatch path is platform-AGNOSTIC: nothing between the
+ * binding and the plan run may special-case a source kind.
+ */
+describe('social platform dispatch (P-028 simulated acceptance)', () => {
+  const SOCIAL_DEDUPE = 'bluesky:reply-9001';
+
+  async function seedSocialChain(): Promise<{ triggerRunId: string; bindingId: string }> {
+    const sources = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, cursor)
+      VALUES (${WS}, 'bluesky', 'connected', ${JSON.stringify({ seq: 4821 })}::text::jsonb)
+      RETURNING id`;
+    const bindings = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+         event_filter, action, armed, storm_policy)
+      VALUES (${WS}, ${sources[0].id}, ${HARNESS}, ${PLAN}, 'ext:bluesky:reply.*',
+              '{}'::jsonb, '{"type":"launch-plan"}'::jsonb, TRUE,
+              ${JSON.stringify({ maxRuns: 12, windowSeconds: 300 })}::text::jsonb)
+      RETURNING id`;
+    const deliveries = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_deliveries
+        (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
+         sink_kind, sink_ref, outcome, attempts, completed_at)
+      VALUES (${WS}, ${sources[0].id}, ${SOCIAL_DEDUPE}, 'social-post',
+              'ext:bluesky:reply.created',
+              ${JSON.stringify({
+                uri: 'at://did:plc:p028/app.bsky.feed.post/9001',
+                text: 'anyone else seeing this?',
+                author: 'did:plc:p028',
+              })}::text::jsonb,
+              'event-bus', 'workspace', 'delivered', 1, now())
+      RETURNING id`;
+    const args = {
+      trigger: {
+        key: 'ext:bluesky:reply.created',
+        source: 'bluesky',
+        event: 'reply.created',
+        sourceId: sources[0].id,
+        externalId: 'at://did:plc:p028/app.bsky.feed.post/9001',
+        occurredAt: null,
+        datatypeId: 'social-post',
+        dedupeKey: SOCIAL_DEDUPE,
+        payload: {
+          uri: 'at://did:plc:p028/app.bsky.feed.post/9001',
+          text: 'anyone else seeing this?',
+          author: 'did:plc:p028',
+        },
+      },
+    };
+    const runs = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_runs
+        (workspace_id, binding_id, delivery_id, dedupe_key, status, args, attempts)
+      VALUES (${WS}, ${bindings[0].id}, ${deliveries[0].id}, ${SOCIAL_DEDUPE}, 'pending',
+              ${JSON.stringify(args)}::text::jsonb, 0)
+      RETURNING id`;
+    return { triggerRunId: runs[0].id, bindingId: bindings[0].id };
+  }
+
+  it('carries a social inbound event through binding -> plan run -> delivery ledger', async () => {
+    const { triggerRunId } = await seedSocialChain();
+    const announceRunWork = vi.fn(async () => undefined);
+
+    const result = await dispatchPendingTriggerRuns(sql, { announceRunWork });
+
+    // The gmail fixture from beforeEach has no pending run, so exactly the
+    // social one is claimed — if dispatch ever special-cased a source kind,
+    // this is where it would show up as claimed:0.
+    expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(result.triggerRunIds).toEqual([triggerRunId]);
+
+    const triggerRuns = await sql<Array<{
+      status: string;
+      outcome: { instancePlanSlug: string; planRunId: number };
+    }>>`
+      SELECT status, outcome FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(triggerRuns[0].status).toBe('succeeded');
+    expect(triggerRuns[0].outcome.instancePlanSlug).toBe(
+      `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+    );
+
+    // The plan run carries the SOCIAL payload verbatim — an agent drafting a
+    // reply reads it from here, so a lossy hand-off would surface as a missing
+    // uri/text rather than as a dispatch failure.
+    const planRuns = await sql<Array<{ trigger: string; inputs: Record<string, unknown> }>>`
+      SELECT trigger, inputs FROM harness_shared.plan_runs
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    expect(planRuns).toHaveLength(1);
+    expect(planRuns[0].trigger).toBe('event');
+    expect(planRuns[0].inputs).toMatchObject({
+      trigger: {
+        key: 'ext:bluesky:reply.created',
+        source: 'bluesky',
+        payload: { uri: 'at://did:plc:p028/app.bsky.feed.post/9001', text: 'anyone else seeing this?' },
+      },
+    });
+    expect(announceRunWork).toHaveBeenCalledWith(sql, WS, triggerRuns[0].outcome.planRunId);
+
+    // The ledger end of the trace: the delivery that caused this run is still
+    // joinable to it, which is what the "delivery ledger shows the full trace"
+    // half of P-028 actually means.
+    const trace = await sql<Array<{ event_key: string; outcome: string; run_status: string }>>`
+      SELECT d.event_key, d.outcome, r.status AS run_status
+        FROM harness_shared.trigger_runs r
+        JOIN harness_shared.trigger_deliveries d ON d.id = r.delivery_id
+       WHERE r.workspace_id = ${WS} AND r.id = ${triggerRunId}`;
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({
+      event_key: 'ext:bluesky:reply.created',
+      outcome: 'delivered',
+      run_status: 'succeeded',
+    });
+  });
+
+  it('honours the per-platform storm policy stored on a social binding', async () => {
+    const { bindingId: socialBindingId } = await seedSocialChain();
+    const stored = await sql<Array<{ storm_policy: { maxRuns: number; windowSeconds: number } }>>`
+      SELECT storm_policy FROM harness_shared.trigger_bindings
+       WHERE workspace_id = ${WS} AND id = ${socialBindingId}`;
+    // Bluesky's conservative-default budget (12 runs / 300s) is what the plan
+    // Triggers composer prefills (D-051). A binding that persisted an unbounded
+    // policy instead would spend a metered platform's quota early, which is the
+    // defect that prefill exists to prevent.
+    expect(stored[0].storm_policy).toMatchObject({ maxRuns: 12, windowSeconds: 300 });
+  });
+});
