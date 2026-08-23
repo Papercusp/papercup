@@ -56,7 +56,7 @@ vi.mock("../../scout/routed-ledger", () => ({
   readRoutedIdeas: vi.fn(async () => []),
 }));
 
-import tool from "./list";
+import tool, { derivePlanTriggerSources } from "./list";
 import {
   resetOperatorCacheForTests,
   resetCachedReadStatsForTests,
@@ -88,9 +88,14 @@ const row = (over: Record<string, unknown>): unknown => ({
   schedule: null,
   scheduledAt: null,
   scheduleActive: false,
+  hasInputSchema: false,
+  hasExternalTrigger: false,
   harnessSlug: "papercup",
   ...over,
 });
+
+const triggerRow = (over: Record<string, unknown> = {}) =>
+  row(over) as Parameters<typeof derivePlanTriggerSources>[0];
 
 const ctx = (workspaceId = "ws-groupby"): never =>
   ({
@@ -128,6 +133,35 @@ afterEach(async () => {
 });
 
 describe("plans:list — groupBy aggregates", () => {
+  it("derives one-time vs triggered from schedule, external binding, or either plan-input schema source", async () => {
+    expect(derivePlanTriggerSources(triggerRow())).toEqual([]);
+    expect(derivePlanTriggerSources(triggerRow({ schedule: { cron: "0 9 * * *" } }))).toEqual(["schedule"]);
+    expect(derivePlanTriggerSources(triggerRow({ hasExternalTrigger: true }))).toEqual(["external"]);
+    expect(derivePlanTriggerSources(triggerRow({ hasInputSchema: true }))).toEqual(["manual"]);
+    expect(derivePlanTriggerSources(triggerRow({ template: "rubric" }))).toEqual(["manual"]);
+
+    M.listPlanIndexRows.mockResolvedValue([
+      row({ planSlug: "one-time" }),
+      row({
+        planSlug: "all-three",
+        schedule: { cron: "0 9 * * *" },
+        hasExternalTrigger: true,
+        hasInputSchema: true,
+      }),
+    ]);
+    const { plans } = await run({});
+    expect(plans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ slug: "one-time", triggered: false, triggerSources: [] }),
+        expect.objectContaining({
+          slug: "all-three",
+          triggered: true,
+          triggerSources: ["schedule", "external", "manual"],
+        }),
+      ]),
+    );
+  });
+
   it("surfaces the permanent forced-past marker on each plan row", async () => {
     M.listPlanIndexRows.mockResolvedValue([
       row({

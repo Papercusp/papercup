@@ -49,6 +49,7 @@ status: active
 
 let fx: PlanPgFixture;
 let admin: postgres.Sql;
+let sourceId: string;
 
 async function stamp(slug: string, ts: string): Promise<void> {
   await admin`
@@ -64,12 +65,37 @@ beforeAll(async () => {
   await seedPlan(admin, WS, HARNESS, P_OLD, body(P_OLD));
   await seedPlan(admin, WS, HARNESS, P_MID, body(P_MID));
   await seedPlan(admin, WS, HARNESS, P_NEW, body(P_NEW));
+  await admin`
+    UPDATE harness_shared.harness_plans
+       SET input_schema = '{"type":"object","properties":{"topic":{"type":"string"}}}'::jsonb
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${P_MID}`;
+  const sources = await admin<Array<{ id: string }>>`
+    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    VALUES (${WS}, 'slack', 'ready')
+    RETURNING id::text`;
+  sourceId = sources[0].id;
+  await admin`
+    INSERT INTO harness_shared.trigger_bindings
+      (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+       action, armed)
+    VALUES (
+      ${WS}, ${sourceId}::uuid, ${HARNESS}, ${P_NEW}, 'ext:slack:mention',
+      '{"type":"launch-plan"}'::jsonb, FALSE
+    )`;
   await stamp(P_OLD, T_OLD);
   await stamp(P_MID, T_MID);
   await stamp(P_NEW, T_NEW);
 }, 180_000);
 
 afterAll(async () => {
+  await admin`
+    DELETE FROM harness_shared.trigger_bindings
+     WHERE workspace_id = ${WS} AND plan_harness_slug = ${HARNESS}
+  `.catch(() => {});
+  await admin`
+    DELETE FROM harness_shared.trigger_sources
+     WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid
+  `.catch(() => {});
   await admin`
     DELETE FROM harness_shared.harness_plans
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
@@ -83,6 +109,16 @@ describe('listPlanIndexRows recency/order/limit filters', () => {
   it('no filter returns all three', async () => {
     const rows = await listPlanIndexRows(opts);
     expect(rows.map((r) => r.planSlug).sort()).toEqual([P_MID, P_NEW, P_OLD].sort());
+  });
+
+  it('projects manual-input and disarmed external-binding presence without loading schema JSON', async () => {
+    const rows = await listPlanIndexRows(opts);
+    const bySlug = new Map(rows.map((row) => [row.planSlug, row]));
+    expect(bySlug.get(P_OLD)).toMatchObject({ hasInputSchema: false, hasExternalTrigger: false });
+    expect(bySlug.get(P_MID)).toMatchObject({ hasInputSchema: true, hasExternalTrigger: false });
+    expect(bySlug.get(P_NEW)).toMatchObject({ hasInputSchema: false, hasExternalTrigger: true });
+    // The hot list projection carries only the boolean; the JSON schema stays undetoasted.
+    expect(bySlug.get(P_MID)?.inputSchema).toBeNull();
   });
 
   it('createdSince filters server-side (>= mid → mid + new)', async () => {

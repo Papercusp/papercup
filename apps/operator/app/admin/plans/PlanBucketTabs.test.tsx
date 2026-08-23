@@ -81,6 +81,7 @@ const DEFAULT_FILTERS: PlanFilterState = {
   actionable: false,
   scout: false,
   scheduled: false,
+  trigger: 'all',
 };
 
 /** Ground-truth bucket counts — exactly what the component computes. */

@@ -1606,6 +1606,7 @@
 .pc-pill--source-you    { background: rgba(167, 139, 250, 0.22); color: #ddd6fe; }
 .pc-pill--source-scoper { background: color-mix(in srgb, var(--accent), transparent 82%);  color: var(--accent-soft); }
 .pc-pill--harness       { background: color-mix(in srgb, var(--accent-strong), transparent 88%); color: var(--accent-soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.pc-pill--trigger       { background: color-mix(in srgb, #f59e0b, transparent 84%); color: #fde68a; }
 /* Lifecycle-bucket pills for the item-list group headers — same hues as the
    Draft/Ready/Running/… bucket tabs so "ready"/"running" read consistently. */
 .pc-pill--bucket-draft    { background: color-mix(in srgb, var(--accent), transparent 82%);  color: var(--accent-soft); }

@@ -28,7 +28,13 @@ import {
   type PlanListRow,
   usePlanViewerEmail,
 } from './plans-api';
-import { applyPlanFilters, OWNER_VIEWS, type OwnerView } from './plan-filtering';
+import {
+  applyPlanFilters,
+  OWNER_VIEWS,
+  PLAN_TRIGGER_FILTERS,
+  type OwnerView,
+  type PlanTriggerFilter,
+} from './plan-filtering';
 import { type DateWindow } from './PlanFilters';
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -60,11 +66,15 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
   const [actionable] = useQueryState('pActionable', parseAsBoolean.withDefault(false));
   const [scout] = useQueryState('pScout', parseAsBoolean.withDefault(false));
   const [scheduled] = useQueryState('pScheduled', parseAsBoolean.withDefault(false));
+  const [trigger] = useQueryState(
+    'pTrigger',
+    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
+  );
 
   const counts = useMemo<Record<PlanBucket, number>>(() => {
     const filtered = applyPlanFilters(
       plans,
-      { date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, scheduled },
+      { date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, scheduled, trigger },
       query,
       searchHitSlugs,
     );
@@ -77,7 +87,7 @@ export default function PlanBucketTabs({ plans, query, searchHitSlugs }: Props) 
     };
     for (const p of filtered) acc[bucketOf(p)] += 1;
     return acc;
-  }, [plans, date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, scheduled, query, searchHitSlugs]);
+  }, [plans, date, owner, initiative, view, viewerEmail, archived, legacy, inbox, actionable, scout, scheduled, trigger, query, searchHitSlugs]);
 
   const toggle = (id: PlanBucket) => {
     const has = buckets.includes(id);

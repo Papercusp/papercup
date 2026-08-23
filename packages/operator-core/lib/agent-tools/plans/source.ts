@@ -153,6 +153,13 @@ export interface PlanRow {
    *  EXCLUSIVE with it (D-002/D-008 Q3). Its `required` array is what the start gate
    *  checks `templateData` against. Null ⇒ the plan declares no inputs. */
   inputSchema: unknown;
+  /** LIST-only cheap presence projection. `inputSchema` is deliberately omitted
+   *  from hot index reads, but plans:list still needs to derive whether a manual
+   *  trigger exists without detoasting the schema JSON. */
+  hasInputSchema?: boolean;
+  /** LIST-only derived relation: at least one installed external-event binding
+   *  launches this plan. Presence, not armed state, defines the trigger facet. */
+  hasExternalTrigger?: boolean;
   supersedes: string[];
   supersededBy: string | null;
   opStatus: 'started' | 'paused' | 'done' | null;
@@ -207,6 +214,8 @@ interface PlanDbRow {
   template: string | null;
   template_data: unknown;
   input_schema: unknown;
+  has_input_schema?: boolean;
+  has_external_trigger?: boolean;
   supersedes: string[] | null;
   superseded_by: string | null;
   op_status: string | null;
@@ -249,6 +258,8 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     template: r.template ?? null,
     templateData: r.template_data ?? null,
     inputSchema: r.input_schema ?? null,
+    hasInputSchema: r.has_input_schema ?? r.input_schema != null,
+    hasExternalTrigger: r.has_external_trigger,
     supersedes: r.supersedes ?? [],
     supersededBy: r.superseded_by,
     opStatus: (r.op_status as PlanRow['opStatus']) ?? null,
@@ -990,7 +1001,16 @@ export async function listPlanIndexRows(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, forced_past
+               template, forced_past,
+               input_schema IS NOT NULL AS has_input_schema,
+               EXISTS (
+                 SELECT 1
+                   FROM harness_shared.trigger_bindings tb
+                  WHERE tb.workspace_id = harness_plans.workspace_id
+                    AND tb.plan_harness_slug = harness_plans.harness_slug
+                    AND tb.plan_slug = harness_plans.plan_slug
+                    AND tb.action->>'type' = 'launch-plan'
+               ) AS has_external_trigger
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND (${filters.includeArchived} OR archived = false)
@@ -1110,7 +1130,16 @@ export async function listPlanIndexRowsForWorkspace(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, forced_past
+               template, forced_past,
+               input_schema IS NOT NULL AS has_input_schema,
+               EXISTS (
+                 SELECT 1
+                   FROM harness_shared.trigger_bindings tb
+                  WHERE tb.workspace_id = harness_plans.workspace_id
+                    AND tb.plan_harness_slug = harness_plans.harness_slug
+                    AND tb.plan_slug = harness_plans.plan_slug
+                    AND tb.action->>'type' = 'launch-plan'
+               ) AS has_external_trigger
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId}
            AND (${filters.includeArchived} OR archived = false)

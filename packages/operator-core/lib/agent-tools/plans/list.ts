@@ -263,7 +263,31 @@ type ListRow = {
   scheduled: boolean;
   scheduleActive: boolean;
   scheduleKind: "recurring" | "one-shot" | null;
+  /** Derived from trigger presence on every read — never persisted as a plan kind. */
+  triggered: boolean;
+  /** Stable source order keeps UI badges and agent payloads deterministic. */
+  triggerSources: PlanTriggerSource[];
 };
+
+export const PLAN_TRIGGER_SOURCES = ["schedule", "external", "manual"] as const;
+export type PlanTriggerSource = (typeof PLAN_TRIGGER_SOURCES)[number];
+
+/** One-time vs triggered is derived truth. A saved/disarmed schedule or external
+ * binding still makes the plan triggered; arming controls execution, not type.
+ * A template-backed plan counts as manual because templates and input_schema are
+ * the two mutually-exclusive schema sources accepted by the plan-inputs gate. */
+export function derivePlanTriggerSources(
+  row: Pick<
+    PlanIndexRow,
+    "schedule" | "scheduledAt" | "template" | "hasInputSchema" | "hasExternalTrigger"
+  >,
+): PlanTriggerSource[] {
+  const sources: PlanTriggerSource[] = [];
+  if (row.schedule != null || row.scheduledAt != null) sources.push("schedule");
+  if (row.hasExternalTrigger === true) sources.push("external");
+  if (row.hasInputSchema === true || row.template != null) sources.push("manual");
+  return sources;
+}
 
 /** Most → least urgent rank, per IMPORTANCE_LEVELS order. */
 const IMPORTANCE_RANK = Object.fromEntries(
@@ -546,7 +570,7 @@ export default defineTool({
       {
         tool: "plans:list",
         key: cacheKey,
-        tags: ["harness_plans", "plan_revisions", "plan_runs"],
+        tags: ["harness_plans", "plan_revisions", "plan_runs", "trigger_bindings"],
         softTtlMs: PLANS_LIST_SOFT_TTL_MS,
         // P-007/D-082: D-073 measured this read hitting the ~10s cachedRead deadline
         // under a 16-way herd (6 of 16 calls at 10037-10186ms) — the per-worker cold
@@ -711,6 +735,7 @@ export default defineTool({
             if (row.isLegacy && !includeLegacy) continue;
 
             const slug = row.planSlug;
+            const triggerSources = derivePlanTriggerSources(row);
 
             let itemCounts: ListRow["itemCounts"] = null;
             let maxImportance: Importance | null = null;
@@ -782,6 +807,8 @@ export default defineTool({
                   : row.scheduledAt != null
                     ? "one-shot"
                     : null,
+              triggered: triggerSources.length > 0,
+              triggerSources,
             });
           }
         }

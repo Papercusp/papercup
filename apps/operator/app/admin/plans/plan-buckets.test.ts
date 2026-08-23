@@ -44,6 +44,7 @@ const NO_FILTERS: PlanFilterState = {
   actionable: false,
   scout: false,
   scheduled: false,
+  trigger: 'all',
 };
 
 describe('bucketOf', () => {
@@ -141,6 +142,28 @@ describe('applyPlanFilters', () => {
       'plain',
       'undefined-sched',
     ]);
+  });
+
+  it('one-time / triggered facet uses the server-derived classification and composes with other filters', () => {
+    const plans = [
+      row({ slug: 'plain', triggered: false, owner: 'a@x.com' }),
+      row({ slug: 'event', triggered: true, triggerSources: ['external'], owner: 'a@x.com' }),
+      row({ slug: 'manual-other', triggered: true, triggerSources: ['manual'], owner: 'b@x.com' }),
+      row({ slug: 'legacy-server-shape', owner: 'a@x.com' }),
+    ];
+    expect(
+      applyPlanFilters(plans, { ...NO_FILTERS, trigger: 'triggered' }, '').map((p) => p.slug),
+    ).toEqual(['event', 'manual-other']);
+    expect(
+      applyPlanFilters(plans, { ...NO_FILTERS, trigger: 'one-time' }, '').map((p) => p.slug),
+    ).toEqual(['plain', 'legacy-server-shape']);
+    expect(
+      applyPlanFilters(
+        plans,
+        { ...NO_FILTERS, trigger: 'triggered', owner: 'a@x.com' },
+        '',
+      ).map((p) => p.slug),
+    ).toEqual(['event']);
   });
 
   it('owner saved-view: mine / others keyed on the viewer email (P-002), case-insensitive', () => {

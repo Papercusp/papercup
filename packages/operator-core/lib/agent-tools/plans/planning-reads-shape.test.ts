@@ -34,6 +34,8 @@ function listRow(i: number, overrides: Record<string, unknown> = {}) {
     scheduled: false,
     scheduleActive: false,
     scheduleKind: null,
+    triggered: false,
+    triggerSources: [],
     ...overrides,
   };
 }
@@ -49,12 +51,14 @@ describe("shapePlansList (P-021)", () => {
     expect(r.slug).toBe("plan-001");
     expect(r).not.toHaveProperty("itemCounts");
     expect(r).not.toHaveProperty("owner");
+    expect(r.triggered).toBe(false);
     // standard keeps the wider field set + done count
     const std = shapePlansList({ plans: [listRow(1)] }, "standard") as {
       plans: Record<string, unknown>[];
     };
     expect(std.plans[0].done).toBe(11); // done 9 + dropped 2
     expect(std.plans[0].owner).toBe("avi@example.com");
+    expect(std.plans[0].triggerSources).toEqual([]);
   });
 
   it("over-cap without an explicit order keeps the most-recently-updated rows + a notice row", () => {

@@ -17,6 +17,8 @@ import { withinDateWindow, type DateWindow } from './PlanFilters';
  *  only mine, or only others'. Keyed on the viewer's plan-owner email. */
 export const OWNER_VIEWS = ['all', 'mine', 'others'] as const;
 export type OwnerView = (typeof OWNER_VIEWS)[number];
+export const PLAN_TRIGGER_FILTERS = ['all', 'one-time', 'triggered'] as const;
+export type PlanTriggerFilter = (typeof PLAN_TRIGGER_FILTERS)[number];
 
 export interface PlanFilterState {
   date: DateWindow | null;
@@ -37,6 +39,8 @@ export interface PlanFilterState {
   scout: boolean;
   /** Only scheduled/recurring plans (P-021 — a recurrence set or a one-shot fire time). */
   scheduled: boolean;
+  /** Derived plan class facet. `all` is the no-op default. */
+  trigger: PlanTriggerFilter;
 }
 
 /**
@@ -78,6 +82,13 @@ export function applyPlanFilters(
   }
   if (f.scheduled) {
     working = working.filter((p) => p.scheduled === true);
+  }
+  if (f.trigger === 'triggered') {
+    working = working.filter((p) => p.triggered === true);
+  } else if (f.trigger === 'one-time') {
+    // Undefined comes only from an older server and is safely compatible with
+    // the historical one-time shape; a current server always sends a boolean.
+    working = working.filter((p) => p.triggered !== true);
   }
   const needle = query.trim().toLowerCase();
   if (!needle) return working;

@@ -28,10 +28,17 @@ import {
   type ItemStatus,
   type PlanStatus,
   type PlanBucket,
+  planTriggerSourceLabel,
   usePlanViewerEmail,
 } from './plans-api';
 import { type DateWindow } from './PlanFilters';
-import { applyPlanFilters, OWNER_VIEWS, type OwnerView } from './plan-filtering';
+import {
+  applyPlanFilters,
+  OWNER_VIEWS,
+  PLAN_TRIGGER_FILTERS,
+  type OwnerView,
+  type PlanTriggerFilter,
+} from './plan-filtering';
 import { comparePlans, PLAN_SORT_IDS, type PlanSort } from './plan-sorting';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useLexicon } from '@/lib/useLexicon';
@@ -133,6 +140,10 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const [fActionable] = useQueryState('pActionable', parseAsBoolean.withDefault(false));
   const [fScout] = useQueryState('pScout', parseAsBoolean.withDefault(false));
   const [fScheduled] = useQueryState('pScheduled', parseAsBoolean.withDefault(false));
+  const [fTrigger] = useQueryState(
+    'pTrigger',
+    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
+  );
   const [fSort] = useQueryState(
     'pSort',
     parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
@@ -145,7 +156,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const sorted = useMemo<PlanListRow[]>(() => {
     const filtered = applyPlanFilters(
       plans,
-      { date: fDate, owner: fOwner, initiative: fInitiative, view: fView, viewerEmail: fViewerEmail, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable, scout: fScout, scheduled: fScheduled },
+      { date: fDate, owner: fOwner, initiative: fInitiative, view: fView, viewerEmail: fViewerEmail, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable, scout: fScout, scheduled: fScheduled, trigger: fTrigger },
       query,
       searchHitSlugs,
     );
@@ -171,7 +182,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       return 0;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fInitiative, fView, fViewerEmail, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fScheduled, fSort, query, searchHitSlugs, runningOrder]);
+  }, [plans, fBucketsKey, fOwner, fInitiative, fView, fViewerEmail, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fScheduled, fTrigger, fSort, query, searchHitSlugs, runningOrder]);
 
   useImperativeHandle(
     ref,
@@ -312,7 +323,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     // search box, the rest are the PlanFilters keys.
     const q = query.trim();
     const filtersActive =
-      fBuckets.length > 0 || !!fOwner || fView !== 'all' || !!fDate || fArchived || fLegacy || fInbox || fActionable || fScout;
+      fBuckets.length > 0 || !!fOwner || fView !== 'all' || !!fDate || fArchived || fLegacy || fInbox || fActionable || fScout || fScheduled || fTrigger !== 'all';
     const msg = q
       ? `No plans match “${q}”.`
       : filtersActive
@@ -513,6 +524,7 @@ function PlanRow({
           {source ? <SourcePill source={source} /> : null}
           {plan.harness ? <HarnessPill harness={plan.harness} /> : null}
           <StatusPill status={plan.status} />
+          {plan.triggered ? <TriggerPill sources={plan.triggerSources} /> : null}
           {plan.scheduled ? <SchedulePill kind={plan.scheduleKind ?? null} active={plan.scheduleActive ?? false} /> : null}
           {plan.updated ? (
             <span
@@ -557,6 +569,17 @@ const PlanRowMemo = memo(PlanRow);
 
 function StatusPill({ status }: { status: PlanStatus }) {
   return <span className={`pc-pill pc-pill--${status}`}>{status}</span>;
+}
+
+function TriggerPill({ sources }: { sources: PlanListRow['triggerSources'] }) {
+  const label = planTriggerSourceLabel(sources);
+  return (
+    <Tooltip label={`Triggered plan · ${label}`}>
+      <span className="pc-pill pc-pill--trigger" data-testid="plan-trigger-source-badge">
+        {label}
+      </span>
+    </Tooltip>
+  );
 }
 
 /**

@@ -18,6 +18,8 @@ function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
     itemCounts: over.itemCounts,
     harness: over.harness ?? 'papercusp',
     startStatus: over.startStatus,
+    triggered: over.triggered,
+    triggerSources: over.triggerSources,
   } as PlanListRow;
 }
 
@@ -97,6 +99,20 @@ describe('buildGlanceRows', () => {
     expect(byslug.p1.liveAgents).toBe(1);
     expect(byslug.p2.needsYou).toBe(0);
     expect(byslug.p2.liveAgents).toBe(2);
+  });
+
+  it('filters the derived one-time / triggered classification without changing the active-bucket rules', () => {
+    const plans = [
+      plan({ slug: 'plain', status: 'active', triggered: false }),
+      plan({ slug: 'event', status: 'active', triggered: true }),
+      plan({ slug: 'old-server', status: 'active' }),
+    ];
+    const common = { plans, query: '', showFinished: false, needsYouByPlan: EMPTY, liveByPlan: EMPTY };
+    expect(buildGlanceRows({ ...common, triggerFilter: 'triggered' }).map((r) => r.plan.slug)).toEqual(['event']);
+    expect(buildGlanceRows({ ...common, triggerFilter: 'one-time' }).map((r) => r.plan.slug).sort()).toEqual([
+      'old-server',
+      'plain',
+    ]);
   });
 });
 

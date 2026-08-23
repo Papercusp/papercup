@@ -144,6 +144,8 @@ describe('projectPlansReadForUi — plans:list', () => {
           itemCounts: { todo: 3, done: 1 },
           ownerIdentity: { handle: 'ada' },
           maxImportance: 'high',
+          triggered: true,
+          triggerSources: ['external', 'manual'],
         },
       ],
     };
@@ -157,6 +159,8 @@ describe('projectPlansReadForUi — plans:list', () => {
     expect(row.itemCounts).toEqual({ todo: 3, done: 1 });
     expect(row.ownerIdentity).toEqual({ handle: 'ada' });
     expect(row.maxImportance).toBe('high');
+    expect(row.triggered).toBe(true);
+    expect(row.triggerSources).toEqual(['external', 'manual']);
   });
 
   /**

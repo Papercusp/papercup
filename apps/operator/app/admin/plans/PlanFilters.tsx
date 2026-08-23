@@ -31,11 +31,21 @@
 import { useMemo, type RefObject } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { type AsyncResult, type PlanListRow, usePlanViewerEmail } from './plans-api';
-import { OWNER_VIEWS, type OwnerView } from './plan-filtering';
+import {
+  OWNER_VIEWS,
+  PLAN_TRIGGER_FILTERS,
+  type OwnerView,
+  type PlanTriggerFilter,
+} from './plan-filtering';
 import { PLAN_SORTS, PLAN_SORT_IDS, planSortLabel, type PlanSort } from './plan-sorting';
 import { Select } from '@/app/harness/Select';
 
 const OWNER_VIEW_LABELS: Record<OwnerView, string> = { all: 'all', mine: 'mine', others: "others'" };
+const PLAN_TRIGGER_LABELS: Record<PlanTriggerFilter, string> = {
+  all: 'all',
+  'one-time': 'one-time',
+  triggered: 'triggered',
+};
 
 export type DateWindow = 'today' | '7d' | '30d';
 const DATE_WINDOWS: Array<{ id: DateWindow; label: string }> = [
@@ -98,6 +108,10 @@ export default function PlanFilters({
     'pScheduled',
     parseAsBoolean.withDefault(false),
   );
+  const [trigger, setTrigger] = useQueryState(
+    'pTrigger',
+    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
+  );
   const [sort, setSort] = useQueryState(
     'pSort',
     parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
@@ -132,6 +146,7 @@ export default function PlanFilters({
     (actionable ? 1 : 0) +
     (scout ? 1 : 0) +
     (scheduled ? 1 : 0) +
+    (trigger !== 'all' ? 1 : 0) +
     (sort !== 'default' ? 1 : 0);
 
   const activeTokens = [
@@ -144,6 +159,7 @@ export default function PlanFilters({
     actionable ? { key: 'actionable', label: 'has actionable', clear: () => setActionable(false) } : null,
     scout ? { key: 'scout', label: 'scout-created', clear: () => setScout(false) } : null,
     scheduled ? { key: 'scheduled', label: 'scheduled', clear: () => setScheduled(false) } : null,
+    trigger !== 'all' ? { key: 'trigger', label: `type: ${trigger}`, clear: () => setTrigger(null) } : null,
     archivedOnly ? { key: 'archived', label: 'archived', clear: () => setArchivedOnly(false) } : null,
     legacyOnly ? { key: 'legacy', label: 'legacy', clear: () => setLegacyOnly(false) } : null,
   ].flatMap((token) => (token ? [token] : []));
@@ -159,6 +175,7 @@ export default function PlanFilters({
     setActionable(false);
     setScout(false);
     setScheduled(false);
+    setTrigger(null);
     setSort(null);
   };
 
@@ -243,6 +260,20 @@ export default function PlanFilters({
           ))}
         </div>
       ) : null}
+
+      <div className="pc-filters__views" role="group" aria-label="Plan trigger type">
+        {PLAN_TRIGGER_FILTERS.map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={`pc-filter-chip ${trigger === value ? 'is-on' : ''}`}
+            aria-pressed={trigger === value}
+            onClick={() => setTrigger(value === 'all' ? null : value)}
+          >
+            {PLAN_TRIGGER_LABELS[value]}
+          </button>
+        ))}
+      </div>
 
       <div className="pc-filters__quick" role="group" aria-label="Quick plan filters">
         {DATE_WINDOWS.map((d) => (

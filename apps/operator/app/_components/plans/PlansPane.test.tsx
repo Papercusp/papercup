@@ -101,6 +101,8 @@ function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
     // `over`, so a field omitted here is silently dropped and a test that sets it
     // asserts against undefined while looking correct.
     origin: over.origin,
+    triggered: over.triggered,
+    triggerSources: over.triggerSources,
   } as PlanListRow;
 }
 
@@ -171,6 +173,26 @@ describe('PlansPane', () => {
     // needs-you badge (1 decision item) + live badge (2 agents) on p-hot
     expect(screen.getByTestId('plans-pane-needs-badge').textContent).toBe('1');
     expect(screen.getByTestId('plans-pane-live-badge').textContent).toContain('2');
+  });
+
+  it('filters one-time vs triggered plans and renders the trigger-source badge', () => {
+    planListData.value = {
+      plans: [
+        plan({ slug: 'plain', title: 'Plain plan', triggered: false }),
+        plan({
+          slug: 'event-plan',
+          title: 'Event plan',
+          triggered: true,
+          triggerSources: ['external', 'manual'],
+        }),
+      ],
+    };
+    nuqs.plTrigger = 'triggered';
+    render(<PlansPane />);
+    expect(screen.queryByText('Plain plan')).toBeNull();
+    expect(screen.getByText('Event plan')).toBeTruthy();
+    expect(screen.getByTestId('plans-pane-trigger-badge').textContent).toBe('event + manual');
+    expect(screen.getByRole('button', { name: 'triggered' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('opens the plan popup (sets ?pplan) when a row is clicked', () => {

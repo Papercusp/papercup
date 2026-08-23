@@ -30,7 +30,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Archive, ClipboardList } from 'lucide-react';
-import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
@@ -42,10 +42,15 @@ import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf
 import {
   bucketOf,
   setPlanArchived,
+  planTriggerSourceLabel,
   usePlanList,
   type PlanBucket,
   type PlanListRow,
 } from '@/app/admin/plans/plans-api';
+import {
+  PLAN_TRIGGER_FILTERS,
+  type PlanTriggerFilter,
+} from '@/app/admin/plans/plan-filtering';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import PlanPopupModal from './PlanPopupModal';
@@ -151,6 +156,7 @@ export function buildGlanceRows(opts: {
   showFinished: boolean;
   needsYouByPlan: ReadonlyMap<string, number>;
   liveByPlan: ReadonlyMap<string, number>;
+  triggerFilter?: PlanTriggerFilter;
 }): PlanGlanceRow[] {
   const q = opts.query.trim().toLowerCase();
   const rows: PlanGlanceRow[] = [];
@@ -158,6 +164,8 @@ export function buildGlanceRows(opts: {
     if (plan.archived || plan.isLegacy) continue;
     const bucket = bucketOf(plan);
     if (!opts.showFinished && !ACTIVE_BUCKETS.has(bucket)) continue;
+    if (opts.triggerFilter === 'triggered' && plan.triggered !== true) continue;
+    if (opts.triggerFilter === 'one-time' && plan.triggered === true) continue;
     if (q) {
       const hay = `${plan.title ?? ''} ${plan.slug}`.toLowerCase();
       if (!hay.includes(q)) continue;
@@ -185,6 +193,10 @@ interface RosterPayloadRow {
 export default function PlansPane() {
   const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
   const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
+  const [triggerFilter, setTriggerFilter] = useQueryState(
+    'plTrigger',
+    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
+  );
   const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
 
   // Warm the Vditor stack shortly after the Plans face mounts, so the first
@@ -248,8 +260,9 @@ export default function PlansPane() {
         showFinished,
         needsYouByPlan,
         liveByPlan,
+        triggerFilter,
       }),
-    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan],
+    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan, triggerFilter],
   );
 
   const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
@@ -326,6 +339,20 @@ export default function PlansPane() {
         </Tooltip>
       </div>
 
+      <div className="plans-pane__trigger-filter" role="group" aria-label="Plan trigger type">
+        {PLAN_TRIGGER_FILTERS.map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={`plans-pane__trigger-chip${triggerFilter === value ? ' is-on' : ''}`}
+            aria-pressed={triggerFilter === value}
+            onClick={() => void setTriggerFilter(value === 'all' ? null : value)}
+          >
+            {value}
+          </button>
+        ))}
+      </div>
+
       {planList.loading && !plans ? (
         <div className="plans-pane__empty">Loading plans…</div>
       ) : rows.length === 0 ? (
@@ -397,6 +424,15 @@ export default function PlansPane() {
                     </span>
                   </span>
                   <span className="plans-pane__row-badges">
+                    {plan.triggered ? (
+                      <span
+                        className="plans-pane__badge plans-pane__badge--trigger"
+                        title={`Triggered plan · ${planTriggerSourceLabel(plan.triggerSources)}`}
+                        data-testid="plans-pane-trigger-badge"
+                      >
+                        {planTriggerSourceLabel(plan.triggerSources)}
+                      </span>
+                    ) : null}
                     {/* Provenance (WI-39439): marks ONLY plans the Blender/Scout
                         ideation loop routed. Absence means human- or
                         standard-agent-authored — including an su agent's own

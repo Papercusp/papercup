@@ -16,7 +16,10 @@ import type { ReactNode } from 'react';
 
 let viewerEmail: string | null;
 vi.mock('./plans-api', () => ({ usePlanViewerEmail: () => viewerEmail }));
-vi.mock('./plan-filtering', () => ({ OWNER_VIEWS: ['all', 'mine', 'others'] }));
+vi.mock('./plan-filtering', () => ({
+  OWNER_VIEWS: ['all', 'mine', 'others'],
+  PLAN_TRIGGER_FILTERS: ['all', 'one-time', 'triggered'],
+}));
 vi.mock('./plan-sorting', () => ({
   PLAN_SORTS: [{ id: 'default', label: 'Default' }, { id: 'recent', label: 'Recent' }],
   PLAN_SORT_IDS: ['default', 'recent'],
@@ -105,6 +108,16 @@ describe('PlanFilters component', () => {
     await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
     const ev = onUrlUpdate.mock.calls.at(-1)![0] as { searchParams: URLSearchParams };
     expect(ev.searchParams.get('pInbox')).toBe('true');
+  });
+
+  it('writes the derived one-time / triggered facet with parseAsStringEnum semantics', async () => {
+    const onUrlUpdate = vi.fn();
+    renderFilters({ onUrlUpdate });
+    const group = screen.getByRole('group', { name: 'Plan trigger type' });
+    fireEvent.click(group.querySelector('button:nth-of-type(3)')!);
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    const ev = onUrlUpdate.mock.calls.at(-1)![0] as { searchParams: URLSearchParams };
+    expect(ev.searchParams.get('pTrigger')).toBe('triggered');
   });
 
   it('clears a single filter via its token chip', async () => {

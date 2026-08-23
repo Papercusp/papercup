@@ -85,6 +85,7 @@ export function shapePlansList(
       next: clip(r.nextAction, c.next),
       open,
       maxImportance: r.maxImportance ?? null,
+      triggered: r.triggered ?? null,
     };
     if (tier === "trimmed") return base;
     return {
@@ -96,6 +97,7 @@ export function shapePlansList(
       startStatus: r.startStatus ?? null,
       priority: r.priority ?? null,
       scheduled: r.scheduled ?? null,
+      triggerSources: r.triggerSources ?? null,
     };
   };
 

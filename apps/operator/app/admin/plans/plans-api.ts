@@ -69,6 +69,18 @@ export type ItemStatus = 'todo' | 'wip' | 'blocked' | 'needs-human' | 'done' | '
 export type Importance = 'urgent' | 'high' | 'normal' | 'low';
 export const IMPORTANCE_LEVELS: readonly Importance[] = ['urgent', 'high', 'normal', 'low'];
 export type PlanStartStatus = 'started' | 'paused' | 'done' | null;
+export type PlanTriggerSource = 'schedule' | 'external' | 'manual';
+
+/** Compact, stable label shared by the sidebar and Create-dock plan rows. */
+export function planTriggerSourceLabel(sources: readonly PlanTriggerSource[] | undefined): string {
+  if (!sources?.length) return 'triggered';
+  const labels: Record<PlanTriggerSource, string> = {
+    schedule: 'schedule',
+    external: 'event',
+    manual: 'manual',
+  };
+  return sources.map((source) => labels[source]).join(' + ');
+}
 
 /**
  * A row of the `plans.list` sync feed.
@@ -144,6 +156,11 @@ export interface PlanListRow {
   scheduleActive?: boolean;
   /** A recurrence set (`recurring`) vs a one-shot `scheduled_at` (`one-shot`); absent ⇒ unscheduled. */
   scheduleKind?: 'recurring' | 'one-shot';
+  /** Derived on every plans:list read from schedule/binding/input presence;
+   *  never persisted as a kind column. */
+  triggered?: boolean;
+  /** Installed trigger sources, in stable schedule → external → manual order. */
+  triggerSources?: PlanTriggerSource[];
 }
 
 export interface PlanItem {
