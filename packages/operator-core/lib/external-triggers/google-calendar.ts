@@ -230,6 +230,173 @@ async function listPage(
   return parseResponse(response, operation);
 }
 
+export interface GoogleCalendarWriteInput {
+  calendarId?: string;
+  summary: string;
+  description?: string | null;
+  location?: string | null;
+  /** RFC3339 instant or a YYYY-MM-DD all-day date. */
+  start: string;
+  end: string;
+  timeZone?: string | null;
+  attendees?: readonly string[];
+}
+
+export interface GoogleCalendarWriteResult {
+  id: string;
+  htmlLink: string | null;
+  status: string | null;
+  attendees: string[];
+}
+
+function eventDate(value: string, timeZone: string | null | undefined): Record<string, unknown> {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) throw new Error('google_calendar_event_time_required');
+  // An all-day event is a bare date; anything else must be a real instant.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return { date: normalized };
+  if (!Number.isFinite(Date.parse(normalized))) throw new Error(`google_calendar_event_time_invalid:${normalized}`);
+  return timeZone ? { dateTime: normalized, timeZone } : { dateTime: normalized };
+}
+
+function writeBody(input: GoogleCalendarWriteInput): Record<string, unknown> {
+  const summary = String(input.summary ?? '').trim();
+  if (!summary || summary.length > 1_024) throw new Error('google_calendar_event_summary_invalid');
+  const body: Record<string, unknown> = {
+    summary,
+    start: eventDate(input.start, input.timeZone),
+    end: eventDate(input.end, input.timeZone),
+  };
+  if (input.description?.trim()) body.description = input.description.trim().slice(0, 8_192);
+  if (input.location?.trim()) body.location = input.location.trim().slice(0, 1_024);
+  if (input.attendees?.length) body.attendees = input.attendees.map((email) => ({ email }));
+  return body;
+}
+
+async function calendarWrite(
+  fetchImpl: typeof fetch,
+  apiOrigin: string,
+  accessToken: string,
+  path: string,
+  method: 'POST' | 'PATCH',
+  body: Record<string, unknown>,
+  operation: string,
+): Promise<GoogleCalendarEvent> {
+  const url = new URL(path, apiOrigin);
+  // Google only emails invitations when explicitly asked to.
+  url.searchParams.set('sendUpdates', 'all');
+  const response = await fetchImpl(url, {
+    method,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  return (await parseResponse(response, operation)) as unknown as GoogleCalendarEvent;
+}
+
+function writeResult(event: GoogleCalendarEvent): GoogleCalendarWriteResult {
+  const id = nonEmpty(event.id);
+  if (!id) throw new Error('google_calendar_event_response_invalid');
+  return {
+    id,
+    htmlLink: nonEmpty(event.htmlLink),
+    status: nonEmpty(event.status),
+    attendees: (event.attendees ?? [])
+      .map((person) => nonEmpty(person?.email))
+      .filter((email): email is string => Boolean(email)),
+  };
+}
+
+/**
+ * Create one calendar event (P-022 write path). Requires the
+ * `calendar.events` scope on the SAME Google Workspace OAuth source per D-010
+ * — there is deliberately no second credential path.
+ *
+ * D-020: attendee addresses reaching here have already cleared the rail-2
+ * trusted-addressee check. This seam performs no such check itself.
+ */
+export async function createGoogleCalendarEvent(
+  accessToken: string,
+  input: GoogleCalendarWriteInput,
+  provided: { fetch?: typeof fetch; apiOrigin?: string } = {},
+): Promise<GoogleCalendarWriteResult> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_calendar_access_token_required');
+  const calendarId = input.calendarId?.trim() || 'primary';
+  const event = await calendarWrite(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? GOOGLE_CALENDAR_API_ORIGIN).replace(/\/$/, ''),
+    token,
+    `/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+    'POST',
+    writeBody(input),
+    'event_create',
+  );
+  return writeResult(event);
+}
+
+/** Patch one existing event; only the fields supplied are changed. */
+export async function updateGoogleCalendarEvent(
+  accessToken: string,
+  eventId: string,
+  input: Partial<GoogleCalendarWriteInput> & { calendarId?: string },
+  provided: { fetch?: typeof fetch; apiOrigin?: string } = {},
+): Promise<GoogleCalendarWriteResult> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_calendar_access_token_required');
+  const id = String(eventId ?? '').trim();
+  if (!id) throw new Error('google_calendar_event_id_required');
+  const calendarId = input.calendarId?.trim() || 'primary';
+  const patch: Record<string, unknown> = {};
+  if (input.summary !== undefined) patch.summary = String(input.summary).trim();
+  if (input.description !== undefined) patch.description = input.description?.trim() ?? '';
+  if (input.location !== undefined) patch.location = input.location?.trim() ?? '';
+  if (input.start !== undefined) patch.start = eventDate(input.start, input.timeZone);
+  if (input.end !== undefined) patch.end = eventDate(input.end, input.timeZone);
+  if (input.attendees !== undefined) patch.attendees = (input.attendees ?? []).map((email) => ({ email }));
+  if (!Object.keys(patch).length) throw new Error('google_calendar_event_patch_empty');
+  const event = await calendarWrite(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? GOOGLE_CALENDAR_API_ORIGIN).replace(/\/$/, ''),
+    token,
+    `/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(id)}`,
+    'PATCH',
+    patch,
+    'event_update',
+  );
+  return writeResult(event);
+}
+
+/** Delete one existing event. Google returns an empty 204 response on success. */
+export async function deleteGoogleCalendarEvent(
+  accessToken: string,
+  eventId: string,
+  input: { calendarId?: string } = {},
+  provided: { fetch?: typeof fetch; apiOrigin?: string } = {},
+): Promise<{ id: string; deleted: true }> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_calendar_access_token_required');
+  const id = String(eventId ?? '').trim();
+  if (!id) throw new Error('google_calendar_event_id_required');
+  const calendarId = input.calendarId?.trim() || 'primary';
+  const url = new URL(
+    `/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(id)}`,
+    (provided.apiOrigin ?? GOOGLE_CALENDAR_API_ORIGIN).replace(/\/$/, ''),
+  );
+  url.searchParams.set('sendUpdates', 'all');
+  const response = await (provided.fetch ?? fetch)(url, {
+    method: 'DELETE',
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json',
+    },
+  });
+  if (!response.ok) await parseResponse(response, 'event_delete');
+  return { id, deleted: true };
+}
+
 function cursorWithoutSyncToken(cursor: Record<string, unknown>): Record<string, unknown> {
   const cleared = { ...cursor };
   delete cleared.syncToken;

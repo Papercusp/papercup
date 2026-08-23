@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createGoogleCalendarEvent,
+  deleteGoogleCalendarEvent,
   normalizeGoogleCalendarEvent,
   syncGoogleCalendarSource,
+  updateGoogleCalendarEvent,
   type GoogleCalendarEvent,
 } from './google-calendar';
 import type { ExternalTriggerSourceRow } from './source-store';
@@ -211,5 +214,120 @@ describe('Google Calendar incremental adapter', () => {
       end: '2026-08-24',
       conferenceData: event.conferenceData,
     }));
+  });
+});
+
+describe('Google Calendar write contract', () => {
+  it('creates an event on the selected calendar and requests invitation delivery', async () => {
+    const fetchSpy = vi.fn(async () =>
+      json({
+        id: 'event-created',
+        htmlLink: 'https://calendar.test/event-created',
+        status: 'confirmed',
+        attendees: [{ email: 'ada@example.com' }],
+      }),
+    );
+    const fetchImpl = fetchSpy as unknown as typeof fetch;
+
+    const result = await createGoogleCalendarEvent(
+      'access-token',
+      {
+        calendarId: 'team/calendar',
+        summary: 'Design review',
+        description: 'Review the trigger contract',
+        start: '2026-08-24T14:00:00.000Z',
+        end: '2026-08-24T14:30:00.000Z',
+        attendees: ['ada@example.com'],
+      },
+      { fetch: fetchImpl, apiOrigin: 'https://calendar.test' },
+    );
+
+    const [request, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(request.pathname).toBe('/calendar/v3/calendars/team%2Fcalendar/events');
+    expect(request.searchParams.get('sendUpdates')).toBe('all');
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: expect.objectContaining({ authorization: 'Bearer access-token' }),
+    });
+    expect(JSON.parse(String(init.body))).toEqual({
+      summary: 'Design review',
+      description: 'Review the trigger contract',
+      start: { dateTime: '2026-08-24T14:00:00.000Z' },
+      end: { dateTime: '2026-08-24T14:30:00.000Z' },
+      attendees: [{ email: 'ada@example.com' }],
+    });
+    expect(result).toEqual({
+      id: 'event-created',
+      htmlLink: 'https://calendar.test/event-created',
+      status: 'confirmed',
+      attendees: ['ada@example.com'],
+    });
+  });
+
+  it('patches only supplied fields and supports all-day dates', async () => {
+    const fetchSpy = vi.fn(async () => json({ id: 'event-1', status: 'confirmed' }));
+    const fetchImpl = fetchSpy as unknown as typeof fetch;
+
+    await updateGoogleCalendarEvent(
+      'access-token',
+      'event/1',
+      {
+        calendarId: 'primary',
+        summary: 'Updated review',
+        start: '2026-08-25',
+      },
+      { fetch: fetchImpl, apiOrigin: 'https://calendar.test' },
+    );
+
+    const [request, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(request.pathname).toBe('/calendar/v3/calendars/primary/events/event%2F1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({
+      summary: 'Updated review',
+      start: { date: '2026-08-25' },
+    });
+  });
+
+  it("deletes an event and accepts Google's empty 204 response", async () => {
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 204 }));
+    const fetchImpl = fetchSpy as unknown as typeof fetch;
+
+    const result = await deleteGoogleCalendarEvent(
+      'access-token',
+      'event/1',
+      { calendarId: 'team/calendar' },
+      { fetch: fetchImpl, apiOrigin: 'https://calendar.test' },
+    );
+
+    const [request, init] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(request.pathname).toBe('/calendar/v3/calendars/team%2Fcalendar/events/event%2F1');
+    expect(request.searchParams.get('sendUpdates')).toBe('all');
+    expect(init).toMatchObject({
+      method: 'DELETE',
+      headers: expect.objectContaining({ authorization: 'Bearer access-token' }),
+    });
+    expect(result).toEqual({ id: 'event/1', deleted: true });
+  });
+
+  it('rejects invalid write requests before touching the provider', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(
+      createGoogleCalendarEvent(
+        'access-token',
+        {
+          summary: 'Missing start',
+          start: '',
+          end: '2026-08-24T14:30:00.000Z',
+        },
+        { fetch: fetchImpl },
+      ),
+    ).rejects.toThrow('google_calendar_event_time_required');
+    await expect(updateGoogleCalendarEvent('access-token', 'event-1', {}, { fetch: fetchImpl })).rejects.toThrow(
+      'google_calendar_event_patch_empty',
+    );
+    await expect(deleteGoogleCalendarEvent('access-token', '', {}, { fetch: fetchImpl })).rejects.toThrow(
+      'google_calendar_event_id_required',
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
