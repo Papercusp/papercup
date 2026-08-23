@@ -21,6 +21,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import WorkflowAgentPanel from './WorkflowAgentPanel';
 import WorkflowGraphPane from './WorkflowGraphPane';
 import { buildWorkflowGraph, type WorkflowBindingInput } from './workflow-graph-model';
+import './adv-workflow-detail.css';
 
 export interface WorkflowDetailViewProps {
   /** Display name of the workflow being inspected. */
