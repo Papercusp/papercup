@@ -158,6 +158,9 @@ export default defineTool({
       harness,
       by: ident.ownerId,
       holder,
+      // The request was based on this exact holder read. The storage write repeats
+      // the check atomically so a claim transfer cannot retarget the request.
+      expectedHolder: holder,
       reason: args.reason,
       onSilence: args.onSilence,
       deadlineAt,

@@ -127,7 +127,14 @@ describe('work_items:request_release', () => {
 
     expect(setWorkItemReleaseRequest).toHaveBeenCalledWith(
       'WI-9',
-      expect.objectContaining({ harness: 'papercup', by: 'me', holder: 'peer-holder', reason: 'looks orphaned', onSilence: 'reclaim' }),
+      expect.objectContaining({
+        harness: 'papercup',
+        by: 'me',
+        holder: 'peer-holder',
+        expectedHolder: 'peer-holder',
+        reason: 'looks orphaned',
+        onSilence: 'reclaim',
+      }),
     );
     expect(commentWorkItem).toHaveBeenCalledTimes(1);
     expect(commentWorkItem.mock.calls[0][0]).toBe('WI-9');
