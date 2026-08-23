@@ -45,15 +45,16 @@ async function seedIssue(id: string, payload: Record<string, unknown> | null, st
 
 /**
  * Seed a plan. The plan-lane floor is deliberately STATE-SENSITIVE, not merely payload-shaped:
- * a `plan_item` back-pointer reserves the row ONLY while its plan is genuinely `active`
- * (reservedPlanLaneExclusionSql). A payload stamp pointing at a draft/paused/absent plan does
- * NOT floor the row — the floor fails open. Seeding the plan is therefore part of the contract
- * under test, not scaffolding: it is what distinguishes "reserved right now" from "stamped".
+ * a `plan_item` back-pointer reserves the row while its ordinary plan is in lifecycle
+ * `draft`/`paused`/`active` or its operation is `started`/`paused` (reservedPlanLaneExclusionSql).
+ * A ready plan with NULL/`done` op_status is a free control. Seeding the plan is therefore part
+ * of the contract under test, not scaffolding: it distinguishes "reserved right now" from
+ * "stamped".
  */
-async function seedPlan(slug: string, status: 'active' | 'paused') {
+async function seedPlan(slug: string, status: 'draft' | 'paused' | 'active' | 'ready', opStatus: string | null = null) {
   await db.sql`
-    INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
-    VALUES (${WS}, ${H}, ${slug}, ${status})`;
+    INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
+    VALUES (${WS}, ${H}, ${slug}, ${status}, ${opStatus})`;
 }
 
 beforeAll(async () => {
@@ -85,7 +86,10 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     // The control. If a clean row does not read admissible, this test is measuring the wrong
     // thing and every assertion below it is worthless.
     await seedPlan('live-plan', 'active');
+    await seedPlan('draft-plan', 'draft');
     await seedPlan('paused-plan', 'paused');
+    await seedPlan('ready-plan', 'ready');
+    await seedPlan('done-plan', 'ready', 'done');
 
     await seedIssue('WI-9001', null);
     // The three floors from the live incident:
@@ -109,10 +113,14 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     });
     // A terminal row named in a STALE tranche — the other everyday way a leader's spec goes empty.
     await seedIssue('WI-9006', null, 'resolved');
-    // Stamped with a plan_item, but the plan is NOT active ⇒ NOT reserved. The floor is
-    // state-sensitive, and a diagnosis that reported this as "plan-lane-reserved" would be
-    // lying in the opposite direction — telling a leader to drop an item that is claimable.
+    // Stamped with a plan_item on an ordinary paused plan ⇒ reserved. The lifecycle state is
+    // owner-controlled, so a diagnosis that reported this as claimable would be lying in the
+    // opposite direction — telling a leader to dispatch work the owner paused.
     await seedIssue('WI-9007', { plan_item: { plan_slug: 'paused-plan', item_id: 'P-002' } });
+    await seedIssue('WI-9009', { plan_item: { plan_slug: 'draft-plan', item_id: 'P-003' } });
+    // Ready/NULL and ready/done are the anti-over-exclusion controls: neither is reserved.
+    await seedIssue('WI-9010', { plan_item: { plan_slug: 'ready-plan', item_id: 'P-004' } });
+    await seedIssue('WI-9011', { plan_item: { plan_slug: 'done-plan', item_id: 'P-005' } });
 
     const out = await explainIssueClaimFloors(H, [
       'WI-9001',
@@ -123,6 +131,9 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
       'WI-9006',
       'WI-9007',
       'WI-9008',
+      'WI-9009',
+      'WI-9010',
+      'WI-9011',
       'WI-9999', // never inserted — a leader typo
     ]);
     const by = new Map(out.map((o) => [o.id, o]));
@@ -133,8 +144,11 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     expect(by.get('WI-9004')).toMatchObject({ admissible: false, refusedBy: 'claim-hold' });
     expect(by.get('WI-9005')).toMatchObject({ admissible: true, refusedBy: null });
     expect(by.get('WI-9006')).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
-    expect(by.get('WI-9007')).toMatchObject({ admissible: true, refusedBy: null });
+    expect(by.get('WI-9007')).toMatchObject({ admissible: false, refusedBy: 'plan-lane-reserved' });
     expect(by.get('WI-9008')).toMatchObject({ admissible: false, refusedBy: 'external-blocker' });
+    expect(by.get('WI-9009')).toMatchObject({ admissible: false, refusedBy: 'plan-lane-reserved' });
+    expect(by.get('WI-9010')).toMatchObject({ admissible: true, refusedBy: null });
+    expect(by.get('WI-9011')).toMatchObject({ admissible: true, refusedBy: null });
     // A typo'd id is the single most likely way to author a dead tranche, and the old static
     // message said nothing about it whatsoever.
     expect(by.get('WI-9999')).toMatchObject({ admissible: false, refusedBy: 'not-found' });

@@ -36,7 +36,7 @@
  * Proves against real Postgres (testcontainer; Docker required):
  *   1. AGREEMENT — across every UNCONDITIONAL floor (not-open, taken, federated-remote,
  *      claim-hold, observation-lane, owner-action, external-blocker, federation-detector,
- *      loop-noise, already-completed, reserved-active-plan, other-owner-lease, blocked-dep,
+ *      loop-noise, already-completed, reserved non-executable plan, other-owner-lease, blocked-dep,
  *      and their satisfied/admit counterparts) the view's membership set === the set the inline
  *      claim path drains, EXACTLY.
  *   2. DIVERGENCE A (per-claim rig floor) — the view admits a rig-gated row (SSOT omits per-claim
@@ -165,14 +165,14 @@ const seedPlanLinkedIssue = (id: string, planSlug: string, itemId: string) =>
  * the store floor #13 reads. `seedPlan` above leaves `items` NULL (the shape every pre-#13 case
  * needs), so this is the sibling that populates it.
  *
- * The plan is seeded at lifecycle 'draft' with op_status NULL on purpose: that makes floor #11
+ * The plan is seeded at lifecycle 'ready' with op_status NULL on purpose: that makes floor #11
  * (reserved-plan-lane) SATISFIED, so any exclusion observed in these cases is attributable to
- * floor #13 alone. Without that, a 'started' plan would exclude the row for the OTHER reason and
- * the case would pass while proving nothing about the floor under test.
+ * floor #13 alone. Without that, a non-executable lifecycle would exclude the row for the OTHER
+ * reason and the case would pass while proving nothing about the floor under test.
  */
 const seedPlanWithItems = (slug: string, items: { id: string; status?: string; blockedBy?: string[] }[]) =>
   db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status, op_status, items)
-          VALUES (${slug}, 'draft', NULL, ${db.sql.json(
+          VALUES (${slug}, 'ready', NULL, ${db.sql.json(
             items.map((it) => ({
               id: it.id,
               text: it.id,
@@ -256,6 +256,9 @@ beforeAll(async () => {
   // P-006/migration 864 retires the ambiguous legacy payload.needsHuman floor while retaining
   // the stable public claim-floor signature through its subtractive v16 wrapper.
   await db.sql.unsafe(readMigration('864-migrate-legacy-human-parks-to-agent-review.sql')).simple();
+  // EI-21268387863408600: ordinary draft/paused lifecycle plans are also reserved, while ready
+  // and done controls remain free and per-run instance lifecycle rows stay exempt.
+  await db.sql.unsafe(readMigration('920-draft-paused-plan-claim-floor.sql.DRAFT')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -326,9 +329,9 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
       },
     });
     await seed('WI-OP', { harnessSlug: OP }); // operator-scope encoding, still self-pickable
-    // reserved-plan-lane floor SATISFIED: a draft plan with no live lease ⇒ free backlog.
-    await seedPlan('draft-free', 'draft');
-    await seedPlanLinkedIssue('WI-DRAFT-FREE', 'draft-free', 'P-01');
+    // reserved-plan-lane floor SATISFIED: a ready plan with no operation or live lease ⇒ free backlog.
+    await seedPlan('ready-free', 'ready');
+    await seedPlanLinkedIssue('WI-READY-FREE', 'ready-free', 'P-01');
     // blocked-dep floor SATISFIED: blocker is TERMINAL (passed feature) ⇒ not blocking.
     await seed('F-DONE', { kind: 'feature', status: 'passed' });
     await seed('WI-DEP-OK');
@@ -364,14 +367,18 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     }); // 15b. agent-review revision work
     await seedPlan('active-plan', 'active'); // 11a. reserved to an ACTIVE plan lane
     await seedPlanLinkedIssue('WI-ACTIVE-PLAN', 'active-plan', 'P-02');
-    await seedPlan('other-lease-plan', 'draft'); // 11b. reserved by ANOTHER owner's live lease
+    await seedPlan('other-lease-plan', 'ready'); // 11b. reserved by ANOTHER owner's live lease
     await seedPlanLinkedIssue('WI-OTHER-LEASE', 'other-lease-plan', 'P-03');
     await seedLease('other-lease-plan', 'P-03', 'su-other-owner', 20);
-    // 11c. reserved to a STARTED plan whose LIFECYCLE status is still 'ready' — the shape a
+    await seedPlan('draft-plan', 'draft'); // 11c. reserved to an ordinary draft plan
+    await seedPlanLinkedIssue('WI-DRAFT-PLAN', 'draft-plan', 'P-DRAFT');
+    await seedPlan('paused-lifecycle-plan', 'paused'); // 11d. reserved to an ordinary paused plan
+    await seedPlanLinkedIssue('WI-PAUSED-LIFECYCLE', 'paused-lifecycle-plan', 'P-PAUSED');
+    // 11e. reserved to a STARTED plan whose LIFECYCLE status is still 'ready' — the shape a
     // real running plan actually has, since plans:start writes op_status and never touches
     // status. Both representations read the lifecycle column ALONE until
     // EI-19409397800537963, so this row was served by both doors; on live papercusp that was
-    // 31 items across 12 running plans. 11d is the same for an owner-PAUSED plan, whose
+    // 31 items across 12 running plans. 11f is the same for an owner-PAUSED plan, whose
     // plans:pause contract is "no new features are picked until plans:start".
     await seedPlan('started-plan', 'ready', 'started');
     await seedPlanLinkedIssue('WI-STARTED-PLAN', 'started-plan', 'P-04');
@@ -384,7 +391,7 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('F-OPEN', { kind: 'feature', status: 'open' }); // 12. blocked-dep (non-terminal blocker)
     await seed('WI-DEP-BLOCKED');
     await blockEdge('WI-DEP-BLOCKED', `${H}#F-OPEN`, 'issue', 'feature');
-    // 13. plan-item-blocked (EI-13738) — the PLAN dependency graph. Every plan below is 'draft'
+    // 13. plan-item-blocked (EI-13738) — the PLAN dependency graph. Every plan below is 'ready'
     // with op_status NULL, so floor #11 is SATISFIED and floor #13 is the ONLY thing that can
     // move these rows; that is what makes each verdict attributable.
     await seedPlanWithItems('blocked-graph', [{ id: 'P-09' }, { id: 'P-10', blockedBy: ['P-09'] }]);
@@ -394,7 +401,7 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
       'WI-CHANGE',
       'WI-DEP-OK',
       'WI-DONE-PLAN-FREE',
-      'WI-DRAFT-FREE',
+      'WI-READY-FREE',
       'WI-LEGACY-HUMAN',
       'WI-OP',
       'WI-PLAIN',
@@ -439,7 +446,7 @@ describe('the three DELIBERATE, documented divergences are pinned (a future "ali
   });
 
   it('DIVERGENCE C — own-lease plan-item exemption: the view excludes a plan-item under any live lease (caller-independent); the LEASE HOLDER can still claim it', async () => {
-    await seedPlan('own-lease-plan', 'draft');
+    await seedPlan('own-lease-plan', 'ready');
     await seedPlanLinkedIssue('WI-OWN-LEASE', 'own-lease-plan', 'P-001');
     await seedLease('own-lease-plan', 'P-001', 'probe', 20); // the lease is held by the CLAIMING assignee
 
