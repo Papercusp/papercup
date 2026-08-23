@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   withFsMutex,
   peekFsMutexSync,
+  resolveFsMutexLockRoot,
   // @ts-expect-error
 } from '../../../../scripts/lib/fs-mutex.mjs';
 
@@ -16,6 +17,28 @@ const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
 afterEach(async () => {
   process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
   delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+});
+
+describe('resolveFsMutexLockRoot', () => {
+  it('keeps one POSIX lock root when callers carry different TMPDIR values', () => {
+    const withoutTmpOverride = resolveFsMutexLockRoot({}, { platform: 'linux', homeDir: '/unused' });
+    const withPapercuspTmp = resolveFsMutexLockRoot(
+      { TMPDIR: '/tmp/pcv' },
+      { platform: 'linux', homeDir: '/unused' },
+    );
+
+    expect(withoutTmpOverride).toBe('/tmp/pcv/fs-mutex-locks');
+    expect(withPapercuspTmp).toBe(withoutTmpOverride);
+  });
+
+  it('preserves the explicit lock-root override on every platform', () => {
+    expect(
+      resolveFsMutexLockRoot(
+        { PAPERCUSP_FS_MUTEX_LOCK_DIR: '/operator/serialized-locks', TMPDIR: '/different/tmp' },
+        { platform: 'linux', homeDir: '/unused' },
+      ),
+    ).toBe('/operator/serialized-locks');
+  });
 });
 
 // EI-18662389554660036: `withFsMutex` is the serialization primitive for shared-tree-wide

@@ -18,7 +18,7 @@
 // shell, no build step) must stay plain-JS-executable with zero devDependency on
 // the test toolchain. If a THIRD consumer shows up, promote both to one shared
 // `libs/generic/fs-mutex` package instead of a third copy.
-import { hostname, tmpdir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -38,8 +38,33 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+/**
+ * Resolve one host-stable mutex root.
+ *
+ * `os.tmpdir()` is intentionally NOT used here. It follows each process's
+ * TMPDIR, and Papercusp agents legitimately run with both TMPDIR unset and
+ * TMPDIR=/tmp/pcv. That split one logical npm-install mutex across
+ * /tmp/pcv/fs-mutex-locks and /tmp/pcv/pcv/fs-mutex-locks, allowing two root
+ * reifiers to hollow shared packages concurrently (WI-40965 / D-031).
+ *
+ * Keep the existing Linux/macOS default path so already-running default-env
+ * callers retain lock continuity. Windows has no guaranteed /tmp, so use the
+ * account home there. PAPERCUSP_FS_MUTEX_LOCK_DIR remains the explicit test /
+ * operator override on every platform.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string }} [options]
+ */
+export function resolveFsMutexLockRoot(env = process.env, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const homeDir = options.homeDir ?? homedir();
+  const stableDefault =
+    platform === 'win32' ? join(homeDir, '.papercusp', 'fs-mutex-locks') : '/tmp/pcv/fs-mutex-locks';
+  return resolve(env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? stableDefault);
+}
+
 function lockRoot() {
-  return resolve(process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? join(tmpdir(), 'pcv', 'fs-mutex-locks'));
+  return resolveFsMutexLockRoot();
 }
 
 function safeName(name) {
