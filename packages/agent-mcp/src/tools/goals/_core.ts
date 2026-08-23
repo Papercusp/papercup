@@ -176,6 +176,19 @@ export interface GoalRowInput {
    * CEILING, not of the goal's polarity (D-001 — no bespoke rails).
    */
   budgetWindowSec?: number | null;
+  /**
+   * The goal's declared IO schemas + resolved start-time inputs
+   * (work-on-everything-goal-2026-08-23 P-021, migration 927).
+   *
+   * Pass-through like `launchSettings`: validated by the CALLER (the start
+   * door / set doors run operator-core's goal-io-validation ajv seam) before
+   * they reach this row — this module stays free of imports beyond node/zod.
+   * `outputs` is deliberately NOT here: outputs are reported at wind-down
+   * (`applyGoalDisposition`), never at creation.
+   */
+  inputSchema?: Record<string, unknown> | null;
+  inputs?: Record<string, unknown> | null;
+  outputSchema?: Record<string, unknown> | null;
 }
 
 /**
@@ -193,7 +206,8 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
   await tx`
     INSERT INTO harness_shared.goals
       (id, install_slug, workspace_id, title, body, parent_id, budget_cents, budget_window_sec,
-       status, standing, kill_criterion, tripwires, metadata, launch_settings)
+       status, standing, kill_criterion, tripwires, metadata, launch_settings,
+       input_schema, inputs, output_schema)
     VALUES
       (${row.id}, ${row.installSlug}, ${row.workspaceId}, ${row.title}, ${row.body ?? null},
        ${row.parentId ?? null}, ${row.budgetCents ?? null}, ${row.budgetWindowSec ?? null},
@@ -202,7 +216,10 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
        ${row.killCriterion ?? null},
        ${row.tripwires?.length ? JSON.stringify(row.tripwires) : null}::jsonb,
        ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb,
-       ${row.launchSettings && Object.keys(row.launchSettings).length ? JSON.stringify(row.launchSettings) : null}::jsonb)
+       ${row.launchSettings && Object.keys(row.launchSettings).length ? JSON.stringify(row.launchSettings) : null}::jsonb,
+       ${row.inputSchema && Object.keys(row.inputSchema).length ? JSON.stringify(row.inputSchema) : null}::jsonb,
+       ${row.inputs && Object.keys(row.inputs).length ? JSON.stringify(row.inputs) : null}::jsonb,
+       ${row.outputSchema && Object.keys(row.outputSchema).length ? JSON.stringify(row.outputSchema) : null}::jsonb)
   `;
 }
 
