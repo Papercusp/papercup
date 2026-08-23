@@ -506,7 +506,15 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
 
   it('reports Infinity age (still flagged) when neither pausedAtMs nor updatedAtMs is readable', () => {
     const r = computeStalePausedRoutines([{ name: 'mystery-routine' }], now);
-    expect(r).toEqual([{ name: 'mystery-routine', ageMs: Infinity, reasonMissing: true, critical: false }]);
+    // Deliberately strict (toEqual, not toMatchObject): this is the one assertion that
+    // pins the emitted row SHAPE, so an unintended new field fails here on purpose.
+    // `alwaysOnUnreaffirmed` is false because a no-anchor row short-circuits BEFORE the
+    // decommissioned cutoff — it is flagged by reasonMissing, never rescued by the
+    // EI-18137248342636257 always-on exemption, and the flag means precisely "this row
+    // survives ONLY because of that exemption".
+    expect(r).toEqual([
+      { name: 'mystery-routine', ageMs: Infinity, reasonMissing: true, critical: false, alwaysOnUnreaffirmed: false },
+    ]);
   });
 
   it('sorts critical routines first, then oldest-first within each group', () => {
