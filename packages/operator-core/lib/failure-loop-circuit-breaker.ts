@@ -98,7 +98,8 @@ export function failureClassOf(result: DispatchProjectedResult): string | null {
   const toolResult = result.result;
   if (!toolResult?.isError) return null;
 
-  const text = toolResult.content?.[0]?.text;
+  const firstContent = toolResult.content?.[0];
+  const text = firstContent?.type === 'text' ? firstContent.text : undefined;
   if (typeof text === 'string' && text.length > 0) {
     try {
       const parsed: unknown = JSON.parse(text);
