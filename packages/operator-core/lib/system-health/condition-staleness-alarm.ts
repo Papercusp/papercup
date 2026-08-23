@@ -28,6 +28,7 @@
  * Best-effort + fail-soft: never throws, never blocks the request worker it runs on.
  */
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   computeConditionStates,
   readConditionEnvelopes,
@@ -52,6 +53,8 @@ import {
   type ReconcileSummary,
 } from '../coord/condition-bridge';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { evaluateGitSyncStall } from '../release/git-sync-stall-watchdog';
+import { readRoutineEngineLiveness } from '../release/routine-engine-liveness';
 
 export const CONDITION_STALENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:condition-staleness-alarm',
@@ -83,6 +86,120 @@ const DEFAULT_INTERVAL_MS = 5 * 60_000;
 // several missed sweeps of margin before we treat its signal as gone quiet, while
 // still being tiny next to the DAYS of staleness this bug actually produces.
 const DEFAULT_SIGNAL_ABSENCE_MS = 2 * 60 * 60_000;
+
+const GIT_SYNC_STALL_PREFIX = 'git-sync-stall:';
+
+interface GitSyncHealthRow {
+  install_slug: string;
+  last_fired_ms: string | number | null;
+  head_sha: string | null;
+  wd_head_sha: string | null;
+  wd_head_since_ms: string | number | null;
+  last_status: string | null;
+  local_sync_status: string | null;
+  last_error: string | null;
+  watchdog_alerted: boolean | null;
+  reaped_count: number | null;
+  wd_error_sweeps: number | null;
+  git_sync_activity: unknown;
+}
+
+/**
+ * Read the writer-backed git-sync state for open condition keys and reuse the
+ * watchdog's pure verdict to decide whether the condition is healthy now.
+ *
+ * This is intentionally a READ-only companion to git-sync-stall-watchdog.ts.
+ * The watchdog emits the recovery broadcast only on its next 15-minute sweep;
+ * the condition actor runs every 5 minutes, so this closes the recovery-lag
+ * window without duplicating the watchdog's alarm/write path. Missing rows or
+ * an unreadable routine-engine clock stay UNKNOWN (no map entry), never healthy.
+ */
+async function defaultReadGitSyncHealth(
+  openGitSyncKeys: readonly string[],
+  now: number,
+): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  const installSlugs = [...new Set(
+    openGitSyncKeys
+      .filter((key) => key.startsWith(GIT_SYNC_STALL_PREFIX))
+      .map((key) => key.slice(GIT_SYNC_STALL_PREFIX.length).trim())
+      .filter(Boolean),
+  )];
+  if (installSlugs.length === 0) return out;
+
+  try {
+    const { sql } = getOrgPg();
+    const [rows, routineEngine] = await Promise.all([
+      sql<GitSyncHealthRow[]>`
+        SELECT install_slug,
+               extract(epoch from last_fired_at) * 1000 AS last_fired_ms,
+               COALESCE(metadata->>'local_sync_head_sha', metadata->>'head_sha') AS head_sha,
+               metadata->>'wd_head_sha' AS wd_head_sha,
+               (metadata->>'wd_head_since_ms')::bigint AS wd_head_since_ms,
+               metadata->>'last_status' AS last_status,
+               metadata->>'local_sync_status' AS local_sync_status,
+               metadata->>'last_error' AS last_error,
+               COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
+               COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count,
+               COALESCE((metadata->>'wd_error_sweeps')::int, 0) AS wd_error_sweeps,
+               metadata->'git_sync_activity' AS git_sync_activity
+          FROM harness_shared.routines
+         WHERE target_role = 'system:git-sync'
+           AND active = true
+           AND workspace_id = ${coordScopeWorkspace()}
+           AND install_slug = ANY(${installSlugs})`,
+      readRoutineEngineLiveness(sql, { nowMs: now }),
+    ]);
+
+    // An unknown engine clock cannot prove that a healthy-looking routine is
+    // actually live. Leave all keys unresolved so this backstop fails open.
+    if (routineEngine.unknown) return out;
+
+    for (const row of rows) {
+      const headSinceMs = row.wd_head_since_ms == null ? null : Number(row.wd_head_since_ms);
+      let headUnchangedMs: number | null;
+      if (row.head_sha == null) {
+        headUnchangedMs = null;
+      } else if (row.wd_head_sha !== row.head_sha || headSinceMs == null) {
+        // Match the watchdog's first-observation/HEAD-advanced behavior. The
+        // next watchdog sweep will persist the new clock; this read must not.
+        headUnchangedMs = 0;
+      } else {
+        headUnchangedMs = now - headSinceMs;
+      }
+
+      const activity = row.git_sync_activity && typeof row.git_sync_activity === 'object'
+        ? row.git_sync_activity as Record<string, unknown>
+        : null;
+      const activeLocalSyncStartedAtMs = activity?.active === true && activity.phase === 'local-sync'
+        ? Number(activity.started_at)
+        : null;
+      const hasError = typeof row.last_error === 'string' && row.last_error.trim().length > 0;
+      const errorSweeps = hasError ? Math.max(1, Number(row.wd_error_sweeps ?? 0)) : 0;
+      const verdict = evaluateGitSyncStall(
+        {
+          lastFiredMs: row.last_fired_ms == null ? null : Number(row.last_fired_ms),
+          headUnchangedMs,
+          lastError: row.last_error,
+          errorSweeps,
+          lastStatus: row.last_status,
+          localSyncStatus: row.local_sync_status,
+          watchdogAlerted: row.watchdog_alerted ?? false,
+          reapedCount: Number(row.reaped_count ?? 0),
+          routineEngineStale: routineEngine.stale,
+          activeLocalSyncStartedAtMs: Number.isFinite(activeLocalSyncStartedAtMs)
+            ? activeLocalSyncStartedAtMs
+            : null,
+        },
+        now,
+      );
+      out.set(`${GIT_SYNC_STALL_PREFIX}${row.install_slug}`, !verdict.stalled);
+    }
+  } catch {
+    // A read failure is unknown, never evidence that git-sync recovered.
+  }
+  return out;
+}
 
 /**
  * PURE: which currently-OPEN conditions have been open longer than `staleMs`, as of `now`.
@@ -153,10 +270,10 @@ export function evaluateStaleConditions(
 // pg-restarted, autoloop-fire-stale:*, and the panel:* catch-all) — every
 // condition liveness-alarm.ts's own `evaluateLivenessAlarm` sources, so "is the
 // signal healthy" is the SAME live computation the watchdog itself alarms from;
-// this can never disagree with it. (Other condition families — e.g.
-// `git-sync-stall:*` — have their own distinct source watchdog and are NOT
-// covered here; extending this registry to them is a natural follow-up, not
-// bundled into this fix to keep the health-check semantics per-family honest.)
+// this can never disagree with it. The `git-sync-stall:*` family is also checked
+// against the active routine's writer-backed metadata using the source watchdog's
+// `evaluateGitSyncStall` verdict. Other condition families remain fail-open until
+// their own source-specific health computation exists.
 
 const INFRA_LIVENESS_PREFIX = 'infra-liveness:';
 
@@ -364,6 +481,13 @@ export interface ConditionStalenessDeps {
    *  not just this tick's local view. Default = the real
    *  `broadcastSevereEventResolvedMany`. */
   broadcastResolvedMany?: (input: { conditionKeys: string[]; summary: string }) => Promise<boolean>;
+  /** EI-211981: read active git-sync routine metadata and return a health verdict
+   * for each requested `git-sync-stall:<installSlug>` key. Missing/failed reads
+   * must omit the key (unknown), never return true. */
+  readGitSyncHealthByKey?: (
+    openGitSyncKeys: readonly string[],
+    now: number,
+  ) => Promise<Map<string, boolean>>;
   /**
    * P-003: the condition→work-item bridge.
    *
@@ -387,8 +511,9 @@ export interface ConditionStalenessDeps {
 
 /**
  * One tick: fold current condition envelopes → state, RECONCILE any open
- * `infra-liveness:*` row whose underlying signal is verified healthy right now
- * (EI-14072 guard #2 — the durable backstop for a dropped/never-sent resolution,
+ * source-verifiable row (`infra-liveness:*` or `git-sync-stall:*`) whose
+ * underlying signal is verified healthy right now (EI-14072 guard #2 plus
+ * EI-211981 — the durable backstop for a dropped/never-sent resolution,
  * independent of guard #1's batched-resolution fix), RECONCILE any open row of
  * ANY family whose signal has gone quiet — no alarm re-observed in over
  * `absenceMs` (EI-15182 guard #3 — resolve-on-absence, the durable fix for a
@@ -461,6 +586,7 @@ export async function runConditionStalenessTick(
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const absenceMs = deps.absenceMs ?? DEFAULT_SIGNAL_ABSENCE_MS;
   const readHealthByKey = deps.readHealthByKey ?? defaultReadInfraLivenessHealth;
+  const readGitSyncHealthByKey = deps.readGitSyncHealthByKey ?? defaultReadGitSyncHealth;
   const broadcastResolvedMany = deps.broadcastResolvedMany ?? broadcastSevereEventResolvedMany;
 
   let states: ConditionState[];
@@ -482,12 +608,25 @@ export async function runConditionStalenessTick(
   const openInfraKeys = states
     .filter((s) => s.open && s.condition_key.startsWith(INFRA_LIVENESS_PREFIX))
     .map((s) => s.condition_key);
-  let healthByKey = new Map<string, boolean>();
+  const openGitSyncKeys = states
+    .filter((s) => s.open && s.condition_key.startsWith(GIT_SYNC_STALL_PREFIX))
+    .map((s) => s.condition_key);
+  let infraHealthByKey = new Map<string, boolean>();
   try {
-    healthByKey = await readHealthByKey(openInfraKeys);
+    infraHealthByKey = await readHealthByKey(openInfraKeys);
   } catch {
-    healthByKey = new Map();
+    infraHealthByKey = new Map();
   }
+  let gitSyncHealthByKey = new Map<string, boolean>();
+  try {
+    gitSyncHealthByKey = await readGitSyncHealthByKey(openGitSyncKeys, now);
+  } catch {
+    gitSyncHealthByKey = new Map();
+  }
+  const healthByKey = new Map<string, boolean>([
+    ...infraHealthByKey,
+    ...gitSyncHealthByKey,
+  ]);
   const toReconcileHealth = selectReconcilableConditions(states, healthByKey);
   if (toReconcileHealth.length > 0) {
     try {

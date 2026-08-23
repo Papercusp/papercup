@@ -3,8 +3,9 @@
  *
  * Leadership is a control-plane state transition, not prompt advice. Every path
  * that installs a leader calls this effect so the leader holds AUTO mode, an
- * active short-cadence monitor loop, and standing wake watches for the fleet's
- * transition events. The effect is idempotent and repairs partial/stale state.
+ * active loop, and standing wake watches for the fleet's transition events. The
+ * effect is idempotent and repairs partial/stale state without overwriting an
+ * active loop's deliberately chosen cadence or mission.
  */
 import { getModes, setMode } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
@@ -307,11 +308,14 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     intervalSec: priorLoop?.intervalSec ?? null,
     mode: priorLoop?.mode ?? null,
   } as LeaderControlOutcome['loop'];
-  const priorLoopHealthy =
-    priorLoop?.active === true &&
-    priorLoop.mode === 'monitor' &&
-    priorLoop.intervalSec != null &&
-    priorLoop.intervalSec <= LEADER_MONITOR_INTERVAL_SEC;
+  // `materializeLoop` is an upsert that replaces the existing loop's cadence,
+  // mode, goal, and kickoff. An active loop may be deliberately retuned by the
+  // leader (for example, widened to a 1200s fallback heartbeat or switched to a
+  // work mission) immediately before a carry-respawn or leader-brief refresh.
+  // Leader control owns the wake/watch safety net, not the leader's loop
+  // mission, so repair only a missing or inactive loop and preserve every active
+  // loop configuration verbatim.
+  const priorLoopHealthy = priorLoop?.active === true;
   if (priorLoopHealthy) {
     loop.healthy = true;
   } else if (!harness) {

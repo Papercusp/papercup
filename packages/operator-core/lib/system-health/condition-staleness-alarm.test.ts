@@ -468,6 +468,81 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
     expect(seenKeys).toEqual([[]]);
   });
 
+  it('EI-211981: a recovered git-sync routine resolves its stale condition before the watchdog broadcast', async () => {
+    const now = Date.parse('2026-08-22T23:30:00.000Z');
+    const recovered = mkState({
+      condition_key: 'git-sync-stall:papercusp',
+      first_seen: '2026-08-22T23:26:16.000Z',
+      open_since: '2026-08-22T23:26:16.000Z',
+      // Keep the source observed recently so EI-15182 does not resolve this via
+      // absence; this assertion is specifically the writer-backed health path.
+      last_seen: '2026-08-22T23:29:00.000Z',
+    });
+    const seen: { keys: string[]; at: number }[] = [];
+    const broadcasts: string[][] = [];
+    const deps = {
+      readStates: async () => [recovered],
+      readHealthByKey: async (keys: readonly string[]) => {
+        expect(keys).toEqual([]);
+        return new Map<string, boolean>();
+      },
+      readGitSyncHealthByKey: async (keys: readonly string[], at: number) => {
+        seen.push({ keys: [...keys], at });
+        return new Map([['git-sync-stall:papercusp', true]]);
+      },
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async () => {
+        throw new Error('a verified recovery must not be escalated as stale');
+      },
+      now: () => now,
+      staleMs: 1,
+      absenceMs: 2 * 60 * 60_000,
+      broadcastResolvedMany: async (input: { conditionKeys: string[] }) => {
+        broadcasts.push(input.conditionKeys);
+        return true;
+      },
+    };
+
+    const result = await runConditionStalenessTick(deps);
+    expect(seen).toEqual([{ keys: ['git-sync-stall:papercusp'], at: now }]);
+    expect(broadcasts).toEqual([['git-sync-stall:papercusp']]);
+    expect(result.reconciled).toEqual(['git-sync-stall:papercusp']);
+    expect(result.signals).toEqual([]);
+    expect(result.fired).toEqual([]);
+  });
+
+  it('EI-211981: an unknown git-sync read leaves the condition open', async () => {
+    const now = Date.parse('2026-08-22T23:30:00.000Z');
+    const stuck = mkState({
+      condition_key: 'git-sync-stall:papercusp',
+      first_seen: '2026-08-22T23:26:16.000Z',
+      open_since: '2026-08-22T23:26:16.000Z',
+      last_seen: '2026-08-22T23:29:00.000Z',
+    });
+    const escalated: string[] = [];
+    const deps = {
+      readStates: async () => [stuck],
+      readGitSyncHealthByKey: async () => new Map<string, boolean>(),
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async (input: { summary: string }) => {
+        escalated.push(input.summary);
+      },
+      now: () => now,
+      staleMs: 1,
+      absenceMs: 2 * 60 * 60_000,
+      broadcastResolvedMany: async () => {
+        throw new Error('unknown health must not resolve the condition');
+      },
+    };
+
+    const result = await runConditionStalenessTick(deps);
+    expect(result.reconciled).toEqual([]);
+    expect(result.fired.map((signal) => signal.key)).toEqual(['stale-condition:git-sync-stall:papercusp']);
+    expect(escalated).toHaveLength(1);
+  });
+
   it('EI-15182 guard #3: a signal-absent condition of ANY family is auto-resolved (broadcast fires) and never flagged stale this same tick', async () => {
     const now = Date.parse('2026-07-17T21:00:00.000Z');
     const staleTs = '2026-07-11T00:10:00.000Z'; // ~6.8d old — the real dummy-pot-0707 evidence

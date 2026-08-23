@@ -213,10 +213,10 @@ describe('ensureFleetLeaderControl', () => {
     expect(out.watches.active).toEqual(standardEventKeys());
   });
 
-  it('repairs a missing autonomy mode, slow work loop, and absent standing watches in one pass', async () => {
+  it('repairs a missing autonomy mode, inactive loop, and absent standing watches in one pass', async () => {
     getModes.mockResolvedValue([]);
     getLoopStatus.mockResolvedValue({
-      active: true,
+      active: false,
       harnessSlug: 'papercusp',
       intervalSec: 300,
       mode: 'work',
@@ -269,6 +269,32 @@ describe('ensureFleetLeaderControl', () => {
     for (const eventKey of ['fleet:claim-released:alpha', 'fleet:drained:alpha', 'fleet:admission-blocked:alpha']) {
       expect(registrations.find((args) => args.eventKey === eventKey)).not.toHaveProperty('payloadFilter');
     }
+  });
+
+  it('preserves an active deliberately retuned work loop instead of overwriting its cadence and goal', async () => {
+    const deliberateGoal = 'continue the staged verification at the widened fallback cadence';
+    getLoopStatus.mockResolvedValue({
+      active: true,
+      harnessSlug: 'papercusp',
+      intervalSec: 1200,
+      mode: 'work',
+      carry: 'cold',
+      goal: deliberateGoal,
+    });
+
+    const out = await ensureFleetLeaderControl(input);
+
+    expect(out.healthy).toBe(true);
+    expect(out.repaired).toBe(false);
+    expect(out.loop).toMatchObject({
+      healthy: true,
+      changed: false,
+      intervalSec: 1200,
+      mode: 'work',
+    });
+    expect(materializeLoop).not.toHaveBeenCalled();
+    expect(buildLoopWakePrompt).not.toHaveBeenCalled();
+    expect(out.watches.active).toEqual(standardEventKeys());
   });
 
   it('repairs legacy self-transition watches while preserving the other watches as unfiltered', async () => {
