@@ -288,21 +288,41 @@ describe('a stored cursor always yields backfill/no-replay-supported', () => {
     }
   });
 
-  it('reports an unreadable stored cursor as no-replay-supported, not cursor-rejected', async () => {
-    // The watermark is never sent anywhere, so no provider ever rejected it.
-    // `cursor-rejected` would send a reader hunting for an API error that was
-    // never produced; the structural truth is that this stream has no replay.
+  it('reports an unreadable stored cursor as cursor-rejected — NOT as the routine reason', async () => {
+    // ⚠ CORRECTED 2026-08-23 (P-016). This test previously asserted the
+    // opposite, on the reasoning that the watermark is never sent to YouTube so
+    // no provider ever rejected it. That reasoning was about the wrong thing:
+    // `cursor-rejected` names the LOCAL invalid-cursor condition, and the
+    // conformance kit states an adapter must report it "even when the provider
+    // itself never saw the cursor". Collapsing it into `no-replay-supported`
+    // destroyed the only operationally useful distinction on this stream — that
+    // reason fires every tick, so an alert on it is noise, while losing
+    // persisted state is rare and worth waking someone for.
     const world = makeWorld();
     const adapter = newAdapter(world);
     publishThreads(world, 3);
     const { result, events } = await drain(adapter, { legacyShape: 'from-an-older-adapter' });
     expect(result.path).toBe('backfill');
-    expect(result.backfillReason).toBe('no-replay-supported');
-    expect(result.backfillReason).not.toBe('cursor-rejected');
+    expect(result.backfillReason).toBe('cursor-rejected');
     expect(events).toHaveLength(3); // the window is still read, not skipped
   });
 
-  it('never reports cursor-expired or cursor-rejected on any pass', async () => {
+  it('still reports the ROUTINE reason for a readable cursor, so the two do not collapse', async () => {
+    const world = makeWorld();
+    const adapter = newAdapter(world);
+    publishThreads(world, 2);
+    const first = await drain(adapter, null);
+    const second = await drain(adapter, first.result.cursor);
+    expect(second.result.path).toBe('backfill');
+    expect(second.result.backfillReason).toBe('no-replay-supported');
+  });
+
+  it('never reports cursor-expired or cursor-rejected for a READABLE cursor', async () => {
+    // Scoped to a readable cursor deliberately. `cursor-expired` is impossible
+    // on this stream in every case — nothing is ever sent to YouTube, so YouTube
+    // cannot age it out. `cursor-rejected` is impossible only HERE, on the
+    // routine path; an unreadable stored cursor does produce it, which the test
+    // above pins.
     const world = makeWorld();
     const adapter = newAdapter(world);
     publishThreads(world, 2);
