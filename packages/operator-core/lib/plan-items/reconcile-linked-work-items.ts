@@ -47,6 +47,7 @@ import {
 } from '../work-items';
 import { getPlanRow, planItemsForRow } from '../agent-tools/plans/source';
 import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
+import { getFeatureBlockers, syncFeatureBlockEdges } from '../dbos/feature-blockers-edges';
 import {
   activeExternalBlockers,
   readExternalBlockers,
@@ -118,6 +119,34 @@ export interface ReconcileLinkedWorkItemsResult {
  * plan item rather than merely referencing it — see the reconcile guard.
  */
 export type LinkedWorkItem = WorkItem & { viaImplementsEdge: boolean };
+
+/**
+ * D-046 (byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 / WI-40754): ONE canonical
+ * work-item per plan lane. Among the NON-terminal linked rows the canonical row is the
+ * EARLIEST-created (tie → lexicographically smallest id), preferring rows PROVEN by an
+ * `implements` edge — so an unrelated stamp-only row can never outrank a real promoted
+ * implementation, while the stamp-only fallback still elects a canonical row when no
+ * proven implementation exists at all. Every other non-terminal linked row is a
+ * DUPLICATE the lane sync must not mutate (live evidence: plan-lane sync reopened
+ * duplicate mints WI-40504 AND WI-40513 together; post-D-046 it mutates only the
+ * canonical row and reports the rest as `skippedDuplicates`). Pure — no I/O.
+ */
+export function selectCanonicalLinkedWorkItem(linked: readonly LinkedWorkItem[]): {
+  canonical: LinkedWorkItem | null;
+  duplicates: LinkedWorkItem[];
+} {
+  const nonTerminal = linked.filter((wi) => !isSettledWorkItemState(wi.state));
+  if (nonTerminal.length === 0) return { canonical: null, duplicates: [] };
+  const proven = nonTerminal.filter((wi) => wi.viaImplementsEdge);
+  const pool = proven.length > 0 ? proven : nonTerminal;
+  let canonical = pool[0];
+  for (const wi of pool.slice(1)) {
+    const tCanon = Date.parse(canonical.createdAt) || 0;
+    const tNext = Date.parse(wi.createdAt) || 0;
+    if (tNext < tCanon || (tNext === tCanon && wi.id < canonical.id)) canonical = wi;
+  }
+  return { canonical, duplicates: nonTerminal.filter((wi) => wi !== canonical) };
+}
 
 /** Match the durable `payload.plan_item` stamp (plan_slug + item_id) on either
  *  federated table.
@@ -708,6 +737,13 @@ export interface PlanLaneSyncResult {
   skippedInFlight: string[];
   /** Linked but already terminal — nothing to do. */
   skippedAlreadyTerminal: string[];
+  /**
+   * D-046: non-terminal linked rows that are NOT the canonical lane row (see
+   * {@link selectCanonicalLinkedWorkItem}) — NEVER mutated by the lane sync, only
+   * reported, so a stale duplicate mint can no longer be reopened/re-parked in
+   * lockstep with the canonical row.
+   */
+  skippedDuplicates: string[];
 }
 
 /**
@@ -720,11 +756,28 @@ export async function syncLinkedWorkItemsToPlanLane(
   item: CompletedPlanItem,
   laneStatus: PlanLaneSyncStatus,
 ): Promise<PlanLaneSyncResult> {
-  const out: PlanLaneSyncResult = { gated: [], ungated: [], skippedInFlight: [], skippedAlreadyTerminal: [] };
+  const out: PlanLaneSyncResult = {
+    gated: [],
+    ungated: [],
+    skippedInFlight: [],
+    skippedAlreadyTerminal: [],
+    skippedDuplicates: [],
+  };
   try {
     const laneRef = planLaneBlockerRef(item.planSlug, item.itemId);
     const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
+    // D-046: elect ONE canonical row; the sync mutates it alone. Terminal rows keep
+    // reporting as skippedAlreadyTerminal; every other non-terminal row is a duplicate.
+    const { canonical } = selectCanonicalLinkedWorkItem(linked);
     for (const wi of linked) {
+      if (isSettledWorkItemState(wi.state)) {
+        out.skippedAlreadyTerminal.push(wi.id);
+        continue;
+      }
+      if (wi !== canonical) {
+        out.skippedDuplicates.push(wi.id);
+        continue;
+      }
       const action = await applyLaneGateToWorkItem(wi, laneStatus, laneRef, {
         planSlug: item.planSlug,
         itemId: item.itemId,
@@ -792,10 +845,153 @@ export async function resyncPlanItemLaneNow(
     if (!row) return null;
     const laneStatus = classifyPlanLane(row, itemId);
     if (!laneStatus) return null;
-    return await syncLinkedWorkItemsToPlanLane(
+    const result = await syncLinkedWorkItemsToPlanLane(
       { planSlug, itemId, harnessSlug: harnessSlug ?? null },
       laneStatus,
     );
+    // D-049/D-050: the SAME reaction that resyncs the lane also reconciles the promoted
+    // dependency graph — before this, plans:set-item-blocked-by updated the plan + lane
+    // but left stale work_item_deps/coord_links edges behind (live: the scheduler kept
+    // WI-40473 blocked on removed P-018/WI-40472 while plans:items reported it
+    // actionable). Best-effort: a dependency-reconcile hiccup must never break the lane
+    // sync that already succeeded.
+    await reconcilePlanAuthoredDependenciesNow(planSlug, itemId, harnessSlug).catch(() => null);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+// ── D-050: plan-authored dependency reconciliation on the canonical promoted row ─────
+//
+// `plans:set-item-blocked-by` rewrites a plan item's `blockedBy` and (via the
+// plan-item.resyncLane reaction) resyncs the LANE — but the promoted dependency GRAPH
+// (coord_links `blocks` edges + the work_item_deps mirror) was never reconciled, so
+// REMOVED plan edges survived as stale scheduler gates (D-049's live evidence). The
+// reconciliation below replaces ONLY the plan-authored edge subset on the canonical row:
+//
+//   desired = (live blockers MINUS the prior plan-authored marker set)
+//             UNION the plan's CURRENT resolved blockers
+//
+// so removed plan edges disappear while unrelated agent-authored blockers survive. The
+// marker (`_planAuthoredBlockers` on the canonical row's payload) records the EXACT
+// blocker work-item ids last authored from this plan item; a markerless legacy row seeds
+// conservatively — every live edge is treated as unrelated (preserved), and only
+// additions happen until the first marker write.
+
+/** D-050: the payload key holding the last plan-authored blocker set on a canonical row. */
+export const PLAN_AUTHORED_BLOCKERS_KEY = '_planAuthoredBlockers';
+
+/** The prior plan-authored blocker ids — ONLY when the marker's identity matches THIS
+ *  plan item (a marker written by a different plan/item must not license deletions
+ *  here). Null = no usable marker → conservative seed. Defensive: payload is federated
+ *  JSON. */
+export function readPlanAuthoredBlockers(
+  payload: unknown,
+  planSlug: string,
+  itemId: string,
+): string[] | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const v = (payload as Record<string, unknown>)[PLAN_AUTHORED_BLOCKERS_KEY];
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const m = v as Record<string, unknown>;
+  if (m.planSlug !== planSlug || m.itemId !== itemId) return null;
+  if (!Array.isArray(m.blockerWorkItemIds)) return null;
+  return m.blockerWorkItemIds.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+}
+
+/**
+ * D-050 pure core: the next full blocker set for the canonical promoted row.
+ * `(live MINUS priorPlanAuthored) UNION currentResolved` — deletions are licensed only
+ * for edges the marker proves THIS plan item authored; a null marker deletes nothing.
+ * Pure — unit-testable without PG.
+ */
+export function computePlanAuthoredDependencySet(args: {
+  liveBlockerIds: readonly string[];
+  priorPlanAuthoredIds: readonly string[] | null;
+  currentResolvedPlanBlockerIds: readonly string[];
+}): string[] {
+  const prior = new Set(args.priorPlanAuthoredIds ?? []);
+  const unrelated = args.liveBlockerIds.filter((id) => !prior.has(id));
+  return [...new Set([...unrelated, ...args.currentResolvedPlanBlockerIds])];
+}
+
+export interface PlanDependencyReconcileResult {
+  /** The canonical promoted row whose edges were reconciled. */
+  canonicalId: string;
+  /** The full blocker set written through syncFeatureBlockEdges. */
+  desired: string[];
+  /** The plan's current blockers as resolved canonical work-item ids (the new marker). */
+  resolved: string[];
+}
+
+/**
+ * Reconcile ONE plan item's promoted dependency edges onto its canonical linked
+ * work-item, per D-050. Fresh-reads the plan (never trusts a caller snapshot), resolves
+ * each still-open `blockedBy` plan item to ITS canonical linked feature-family row, and
+ * writes the replace-set through `syncFeatureBlockEdges` — the authoritative coord_links
+ * writer with the work_item_deps mirror — even when the set is EMPTY, so removed plan
+ * edges actually clear. The `_planAuthoredBlockers` marker is written ONLY after the
+ * edge sync succeeds (a failed sync must not advance provenance). Null = nothing to do
+ * (no plan/item, no canonical feature-family row) or the edge sync was refused (cycle) —
+ * fail-soft by design, mirroring every other sweep in this module.
+ */
+export async function reconcilePlanAuthoredDependenciesNow(
+  planSlug: string,
+  itemId: string,
+  harnessSlug?: string | null,
+): Promise<PlanDependencyReconcileResult | null> {
+  try {
+    const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
+    if (!row) return null;
+    const items = planItemsForRow(row);
+    const item = items.find((i) => i.id === itemId);
+    if (!item) return null;
+
+    // The canonical promoted row for THIS lane. Only feature-family rows participate:
+    // getFeatureBlockers/syncFeatureBlockEdges are the feature→feature seam, which is
+    // also what automatically preserves issue-family blockers (they live on edges this
+    // writer never touches).
+    const { canonical } = selectCanonicalLinkedWorkItem(await findAllLinkedWorkItems(planSlug, itemId));
+    if (!canonical || canonical.family !== 'feature' || !canonical.harness) return null;
+    const harness = canonical.harness;
+
+    // Resolve each CURRENT still-open blocker plan item to its canonical linked
+    // feature-family row in the SAME harness. A done/dropped blocker is satisfied, not
+    // missing (promotion's own rule); an unresolvable one contributes no edge — never a
+    // guess.
+    const statusById = new Map(items.map((i) => [i.id, i.storedStatus as string | null]));
+    const resolved: string[] = [];
+    for (const blockerItemId of item.blockedBy ?? []) {
+      const st = statusById.get(blockerItemId);
+      if (st === 'done' || st === 'dropped' || st === undefined) continue;
+      const blockerCanonical = selectCanonicalLinkedWorkItem(
+        await findAllLinkedWorkItems(planSlug, blockerItemId),
+      ).canonical;
+      if (!blockerCanonical || blockerCanonical.family !== 'feature') continue;
+      if ((blockerCanonical.harness ?? null) !== harness) continue;
+      if (blockerCanonical.id === canonical.id) continue;
+      resolved.push(blockerCanonical.id);
+    }
+
+    const live = (await getFeatureBlockers(harness)).get(canonical.id) ?? [];
+    const prior = readPlanAuthoredBlockers(canonical.payload, planSlug, itemId);
+    const desired = computePlanAuthoredDependencySet({
+      liveBlockerIds: live,
+      priorPlanAuthoredIds: prior,
+      currentResolvedPlanBlockerIds: resolved,
+    });
+
+    // Write even an EMPTY set — that is exactly how a removed plan edge clears. A cycle
+    // refusal (syncFeatureBlockEdges throws) aborts BEFORE the marker write below, so a
+    // refused sync never advances provenance.
+    await syncFeatureBlockEdges(harness, canonical.id, desired);
+    await mergeWorkItemPayload(
+      canonical.id,
+      { [PLAN_AUTHORED_BLOCKERS_KEY]: { planSlug, itemId, blockerWorkItemIds: resolved } },
+      { harness },
+    );
+    return { canonicalId: canonical.id, desired, resolved };
   } catch {
     return null;
   }
