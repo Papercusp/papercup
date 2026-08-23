@@ -214,6 +214,11 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WATCHDOG_TICKS_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  // Claims emit `work-item:claimed:*` through the await-event primitive. The real
+  // emitter records every fire in migration 632's unconditional latch; install
+  // that runtime dependency here so the canonical race test exercises the same
+  // path as production instead of producing a fail-soft missing-table warning.
+  await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
   // The terminal-plan floor reads the real normalized plan-item index (migration 675), not a
   // retyped test-only table. The fixture seeds only the rows needed by the regression below.
   await db.sql.unsafe(readMigration('675-normalize-plan-items-decisions.sql')).simple();
