@@ -38,6 +38,20 @@ export const FLAGS = {
   // FLAG_DEFAULTS — additive new surface, nothing else changes behavior when the
   // tab is hidden); flip OFF via /admin/features to pull the nav item + route.
   RES_ALLOCATION: "papercusp-res-allocation",
+  // WI-40825 / EI-21218726167520963 — the PUSH half of plan-item text drift: the
+  // post-commit warning a plan write hands back to the editor, plus the one-shot
+  // coord ping to the holders of work-items minted from an item that write
+  // rewrote or removed. Default ON (derived FLAG_DEFAULTS — deliberately NOT in
+  // DARK_FLAGS): it is additive, runs only after the write has already committed,
+  // and is fail-soft throughout. This flag is the kill-switch for the FAN-OUT
+  // specifically: the fan-out is the only part with a blast radius (bounded at
+  // MAX_DRIFT_NOTIFICATIONS per write), so if it ever proves noisy or
+  // false-positive, flipping this OFF degrades gracefully to the PULL half — the
+  // derived `planItemTextDrift` verdict on work_items:get, which is the authority
+  // anyway and stays on. The mint-time hash stamp is NOT gated: withholding it
+  // would silently create a population of records that can only ever answer
+  // `unknown`, which is the exact false-absence this feature exists to close.
+  PLAN_ITEM_TEXT_DRIFT_PUSH: "papercusp-plan-item-text-drift-push",
   // Testing-only surfaces (pi tab, add-plugin button) AND the Oracle assistant
   // (dock + Tutorial menubar button + /settings/oracle + /api/oracle/*) — the
   // separate `papercusp-oracle` key was folded into this one by owner ask
