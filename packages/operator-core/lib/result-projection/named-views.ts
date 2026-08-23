@@ -317,12 +317,18 @@ export interface ViewableResult {
 }
 
 /**
- * Take the `view` argument off a dispatch args object.
+ * Take the reserved `view` argument off a dispatch args object.
  *
- * The view name is a DISPATCH-level control, so it must be stripped before the
- * tool's own schema validation runs — every tool schema is
- * additionalProperties:false, so an unstripped key is rejected as unknown by
- * the entire catalog. Exactly the reservation `projection` already has.
+ * For tools with a registered named-result-view table, the view name is a
+ * DISPATCH-level control, so it must be stripped before the tool's own schema
+ * validation runs — every tool schema is additionalProperties:false, so an
+ * unstripped key is rejected as unknown by the entire catalog. Exactly the
+ * reservation `projection` already has.
+ *
+ * A tool may also legitimately own a semantic `view` argument (for example
+ * `coord:roster { view: 'claims' }`). Only registered named-result-view tools
+ * may claim that key at the dispatch layer; all other tools receive it
+ * untouched. This keeps the result-view control from shadowing tool schemas.
  *
  * BOTH dispatch paths (direct tools/call and the nested tools:invoke) call this
  * one function. That is deliberate: the previous generation of this seam was
@@ -339,6 +345,12 @@ export function takeNamedViewFromArgs(
 ): TakeNamedViewResult {
   const source = args && typeof args === 'object' ? args : {};
   if (!(VIEW_ARG in source)) return { kind: 'none', args: source };
+
+  // `view` is also a valid semantic argument on coordination readers such as
+  // coord:roster. Reserve it for the named-result-view protocol only when the
+  // target tool actually has registered result views; otherwise let the
+  // target schema/handler consume it normally.
+  if (viewNamesFor(toolName).length === 0) return { kind: 'none', args: source };
 
   const resolution = resolveNamedView(toolName, source[VIEW_ARG]);
   if (!resolution.ok) {

@@ -299,6 +299,16 @@ describe('named result views — dispatch seam', () => {
     expect(taken.error).toContain('capsule');
   });
 
+  it('passes a semantic view argument through for tools without result-view registrations', () => {
+    const args = { [VIEW_ARG]: 'claims', scope: 'workspace' };
+    const taken = takeNamedViewFromArgs(args, 'coord:roster');
+
+    // coord:roster owns `view` as its lens selector. The dispatch-level named
+    // result-view protocol must not turn that valid tool argument into a
+    // view_unknown error before the handler runs.
+    expect(taken).toEqual({ kind: 'none', args });
+  });
+
   /**
    * THE PARITY GUARANTEE. The previous generation of this seam was two
    * hand-mirrored copies of the projection logic, and the nested `tools:invoke`
