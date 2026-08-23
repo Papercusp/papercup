@@ -419,4 +419,58 @@ describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every pat
     await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
     expect(stamp(metadata)).toMatchObject({ requestedExecutionMode: 'server', backendMismatch: false });
   });
+
+  it('stamps a saved-recipe SUCCESS with the resolved recipe selector', async () => {
+    // The success path was previously covered only by its catch sibling, which meant the
+    // selector and reuse stamps were never exercised at all.
+    const { ctx, metadata } = spyCtx();
+    const run = vi.fn<SavedRecipeAdapter['run']>().mockResolvedValue({
+      results: [{ ok: true, id: 'saved', result: { summary: 'done' } }],
+    } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>);
+    await runOrchestration({ recipe: { id: 'saved', revision: 3 } }, ctx, {
+      recipes: { run } as SavedRecipeAdapter,
+    });
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(stamp(metadata)).toMatchObject({
+      source: 'recipe',
+      phase: 'execution',
+      executed: true,
+      recipeRequested: true,
+      recipeReuse: true,
+      // REGRESSION: an earlier draft guarded this with `typeof args.recipe === 'string'`, which
+      // can never be true for the public OBJECT selector — so recipeId was silently never
+      // stamped, and saved-recipe reuse (a headline rollout metric) read as zero forever.
+      recipeId: 'saved',
+      recipeRevision: 3,
+    });
+  });
+
+  it('derives phase/executed from the envelope — a recipe that never RAN is not stamped as executed', async () => {
+    // REGRESSION: the recipe stamp used to hardcode phase:'execution', executed:true. An item
+    // that failed in its own preflight builds a preflight/not-executed envelope, so hardcoding
+    // recorded work that never happened — inflating the executed count and polluting the
+    // latency sample, in the metric meant to detect exactly that kind of degradation.
+    const { ctx, metadata } = spyCtx();
+    const run = vi.fn<SavedRecipeAdapter['run']>().mockResolvedValue({
+      results: [{ ok: false, phase: 'preflight', error: 'recipe_preflight_rejected', id: 'saved' }],
+    } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>);
+    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    expect(stamp(metadata)).toMatchObject({ source: 'recipe', phase: 'preflight', executed: false });
+  });
+
+  it('stamps a recipes:run top-level refusal as a preflight row', async () => {
+    const { ctx, metadata } = spyCtx();
+    const run = vi.fn<SavedRecipeAdapter['run']>().mockResolvedValue({
+      ok: false,
+      error: { code: 'recipe_not_found', message: 'no such recipe' },
+    } as unknown as Awaited<ReturnType<SavedRecipeAdapter['run']>>);
+    await runOrchestration({ recipe: { id: 'missing' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(stamp(metadata)).toMatchObject({
+      source: 'recipe',
+      phase: 'preflight',
+      executed: false,
+      failureClass: 'recipe_not_found',
+    });
+  });
 });
