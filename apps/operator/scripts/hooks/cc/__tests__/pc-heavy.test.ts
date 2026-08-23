@@ -1684,6 +1684,28 @@ describe('pc-heavy.sh — declared result-affecting env in the coalescing key (E
   });
 });
 
+describe('root affected-test entrypoints enable safe coalescing (EI-18699972365875475)', () => {
+  const scripts = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts as Record<
+    string,
+    string
+  >;
+  const affectedEntrypoints = [
+    'test',
+    'test:affected',
+    'test:related',
+    'test:affected:integration',
+    'test:all',
+    'test:all:integration',
+  ];
+
+  it.each(affectedEntrypoints)('%s declares the env inputs that change its verdict', (name) => {
+    expect(scripts[name]).toContain(
+      'PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED',
+    );
+    expect(scripts[name]).not.toContain('PC_HEAVY_COALESCE=0');
+  });
+});
+
 describe('pc-heavy.sh — load-adaptive slot count (EI-19313096203661357)', () => {
   // A PATH-shimmed `nproc` pins the core count so the formula asserts the same
   // numbers on any host; PC_HEAVY_LOAD1_OVERRIDE pins load1 (same convention as
