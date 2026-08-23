@@ -425,16 +425,15 @@ export default defineTool({
         // release on it would block legitimate ones on a low-precision signal. The releasing
         // agent is also the ONE reader who can cheaply settle it — they still have the pid and
         // the shell. Fail-soft: a checkpoint-read hiccup must never fail the release itself.
-        const strandWarning = wasHeld
+        const releaseCheckpoint = wasHeld
           ? await getWorkItemCheckpoint({
               harness: workItem.harness ?? it.harness ?? null,
               workItemId: it.id,
               workspaceId: ident.workspaceId ?? undefined,
             })
-              .then((cp) => (cp && detectBgJobCheckpointClaim(cp).detected ? cp : null))
               .catch(() => null)
           : null;
-        const stranding = strandWarning
+        const stranding = releaseCheckpoint && detectBgJobCheckpointClaim(releaseCheckpoint).detected
           ? {
               strandedCheckpointWarning:
                 `You are releasing '${it.id}' while its checkpoint cites a BACKGROUND JOB as the evidence it is waiting on. ` +
@@ -468,8 +467,43 @@ export default defineTool({
             }
           : {};
         const claimHold = it.claimHold ?? args.claimHold;
+        // EI-16289: a checkpoint/reason records WHY a holder put work down, but a plain
+        // release does not make that disposition sticky — it applies only the short
+        // same-agent cooldown and leaves the row immediately self-selectable by every
+        // OTHER agent. That distinction was repeatedly missed in real drain loops: four+
+        // sessions re-claimed WI-5335 and re-derived the same "not now" conclusion even
+        // though the checkpoint already said to route it outside the fast drain.
+        //
+        // Do NOT infer that every checkpoint means deferral: work_items:park deliberately
+        // writes a checkpoint for a NORMAL resumable handoff. Surface the semantic delta at
+        // the decision point instead. A second release on the now-unassigned row can still
+        // apply claimHold:true, so this is actionable after the plain release rather than a
+        // dead-end warning. Explicit claimHold:false is the caller's deliberate "re-pool"
+        // signal and therefore suppresses the nudge. Forced reclaims carry mandatory audit
+        // reasons with unrelated semantics, so they are excluded too.
+        const claimHoldNudge =
+          !force && claimHold === undefined && wasHeld && (releaseCheckpoint || reason)
+            ? {
+                claimHoldNudge:
+                  `Plain release left '${it.id}' self-selectable by other agents immediately (only your own short ` +
+                  `re-claim cooldown was applied). ${releaseCheckpoint ? 'Its checkpoint remains resume context, not a queue disposition.' : 'Its release reason was recorded, but does not change selectability.'} ` +
+                  `If this means "defer / not now / do not self-select", apply the durable disposition now with ` +
+                  `work_items:release { id:'${it.id}', claimHold:true, reason:'<unpark condition>' }; that follow-up ` +
+                  `works while the item is unassigned. If this is an ordinary handoff, no action is needed.`,
+              }
+            : {};
         if (claimHold === undefined) {
-          return { ok: true as const, id: it.id, workItem, forced, ...delta, ...stranding, ...completion, ...reasonDisclosure };
+          return {
+            ok: true as const,
+            id: it.id,
+            workItem,
+            forced,
+            ...delta,
+            ...stranding,
+            ...completion,
+            ...claimHoldNudge,
+            ...reasonDisclosure,
+          };
         }
         // WI-321 boomerang fix: a release-park is a DURABLE park (claim_hold_* provenance),
         // NOT a held_open_* lease — a lease dies ~2h after the parker's session ends

@@ -166,6 +166,9 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     const b = await body({ id: 'WI-CLEAN' });
     expect(b.results[0]).toMatchObject({ ok: true, released: true });
     expect(b.results[0].strandedCheckpointWarning).toBeUndefined();
+    expect(b.results[0].claimHoldNudge).toMatch(/self-selectable by other agents immediately/);
+    expect(b.results[0].claimHoldNudge).toMatch(/claimHold:true/);
+    expect(b.results[0].claimHoldNudge).toMatch(/checkpoint remains resume context, not a queue disposition/);
   });
 
   it('stays silent when the item has no checkpoint at all', async () => {
@@ -193,6 +196,15 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-PARK' });
     expect(b.results[0].strandedCheckpointWarning).toMatch(/BACKGROUND JOB/);
     expect(b.results[0].claimHold).toBeDefined();
+    expect(b.results[0].claimHoldNudge).toBeUndefined();
+  });
+
+  it('explicit claimHold:false is the deliberate re-pool signal and suppresses the nudge', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(PLAIN_CHECKPOINT);
+    mockResolvedTyped(holdM, { id: 'WI-HANDOFF', harness: 'papercusp', hold: false, applicable: true });
+    const b = await body({ id: 'WI-HANDOFF', claimHold: false, reason: 'normal successor handoff' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-HANDOFF', claimHold: false });
+    expect(b.results[0].claimHoldNudge).toBeUndefined();
   });
 
   it('degrades to a normal release (no crash, no warning) when the checkpoint read throws', async () => {
