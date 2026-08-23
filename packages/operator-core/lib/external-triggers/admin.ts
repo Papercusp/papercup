@@ -904,8 +904,22 @@ export function socialAdminFacts(
     verified: isSocialPlatformVerified(row),
     blockedOn: row.blockedOn ?? null,
     authMode: row.auth.mode,
-    readTransport: row.read.transport,
-    cursor: socialCursorFreshness(cursor, nowMs),
+    readTransport: row.read?.transport ?? null,
+    // A write-only platform has no cursor to classify, and letting it fall
+    // through would render `never-synced` — permanently true, permanently
+    // alarming, and not actionable by anyone. See the `not-readable` note in
+    // cursor-freshness.ts: only a caller holding the row can tell these apart.
+    cursor:
+      row.read === null
+        ? {
+            state: 'not-readable' as const,
+            at: null,
+            ageMs: null,
+            position: null,
+            detail:
+              'this platform has no readable content stream at any grant tier we hold — it is write-only, so there is nothing to sync',
+          }
+        : socialCursorFreshness(cursor, nowMs),
     rateBudget: {
       maxRuns: policy.maxRuns,
       windowSeconds: policy.windowSeconds,
