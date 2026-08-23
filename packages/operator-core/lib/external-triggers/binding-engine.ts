@@ -16,6 +16,7 @@ import {
   type ScheduledPlanFireResult,
 } from '../harness/routines/plan-run-action';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from './ingestion';
+import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -24,11 +25,21 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_STALE_AFTER_SECONDS = 60;
 
+/**
+ * The action vocabulary (work-on-everything-goal-2026-08-23 P-020, D-006).
+ * `launch-plan` mints a plan run; `start-goal` ACTIVATES the binding's target
+ * goal through the one goal-activation primitive (`startGoalById`) — never a
+ * second spawn path.
+ */
+const SUPPORTED_TRIGGER_ACTIONS: ReadonlySet<string> = new Set(['launch-plan', 'start-goal']);
+
 interface BindingRow {
   id: string;
   sourceId: string;
-  planHarnessSlug: string;
-  planSlug: string;
+  /** Nullable since migration 921: a binding targets EXACTLY ONE of plan / goal. */
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   action: Record<string, unknown>;
@@ -40,8 +51,9 @@ interface ClaimedTriggerRun {
   id: string;
   workspaceId: string;
   bindingId: string;
-  planHarnessSlug: string;
-  planSlug: string;
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
   args: TriggerRunArgs;
   action: Record<string, unknown>;
   attempts: number;
@@ -79,6 +91,12 @@ export interface TriggerDispatchResult {
   claimed: number;
   succeeded: number;
   failed: number;
+  /**
+   * `start-goal` runs closed TERMINALLY without an activation (goal gone /
+   * not-active / no harness / already held) — refusals a re-firing trigger
+   * treats as settled, never retried. Plan runs never land here.
+   */
+  skipped: number;
   triggerRunIds: string[];
 }
 
@@ -89,6 +107,11 @@ type RunPlan = (
 
 export interface TriggerDispatchDeps {
   runPlan?: RunPlan;
+  /** The goal-activation primitive (P-020) — injectable for tests, `startGoalById` in production. */
+  startGoal?: (
+    sql: postgres.Sql,
+    input: { workspaceId: string; goalId: string; launcherOwnerId: string },
+  ) => Promise<StartGoalByIdResult>;
   announceRunWork?: (sql: postgres.Sql, workspaceId: string, runId: number) => Promise<void>;
   batchSize?: number;
   staleAfterSeconds?: number;
@@ -148,6 +171,7 @@ async function loadBindingForUpdate(tx: Db, workspaceId: string, id: string): Pr
            source_id AS "sourceId",
            plan_harness_slug AS "planHarnessSlug",
            plan_slug AS "planSlug",
+           goal_id AS "goalId",
            event_pattern AS "eventPattern",
            event_filter AS "eventFilter",
            action,
@@ -202,7 +226,7 @@ async function queueOneBinding(
     if (!keyMatchesPattern(binding.eventPattern, event.key)) return null;
     if (!payloadMatchesFilter(binding.eventFilter, event.payload)) return null;
 
-    if (actionType(binding.action) !== 'launch-plan') {
+    if (!SUPPORTED_TRIGGER_ACTIONS.has(actionType(binding.action))) {
       return insertTerminalTriggerRun(tx, {
         event,
         binding,
@@ -351,6 +375,7 @@ async function claimPendingTriggerRuns(
            c.binding_id AS "bindingId",
            b.plan_harness_slug AS "planHarnessSlug",
            b.plan_slug AS "planSlug",
+           b.goal_id AS "goalId",
            c.args,
            b.action,
            c.attempts
@@ -434,18 +459,67 @@ export async function dispatchPendingTriggerRuns(
   );
   const rows = await claimPendingTriggerRuns(sql, batchSize, staleAfterSeconds);
   const runPlan = deps.runPlan ?? runScheduledPlanFire;
+  const startGoal = deps.startGoal ?? startGoalById;
   const announce = deps.announceRunWork ?? announceRunWork;
   const result: TriggerDispatchResult = {
     claimed: rows.length,
     succeeded: 0,
     failed: 0,
+    skipped: 0,
     triggerRunIds: rows.map((row) => row.id),
   };
 
   for (const row of rows) {
     try {
-      if (actionType(row.action) !== 'launch-plan') {
-        throw new Error(`external_trigger_unsupported_action:${actionType(row.action)}`);
+      const type = actionType(row.action);
+      if (!SUPPORTED_TRIGGER_ACTIONS.has(type)) {
+        throw new Error(`external_trigger_unsupported_action:${type}`);
+      }
+
+      // ── start-goal (P-020): activate the binding's target goal ──────────
+      // The primitive owns every guard; this leg only maps its verdict onto
+      // the outbox row. plan_run_ref stays NULL — a goal run's handle is
+      // outcome.goalId + outcome.agentOwnerId, never a plan-run ref.
+      if (type === 'start-goal') {
+        if (!row.goalId) throw new Error('external_trigger_missing_goal_target');
+        const started = await startGoal(sql, {
+          workspaceId: row.workspaceId,
+          goalId: row.goalId,
+          launcherOwnerId: `trigger-binding:${row.bindingId}`,
+        });
+        if (started.ok) {
+          await sql`
+            UPDATE harness_shared.trigger_runs
+               SET status = 'succeeded',
+                   outcome = ${JSON.stringify({
+                     goalId: started.goalId,
+                     agentOwnerId: started.ownerId,
+                     ...(started.warnings.length ? { warnings: started.warnings } : {}),
+                   })}::text::jsonb,
+                   error = NULL, completed_at = now(), updated_at = now()
+             WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+          result.succeeded += 1;
+        } else if (started.reason === 'holder-unknown' || started.reason === 'not-ready') {
+          // Heal-able refusals: liveness evidence recovers, prerequisites
+          // complete. Throw → 'failed' → the outbox retries under attempts.
+          throw new Error(`external_trigger_goal_start_refused:${started.reason}:${started.detail}`);
+        } else {
+          // Terminal refusals (not-found / not-active / no-harness /
+          // already-held): the trigger's intent is settled — never retried.
+          await sql`
+            UPDATE harness_shared.trigger_runs
+               SET status = 'skipped',
+                   outcome = ${JSON.stringify({ goalId: row.goalId, refusal: started.reason })}::text::jsonb,
+                   error = ${started.detail}, completed_at = now(), updated_at = now()
+             WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      // ── launch-plan (the original path) ─────────────────────────────────
+      if (!row.planHarnessSlug || !row.planSlug) {
+        throw new Error('external_trigger_missing_plan_target');
       }
       const launched = await runPlan(sql, {
         installSlug: row.planHarnessSlug,
