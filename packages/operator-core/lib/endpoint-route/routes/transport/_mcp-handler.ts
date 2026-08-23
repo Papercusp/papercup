@@ -1286,6 +1286,53 @@ function forwardToolsInvokeProjection<T>(
   };
 }
 
+/**
+ * Same rescue as `forwardToolsInvokeProjection`, for the OTHER framework-reserved
+ * dispatch control. A `payloadTier` on the outer `tools:invoke` call is aimed at the
+ * TARGET tool's payload shaping — the wrapper has no payload of its own worth tiering
+ * — but `tools:invoke` re-dispatches with `args.args` alone (see agent-tools/tools/
+ * invoke.ts), so an un-forwarded outer tier never reaches the target at all.
+ *
+ * Left unforwarded it fails SILENTLY rather than loudly: the call still returns
+ * ok:true, just trimmed, and the only tell is `_shapeNote.tier` — which a caller who
+ * explicitly asked for 'full' has no reason to re-read. That made `projection` (which
+ * has a forwarder) and `payloadTier` (which did not) behave oppositely from the same
+ * outer position on the same tool. EI-21245922047633177.
+ *
+ * An explicitly nested `payloadTier` is left untouched: that is the caller being
+ * specific about the target, and it wins. The outer copy is deliberately KEPT — it
+ * shapes the wrapper's own result and is what the `projectionNeedsFullSource` check
+ * below reads.
+ */
+const PAYLOAD_TIER_ARG = 'payloadTier' as const;
+
+// Exported for tests; not part of the route's public surface (same convention as
+// __buildMcpToolContext_forTests above).
+export function forwardToolsInvokePayloadTier<T>(toolName: string, dispatchArgs: T): T | Record<string, unknown> {
+  if (toolName !== 'tools:invoke' || !dispatchArgs || typeof dispatchArgs !== 'object') {
+    return dispatchArgs;
+  }
+
+  const invokeArgs = dispatchArgs as Record<string, unknown>;
+  if (!(PAYLOAD_TIER_ARG in invokeArgs)) return dispatchArgs;
+
+  const nestedArgs = invokeArgs.args;
+  const nestedRecord =
+    nestedArgs && typeof nestedArgs === 'object' && !Array.isArray(nestedArgs)
+      ? (nestedArgs as Record<string, unknown>)
+      : nestedArgs === undefined
+        ? {}
+        : null;
+  if (!nestedRecord || PAYLOAD_TIER_ARG in nestedRecord) {
+    return dispatchArgs;
+  }
+
+  return {
+    ...invokeArgs,
+    args: { ...nestedRecord, [PAYLOAD_TIER_ARG]: invokeArgs[PAYLOAD_TIER_ARG] },
+  };
+}
+
 async function buildMcpToolContext(
   spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
@@ -2181,12 +2228,16 @@ const handler = createMcpHandler(
                     argHarness === '*' ||
                     (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
                 if (escapes) {
+                  const crossHiveClaimHint =
+                    toolName === 'work_items:claim'
+                      ? ' For cross-Pot work, use discovery:pots → pot:request_work with an outbound work-request grant; direct work_items:claim is per-Hive.'
+                      : '';
                   return {
                     isError: true,
                     content: [
                       {
                         type: 'text' as const,
-                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".`,
+                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}`,
                       },
                     ],
                   };
@@ -2330,6 +2381,10 @@ const handler = createMcpHandler(
           const forwardedToolsInvokeProjection = forwardToolsInvokeProjection(toolName, dispatchArgs, projectionSpec);
           dispatchArgs = forwardedToolsInvokeProjection.dispatchArgs;
           projectionSpec = forwardedToolsInvokeProjection.projectionSpec;
+          // The sibling control takes the same route, for the same reason: an outer
+          // payloadTier is meant for the re-dispatched TARGET, and tools:invoke would
+          // otherwise drop it silently. EI-21245922047633177.
+          dispatchArgs = forwardToolsInvokePayloadTier(toolName, dispatchArgs);
           // Named result views (P-001) — the DIRECT path. Same helper, same
           // semantics as the nested `tools:invoke` path above; routing both
           // through one function is what keeps them from drifting.
