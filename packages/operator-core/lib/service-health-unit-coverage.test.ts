@@ -101,6 +101,28 @@ describe('SupervisionEntry.episodic — what "down" means for a timer-driven uni
     expect(timer?.episodic, 'an ARMED timer is continuously active — marking it episodic would mask a stopped timer').toBeFalsy();
   });
 
+  it('EI-21232345359778222: live-federation-gate declares exitEncodesRunOnly, and that implies episodic', () => {
+    // The gate exits 0 on `GATE: FRESH-RED (… still red, already tracked; NOT a green)` exactly
+    // as it does on a real green (live-federation-gate.sh:563), so a down→up transition on this
+    // unit is "the last run exited 0" and NEVER "recovered". Asserted by name because dropping
+    // the flag re-arms a FALSE ALL-CLEAR — the failure direction nothing else would catch: the
+    // reconciler would go back to broadcasting `✅ … recovered` and stay green in every test.
+    const svc = SUPERVISED_PROCESSES.find((e) => e.name === 'live-federation-gate');
+    expect(
+      svc?.exitEncodesRunOnly,
+      'papercup-live-federation-gate exits 0 whether its subject is green or still red — supervision may not claim recovery from it',
+    ).toBe(true);
+
+    // INVARIANT: exitEncodesRunOnly ⇒ episodic. For a persistent service the exit status IS the
+    // condition (the process is up or it is not), so the flag could only mislead there.
+    const violations = SUPERVISED_PROCESSES.filter((e) => e.exitEncodesRunOnly && !e.episodic).map((e) => e.name);
+    expect(
+      violations,
+      `exitEncodesRunOnly only makes sense for a timer-driven oneshot; for a persistent unit the exit ` +
+        `status IS the condition:\n  - ${violations.join('\n  - ')}`,
+    ).toEqual([]);
+  });
+
   it('the host release-gate PRODUCER timer is supervised, non-episodic, and auto-restarting (WI-38449 / D-007 F1)', () => {
     // The gap this closes: `papercup-perf-signals-capture.timer` latched `failed`
     // for ~7h on 2026-08-15/16 and NOTHING detected it, so the host SLO/CLOSE_WAIT
