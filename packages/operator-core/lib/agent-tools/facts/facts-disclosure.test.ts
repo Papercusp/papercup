@@ -43,6 +43,7 @@ beforeAll(() => {
     visibility: { kind: 'workspace' },
     federation: { kind: 'local' },
     changeSignal: { kind: 'event', key: 'test' },
+    shape: 'PipelinePosition',
   });
 });
 

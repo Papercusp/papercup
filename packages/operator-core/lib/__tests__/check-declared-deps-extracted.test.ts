@@ -33,25 +33,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import {
-  RUNTIME_CONTENT_PROBES,
-  findUnextractedDeps,
-  findUnextractedDepsWithRetry,
-  findUnusableRuntimeDeps,
-  findUnusableRuntimeDepsWithRetry,
-  resolveRuntimeContentProbes,
-  resolveWorkspaceDirs,
-  resolvesOnDisk,
-} from '../../../../scripts/check-declared-deps-extracted.mjs';
+import { RUNTIME_CONTENT_PROBES, findUnextractedDeps, findUnextractedDepsWithRetry, findUnusableRuntimeDeps, findUnusableRuntimeDepsWithRetry, resolveRuntimeContentProbes, resolveWorkspaceDirs, resolvesOnDisk } from '../../../../scripts/check-declared-deps-extracted.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
-import {
-  normalizeNpmArgs,
-  parseCliArgs,
-  repoLockName,
-  runCommandUnderInstallMutex,
-  verifyDepsExtracted,
-} from '../../../../scripts/npm-install-safe.mjs';
+import { normalizeNpmArgs, parseCliArgs, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
+
+type RuntimeProbeFailure = { specifier: string; detail: string };
 
 const made: string[] = [];
 afterEach(() => {
@@ -247,7 +234,7 @@ describe('runtime-content probes catch partial packages that directory checks ca
     );
     writePackage('rocksdb-native', { type: 'module', exports: './binding.js' });
 
-    const failures = findUnusableRuntimeDeps({ repoRoot: root });
+    const failures = findUnusableRuntimeDeps({ repoRoot: root }) as RuntimeProbeFailure[];
     expect(failures.map((failure) => failure.specifier)).toEqual(RUNTIME_CONTENT_PROBES);
     for (const failure of failures) expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
   });
