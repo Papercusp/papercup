@@ -66,6 +66,7 @@ import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { clearGoalClaimedIfMatches } from './agent-state-stamp';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { planItemRef } from './issue-blocks-merge';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { randomInt } from 'node:crypto';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
@@ -2656,6 +2657,7 @@ export async function mergeIssuePayload(
   const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
   const unset = [...new Set(opts.unset ?? [])];
+  const clearingPlanItem = unset.includes('plan_item');
   // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
   // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
   // INSTEAD OF trigger re-merges the incoming payload into the stored one
@@ -2670,15 +2672,79 @@ export async function mergeIssuePayload(
   // -key clear, which routes through this identical unset path.
   // Writing the base table also stops a lossy round-trip: the trigger rebuilds `_ei` from
   // the view's scalar projection, whereas the stored `_ei` is preserved untouched here.
-  const rows = await sql<{ ok: number }[]>`
+  const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
     UPDATE harness_shared.work_items
        SET payload = (COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb) - ${unset}::text[],
+           -- A promoted issue has TWO admission identities: payload.plan_item and
+           -- the normalized source-plan columns. Clearing only the JSON stamp lets
+           -- a fresh read/lane sync immediately rehydrate the same plan link from
+           -- source_plan_slug/source_plan_item_ids (EI-21215740738650819).
+           -- Keep all three representations in the SAME write.
+           source_plan_slug = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_slug END,
+           source_plan_item_ids = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_item_ids END,
            origin = 'local',
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${ws}
        AND feature_id = ${id}
        AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
     RETURNING 1 AS ok`;
+
+  let rows: { ok: number }[];
+  if (clearingPlanItem) {
+    // The coverage edge is the third representation of the link. Snapshot its
+    // exact outgoing refs under a row lock, clear the row, and retract only those
+    // refs in one bounded transaction. This avoids both half-clears and deleting a
+    // separate hand-authored plan relation that was never represented on the row.
+    rows = await boundedOrgTxn(async (tx) => {
+      const prior = await tx<{
+        payload_plan_slug: string | null;
+        payload_item_id: string | null;
+        source_plan_slug: string | null;
+        source_plan_item_ids: string[] | null;
+      }[]>`
+        SELECT payload->'plan_item'->>'plan_slug' AS payload_plan_slug,
+               payload->'plan_item'->>'item_id' AS payload_item_id,
+               source_plan_slug,
+               source_plan_item_ids
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${ws}
+           AND feature_id = ${id}
+           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         FOR UPDATE`;
+      if (!prior[0]) return [];
+
+      const updated = await updatePayload(tx);
+      if (!updated[0]) return updated;
+
+      const refs = new Set<string>();
+      const before = prior[0];
+      if (before.payload_plan_slug && before.payload_item_id) {
+        refs.add(planItemRef(before.payload_plan_slug, before.payload_item_id));
+      }
+      if (before.source_plan_slug) {
+        for (const itemId of before.source_plan_item_ids ?? []) {
+          if (itemId) refs.add(planItemRef(before.source_plan_slug, itemId));
+        }
+      }
+      if (refs.size > 0) {
+        const coordWs = coordScopeWorkspace();
+        await tx`
+          DELETE FROM harness_shared.coord_links
+           WHERE workspace_id = ${coordWs}
+             AND src_kind = ${ISSUE_KIND}
+             AND src_ref = ${id}
+             AND dst_kind = 'plan_item'
+             AND dst_ref = ANY (${[...refs]})
+             -- Member-written stamps use relates; plan promotion writes
+             -- implements. Both assert coverage and both must disappear when
+             -- the caller explicitly clears plan_item.
+             AND rel = ANY (ARRAY['relates', 'implements'])`;
+      }
+      return updated;
+    });
+  } else {
+    rows = await updatePayload(sql as OrgSql);
+  }
   if (!rows[0]) return null;
   return getIssueInWorkspace(ws, id);
 }
