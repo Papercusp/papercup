@@ -195,7 +195,7 @@ function executionEnvelope(
   return buildOutputEnvelope({ summary, metrics });
 }
 
-function preflightError(code: string, message: string, args: ServerScriptRunArgs): ToolResult {
+function preflightError(code: string, message: string, args: OrchestrationSourceArgs): ToolResult {
   const envelope = buildOutputEnvelope({
     summary: '',
     state: 'error',
@@ -219,13 +219,16 @@ export async function runServerScriptAdapter(
   ctx: UnifiedToolContext,
   deps: ServerScriptRunDeps = DEFAULT_DEPS,
 ): Promise<ToolResult> {
-  if (args.execution?.lifecycle === 'background') {
-    return preflightError(
-      'lifecycle_unavailable',
-      'Background orchestration is unavailable; use foreground execution or the task-backed capability surface.',
-      args,
-    );
-  }
+  const policyFailure = orchestrationPolicyFailure(args);
+  if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args);
+
+  const checked = await inspectScriptContract({
+    script: args.script,
+    bindings: args.bindings,
+    lifecycle: args.execution?.lifecycle,
+    ctx,
+  });
+  if (!checked.ok) return preflightError(checked.error.code, checked.error.message, args);
 
   const captureMode = args.capture?.mode ?? 'auto';
   const startedAt = Date.now();
@@ -238,7 +241,12 @@ export async function runServerScriptAdapter(
         ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
         ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }),
       },
-      ctx,
+      withCodeRunContract(ctx, {
+        inputs: checked.contract.bindings.inputs,
+        ...(checked.contract.bindingSchema ? { bindingSchema: checked.contract.bindingSchema } : {}),
+        capabilityManifest: checked.manifest,
+        ...(args.capture?.tags ? { tags: args.capture.tags } : {}),
+      }),
       captureMode,
     );
     const { payload, media } = parseCodeRunResult(codeResult);
@@ -297,17 +305,128 @@ export async function runServerScriptAdapter(
   }
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+function recipeRunEnvelope(
+  raw: unknown,
+  args: OrchestrationSourceArgs,
+  durationMs: number,
+): ToolResult {
+  const direct = asRecord(raw);
+  if (direct?.ok === false && asRecord(direct.error)) {
+    const error = asRecord(direct.error)!;
+    return preflightError(String(error.code ?? 'recipe_preflight_failed'), String(error.message ?? 'recipe preflight failed'), args);
+  }
+  const results = direct?.results;
+  const item = Array.isArray(results) ? asRecord(results[0]) : null;
+  if (!item) throw new Error('orchestrate:run: recipes:run returned an invalid envelope');
+
+  const result = asRecord(item.result) ?? {};
+  const summary = authoredSummaryText(result.summary ?? result.result);
+  const metrics: OutputExecutionMetrics = {
+    backend: 'server',
+    durationMs,
+    toolCalls: 1 + (finiteNonNegative(result.dispatchCount) ?? 0),
+    intermediateBytes: finiteNonNegative(result.intermediateBytes) ?? 0,
+    requestedTimeoutSec: args.timeoutSec ?? DEFAULT_TIMEOUT_SEC,
+    effectiveTimeoutSec: args.timeoutSec
+      ? clampForegroundTimeoutMs(args.timeoutSec * 1_000) / 1_000
+      : DEFAULT_TIMEOUT_SEC,
+    requestedExecutionMode: args.execution?.mode ?? 'server',
+    executionMode: 'server',
+    executionModeDeprecated: args.execution?.mode === 'auto',
+    lifecycle: 'foreground',
+    recipeReuse: true,
+    recipeId: args.recipe?.id ?? String(item.id ?? ''),
+    dryRun: args.dryRun ?? false,
+  };
+
+  let envelope: OutputEnvelope;
+  try {
+    if (item.ok !== true) {
+      const phase = item.phase === 'preflight' ? 'preflight' : 'execution';
+      envelope = buildOutputEnvelope({
+        summary,
+        state: 'error',
+        error: {
+          code: String(item.error ?? 'recipe_execution_failed'),
+          message: String(asRecord(item.diagnostic)?.message ?? item.reason ?? 'saved recipe execution failed'),
+        },
+        metrics: { ...metrics, phase, executed: phase !== 'preflight' },
+      });
+    } else if (result.partial === true || countArray(result.childFailures) > 0) {
+      envelope = buildOutputEnvelope({
+        summary,
+        state: 'incomplete',
+        incomplete: { reason: 'partial_execution' },
+        metrics,
+      });
+    } else {
+      envelope = buildOutputEnvelope({ summary, metrics });
+    }
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    envelope = buildOutputEnvelope({
+      summary: '',
+      state: 'error',
+      error: {
+        code: 'summary_budget_exceeded',
+        message:
+          `${error.message}; author a bounded summary within ` +
+          `${DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS} characters and return bulky evidence through references`,
+      },
+      metrics: { ...metrics, phase: 'execution', executed: true },
+    });
+  }
+  return { content: [{ type: 'text', text: JSON.stringify(envelope) }] } as ToolResult;
+}
+
+export async function runOrchestration(
+  args: OrchestrationSourceArgs,
+  ctx: UnifiedToolContext,
+  deps: { server?: ServerScriptRunDeps; recipes?: SavedRecipeAdapter } = {},
+): Promise<ToolResult> {
+  const policyFailure = orchestrationPolicyFailure(args);
+  if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args);
+  if (args.script) {
+    return runServerScriptAdapter(args as ServerScriptRunArgs, ctx, deps.server ?? DEFAULT_DEPS);
+  }
+
+  const startedAt = Date.now();
+  try {
+    const adapter = deps.recipes ?? savedRecipeAdapterFor(ctx);
+    const raw = await adapter.run({
+      recipe: args.recipe as SavedRecipeSelector,
+      ...(args.bindings ? { bindings: args.bindings } : {}),
+      ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }),
+      ...(args.dryRun === undefined ? {} : { dryRun: args.dryRun }),
+    });
+    return recipeRunEnvelope(raw, args, Math.max(0, Date.now() - startedAt));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const envelope = buildOutputEnvelope({
+      summary: '',
+      state: 'error',
+      error: { code: 'server_adapter_failed', message, retryable: false },
+      metrics: { backend: 'server', phase: 'execution', executed: false },
+    });
+    return { isError: true, content: [{ type: 'text', text: JSON.stringify(envelope) }] } as ToolResult;
+  }
+}
+
 const orchestrateRunTool = defineTool({
   name: 'orchestrate:run',
   description:
-    'Run a fresh server-side orchestration script through code:run and return one bounded authored-summary envelope. ' +
-    'The adapter preserves current-caller authorization, typed signature repair, timeout handling, dry-run previews, media returns, and recipe capture.',
+    'Preferred execution door for exactly one fresh script or saved recipe. Runs on the server under the current caller and returns one bounded authored-summary envelope.',
   guidance: {
-    when: 'You have a fresh multi-step server orchestration script and need one aggregate-safe output envelope.',
-    notWhen: 'You have a saved recipe id; use recipes:run until the saved-recipe adapter is joined into this facade.',
+    when: 'After orchestrate:search/inspect, run one fresh script or exact saved-recipe continuation.',
+    notWhen: 'You need a single direct tool call or must use a native compatibility door explicitly.',
     chaining:
-      'orchestrate:run { script:{ source, title?, description? }, execution?:{ mode:"server" }, capture?:{ mode:"auto"|"never" }, timeoutSec? }',
-    seeAlso: ['code:run', 'recipes:search', 'recipes:run'],
+      'orchestrate:search { query } → orchestrate:inspect { recipe|script } → orchestrate:run { recipe|script }',
+    seeAlso: ['orchestrate:search', 'orchestrate:inspect', 'code:run (compatibility door)', 'recipes:run (compatibility door)'],
   },
   capability: 'capability:bash',
   requirePrincipal: false,
@@ -315,7 +434,7 @@ const orchestrateRunTool = defineTool({
   agentRoles: [...AGENT_ROLES],
   args: serverScriptRunArgsSchema,
   handler(args, ctx) {
-    return runServerScriptAdapter(args, ctx);
+    return runOrchestration(args, ctx);
   },
 });
 
