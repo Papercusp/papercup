@@ -26,7 +26,11 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { hostname } from 'node:os';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
-import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
+import {
+  gitPipelineSnapshot,
+  projectGreenCheckpointPause,
+  type GitPipelineSnapshot,
+} from './git-pipeline-stats';
 import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 // EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
 // never git-pipeline-POSITION, so this does not close an import cycle.
@@ -904,6 +908,8 @@ export interface PipelinePosition {
     /** WI-282: the green-checkpoint is WEDGED / not firing (visible even at 0 reds). */
     fireStale: boolean;
     fireStaleReason: string | null;
+    /** Deliberate green-checkpoint pause; when present it outranks cached gate verdicts. */
+    pause?: NonNullable<GitPipelineSnapshot['routines']['greenCheckpoint']>['pause'];
     /**
      * P-004 — WHO owns this gate incident (`green-stall:<harness>`): the singleton
      * work-item, its explicit `claimState`, and the lease.
@@ -2824,7 +2830,9 @@ export function computeStages(
     stages.push(off('gate'), off('main'), off('deployed'));
   } else {
     const g = p.gate;
-    const gateHealth: StageHealth = g.fireStale
+    const gateHealth: StageHealth = g.pause
+      ? 'broken'
+      : g.fireStale
       ? 'broken'
       : g.stalled || g.consecutiveReds > 0
         ? 'stalled'
@@ -2899,7 +2907,7 @@ export function computeStages(
      * read a null lever as "someone else has this", which is a claim no absent value can
      * make.
      */
-    const livenessNote = !gateBlocked
+    const livenessNote = g.pause || !gateBlocked
       ? ''
       : runInFlight
         ? ` A gate run IS in flight${
@@ -2919,7 +2927,12 @@ export function computeStages(
                   ? ` (computed ${Math.round(g.checkpointRunInFlight.asOfAgeMs / 1000)}s ago)`
                   : ''
               } — the live lock read did not answer, so treat this as a hint, not a measurement, before firing anything.`;
-    const gateDetail = notInCandidate
+    const pauseDetail = g.pause
+      ? `Gate is DELIBERATELY PAUSED (active:false)${g.pause.reason ? `: ${g.pause.reason}` : ''} — no scheduled fire can occur until the hold is resumed.`
+      : null;
+    const gateDetail = g.pause
+      ? pauseDetail
+      : notInCandidate
       ? `${cic.detail}${
           gateHealth === 'stalled'
             ? cic.missingReason === 'newer-commit'
@@ -3000,7 +3013,9 @@ export function computeStages(
               // "fire a checkpoint run" and "fix the reds" send the reader at the wrong thing —
               // a re-fire aborts identically at the same preflight, and the named failing tests
               // are not what is holding the pipeline. Route to the blocking condition instead.
-              g.inconclusive
+              g.pause
+              ? null
+              : g.inconclusive
               ? g.inconclusive.status === 'migrations-pending'
                 ? 'db:migrate (the gate aborts before judging while a migration is pending — apply it, THEN the next scheduled run judges normally; firing one now aborts the same way)'
                 : // EI-20767792192323374: an infra abort is the one abort where RE-FIRING IS the
@@ -3800,6 +3815,10 @@ function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
       : 'WAITING FOR HEAD CONTAINMENT (target commit is not reachable from HEAD; nothing to do locally). ';
   }
   const at = p.blockedOn.toUpperCase();
+  if (p.blockedOn === 'gate' && p.gate.pause) {
+    const reason = p.gate.pause.reason ? `: ${p.gate.pause.reason}` : '';
+    return `BLOCKED AT GATE — green-checkpoint is DELIBERATELY PAUSED (active:false)${reason}; no scheduled fire can occur until the hold is resumed. `;
+  }
   if (!p.nextAction) return `WAITING AT ${at} (nothing to do — this leg is advancing on its own). `;
   // When the lever belongs to a LATER stage than where the change sits, say both: "the leg
   // you are on is fine, but this one is not". Collapsing them would either hide that the
@@ -3896,7 +3915,9 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
   // nothing in the one-line summary told a reader "green" and "not advancing"
   // were BOTH true at once. Name the combination instead of staying silent on it.
   const gateNote =
-    !p.positions.inMain && p.gate.fireStale
+    !p.positions.inMain && p.gate.pause
+      ? ` (green gate DELIBERATELY PAUSED: ${p.gate.pause.reason ?? 'no pause reason recorded'})`
+      : !p.positions.inMain && p.gate.fireStale
       ? ` (green gate WEDGED — not firing: ${p.gate.fireStaleReason ?? 'stale'})`
       : !p.positions.inMain && p.gate.stalled
         ? ` (green gate STALLED: ${p.gate.consecutiveReds} reds)`
@@ -4392,8 +4413,14 @@ export async function gitPipelinePosition(
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
     lastGreenAtMs: snap.gate.lastGreenAtMs,
-    fireStale: snap.gate.fireStale,
-    fireStaleReason: snap.gate.fireStaleReason,
+    ...(() => {
+      const pauseProjection = projectGreenCheckpointPause(snap.routines?.greenCheckpoint ?? null);
+      return {
+        fireStale: pauseProjection.fireStale || snap.gate.fireStale,
+        fireStaleReason: pauseProjection.fireStaleReason ?? snap.gate.fireStaleReason,
+        pause: pauseProjection.pause,
+      };
+    })(),
     checkpointRunInFlight,
     // EI-19325520469216548: PROJECTED straight from the snapshot — git-pipeline-stats already
     // computes all five (evaluateGateVerdictFreshness + its two enrichments), and until now they

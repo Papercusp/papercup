@@ -118,6 +118,7 @@ function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLim
         'lastGreenAtMs',
         'fireStale',
         'fireStaleReason',
+        'pause',
         'verdictStale',
         'verdictStaleReason',
         'verdictStaleReasonCode',

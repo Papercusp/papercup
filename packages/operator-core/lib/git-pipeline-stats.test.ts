@@ -13,6 +13,7 @@ import {
   selectActiveCheckpointRoot,
   pickRetriageVerdict,
   projectGreenCheckpointFireFreshness,
+  projectGreenCheckpointPause,
   GIT_SYNC_CONFLICT_MAX_AGE_MS,
   isGitSyncConflictCurrent,
   currentGateInconclusive,
@@ -221,6 +222,52 @@ describe('projectGreenCheckpointFireFreshness', () => {
         reason: 'the routine has not FIRED in ~4h',
       }),
     ).toEqual({ fireStale: true, fireStaleReason: 'the routine has not FIRED in ~4h' });
+  });
+});
+
+describe('projectGreenCheckpointPause', () => {
+  const paused = {
+    name: 'green-checkpoint',
+    active: false,
+    cron: '0 0 * * * *',
+    lastFiredAtMs: 1_786_779_000_000,
+    nextFireAtMs: null,
+    pause: {
+      reason: 'hold while the repaired staging checkout is verified',
+      pausedBy: 'su-release-owner',
+      pausedAtMs: 1_786_780_000_000,
+    },
+  };
+
+  it('projects an inactive routine pause as a deliberate fire hold with its reason', () => {
+    expect(projectGreenCheckpointPause(paused)).toEqual({
+      pause: paused.pause,
+      fireStale: true,
+      fireStaleReason:
+        'green-checkpoint is deliberately PAUSED (active:false): hold while the repaired staging checkout is verified — ' +
+        'no scheduled fire can occur until the hold is resumed',
+    });
+  });
+
+  it('does not carry stale pause metadata onto an active routine', () => {
+    expect(projectGreenCheckpointPause({ ...paused, active: true })).toEqual({
+      pause: null,
+      fireStale: false,
+      fireStaleReason: null,
+    });
+  });
+
+  it('does not invent a pause for a missing or unpaused routine', () => {
+    expect(projectGreenCheckpointPause(null)).toEqual({
+      pause: null,
+      fireStale: false,
+      fireStaleReason: null,
+    });
+    expect(projectGreenCheckpointPause({ ...paused, pause: null })).toEqual({
+      pause: null,
+      fireStale: false,
+      fireStaleReason: null,
+    });
   });
 });
 

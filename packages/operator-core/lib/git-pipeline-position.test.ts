@@ -2137,6 +2137,37 @@ describe('computeStages: position x health', () => {
     expect(stage(s, 'gate').detail).toMatch(/paused/);
   });
 
+  it('EI-21271222700908558: a deliberate pause outranks a stale repair-staging-mismatch abort', () => {
+    const s = computeStages(
+      input({
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        gate: {
+          ...input().gate,
+          fireStale: true,
+          fireStaleReason: 'green-checkpoint is deliberately PAUSED (active:false)',
+          pause: {
+            reason: 'hold while the repaired staging checkout is verified',
+            pausedBy: 'su-release-owner',
+            pausedAtMs: 1_786_780_000_000,
+          },
+          inconclusive: {
+            status: 'repair-staging-mismatch',
+            candidate: 'repair-candidate-sha',
+            detail: 'repair patch is not on staging',
+            observedAtMs: 1_786_780_000_000,
+          },
+        },
+      }),
+    );
+    const gate = stage(s, 'gate');
+    expect(gate).toMatchObject({ position: 'pending', health: 'broken', lever: null });
+    expect(gate.detail).toMatch(/DELIBERATELY PAUSED/);
+    expect(gate.detail).toMatch(/repaired staging checkout is verified/);
+    expect(gate.detail).not.toMatch(/repair-staging-mismatch/);
+    expect(gate.detail).not.toMatch(/clear the gate abort condition/);
+    expect(deriveBlocker(s)).toMatchObject({ blockedOn: 'gate', nextAction: null, actionOwner: null });
+  });
+
   it('keeps a firing-but-verdict-stale gate separate from a non-firing gate', () => {
     const s = computeStages(
       input({
@@ -3430,6 +3461,35 @@ describe('changeInCandidate (P-004)', () => {
 
     it('stays silent when containment is unknown — no verdict is better than a wrong one', () => {
       expect(summarizePosition(base())).not.toMatch(/⚠ The gate run/);
+    });
+
+    it('EI-21271222700908558: the summary names a deliberate pause instead of a stale repair abort', () => {
+      const summary = summarizePosition(
+        base({
+          blockedOn: 'gate',
+          nextAction: null,
+          gate: {
+            ...base().gate,
+            fireStale: true,
+            fireStaleReason: 'green-checkpoint is deliberately PAUSED (active:false)',
+            pause: {
+              reason: 'hold while the repaired staging checkout is verified',
+              pausedBy: 'su-release-owner',
+              pausedAtMs: 1_786_780_000_000,
+            },
+            inconclusive: {
+              status: 'repair-staging-mismatch',
+              candidate: 'repair-candidate-sha',
+              detail: 'repair patch is not on staging',
+              observedAtMs: 1_786_780_000_000,
+            },
+          },
+        }),
+      );
+      expect(summary).toMatch(/BLOCKED AT GATE.*DELIBERATELY PAUSED/);
+      expect(summary).toMatch(/repaired staging checkout is verified/);
+      expect(summary).not.toMatch(/repair-staging-mismatch/);
+      expect(summary).not.toMatch(/clear the gate abort condition/);
     });
 
     /**

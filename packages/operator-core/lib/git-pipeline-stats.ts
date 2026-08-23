@@ -653,6 +653,29 @@ export function projectGreenCheckpointFireFreshness(verdict: { fireStale: boolea
 }
 
 /**
+ * Project the green-checkpoint routine's deliberate pause onto the gate read.
+ * An inactive routine with a pause record cannot produce a verdict, but it is
+ * not an unexplained wedge: the record is the authoritative reason and exit
+ * context. Active routines must not inherit stale pause metadata.
+ */
+export function projectGreenCheckpointPause(routine: RoutineInfo | null): {
+  pause: RoutineInfo['pause'];
+  fireStale: boolean;
+  fireStaleReason: string | null;
+} {
+  const pause = routine?.active === false ? routine.pause : null;
+  if (!pause) return { pause: null, fireStale: false, fireStaleReason: null };
+  const reason = pause.reason?.trim();
+  return {
+    pause,
+    fireStale: true,
+    fireStaleReason:
+      `green-checkpoint is deliberately PAUSED (active:false)${reason ? `: ${reason}` : ''} — ` +
+      'no scheduled fire can occur until the hold is resumed',
+  };
+}
+
+/**
  * EI-13714 — PURE: decide whether the raw cached gate counters (`consecutiveReds` / `stalled` /
  * `failingTests` / `firstRedAtMs`, straight off the `gate_health` blob) must be corrected before
  * being reported anywhere, given the verdict-freshness rule that fired (if any).
@@ -840,9 +863,11 @@ export async function gitPipelineSnapshot(
   // Reuse the green-stall-watchdog's pure freshness verdict (last-fire / last-green
   // age) so the gate READ surfaces a wedge too — independent of the red streak.
   const gcRow = byName('green-checkpoint');
+  const greenCheckpoint = toRoutineInfo(gcRow);
+  const pauseProjection = projectGreenCheckpointPause(greenCheckpoint);
   const gcLastFiredMs = dateMs(gcRow?.last_fired_at);
-  let gcFireStale = false;
-  let gcFireStaleReason: string | null = null;
+  let gcFireStale = pauseProjection.fireStale;
+  let gcFireStaleReason: string | null = pauseProjection.fireStaleReason;
   if (gcRow?.active === true) {
     try {
       const { evaluateGreenStall } = await import('./release/green-stall-watchdog');
@@ -1081,7 +1106,7 @@ export async function gitPipelineSnapshot(
     generatedAtMs: Date.now(),
     routines: {
       gitSync: toRoutineInfo(gitSyncRow),
-      greenCheckpoint: toRoutineInfo(byName('green-checkpoint')),
+      greenCheckpoint,
       releaseTrigger: toRoutineInfo(byName('release-trigger')),
     },
     gitSync: {
