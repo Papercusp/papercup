@@ -121,11 +121,19 @@ beforeEach(async () => {
 });
 
 async function seedGoal(
-  over: { id?: string; status?: string; metadata?: postgres.JSONValue; budgetCents?: number | null } = {},
+  over: {
+    id?: string;
+    status?: string;
+    metadata?: postgres.JSONValue;
+    budgetCents?: number | null;
+    /** P-004: the denominator for budgetCents. Null ⇒ per goal lifetime. */
+    budgetWindowSec?: number | null;
+  } = {},
 ) {
-  await rootSql`INSERT INTO harness_shared.goals (id, workspace_id, status, metadata, budget_cents, created_at)
+  await rootSql`INSERT INTO harness_shared.goals (id, workspace_id, status, metadata, budget_cents, budget_window_sec, created_at)
     VALUES (${over.id ?? GOAL}, ${WS}, ${over.status ?? 'active'},
-            ${over.metadata ? rootSql.json(over.metadata) : null}, ${over.budgetCents ?? null}, ${GOAL_CREATED})`;
+            ${over.metadata ? rootSql.json(over.metadata) : null}, ${over.budgetCents ?? null},
+            ${over.budgetWindowSec ?? null}, ${GOAL_CREATED})`;
 }
 async function pot(harness: string, goalId = GOAL) {
   await rootSql`INSERT INTO harness_shared.goal_pots (workspace_id, goal_id, harness_slug)
@@ -348,6 +356,67 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res).toMatchObject({ written: 1, tripwiresAdvanced: 0 });
     expect(await goalTripwires()).toBeNull();
+  });
+
+  /**
+   * The ceiling's DENOMINATOR (work-on-everything-goal-2026-08-23 P-004).
+   *
+   * The breach check KILLS, so the denominator is not a reporting detail. With
+   * a window declared, lifetime spend is the WRONG number rather than a
+   * stricter one: a standing goal (P-001) accrues forever, so judging it
+   * against lifetime does not budget it — it schedules its auto-kill for
+   * whenever the running total happens to arrive.
+   *
+   * Both directions are asserted on purpose. The survive case alone would pass
+   * against an implementation that simply stopped enforcing budgets on
+   * windowed goals, which would be a worse bug than the one being fixed.
+   */
+  describe('P-004: a windowed ceiling is judged over the window, not the lifetime', () => {
+    /** Old enough to sit outside the window, new enough to be after goal creation. */
+    const OLD = GOAL_MS + 60_000;
+    const RECENT = () => Date.now() - 60_000;
+
+    it('SURVIVES: lifetime spend is over the ceiling but the trailing window is not', async () => {
+      await seedGoal({ budgetCents: 200, budgetWindowSec: 3_600 });
+      await pot('hive-a');
+      await sample({ harness: 'hive-a', usd: 5.0, ts: OLD }); // 500c, long ago
+      await sample({ harness: 'hive-a', usd: 0.5, ts: RECENT() }); // 50c, in-window
+
+      const res = await runGoalSpendRollupOnce(rootSql);
+      expect(res).toMatchObject({ ok: true, errors: [] });
+      const rows = await rootSql<Array<{ status: string }>>`
+        SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+      // Lifetime is 550c against a 200c ceiling; the window holds 50c.
+      // Pre-P-004 this goal is dead here.
+      expect(rows[0]?.status).toBe('active');
+    });
+
+    it('STILL KILLS: spend WITHIN the window reaches the ceiling', async () => {
+      await seedGoal({ budgetCents: 200, budgetWindowSec: 3_600 });
+      await pot('hive-a');
+      await sample({ harness: 'hive-a', usd: 5.0, ts: OLD });
+      await sample({ harness: 'hive-a', usd: 2.0, ts: RECENT() }); // 200c in-window
+
+      await runGoalSpendRollupOnce(rootSql);
+      const rows = await rootSql<Array<{ status: string }>>`
+        SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+      expect(rows[0]?.status).toBe('killed');
+      // The recorded reason must name the window, or a later reader cannot tell
+      // which rule killed it.
+      const meta = (await goalMetadata()) as { autoKilled?: { reasons?: string[] } };
+      expect(meta.autoKilled?.reasons?.join(' ')).toContain('per 3600s window');
+    });
+
+    it('CONTROL: the same spend with NO window still kills on lifetime — the rule is unchanged for ordinary goals', async () => {
+      await seedGoal({ budgetCents: 200 });
+      await pot('hive-a');
+      await sample({ harness: 'hive-a', usd: 5.0, ts: OLD });
+
+      await runGoalSpendRollupOnce(rootSql);
+      const rows = await rootSql<Array<{ status: string }>>`
+        SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+      expect(rows[0]?.status).toBe('killed');
+    });
   });
 
   it('kills an active goal when measured spend reaches its declared budget', async () => {
