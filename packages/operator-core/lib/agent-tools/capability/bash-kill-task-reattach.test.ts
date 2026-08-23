@@ -122,11 +122,47 @@ beforeEach(() => {
 });
 
 describe('capability:bash_kill — durable task attachment', () => {
-  it('requires exactly one process-local or durable handle', () => {
+  // EI-21240465530065342: capability:bash returns BOTH ids, so sending both
+  // back is the natural stop call. Requiring exactly one rejected it on shape.
+  it('accepts either handle alone AND both together, and requires at least one', () => {
     expect(bashKill.args.safeParse({ bash_id: 'bash-1' }).success).toBe(true);
     expect(bashKill.args.safeParse({ task_id: 'task-1' }).success).toBe(true);
+    expect(bashKill.args.safeParse({ bash_id: 'bash-1', task_id: 'task-1' }).success).toBe(true);
     expect(bashKill.args.safeParse({}).success).toBe(false);
-    expect(bashKill.args.safeParse({ bash_id: 'bash-1', task_id: 'task-1' }).success).toBe(false);
+  });
+
+  it('stops the job through task_id when both handles are supplied and agree', async () => {
+    const result = await bashKill.handler(
+      { bash_id: 'bash-carry-1', task_id: 'task-carry-1' },
+      ctx(),
+    );
+    const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+    expect(result.isError).toBeFalsy();
+    expect(control.killTask).toHaveBeenCalledWith('task-carry-1');
+    expect(payload).toMatchObject({ ok: true, task_id: 'task-carry-1', bash_id: 'bash-carry-1' });
+  });
+
+  // The safety property that makes accepting both handles acceptable at all:
+  // disagreeing handles must kill NOTHING. Resolving the durable one anyway
+  // would terminate a job the caller did not name — unrecoverable.
+  it('refuses two handles that name different jobs and kills nothing', async () => {
+    const result = await bashKill.handler(
+      { bash_id: 'bash-some-other-job', task_id: 'task-carry-1' },
+      ctx(),
+    );
+    const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+    expect(result.isError).toBe(true);
+    expect(payload).toMatchObject({
+      ok: false,
+      reason: 'handle_mismatch',
+      bash_id: 'bash-some-other-job',
+      task_id: 'task-carry-1',
+      durable_bash_id: 'bash-carry-1',
+    });
+    expect(control.killTask).not.toHaveBeenCalled();
+    expect(jobs.killJob).not.toHaveBeenCalled();
   });
 
   it('reattaches a missing bash_id through the durable ledger and task-manager kill path', async () => {

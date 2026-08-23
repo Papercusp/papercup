@@ -124,6 +124,20 @@ export default defineTool({
           advice: 'This task is not a capability:bash background job with a durable bash handle. It was NOT killed.',
         });
       }
+      // Both handles supplied: task_id is authoritative. A bash_id naming a
+      // DIFFERENT job means the caller is confused about which job it is
+      // stopping, so refuse instead of resolving — killing the task_id job
+      // under a bash_id the caller trusts is an unrecoverable wrong action.
+      if (args.bash_id && args.bash_id !== durableBashId) {
+        return errorResult({
+          reason: 'handle_mismatch',
+          task_id: args.task_id,
+          bash_id: args.bash_id,
+          durable_bash_id: durableBashId,
+          advice:
+            'bash_id and task_id identify DIFFERENT jobs. NOTHING was killed. Send task_id alone (the durable handle, correct after a carry or across operator workers), or bash_id alone to stop the process-local job in its launching context.',
+        });
+      }
       bashId = durableBashId;
     }
 
