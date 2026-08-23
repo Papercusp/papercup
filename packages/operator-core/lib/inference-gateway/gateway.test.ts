@@ -6,6 +6,19 @@ import net from 'node:net';
 import { createInferenceGateway, estimateTokens, parseRateReset, classify429Shape, classifyColdRest429, classifyProxyHandlerError, effectivePriorityLabel, MODEL_DOWNGRADED_HEADER, normalizeGatewayRequestBody, resolveGatewayModel, type ActiveAccount, type AccountPool } from './gateway';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
+import {
+  configureScheduledRegistry,
+  resetScheduledRegistry,
+  type TimerHandle,
+} from '@papercusp/scheduled-registry';
+
+function enableRealManagedTimersForTest(): void {
+  resetScheduledRegistry();
+  configureScheduledRegistry({
+    setIntervalImpl: (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle,
+    clearIntervalImpl: (handle) => clearInterval(handle as unknown as ReturnType<typeof setInterval>),
+  });
+}
 
 interface Upstream {
   server: http.Server;
@@ -136,6 +149,7 @@ afterEach(async () => {
   await gw?.close();
   await upstream?.close();
   invalidated = 0;
+  resetScheduledRegistry();
 });
 
 async function boot(
@@ -3460,6 +3474,7 @@ test('effectivePriorityLabel leaves unknown owners and headerless requests in th
 /* ── proactive egress probing (gateway-rayobyte-hardening P-002) ── */
 
 test('[proactive-probe] a dead proxy is circuit-opened by the IDLE prober before any live request, and a pinned request routes around it', async () => {
+  enableRealManagedTimersForTest();
   // A has a proxy egress whose probe always fails; B is healthy. No live traffic touches A — the
   // proactive prober alone must cool it (the reactive circuit would need two live requests to burn
   // first). A subsequent request PINNED to A yields (unserviceable pin) and serves via B.

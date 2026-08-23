@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  configureScheduledRegistry,
+  resetScheduledRegistry,
+  type TimerHandle,
+} from '@papercusp/scheduled-registry';
 import {
   recordTtsSpeakSuccess,
   recordTtsSpeakError,
@@ -8,8 +13,17 @@ import {
   startSttHealthMonitor,
 } from './voice-engine-health';
 
+function enableRealManagedTimersForTest(): void {
+  resetScheduledRegistry();
+  configureScheduledRegistry({
+    setIntervalImpl: (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle,
+    clearIntervalImpl: (handle) => clearInterval(handle as unknown as ReturnType<typeof setInterval>),
+  });
+}
+
 afterEach(() => {
   _resetTtsHealthForTests();
+  resetScheduledRegistry();
 });
 
 describe('TTS failure tracking', () => {
@@ -52,6 +66,8 @@ describe('TTS failure tracking', () => {
 });
 
 describe('STT health monitor', () => {
+  beforeEach(enableRealManagedTimersForTest);
+
   it('detects disconnect transition (up → down)', async () => {
     let online = true;
     const events: string[] = [];

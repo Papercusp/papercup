@@ -5,6 +5,11 @@
  * so the launch is visible in fleet:tree instead of silently untracked.
  */
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  configureScheduledRegistry,
+  resetScheduledRegistry,
+  type TimerHandle,
+} from '@papercusp/scheduled-registry';
 
 // Use vi.fn() directly inside factories — avoids the TDZ issue from referencing
 // module-level vars inside hoisted vi.mock calls.
@@ -46,6 +51,15 @@ import {
 } from './launch-blueprint';
 
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
+
+function enableRealManagedTimersForTest(): void {
+  resetScheduledRegistry();
+  configureScheduledRegistry({
+    setIntervalImpl: (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle,
+    clearIntervalImpl: (handle) => clearInterval(handle as unknown as ReturnType<typeof setInterval>),
+  });
+}
+
 // Stable mock sql handle — same object every getOrgPg() call so finishSpawn
 // gets the same reference that recordSpawn got.
 const activeQueenRows: Array<{ spawn_id: string; harness_slug: string | null }> = [];
@@ -63,6 +77,7 @@ afterEach(() => {
   activeQueenRows.length = 0;
   vi.clearAllMocks();
   mockSql.begin = vi.fn(async (cb: (tx: typeof mockSql) => unknown) => cb(mockSql));
+  resetScheduledRegistry();
 });
 
 describe('defaultFire fallback — durable spawn row (WI-108)', () => {
@@ -264,6 +279,7 @@ describe('defaultFire fallback — heartbeats the launch row while the fetch is 
   const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   beforeEach(() => {
+    enableRealManagedTimersForTest();
     vi.mocked(getOrgPg).mockReturnValue({ sql: mockSql } as unknown as ReturnType<typeof getOrgPg>);
     vi.mocked(recordSpawn).mockResolvedValue(undefined);
     vi.mocked(finishSpawn).mockResolvedValue(undefined);

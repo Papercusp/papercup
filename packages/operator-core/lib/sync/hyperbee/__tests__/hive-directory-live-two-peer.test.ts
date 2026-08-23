@@ -31,10 +31,15 @@
  * so an unknown device still fails attestation).
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
+import {
+  configureScheduledRegistry,
+  resetScheduledRegistry,
+  type TimerHandle,
+} from '@papercusp/scheduled-registry';
 import type { HyperswarmLike } from '../swarm';
 import { HiveDirectory, type HiveDirectoryDeps } from '../../../hive-directory';
 import {
@@ -47,6 +52,14 @@ import type { SignedHiveAnnounce } from '../hive-announce';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
+function enableRealManagedTimersForTest(): void {
+  resetScheduledRegistry();
+  configureScheduledRegistry({
+    setIntervalImpl: (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle,
+    clearIntervalImpl: (handle) => clearInterval(handle as unknown as ReturnType<typeof setInterval>),
+  });
+}
+
 afterEach(async () => {
   while (cleanups.length) {
     try {
@@ -55,6 +68,7 @@ afterEach(async () => {
       /* best-effort teardown */
     }
   }
+  resetScheduledRegistry();
 });
 
 function rawPubkeyBase64(publicKey: ReturnType<typeof generateKeyPairSync>['publicKey']): string {
@@ -160,6 +174,8 @@ function publicHive(potId: string, title: string): HiveDirectoryMeta {
 }
 
 describe('P2P hive directory — LIVE two-peer E2E over real Hyperswarm (production wiring)', () => {
+  beforeEach(enableRealManagedTimersForTest);
+
   it(
     'A and B discover each other’s PUBLIC hives, with member links intact; an edit converges by LWW',
     async () => {

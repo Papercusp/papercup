@@ -8,8 +8,21 @@
  * headers traverse every hop immediately. Live pin:
  * lib/__tests__/ask-choice-e2e.integration.test.ts ("tool reachable" case).
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import {
+  configureScheduledRegistry,
+  resetScheduledRegistry,
+  type TimerHandle,
+} from '@papercusp/scheduled-registry';
 import { primeSseResponse } from '../_mcp-handler';
+
+function enableRealManagedTimersForTest(): void {
+  resetScheduledRegistry();
+  configureScheduledRegistry({
+    setIntervalImpl: (cb, ms) => setInterval(cb, ms) as unknown as TimerHandle,
+    clearIntervalImpl: (handle) => clearInterval(handle as unknown as ReturnType<typeof setInterval>),
+  });
+}
 
 function sseResponse(body: ReadableStream<Uint8Array> | null): Response {
   return new Response(body, {
@@ -35,6 +48,9 @@ async function readWithTimeout<T>(read: Promise<T>, timeoutMs: number, message: 
 }
 
 describe('primeSseResponse', () => {
+  beforeEach(enableRealManagedTimersForTest);
+  afterEach(resetScheduledRegistry);
+
   it('prepends an SSE comment as the FIRST chunk, then forwards the original chunks', async () => {
     const enc = new TextEncoder();
     const inner = new ReadableStream<Uint8Array>({
