@@ -10,6 +10,11 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./jcs": {
+      "types": "./src/jcs.ts",
+      "import": "./src/jcs.ts",
+      "default": "./src/jcs.ts"
     }
   },
   "scripts": {

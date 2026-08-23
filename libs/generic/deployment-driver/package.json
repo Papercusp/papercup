@@ -13,7 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@papercusp/module-singleton": "*"
+    "@papercusp/module-singleton": "*",
+    "@papercusp/publish-auth": "*"
   },
   "devDependencies": {
     "vitest": "^4.1.4"
