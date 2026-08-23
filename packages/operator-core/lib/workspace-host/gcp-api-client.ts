@@ -109,6 +109,12 @@ export interface GcpWorkspaceHostApiClientOptions {
   acquireAuth?: () => Promise<GcpResolvedAuth>;
   fetch?: typeof fetch;
   now?: () => string;
+  /** Resolve this family for discovery, but return only its exact immutable member id. */
+  imageFamily?: {
+    project: string;
+    family: string;
+    label?: string;
+  };
 }
 
 function required(value: string | undefined, label: string): string {
@@ -299,11 +305,19 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   private readonly acquireAuth: () => Promise<GcpResolvedAuth>;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => string;
+  private readonly imageFamily: { project: string; family: string; label?: string };
 
   constructor(options: GcpWorkspaceHostApiClientOptions = {}) {
     this.acquireAuth = options.acquireAuth ?? acquireGcpAdcAuth;
     this.fetchImpl = options.fetch ?? fetch;
     this.now = options.now ?? (() => new Date().toISOString());
+    const imageFamily = options.imageFamily ?? GCP_DEFAULT_WORKSPACE_HOST_IMAGE;
+    const label = options.imageFamily?.label?.trim();
+    this.imageFamily = {
+      project: required(imageFamily.project, 'image_project'),
+      family: required(imageFamily.family, 'image_family'),
+      ...(label ? { label } : {}),
+    };
   }
 
   private async request<T>(url: string, init: RequestInit = {}): Promise<T> {
@@ -441,7 +455,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     const projectId = projectFromConnection(connection);
     assertCatalogProject(query, projectId);
     const image = await this.request<RawImage>(
-      `${COMPUTE_API}/projects/${segment(GCP_DEFAULT_WORKSPACE_HOST_IMAGE.project, 'image_project')}/global/images/family/${segment(GCP_DEFAULT_WORKSPACE_HOST_IMAGE.family, 'image_family')}`,
+      `${COMPUTE_API}/projects/${segment(this.imageFamily.project, 'image_project')}/global/images/family/${segment(this.imageFamily.family, 'image_family')}`,
     );
     const architecture =
       image.architecture === 'ARM64' ? 'arm64' : image.architecture === 'X86_64' ? 'x86_64' : undefined;
@@ -449,9 +463,14 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     const name = required(image.name, 'image_name');
     return [
       {
-        id: image.selfLink ?? `projects/${GCP_DEFAULT_WORKSPACE_HOST_IMAGE.project}/global/images/${name}`,
+        id: `projects/${this.imageFamily.project}/global/images/${name}`,
         version: name,
-        label: `Ubuntu 24.04 LTS (${name})`,
+        label:
+          this.imageFamily.label ??
+          (this.imageFamily.project === GCP_DEFAULT_WORKSPACE_HOST_IMAGE.project &&
+          this.imageFamily.family === GCP_DEFAULT_WORKSPACE_HOST_IMAGE.family
+            ? `Ubuntu 24.04 LTS (${name})`
+            : `${this.imageFamily.family} (${name})`),
         ...(architecture ? { architecture } : {}),
         signed: true,
         ...(image.creationTimestamp ? { publishedAt: image.creationTimestamp } : {}),
