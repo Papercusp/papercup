@@ -33,6 +33,7 @@ vi.mock('./workspace-registry', async () => {
 });
 
 const rr = await import('./work-items-release-request');
+const workItems = await import('./work-items');
 
 const H = 'papercup';
 const WS = 'default';
@@ -252,6 +253,37 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
       expectedHolder: 'holder-1',
     });
     expect(withdrawn).toMatchObject({ resolved: true, resolution: 'requester-withdrawn', by: 'requester-1', holder: 'holder-1' });
+  });
+
+  it('consequence-reclaim clears a stale claim hold before returning the item to the pool', async () => {
+    const id = 'WI-40086-reclaim-hold';
+    await seedIssue(id, {
+      takenBy: 'old-holder',
+      payload: {
+        _claimHold: true,
+        held_open_by: 'old-holder',
+        held_open_reason: 'successor sole-serializer hold',
+      },
+    });
+    await rr.setWorkItemReleaseRequest(id, {
+      harness: H,
+      by: 'requester',
+      holder: 'old-holder',
+      expectedHolder: 'old-holder',
+      reason: 'stale serializer',
+      onSilence: 'reclaim',
+      deadlineAt: Date.now() - 1,
+    });
+
+    const resolved = await rr.resolveWorkItemReleaseRequest(id, { harness: H, resolution: 'consequence-reclaim' });
+    expect(resolved).toMatchObject({ resolved: true, resolution: 'consequence-reclaim' });
+
+    await workItems.releaseWorkItem(id, { harness: H });
+
+    const payload = await readPayload(id);
+    expect(payload).not.toHaveProperty('_claimHold');
+    expect(payload).not.toHaveProperty('held_open_by');
+    expect(payload).not.toHaveProperty('held_open_reason');
   });
 });
 
