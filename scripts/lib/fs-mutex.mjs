@@ -18,9 +18,10 @@
 // shell, no build step) must stay plain-JS-executable with zero devDependency on
 // the test toolchain. If a THIRD consumer shows up, promote both to one shared
 // `libs/generic/fs-mutex` package instead of a third copy.
+import { randomUUID } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -71,6 +72,10 @@ function safeName(name) {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
+function readerRoot(lockRootDir, name) {
+  return join(lockRootDir, `${safeName(name)}.readers`);
+}
+
 async function readOwner(lockDir) {
   try {
     return await readFile(join(lockDir, 'owner.json'), 'utf8');
@@ -109,6 +114,65 @@ async function isOwnerProcessConfirmedDead(lockDir) {
   }
 }
 
+async function lockAgeMs(lockDir) {
+  return stat(lockDir)
+    .then((s) => Date.now() - s.mtimeMs)
+    .catch(() => 0);
+}
+
+async function reclaimAbandonedLock(lockDir, staleMs) {
+  // Confirm a dead owner before falling back to the existing age-based safety
+  // valve. The positive pid check is what lets a crashed reader release its
+  // marker promptly; the age fallback also handles a process dying between
+  // mkdir and owner.json, where there is no pid to inspect.
+  if (await isOwnerProcessConfirmedDead(lockDir) || (await lockAgeMs(lockDir)) > staleMs) {
+    await rm(lockDir, { recursive: true, force: true });
+    return true;
+  }
+  return false;
+}
+
+async function writerLockIsHeld(lockDir, staleMs) {
+  try {
+    await stat(lockDir);
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+  return !(await reclaimAbandonedLock(lockDir, staleMs));
+}
+
+async function listReaderLocks(readersDir) {
+  try {
+    const entries = await readdir(readersDir, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => join(readersDir, entry.name));
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function waitForReaders(readersDir, { timeoutMs, staleMs, retryMs, startedAt, onWaiting }) {
+  let announcedWaiting = false;
+  for (;;) {
+    const readers = await listReaderLocks(readersDir);
+    for (const reader of readers) await reclaimAbandonedLock(reader, staleMs);
+    const activeReaders = await listReaderLocks(readersDir);
+    if (activeReaders.length === 0) return;
+
+    const elapsed = Date.now() - startedAt;
+    if (!announcedWaiting && onWaiting) {
+      announcedWaiting = true;
+      onWaiting({ owner: await readOwner(activeReaders[0]), elapsedMs: elapsed });
+    }
+    if (elapsed > timeoutMs) {
+      const currentOwner = await readOwner(activeReaders[0]);
+      throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex readers (${readersDir}); holder: ${currentOwner}`);
+    }
+    await sleep(retryMs);
+  }
+}
+
 /**
  * Run `fn` while holding an exclusive, cross-process, filesystem-local mutex
  * named `name`. Blocks (retrying every `retryMs`) until acquired, a stale/dead
@@ -118,16 +182,18 @@ async function isOwnerProcessConfirmedDead(lockDir) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
+  if (opts.mode === 'read' || opts.mode === 'reader') return withFsMutexRead(name, fn, opts);
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') {
     return fn();
   }
 
   const root = lockRoot();
   const lockDir = join(root, `${safeName(name)}.lock`);
+  const readersDir = readerRoot(root, name);
   const timeoutMs = opts.timeoutMs ?? intEnv('PAPERCUSP_FS_MUTEX_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
   const staleMs = opts.staleMs ?? intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
   const retryMs = opts.retryMs ?? intEnv('PAPERCUSP_FS_MUTEX_RETRY_MS', DEFAULT_RETRY_MS);
@@ -175,9 +241,83 @@ export async function withFsMutex(name, fn, opts = {}) {
   }
 
   try {
+    await waitForReaders(readersDir, { timeoutMs, staleMs, retryMs, startedAt, onWaiting: opts.onWaiting });
     return await fn();
   } finally {
     await rm(lockDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Run `fn` while holding a shared reader marker for `name`. Readers do not
+ * acquire the writer's exclusive mkdir lock, so independent dependency reads
+ * can proceed together. A reader marker is installed before checking the
+ * writer lock; a writer that wins the race therefore waits for that marker,
+ * while a reader that observes an existing writer backs out and retries.
+ *
+ * @template T
+ * @param {string} name
+ * @param {() => Promise<T>} fn
+ * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void }} [opts]
+ * @returns {Promise<T>}
+ */
+export async function withFsMutexRead(name, fn, opts = {}) {
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') return fn();
+
+  const root = lockRoot();
+  const writerDir = join(root, `${safeName(name)}.lock`);
+  const readersDir = readerRoot(root, name);
+  const timeoutMs = opts.timeoutMs ?? intEnv('PAPERCUSP_FS_MUTEX_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
+  const staleMs = opts.staleMs ?? intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
+  const retryMs = opts.retryMs ?? intEnv('PAPERCUSP_FS_MUTEX_RETRY_MS', DEFAULT_RETRY_MS);
+  const startedAt = Date.now();
+  const readerDir = join(readersDir, `${process.pid}-${Date.now()}-${randomUUID()}.lock`);
+  const owner = {
+    pid: process.pid,
+    host: hostname(),
+    startedAt: new Date(startedAt).toISOString(),
+    name,
+    mode: 'read',
+  };
+
+  await mkdir(root, { recursive: true });
+  await mkdir(readersDir, { recursive: true });
+
+  let announcedWaiting = false;
+  for (;;) {
+    let markerCreated = false;
+    let ready = false;
+    try {
+      await mkdir(readerDir);
+      markerCreated = true;
+      await writeFile(join(readerDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+      ready = !(await writerLockIsHeld(writerDir, staleMs));
+    } catch (error) {
+      if (error.code !== 'EEXIST') {
+        if (markerCreated) await rm(readerDir, { recursive: true, force: true });
+        throw error;
+      }
+    }
+
+    if (ready) break;
+    if (markerCreated) await rm(readerDir, { recursive: true, force: true });
+
+    const elapsed = Date.now() - startedAt;
+    if (!announcedWaiting && opts.onWaiting) {
+      announcedWaiting = true;
+      opts.onWaiting({ owner: await readOwner(writerDir), elapsedMs: elapsed });
+    }
+    if (elapsed > timeoutMs) {
+      const currentOwner = await readOwner(writerDir);
+      throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex writer ("${name}"); holder: ${currentOwner}`);
+    }
+    await sleep(retryMs);
+  }
+
+  try {
+    return await fn();
+  } finally {
+    await rm(readerDir, { recursive: true, force: true });
   }
 }
 

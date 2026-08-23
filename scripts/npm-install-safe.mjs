@@ -54,7 +54,7 @@ import { realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { withFsMutex } from './lib/fs-mutex.mjs';
+import { withFsMutexRead, withFsMutex } from './lib/fs-mutex.mjs';
 import {
   findUnextractedDepsWithRetry,
   findUnusableRuntimeDepsWithRetry,
@@ -195,7 +195,7 @@ export function runCommandUnderInstallMutex({
   const [command, ...args] = commandArgs;
   const lockName = repoLockName(repoRoot);
 
-  return withFsMutex(
+  return withFsMutexRead(
     lockName,
     async () => {
       // Reader diagnostics belong on stderr: callers such as ptool expose the
