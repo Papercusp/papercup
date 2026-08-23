@@ -52,6 +52,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
 import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
+import PlanDashboardHost from '@/app/_components/plans/PlanDashboardHost';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
@@ -302,6 +303,15 @@ function RootComponent() {
                         <RouteErrorBoundary>
                           <Outlet />
                         </RouteErrorBoundary>
+                        {/* plan-visibility-revamp-2026-08-23 P-003 (D-002):
+                            the plan-dashboard app-pane takeover. A SIBLING of
+                            the routed Outlet inside <main> (position:relative),
+                            so `?pdash=<harness>::<slug>` overlays exactly the
+                            app pane — full width — while the routed page stays
+                            mounted underneath (back = clear the param, route
+                            state intact). Opened by the op-chat plan sidebar's
+                            row click (P-005); deep-linkable like any nuqs URL. */}
+                        <PlanDashboardHost />
                       </main>
                     </PostHogProvider>
                   </OperatorConversationProvider>
