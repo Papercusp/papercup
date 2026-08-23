@@ -12,4 +12,9 @@ export function characterRangeForLines(source: any, range: any): {
 /** Validate and normalize explicit in-repository file paths. */
 export function normalizeScopedPaths(args: any): any;
 export function buildPrettierCheckArgs(cli: any, repoPath: any, range: any): any[];
+export function buildPrettierArgs(cli: any, repoPath: any, range: any, mode?: string): any[];
+export function parseFormatCliArgs(args: any): {
+    mode: string;
+    paths: any;
+};
 export const REPO_ROOT: string;
