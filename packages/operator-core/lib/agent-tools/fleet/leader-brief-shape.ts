@@ -184,6 +184,15 @@ function compactMember(value: unknown): unknown {
   return out;
 }
 
+/**
+ * EI-21242929839064139: this is an exceptional identity index, not another
+ * verbose member sample. Keep only the target identity and branch so every
+ * summary.bench_suggested row remains actionable under transport shaping.
+ */
+function compactBenchSuggestion(value: unknown): unknown {
+  return pick(value, ['agentId', 'kind'], 120) ?? {};
+}
+
 function compactVerdict(value: unknown): unknown {
   return pick(value, ['agentId', 'verdict', 'idleCause'], 120) ?? value;
 }
@@ -328,6 +337,9 @@ function buildProjection(
     out.monitoringBlindAdvisory = compactMonitoringBlindAdvisory(data.monitoringBlindAdvisory);
   }
   if ('summary' in data) out.summary = compactSummary(data.summary);
+  if (Array.isArray(data.benchSuggestions)) {
+    out.benchSuggestions = data.benchSuggestions.map(compactBenchSuggestion);
+  }
   if ('deltaSummary' in data) out.deltaSummary = clip(data.deltaSummary, 220) ?? data.deltaSummary;
   if ('delta' in data) out.delta = data.delta;
   if ('campaign' in data) out.campaign = compactCampaign(data.campaign, campaignRecentRows);
@@ -414,6 +426,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     ...(source.summary !== undefined ? { summary: compactSummary(source.summary, true) } : {}),
     leaderBriefProjection: { tier, emergency: true, note: 'Further optional detail was omitted to keep the monitor response valid JSON.' },
   };
+  if (Array.isArray(source.benchSuggestions)) {
+    emergency.benchSuggestions = source.benchSuggestions.map(compactBenchSuggestion);
+  }
   // Emergency is a byte-pressure tier, not permission to turn bounded arrays
   // into unexplained omissions. Keep one actionable member/verdict and retain
   // truthful zero-shown pointers for every dropped family.

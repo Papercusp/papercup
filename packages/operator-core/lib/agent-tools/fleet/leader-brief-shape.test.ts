@@ -101,6 +101,36 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.specFilterOmitted).toMatchObject({ reason: 'bounded for monitor transport' });
   });
 
+  it('keeps every bench target in a complete exceptional index when member rows are truncated', () => {
+    const members = [
+      ...Array.from({ length: 20 }, (_, index) => ({ agentId: `ordinary-${index}`, verdict: 'monitoring' })),
+      { agentId: 'bench-a', verdict: 'monitoring', benchSuggestion: { kind: 'laneless-idle' } },
+      { agentId: 'bench-b', verdict: 'monitoring', benchSuggestion: { kind: 'stalled-no-mcp' } },
+      { agentId: 'bench-c', verdict: 'monitoring', benchSuggestion: { kind: 'idle-with-claimable' } },
+    ];
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'bench-fleet', members: members.length, bench_suggested: 3, laneless_idle: 1 },
+        members,
+        benchSuggestions: [
+          { agentId: 'bench-a', kind: 'laneless-idle' },
+          { agentId: 'bench-b', kind: 'stalled-no-mcp' },
+          { agentId: 'bench-c', kind: 'idle-with-claimable' },
+        ],
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+
+    expect(out.benchSuggestions).toEqual([
+      { agentId: 'bench-a', kind: 'laneless-idle' },
+      { agentId: 'bench-b', kind: 'stalled-no-mcp' },
+      { agentId: 'bench-c', kind: 'idle-with-claimable' },
+    ]);
+    expect(out.summary).toMatchObject({ bench_suggested: 3 });
+    expect((out.members as Array<{ agentId: string }>).some((member) => member.agentId === 'bench-a')).toBe(false);
+  });
+
   it('preserves the monitoring-blind advisory in the emergency byte-pressure projection', () => {
     const input = largeBrief();
     input.campaign.axes = Object.fromEntries(
