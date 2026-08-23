@@ -26,6 +26,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sqlMock = vi.fn();
+const getFlagMock = vi.fn();
 const notifyAgentsMock = vi.fn();
 const resolvePlanItemStampMock = vi.fn();
 const getPlanRowMock = vi.fn();
@@ -38,6 +39,11 @@ const planItemsForRowMock = vi.fn();
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({ sql: sqlMock }),
+}));
+
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getFlag: (...args: unknown[]) => getFlagMock(...args),
 }));
 
 vi.mock('../agent-tools/coordination/notify-agents', async (importOriginal) => ({
@@ -138,6 +144,7 @@ const CHANGED: PlanItemTextChange = {
 beforeEach(() => {
   vi.clearAllMocks();
   notifyAgentsMock.mockResolvedValue({ notified: ['su-holder'], subscribed: [], woke: 0 });
+  getFlagMock.mockResolvedValue(true);
 });
 
 describe('reportPlanItemTextDrift — the post-write push', () => {
@@ -330,6 +337,39 @@ describe('planItemTextDriftForWrite — the handler one-liner', () => {
     await expect(
       planItemTextDriftForWrite({} as never, 'my-plan', [CHANGED], 'papercusp'),
     ).resolves.toBeNull();
+  });
+
+  it('runs the push when the flag is on', async () => {
+    primeQueries({ stamp: [stampRow()], column: [] });
+    const res = await planItemTextDriftForWrite({} as never, 'my-plan', [CHANGED], 'papercusp');
+    expect(res?.affected).toHaveLength(1);
+    expect(notifyAgentsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('is fully inert when the kill-switch flag is off — no lookup, no ping, no report', async () => {
+    primeQueries({ stamp: [stampRow()], column: [] });
+    getFlagMock.mockResolvedValue(false);
+    const res = await planItemTextDriftForWrite({} as never, 'my-plan', [CHANGED], 'papercusp');
+    expect(res).toBeNull();
+    // The point of the switch is to remove the FAN-OUT and its cost, so it must
+    // short-circuit before the database, not merely suppress the message.
+    expect(sqlMock).not.toHaveBeenCalled();
+    expect(notifyAgentsMock).not.toHaveBeenCalled();
+  });
+
+  it('FAILS OPEN when the flag service is unreachable', async () => {
+    // The flag's own default is ON. Treating an unreachable flag service as "off"
+    // would silently disable the warning channel with nothing saying so — exactly
+    // the false-absence this feature exists to close.
+    primeQueries({ stamp: [stampRow()], column: [] });
+    getFlagMock.mockRejectedValue(new Error('flag service down'));
+    const res = await planItemTextDriftForWrite({} as never, 'my-plan', [CHANGED], 'papercusp');
+    expect(res?.affected).toHaveLength(1);
+  });
+
+  it('does not consult the flag at all when there is nothing to report', async () => {
+    await expect(planItemTextDriftForWrite({} as never, 'my-plan', [])).resolves.toBeNull();
+    expect(getFlagMock).not.toHaveBeenCalled();
   });
 });
 
