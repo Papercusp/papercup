@@ -34,7 +34,12 @@ import {
 } from './cgroup-read';
 import { taskManagerEnabledSync } from './enabled';
 import { scopeSupportKnown } from './managed-spawn';
-import { closeTask, markSpawned, registerTask } from './store';
+import {
+  bindAgentSessionTaskToLatestNativeSession,
+  closeTask,
+  markSpawned,
+  registerTask,
+} from './store';
 import {
   deriveUserManagerRoot,
   newTaskId,
@@ -218,6 +223,20 @@ export function completeSyncEnrolment(
         confined: enrolment.confined,
         unconfinedReason: enrolment.unconfinedReason,
       });
+      if (spec.class === 'agent-session') {
+        try {
+          await bindAgentSessionTaskToLatestNativeSession(enrolment.taskId);
+        } catch (error) {
+          // The bootstrap-side bulk binder is the other half of this race and
+          // the reconciler keeps the task visible, so linking failure must not
+          // turn a healthy spawn into a launch failure. It must still be loud:
+          // an unlinked row cannot participate in session-end cleanup.
+          const reason = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `[task-manager] native-session bind failed for task ${enrolment.taskId}: ${reason.slice(0, 500)}`,
+          );
+        }
+      }
     })
     .catch((error: unknown) => {
       // Fail open — see the header — but never fail silently. The reconciler can
