@@ -330,3 +330,93 @@ describe('orchestrate:run server-script adapter', () => {
     expect(envelope(neither)).toMatchObject({ state: 'error', error: { code: 'source_missing' } });
   });
 });
+
+/** WI-40720 gap 2 — outer-row telemetry on EVERY return path.
+ *
+ *  Only the script SUCCESS path used to stamp `ctx.metadata`. Preflight refusals, the saved-recipe
+ *  path and both catch paths stamped nothing, so a refused, thrown, or recipe-driven
+ *  orchestrate:run left no telemetry row — and the P-020 rollout gates therefore measured only the
+ *  runs that worked. That is survivorship bias in the exact metric meant to detect regressions:
+ *  the more often the door failed, the healthier its failure rate looked.
+ *
+ *  These assert on the STAMP (ctx.metadata), never on the returned envelope. Every path already
+ *  filled envelope.metrics correctly, which is precisely why the gap was easy to miss by reading. */
+describe('WI-40720 gap 2 — orchestrate:run stamps a telemetry row on every path, not just success', () => {
+  const spyCtx = () => {
+    const metadata = vi.fn();
+    return { ctx: { metadata } as unknown as UnifiedToolContext, metadata };
+  };
+  const stamp = (metadata: ReturnType<typeof vi.fn>) =>
+    (metadata.mock.calls[0]?.[0] ?? {}) as Record<string, unknown>;
+
+  it('stamps a PREFLIGHT REFUSAL, which previously recorded nothing at all', async () => {
+    const { ctx, metadata } = spyCtx();
+    await runOrchestration(
+      { script: { source: 'return "ok";' }, execution: { mode: 'client' } },
+      ctx,
+      { server: { runCode: vi.fn<ServerScriptRunDeps['runCode']>() } },
+    );
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(stamp(metadata)).toMatchObject({
+      backend: 'server',
+      phase: 'preflight',
+      executed: false,
+      source: 'script',
+      failureClass: 'execution_mode_unavailable',
+    });
+  });
+
+  it('stamps a THROWN adapter — the row most certain to have been missing', async () => {
+    const { ctx, metadata } = spyCtx();
+    const runCode = vi.fn<ServerScriptRunDeps['runCode']>().mockRejectedValue(new Error('boom'));
+    await runOrchestration({ script: { source: 'return "ok";' } }, ctx, { server: { runCode } });
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(stamp(metadata)).toMatchObject({
+      phase: 'execution',
+      executed: false,
+      source: 'script',
+      failureClass: 'server_adapter_failed',
+    });
+    // durationMs must be present and sane, not absent — the latency gate reads it.
+    expect(typeof stamp(metadata).durationMs).toBe('number');
+    expect(stamp(metadata).durationMs as number).toBeGreaterThanOrEqual(0);
+  });
+
+  it('stamps the SAVED-RECIPE path and tags it source:recipe, not source:script', async () => {
+    const { ctx, metadata } = spyCtx();
+    const run = vi.fn<SavedRecipeAdapter['run']>().mockRejectedValue(new Error('recipe exploded'));
+    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(stamp(metadata)).toMatchObject({ source: 'recipe', executed: false, phase: 'execution' });
+  });
+
+  it('does NOT flag execution mode "auto" as a backend mismatch', async () => {
+    // REGRESSION. backendMismatch is one of gap 4's HARD rollback triggers, and `auto` means
+    // "server, you choose" — being served server-side is that request HONOURED. An earlier draft
+    // computed `requested !== 'server'`, which would have fired the loudest alarm in the gate on
+    // entirely correct behaviour, and on what is likely the most common mode.
+    const { ctx, metadata } = spyCtx();
+    const run = vi.fn<SavedRecipeAdapter['run']>().mockRejectedValue(new Error('x'));
+    await runOrchestration({ recipe: { id: 'saved' }, execution: { mode: 'auto' } }, ctx, {
+      recipes: { run } as SavedRecipeAdapter,
+    });
+    expect(stamp(metadata)).toMatchObject({ requestedExecutionMode: 'auto', backendMismatch: false });
+  });
+
+  it('DOES flag a genuinely non-server requested mode as a mismatch', async () => {
+    // The falsifying counterpart: if backendMismatch were hardcoded false the test above would
+    // pass while the trigger never fired at all.
+    const { ctx, metadata } = spyCtx();
+    await runOrchestration({ script: { source: 'return "ok";' }, execution: { mode: 'client' } }, ctx, {
+      server: { runCode: vi.fn<ServerScriptRunDeps['runCode']>() },
+    });
+    expect(stamp(metadata)).toMatchObject({ requestedExecutionMode: 'client', backendMismatch: true });
+  });
+
+  it('omitting execution entirely defaults to server and is not a mismatch', async () => {
+    const { ctx, metadata } = spyCtx();
+    const run = vi.fn<SavedRecipeAdapter['run']>().mockRejectedValue(new Error('x'));
+    await runOrchestration({ recipe: { id: 'saved' } }, ctx, { recipes: { run } as SavedRecipeAdapter });
+    expect(stamp(metadata)).toMatchObject({ requestedExecutionMode: 'server', backendMismatch: false });
+  });
+});
