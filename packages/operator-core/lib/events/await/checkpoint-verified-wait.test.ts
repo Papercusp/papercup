@@ -333,15 +333,40 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
   });
 
-  it('classifies an inactive missing routine as an absent producer observation', async () => {
+  it('EI-21201405924579516: inactive run plus inactive routine without pause metadata is unknown, never absent', async () => {
     const certificate = checkpointProducerCertificate({
-      pipeline: 'papercusp', ownerId: 'su-1', issuedAtMs: 1_500,
-      expectedCadenceMs: 5_000, verificationDeadlineMs: 2_000, snapshot: snapshot(),
+      pipeline: 'papercusp',
+      ownerId: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
+      workItemId: 'WI-40086',
+      issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000,
+      verificationDeadlineMs: 2_000,
+      snapshot: snapshot(),
     });
-    const absent = snapshot({ activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null }, routines: { gitSync: null, greenCheckpoint: null, releaseTrigger: null } });
-    await expect(observeCheckpointProducer(certificate, { snapshot: async () => absent })).resolves.toMatchObject({
+    const ambiguous = snapshot({
+      activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+      routines: {
+        gitSync: null,
+        greenCheckpoint: {
+          name: 'green-checkpoint',
+          active: false,
+          cron: null,
+          lastFiredAtMs: null,
+          nextFireAtMs: null,
+          pause: null,
+        },
+        releaseTrigger: null,
+      },
+    });
+    const observed = await observeCheckpointProducer(certificate, { snapshot: async () => ambiguous });
+    expect(observed).toMatchObject({
       producerPresent: false,
+      state: 'unknown',
       completedAtMs: null,
+    });
+    expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
+      classification: 'unknown',
+      nextAction: 're-await',
     });
   });
 });

@@ -253,6 +253,34 @@ describe('sweepOnce — verified-wait producer controls', () => {
     });
   });
 
+  it('does not emit takeover when an inactive run/routine snapshot is only unknown', async () => {
+    const awaited = verifiedAwait({
+      producerHealthCertificate: {
+        ...verifiedAwait().producerHealthCertificate!,
+        owner: { ownerId: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083', workItemId: 'WI-40086' },
+      },
+    });
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([awaited]);
+    h.observeCheckpointProducer.mockResolvedValueOnce({
+      checkedAtMs: 2_000,
+      producerPresent: false,
+      state: 'unknown',
+      lastProgressAtMs: null,
+      lastFireAtMs: null,
+      completedAtMs: null,
+      evidence: { active: false, candidate: null, routineActive: false, routinePauseReason: null },
+    });
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith({
+      id: 91,
+      result: expect.objectContaining({ classification: 'unknown', nextAction: 're-await' }),
+      nextCertificate: undefined,
+    });
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+  });
+
   it('resumes immediately when the authoritative completion latch already fired', async () => {
     const awaited = verifiedAwait();
     h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([awaited]);

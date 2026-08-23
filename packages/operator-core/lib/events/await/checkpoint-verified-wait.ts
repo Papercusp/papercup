@@ -148,6 +148,17 @@ function checkpointObservationState(
     return 'idle';
   }
 
+  // EI-21201405924579516: an observed inactive run plus an inactive (or missing)
+  // routine without pause provenance is not an authoritative absence. The
+  // systemd snapshot proves only that no run is active at this instant; the
+  // routine metadata does not tell us whether it was deliberately disabled,
+  // between launches, or read from a stale/degraded row. Returning undefined
+  // here leaves producerPresent=false and turns that ambiguity into an
+  // owner-takeover verdict. Keep it conservative and re-await instead.
+  if (activeRun.candidate == null && routine?.active !== true && !explicitlyPaused) {
+    return 'unknown';
+  }
+
   return undefined;
 }
 
