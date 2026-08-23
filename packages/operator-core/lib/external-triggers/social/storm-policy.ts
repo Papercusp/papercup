@@ -100,8 +100,15 @@ export type SocialStormCapBasis =
       kind: 'dynamic-quota';
       /** The vendor formula the allowance actually follows (D-028). */
       formula: string;
-      /** Response header that reports consumption, as percentages. */
-      usageHeader: string;
+      /**
+       * Response header that reports consumption, as percentages — or null when
+       * the platform publishes NO usage signal (Threads, D-037).
+       *
+       * A null here is not cosmetic. It says `observedPeakUsagePct` can never
+       * become non-null, so the cap below rests on `assumedDailyFloor` alone
+       * permanently rather than until the first observation arrives.
+       */
+      usageHeader: string | null;
       /** The absolute anchor: the formula's smallest non-vacuous daily value. */
       assumedDailyFloor: number;
       /** Calls one run is assumed to spend against that allowance. */
@@ -281,6 +288,12 @@ function dynamicQuotaPolicy(
 ): SocialStormPolicy {
   const retryForbidden = dq.retryExtendsBlock === true;
   const spendPerRun = ASSUMED_REQUESTS_PER_RUN;
+  // Threads has a dynamic quota and NO usage header (D-037), so this prose may
+  // not name a header that does not exist. Saying the absence out loud beats a
+  // generic subject: a reader of the reason string learns why no measurement
+  // backs the cap, which is the whole difference between this platform and its
+  // two header-reporting siblings.
+  const usageSubject = dq.usageHeader ?? 'the provider (which publishes no usage signal)';
   const observed =
     typeof observation?.peakUsagePct === 'number' && Number.isFinite(observation.peakUsagePct)
       ? observation.peakUsagePct
@@ -295,7 +308,7 @@ function dynamicQuotaPolicy(
     basis: {
       kind: 'dynamic-quota',
       formula: dq.formula,
-      usageHeader: dq.usageHeader,
+      usageHeader: dq.usageHeader ?? null,
       assumedDailyFloor: dq.assumedDailyFloor,
       spendPerRun,
       observedPeakUsagePct: observed,
@@ -315,7 +328,7 @@ function dynamicQuotaPolicy(
 
   if (observation?.throttled === true) {
     return held(
-      `${dq.usageHeader} reported a throttle on this account; ${
+      `${usageSubject} reported a throttle on this account; ${
         retryForbidden ? 'retrying would extend the block, so no retry is scheduled' : 'launching is suspended'
       }`,
       observed === null ? 0 : Math.max(0, 100 - observed),
@@ -325,7 +338,7 @@ function dynamicQuotaPolicy(
   const headroomPct = observed === null ? 100 : Math.max(0, 100 - observed);
   if (headroomPct <= 0) {
     return held(
-      `${dq.usageHeader} reports ${observed}% of the allowance consumed; the next call is the one that trips the throttle`,
+      `${usageSubject} reports ${observed}% of the allowance consumed; the next call is the one that trips the throttle`,
       0,
     );
   }

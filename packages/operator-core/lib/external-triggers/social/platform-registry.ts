@@ -221,8 +221,29 @@ export interface SocialRateBudget {
     formula: string;
     /** What the allowance scales with, in the vendor's words. */
     driver: string;
-    /** Response header reporting ACTUAL consumption, as percentages. */
-    usageHeader: string;
+    /**
+     * Response header reporting ACTUAL consumption, as percentages.
+     *
+     * ⚠ OPTIONAL SINCE P-018, AND THE ABSENCE IS A REAL STATE RATHER THAN AN
+     * UNFILLED FIELD. This was required because the only two platforms with a
+     * dynamic quota — Pages and Instagram — both report consumption in
+     * `X-Business-Use-Case-Usage`, which made "has a moving allowance" and "has
+     * a usage header" look like the same fact. Threads breaks that: it states
+     * the same 4800-per-impression formula and publishes NO usage signal for it
+     * at all. Verified twice over on the shared rate-limiting page — Threads is
+     * absent from the BUC error-code table AND from the enumerated `type`
+     * values of the usage header, where every sibling product appears — so this
+     * is a documented exclusion, not a gap in our reading (D-037).
+     *
+     * ABSENT THEREFORE MEANS UNOBSERVABLE: no header carries this platform's
+     * consumption, so `SocialQuotaObservation` will never be populated for it,
+     * `observedPeakUsagePct` stays null for the lifetime of the integration,
+     * and the cap rests on `assumedDailyFloor` ALONE and permanently. That is a
+     * weaker position than a header-reporting platform, and it is stated here
+     * so a consumer reads it as a property rather than inferring it from a
+     * field that happens to be missing.
+     */
+    usageHeader?: string;
     /** The `type` value identifying this platform's rows within that header. */
     usageType?: string;
     /**
@@ -765,13 +786,131 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     id: 'threads',
     label: 'Threads',
     wave: 'B',
-    verifiedAt: null,
-    sources: [],
-    auth: { mode: 'app-review', scopes: [] },
-    read: { transport: 'poll-cursor', replay: 'poll-cursor' },
-    write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
-    limits: {},
-    blockedOn: 'owner: Meta app review (shares the Meta app identity with Instagram and Facebook Pages)',
+    verifiedAt: '2026-08-23',
+    sources: [
+      'https://developers.facebook.com/docs/threads/overview',
+      'https://developers.facebook.com/docs/threads/posts',
+      'https://developers.facebook.com/docs/threads/reply-management',
+      'https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/create-replies/',
+      'https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/retrieve-replies/',
+      'https://developers.facebook.com/docs/threads/retrieve-and-manage-replies/replies-and-conversations/',
+      'https://developers.facebook.com/docs/threads/troubleshooting/',
+      'https://developers.facebook.com/docs/permissions',
+      'https://developers.facebook.com/docs/graph-api/overview/rate-limiting',
+    ],
+    auth: {
+      mode: 'app-review',
+      // A THIRD HOST, not a third product on a shared host. Threads runs on
+      // graph.threads.net (graph.threads.com is documented as equivalent) at
+      // v1.0 — NOT graph.facebook.com — so no Pages or Instagram URL helper,
+      // version pin, or error-shape assumption transfers, however similar the
+      // two-step publish looks.
+      scopes: [
+        'threads_basic',
+        'threads_content_publish',
+        'threads_manage_replies',
+        'threads_read_replies',
+      ],
+      notes:
+        '⚠ D-034 FIRED TWICE HERE, BOTH TIMES AS A MISSING SCOPE RATHER THAN A PHANTOM ONE — the inverse of Instagram, and the more dangerous direction. (1) `threads_read_replies` is documented plainly in the permissions reference ("read replies to a user\'s thread") and is NEVER named by the Threads overview, whose scope list runs threads_basic / threads_content_publish / threads_manage_replies / threads_delete / threads_location_tagging. An adapter built from the overview would ship without the one scope its entire read path needs — and per D-027 an under-privileged read on these surfaces returns EMPTY rather than erroring, so the failure would present as "this account has no replies", permanently and silently. A phantom permission fails loudly at the authorize call; a missing one fails silently forever. (2) The create-replies ENDPOINT page adds a gate no overview states: "To reply to a thread, you must meet one of the following permission requirements" — "You are the owner of the root thread post" OR "You have either the threads_keyword_search or the threads_manage_mentions permission." That is a SEPARATE gate from the capability scope: threads_manage_replies is still required to create a reply at all, and no amount of it entitles you to reply under someone else\'s root post. NEITHER review-heavy scope is requested, and that is a deliberate scope decision (D-039): v1 replies only under root posts this profile owns, which is exactly what the conversation-edge read feeds it, so ownership satisfies the gate for the real workload. Requesting a mentions or keyword-search scope would ask review for privilege the feature does not exercise — the same reasoning that excluded ads_management on Instagram and pages_manage_metadata on Pages. The adapter ENFORCES the boundary before the call rather than discovering it at runtime. `threads_delete`, `threads_location_tagging`, `threads_manage_insights`, `threads_business_basic`, `threads_profile_discovery` and `threads_share_to_instagram` all exist and are deliberately not requested. ACCOUNT TYPE IS NOT DOCUMENTED on any page read: the overview never states whether a linked Facebook Page or Instagram account is a precondition, unlike Instagram where the linked-Page requirement is stated outright. Recorded as unknown rather than assumed absent — an assumption in either direction is a review-time surprise.',
+    },
+    read: {
+      transport: 'poll-cursor',
+      replay: 'watermark-rescan',
+      backfill:
+        'Re-read the conversation edge newest-first and stop CLIENT-SIDE at a stored timestamp watermark: neither media-level edge documents a since/until filter, so there is no server-side replay to ask for. ⚠ UNLIKE INSTAGRAM, THE RESCAN IS PAGEABLE AND THEREFORE COMPLETE — see the replies stream, where this is a correctness property rather than a throughput note.',
+      streams: {
+        replies: {
+          transport: 'poll-cursor',
+          replay: 'watermark-rescan',
+          backfill:
+            'TWO EDGES EXIST AND THE CHOICE BETWEEN THEM IS LOAD-BEARING. "GET {media-id}/replies only returns the top-level replies under the Threads ID provided in the request, while GET {media-id}/conversation returns all replies, regardless of the depth" — the latter being "a paginated and flattened list of all top-level and nested replies". The adapter takes `conversation`: a flattened all-depth read is exactly the ingestion shape, and the alternative is chasing `has_replies` down the tree with one call per level. Its stated caveat is respected — "This endpoint is only intended to be used on the root-level threads with replies" — so it is called on root media only. ⚠⚠ THE CLASS IS INSTAGRAM\'S AND THE CONSEQUENCE IS NOT (D-036). Both platforms are `watermark-rescan`, because neither offers a time filter and the client must stop at its own watermark. But Instagram\'s edge is capped at 50 with NO paging, which converts that into a permanent LOSS BOUND (D-031); both Threads edges are documented as paginated, both return paging.cursors.before/after, and NO cap phrase ("returns a maximum of N") appears anywhere on the page. So the Threads rescan can page backwards until it reaches the watermark: cost grows with the gap, and nothing falls off the end. THE ADAPTER THEREFORE NEVER SETS `lossRisk`, and that absence is a verified fact rather than an adapter declining to compute the predicate. ⚠ THE PROVIDER CURSOR IS NOT A RESUME POINT and must not be persisted as one: the docs never state how to pass a cursor in a request (cursors appear only in sample responses), and an `after` on a reverse-chronological list addresses a position within one result set, not a position in a stream — the same trap this registry already records against YouTube\'s pageToken. Ordering IS controllable: `reverse` is documented on both edges, "true if replies should be sorted in reverse chronological order", defaulting to true. Fields carry `root_post` ("Media ID of the top-level post or original thread in the reply tree") and `replied_to` ("Media ID of the immediate parent of the reply"), so the tree is reconstructable client-side from a flat list.',
+        },
+      },
+    },
+    write: {
+      verbs: ['reply', 'post'],
+      // Documented nowhere across the eight pages read: no idempotency key,
+      // client token, request id or dedup parameter. A retried publish creates
+      // a second post, exactly as on Pages and Instagram.
+      idempotency: 'none',
+      verifiedAt: '2026-08-23',
+      notes:
+        '⚠ ONE SHAPE, NOT TWO — AND THIS IS WHERE COPYING P-017 WOULD GO WRONG (D-035). Instagram is asymmetric: a reply is ONE call (POST /{ig-comment-id}/replies) and a post is TWO. Threads collapses both into the SAME two-step flow — POST /{threads-user-id}/threads to build a container, then POST /{threads-user-id}/threads_publish with `creation_id` — differing only by one container parameter, `reply_to_id`. An adapter modelled on Instagram would invent a distinction the vendor does not have. SECOND, AND OPPOSITE TO INSTAGRAM: nested replies are addressable. "Use the reply_to_id parameter to reply to a specific reply under the root post." D-031 recorded that Instagram silently RE-PARENTS a reply-to-a-reply onto the top-level comment; Threads honours the exact parent, so the id is passed through verbatim rather than normalised up to a root. TIMING — TWO CONSTANTS, ONE SHARED WITH INSTAGRAM AND ONE NOT, so both are cited rather than either being read across (D-005): Threads states "It is recommended to wait on average 30 seconds before publishing a Threads media container" (Threads-only; Instagram states no such pre-wait), while its troubleshooting page states "We recommend querying a container\'s status once per minute, for no more than 5 minutes" — the SAME polling cadence Instagram documents. CONTAINER EXPIRY IS 24h AND WAS VERIFIED ON THREADS\' OWN PAGE rather than inherited: the container status endpoint GET /{threads-container-id} documents EXPIRED as "The container was not published within 24 hours and has expired", alongside ERROR, FINISHED, IN_PROGRESS and PUBLISHED. That status endpoint is the same DETECTION affordance Instagram has and Pages lacks — a publish that times out without returning an id can be disambiguated by asking the container what happened — but it is detection, not idempotency (D-033): the retry still has to be gated on the probe. TEXT-PRIMARY, THE OPPOSITE OF INSTAGRAM (D-032, asked rather than assumed): media_type is TEXT | IMAGE | VIDEO (CAROUSEL for the parent container only), `text` is "Required for media_type=TEXT", and the posts page\'s own worked example is "Create a media container with text only". So a Threads post needs NO media, and an adapter copied from instagram-write-adapter would have refused every valid text post. Text caps at 500 characters; carousels take 2–20 children; links cap at 5; link_attachment and gif_attachment are TEXT-ONLY and "will not work with image, video, or carousel posts".',
+    },
+    limits: {
+      // NO `budgetHeaders`, DELIBERATELY AND VERIFIABLY (D-037). Pages and
+      // Instagram both report budget as a percentage in
+      // X-Business-Use-Case-Usage; Threads publishes no usage header at all.
+      // This is a documented exclusion rather than an unread page: Threads is
+      // absent from the BUC error-code table AND from the enumerated `type`
+      // values of that header, where every sibling product is listed.
+      dynamicQuota: {
+        formula: 'Calls within 24 hours = 4800 * Number of Impressions',
+        driver:
+          'the number of times the app user\'s Threads content has entered a person\'s screen within the last 24 hours',
+        // ⚠ NOT 4800 — AND THE DIFFERENCE FROM INSTAGRAM IS DOCUMENTED, NOT AN
+        // ERROR IN EITHER ROW (D-038). Threads states "The minimum value for
+        // impressions is 10 (so if the impressions is less than 10 we default
+        // to 10)", so the formula's smallest real value is 4800 × 10. That
+        // clause appears ONLY under Threads on the shared rate-limiting page;
+        // the Instagram section carries the identical formula sentence with no
+        // minimum, which is why Instagram's floor stays 4800. Harmonising the
+        // two would have made Instagram's assumed budget ten times too
+        // GENEROUS — the direction that fails only under real load.
+        assumedDailyFloor: 48_000,
+        // No `usageHeader` and no `throttleCodes`: Threads documents neither, so
+        // consumption is UNOBSERVABLE and a live throttle is UNCLASSIFIABLE.
+        // Instagram's 80002 and Pages' 80001/32 stay where they are — carrying
+        // either here would mean watching for a code this host never emits and
+        // parsing a header that is not sent, both of which read as "healthy".
+        retryExtendsBlock: true,
+      },
+      // FOUR NON-FUNGIBLE PER-PROFILE BUCKETS over a rolling 24h — the richest
+      // bucket picture of any platform in this registry, and the case D-030's
+      // amended rule was written for: a bucket declaring a verb wins for that
+      // verb. Note `replies` DECLARES ITS OWN BUCKET here, where on Instagram
+      // replies were undeclared and fell through to the call budget.
+      buckets: {
+        publishing: {
+          appliesTo:
+            'POST /{threads-user-id}/threads_publish — "Threads profiles are limited to 250 published posts within a 24-hour moving period" (a carousel counts as one)',
+          perDay: 250,
+          unit: 'calls',
+          verbs: ['post'],
+          notes:
+            'Call-capped, not unit-capped: the cap counts PUBLISHES regardless of media size, and is enforced on threads_publish — so container creation and status polling do not draw on it. Unlike Instagram, the vendor does not contradict itself on this figure.',
+        },
+        replies: {
+          appliesTo:
+            'the reply half of POST /{threads-user-id}/threads_publish — "Threads profiles are limited to 1,000 replies within a 24-hour moving period"',
+          perDay: 1_000,
+          unit: 'calls',
+          verbs: ['reply'],
+          notes:
+            'DECLARED, WHERE INSTAGRAM\'S WAS NOT. A Threads reply publishes through the same endpoint as a post but draws on a separate, four-times-larger allowance, so a reply may NOT be rationed against the publishing bucket and vice versa. This is exactly the pairing D-030 amended D-029 for.',
+        },
+        deletions: {
+          appliesTo: 'post deletion — 100 within a 24-hour moving period',
+          perDay: 100,
+          unit: 'calls',
+          verbs: ['delete'],
+          notes:
+            'Recorded although `delete` is NOT in this row\'s write.verbs and threads_delete is not requested: the bucket is documented, and omitting it would leave a later item to rediscover it. Declaring a bucket is not declaring the capability.',
+        },
+        locationSearch: {
+          appliesTo: 'location search — 500 within a 24-hour moving period',
+          perDay: 500,
+          unit: 'calls',
+          notes:
+            'No `verbs`: location search maps to no verb in this registry\'s vocabulary, and per SocialQuotaBucket an omitted `verbs` means "not stated for any verb" — a consumer must never match it. Recorded for completeness only.',
+        },
+      },
+      notes:
+        '⚠⚠ THE WEAKEST OBSERVABILITY POSITION OF ANY PLATFORM IN THIS REGISTRY, and it is worth stating plainly because the row otherwise looks richer than Instagram\'s. THE BUCKETS ARE QUERYABLE AND THE CALL BUDGET IS NOT OBSERVABLE AT ALL. GET /{threads-user-id}/threads_publishing_limit returns ABSOLUTE figures for all four buckets (quota_usage/config, reply_quota_usage/reply_config, delete_*, location_search_*, each with quota_duration 86400) — strictly better than Instagram, whose header reports only percentages. But the 4800-per-impression CALL budget has neither an endpoint nor a header: nothing reports its consumption, so `observedPeakUsagePct` can never become non-null and the cap rests on assumedDailyFloor permanently. Combined with the absence of any documented throttle code, this means a Threads throttle can be neither predicted nor recognised — only avoided by rationing. THAT is why retryExtendsBlock is set: the "stop making API calls / continuing to make calls will continue to increase your call count, which will increase the time before calls will be successful again" guidance is stated in the Best Practices of BOTH the Platform and Business Use Case rate-limit systems, not scoped to any single product, so it governs Threads even though Threads appears in neither the error-code table nor the header type list. A generic exponential-backoff wrapper here would deepen every throttle it touched while presenting as provider flakiness. CPU-time limits scale the same way: 720000 × impressions for total_cputime, 2880000 × impressions for total_time.',
+    },
+    blockedOn:
+      'owner: Meta app review (shares the Meta app identity with Instagram and Facebook Pages; threads_read_replies and threads_manage_replies both require review, and the account-type precondition is undocumented)',
   },
 
   linkedin: {
