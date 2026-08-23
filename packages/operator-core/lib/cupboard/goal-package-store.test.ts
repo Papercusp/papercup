@@ -3,7 +3,7 @@
  * the live-state boundary (tripwire `current` never survives a read)
  * (work-on-everything-goal-2026-08-23 P-006).
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -70,10 +70,7 @@ describe('writeGoalPackageDir → readGoalPackageDirForInstall roundtrip', () =>
   it('omits requires_rubrics from listing.json entirely when none are declared', () => {
     const root = scratch();
     const written = writeGoalPackageDir({ ...EXPORT, requiresRubrics: [] }, { ref: 'no-rubrics', targetDir: root });
-    const listing = JSON.parse(
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      require('node:fs').readFileSync(written.listingPath, 'utf8'),
-    ) as Record<string, unknown>;
+    const listing = JSON.parse(readFileSync(written.listingPath, 'utf8')) as Record<string, unknown>;
     expect('requires_rubrics' in listing).toBe(false);
     expect(listing).toMatchObject({ kind: 'goal', id: 'no-rubrics' });
   });
