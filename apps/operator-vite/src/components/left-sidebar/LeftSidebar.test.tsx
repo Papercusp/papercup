@@ -65,9 +65,7 @@ vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-account
 // with the Kettle tab — P-059/D-083. A vi.mock naming a module that no longer
 // exists is the strand this repo has been bitten by before, so it goes with the
 // tab rather than lingering as a harmless-looking line.)
-vi.mock('./SystemTab', () => ({ default: () => <div data-testid="panel-system" /> }));
-vi.mock('./AgentsTab', () => ({ default: () => <div data-testid="panel-agents" /> }));
-vi.mock('./SpendTab', () => ({ default: () => <div data-testid="panel-spend" /> }));
+vi.mock('./WorkspacePulseTab', () => ({ default: () => <div data-testid="panel-pulse" /> }));
 vi.mock('./ConversationsTab', () => ({ default: () => <div data-testid="panel-conversations" /> }));
 // SwarmTab / VoiceTab are deliberately NOT stubbed: this rail no longer mounts
 // them at all (WI-5162 — they are op-chat sidebar faces now). A stub here would
@@ -162,7 +160,7 @@ describe('<LeftSidebar> shell', () => {
   // t('overwatch')); the useLexicon mock above echoes the key, so they render as
   // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
   // Pots / Papercup / Brain / Kettle at runtime).
-  it('orders the rail Accounts · Papercup · Mug · Kettle · Agents · System · Spend', () => {
+  it('orders the consolidated rail Accounts · Papercup · Pulse', () => {
     // The blanket useFlag answer turns EVERY gated tab on — overwatch, sentinel
     // and (since WI-37561) conversations. The full rail is what the owner's
     // ordering describes, and pinning it with the gates open is deliberate: a
@@ -199,21 +197,16 @@ describe('<LeftSidebar> shell', () => {
       // silent reshuffle this test exists to make loud. If you are reading this
       // because the test red'd, check whether your change meant to move a tab at
       // all before editing the expectation.)
-      // The scheduled-work rail, split by whether a fire RUNS A MODEL (owner ask
-      // 2026-07-26). These two REPLACE the former Blender + Docs tabs, whose rows
-      // redistributed into the split.
-      'Agents',
-      'System',
-      // Cost is ONE workspace-wide tab at the end of the rail, not a lane inside
-      // each automation pane (owner correction 2026-07-25).
-      'Spend',
+      // Catalog identity, controls, schedules, history, and spend moved to the
+      // full-width Automations main tab. The middle pane keeps live attention.
+      'Pulse',
       // WI-5754 — APPENDED, never inserted: the order above is owner-set, so a
       // new tab goes last rather than reshuffling it. The label is "Convos"
       // because a 3-column tab cell fits ~8 characters beside its icon at the
       // rail's 300px minimum; the pane header carries the full word.
       //
       // WI-37561: Convos is now DEFAULT OFF behind CONVERSATIONS_RAIL_TAB (owner
-      // directive 2026-08-09), so at runtime the rail normally ends at Spend. It
+      // directive 2026-08-09), so at runtime the rail normally ends at Pulse. It
       // is asserted here because the flag is ON in this test — its POSITION is
       // what survives the park, and holding that position is precisely what makes
       // flipping the flag back on a one-click change rather than a code change.
@@ -254,20 +247,18 @@ describe('<LeftSidebar> shell', () => {
       // ('goal' was here — removed 2026-08-09 with the Goals tab. It joins
       // 'blender'/'docs'/'tasks' as a RETIRED id: a stale `?lst=goal` no longer
       // matches the nuqs literal parser and falls through to the default tab.)
-      'agents',
-      'system',
-      'spend',
+      'pulse',
       'conversations',
     ]);
   });
 
-  // Subject is `system`, not the removed `hives` (2026-08-10). It must stay a
+  // Subject is `pulse`, the consolidated non-default live-attention pane. It must stay a
   // NON-DEFAULT, ungated, stubbed tab or the test stops proving anything: point it
   // at the default tab and it passes without the deep link doing any work.
   it('deep-links a tab from ?lst= and mounts only that panel', async () => {
-    renderRail('?lst=system');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('system');
-    expect(await screen.findByTestId('panel-system')).toBeTruthy();
+    renderRail('?lst=pulse');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('pulse');
+    expect(await screen.findByTestId('panel-pulse')).toBeTruthy();
     // The DEFAULT panel must not also be mounted — this asserted `panel-queen`
     // until 2026-08-12, which became vacuous when that tab was deleted
     // (P-063/D-096); re-pointed at the new default so it still proves "only that
@@ -293,7 +284,7 @@ describe('<LeftSidebar> shell', () => {
     // has a subject that could actually have mounted.
     expect(screen.queryByTestId('panel-accounts')).toBeNull();
     // The collapsed expand-rail icon buttons are present.
-    expect(screen.getByTestId('left-sidebar-rail-system')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-rail-pulse')).toBeTruthy();
     // ...and the removed Pots icon is NOT (2026-08-10) — the collapsed rail is a
     // second rendering of TABS, so a tab removed from one must vanish from both.
     expect(screen.queryByTestId('left-sidebar-rail-hives')).toBeNull();
@@ -301,10 +292,10 @@ describe('<LeftSidebar> shell', () => {
 
   it('clicking a tab switches the active panel and writes ?lst', async () => {
     const { lastQuery } = renderRail();
-    fireEvent.click(screen.getByTestId('left-sidebar-tab-system'));
-    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('system'));
-    expect(await screen.findByTestId('panel-system')).toBeTruthy();
-    expect(lastQuery()).toContain('lst=system');
+    fireEvent.click(screen.getByTestId('left-sidebar-tab-pulse'));
+    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('pulse'));
+    expect(await screen.findByTestId('panel-pulse')).toBeTruthy();
+    expect(lastQuery()).toContain('lst=pulse');
   });
 
   it('the collapse button writes ?lsb=false', async () => {
@@ -329,13 +320,13 @@ describe('<LeftSidebar> shell', () => {
   });
 
   it('the expand control is the TOPMOST collapsed-rail button and re-expands to the last pane without switching tabs (WI-4800)', async () => {
-    // Subject moved off the removed `hives` to `system` (2026-08-10). It must be a
+    // Pulse is a NON-DEFAULT tab, so this proves expand preserves selection.
     // NON-DEFAULT tab (the default is 'queen') or "re-expands WITHOUT switching
     // tabs" would pass even if the tab silently reset.
-    renderRail('?lsb=false&lst=system');
+    renderRail('?lsb=false&lst=pulse');
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('true');
-    expect(rail.getAttribute('data-tab')).toBe('system');
+    expect(rail.getAttribute('data-tab')).toBe('pulse');
     // The expand control is the FIRST button in the collapsed rail (topmost) —
     // the mirror of the collapse chevron, not buried under the tab icons.
     const railEl = document.querySelector('.pclsb__expand-rail');
@@ -347,7 +338,7 @@ describe('<LeftSidebar> shell', () => {
     await waitFor(() => {
       expect(rail.getAttribute('data-collapsed')).toBe('false');
     });
-    expect(rail.getAttribute('data-tab')).toBe('system');
+    expect(rail.getAttribute('data-tab')).toBe('pulse');
   });
 
   // WI-5162 (owner ask 2026-07-17): Fleet + Peers MOVED to the op-chat sidebar,
@@ -367,7 +358,7 @@ describe('<LeftSidebar> shell', () => {
     // 'overwatch' left it on 2026-08-11 for the same reason — P-059/D-083, and
     // 'queen' on 2026-08-12 — P-063/D-096. Anchored on two UNGATED survivors so
     // this cannot go silently unasserted the way a gated anchor could.)
-    for (const kept of ['accounts', 'agents']) {
+    for (const kept of ['accounts', 'pulse']) {
       expect(screen.getByTestId(`left-sidebar-tab-${kept}`)).toBeTruthy();
     }
     // ...and Pots is gone from BOTH renderings, same as Fleet/Peers above.
@@ -399,7 +390,7 @@ describe('<LeftSidebar> shell', () => {
     // turn (P-063/D-096), so Accounts anchors that side now. The removal came out
     // of the MIDDLE of TABS, so these are what a bad re-index would disturb.
     expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
-    expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-tab-pulse')).toBeTruthy();
   });
 
   // (The `?lst=overwatch` bookmark case moved into the tier-retirement block
@@ -424,7 +415,7 @@ describe('<LeftSidebar> shell', () => {
     // P-059/D-083 — and then Mug did too — P-063/D-096 — so Accounts is the
     // surviving anchor on that side.)
     expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
-    expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-tab-pulse')).toBeTruthy();
   });
 
   it("retires the 'goal' id so a stale ?lst=goal falls through to the default tab", async () => {
@@ -462,9 +453,9 @@ describe('<LeftSidebar> shell', () => {
       // one of the two leaves the tab reachable from the icon rail while invisible
       // in the strip, which is worse than not gating it at all.
       expect(screen.queryByTestId('left-sidebar-rail-conversations')).toBeNull();
-      // The rail is otherwise intact: hiding the last tab must not disturb Spend,
+      // The rail is otherwise intact: hiding the last tab must not disturb Pulse,
       // the tab it sits beside.
-      expect(screen.getByTestId('left-sidebar-tab-spend')).toBeTruthy();
+      expect(screen.getByTestId('left-sidebar-tab-pulse')).toBeTruthy();
     });
 
     it('shows Convos again the moment the flag is flipped on', () => {
@@ -558,7 +549,7 @@ describe('<LeftSidebar> shell', () => {
       // The ungated rail is otherwise intact — the removal came out of the
       // MIDDLE of TABS, so these neighbours are what a bad re-index disturbs.
       expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
-      expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
+      expect(screen.getByTestId('left-sidebar-tab-pulse')).toBeTruthy();
     });
 
     // ⚠ THE FLAG IS NOT AN UNDO — the UI counterpart of the contract D-080 set
@@ -617,7 +608,7 @@ describe('<LeftSidebar> shell', () => {
       expect(TAB_IDS).not.toContain('overwatch');
       // Survivors pinned too, so this reds on a bad splice and not only a rename.
       expect(TAB_IDS).toContain('accounts');
-      expect(TAB_IDS).toContain('agents');
+      expect(TAB_IDS).toContain('pulse');
     });
 
     // P-068/D-098 DELETED the tier flag — the last read (adv/AdvNowRunning) went
@@ -650,58 +641,20 @@ describe('<LeftSidebar> shell', () => {
     expect(document.documentElement.style.getPropertyValue('--left-sidebar-w')).toBeTruthy();
   });
 
-  // Agents + System (owner ask 2026-07-25, split 2026-07-26) — the automation-
-  // control tabs. These exist so scheduled agents that SPEND TOKENS are visible and
-  // pausable; if a refactor drops them from TABS the owner silently loses that
-  // control again, which is exactly the failure they were added to fix.
-  it('opens the Agents tab from ?lst=agents', async () => {
-    renderRail('?lst=agents');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('agents');
-    expect(await screen.findByTestId('panel-agents')).toBeTruthy();
-    // Re-pointed off `panel-queen` when that tab retired (P-063/D-096): the point
-    // is that the DEFAULT panel is not also mounted, which needs a subject that
-    // could actually mount.
-    expect(screen.queryByTestId('panel-accounts')).toBeNull();
-  });
-
-  it('opens the System tab from ?lst=system', async () => {
-    renderRail('?lst=system');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('system');
-    expect(await screen.findByTestId('panel-system')).toBeTruthy();
-  });
-
-  // This anchored on the Kettle tab until 2026-08-11 (owner placement 2026-07-25:
-  // Agents + System sit in the slots Blender + Docs held, right after the Kettle).
-  // The Kettle retired — P-059/D-083 — so the anchor moved LEFT to Mug, the
-  // surviving neighbour, rather than the assertion being dropped: the owner's
-  // placement is about what Agents/System follow, and that constraint outlives the
-  // particular tab that used to precede them.
-  //
-  // The old `if (kettle > -1)` guard existed because the Kettle was flag-gated.
-  // Anchoring on a gated tab meant the adjacency silently went UNASSERTED whenever
-  // the gate was off — and with the tab deleted that guard would have been false
-  // forever, leaving a test that passes while checking nothing. The anchor is now
-  // an UNGATED tab, which removes that failure mode entirely rather than working
-  // around it by forcing a flag on.
-  it('places Agents and System immediately after the Papercup tab', () => {
+  // The middle pane's one operational replacement follows Papercup; automation
+  // identity and controls live in the full-width main tab instead.
+  it('opens Pulse from ?lst=pulse and places it immediately after Papercup', async () => {
     H.blanketFlagOn = true;
-    renderRail();
+    renderRail('?lst=pulse');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('pulse');
+    expect(await screen.findByTestId('panel-pulse')).toBeTruthy();
     const ids = Array.from(document.querySelectorAll('[role="tab"]')).map((el) =>
       el.getAttribute('data-testid'),
     );
-    // The anchor has walked LEFT twice as tabs retired out from under it: Kettle
-    // (P-059/D-083) → Mug (P-063/D-096) → Papercup, the surviving left-hand
-    // neighbour. Each time the ANCHOR moved rather than the assertion being
-    // dropped, because the owner's placement (2026-07-25) is about what
-    // Agents/System FOLLOW, and that constraint outlives whichever tab precedes
-    // them.
     const anchor = ids.indexOf('left-sidebar-tab-sentinel');
-    const agents = ids.indexOf('left-sidebar-tab-agents');
-    const system = ids.indexOf('left-sidebar-tab-system');
+    const pulse = ids.indexOf('left-sidebar-tab-pulse');
     expect(anchor).toBeGreaterThan(-1);
-    expect(agents).toBeGreaterThan(-1);
-    expect(system).toBe(agents + 1);
-    expect(agents).toBe(anchor + 1);
+    expect(pulse).toBe(anchor + 1);
   });
 
   // The retired ids must not silently resolve to something else — a stale
@@ -712,28 +665,18 @@ describe('<LeftSidebar> shell', () => {
     expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).not.toBe('blender');
   });
 
-  /**
-   * The other half of the deep-link contract (owner report 2026-07-27: "what does
-   * the Open Arming button do, it doesnt seem to do anything").
-   *
-   * `lst` is parseAsStringLiteral(TAB_IDS), so a link writing a NON-member id is
-   * silently rejected and the rail falls back to its default tab. The Learning
-   * tab's Open Arming button used to write the retired `blender` id: the test
-   * above asserted blender does not resolve, and a LearningTab test asserted the
-   * button writes blender — both passed, and between them they encoded a dead
-   * button as intended behaviour. This test pins the LIVE target so a future tab
-   * rename breaks here instead of silently neutering the button again. Keep it in
-   * sync with LearningTab's ARMING_SIDEBAR_TAB.
-   */
-  it("resolves the tab Learning's Open Arming deep-links to (ARMING_SIDEBAR_TAB = 'agents')", () => {
-    renderRail('?lst=agents');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('agents');
-  });
-
-  it('exports TAB_IDS containing that target, so deep-linkers can be validated', async () => {
+  it('retires the duplicate Agents/System/Spend catalog ids and exports Pulse', async () => {
     const { TAB_IDS } = await import('./LeftSidebar');
-    expect(TAB_IDS).toContain('agents');
+    expect(TAB_IDS).toContain('pulse');
+    expect(TAB_IDS).not.toContain('agents');
+    expect(TAB_IDS).not.toContain('system');
+    expect(TAB_IDS).not.toContain('spend');
     expect(TAB_IDS).not.toContain('blender');
+    for (const stale of ['agents', 'system', 'spend']) {
+      cleanup();
+      renderRail(`?lst=${stale}`);
+      expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts');
+    }
   });
 
 });

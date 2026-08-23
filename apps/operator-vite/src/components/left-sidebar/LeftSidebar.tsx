@@ -43,7 +43,7 @@ import type { BoundLexicon } from '@papercusp/lexicon';
 // nothing else in this rail uses it.
 // `Network` left with the Pots tab (2026-08-10) — it was that tab's icon and
 // nothing else in this rail uses it.
-import { CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Activity, CupSoda, KeyRound, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -61,8 +61,8 @@ import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 // 2026-08-10 by owner directive, and `PotsTab.tsx` has since been DELETED (P-077).
 // The two surfaces it hosted that are NOT retired tier code — `PotFederationStatus`
 // and the p2p roster, both readers of the SHARED POT SUBSTRATE that D-003 says
-// SURVIVES the retirement — were re-homed into the System tab rather than deleted
-// with their host; the roster lives in `PotPeerRoster.tsx` now. See SystemTab.tsx
+// SURVIVES the retirement — were re-homed into Workspace pulse rather than deleted
+// with their host; the roster lives in `PotPeerRoster.tsx` now.
 // for why that tab is their home. Only the per-pot start/stop control
 // (`LocalPotsControl`) went with the tier.)
 // 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
@@ -87,37 +87,19 @@ const AccountsTab = lazy(() => import('./AccountsTab'));
 // sidebar is the quick live-override surface; full workspace settings hold the
 // defaults. Flag-gated (PAPERCUP); hidden until the role is live.
 const PapercupTab = lazy(() => import('./PapercupTab'));
-// 🤖 Agents + ⚙ System — the scheduled-work rail, split by whether a fire RUNS A
-// MODEL (owner ask 2026-07-26: "its an 'agents' tab, only the actual llm runs
-// should show there, other things that run in a schedule lets make a new tab for
-// all the routines that are deterministic").
-//
-// These two REPLACE the former Blender (🌀 learning) and Docs (📄 documentation)
-// tabs, whose rows redistributed into the split — the learning pipeline and doc
-// repair are model runs and live in Agents; knowledge-pack maintenance and the doc
-// freshness sweep are deterministic and live in System. Subject was never the axis
-// the owner needed; "does this spend money" was. The Blender's Arming (spend-gate)
-// section moved into Agents, beside the things it gates.
-//
-// The lenses partition the catalog by construction (`spend !== 'none'` vs
-// `=== 'none'`), so a routine cannot fall between them — which is how the old
-// category wiring lost 40 rows to an `infra` category no pane claimed.
-const AgentsTab = lazy(() => import('./AgentsTab'));
-const SystemTab = lazy(() => import('./SystemTab'));
+// Workspace pulse — the middle pane now carries live attention and handoffs,
+// not a second automation catalog. Its shortcuts preserve HUD, Health, shared
+// federation, peer-roster, and Ask-an-agent access; schedules, controls, history,
+// and spend live in the full-width /adv Automations tab.
+const WorkspacePulseTab = lazy(() => import('./WorkspacePulseTab'));
 // 💬 Conversations — the curated conversation stream (Q&A, group decisions,
 // agent chats, work-item mail) at rail width (WI-5754, owner ask 2026-07-25).
 // It is the SAME four SSE-cached reads /adv's Conversations tab consumes — see
 // components/conversations/unified-conversations for the shared composition —
 // re-laid-out as a single drill-in column. Reading only: composing a question
-// lives in the Agents tab (AskAgentPane), so the rail has exactly one place to
+// lives in Workspace pulse (AskAgentPane), so the rail has exactly one place to
 // ask and one place to read.
 const ConversationsTab = lazy(() => import('./ConversationsTab'));
-// 💰 Spend — the ONE workspace-wide cost surface (owner correction 2026-07-25).
-// Blender/Docs/Agents each had their own "Spend" lane, but spend is recorded per
-// agent ROLE with no link back to the spawning routine, so each pane hand-picked
-// overlapping roles and reported the SAME dollars as its own. Cost is a peer tab
-// now, sitting right of Agents, with the attribution limit stated on it.
-const SpendTab = lazy(() => import('./SpendTab'));
 // (The 🎯 Goals tab is REMOVED from this rail — owner directive 2026-08-09,
 // verbatim: "remove the goals middle pane tab entirely. We already have a goals
 // tab inside the hud tab lets just use that." It shipped here two days earlier
@@ -149,17 +131,17 @@ const SpendTab = lazy(() => import('./SpendTab'));
 // brand nouns resolve through the flag-gated pack — classic/public shows Pot,
 // Brain, Operator, Fleet; the-hive skin shows Hive, Queen, Sentinel, Colony.
 // Overwatch has no TermKey (D-002) so it stays literal in both packs.
-// ORDER IS OWNER-SET (2026-07-25, split 2026-07-26; Pots removed 2026-08-10):
-// Accounts · Papercup · Mug · Kettle · Agents · System · Spend. The owner read the
+// ORDER IS OWNER-SET (Automations consolidation 2026-08-22):
+// Accounts · Papercup · Pulse. The owner read the
 // rail left-to-right as "who am I / what am I running / who talks to me"
 // (Accounts → Pots → Papercup) before the autonomous machinery (Mug → Kettle → the
-// two scheduled-work panes). With Pots gone that reading is now Accounts →
-// Papercup; the REST of the order is untouched, deliberately — removing one entry
-// must not become licence to re-sort the others.
+// scheduled-work surfaces). Those catalogs now live in the workspace-wide
+// Automations main tab; Pulse is their live-attention replacement here.
 // Tab IDS ARE FROZEN — `?lst=<id>` deep links, ui:dispatch, and the collapsed rail
 // buttons key on them — so reordering only moves array entries; never rename an id
 // to match a new position. (`blender` and `docs` are RETIRED ids: their panes were
-// dissolved into the Agents/System split. A stale `?lst=blender` deep link now
+// dissolved into the Agents/System split, which was itself replaced by the
+// full-width Automations tab. A stale `?lst=blender` deep link now
 // falls through to the default tab rather than resolving.)
 const TABS = [
   { id: 'accounts', label: (_t: BoundLexicon) => 'Accounts', icon: KeyRound, tip: (_t: BoundLexicon) => 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
@@ -179,8 +161,8 @@ const TABS = [
   // asked for removal, not "behind a testing flag" (his words for Convos).
   // `PotsTab.tsx` itself is now deleted too (P-077), but NOT its contents: the
   // federation panel and the p2p roster were SURVIVING shared-pot substrate
-  // (D-003/D-069) whose only surface this tab was, and both were re-homed into
-  // the System tab first — see SystemTab.tsx. `LocalPotsControl` is the one part
+  // (D-003/D-069) whose only surface this tab was, and both are now re-homed into
+  // Workspace pulse. `LocalPotsControl` is the one part
   // that went with the tier: adv/PotsRunningPill (P-075) and this tab were its
   // only two mounts, so D-070's deferred deletion landed with P-077.)
   // Cup-cast nav icons (restore-pot-lexicon D-006): Papercup→CupSoda 🥤.
@@ -207,15 +189,7 @@ const TABS = [
   // (🎯 Goals sat HERE, between Kettle and Agents, from 2026-08-07 to 2026-08-09.
   // Removed on owner directive — see the note above the imports. The HUD's Goals
   // tab is the one goals surface now.)
-  // 🤖 Agents + ⚙ System sit immediately after the Mug tab (they followed the
-  // Kettle until it retired on 2026-08-11 — P-059/D-083), in the
-  // slots Blender + Docs held — owner placement 2026-07-25, split 2026-07-26.
-  // Agents leads: it is the one that costs money. Literal labels in both lexicon
-  // packs — they name concrete automation surfaces, not cup-cast brand nouns, so
-  // there is no TermKey to resolve.
-  { id: 'agents', label: (_t: BoundLexicon) => 'Agents', icon: Bot, tip: (_t: BoundLexicon) => 'Scheduled work that RUNS A MODEL — loops, wakes, learning, doc repair. Everything here can spend money', render: (a: boolean) => <AgentsTab active={a} /> },
-  { id: 'system', label: (_t: BoundLexicon) => 'System', icon: Cog, tip: (_t: BoundLexicon) => 'Deterministic scheduled work — git sync, release gate, GC, health probes. None of it spends money', render: (a: boolean) => <SystemTab active={a} /> },
-  { id: 'spend', label: (_t: BoundLexicon) => 'Spend', icon: Coins, tip: (_t: BoundLexicon) => 'What every agent in this workspace cost over the last 7 days', render: (a: boolean) => <SpendTab active={a} /> },
+  { id: 'pulse', label: (_t: BoundLexicon) => 'Pulse', icon: Activity, tip: (_t: BoundLexicon) => 'Workspace pulse — live agents, system warnings, handoffs, and shortcuts to the full Automations, HUD, and Health tabs', render: (a: boolean) => <WorkspacePulseTab active={a} /> },
   // 💬 Conversations sits LAST (owner ask 2026-07-25). Appending rather than
   // inserting keeps the owner-set order of every tab before it untouched — the
   // order is pinned by a test precisely so a later addition can't quietly

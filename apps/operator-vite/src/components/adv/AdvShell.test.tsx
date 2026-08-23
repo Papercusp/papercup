@@ -260,9 +260,9 @@ describe('AdvShell — strip + header', () => {
     const header = document.querySelector('.pc-advshell__header')!;
     expect(header.firstElementChild?.className).toContain('pc-advshell__tabs');
     // D-001 (owner decision, 2026-07-26): only the PRIMARY_ADV_TAB_IDS set
-    // renders as real Tabs.Trigger elements — Overview + HUD, plus Work and
-    // Learning promoted out of the More menu by later owner asks the same day.
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    // renders as real Tabs.Trigger elements — Overview + HUD + Automations,
+    // plus Work and Learning promoted out of the More menu.
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.queryByRole('tab', { name: 'overwatch' })).toBeNull();
     // Tab-strip overflow affordance (owner ask 2026-06-15 #1): the scroll
     // chevrons are wired into the strip (CSS reveals them only when clipped, so
@@ -271,6 +271,7 @@ describe('AdvShell — strip + header', () => {
     expect(document.querySelector('button.pc-advshell__tabnav--right')).toBeTruthy();
     // labels render lowercased in the trigger span
     expect(screen.getByRole('tab', { name: 'hud' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'automations' })).toBeTruthy();
     // 'harnesses' is the Work tab and sits right of HUD on the strip (owner ask
     // 2026-07-26); its old "working" label is gone.
     expect(screen.getByRole('tab', { name: 'work' })).toBeTruthy();
@@ -310,9 +311,9 @@ describe('AdvShell — strip + header', () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
-    // Work + Learning are workspace-level (WORKSPACE_TAB_IDS), so they survive
+    // Automations, Work, and Learning are workspace-level, so they survive
     // the All-Pots filter alongside Overview + HUD.
-    expect(tabs).toEqual(['overview', 'hud', 'work', 'learning']);
+    expect(tabs).toEqual(['overview', 'hud', 'automations', 'work', 'learning']);
   });
 
   it('keeps a per-pot tab pinned (no snap to Overview) under All scope — reachable via More, and the trigger reads active', async () => {
@@ -362,6 +363,7 @@ describe('AdvShell — "More" menu (D-001 mitigations: grouped, searchable, rece
     expect(items).not.toContain('Work');
     expect(items).not.toContain('Working');
     expect(items).not.toContain('Learning');
+    expect(items).not.toContain('Automations');
   });
 
   it('is type-to-filter searchable: typing narrows to matching sections', async () => {

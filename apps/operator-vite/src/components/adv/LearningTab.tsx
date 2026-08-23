@@ -17,7 +17,6 @@ import {
   useQueryStates,
   parseAsStringEnum,
   parseAsString,
-  parseAsBoolean,
 } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -510,44 +509,24 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
   "throughput",
 ]);
 
-/** P-009: the one deep-link the teaching empty states and the orientation
- *  banner share — opens the left rail on the Blender pane, whose Arming section
- *  is the switchboard every "make data appear here" action points at. Writes
- *  the SAME nuqs keys LeftSidebar owns (`lsb`/`lst`; tab ids are frozen). */
-/**
- * The LeftSidebar tab that actually contains the Arming (spend-gate) controls.
- *
- * ⚠ MUST be a member of LeftSidebar's `TAB_IDS` — `lst` is parsed with
- * `parseAsStringLiteral(TAB_IDS)`, so an id that is not in that list is SILENTLY
- * REJECTED and the sidebar falls back to its default tab. That is exactly how
- * this button rotted into a no-op: it wrote `lst: "blender"` back when a Blender
- * tab existed, the tab was later replaced, and the deep link kept "working"
- * (writing a URL param) while doing nothing visible (owner report 2026-07-27:
- * "what does the Open Arming button do, it doesnt seem to do anything").
- *
- * Arming today = `AutomationPane` with `lens="llm"` (its `showArming` gate),
- * which is rendered by `AgentsTab` under the `agents` tab — hence 'agents'.
- * `qAgents: 'routines'` picks that pane's lane explicitly instead of relying on
- * its default, so the link lands on Arming even if the lane default changes.
- * If you rename these, update this constant: the guard test asserts the pair.
- */
-export const ARMING_SIDEBAR_TAB = "agents";
-export const ARMING_AGENTS_LANE = "routines";
+/** Learning's arming teaching links now open the full-width Automations catalog.
+ * The middle pane no longer owns a duplicate Agents/System automation catalog. */
+export const ARMING_AUTOMATIONS_TAB = "automations";
 
 function useOpenArming(): () => void {
-  const [, setRail] = useQueryStates({
-    lsb: parseAsBoolean,
-    lst: parseAsString,
-    qAgents: parseAsString,
+  const [, setDestination] = useQueryStates({
+    tab: parseAsString,
+    autoView: parseAsString,
+    autoFilter: parseAsString,
   });
   return useCallback(
     () =>
-      void setRail({
-        lsb: true,
-        lst: ARMING_SIDEBAR_TAB,
-        qAgents: ARMING_AGENTS_LANE,
+      void setDestination({
+        tab: ARMING_AUTOMATIONS_TAB,
+        autoView: "catalog",
+        autoFilter: "ai",
       }),
-    [setRail],
+    [setDestination],
   );
 }
 

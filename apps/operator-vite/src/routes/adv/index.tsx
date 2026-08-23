@@ -17,6 +17,7 @@ import AdvHarnessPanelPage from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
 import HudView from '@/app/adv/hud/HudView';
+import AdvAutomationsTab from '../../components/adv/AdvAutomationsTab';
 // plans.css is still needed: the Create dock's panels (PlansListPanel,
 // PreviewPanel, …) reuse the `pc-plans__*` classes from PlansClient.
 import '@/app/admin/plans/plans.css';
@@ -83,6 +84,8 @@ function renderAdvTab(tab: AdvTabId, potScope: AdvScope) {
       // HUD — the session board: every live session grouped by what it needs
       // (adv-hud-fleet-board-2026-07-25). `/adv/HUD` redirects to ?tab=hud.
       return <HudView potScope={potScope} />;
+    case 'automations':
+      return <AdvAutomationsTab />;
     case 'conversations':
       return <AdvConversationsTab />;
     case 'learning':

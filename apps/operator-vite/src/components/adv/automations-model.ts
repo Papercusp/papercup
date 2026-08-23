@@ -1,0 +1,400 @@
+import type {
+  AutomationCatalog,
+  AutomationRoutine,
+} from '@papercusp/operator-core/lib/automation/catalog';
+import type {
+  ExternalTriggerAdminSnapshot,
+  ExternalTriggerBindingAdminRow,
+} from '@papercusp/operator-core/lib/external-triggers/admin';
+
+export type AutomationKind = 'triggered-plan' | 'ai-routine' | 'system-task';
+export type AutomationFilter = 'all' | 'triggered' | 'ai' | 'system' | 'paused';
+
+export interface AutomationPlanRow {
+  slug: string;
+  title?: string;
+  harness: string;
+  status: string;
+  nextAction?: string;
+  startStatus?: string;
+  maxImportance?: string;
+  scheduled?: boolean;
+  scheduleActive?: boolean;
+  scheduleKind?: 'recurring' | 'one-shot';
+  triggered?: boolean;
+  triggerSources?: Array<'schedule' | 'external' | 'manual'>;
+}
+
+export interface AutomationScheduleRow {
+  templateSlug: string;
+  title: string | null;
+  harnessSlug: string;
+  schedule: {
+    kind?: string;
+    rrule?: string;
+    cron?: string;
+    dtstart?: string;
+    tzid?: string;
+  } | null;
+  scheduledAt: string | null;
+  expiresAt: string | null;
+  tzid: string | null;
+  scheduleActive: boolean;
+}
+
+export interface AutomationOccurrenceRow {
+  templateSlug: string;
+  title: string | null;
+  harnessSlug: string;
+  occurrenceMs: number;
+  kind: 'recurring' | 'one-shot';
+  scheduleActive: boolean;
+  lastOutcome: string | null;
+}
+
+export interface AutomationTrigger {
+  id: string;
+  kind: 'schedule' | 'manual' | 'external';
+  provider: string;
+  label: string;
+  detail: string;
+  armed: boolean | null;
+  bindingId?: string;
+}
+
+export interface AutomationItem {
+  id: string;
+  kind: AutomationKind;
+  label: string;
+  description: string;
+  harness: string | null;
+  planSlug: string | null;
+  routine: AutomationRoutine | null;
+  triggers: AutomationTrigger[];
+  running: boolean;
+  paused: boolean;
+  needsAttention: boolean;
+  nextAt: number | null;
+  lastAt: number | null;
+  timingLabel: string;
+  spendLabel: string;
+}
+
+export interface AutomationActivityItem {
+  id: string;
+  automationId: string | null;
+  label: string;
+  detail: string;
+  status: string;
+  at: number;
+  costUsd: number | null;
+}
+
+export interface AutomationSourceItem {
+  id: string;
+  kind: 'schedule' | 'manual' | 'external';
+  label: string;
+  status: string;
+  detail: string;
+  bindingCount: number;
+  armedCount: number;
+}
+
+export interface BuildAutomationModelInput {
+  catalog: AutomationCatalog | null;
+  plans: readonly AutomationPlanRow[];
+  schedules: readonly AutomationScheduleRow[];
+  occurrences: readonly AutomationOccurrenceRow[];
+  external: ExternalTriggerAdminSnapshot | null;
+  nowMs?: number;
+}
+
+function planKey(harness: string, slug: string): string {
+  return `${harness}:${slug}`;
+}
+
+function parseTime(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export function relativeTime(value: number | null, nowMs = Date.now()): string {
+  if (value == null) return 'No upcoming run';
+  const delta = value - nowMs;
+  const abs = Math.abs(delta);
+  const suffix = delta >= 0 ? 'in' : 'ago';
+  if (abs < 60_000) return delta >= 0 ? 'now' : 'just now';
+  const minutes = Math.max(1, Math.round(abs / 60_000));
+  if (minutes < 90) return delta >= 0 ? `${suffix} ${minutes}m` : `${minutes}m ${suffix}`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return delta >= 0 ? `${suffix} ${hours}h` : `${hours}h ${suffix}`;
+  const days = Math.round(hours / 24);
+  return delta >= 0 ? `${suffix} ${days}d` : `${days}d ${suffix}`;
+}
+
+function scheduleLabel(row: AutomationScheduleRow | undefined): string {
+  if (!row) return 'Scheduled';
+  if (row.scheduledAt) return `Once · ${new Date(row.scheduledAt).toLocaleString()}`;
+  const raw = row.schedule?.rrule ?? row.schedule?.cron;
+  if (!raw) return 'Recurring schedule';
+  return raw.replace(/^RRULE:/i, '').replaceAll(';', ' · ');
+}
+
+function sourceForBinding(
+  binding: ExternalTriggerBindingAdminRow,
+  external: ExternalTriggerAdminSnapshot | null,
+): AutomationTrigger {
+  const source = external?.sources.find((candidate) => candidate.id === binding.sourceId);
+  const provider = binding.sourceKind.replaceAll('-', ' ');
+  return {
+    id: `external:${binding.id}`,
+    kind: 'external',
+    provider,
+    label: binding.eventPattern,
+    detail: source
+      ? `${source.status}${source.lastError ? ` · ${source.lastError}` : ''}`
+      : binding.sourceStatus,
+    armed: binding.armed,
+    bindingId: binding.id,
+  };
+}
+
+function planTriggers(
+  plan: AutomationPlanRow,
+  schedule: AutomationScheduleRow | undefined,
+  bindings: readonly ExternalTriggerBindingAdminRow[],
+  external: ExternalTriggerAdminSnapshot | null,
+): AutomationTrigger[] {
+  const sources = new Set(plan.triggerSources ?? []);
+  const triggers: AutomationTrigger[] = [];
+  if (sources.has('schedule') || schedule) {
+    triggers.push({
+      id: `schedule:${planKey(plan.harness, plan.slug)}`,
+      kind: 'schedule',
+      provider: 'schedule',
+      label: scheduleLabel(schedule),
+      detail: schedule?.tzid ?? schedule?.schedule?.tzid ?? 'Workspace time zone',
+      armed: schedule?.scheduleActive ?? plan.scheduleActive ?? false,
+    });
+  }
+  for (const binding of bindings) triggers.push(sourceForBinding(binding, external));
+  if (sources.has('manual')) {
+    triggers.push({
+      id: `manual:${planKey(plan.harness, plan.slug)}`,
+      kind: 'manual',
+      provider: 'manual',
+      label: 'Run now with declared plan inputs',
+      detail: 'Input readiness is checked by the plan start gate',
+      armed: null,
+    });
+  }
+  return triggers;
+}
+
+function routineSpendLabel(routine: AutomationRoutine): string {
+  if (routine.spend === 'none') return '$0 model spend';
+  if (routine.spend === 'unknown') return 'Spend classification unknown';
+  return 'Model spend possible';
+}
+
+function planItem(
+  plan: AutomationPlanRow,
+  schedule: AutomationScheduleRow | undefined,
+  occurrences: readonly AutomationOccurrenceRow[],
+  bindings: readonly ExternalTriggerBindingAdminRow[],
+  external: ExternalTriggerAdminSnapshot | null,
+  nowMs: number,
+): AutomationItem {
+  const triggers = planTriggers(plan, schedule, bindings, external);
+  const nextAt = occurrences
+    .filter((row) => row.occurrenceMs >= nowMs)
+    .reduce<number | null>((current, row) => current == null || row.occurrenceMs < current ? row.occurrenceMs : current, null);
+  const bindingRuns = bindings.map((binding) => binding.lastRun).filter((run) => run != null);
+  const lastAt = bindingRuns.reduce<number | null>((current, run) => {
+    const value = parseTime(run.triggeredAt);
+    return value != null && (current == null || value > current) ? value : current;
+  }, null);
+  const running = plan.startStatus === 'started' || bindingRuns.some((run) => run.status === 'running');
+  const automatic = triggers.filter((trigger) => trigger.kind !== 'manual');
+  const paused = automatic.length > 0 && automatic.every((trigger) => trigger.armed === false);
+  const needsAttention =
+    plan.maxImportance === 'urgent' ||
+    bindingRuns.some((run) => run.status === 'failed' || Boolean(run.error));
+  return {
+    id: `plan:${planKey(plan.harness, plan.slug)}`,
+    kind: 'triggered-plan',
+    label: plan.title ?? plan.slug,
+    description: plan.nextAction ?? `Triggered plan in ${plan.harness}`,
+    harness: plan.harness,
+    planSlug: plan.slug,
+    routine: null,
+    triggers,
+    running,
+    paused,
+    needsAttention,
+    nextAt,
+    lastAt,
+    timingLabel: paused ? 'Automatic triggers paused' : nextAt != null ? `Next ${relativeTime(nextAt, nowMs)}` : `${triggers.length} installed trigger${triggers.length === 1 ? '' : 's'}`,
+    spendLabel: 'Run-linked cost available in details',
+  };
+}
+
+function routineItem(routine: AutomationRoutine, nowMs: number): AutomationItem {
+  const nextAt = parseTime(routine.nextFireAt);
+  const lastAt = parseTime(routine.lastFiredAt);
+  const kind: AutomationKind = routine.spend === 'none' ? 'system-task' : 'ai-routine';
+  return {
+    id: `routine:${routine.name}:${routine.installSlug}`,
+    kind,
+    label: routine.name,
+    description: routine.controlWhy,
+    harness: routine.installSlug || null,
+    planSlug: null,
+    routine,
+    triggers: [{
+      id: `routine-trigger:${routine.name}:${routine.installSlug}`,
+      kind: routine.kind === 'triggered' ? 'external' : 'schedule',
+      provider: routine.source,
+      label: routine.triggerLabel ?? routine.cadence ?? 'Event-driven',
+      detail: routine.controlWhy,
+      armed: routine.armedState === 'unknown' ? null : routine.armedState === 'armed',
+    }],
+    running: routine.liveness === 'running',
+    paused: routine.armedState === 'disarmed' || !routine.active,
+    needsAttention: routine.needsAttention,
+    nextAt,
+    lastAt,
+    timingLabel: routine.liveness === 'stalled'
+      ? `Stalled · last ${relativeTime(lastAt, nowMs)}`
+      : nextAt != null
+        ? `Next ${relativeTime(nextAt, nowMs)}`
+        : routine.triggerLabel ?? routine.cadence ?? 'Event-driven',
+    spendLabel: routineSpendLabel(routine),
+  };
+}
+
+export function buildAutomationItems(input: BuildAutomationModelInput): AutomationItem[] {
+  const nowMs = input.nowMs ?? Date.now();
+  const schedules = new Map(input.schedules.map((row) => [planKey(row.harnessSlug, row.templateSlug), row]));
+  const occurrences = new Map<string, AutomationOccurrenceRow[]>();
+  for (const row of input.occurrences) {
+    const key = planKey(row.harnessSlug, row.templateSlug);
+    const group = occurrences.get(key) ?? [];
+    group.push(row);
+    occurrences.set(key, group);
+  }
+  const bindings = new Map<string, ExternalTriggerBindingAdminRow[]>();
+  for (const row of input.external?.bindings ?? []) {
+    const key = planKey(row.planHarnessSlug, row.planSlug);
+    const group = bindings.get(key) ?? [];
+    group.push(row);
+    bindings.set(key, group);
+  }
+
+  const items: AutomationItem[] = [];
+  for (const plan of input.plans) {
+    if (!plan.triggered && !(plan.triggerSources?.length)) continue;
+    const key = planKey(plan.harness, plan.slug);
+    items.push(planItem(
+      plan,
+      schedules.get(key),
+      occurrences.get(key) ?? [],
+      bindings.get(key) ?? [],
+      input.external,
+      nowMs,
+    ));
+  }
+  for (const routine of input.catalog?.routines ?? []) items.push(routineItem(routine, nowMs));
+
+  return items.sort((a, b) => {
+    if (a.needsAttention !== b.needsAttention) return a.needsAttention ? -1 : 1;
+    if (a.running !== b.running) return a.running ? -1 : 1;
+    if (a.paused !== b.paused) return a.paused ? 1 : -1;
+    if ((a.nextAt ?? Infinity) !== (b.nextAt ?? Infinity)) return (a.nextAt ?? Infinity) - (b.nextAt ?? Infinity);
+    return a.label.localeCompare(b.label);
+  });
+}
+
+export function filterAutomationItems(
+  items: readonly AutomationItem[],
+  filter: AutomationFilter,
+  query: string,
+): AutomationItem[] {
+  const needle = query.trim().toLocaleLowerCase();
+  return items.filter((item) => {
+    if (filter === 'triggered' && item.kind !== 'triggered-plan') return false;
+    if (filter === 'ai' && item.kind !== 'ai-routine') return false;
+    if (filter === 'system' && item.kind !== 'system-task') return false;
+    if (filter === 'paused' && !item.paused) return false;
+    if (!needle) return true;
+    return [item.label, item.description, item.harness, item.planSlug, ...item.triggers.flatMap((trigger) => [trigger.provider, trigger.label])]
+      .some((value) => value?.toLocaleLowerCase().includes(needle));
+  });
+}
+
+export function buildAutomationActivity(input: BuildAutomationModelInput): AutomationActivityItem[] {
+  const items: AutomationActivityItem[] = [];
+  for (const run of input.external?.recentRuns ?? []) {
+    items.push({
+      id: `external-run:${run.id}`,
+      automationId: `plan:${planKey(run.planHarnessSlug, run.planSlug)}`,
+      label: `${run.planSlug} · ${run.sourceKind}`,
+      detail: run.error ?? run.eventPattern,
+      status: run.status,
+      at: parseTime(run.triggeredAt) ?? 0,
+      costUsd: null,
+    });
+  }
+  for (const routine of input.catalog?.routines ?? []) {
+    const at = parseTime(routine.lastFiredAt);
+    if (at == null) continue;
+    items.push({
+      id: `routine-run:${routine.name}:${routine.installSlug}:${at}`,
+      automationId: `routine:${routine.name}:${routine.installSlug}`,
+      label: routine.name,
+      detail: `${routine.source} · ${routine.cadence ?? routine.triggerLabel ?? 'event-driven'}`,
+      status: routine.needsAttention ? 'needs attention' : routine.liveness,
+      at,
+      costUsd: null,
+    });
+  }
+  return items.sort((a, b) => b.at - a.at);
+}
+
+export function buildAutomationSources(input: BuildAutomationModelInput): AutomationSourceItem[] {
+  const scheduled = input.plans.filter((plan) => plan.triggerSources?.includes('schedule'));
+  const manual = input.plans.filter((plan) => plan.triggerSources?.includes('manual'));
+  const result: AutomationSourceItem[] = [
+    {
+      id: 'source:schedule',
+      kind: 'schedule',
+      label: 'Schedule',
+      status: `${scheduled.filter((plan) => plan.scheduleActive).length} armed`,
+      detail: 'Recurring and one-shot plan schedules',
+      bindingCount: scheduled.length,
+      armedCount: scheduled.filter((plan) => plan.scheduleActive).length,
+    },
+    {
+      id: 'source:manual',
+      kind: 'manual',
+      label: 'Manual',
+      status: `${manual.length} input-enabled`,
+      detail: 'Run now through each plan’s declared input gate',
+      bindingCount: manual.length,
+      armedCount: manual.length,
+    },
+  ];
+  for (const source of input.external?.sources ?? []) {
+    result.push({
+      id: `source:${source.id}`,
+      kind: 'external',
+      label: source.kind.replaceAll('-', ' '),
+      status: source.status,
+      detail: source.lastError ?? (source.lastConnectedAt ? `Last connected ${new Date(source.lastConnectedAt).toLocaleString()}` : 'Not connected yet'),
+      bindingCount: source.bindingCount,
+      armedCount: source.armedBindingCount,
+    });
+  }
+  return result;
+}

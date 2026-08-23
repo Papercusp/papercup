@@ -730,10 +730,7 @@ const setTestingFlag = (on: boolean) =>
     evaluatedAt: Date.now(),
     source: "override",
   });
-import LearningTab, {
-  ARMING_AGENTS_LANE,
-  ARMING_SIDEBAR_TAB,
-} from "./LearningTab";
+import LearningTab, { ARMING_AUTOMATIONS_TAB } from "./LearningTab";
 
 beforeEach(() => {
   // Flags are a MODULE-level store, so an armed flag would leak into every later
@@ -743,6 +740,8 @@ beforeEach(() => {
   nuqsState.lview = "improvements";
   nuqsState.lane = "all";
   nuqsState.tab = null;
+  nuqsState.autoView = null;
+  nuqsState.autoFilter = null;
   nuqsState.grade = null;
   nuqsState.irail = null;
   nuqsState.lsrc = null;
@@ -2445,7 +2444,7 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     ).toContain("none yet");
   });
 
-  it("3. teaches on the empty list, and its Open Arming lands on the LIVE arming tab", () => {
+  it("3. teaches on the empty list, and its Open Arming lands on the Automations AI catalog", () => {
     improvementsResult = {
       ...improvementsResult,
       data: [
@@ -2476,13 +2475,10 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // The banner renders its own "Open Arming" — scope to the empty state, or
     // this asserts the wrong button (they share a hook, not a call site).
     fireEvent.click(within(empty).getByRole("button", { name: "Open Arming" }));
-    expect(nuqsState.lsb).toBe(true);
-    expect(nuqsState.lst).toBe(ARMING_SIDEBAR_TAB);
-    // Pinned literally: `lst` is parsed with parseAsStringLiteral(TAB_IDS), so a
-    // value outside that list is SILENTLY dropped and the link no-ops — which is
-    // exactly how the retired 'blender' id rotted while still writing a URL.
-    expect(nuqsState.lst).toBe("agents");
-    expect(nuqsState.qAgents).toBe(ARMING_AGENTS_LANE);
+    expect(nuqsState.tab).toBe(ARMING_AUTOMATIONS_TAB);
+    expect(nuqsState.tab).toBe("automations");
+    expect(nuqsState.autoView).toBe("catalog");
+    expect(nuqsState.autoFilter).toBe("ai");
   });
 
   it("3b. withholds the teaching copy when the list is empty because of a FILTER", () => {
@@ -3221,13 +3217,13 @@ describe("LearningTab — P-009 first-run orientation", () => {
     expect(screen.queryByText(/learns as you work/)).toBeNull();
   });
 
-  it("the banner's Open Arming deep-links the rail to the LIVE Arming tab (agents), not the retired blender id", () => {
+  it("the banner's Open Arming deep-links to the full-width Automations AI catalog", () => {
     render(<LearningTab />);
     fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
-    expect(nuqsState.lsb).toBe(true);
-    expect(nuqsState.lst).toBe(ARMING_SIDEBAR_TAB);
-    expect(nuqsState.lst).toBe("agents"); // pinned: a non-TAB_IDS value is silently dropped
-    expect(nuqsState.qAgents).toBe(ARMING_AGENTS_LANE); // lands on the Arming lane
+    expect(nuqsState.tab).toBe(ARMING_AUTOMATIONS_TAB);
+    expect(nuqsState.tab).toBe("automations");
+    expect(nuqsState.autoView).toBe("catalog");
+    expect(nuqsState.autoFilter).toBe("ai");
   });
 
   it("renders the visible view gloss for the active view (same source as the tab tooltips)", () => {
