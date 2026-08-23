@@ -49,12 +49,15 @@ describe('EI-18738872670541790 — verify-tauri-headless reclaims an abandoned (
 
   it('the picker loop attempts to reclaim before falling back to skipping past the display', () => {
     const loop = src.match(
-      /while DISPLAY=":\$DISPLAY_NUM" xdpyinfo >\/dev\/null 2>&1[\s\S]*?\n\s*done/,
+      /while x_display_taken "\$DISPLAY_NUM"; do[\s\S]*?\n\s*done/,
     )?.[0];
     expect(loop).toBeTruthy();
-    expect(loop).toContain('reap_stale_display_if_abandoned "$DISPLAY_NUM" && break');
-    // The pre-existing stale-socket skip (EI-16466) must still be intact alongside it.
-    expect(loop).toMatch(/\|\|\s*\[\s*-S\s*"\/tmp\/\.X11-unix\/X\$DISPLAY_NUM"\s*\]/);
+    expect(loop).toContain('reap_stale_display_if_abandoned "$DISPLAY_NUM" || true');
+    expect(loop).toContain('reap_orphaned_x_lock "$DISPLAY_NUM" || true');
+    // Re-test after every reclaim attempt: another blocker may still prevent a bind.
+    expect(loop).toContain('x_display_taken "$DISPLAY_NUM" || break');
+    // The pre-existing stale-socket skip (EI-16466) remains in the shared taken predicate.
+    expect(src).toContain('[ -S "/tmp/.X11-unix/X$1" ] && return 0');
   });
 
   it('a display with no live Xvfb defers to the orphaned-socket reclaimer, never the Xvfb-kill path', () => {
