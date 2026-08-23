@@ -507,6 +507,35 @@ function num(v: unknown): number | null {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
   return Number.isFinite(n) ? n : null;
 }
+
+export function currentGateInconclusive(
+  value: unknown,
+  repairQueue: unknown,
+): GitPipelineSnapshot['gate']['inconclusive'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const inc = value as Record<string, unknown>;
+  if (typeof inc.status !== 'string') return null;
+
+  // EI-21226444968466505: repair holds are projections of the serialized repair
+  // queue, not independent blockers. Queue cleanup used to leave the last
+  // `gate_health.inconclusive` blob behind, so every release read kept routing
+  // operators at a repair SHA that no longer had a queue, worktree, or fixer.
+  // A malformed/non-null queue stays fail-closed; only an authoritatively absent
+  // queue disproves these two queue-owned statuses.
+  if (
+    repairQueue == null &&
+    (inc.status === 'repair-in-progress' || inc.status === 'repair-staging-mismatch')
+  ) {
+    return null;
+  }
+
+  return {
+    status: inc.status,
+    candidate: typeof inc.candidate === 'string' ? inc.candidate : null,
+    detail: typeof inc.detail === 'string' ? inc.detail : null,
+    observedAtMs: num(inc.observedAtMs),
+  };
+}
 function strArr(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 }
@@ -1147,16 +1176,7 @@ export async function gitPipelineSnapshot(
       // by construction. Shape-checked rather than cast: a blob predating this field, or one
       // written by a version that shaped it differently, must read as "no abort recorded" rather
       // than as a half-populated abort a consumer would render with empty fields.
-      inconclusive: (() => {
-        const inc = gateHealth.inconclusive as Record<string, unknown> | null | undefined;
-        if (!inc || typeof inc !== 'object' || typeof inc.status !== 'string') return null;
-        return {
-          status: inc.status,
-          candidate: typeof inc.candidate === 'string' ? inc.candidate : null,
-          detail: typeof inc.detail === 'string' ? inc.detail : null,
-          observedAtMs: num(inc.observedAtMs),
-        };
-      })(),
+      inconclusive: currentGateInconclusive(gateHealth.inconclusive, gcMeta.repair_queue),
     },
     openConflict,
     windows: { day, week },

@@ -15,6 +15,7 @@ import {
   projectGreenCheckpointFireFreshness,
   GIT_SYNC_CONFLICT_MAX_AGE_MS,
   isGitSyncConflictCurrent,
+  currentGateInconclusive,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
@@ -34,6 +35,31 @@ describe('resolverModel', () => {
     expect(resolverModel()).toBe('opus:xhigh');
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus' })); // no merge-resolver key
     expect(resolverModel()).toBe('opus:xhigh');
+  });
+});
+
+describe('currentGateInconclusive', () => {
+  const mismatch = {
+    status: 'repair-staging-mismatch',
+    candidate: 'a'.repeat(40),
+    detail: 'repair patch is not on staging',
+    observedAtMs: 123,
+  };
+
+  it('suppresses a stale repair-owned hold once the authoritative queue is absent', () => {
+    expect(currentGateInconclusive(mismatch, null)).toBeNull();
+    expect(currentGateInconclusive({ ...mismatch, status: 'repair-in-progress' }, undefined)).toBeNull();
+  });
+
+  it('preserves repair holds while any queue payload remains', () => {
+    expect(currentGateInconclusive(mismatch, { phase: 'ready-to-verify' })).toEqual(mismatch);
+  });
+
+  it('preserves non-repair aborts independently of the repair queue', () => {
+    expect(currentGateInconclusive({ ...mismatch, status: 'migrations-pending' }, null)).toEqual({
+      ...mismatch,
+      status: 'migrations-pending',
+    });
   });
 });
 
