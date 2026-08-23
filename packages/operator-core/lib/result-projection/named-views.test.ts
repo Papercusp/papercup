@@ -327,8 +327,16 @@ describe('named result views — seeded registry integrity', () => {
     expect(orientView.ok && itemView.ok).toBe(true);
     if (!orientView.ok || !itemView.ok) return;
 
+    const longCheckpoint = 'checkpoint evidence '.repeat(200);
+    const itemSample = {
+      ...SAMPLE_WORK_ITEMS_GET,
+      results: SAMPLE_WORK_ITEMS_GET.results.map((result) => ({
+        ...result,
+        checkpoint: longCheckpoint,
+      })),
+    };
     const orient = applyNamedView(SAMPLE_COORD_ORIENT, orientView);
-    const item = applyNamedView(SAMPLE_WORK_ITEMS_GET, itemView);
+    const item = applyNamedView(itemSample, itemView);
     expect(orient.receipt.unmatchedFields ?? []).toEqual([]);
     expect(item.receipt.unmatchedFields ?? []).toEqual([]);
     expect(orient.receipt.budgetEnforced).toBeUndefined();
@@ -342,7 +350,7 @@ describe('named result views — seeded registry integrity', () => {
     expect(orientBody).toHaveProperty('recovery.checkpoints.0.id', 'WI-39919');
     expect(orientBody).toHaveProperty('codexLocks.lockMode', 'manual');
     expect(itemBody).toHaveProperty('results.0.holder.agreement', 'sole');
-    expect(itemBody).toHaveProperty('results.0.checkpoint', '## Re-claimed after my own release');
+    expect(itemBody).toHaveProperty('results.0.checkpoint', longCheckpoint);
     expect(itemBody).toHaveProperty('results.0.checkpointAgeMs', 106_146);
   });
 

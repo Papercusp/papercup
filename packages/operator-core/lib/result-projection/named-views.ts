@@ -100,7 +100,7 @@ export const NAMED_VIEWS: Readonly<Record<string, Readonly<Record<string, NamedV
 
     'coord:orient': Object.freeze({
       'recovery-critical': Object.freeze({
-        version: 1,
+        version: 2,
         purpose:
           'Cold-successor capsule: authoritative control/loop/checkpoint recovery, effective mission, and Codex lock mode.',
         budgetChars: 4800,
@@ -142,7 +142,7 @@ export const NAMED_VIEWS: Readonly<Record<string, Readonly<Record<string, NamedV
         version: 1,
         purpose:
           'Cold-successor item capsule: identity/state, live holder agreement, complete checkpoint, and checkpoint freshness.',
-        budgetChars: 3800,
+        budgetChars: 5400,
         fields: [
           'ok',
           'results[].ok',
