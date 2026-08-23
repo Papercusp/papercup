@@ -363,6 +363,12 @@ export type ReconcileAction =
    *  previous up/down state is HELD unchanged and nothing is notified. Distinct from 'healthy'
    *  precisely so it can never be read as evidence the unit is fine. */
   | { kind: 'run-in-flight'; unit: string }
+  /** EI-21232345359778222: the same down -> healthy transition as 'recovered', for an entry
+   *  whose `exitEncodesRunOnly` says its exit status reports the RUN, not the CONDITION. The
+   *  state changes are identical; what differs is the CLAIM we are entitled to broadcast —
+   *  "the last run exited 0", never "recovered". Kept as its own kind rather than a field on
+   *  'recovered' so a consumer cannot read the honest case by forgetting to check a flag. */
+  | { kind: 'run-succeeded'; unit: string }
   | {
       kind: 'report-only';
       unit: string;
@@ -437,7 +443,13 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
     }
     return {
       action: wasDown
-        ? { kind: 'recovered', unit: entry.name }
+        ? // EI-21232345359778222: for an entry whose exit status encodes only whether the RUN
+          // completed, this transition is NOT evidence the condition recovered. Same state
+          // change, weaker claim. See `SupervisionEntry.exitEncodesRunOnly` for the measurement
+          // (`live-federation-gate.sh` exits 0 on `GATE: FRESH-RED` just as it does on a green).
+          entry.exitEncodesRunOnly
+          ? { kind: 'run-succeeded', unit: entry.name }
+          : { kind: 'recovered', unit: entry.name }
         : // Emitted ONLY when true, so the steady-state healthy action keeps its exact previous
           // shape and a `firstObservation: false` never has to be asserted anywhere.
           { kind: 'healthy', unit: entry.name, ...(firstObservation ? { firstObservation: true } : {}) },
@@ -968,6 +980,10 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       show?.unitFileState !== undefined ||
       action.kind === 'healthy' ||
       action.kind === 'recovered' ||
+      // EI-21232345359778222: 'run-succeeded' is the SAME up-transition as 'recovered', only
+      // with a weaker broadcast — so it is observed for the identical reason. Omitting it here
+      // would have silently changed pause-clock behaviour for the one unit that carries the flag.
+      action.kind === 'run-succeeded' ||
       action.kind === 'run-in-flight'
     ) {
       observedThisTick.push(entry.unit);
@@ -1106,7 +1122,13 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
                   ? action.confirmedAbsent
                     ? `⚠ supervision: \`${entry.unit}\` not found by systemctl --user (LoadState=not-found — removed/never installed) — report-only`
                     : `⚠ supervision: \`${entry.unit}\` is not loaded by systemctl --user and its state could not be read — report-only (NOT confirmed missing; check \`systemctl --user status ${entry.unit}\`)`
-                  : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
+                  : // EI-21232345359778222: pair the down claim with the up claim. For a unit
+                    // whose exit status encodes only the RUN, "is down" over-states in the same
+                    // direction "recovered" did — and a reader who cannot pair the two messages
+                    // cannot tell which fact each one carries.
+                    entry.exitEncodesRunOnly
+                    ? `⚠ supervision: \`${entry.unit}\` last run exited NON-ZERO (the RUN failed or reported news — read the verdict writer for the actual verdict) (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`
+                    : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
               category: 'supervision',
             })
             .catch(() => {});
@@ -1118,6 +1140,26 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           .catch(() => {});
         // EI-19966318801100410: auto-resolve any give-up EI this unit had open. No-ops when
         // none is open (the normal case — most recoveries never went through a give-up at all).
+        await deps.resolveGiveUpEi?.({ unit: entry.unit }).catch(() => {});
+        break;
+      case 'run-succeeded':
+        // EI-21232345359778222: state the fact we actually hold, and name what it does NOT
+        // settle. The whole cost of this bug was one word: a reader saw `✅ … recovered`,
+        // reported the federation gate healthy, and had to retract it — the gate had exited 0
+        // on `GATE: FRESH-RED` while its tracked red stood and no witness had rerun. The
+        // disclaimer is IN the summary, not a doc note, because the summary is the only part
+        // that reaches the reader.
+        await deps
+          .notify({
+            summary:
+              `☑ supervision: \`${entry.unit}\` last run exited 0 (the RUN completed — NOT a ` +
+              `verdict: this unit exits 0 whether its subject is green or still red; read the ` +
+              `verdict writer before reporting recovery)`,
+            category: 'supervision',
+          })
+          .catch(() => {});
+        // Unchanged from 'recovered', and correct here: a give-up EI records that SUPERVISION
+        // gave up restarting the unit — a run-level fact, which a completed run does settle.
         await deps.resolveGiveUpEi?.({ unit: entry.unit }).catch(() => {});
         break;
       case 'healthy':
