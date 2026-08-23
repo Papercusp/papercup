@@ -510,12 +510,20 @@ export type FleetLaunchSlot =
  * on a different :3070 worker whose map was empty). Call AFTER createFleetIfAbsent —
  * the row must exist; a missing row fails OPEN (won, unrecorded) rather than wedging
  * the launch. `now` is injectable for deterministic window tests.
+ *
+ * `allowCountIncreaseWithinWindow` is the canary-first/top-up exception (EI-13483):
+ * a strictly higher declarative target may atomically advance the slot while a
+ * verified member is already live. The comparison and update remain ONE SQL
+ * statement, so concurrent callers asking for the same higher target still yield
+ * exactly one winner. Callers that use `count` as a wave size keep the historical
+ * time-window-only behavior by leaving the option false.
  */
 export async function claimFleetLaunchSlot(opts: {
   workspaceId: string;
   fleetSlug: string;
   count: number;
   windowMs: number;
+  allowCountIncreaseWithinWindow?: boolean;
   now?: number;
   sql?: Sql;
 }): Promise<FleetLaunchSlot> {
@@ -525,9 +533,20 @@ export async function claimFleetLaunchSlot(opts: {
     `UPDATE harness_shared.agent_fleets
         SET last_launch_at = $3, last_launch_count = $4, updated_at = $3
       WHERE workspace_id = $1 AND fleet_slug = $2
-        AND (last_launch_at IS NULL OR last_launch_at < $5)
+        AND (
+          last_launch_at IS NULL
+          OR last_launch_at < $5
+          OR ($6 AND COALESCE(last_launch_count, 0) < $4)
+        )
       RETURNING fleet_slug`,
-    [opts.workspaceId, opts.fleetSlug, now, opts.count, now - opts.windowMs],
+    [
+      opts.workspaceId,
+      opts.fleetSlug,
+      now,
+      opts.count,
+      now - opts.windowMs,
+      opts.allowCountIncreaseWithinWindow ?? false,
+    ],
   )) as unknown as Array<{ fleet_slug: string }>;
   if (won.length > 0) return { won: true, at: now };
   const prior = (await s.unsafe(

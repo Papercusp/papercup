@@ -2249,6 +2249,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
 
   it('opens only the DEFICIT when some members are live (2 requested, 1 alive → 1 opened)', async () => {
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1']);
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
     const res = await tool.handler(
@@ -2258,6 +2259,12 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(claimFleetLaunchSlot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        count: 2,
+        allowCountIncreaseWithinWindow: true,
+      }),
+    );
     expect(payload.message).toContain('deficit top-up: 1 already live of the 2 requested');
   });
 

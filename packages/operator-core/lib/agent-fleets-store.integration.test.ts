@@ -104,6 +104,71 @@ describe('claimFleetLaunchSlot (P-005 cross-worker idempotency)', () => {
     expect(refire).toEqual({ won: false, priorAt: t0, priorCount: 2 });
   });
 
+  it('atomically advances a higher target inside the window while suppressing duplicate scale-up calls (EI-13483)', async () => {
+    await insertFleet('canary-scale-up');
+    const t0 = 1_500_000;
+    const canary = await claimFleetLaunchSlot({
+      workspaceId: WS,
+      fleetSlug: 'canary-scale-up',
+      count: 1,
+      windowMs: WINDOW,
+      allowCountIncreaseWithinWindow: true,
+      now: t0,
+      sql: rootSql,
+    });
+    expect(canary).toEqual({ won: true, at: t0 });
+
+    const scaleUp = await claimFleetLaunchSlot({
+      workspaceId: WS,
+      fleetSlug: 'canary-scale-up',
+      count: 11,
+      windowMs: WINDOW,
+      allowCountIncreaseWithinWindow: true,
+      now: t0 + 40_000,
+      sql: rootSql,
+    });
+    expect(scaleUp).toEqual({ won: true, at: t0 + 40_000 });
+
+    const duplicate = await claimFleetLaunchSlot({
+      workspaceId: WS,
+      fleetSlug: 'canary-scale-up',
+      count: 11,
+      windowMs: WINDOW,
+      allowCountIncreaseWithinWindow: true,
+      now: t0 + 40_001,
+      sql: rootSql,
+    });
+    expect(duplicate).toEqual({ won: false, priorAt: t0 + 40_000, priorCount: 11 });
+  });
+
+  it('admits exactly one concurrent caller for the same higher in-window target (EI-13483)', async () => {
+    await insertFleet('canary-scale-race');
+    const t0 = 1_750_000;
+    await claimFleetLaunchSlot({
+      workspaceId: WS,
+      fleetSlug: 'canary-scale-race',
+      count: 1,
+      windowMs: WINDOW,
+      now: t0,
+      sql: rootSql,
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        claimFleetLaunchSlot({
+          workspaceId: WS,
+          fleetSlug: 'canary-scale-race',
+          count: 11,
+          windowMs: WINDOW,
+          allowCountIncreaseWithinWindow: true,
+          now: t0 + 40_000 + i,
+          sql: rootSql,
+        }),
+      ),
+    );
+    expect(results.filter((result) => result.won)).toHaveLength(1);
+  });
+
   it('the window elapsing re-opens the slot (a genuine second wave)', async () => {
     await insertFleet('second-wave');
     const t0 = 2_000_000;

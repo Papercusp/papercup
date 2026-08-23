@@ -2503,8 +2503,9 @@ export default defineTool({
         remoteSlot = await claimFleetLaunchSlot({
           workspaceId,
           fleetSlug,
-          count: openCount,
+          count,
           windowMs: RELAUNCH_SUPPRESS_MS,
+          allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
         });
       } catch (e: any) {
         return err(`Failed to check the fleet's launch guard: ${e?.message ?? e}`);
@@ -2846,8 +2847,9 @@ export default defineTool({
       slot = await claimFleetLaunchSlot({
         workspaceId,
         fleetSlug,
-        count: openCount,
+        count,
         windowMs: RELAUNCH_SUPPRESS_MS,
+        allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
       });
     } catch (e: any) {
       return err(`Failed to check the fleet's launch guard: ${e?.message ?? e}`);
@@ -2863,8 +2865,9 @@ export default defineTool({
         slot = await claimFleetLaunchSlot({
           workspaceId,
           fleetSlug,
-          count: openCount,
+          count,
           windowMs: RELAUNCH_SUPPRESS_MS,
+          allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
         });
       } catch {
         /* keep the lost slot — the window self-heals */
@@ -2893,8 +2896,9 @@ export default defineTool({
             slot = await claimFleetLaunchSlot({
               workspaceId,
               fleetSlug,
-              count: openCount,
+              count,
               windowMs: RELAUNCH_SUPPRESS_MS,
+              allowCountIncreaseWithinWindow: leaderRole === 'leader' && liveMembers > 0,
             });
           } catch {
             /* keep the lost slot — the window self-heals */
