@@ -1,7 +1,8 @@
 /**
- * Migration-901 acceptance against a real Postgres pool. The migration stays
- * `.DRAFT` in the shared tree while this suite applies it only to an isolated
- * database, proving the guards before the production migration is armed.
+ * Migration-901 acceptance against a real Postgres pool. During authoring the
+ * suite can read the reserved `.DRAFT`; after the guard suite passes and the
+ * migration is armed, it reads the canonical SQL. Either way, the SQL is
+ * applied only to an isolated database for this acceptance run.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
