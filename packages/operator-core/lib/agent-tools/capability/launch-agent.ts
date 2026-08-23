@@ -278,7 +278,7 @@ export default defineTool({
     // canonical saved profile has been resolved. It is deliberately absent
     // from the public zod schema, so ordinary fresh-launch behavior does not
     // change and callers cannot smuggle an unaudited recovery carry.
-    const savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' })
+    let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' })
       .__savedLaunchCarry;
     const isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     const isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
@@ -641,6 +641,7 @@ export default defineTool({
             savedLaunchSpec.effective.member.effort,
           );
           args.extraArgs ??= savedLaunchSpec.effective.member.extraArgs;
+          savedLaunchCarry ??= savedLaunchSpec.effective.member.carry;
           savedLaunchSpecMeta = {
             provenance: savedLaunchSpec.provenance,
             reusePath: savedLaunchSpec.reusePath,
@@ -836,6 +837,7 @@ export default defineTool({
               account: args.account ?? null,
               model: args.model ?? null,
               headless: !!args.headless,
+              carry: savedLaunchCarry ?? null,
               launchMode,
               extraArgs: args.extraArgs ?? null,
             })

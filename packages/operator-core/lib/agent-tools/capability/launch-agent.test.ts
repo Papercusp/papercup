@@ -582,6 +582,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(command).toContain('--model=sonnet:high');
     expect(command).toContain('--account=default');
     expect(command).toContain('--context-size=trimmed');
+    expect(command).toContain('--carry=warm');
     expect(command).toContain('--headless');
     expect(dataOf(res)?.launch).toMatchObject({
       mode: 'resume',
