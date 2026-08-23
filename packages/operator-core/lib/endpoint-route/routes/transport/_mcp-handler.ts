@@ -1011,6 +1011,7 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // (and any future transport) can reuse the same telemetry + quota
 // implementation. Don't fork the SQL across transports.
 import { PROJECTED_DEPS, backfillResultDoorOutputRef } from '../../../projected-tool-deps';
+import { isPreferredDoor } from '../../../code-run-batch-nudge';
 
 // EI-18803497769946984: names a tool that is holding the ambient workspace transaction
 // past ~45s, before Postgres's 60s idle timeout kills the backend and the caller gets a
@@ -1227,6 +1228,45 @@ function projectionMaterializationContext(ctx: UnifiedToolContext, needsFullSour
     contextTier: 'full',
     payloadTierOverride: 'full',
     transportCapExempt: true,
+  };
+}
+
+/**
+ * A projection on the outer `tools:invoke` call is intended for the target
+ * result, not the wrapper's guidance text. Forward it into the target args so
+ * the re-dispatch path applies it at the same boundary as a direct call.
+ *
+ * Keep an explicitly nested projection untouched: that is a deliberate
+ * two-level call, where the nested stage reduces the target and the outer
+ * stage reduces the wrapper result.
+ */
+function forwardToolsInvokeProjection(
+  toolName: string,
+  dispatchArgs: unknown,
+  projectionSpec: ProjectionSpec | null,
+): { dispatchArgs: unknown; projectionSpec: ProjectionSpec | null } {
+  if (toolName !== 'tools:invoke' || !projectionSpec || !dispatchArgs || typeof dispatchArgs !== 'object') {
+    return { dispatchArgs, projectionSpec };
+  }
+
+  const invokeArgs = dispatchArgs as Record<string, unknown>;
+  const nestedArgs = invokeArgs.args;
+  const nestedRecord =
+    nestedArgs && typeof nestedArgs === 'object' && !Array.isArray(nestedArgs)
+      ? (nestedArgs as Record<string, unknown>)
+      : nestedArgs === undefined
+        ? {}
+        : null;
+  if (!nestedRecord || PROJECTION_ARG in nestedRecord) {
+    return { dispatchArgs, projectionSpec };
+  }
+
+  return {
+    dispatchArgs: {
+      ...invokeArgs,
+      args: { ...nestedRecord, [PROJECTION_ARG]: projectionSpec },
+    },
+    projectionSpec: null,
   };
 }
 
@@ -2269,6 +2309,9 @@ const handler = createMcpHandler(
             // reserved control is exposed to the target's validated args.
             projectionNeedsFullSource = !('payloadTier' in dispatchArgs);
           }
+          const forwardedToolsInvokeProjection = forwardToolsInvokeProjection(toolName, dispatchArgs, projectionSpec);
+          dispatchArgs = forwardedToolsInvokeProjection.dispatchArgs;
+          projectionSpec = forwardedToolsInvokeProjection.projectionSpec;
           // Named result views (P-001) — the DIRECT path. Same helper, same
           // semantics as the nested `tools:invoke` path above; routing both
           // through one function is what keeps them from drifting.
@@ -2571,13 +2614,18 @@ const handler = createMcpHandler(
                 | {
                     truncated?: boolean;
                     spillUri?: string;
+                    // result-door.ts has always emitted this beside spillUri; it was simply not
+                    // declared here, so the filesystem path was dropped on the floor. It is the
+                    // join key that lets a later capability:read of the spill be correlated back
+                    // to the run that produced it (that read records the path in its args_json).
+                    spillPath?: string | null;
                     originalChars?: number;
                     originalBytes?: number;
                     reason?: string;
                     aggregate?: { exceeded?: boolean };
                   }
                 | undefined;
-              if (doorMeta?.truncated && (doorMeta.spillUri || toolName === 'code:run')) {
+              if (doorMeta?.truncated && (doorMeta.spillUri || isPreferredDoor(toolName))) {
                 const originalBytes = doorMeta.originalBytes ?? doorMeta.originalChars ?? 0;
                 void backfillResultDoorOutputRef({
                   workspaceId: dispatchSpawnCtx.workspaceId,
@@ -2586,11 +2634,20 @@ const handler = createMcpHandler(
                   runId: dispatchSpawnCtx.runId ?? null,
                   outputRef: doorMeta.spillUri ?? null,
                   outputSize: doorMeta.spillUri ? originalBytes : null,
-                  ...(toolName === 'code:run'
+                  // WI-40720 gap 3: this branch was `toolName === 'code:run'`, so a recipes:run or
+                  // orchestrate:run call could spill real bytes and record NO telemetry for them —
+                  // the rollout gates then graded a default-on orchestration suite on code:run
+                  // traffic alone. Widened to every preferred door via the one shared predicate.
+                  ...(isPreferredDoor(toolName)
                     ? {
                         metadataJson: {
                           returnedContextBytes: measureResultContextBytes(result),
                           spilledBytes: doorMeta.spillUri ? originalBytes : 0,
+                          // The scratch FILE path, distinct from the papercusp:// spillUri above.
+                          // A later capability:read of the spill records this same path in its
+                          // args_json, so stamping it here is what makes spill-resolution success
+                          // measurable at all — without it the two halves cannot be joined.
+                          ...(doorMeta.spillPath ? { spillPath: doorMeta.spillPath } : {}),
                           resultDoorReason: doorMeta.reason ?? 'per-result-budget-exceeded',
                           aggregateOutputEscape:
                             doorMeta.reason === 'aggregate-output-budget-exceeded' ||
