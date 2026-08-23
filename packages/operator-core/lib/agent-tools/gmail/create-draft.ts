@@ -28,6 +28,6 @@ export default defineTool({
     const workspaceId = ctx.workspaceId?.trim() || ctx.principal?.workspaceId?.trim();
     if (!workspaceId || workspaceId === '*') throw new Error('gmail_draft_workspace_required');
     const result = await draftResponseToGmailTriggerPlanRun(ctx.tx!, workspaceId, args.planRunId, args.text);
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...result }) }] };
+    return { data: { ok: true, ...result } };
   },
 });
