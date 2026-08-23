@@ -56,6 +56,16 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError(null, 'error', 'invalid_args: note: Too big')).toBe('caller');
   });
 
+  it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {
+    expect(
+      classifyToolError(
+        'handler_error',
+        'error',
+        'capability:computer — no sandbox desktop is leased to this agent. A desktop must be provisioned first',
+      ),
+    ).toBe('caller');
+  });
+
   it('high-volume NON-structural buckets never leak into the auto-implement (structural) lane', () => {
     // The "floods a lane" failure mode: a timeout / provider-429 / PG-exhaustion /
     // caller-arg shape mis-filed as a deterministic tool bug.

@@ -161,6 +161,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'yet another distinct caller mode (P-012 separation)',
   },
+  {
+    n: 5, errorCode: 'handler_error', status: 'error',
+    message: 'capability:computer — no sandbox desktop is leased to this agent. A desktop must be provisioned first',
+    expectedClass: 'caller',
+    note: 'desktop-only capability used before provisioning its required lease — caller precondition, not a structural tool defect',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {
