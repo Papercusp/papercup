@@ -13,7 +13,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 let rows: unknown[] = [];
 const sqlSpy = vi.fn(async () => rows);
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlSpy }),
 }));
 
