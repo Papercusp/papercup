@@ -5288,6 +5288,12 @@ init_esm();
 function safeKey(k) {
   return k.replace(/[^a-zA-Z0-9_]/g, "");
 }
+function isMissingIterativeScanParameter(error) {
+  const candidate = error;
+  const code = candidate?.code;
+  const message = typeof candidate?.message === "string" ? candidate.message : "";
+  return code === "42704" || /unrecognized configuration parameter[\s\S]*hnsw\.iterative_scan/i.test(message);
+}
 var ENTITY_STOPWORDS = /* @__PURE__ */ new Set([
   "the",
   "a",
@@ -5350,15 +5356,178 @@ var ENTITY_STOPWORDS = /* @__PURE__ */ new Set([
   "onto",
   "about",
   "above",
-  "below"
+  "below",
+  "against",
+  "through",
+  "during",
+  "without",
+  "between",
+  "among",
+  "because",
+  "although",
+  "though",
+  "if",
+  "until",
+  "unless",
+  "whether",
+  "which",
+  "who",
+  "whom",
+  "whose",
+  "what",
+  "where",
+  "why",
+  "how",
+  "has",
+  "have",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "must"
 ]);
+var ENTITY_CLAUSE_WORDS = /* @__PURE__ */ new Set([
+  "against",
+  "and",
+  "or",
+  "but",
+  "so",
+  "because",
+  "although",
+  "though",
+  "if",
+  "when",
+  "while",
+  "until",
+  "unless",
+  "then",
+  "than",
+  "whether",
+  "which",
+  "who",
+  "whom",
+  "whose",
+  "what",
+  "where",
+  "why",
+  "how",
+  "is",
+  "was",
+  "are",
+  "were",
+  "be",
+  "been",
+  "being",
+  "has",
+  "have",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "must"
+]);
+var ENTITY_NOUN_GERUNDS = /* @__PURE__ */ new Set([
+  "embedding",
+  "building",
+  "testing",
+  "training",
+  "routing",
+  "running",
+  "linking",
+  "indexing",
+  "caching",
+  "logging",
+  "parsing",
+  "streaming",
+  "rendering",
+  "deploying",
+  "releasing",
+  "scoping",
+  "staging",
+  "handling",
+  "loading",
+  "writing",
+  "reading",
+  "searching",
+  "matching",
+  "ranking",
+  "federating",
+  "migrating",
+  "processing",
+  "querying",
+  "fetching",
+  "syncing",
+  "spawning",
+  "checkpointing",
+  "compacting",
+  "orchestrating",
+  "scheduling",
+  "validating",
+  "reviewing",
+  "working",
+  "waiting",
+  "passing",
+  "failing"
+]);
+var ENTITY_VAGUE_LEADERS = /* @__PURE__ */ new Set([
+  "actual",
+  "apparent",
+  "different",
+  "entire",
+  "false",
+  "genuine",
+  "likely",
+  "new",
+  "only",
+  "other",
+  "possible",
+  "potential",
+  "prior",
+  "previous",
+  "real",
+  "same",
+  "single",
+  "true",
+  "whole"
+]);
+var ENTITY_ARTIFACT_PUNCTUATION = /[\`"|()[\]{}+,;:!?<>\u2014\u2013]/;
+var ENTITY_NOMINALIZATION = /(?:tion|sion|ment|ance|ence|ity|ness|al)$/;
+var ENTITY_PLURAL = /(?:s|es|ies)$/;
+function normalizeEntityWord(word) {
+  return word.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+}
 function isLowQualityCompoundEntity(text) {
   let t = String(text ?? "").trim().toLowerCase();
   if (!t) return true;
   t = t.replace(/^(?:the|a|an)\s+/, "");
-  const words = t.split(/\s+/).filter(Boolean);
+  const words = t.split(/\s+/).filter(Boolean).map(normalizeEntityWord).filter(Boolean);
   if (words.length < 2) return true;
   if (ENTITY_STOPWORDS.has(words[0]) || ENTITY_STOPWORDS.has(words[words.length - 1])) return true;
+  if (ENTITY_ARTIFACT_PUNCTUATION.test(t)) return true;
+  if (words.some((word) => ENTITY_CLAUSE_WORDS.has(word))) return true;
+  if (words.length >= 3 && words.some((word) => /['\u2019]s$/.test(word))) return true;
+  const first = words[0];
+  if (first.length >= 8 && first.endsWith("ing") && !ENTITY_NOUN_GERUNDS.has(first)) return true;
+  const hasNominalizedWord = words.slice(1).some(
+    (word) => word.length >= 5 && ENTITY_NOMINALIZATION.test(word)
+  );
+  const lastWord = words[words.length - 1];
+  const hasPluralTail = ENTITY_PLURAL.test(lastWord) && !/(?:ss|us|is)$/.test(lastWord);
+  if (words.length >= 3 && ENTITY_VAGUE_LEADERS.has(first) && hasNominalizedWord && hasPluralTail) {
+    return true;
+  }
   const hasContent = words.some((w) => w.length >= 3 && !ENTITY_STOPWORDS.has(w) && /[a-z]/.test(w));
   return !hasContent;
 }
@@ -5385,10 +5554,14 @@ function storeKindCond(alias, kind) {
 function splitTemporalControls(filters) {
   if (!filters) return { temporal: { includeSuperseded: false }, rest: void 0 };
   const { as_of, include_superseded, ...rest } = filters;
+  const hasAsOf = as_of !== void 0 && as_of !== null;
   const asOfMs = typeof as_of === "string" || typeof as_of === "number" ? new Date(as_of).getTime() : NaN;
+  if (hasAsOf && !Number.isFinite(asOfMs)) {
+    throw new RangeError("as_of must be a parseable timestamp");
+  }
   return {
     temporal: {
-      ...Number.isFinite(asOfMs) ? { asOf: new Date(asOfMs).toISOString() } : {},
+      ...hasAsOf ? { asOf: new Date(asOfMs).toISOString() } : {},
       includeSuperseded: include_superseded === true || include_superseded === 1 || include_superseded === "1" || include_superseded === "true"
     },
     rest
@@ -5454,29 +5627,43 @@ var CanonicalVectorStore = class {
   }
   /**
    * Whether this server understands `hnsw.iterative_scan` (pgvector >= 0.8).
-   * Probed ONCE per store and cached. An older build rejects the GUC with
-   * `unrecognized configuration parameter`, so we must never assume it
-   * exists \u2014 failing open (a narrower result) beats failing search entirely.
+   * Probed once per store and cached when the result is stable. An older build
+   * rejects the GUC with `unrecognized configuration parameter`, so that
+   * permanent capability answer is cached. A transient connection failure must
+   * not poison the process: failing open for that call (a narrower result)
+   * beats failing search entirely, and the next call gets another chance.
    */
   iterativeScanSupport = null;
   probeIterativeScan(pool) {
     if (!this.iterativeScanSupport) {
-      this.iterativeScanSupport = (async () => {
-        const conn = await pool.connect();
+      let probe;
+      probe = (async () => {
+        let conn = null;
         try {
+          conn = await pool.connect();
           await conn.query("BEGIN");
           await conn.query(`SET LOCAL hnsw.iterative_scan = relaxed_order`);
           return true;
-        } catch {
+        } catch (error) {
+          const permanentUnsupported = isMissingIterativeScanParameter(error);
+          console.warn(
+            permanentUnsupported ? "[memory] server does not support hnsw.iterative_scan; using the legacy capped scan" : "[memory] capability probe failed transiently; using the legacy capped scan for this call and will retry"
+          );
+          if (!permanentUnsupported && this.iterativeScanSupport === probe) {
+            this.iterativeScanSupport = null;
+          }
           return false;
         } finally {
-          try {
-            await conn.query("ROLLBACK");
-          } catch {
+          if (conn) {
+            try {
+              await conn.query("ROLLBACK");
+            } catch {
+            }
+            conn.release();
           }
-          conn.release();
         }
       })();
+      this.iterativeScanSupport = probe;
     }
     return this.iterativeScanSupport;
   }
@@ -5688,14 +5875,38 @@ var CanonicalVectorStore = class {
   async get(id) {
     const client = await this.getClient();
     const res = await client.query(
-      `SELECT id, payload FROM ${this.cfg.schema}.memory_canonical WHERE id = $1`,
+      `SELECT id, payload, valid_at, invalid_at, superseded_by
+         FROM ${this.cfg.schema}.memory_canonical WHERE id = $1`,
       [id]
     );
     if (res.rowCount === 0) return null;
-    return { id: res.rows[0].id, payload: res.rows[0].payload };
+    const row = res.rows[0];
+    return {
+      id: row.id,
+      payload: this.storeKind === "memory" ? foldValidity(row.payload, row, { includeSuperseded: false }) : row.payload
+    };
   }
   async update(id, vector, payload) {
-    await this.insert([vector], [id], [payload]);
+    if (vector.length !== this.cfg.embeddingModelDims) {
+      throw new Error(
+        `CanonicalVectorStore.update: vector dim ${vector.length} !== expected ${this.cfg.embeddingModelDims}`
+      );
+    }
+    const client = await this.getClient();
+    const vecTable = `${this.cfg.schema}.${this.cfg.vecTable}`;
+    const { validity: _validity, ...nextPayload } = payload ?? {};
+    await client.query(
+      `UPDATE ${this.cfg.schema}.memory_canonical
+          SET payload = payload || $2::jsonb, updated_at = now()
+        WHERE id = $1`,
+      [id, JSON.stringify(nextPayload)]
+    );
+    await client.query(
+      `INSERT INTO ${vecTable} (memory_id, vector, embedded_at)
+       VALUES ($1, $2::vector, now())
+       ON CONFLICT (memory_id) DO UPDATE SET vector = EXCLUDED.vector, embedded_at = now()`,
+      [id, toVectorLiteral(vector)]
+    );
   }
   /**
    * Patch a memory row's metadata WITHOUT re-embedding \u2014 a shallow merge of
@@ -6253,8 +6464,8 @@ async function buildClient() {
     let installedRequire = false;
     if (nlpFix && !hadGlobalRequire) {
       try {
-        const { createRequire } = await import("node:module");
-        gt.require = createRequire(import.meta.url);
+        const { createRequire: createRequire2 } = await import("node:module");
+        gt.require = createRequire2(import.meta.url);
         installedRequire = true;
       } catch {
       }
@@ -6822,9 +7033,11 @@ init_config();
 
 // ../../libs/generic/memory/src/local-embedder-worker.ts
 import { Worker } from "node:worker_threads";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute, join } from "node:path";
 var _worker = null;
 var _workerReady = null;
 var _nextId = 0;
@@ -6840,9 +7053,93 @@ function syncWorkerRef() {
   else _worker.unref();
   _refd = want;
 }
+var WORKER_SCRIPT_NAME = "local-embedder-worker.script.mjs";
+function runtimeFilename() {
+  try {
+    return typeof __filename === "string" ? __filename : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function runtimeMetaUrl() {
+  try {
+    return typeof import.meta.url === "string" ? import.meta.url : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function packageEntry() {
+  try {
+    const requireFn = typeof __require === "function" ? __require : (() => {
+      const url = runtimeMetaUrl();
+      const filename = runtimeFilename();
+      if (url?.startsWith("file:")) return createRequire(url);
+      if (filename && isAbsolute(filename)) return createRequire(filename);
+      return void 0;
+    })();
+    return requireFn?.resolve("@papercusp/memory");
+  } catch {
+    return void 0;
+  }
+}
+function ancestorDirectories(start, maxDepth = 8) {
+  const roots = [];
+  let current = resolve(start);
+  for (let i = 0; i <= maxDepth; i += 1) {
+    roots.push(current);
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return roots;
+}
+function resolveWorkerScriptPath(probe = {}) {
+  const exists = probe.exists ?? existsSync;
+  const filename = probe.filename === void 0 ? runtimeFilename() : probe.filename ?? void 0;
+  const metaUrl = probe.metaUrl === void 0 ? runtimeMetaUrl() : probe.metaUrl ?? void 0;
+  const cwd = probe.cwd === void 0 ? process.cwd() : probe.cwd ?? void 0;
+  const entry = probe.packageEntry === void 0 ? packageEntry() : probe.packageEntry ?? void 0;
+  const candidates = [];
+  const add = (candidate) => {
+    if (!candidate) return;
+    const absolute = resolve(candidate);
+    if (!candidates.includes(absolute)) candidates.push(absolute);
+  };
+  if (metaUrl?.startsWith("file:")) {
+    try {
+      add(join(dirname(fileURLToPath(metaUrl)), WORKER_SCRIPT_NAME));
+    } catch {
+    }
+  }
+  if (filename && isAbsolute(filename)) add(join(dirname(filename), WORKER_SCRIPT_NAME));
+  if (entry) {
+    add(join(dirname(entry), WORKER_SCRIPT_NAME));
+    add(join(dirname(dirname(entry)), "src", WORKER_SCRIPT_NAME));
+    add(join(dirname(dirname(entry)), "dist", WORKER_SCRIPT_NAME));
+  }
+  if (cwd) {
+    for (const root of ancestorDirectories(cwd)) {
+      add(join(root, WORKER_SCRIPT_NAME));
+      add(join(root, "src", WORKER_SCRIPT_NAME));
+      add(join(root, "dist", WORKER_SCRIPT_NAME));
+      add(join(root, "libs", "generic", "memory", "src", WORKER_SCRIPT_NAME));
+      add(join(root, "libs", "generic", "memory", "dist", WORKER_SCRIPT_NAME));
+    }
+  }
+  const found = candidates.find((candidate) => {
+    try {
+      return exists(candidate);
+    } catch {
+      return false;
+    }
+  });
+  if (found) return found;
+  throw new Error(
+    `Unable to locate ${WORKER_SCRIPT_NAME}; checked ${candidates.slice(0, 8).join(", ") || "(no candidates)"}.`
+  );
+}
 function workerPath() {
-  const here = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
-  return resolve(dirname(here), "local-embedder-worker.script.mjs");
+  return resolveWorkerScriptPath();
 }
 function ensureWorker() {
   if (_workerDisabled) return Promise.reject(new Error("worker disabled"));
@@ -7747,21 +8044,70 @@ function json(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) });
   res.end(payload);
 }
-function readBody(req) {
+var SidecarRequestAbortedError = class extends Error {
+  constructor() {
+    super("request_aborted");
+    this.name = "AbortError";
+  }
+};
+function trackRequestCancellation(req, res) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  const onRequestAborted = () => abort();
+  const onRequestClose = () => {
+    if (!req.complete) abort();
+  };
+  const onResponseClose = () => {
+    if (!res.writableEnded) abort();
+  };
+  req.once("aborted", onRequestAborted);
+  req.once("close", onRequestClose);
+  res.once("close", onResponseClose);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      req.off("aborted", onRequestAborted);
+      req.off("close", onRequestClose);
+      res.off("close", onResponseClose);
+    }
+  };
+}
+function readBody(req, signal) {
   return new Promise((resolve3, reject) => {
     let size = 0;
     const chunks = [];
-    req.on("data", (c) => {
+    let settled = false;
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = () => finish(reject, new SidecarRequestAbortedError());
+    const onData = (c) => {
       size += c.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error("body too large"));
+        finish(reject, new Error("body too large"));
         req.destroy();
         return;
       }
       chunks.push(c);
-    });
-    req.on("end", () => resolve3(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    };
+    const onEnd = () => finish(resolve3, Buffer.concat(chunks).toString("utf8"));
+    const onError = (error) => finish(reject, error);
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 function createEmbedSidecarServer(opts = {}) {
@@ -7821,20 +8167,48 @@ function createEmbedSidecarServer(opts = {}) {
   );
   let active = 0;
   const waiting = [];
+  function drainQueue() {
+    while (active < concurrency && waiting.length > 0) {
+      const next = waiting.shift();
+      if (next.started || next.settled) continue;
+      next.start();
+    }
+  }
+  const scheduleDrain = () => {
+    setTimeout(drainQueue, 5);
+  };
   const enqueue = (work) => {
-    const start = () => {
-      active++;
-      return Promise.resolve().then(work).finally(() => {
-        active--;
-        waiting.shift()?.();
-      });
-    };
-    if (active < concurrency) return start();
-    return new Promise((resolve3, reject) => {
-      waiting.push(() => {
-        start().then(resolve3, reject);
-      });
+    let resolveTask;
+    let rejectTask;
+    const promise = new Promise((resolve3, reject) => {
+      resolveTask = resolve3;
+      rejectTask = reject;
     });
+    const entry = {
+      started: false,
+      settled: false,
+      start: () => {
+        if (entry.started || entry.settled) return;
+        entry.started = true;
+        active++;
+        Promise.resolve().then(work).then(resolveTask, rejectTask).finally(() => {
+          active--;
+          scheduleDrain();
+        });
+      },
+      cancel: () => {
+        if (entry.started || entry.settled) return false;
+        const index = waiting.indexOf(entry);
+        if (index < 0) return false;
+        waiting.splice(index, 1);
+        entry.settled = true;
+        rejectTask(new SidecarRequestAbortedError());
+        return true;
+      }
+    };
+    if (active < concurrency) entry.start();
+    else waiting.push(entry);
+    return { promise, cancel: entry.cancel };
   };
   const cacheMax = opts.cacheMax ?? EMBED_CACHE_MAX_DEFAULT;
   const vecCache = /* @__PURE__ */ new Map();
@@ -7859,47 +8233,85 @@ function createEmbedSidecarServer(opts = {}) {
       vecCache.delete(oldest);
     }
   };
-  const computeCached = (key, work) => {
+  const computeCached = (key, work, signal) => {
+    if (signal.aborted) return Promise.reject(new SidecarRequestAbortedError());
     const cached = cacheGet(key);
     if (cached) {
       cacheHits++;
       return Promise.resolve(cached);
     }
-    const joined = inflight.get(key);
-    if (joined) {
+    let entry = inflight.get(key);
+    if (entry) {
       cacheHits++;
-      return joined;
+    } else {
+      cacheMisses++;
+      entry = { task: enqueue(work), consumers: 0 };
+      inflight.set(key, entry);
+      const owned2 = entry;
+      void owned2.task.promise.then(
+        (value) => {
+          if (owned2.consumers > 0) cachePut(key, value);
+        },
+        () => {
+        }
+      ).finally(() => {
+        if (inflight.get(key) === owned2) inflight.delete(key);
+      });
     }
-    cacheMisses++;
-    const run = enqueue(async () => {
-      const value = await work();
-      cachePut(key, value);
-      return value;
+    const owned = entry;
+    owned.consumers++;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      owned.consumers--;
+      if (owned.consumers === 0 && owned.task.cancel() && inflight.get(key) === owned) {
+        inflight.delete(key);
+      }
+    };
+    return new Promise((resolve3, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        release();
+        reject(new SidecarRequestAbortedError());
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+      owned.task.promise.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          release();
+          resolve3(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          release();
+          reject(error);
+        }
+      );
     });
-    inflight.set(key, run);
-    void run.then(
-      () => inflight.delete(key),
-      () => inflight.delete(key)
-    );
-    return run;
   };
-  const embedOneCached = (model, kind, text) => computeCached(`${model}:${kind}\0${text}`, async () => {
+  const embedOneCached = (model, kind, text, signal) => computeCached(`${model}:${kind}\0${text}`, async () => {
     const embed = await getEmbedder(model, kind);
     return embed(text);
-  });
-  const rerankOneCached = (model, query, text) => computeCached(`${model}\0${query}\0${text}`, async () => {
+  }, signal);
+  const rerankOneCached = (model, query, text, signal) => computeCached(`${model}\0${query}\0${text}`, async () => {
     const rerankFn = await getReranker(model);
     const scores = await rerankFn(query, [text]);
     if (scores.length !== 1 || typeof scores[0] !== "number" || !Number.isFinite(scores[0])) {
       throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
     }
     return [scores[0]];
-  }).then((boxed) => boxed[0]);
-  const handleEmbed = async (req, res) => {
+  }, signal).then((boxed) => boxed[0]);
+  const handleEmbed = async (req, res, signal) => {
     let parsed;
     try {
-      parsed = JSON.parse(await readBody(req));
+      parsed = JSON.parse(await readBody(req, signal));
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 400, { error: `invalid JSON body: ${e instanceof Error ? e.message : String(e)}` });
       return;
     }
@@ -7910,7 +8322,7 @@ function createEmbedSidecarServer(opts = {}) {
     }
     try {
       const vectors = await Promise.all(
-        v.texts.map((text) => embedOneCached(v.model, v.kind, text))
+        v.texts.map((text) => embedOneCached(v.model, v.kind, text, signal))
       );
       const body = {
         vectors,
@@ -7920,14 +8332,16 @@ function createEmbedSidecarServer(opts = {}) {
       };
       json(res, 200, body);
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 500, { error: `embed_failed: ${e instanceof Error ? e.message : String(e)}` });
     }
   };
-  const handleRerank = async (req, res) => {
+  const handleRerank = async (req, res, signal) => {
     let parsed;
     try {
-      parsed = JSON.parse(await readBody(req));
+      parsed = JSON.parse(await readBody(req, signal));
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 400, { error: `invalid JSON body: ${e instanceof Error ? e.message : String(e)}` });
       return;
     }
@@ -7937,7 +8351,7 @@ function createEmbedSidecarServer(opts = {}) {
       return;
     }
     try {
-      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text)));
+      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text, signal)));
       const body = {
         scores,
         runtime: EMBED_SIDECAR_RUNTIME,
@@ -7945,8 +8359,13 @@ function createEmbedSidecarServer(opts = {}) {
       };
       json(res, 200, body);
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 500, { error: `rerank_failed: ${e instanceof Error ? e.message : String(e)}` });
     }
+  };
+  const withRequestCancellation = (handler) => (req, res) => {
+    const cancellation = trackRequestCancellation(req, res);
+    void handler(req, res, cancellation.signal).finally(cancellation.dispose);
   };
   const handlers = {
     [EMBED_SIDECAR_CAP_HEALTHZ]: (_req, res) => {
@@ -7995,8 +8414,8 @@ function createEmbedSidecarServer(opts = {}) {
         concurrency
       });
     },
-    [EMBED_SIDECAR_CAP_EMBED]: (req, res) => void handleEmbed(req, res),
-    [EMBED_SIDECAR_CAP_RERANK]: (req, res) => void handleRerank(req, res)
+    [EMBED_SIDECAR_CAP_EMBED]: withRequestCancellation(handleEmbed),
+    [EMBED_SIDECAR_CAP_RERANK]: withRequestCancellation(handleRerank)
   };
   const capabilities = Object.keys(handlers);
   const server = http.createServer((req, res) => {

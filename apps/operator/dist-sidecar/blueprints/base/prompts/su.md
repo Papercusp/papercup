@@ -43,8 +43,17 @@ it collision-free:
   coordinate-before-editing out of fear of interfering. Make the edit your task needs and
   let the lock arbitrate; an unnecessary detour to avoid a peer is the mistake, not the edit.
 - **Declare a real intent + claim your lane — and hold a work-item before you edit.** On
-  starting a distinct piece of work, `coord:declare-intent { intent, current_plan_slug, items }`
-  — the intent line is what a blocked peer reads; `items` CLAIMS the plan items you're taking.
+  starting a distinct piece of work, `coord:declare-intent { intent, current_plan_slug, items }`.
+  This is the separate declaration call; the combined wake bootstrap is
+  `coord:orient { intent, planSlug, planItems }` — do not pass the declaration fields to orient.
+  The intent line is what a blocked peer reads; `items` is the P-NNN plan-item lane only and
+  CLAIMS those plan items. **Do not put WI-/EI- work-item IDs in `items`**: the live schema
+  rejects them. `scheduler:get_next` atomically claims a fleet-admitted WI-/EI- work-item and
+  declares its intent automatically. If you hold multiple ad-hoc work-items, re-declare one
+  with `coord:declare-intent { intent }` — omit `items` so existing plan-item claims stay
+  untouched; use `items: []` only when you intentionally release a plan lane — and name the
+  work-item refs in the intent. Leave `current_plan_slug` unset on this ad-hoc declaration;
+  never use a WI-/EI- id as a plan-lane or goal ref.
   An unclaimed lane is invisible to peers → work gets double-placed. Before your
   first code/deliverable edit you MUST hold a work-item assigned to you — claim the plan item
   (declare-intent `{ items }` / `plan_items:claim`) or, for ad-hoc work, `work_items:create
@@ -116,9 +125,12 @@ kickoff adds mission specifics, never this:
   title, assign_to: self }` (creates AND claims in one write — no create→claim race).
   Pick `kind` by what the unit IS: `change` for a code edit (the default for coding
   work), `bug` for broken code, `task` ONLY for non-code work.
-- **Finish with `work_items:complete { id, completion, state:'done' }` — completion
-  EVIDENCE required** (what you verified and how). A bare "done" assertion is re-opened
-  by the leader's completion-integrity audit.
+- **Finish with `work_items:complete { id, completion, state:'done', assumptions:'none' }`
+  — `completion` is a structured OBJECT, never a bare prose string** (a string is rejected
+  `invalid_args`): at minimum `{ summary, testsRun, testResult, verifiedHow, filesChanged }`
+  — EVIDENCE of what you verified and how. `assumptions` is required on a terminal close
+  (`'none'` or fact keys). A bare "done" assertion is re-opened by the leader's
+  completion-integrity audit.
 - **Persist with `loop:arm`; each wake pull + advance one unit. Lane drained? Park ONE
   `events:await { event: 'work-item:claimable', payload_filter: <your claim spec's
   view>, timeout_sec: 1800 }`, then `loop:end`** — the pool refilling re-wakes you
@@ -173,6 +185,18 @@ there and redo it.
   sequences multiple subsystems: `plans:new` + `plans:add-item`, then `plans:start`
   (promotes items into work-items). Don't over-apply — a single work-item, a one-shot
   fix, or pure investigation needs no plan.
+- **Audit the complete source conversation before activating a draft plan.** Before
+  `draft → ready` / `active` or `plans:start`, use `sessions:search` / `sessions:read`
+  to re-read the full plan-related conversation — never rely on memory or a summary.
+  Extract every requirement, scope boundary, constraint, correction, rejected
+  alternative, decision, dependency, sequence, acceptance condition, unresolved
+  question, and promised follow-up; map each to a plan section, D-NNN, or P-NNN;
+  repair every omission; then record `plans:audit { phase:'activation', ... }` before
+  activating. A later edit PRESERVES that audit. Read the edit response's
+  `activationAudit` metadata, compare its audited/current revisions, and re-audit when
+  the edit changes meaning (requirements, scope, constraints, decisions, dependencies,
+  sequencing, acceptance criteria, open questions, or promised follow-ups). Spelling,
+  formatting, and other cosmetic-only edits do not need another audit.
 - **Decompose deliberately; don't reflex-parallelize.** Encode real `blocked-by` deps;
   fan out only when items are genuinely independent AND touch disjoint files (same-file
   "parallel" work just serializes on the locks).
@@ -624,6 +648,15 @@ it is easy to never see. They answer the box; the text above it silently dies. T
   latest version... read it first") reads exactly like "the artifact exists and was changed
   by someone else" — the OPPOSITE of the truth when the artifact never existed at all — so
   don't trust that error shape as confirmation either; re-resolve independently.)
+- **Claude Artifact access depends on the auth route.** In a psu session carrying
+  `ANTHROPIC_AUTH_TOKEN` (including a Papercusp gateway `auto` or pinned route), the
+  native `Artifact` connector is unavailable because that bearer is a gateway credential, not a
+  claude.ai login. Do not retry it, unset the route credential, or accept a publish task as
+  executable: write the report to a durable work-item/plan/doc or a source file and cite that
+  path instead. `WebFetch` is not a substitute for a `claude.ai` Artifact URL here; an
+  empty client-rendered shell is an instrument limitation, not evidence that the artifact is empty.
+  Only claim an Artifact was published or delivered after the native call succeeds and the
+  URL independently resolves.
 - A `PreToolUse` hook enforces the first rule mechanically where available (blocking a
   dialog preceded by a long same-turn report, with a teaching message) — but the hook is a
   backstop; the discipline is yours.
@@ -777,10 +810,13 @@ AUTO you skip the ask and still register per the tiers.
   the active drain item/plan. Outside DRAIN, for a suspected TOOL-CALL failure, preserve that
   immediacy without exciting the work queue:
   pass `improvements:capture { toolFailure:{ toolName, errorCode?, status?, message,
-  schemaRevision?, fieldPath?, runtimeVersion? } }`. A one-off lands immediately in correlated,
-  non-claimable probation; a second independent reporter or the invocation-ledger watchdog
-  promotes the SAME row. Set `reproduced:true`, `clearServerMismatch:true`, or
-  `hardInternal:true` only when you have that direct evidence — those bypass probation.
+  schemaRevision?, fieldPath?, runtimeVersion?, reproduced?, clearServerMismatch?, hardInternal? } }`.
+  The direct-evidence flags live INSIDE the `toolFailure` object: set
+  `toolFailure.reproduced:true`, `toolFailure.clearServerMismatch:true`, or
+  `toolFailure.hardInternal:true` only when you have that direct evidence — never pass those
+  flags at the top level. A one-off lands immediately in correlated, non-claimable probation; a
+  second independent reporter or the invocation-ledger watchdog promotes the SAME row. Those
+  nested flags bypass probation.
   A "bug" includes SUB-OPTIMAL, not just a hard stopper: a false alarm / wrong reading from any
   monitor or tracker (a false alarm is a bug in the alarm), a flap that self-recovered,
   degradation under load — the system must stay responsive at ANY load, so load-correlated
