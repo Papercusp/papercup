@@ -26,7 +26,7 @@
  * `scripts/check-no-bespoke-state-read.mjs` (`npm run lint:no-bespoke-state-read`).
  * A registry nobody registers into is surface #29 and strictly worse than today.
  *
- * ⚠ The validator below is deliberately domain-free (it knows about falsifiers and
+ * ⚠ The validator below is deliberately domain-free (it knows about assessments and
  * three-valued verdicts, not about git or systemd). If a second consumer appears it
  * should be lifted to `libs/generic/*` behind a configure*() seam per the repo's
  * generic-first rule; it lives here for now because it has exactly one consumer.
@@ -70,26 +70,6 @@ export type CallerRelativity =
   /** Relative to something the caller never passes — e.g. the caller's uid. */
   | { kind: 'ambient'; source: string };
 
-/**
- * D-038 axis 1 — the dimension that can FALSIFY the reading of the headline value.
- * Which dimension that is, is per-cell: derivation level (session), subject
- * (pipeline), or existence (unit).
- *
- * `measurement` is the load-bearing field. A derived verdict over a raw leg adds
- * interpretation but NO NEW INFORMATION — it is recomputable from the leg. A real
- * falsifier comes from an INDEPENDENT measurement. Without this field a cell can
- * "declare health" while only re-projecting its own position, which is a confident
- * wrong answer wearing the contract's badge.
- */
-export interface CellFalsifier {
-  /** Field path of the falsifying dimension. */
-  field: string;
-  /** The independent measurement it comes from. Must not be the headline. */
-  measurement: string;
-  /** The false reading it kills, stated concretely. */
-  kills: string;
-}
-
 /** One entry of an assessment's closed code map. Both fields are required and
  *  non-empty — see `CellAssessmentSpec.codes` for why `meaning` alone is not enough. */
 export interface CellAssessmentCode {
@@ -109,20 +89,13 @@ export interface CellAssessmentCode {
  * break every caller that genuinely consumes telemetry in order to serve the ones
  * that want semantics.
  *
- * ⚠ THIS IS NOT A FALSIFIER, AND THE DIFFERENCE IS THE WHOLE POINT (D-004). A
- * falsifier asserted a NEGATIVE — "here is the reading this kills" — which is
- * unactionable on its own: the caller learns what not to conclude and is left to
- * invent what to do instead. An assessment states the positive: a code, what it
- * MEANS, and the action that is SAFE under it. There is deliberately no `kills`, no
- * `measurement`, and no negative-inference field anywhere in this contract.
- *
- * ⚠ OPTIONAL ONLY FOR THE LENGTH OF THE MIGRATION (P-003 → P-006). P-004 populates
- * all ten built-in cells from the P-001 truth tables; P-006 deletes `falsifier` and
- * makes this required. It is declared optional HERE only so that introducing it does
- * not strand the ten live registrations and the test fixtures that construct a
- * `CellSpec` — the required-field strand `lint:required-field-strands` exists to
- * catch. Do NOT read the `?` as "assessment is discretionary": a value-bearing cell
- * without one is unfinished, not exempt.
+ * ⚠ THERE IS DELIBERATELY NO `kills`, NO `measurement`, AND NO NEGATIVE-INFERENCE
+ * FIELD ANYWHERE IN THIS CONTRACT (D-004/D-006). The predecessor contract asserted a
+ * NEGATIVE — "here is the reading this kills" — which is unactionable on its own: the
+ * caller learns what not to conclude and is left to invent what to do instead. An
+ * assessment states the positive: a code, what it MEANS, and the action that is SAFE
+ * under it. That asymmetry is why the two were never aliased or auto-translated, and
+ * why nothing here reconstructs a negative claim from a positive one.
  */
 export interface CellAssessmentSpec {
   /**
@@ -151,9 +124,9 @@ export interface CellAssessmentSpec {
   /**
    * The same-payload paths that SUBSTANTIATE the code. Non-empty and distinct.
    *
-   * This is where a retiring falsifier's independent measurement goes when it still
-   * carries information (D-004): kept as evidence FOR a positive reading, rather
-   * than its `kills` prose translated mechanically into a negative one.
+   * An INDEPENDENT measurement belongs here when it carries real information (D-004):
+   * kept as evidence FOR a positive reading, never rewritten into a negative claim
+   * about what the value is not.
    */
   evidence: readonly string[];
 }
@@ -305,7 +278,7 @@ export interface CellHeadlineSource {
   /**
    * Dot-path into the SAME resolver result holding this read's source label.
    * Must differ from `changeSignal.path`: a "source" that IS the value carries no
-   * information, the same emptiness axis 1 rejects for a falsifier.
+   * information — the same emptiness `assessment-is-headline` rejects, one field over.
    */
   path: string;
   /**
@@ -322,8 +295,8 @@ export interface CellHeadlineSource {
  * P-006 — A POINTER FROM ONE CELL TO ANOTHER. See `CellSpec.pointers`.
  *
  * ⚠ THE ABSENT FIELDS ARE THE DESIGN. There is no `field`, no `measurement`, no
- * `kills` — so a pointer is STRUCTURALLY INCAPABLE of being a second falsifier,
- * which is what D-014 forbids. It carries no value and makes no claim about this
+ * `kills` — so a pointer is STRUCTURALLY INCAPABLE of carrying a claim about this
+ * cell's reading, which is what D-014 forbids. It carries no value and makes no claim about this
  * cell's headline; it says only "the question you are about to ask next is
  * answered THERE". A reader who ignores it loses nothing but a hop.
  */
@@ -372,15 +345,27 @@ export interface CellSpec {
   owner: string;
   /** Field path of the headline value this cell answers with. */
   headline: string;
-  /** Axis 1. ⚠ RETIRING — D-006/P-006 delete this field once every cell declares an
-   *  `assessment` below. Both are carried only for the length of the migration, and
-   *  there is deliberately NO alias or auto-translation between them: a `kills`
-   *  sentence is a negative claim and a `safeAction` is a positive one, so mapping
-   *  one onto the other mechanically would manufacture guidance nobody authored. */
-  falsifier: CellFalsifier;
-  /** D-008 — WHAT THE VALUE MEANS. Optional ONLY until P-006; see
-   *  {@link CellAssessmentSpec} for why, and for why that `?` is not a licence. */
-  assessment?: CellAssessmentSpec;
+  /**
+   * D-008 — WHAT THE VALUE MEANS. REQUIRED, and nullable (P-006/D-016).
+   *
+   * REQUIRED TO DECIDE, not required to HAVE. An assessment names a path into a
+   * RESOLVER RESULT, so only a `poll` cell can carry one — an event-signalled cell has
+   * no dispatch to produce that payload and the validator rejects a declaration it
+   * could never satisfy. Making the field plainly required would therefore force every
+   * event cell to declare exactly what registration then refuses, i.e. delete the event
+   * variant as a side effect of a field change.
+   *
+   * So the two legal answers are stated, never omitted — the same move
+   * {@link CallerRelativity} makes with `global`:
+   *   • poll cell  → a real {@link CellAssessmentSpec}. `null` is `assessment-missing`.
+   *   • event cell → `null`. A non-null one is `assessment-on-event-cell`.
+   *
+   * ⚠ Do NOT restore the `?`. Optional meant "discretionary", which is what let a
+   * value-bearing cell ship with no semantics at all; `| null` means "you must decide,
+   * and one of the two answers is unavailable to you". Re-weakening it to silence a
+   * strand reintroduces precisely what requiring it prevents.
+   */
+  assessment: CellAssessmentSpec | null;
   /** Axis 2 — can the verdict be unknown? If so the rules below bind. */
   nullable: boolean;
   /**
@@ -473,9 +458,10 @@ export interface CellSpec {
    * `state:read` — which is what this repo's own guidance tells them to do before
    * acting on a gate value — saw no trace of it.
    *
-   * A POINTER, NEVER A FALSIFIER (D-014). `CellPointer` has no field/measurement/kills
-   * by construction, so this cannot become the "falsifier per block" the plan's P-005
-   * assumed and the contract rejects. Ownership keeps its own cell, its own headline
+   * A POINTER MAKES NO CLAIM ABOUT THIS CELL'S READING (D-014). `CellPointer` has no
+   * field/measurement/kills by construction, so this cannot become the per-block
+   * side-claim the plan's P-005 assumed and the contract rejects — the discipline that
+   * outlived the retired axis-1 contract. Ownership keeps its own cell, its own headline
    * and its own independent check; this only makes it reachable.
    *
    * Targets are resolved PER-READ, not at registration — see `CellPointer.cell`.
@@ -498,7 +484,11 @@ export interface CellRejection {
    *  purpose: `visibility`/`federation` are NOT contract axes, they are the access
    *  model P-019 added, and blurring them would misrepresent D-038 as having eight. */
   axis:
-    | 1
+    /** ⚠ THE GAP AT 1 IS DELIBERATE — DO NOT RENUMBER. Axis 1 was the falsifier, which
+     *  P-006 removed; `assessment` REPLACES it (D-006) but is named rather than
+     *  numbered, for the reason the comment on that member gives. Sliding 2–5 down to
+     *  close the gap would silently re-point every D-038 axis citation in this repo's
+     *  docs, plans and decisions at the wrong rule. */
     | 2
     | 3
     | 4
@@ -517,7 +507,7 @@ export interface CellRejection {
   detail: string;
 }
 
-/** Normalise for the containment checks — a falsifier that merely re-cases or
+/** Normalise for the containment checks — a field that merely re-cases or
  *  re-punctuates the headline is still the headline. */
 function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -533,18 +523,7 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
   const reject = (axis: CellRejection['axis'], rule: string, detail: string) =>
     out.push({ cell: spec.cell, axis, rule, detail });
 
-  // ── Axis 1 — the falsifier must not be the headline wearing a hat.
   const headline = norm(spec.headline);
-  if (norm(spec.falsifier.field) === headline) {
-    reject(1, 'falsifier-is-headline', `falsifier.field "${spec.falsifier.field}" IS the headline value — a cell cannot falsify itself.`);
-  }
-  const measurement = norm(spec.falsifier.measurement);
-  if (measurement === headline || measurement.includes(headline)) {
-    reject(1, 'falsifier-derived-from-headline', `falsifier.measurement "${spec.falsifier.measurement}" is derived from the headline. A derived verdict adds interpretation but no new information; a falsifier needs an INDEPENDENT measurement.`);
-  }
-  if (!spec.falsifier.measurement.trim() || !spec.falsifier.kills.trim()) {
-    reject(1, 'falsifier-incomplete', 'falsifier requires both `measurement` (where the independent signal comes from) and `kills` (the false reading it prevents).');
-  }
 
   // ── Axis 2 — three-valued, and the unknown must be enumerated AND hoisted.
   if (spec.nullable && !spec.unknownHoist?.trim()) {
@@ -705,17 +684,31 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
       reject(
         'headlineSource',
         'headline-source-is-changesignal-path',
-        `headlineSource.path "${src.path}" IS changeSignal.path — a value cannot be its own provenance. This is axis 1's falsifier-is-headline emptiness in a second field: it looks like corroboration and carries no information.`,
+        `headlineSource.path "${src.path}" IS changeSignal.path — a value cannot be its own provenance. This is the same emptiness \`assessment-is-headline\` rejects, in a second field: it looks like corroboration and carries no information.`,
       );
     }
   }
 
-  // ── D-008 — THE ASSESSMENT. Every check below runs ONLY when one is declared, which
-  // is what keeps P-003 additive: the ten cells that have not migrated yet register
-  // exactly as before. P-006 removes the `undefined` branch and makes absence itself
-  // a rejection.
-  const assessment = spec.assessment;
-  if (assessment !== undefined) {
+  // ── D-008 — THE ASSESSMENT. REQUIRED AND NULLABLE (P-006/D-016). `null` is the event
+  // cell's legal answer and a real spec is the poll cell's; omission is not a third
+  // option. The `?? null` is the runtime backstop for a caller who reached here from
+  // untyped JS — it folds an omitted field into the SAME branch as an explicit null so
+  // it is judged, never waved through.
+  //
+  // ⚠ The requirement is keyed on NOT-event rather than on IS-poll, deliberately. A cell
+  // whose `changeSignal` is missing or malformed must fall into "needs semantics", not
+  // out of it: keying on `=== 'poll'` would let a broken discriminator silently exempt a
+  // value-bearing cell from the one field that says what its value MEANS.
+  const assessment = spec.assessment ?? null;
+  if (assessment === null) {
+    if (spec.changeSignal?.kind !== 'event') {
+      reject(
+        'assessment',
+        'assessment-missing',
+        'a value-bearing cell must declare an `assessment` — what its value MEANS as a closed enum, and what is SAFE to do under each code. `null` is reserved for event-signalled cells, which have no resolver payload to read a code out of. Without one this cell ships a number with no stated semantics, and every caller invents its own reading — the defect this contract exists to remove.',
+      );
+    }
+  } else {
     const apath = typeof assessment.path === 'string' ? assessment.path.trim() : '';
     if (!apath) {
       reject(
@@ -738,7 +731,8 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
     }
 
     // ── DISTINCTNESS. An assessment that IS the headline is the headline wearing a
-    // hat — axis 1's `falsifier-is-headline` emptiness in a fourth field. `norm` is
+    // hat. This is the CANONICAL statement of an emptiness `headline-source-is-
+    // changesignal-path` and `pointer-is-self` each reject in their own field. `norm` is
     // used here (not an exact match) precisely because a re-cased or re-punctuated
     // restatement of the headline is the case worth catching.
     if (apath && norm(apath) === headline) {
@@ -811,7 +805,7 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
       reject(
         'assessment',
         'assessment-evidence-empty',
-        '`evidence` is empty. An assessment with nothing behind it is an assertion wearing the contract\'s badge — the same emptiness axis 1 rejected a falsifier for, one field over.',
+        '`evidence` is empty. An assessment with nothing behind it is an assertion wearing the contract\'s badge — the same emptiness `assessment-is-headline` rejects, one field over.',
       );
     } else {
       const seenEvidence = new Set<string>();
@@ -860,7 +854,7 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
           reject(
             'pointers',
             'pointer-to-self',
-            `pointer target "${target}" IS this cell. A pointer exists to reach an answer this cell does not give; pointing at itself is axis 1's falsifier-is-headline emptiness in a third field.`,
+            `pointer target "${target}" IS this cell. A pointer exists to reach an answer this cell does not give; pointing at itself is the same emptiness \`assessment-is-headline\` rejects, in a third field.`,
           );
         }
         if (seen.has(norm(target))) {

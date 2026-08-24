@@ -131,31 +131,13 @@ export type CellRead =
        */
       source?: CellSourceRead;
       /**
-       * WI-6506 — the field whose ENTIRE PURPOSE is to stop a caller misreading the
-       * headline, actually delivered instead of declared-and-discarded. Before this,
-       * `falsifier` had exactly one runtime consumer (`validateCellSpec`'s STRING
-       * checks at registration) and `cell-read.ts` never mentioned it at all — a
-       * reader got the headline and never the independent measurement meant to
-       * contradict a false reading of it.
+       * D-008 — WHAT THE VALUE MEANS. Present exactly when the spec declares a non-null
+       * `assessment`, which since P-006 is EVERY value-bearing cell: the field is
+       * required on `CellSpec` and only an event-signalled cell may answer `null`
+       * (D-016), because it has no resolver payload to read a code out of.
        *
-       * EXTRACTED FROM THE SAME DISPATCH (axis 5 — one derivation, many lenses):
-       * `spec.falsifier.field` is a third `valueAtPath`-shaped projection of the
-       * payload already in hand, exactly like `material` above. No second resolver
-       * call, so it cannot drift from the value it qualifies.
-       *
-       * Always present on a `value` result — every registered cell declares a
-       * falsifier (`validateCellSpec` requires it), so there is no "cell declares
-       * none" omission case here the way there is for `material`/`unknownHoist`.
-       */
-      falsifier: CellFalsifierRead;
-      /**
-       * D-008 — WHAT THE VALUE MEANS. Present exactly when the spec declares an
-       * `assessment`, which during the P-003→P-006 migration is "the cells that have
-       * been migrated"; P-004 populates the rest and P-006 makes this non-optional.
-       *
-       * ⚠ OPTIONAL HERE MEANS "THIS CELL HAS NOT MIGRATED", NEVER "NOTHING TO REPORT".
-       * The two failure directions are already distinguished INSIDE the field —
-       * `status:'unavailable'` is how a migrated cell says it could not assess — so a
+       * ⚠ ABSENT HERE MEANS "EVENT-SIGNALLED CELL", NEVER "NOTHING TO REPORT". A cell
+       * that could not assess says so INSIDE the field — `status:'unavailable'` — so a
        * consumer must not read an absent `assessment` as an all-clear. That collapse
        * is the same one `ordered` documents ("absence means no opinion, never clear").
        */
@@ -296,39 +278,9 @@ export interface CellHoist {
 }
 
 /**
- * WI-6506 — the falsifier's independent measurement, delivered alongside the value
- * it exists to contradict a false reading of.
- *
- * `field`/`kills` are carried straight from `spec.falsifier` (never re-derived — a
- * caller should not have to go read the registry to know what `value` even means).
- */
-export interface CellFalsifierRead {
-  /** The independent field path this falsifier reads (`spec.falsifier.field`). */
-  field: string;
-  /** The value AT that path, in this SAME resolver payload — no second dispatch. */
-  value: unknown;
-  /** The false reading this independent measurement is meant to kill (`spec.falsifier.kills`). */
-  kills: string;
-  /** True ⇒ the declared field path was absent from the resolver payload: registration
-   *  drift, NOT a measured null. Mirrors `CellHoist.drifted`, for the identical MISSING
-   *  ≠ NULL reason `state-plane-stamp.ts`'s `pathExists` documents — own-key path EXISTENCE,
-   *  not `valueAtPath`, decides this, because `valueAtPath` collapses a legitimately
-   *  null intermediate segment to the SAME `undefined` a missing key produces. */
-  drifted?: true;
-  /** True ⇒ the path was absent, but the PAYLOAD ITSELF declares it was truncated by its
-   *  door, so the absence is UNATTRIBUTABLE — see {@link payloadTruncatedByDoor}.
-   *  Mutually exclusive with `drifted`. A falsifier that arrives this way has NOT fired
-   *  and has NOT been contradicted: it simply did not survive transit, and a reader must
-   *  treat the headline as UNFALSIFIED rather than as confirmed. */
-  truncatedByDoor?: true;
-  /** The re-read that returns the untruncated payload (the door's own `projection.fullRead`). */
-  fullRead?: unknown;
-}
-
-/**
  * D-008 — ONE declared evidence path, delivered with the code it substantiates.
  *
- * Carries the same MISSING ≠ NULL split as `CellHoist`/`CellFalsifierRead`, for the
+ * Carries the same MISSING ≠ NULL split as `CellHoist`, for the
  * same reason and by the same own-key walk: a resolver that MEASURED and found null
  * and a path that never arrived demand opposite responses, and collapsing them is the
  * defect this whole plan exists to close.
@@ -911,11 +863,17 @@ async function readCellValue(
       headline: spec.headline,
       resolver: spec.resolver,
       ...(spec.ordered === undefined ? {} : { ordered: { stages: [...spec.ordered.stages] } }),
-      falsifier: falsifierFrom(payload, spec.falsifier),
-      // D-008 — omitted entirely when the cell has not migrated yet, so an unmigrated
-      // cell reads exactly as it did before P-003. A MIGRATED cell always carries the
-      // field, reporting `unavailable` rather than vanishing when it cannot assess.
-      ...(spec.assessment === undefined ? {} : { assessment: assessmentFrom(payload, spec.assessment) }),
+      // D-008/D-016 — omitted ONLY for an event-signalled cell, the one case allowed to
+      // declare `assessment: null` (it has no resolver payload to read a code out of).
+      // Every value-bearing cell always carries the field, reporting `unavailable`
+      // rather than vanishing when it cannot assess.
+      //
+      // ⚠ The nullish test is load-bearing, not stylistic. This read `=== undefined`
+      // until P-006 widened the field from optional to `CellAssessmentSpec | null`; a
+      // strict-undefined check survives that widening GRAMMATICALLY while silently
+      // changing meaning — it stops matching an explicit null and hands `assessmentFrom`
+      // a null spec to path into. D-016 names this as the only shape the widening breaks.
+      ...(spec.assessment == null ? {} : { assessment: assessmentFrom(payload, spec.assessment) }),
       ...(spec.unknownHoist === undefined ? {} : { unknownHoist: hoistFrom(payload, spec.unknownHoist) }),
       ...(materialPath !== undefined && materialValue !== undefined
         ? { material: { path: materialPath, value: materialValue } }
