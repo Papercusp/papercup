@@ -155,6 +155,15 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
 
   // ── needs a per-run id → skipped by the live audit (null) ──
   'workItems.detail': null, // a specific work-item id
+  // Same shape as workItems.detail — a specific work-item id, so DEFAULT_HARNESS_ARGS
+  // cannot satisfy its argsSchema. Skipped rather than given a representative id on
+  // purpose: with a stale id the resolver returns its 'work-item-not-found' branch, so
+  // the audit would measure the EMPTY case and record a reassuring number for a read
+  // that is not empty in use. Its payload also has no cardinality axis to police — the
+  // brief is bounded by buildBoundedPriorAttemptBrief's own envelope budget (measured
+  // 869–3,499 estimated tokens on real items), and the consumer mounts it behind
+  // `useSyncQuery({ enabled })` so nothing runs until a human opens the section.
+  'workItems.priorAttempts': null, // a specific work-item id (P-017 slice D)
   'featuresConsolidated.detail': null, // a specific featureId
   'featureTimeline.byFeature': null, // a specific featureId
   'learning.analyzeCycle': null, // a specific cycleId (from learning.analyze)
