@@ -486,6 +486,43 @@ export default defineTool({
       }
     };
 
+    /**
+     * P-011: WHICH behavior clauses the claim puts the agent on the hook for, at
+     * WHICH revision. Advisory (D-017) — reported, never enforced; P-013 owns any
+     * refusal. Delegates to the shared port so what a claimant is told cannot drift
+     * from what the completion gate will hold them to, and so this surface satisfies
+     * the `behaviorContract` leg the parity guard enumerates.
+     *
+     * Same fail-soft posture as every sibling helper above: a swallowed read omits
+     * the hint rather than asserting the item is on the hook for nothing.
+     */
+    const behaviorContractFor = async (
+      wi: {
+        id?: string;
+        payload?: unknown;
+        harness?: string | null;
+        sourcePlanSlug?: string | null;
+        sourcePlanItemIds?: string[] | null;
+      } | null,
+    ): Promise<{ behaviorContract: unknown; behaviorContractNote: string } | null> => {
+      if (!wi?.id) return null;
+      try {
+        const m = await import('../../behavior-contract-claim-port');
+        return await m.getClaimTimeBehaviorContract(
+          {
+            id: wi.id,
+            payload: wi.payload,
+            harness: wi.harness,
+            sourcePlanSlug: wi.sourcePlanSlug,
+            sourcePlanItemIds: wi.sourcePlanItemIds,
+          },
+          wi.harness ?? args.harness,
+        );
+      } catch {
+        return null;
+      }
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
@@ -508,6 +545,7 @@ export default defineTool({
         retractionAdvisory,
         authorshipRevalidationResult,
         planContradictionResult,
+        behaviorContractResult,
       ] = await Promise.all([
         planDecisionsFor(wiOf(claimed)),
         priorAttemptsFor(wiOf(claimed)),
@@ -515,6 +553,7 @@ export default defineTool({
         getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness),
         authorshipRevalidationFor(wiOf(claimed)),
         planContradictionFor(wiOf(claimed)),
+        behaviorContractFor(wiOf(claimed)),
       ]);
       return {
         content: [
