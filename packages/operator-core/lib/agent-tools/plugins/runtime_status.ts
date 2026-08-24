@@ -30,6 +30,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const status = await pluginHostStatus();
-    return { content: [{ type: 'text', text: JSON.stringify(status) }] };
+    return { data: status };
   },
 });

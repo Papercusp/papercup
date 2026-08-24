@@ -28,16 +28,6 @@ export default defineTool({
   }),
   async handler(args) {
     const result = await listAllHarnessesWithHealth(args.workspaceIds ?? null);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            count: result.harnesses.length,
-            harnesses: result.harnesses,
-          }),
-        },
-      ],
-    };
+    return { data: { count: result.harnesses.length, harnesses: result.harnesses } };
   },
 });

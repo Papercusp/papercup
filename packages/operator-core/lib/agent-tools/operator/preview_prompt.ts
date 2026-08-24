@@ -35,6 +35,6 @@ export default defineTool({
       userId: args.userId ?? 'debug-preview',
       showFirstRun: args.showFirstRun,
     });
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    return { data: result };
   },
 });

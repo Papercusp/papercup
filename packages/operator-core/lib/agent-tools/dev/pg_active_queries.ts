@@ -29,10 +29,6 @@ export default defineTool({
   }),
   async handler(args) {
     const result = await pgActiveQueries(args.limit);
-    return {
-      content: [
-        { type: 'text', text: JSON.stringify({ count: result.queries.length, queries: result.queries }) },
-      ],
-    };
+    return { data: { count: result.queries.length, queries: result.queries } };
   },
 });

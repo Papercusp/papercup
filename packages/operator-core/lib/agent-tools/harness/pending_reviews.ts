@@ -34,8 +34,6 @@ export default defineTool({
   async handler(args) {
     const result = await listPendingReviews(args.slug, phasePhaseLabel(args.phase));
     const reviews = result.reviews.slice(0, args.limit ?? 20);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ count: reviews.length, reviews }) }],
-    };
+    return { data: { count: reviews.length, reviews } };
   },
 });

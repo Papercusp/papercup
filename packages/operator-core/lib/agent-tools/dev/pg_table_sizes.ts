@@ -28,10 +28,6 @@ export default defineTool({
   }),
   async handler(args) {
     const result = await pgTableSizes(args.schema, args.limit);
-    return {
-      content: [
-        { type: 'text', text: JSON.stringify({ count: result.tables.length, tables: result.tables }) },
-      ],
-    };
+    return { data: { count: result.tables.length, tables: result.tables } };
   },
 });

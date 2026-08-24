@@ -31,10 +31,6 @@ export default defineTool({
       workspaceIds: args.workspaceIds ?? null,
       limit: args.limit,
     });
-    return {
-      content: [
-        { type: 'text', text: JSON.stringify({ count: result.entries.length, entries: result.entries }) },
-      ],
-    };
+    return { data: { count: result.entries.length, entries: result.entries } };
   },
 });

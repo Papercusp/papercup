@@ -27,8 +27,18 @@ afterEach(() => {
   vi.doUnmock('../../../harness-registry');
 });
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+// EI-21298204083822674: accept EITHER wire shape, so a tool migrating from the
+// legacy inline-JSON `{ content:[{ text }] }` to `{ data }` (the tool-data-shape
+// ratchet's whole direction of travel) does not require editing each call site.
+// Same shared-helper repoint as the 2026-07-26 `parseTextPayload` pattern.
+function parsePayload(result: {
+  data?: unknown;
+  content?: Array<{ text: string }>;
+}): Record<string, unknown> {
+  if (result && 'data' in result && result.data !== undefined) {
+    return result.data as Record<string, unknown>;
+  }
+  return JSON.parse(result.content![0].text);
 }
 
 describe('plugins:runtime_status', () => {

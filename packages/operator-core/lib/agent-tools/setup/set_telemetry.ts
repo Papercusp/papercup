@@ -25,8 +25,6 @@ export default defineTool({
   }),
   async handler(args) {
     const next = await mergeSetupWizardState({ telemetry_enabled: args.enabled });
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ telemetry_enabled: next.telemetry_enabled }) }],
-    };
+    return { data: { telemetry_enabled: next.telemetry_enabled } };
   },
 });

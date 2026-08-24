@@ -34,16 +34,6 @@ export default defineTool({
       hours: args.hours,
       limit: args.limit,
     });
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            count: result.entries.length,
-            entries: result.entries,
-          }),
-        },
-      ],
-    };
+    return { data: { count: result.entries.length, entries: result.entries } };
   },
 });

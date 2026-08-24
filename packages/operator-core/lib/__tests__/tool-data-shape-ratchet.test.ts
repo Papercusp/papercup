@@ -227,7 +227,25 @@ for (const file of TOOL_FILES) {
 // (plans:{publish-outputs,set-output-schema,set-title,audit-unshipped} and
 // work_items:withdraw_release_request). Real count 440 → 435; ceiling 438 → 437,
 // leaving two slots without rewarding the preceding net growth with a bump.
-const BASELINE = 437;
+//
+// 2026-08-24 (EI-21298204083822674, su-278b876c): found RED at 444 vs 437 — seven
+// over, un-attributable (net growth by several hands since 08-23). Migrated twelve
+// mechanical single-return, no-isError handlers to `{ data }`:
+// dev/{pg_table_sizes,harnesses,pg_active_queries,activity,audit},
+// plugins/runtime_status, setup/set_telemetry,
+// operator/{multi_workspace,standing_approval_mark_shown,preview_prompt},
+// harness/{pending_reviews,markdown_index}. Real count 444 → 432, verified by
+// re-running the discovery walk after each batch (the count dropped by exactly the
+// number migrated, which is the only proof a candidate was not a trap-(1) file).
+// Ceiling 437 → 434, keeping the established two slots of churn headroom.
+//
+// ⚠ CORRECTION to trap (1) below: its named list is STALE. It says
+// dev/{pg_table_sizes,harnesses,pg_active_queries} stringify outside their return
+// so migrating them would not lower the count. Read pg_table_sizes.ts on 08-24:
+// it was a textbook single mechanical return, and migrating all three DID lower the
+// count by three. They were evidently refactored since 08-02. Verify per file —
+// the walk-recount above is the check that settles it either way.
+const BASELINE = 434;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

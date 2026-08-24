@@ -30,8 +30,6 @@ export default defineTool({
   }),
   async handler(args) {
     await markCandidateShown(args.capability, args.targetHarness);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, capability: args.capability, targetHarness: args.targetHarness }) }],
-    };
+    return { data: { ok: true, capability: args.capability, targetHarness: args.targetHarness } };
   },
 });

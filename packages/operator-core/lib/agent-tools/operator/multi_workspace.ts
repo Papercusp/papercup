@@ -31,6 +31,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const snapshot = await readMultiWorkspaceSnapshot(activeWorkspaceId());
-    return { content: [{ type: 'text', text: JSON.stringify(snapshot) }] };
+    return { data: snapshot };
   },
 });

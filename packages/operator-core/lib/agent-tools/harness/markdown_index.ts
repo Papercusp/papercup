@@ -30,6 +30,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const index = await loadHarnessMarkdownIndex();
-    return { content: [{ type: 'text', text: JSON.stringify({ index }) }] };
+    return { data: { index } };
   },
 });
