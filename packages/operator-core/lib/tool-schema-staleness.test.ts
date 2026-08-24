@@ -106,6 +106,22 @@ describe('toolSchemaStaleness', () => {
   });
 });
 
+describe('hint length', () => {
+  // capture.ts reserves `hint.length` characters out of the body budget before
+  // appending. That reservation is only safe while the hint stays SHORT relative to
+  // the 16k body limit — a future edit that grows it into a paragraph would start
+  // eating real report content instead of the slack it was meant to use.
+  it('stays a single short line, so reserving room for it cannot displace the report', async () => {
+    const verdict = await toolSchemaStaleness('work_items:complete', deps({
+      git: gitFrom({ [DEPLOYED]: BLOB_A, staging: BLOB_B }),
+    }));
+    const hint = renderStalenessHint(verdict, 'work_items:complete');
+    expect(hint).not.toBeNull();
+    expect(hint!.length).toBeLessThan(600);
+    expect(hint).not.toContain('\n');
+  });
+});
+
 describe('relativizeToRepo', () => {
   it('strips the root prefix', () => {
     expect(relativizeToRepo(SRC, ROOT)).toBe(REL);

@@ -815,8 +815,17 @@ export default defineTool({
     const stalenessHint = args.toolFailure
       ? await toolFailureStalenessHint(args.toolFailure.toolName)
       : null;
+    // Reserve room for the hint rather than clamping the join: the body arrives
+    // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
+    // clamping afterwards would silently truncate the hint off the END — losing
+    // exactly the line this exists to add, on the longest (most detailed) reports.
     const bodyWithStaleness = stalenessHint
-      ? [captureText.body, stalenessHint].filter(Boolean).join('\n\n')
+      ? [
+          clampText(captureText.body, Math.max(0, LIMITS.CONTENT - stalenessHint.length - 2)),
+          stalenessHint,
+        ]
+          .filter(Boolean)
+          .join('\n\n')
       : captureText.body;
     const toolFailureKind: 'bug' | 'change' | undefined = normalizedToolFailure
       ? args.toolFailure?.clearServerMismatch || args.toolFailure?.hardInternal
