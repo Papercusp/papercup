@@ -137,6 +137,24 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(hits).toHaveLength(1);
     expect(hits[0]!.value).toBe('abc1234');
   });
+
+  it('does not classify a work-item checkpoint contentHash as a deployed SHA', () => {
+    const text = 'The implementation-start checkpoint is written (contentHash 562d3b6d9979)';
+    expect(detectCellTranscriptions(text)).toEqual([]);
+    expect(cellTranscriptionHint(text)).toBeNull();
+  });
+
+  it('does not classify a checkpoint hash from a coord summary with unrelated live-lock context', () => {
+    const summary = 'WI-40905 checkpoint 721014582be1: waiting on two live Vite locks before final rebuild';
+    const body =
+      'Checkpoint 721014582be1 records the rejected torn artifact, root 81a24825be after git-sync, ' +
+      'and the two remaining production paths live-locked by su-e9b139d9.';
+    const text = `${summary}\n${body}`;
+    const hits = detectCellTranscriptions(text);
+
+    expect(hits.some((hit) => hit.value === '721014582be1')).toBe(false);
+    expect(cellTranscriptionHint(text)).not.toContain('721014582be1');
+  });
 });
 
 describe('cell-transcription detector — never throws, never blocks (tier-3 invariant)', () => {

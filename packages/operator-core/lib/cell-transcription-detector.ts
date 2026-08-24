@@ -100,6 +100,22 @@ const REFERENCE_COMMIT_PREFIX =
 const EXPLICIT_PIPELINE_STATE_AFTER_VALUE =
   /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
 
+/**
+ * A work-item checkpoint's contentHash is an artifact fingerprint, not a Git or
+ * deployment SHA. The label is often immediately adjacent to the value (for
+ * example, `checkpoint 721...` or `(contentHash 562...)`), while an unrelated
+ * phrase such as "live Vite locks" appears later in the same coord summary. Keep
+ * this exclusion anchored to the value so that ordinary checkpoint prose does not
+ * weaken the detector's state-claim context globally.
+ */
+const CHECKPOINT_VALUE_PREFIX = /\bcheckpoint\s*$/i;
+const CONTENT_HASH_VALUE_PREFIX = /\bcontent[- ]?hash\s*(?::|=)?\s*$/i;
+
+function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return CHECKPOINT_VALUE_PREFIX.test(before) || CONTENT_HASH_VALUE_PREFIX.test(before);
+}
+
 function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valueLength: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   if (!SOURCE_HEAD_VALUE_PREFIX.test(before)) return false;
@@ -226,7 +242,8 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
       if (
         p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
         (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
-          isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length))
+          isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
+          isCheckpointMetadataValue(haystack, m.index))
       ) {
         continue;
       }
