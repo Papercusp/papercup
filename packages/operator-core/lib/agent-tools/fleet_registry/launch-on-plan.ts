@@ -779,11 +779,10 @@ function floorCap(n: number | null | undefined): number | null {
   return typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null;
 }
 
-/** Below this, a value is still plausible as a real filesystem path even without a
- *  newline; above it we treat it as inline text rather than risk feeding it to
- *  `readFileSync` (Linux/macOS PATH_MAX is 4096 — this ceiling sits well under that,
- *  since no genuine caller path is anywhere close to it). */
-const LAUNCH_CONTEXT_INLINE_TEXT_LENGTH_THRESHOLD = 1000;
+/** A single path component is capped at 255 bytes on the filesystems this tool
+ *  supports. Above that, a value is not a plausible path component, so treat it
+ *  as inline text rather than risk feeding it to `readFileSync`. */
+const LAUNCH_CONTEXT_INLINE_TEXT_LENGTH_THRESHOLD = 255;
 
 /**
  * `launchContext` documents itself as a file PATH, but its own schema text ("sent as
@@ -795,7 +794,7 @@ const LAUNCH_CONTEXT_INLINE_TEXT_LENGTH_THRESHOLD = 1000;
  * cheaply instead of finding out via a failed `open(2)`.
  */
 export function looksLikeInlineLaunchContextText(value: string): boolean {
-  return value.includes('\n') || value.length > LAUNCH_CONTEXT_INLINE_TEXT_LENGTH_THRESHOLD;
+  return value.includes('\n') || Buffer.byteLength(value, 'utf8') > LAUNCH_CONTEXT_INLINE_TEXT_LENGTH_THRESHOLD;
 }
 
 /**
