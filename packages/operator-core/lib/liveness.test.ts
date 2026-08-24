@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveLiveness, LIVE_MS, STALE_MS, type Liveness } from './liveness';
+import { deriveLiveness, heartbeatAgeTone, LIVE_MS, STALE_MS, type Liveness } from './liveness';
 
 const NOW = Date.UTC(2026, 5, 4, 12, 0, 0); // fixed clock; epoch ms
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -24,6 +24,14 @@ describe('deriveLiveness — LIVE_MS boundary', () => {
 
   it('EXACTLY at LIVE_MS (age = LIVE_MS) flips to idle — the cutoff is strict <', () => {
     expect(deriveLiveness(iso(NOW - LIVE_MS), NOW)).toBe('idle');
+  });
+});
+
+describe('heartbeatAgeTone — explicit compatibility name', () => {
+  it('is byte-identical to the deprecated deriveLiveness alias', () => {
+    for (const age of [0, LIVE_MS - 1, LIVE_MS, STALE_MS - 1, STALE_MS]) {
+      expect(heartbeatAgeTone(iso(NOW - age), NOW)).toBe(deriveLiveness(iso(NOW - age), NOW));
+    }
   });
 });
 

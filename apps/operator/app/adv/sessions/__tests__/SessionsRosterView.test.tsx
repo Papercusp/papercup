@@ -15,6 +15,7 @@ import {
   groupRoster,
   buildFilesInPlay,
   isZombie,
+  rosterLiveness,
   applyRosterFilters,
   EMPTY_FILTERS,
   type RosterEntry,
@@ -81,6 +82,9 @@ function entry(over: Partial<RosterEntry> = {}): RosterEntry {
     pid: 1,
     startedAt: '2026-06-02T00:00:00.000Z',
     heartbeatAt: new Date().toISOString(),
+    sessionState: null,
+    liveTurn: null,
+    heartbeatFresh: true,
     liveness: 'live',
     stale: false,
     workspaceId: 'ws1',
@@ -126,12 +130,29 @@ describe('groupRoster', () => {
 });
 
 describe('isZombie', () => {
-  it('is a zombie only when non-stale AND pid confirmed dead', () => {
-    expect(isZombie({ liveness: 'live', pidAlive: false })).toBe(true);
+  it('uses explicit heartbeat freshness, not the legacy display tone', () => {
+    expect(isZombie({ heartbeatFresh: true, liveness: 'stale', pidAlive: false })).toBe(true);
+    expect(isZombie({ heartbeatFresh: false, liveness: 'live', pidAlive: false })).toBe(false);
+    expect(isZombie({ heartbeatFresh: true, liveness: 'live', pidAlive: true })).toBe(false);
+    expect(isZombie({ heartbeatFresh: true, liveness: 'live', pidAlive: null })).toBe(false); // unknown ≠ zombie
+  });
+
+  it('falls back to the legacy tone only when heartbeatFresh is unavailable', () => {
     expect(isZombie({ liveness: 'idle', pidAlive: false })).toBe(true);
-    expect(isZombie({ liveness: 'live', pidAlive: true })).toBe(false);
-    expect(isZombie({ liveness: 'live', pidAlive: null })).toBe(false); // unknown ≠ zombie
-    expect(isZombie({ liveness: 'stale', pidAlive: false })).toBe(false); // already gone
+    expect(isZombie({ liveness: 'stale', pidAlive: false })).toBe(false);
+  });
+});
+
+describe('rosterLiveness', () => {
+  it('projects sessionState when the heartbeat-age compatibility tone disagrees', () => {
+    expect(rosterLiveness(entry({ sessionState: 'live', liveness: 'stale' }))).toBe('live');
+    expect(rosterLiveness(entry({ sessionState: 'parked', liveness: 'live' }))).toBe('idle');
+    expect(rosterLiveness(entry({ sessionState: 'ended', liveness: 'live' }))).toBe('stale');
+  });
+
+  it('falls back to the legacy tone for old or unknown payloads', () => {
+    expect(rosterLiveness(entry({ sessionState: null, liveness: 'idle' }))).toBe('idle');
+    expect(rosterLiveness(entry({ sessionState: 'future-state', liveness: 'live' }))).toBe('live');
   });
 });
 
@@ -174,6 +195,15 @@ describe('applyRosterFilters (P-010)', () => {
   });
   it('filters by liveness', () => {
     expect(applyRosterFilters(roster, { ...EMPTY_FILTERS, liveness: 'live' }).map((e) => e.ownerId)).toEqual(['a', 'c']);
+  });
+  it('filters by the oracle projection when raw heartbeat age disagrees', () => {
+    const contradictory = [
+      entry({ ownerId: 'oracle-live', sessionState: 'live', liveness: 'stale' }),
+      entry({ ownerId: 'heartbeat-live', sessionState: 'ended', liveness: 'live' }),
+    ];
+    expect(
+      applyRosterFilters(contradictory, { ...EMPTY_FILTERS, liveness: 'live' }).map((e) => e.ownerId),
+    ).toEqual(['oracle-live']);
   });
   it('filters by role', () => {
     expect(applyRosterFilters(roster, { ...EMPTY_FILTERS, role: 'architect' }).map((e) => e.ownerId)).toEqual(['b']);
@@ -346,8 +376,8 @@ describe('SessionsRosterView', () => {
   it('hides stale agents by default and surfaces a toggle (perf fix)', async () => {
     syncState.roster = {
       active: [
-        entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
-        entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
+        entry({ ownerId: 'L', label: 'live-one', sessionState: 'live', liveness: 'stale' }),
+        entry({ ownerId: 'S', label: 'stale-one', sessionState: 'ended', liveness: 'live' }),
       ],
       ended: [],
     };
@@ -357,7 +387,7 @@ describe('SessionsRosterView', () => {
     );
     await findByText('live-one');
     expect(queryByText('stale-one')).toBeNull(); // stale hidden by default
-    const toggle = await findByText(/1 stale/); // the show-stale toggle carries the count
+    const toggle = await findByText(/1 inactive/); // the oracle-derived hidden count
     fireEvent.click(toggle);
     expect(onToggleStale).toHaveBeenCalled();
   });
@@ -365,8 +395,8 @@ describe('SessionsRosterView', () => {
   it('shows stale agents when showStale is on', async () => {
     syncState.roster = {
       active: [
-        entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
-        entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
+        entry({ ownerId: 'L', label: 'live-one', sessionState: 'live', liveness: 'stale' }),
+        entry({ ownerId: 'S', label: 'stale-one', sessionState: 'ended', liveness: 'live' }),
       ],
       ended: [],
     };

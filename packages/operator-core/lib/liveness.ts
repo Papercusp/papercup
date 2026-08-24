@@ -1,8 +1,10 @@
 /**
- * liveness.ts — the 3-state agent-liveness scale, as a DEPENDENCY-FREE leaf.
+ * liveness.ts — the legacy 3-tone HEARTBEAT-AGE display scale, as a
+ * DEPENDENCY-FREE leaf.
  *
- * Both the server (@/lib/adv-roster, which derives liveness for the roster
- * endpoint) and the client (the presence UI's LivenessDot) need this. The
+ * Both the server (@/lib/adv-roster, which carries the compatibility tone for
+ * older clients) and the client (the presence UI's LivenessDot fallback) need
+ * this. The
  * server module can't be imported from a client component — it pulls in the PG
  * presence store and would leak node builtins into the SPA bundle (the
  * operator-vite blank-page failure mode). So the thresholds + the pure
@@ -25,16 +27,25 @@ export const STALE_MS = 600_000;
 export type Liveness = 'live' | 'idle' | 'stale' | 'pending';
 
 /**
- * Derive liveness from a heartbeat ISO timestamp + a clock (ms epoch). "idle"
- * means no recent tool call (the agent may be mid-reasoning), NOT gone — the
- * heartbeat only fires on tool boundaries. live < LIVE_MS · idle < STALE_MS ·
- * else stale. A missing/unparseable timestamp is treated as stale.
+ * Reduce heartbeat age to the legacy three visual tones. This is PROCESS
+ * KEEPALIVE freshness, not an agent-liveness verdict. New verdict consumers
+ * must use `resolveSessionStates`; UI code with a roster payload should project
+ * its `sessionState` and use this only when that field is unavailable.
  */
-export function deriveLiveness(heartbeatAtIso: string, nowMs: number): Liveness {
+export function heartbeatAgeTone(heartbeatAtIso: string, nowMs: number): Liveness {
   const t = new Date(heartbeatAtIso).getTime();
   if (!Number.isFinite(t)) return 'stale';
   const age = nowMs - t;
   if (age < LIVE_MS) return 'live';
   if (age < STALE_MS) return 'idle';
   return 'stale';
+}
+
+/**
+ * @deprecated Ambiguous name: this derives only a heartbeat-age DISPLAY tone,
+ * not liveness. Use `resolveSessionStates` for a verdict or
+ * `heartbeatAgeTone` for the explicit compatibility projection.
+ */
+export function deriveLiveness(heartbeatAtIso: string, nowMs: number): Liveness {
+  return heartbeatAgeTone(heartbeatAtIso, nowMs);
 }

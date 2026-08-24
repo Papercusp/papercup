@@ -26,7 +26,7 @@ import { advSessionsByCoordOwner, isFailedTerminalLaunch, type AdvSessionRow } f
 // WI-37841: the cause of a failed launch, from the boot log psu-launcher.mjs and
 // launch-su.ts both write. One shared path derivation — see psu-launch-log.mjs.
 import { readPsuHeadlessLaunchBlockHint, readPsuLaunchLogTail } from './psu-launch-log.mjs';
-import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
+import { heartbeatAgeTone, LIVE_MS, type Liveness } from './liveness';
 import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
 import {
@@ -66,7 +66,12 @@ export type { AgentClaim, OrphanedClaimSummary };
 
 // Re-export the liveness primitives (now sourced from the dep-free leaf so the
 // client presence UI can share them) for existing importers.
-export { deriveLiveness, LIVE_MS };
+/**
+ * @deprecated `deriveLiveness` is a heartbeat-age display projection, not the
+ * shared session-liveness verdict. Prefer `resolveSessionStates`; retained here
+ * only for existing imports.
+ */
+export { deriveLiveness, LIVE_MS } from './liveness';
 export type { Liveness };
 
 /**
@@ -392,10 +397,13 @@ export interface RosterEntry {
   /** The harness the run's log lives under (the stream's `:slug`). Paired with
    *  runId; null when runId is null. */
   harnessSlug: string | null;
-  /** Whether this agent appears to be ACTIVELY THINKING right now — its session
-   *  transcript was appended within SESSION_THINKING_ACTIVE_MS (the roster's
-   *  "in the middle of thinking" indicator). Best-effort proxy; false for agents
-   *  with no resolvable transcript. */
+  /** Whether transcript OUTPUT changed within SESSION_THINKING_ACTIVE_MS.
+   *  Display decoration only: it is not proof that a turn is live. */
+  transcriptFresh: boolean;
+  /**
+   * @deprecated Compatibility alias for `transcriptFresh`. New consumers must
+   * use the explicit field; this alias will be removed after payload skew clears.
+   */
   thinking: boolean;
   /** Whether a transcript actually RESOLVES for this agent's live-thinking pane —
    *  i.e. clicking it would show turns rather than an empty "waiting/stalled" pane.
@@ -669,13 +677,13 @@ export function mergeRosterEntries(
     // proves the process). Take the BEST of the two legs; same-host pid-alive
     // is definitive. Presence still owns intent/claims enrichment.
     const nursery = nurseryByOwner.get(p.ownerId) ?? null;
-    let liveness = deriveLiveness(p.heartbeatAt, nowMs);
+    let liveness = heartbeatAgeTone(p.heartbeatAt, nowMs);
     if (nursery) {
       const nurseryLiveness: Liveness =
         nursery.pidAlive === true
           ? 'live'
           : nursery.heartbeatAt
-            ? deriveLiveness(nursery.heartbeatAt, nowMs)
+            ? heartbeatAgeTone(nursery.heartbeatAt, nowMs)
             : 'stale';
       if (LIVENESS_RANK[nurseryLiveness] > LIVENESS_RANK[liveness]) liveness = nurseryLiveness;
     }
@@ -804,7 +812,8 @@ export function mergeRosterEntries(
       // psu/su session's own declared harness (P-007 finding — see
       // sessionBriefHarnessByOwner's docblock for why this fallback exists).
       harnessSlug: runInfoByOwner.get(p.ownerId)?.harness ?? extra.sessionBriefHarness?.get(p.ownerId) ?? null,
-      thinking: false, // annotated by mergeRosterWithAssignments (transcript mtime)
+      transcriptFresh: false, // annotated by mergeRosterWithAssignments (transcript mtime)
+      thinking: false, // deprecated compatibility alias for transcriptFresh
       // Default true (non-claude backends gate on their own handle); a claude session
       // whose transcript doesn't resolve is flipped false in mergeRosterWithAssignments.
       thinkingResolvable: true,
@@ -889,6 +898,7 @@ export function pendingLaunchesToRosterEntries(
       // Not yet running → no thinking stream.
       runId: null,
       harnessSlug: null,
+      transcriptFresh: false,
       thinking: false,
       thinkingResolvable: true,
     };
@@ -1017,6 +1027,7 @@ export function startingLaunchesToRosterEntries(
       openAwait: null,
       runId: null,
       harnessSlug: null,
+      transcriptFresh: false,
       thinking: false,
       thinkingResolvable: true,
     };
@@ -1316,9 +1327,9 @@ export async function activeLoopOwners(): Promise<Set<string>> {
  * dead/stale agents) — the claim-keyed half a presence-primary roster can't see.
  */
 /**
- * "In the middle of thinking" (roster indicator) resolution for a set of
- * entries: a session whose transcript was appended within
- * SESSION_THINKING_ACTIVE_MS reads as actively thinking. Resolved in PARALLEL
+ * Transcript-output freshness resolution for a set of entries: a session
+ * whose transcript was appended within SESSION_THINKING_ACTIVE_MS gets the
+ * `transcriptFresh` decoration. This does NOT establish a live turn. Resolved in PARALLEL
  * (never a serial fs loop, per the perf docs) and best-effort — every backend's
  * transcript path is cached, so this is one cheap stat/agent. Claude sessions
  * key by sessionId (+owner fast path); codex by the adv row id (its CODEX_HOME
@@ -1326,11 +1337,11 @@ export async function activeLoopOwners(): Promise<Set<string>> {
  *
  * Extracted from mergeRosterWithAssignments (WI-4734) so a latency-critical
  * caller can run the roster merge CONCURRENTLY with other work (thinking fully
- * deferred via `thinkingFor: () => false`) and resolve thinking POST-HOC for
+ * deferred via `thinkingFor: () => false`) and resolve freshness POST-HOC for
  * just the entries it will actually surface — same safety condition as the
  * WI-3924 `thinkingFor` gate: only ever skip entries the caller never exposes.
  */
-export async function resolveThinkingForEntries(
+export async function resolveTranscriptFreshnessForEntries(
   entries: RosterEntry[],
   opts: { nowMs?: number } = {},
 ): Promise<void> {
@@ -1341,26 +1352,35 @@ export async function resolveThinkingForEntries(
   await Promise.all(
     entries.map(async (e) => {
       if (e.sessionId) {
-        // ONE resolve → both signals: `thinking` (transcript mtime recent) AND
+        // ONE resolve → both signals: `transcriptFresh` (transcript mtime recent) AND
         // `thinkingResolvable` (a transcript exists to stream at all). A parked/ended
         // claude session whose transcript is gone flips resolvable→false so the client
         // shows the honest "Live thinking unavailable" note, not an empty pane (WI-2680).
         const state = await resolveSessionThinkingState(e.sessionId, { owner: e.ownerId, nowMs })
           .catch(() => ({ resolvable: false, thinking: false }));
+        e.transcriptFresh = state.thinking;
         e.thinking = state.thinking;
         e.thinkingResolvable = state.resolvable;
       } else if (e.agent === 'codex' && e.advSessionId != null) {
-        e.thinking = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
+        e.transcriptFresh = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
+        e.thinking = e.transcriptFresh;
       } else if (e.ompThreadId) {
-        e.thinking = await isOmpThreadThinking(e.ompThreadId, {
+        e.transcriptFresh = await isOmpThreadThinking(e.ompThreadId, {
           nowMs,
           activeMs: SESSION_THINKING_ACTIVE_MS,
           sessionKey: e.advSessionId ?? undefined,
         }).catch(() => false);
+        e.thinking = e.transcriptFresh;
       }
     }),
   );
 }
+
+/**
+ * @deprecated The resolved signal is transcript freshness, not cognition or a
+ * live turn. Use `resolveTranscriptFreshnessForEntries`.
+ */
+export const resolveThinkingForEntries = resolveTranscriptFreshnessForEntries;
 
 export async function mergeRosterWithAssignments(
   opts: {
@@ -1501,8 +1521,8 @@ export async function mergeRosterWithAssignments(
   // announced machineLabel) so the roster can group/tab by machine.
   const localLabel = machineFingerprint();
   for (const e of active) if (e.isLocal && !e.machineLabel) e.machineLabel = localLabel;
-  // "In the middle of thinking" (roster indicator): a session whose transcript was
-  // appended within SESSION_THINKING_ACTIVE_MS reads as actively thinking. Resolved
+  // Transcript-output freshness decoration: a session whose transcript was
+  // appended within SESSION_THINKING_ACTIVE_MS is marked transcriptFresh. Resolved
   // in PARALLEL (never a serial fs loop, per the perf docs) and best-effort — every
   // backend's transcript path is cached, so this is one cheap stat/agent. Claude
   // sessions key by sessionId (+owner fast path); codex by the adv row id (its
@@ -1511,8 +1531,8 @@ export async function mergeRosterWithAssignments(
   // the caller will actually use — skipped entries pay no per-entry
   // transcript-stat cost (see the opts.thinkingFor doc comment above for the
   // safety condition this relies on).
-  const thinkingCandidates = opts.thinkingFor ? active.filter(opts.thinkingFor) : active;
-  await resolveThinkingForEntries(thinkingCandidates);
+  const transcriptFreshnessCandidates = opts.thinkingFor ? active.filter(opts.thinkingFor) : active;
+  await resolveTranscriptFreshnessForEntries(transcriptFreshnessCandidates);
   return {
     active,
     // WI-5975: explicit single-arg — `.map(summarizeOrphan)` would pass the array

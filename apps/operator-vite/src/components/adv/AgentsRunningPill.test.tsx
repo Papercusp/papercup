@@ -73,7 +73,7 @@ vi.mock('nuqs', () => ({
   },
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, activityLiveness, activityLivenessTitle, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkSession, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, isTranscriptFresh, thinkingStreamUrl, fmtCompactAge, activityLiveness, activityLivenessTitle, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkSession, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -294,16 +294,21 @@ describe('<AgentsRunningPill>', () => {
   });
 
   it('shows a "thinking" count in the pill when agents are actively thinking', () => {
-    H.active = [agent({ ownerId: 'a1', thinking: true }), agent({ ownerId: 'a2', thinking: false })];
+    H.active = [agent({ ownerId: 'a1', transcriptFresh: true }), agent({ ownerId: 'a2', transcriptFresh: false })];
     render(<Pill />);
     expect(screen.getByTestId('agents-thinking-count').textContent).toContain('1 thinking');
   });
 
   it('renders a pulsing thinking dot on an actively-thinking row', () => {
-    H.active = [agent({ ownerId: 'a1', thinking: true })];
+    H.active = [agent({ ownerId: 'a1', transcriptFresh: true })];
     nuqs.open = true;
     render(<Pill />);
     expect(screen.getAllByTestId('thinking-dot').length).toBeGreaterThan(0);
+  });
+
+  it('prefers transcriptFresh but accepts the deprecated thinking alias during payload skew', () => {
+    expect(isTranscriptFresh({ transcriptFresh: false, thinking: true })).toBe(false);
+    expect(isTranscriptFresh({ thinking: true })).toBe(true);
   });
 
   it('shows a compact last-active pill next to the liveness dot', () => {

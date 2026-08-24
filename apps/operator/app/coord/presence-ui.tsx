@@ -13,16 +13,26 @@
  * source the server roster endpoint uses), so client + server can't drift.
  */
 
-import { deriveLiveness, type Liveness } from '@papercusp/operator-core/lib/liveness';
+import { heartbeatAgeTone, type Liveness } from '@papercusp/operator-core/lib/liveness';
 import type { SessionState } from '@papercusp/operator-core/lib/agent-tools/coordination/presence-wakeability';
 import type { CSSProperties } from 'react';
 import styles from './presence-ui.module.css';
 
 export type { Liveness, SessionState };
 
-/** Liveness from a heartbeat ISO string, using the current wall clock. */
+/** Explicit heartbeat-age DISPLAY tone for old/degraded payloads. */
+export function heartbeatToneFromTimestamp(heartbeatAtIso: string, nowMs: number = Date.now()): Liveness {
+  return heartbeatAgeTone(heartbeatAtIso, nowMs);
+}
+
+/**
+ * @deprecated Ambiguous name: this is heartbeat freshness, not an agent
+ * liveness verdict. Prefer the roster's `sessionState` (or pass it to
+ * `LivenessDot`); use `heartbeatToneFromTimestamp` only as a compatibility
+ * fallback when the oracle field is unavailable.
+ */
 export function livenessFromHeartbeat(heartbeatAtIso: string, nowMs: number = Date.now()): Liveness {
-  return deriveLiveness(heartbeatAtIso, nowMs);
+  return heartbeatToneFromTimestamp(heartbeatAtIso, nowMs);
 }
 
 export const LIVENESS_TITLE: Record<Liveness, string> = {

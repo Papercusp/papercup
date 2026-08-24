@@ -73,6 +73,7 @@ function entry(over: Partial<HudRosterEntry> = {}): HudRosterEntry {
     contextTokens: null,
     compactionLimit: null,
     openAwait: null,
+    transcriptFresh: false,
     thinking: false,
     ...over,
   };
@@ -458,7 +459,7 @@ describe('deriveColumn — precedence', () => {
         entry({
           sessionState: 'parked',
           liveTurn: false,
-          thinking: true,
+          transcriptFresh: true,
           liveness: 'live',
           lastActiveAt: iso(5_000),
         }),
@@ -473,7 +474,7 @@ describe('deriveColumn — precedence', () => {
         entry({
           sessionState: null,
           liveTurn: null,
-          thinking: true,
+          transcriptFresh: true,
           liveness: 'idle',
           lastActiveAt: iso(5_000),
         }),

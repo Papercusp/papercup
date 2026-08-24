@@ -139,6 +139,8 @@ describe('mergeRosterEntries', () => {
     expect(entry.currentPlanSlug).toBe('live-plan'); // from presence
     expect(entry.liveness).toBe('live');
     expect(entry.liveTurn).toBeNull();
+    expect(entry.transcriptFresh).toBe(false);
+    expect(entry.thinking).toBe(false); // deprecated compatibility alias
   });
 
   it('carries the shared oracle live-turn activity beside its session-state verdict', () => {

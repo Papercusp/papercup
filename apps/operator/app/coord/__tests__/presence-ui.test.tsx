@@ -7,7 +7,13 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
-import { LivenessDot, livenessForSessionState, livenessFromHeartbeat, normalizeSessionState } from '../presence-ui';
+import {
+  heartbeatToneFromTimestamp,
+  LivenessDot,
+  livenessForSessionState,
+  livenessFromHeartbeat,
+  normalizeSessionState,
+} from '../presence-ui';
 
 afterEach(cleanup);
 
@@ -67,5 +73,11 @@ describe('livenessFromHeartbeat', () => {
 
   it('treats an unparseable heartbeat as stale', () => {
     expect(livenessFromHeartbeat('not-a-date', now)).toBe('stale');
+  });
+
+  it('is a compatibility alias for the explicitly named heartbeat tone', () => {
+    expect(livenessFromHeartbeat(iso(now - 300_000), now)).toBe(
+      heartbeatToneFromTimestamp(iso(now - 300_000), now),
+    );
   });
 });

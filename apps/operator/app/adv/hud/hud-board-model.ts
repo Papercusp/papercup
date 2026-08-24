@@ -222,9 +222,12 @@ export interface HudRosterEntry {
    * tokens (["psu", "--model=…"]) from a psu/fleet launch, and
    * [terminal, greetingCmd] from a console launch, where the flag is embedded in
    * the recorded shell command.
-   */
+  */
   launchArgv?: string[];
   openAwait: HudOpenAwait | null;
+  /** Recent transcript-output freshness. Display decoration only. */
+  transcriptFresh?: boolean | null;
+  /** @deprecated Compatibility alias for transcriptFresh on older payloads. */
   thinking: boolean;
   /** The adv_sessions `display` hint. Optional — only the launch-record tiers
    *  carry one ('workbench' for a D-006 pane launch, 'terminal' for a WI-6376
@@ -1246,8 +1249,9 @@ export function deriveColumn(
     e.sessionState != null
       ? e.sessionState === 'live'
       : e.liveTurn === true || e.liveness === 'live';
+  const transcriptFresh = e.transcriptFresh ?? e.thinking;
   const transcriptFreshFallback =
-    e.sessionState == null && e.liveTurn == null && e.thinking;
+    e.sessionState == null && e.liveTurn == null && transcriptFresh;
   if (oracleWorking || transcriptFreshFallback || (e.loopArmed && e.liveness !== 'stale')) {
     return {
       column: 'working',

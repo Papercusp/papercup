@@ -18,7 +18,13 @@ import { useCallback, useMemo } from 'react';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import type { NativeSessionHandle } from '@papercusp/operator-core/lib/native-session-handles';
 import { modeChipLabel, modeChipTitle } from '@papercusp/operator-core/lib/modes/registry';
-import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
+import {
+  LivenessDot,
+  livenessForSessionState,
+  normalizeSessionState,
+  type Liveness,
+  type SessionState,
+} from '@/app/coord/presence-ui';
 import { Select } from '@/app/harness/Select';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
@@ -98,6 +104,14 @@ export interface RosterEntry {
   pid: number | null;
   startedAt: string;
   heartbeatAt: string;
+  /** The shared oracle's sole agent-liveness verdict. Optional only for payload
+   * skew; when present it outranks the legacy heartbeat-age `liveness` tone. */
+  sessionState?: SessionState | string | null;
+  /** Orthogonal current-turn activity from the same oracle. */
+  liveTurn?: boolean | null;
+  /** Raw process-keepalive freshness. This is not a liveness verdict. */
+  heartbeatFresh?: boolean | null;
+  /** @deprecated Heartbeat-age display tone retained for older payloads. */
   liveness: Liveness;
   stale: boolean;
   workspaceId: string;
@@ -214,11 +228,23 @@ export function applyRosterFilters(active: RosterEntry[], f: RosterFilters): Ros
   const fileQ = f.file.trim().toLowerCase();
   return active.filter((e) => {
     if (f.client && (e.agent ?? shortSource(e.source)) !== f.client) return false;
-    if (f.liveness && e.liveness !== f.liveness) return false;
+    if (f.liveness && rosterLiveness(e) !== f.liveness) return false;
     if (f.role && (e.role ?? '') !== f.role) return false;
     if (fileQ && !e.currentFiles.some((p) => p.toLowerCase().includes(fileQ))) return false;
     return true;
   });
+}
+
+/**
+ * Project the oracle's richer session-state vocabulary into the roster's
+ * existing three visual/filter tones. The heartbeat-age field is compatibility
+ * only and is consulted solely when the payload has no recognised oracle state.
+ */
+export function rosterLiveness(
+  e: Pick<RosterEntry, 'sessionState' | 'liveness'>,
+): Liveness {
+  const sessionState = normalizeSessionState(e.sessionState);
+  return sessionState ? livenessForSessionState(sessionState) : e.liveness;
 }
 
 function basename(p: string): string {
@@ -261,11 +287,18 @@ export function groupRoster(active: RosterEntry[], planFilters: string[]): Group
 }
 
 /**
- * A "zombie" agent: its heartbeat says it's still around (not stale) but the OS
- * process is confirmed dead (P-008). pidAlive===null is "unknown", NOT a zombie.
+ * A "zombie" agent: process keepalive is fresh but the same-host OS process is
+ * confirmed dead (P-008). `heartbeatFresh` is the canonical keepalive leg;
+ * legacy `liveness` is used only when that explicit field is unavailable.
+ * pidAlive===null is "unknown", NOT a zombie.
  */
-export function isZombie(e: { liveness: Liveness; pidAlive: boolean | null }): boolean {
-  return e.liveness !== 'stale' && e.pidAlive === false;
+export function isZombie(e: {
+  heartbeatFresh?: boolean | null;
+  liveness: Liveness;
+  pidAlive: boolean | null;
+}): boolean {
+  const heartbeatFresh = e.heartbeatFresh ?? e.liveness !== 'stale';
+  return heartbeatFresh && e.pidAlive === false;
 }
 
 export interface FileInPlay {
@@ -315,10 +348,13 @@ function RosterRow({
   const lex = useLexicon();
   const client = e.agent ?? shortSource(e.source);
   const extraFiles = e.currentFiles.length - 6;
+  const displayLiveness = rosterLiveness(e);
+  const sessionState = normalizeSessionState(e.sessionState);
   return (
     <li
       className="pc-roster__row"
-      data-liveness={e.liveness}
+      data-liveness={displayLiveness}
+      data-session-state={sessionState ?? undefined}
       data-selected={selected || undefined}
       role="button"
       tabIndex={0}
@@ -332,7 +368,7 @@ function RosterRow({
       }}
     >
       <div className="pc-roster__row-main">
-        <LivenessDot liveness={e.liveness} />
+        <LivenessDot liveness={displayLiveness} sessionState={sessionState} />
         <span className="pc-roster__badge" data-client={client}>
           {client}
         </span>
@@ -408,7 +444,7 @@ function GroupSection({
   onSelect: (ownerId: string) => void;
 }): React.JSX.Element | null {
   if (entries.length === 0) return null;
-  const live = entries.filter((e) => e.liveness === 'live').length;
+  const live = entries.filter((e) => rosterLiveness(e) === 'live').length;
   return (
     <section className="pc-roster__group">
       <header className="pc-roster__group-head">
@@ -615,9 +651,9 @@ export function SessionsRosterList({
   );
   const active = useMemo(() => applyRosterFilters(rawActive, filters), [rawActive, filters]);
 
-  const live = active.filter((e) => e.liveness === 'live').length;
-  const idle = active.filter((e) => e.liveness === 'idle').length;
-  const staleCount = active.filter((e) => e.liveness === 'stale').length;
+  const live = active.filter((e) => rosterLiveness(e) === 'live').length;
+  const idle = active.filter((e) => rosterLiveness(e) === 'idle').length;
+  const staleCount = active.filter((e) => rosterLiveness(e) === 'stale').length;
   const filtered = hasActiveFilters(filters);
 
   // PERF: stale agents are ~almost-always-ended sessions and on a busy box make
@@ -626,7 +662,7 @@ export function SessionsRosterList({
   // default; show when the toggle is on OR the user explicitly filters to stale.
   const showStaleRows = showStale || filters.liveness === 'stale';
   const visibleActive = useMemo(
-    () => (showStaleRows ? active : active.filter((e) => e.liveness !== 'stale')),
+    () => (showStaleRows ? active : active.filter((e) => rosterLiveness(e) !== 'stale')),
     [active, showStaleRows],
   );
 
@@ -650,7 +686,7 @@ export function SessionsRosterList({
             <span className="pc-roster__head-title">Active agents</span>
             <span
               className="pc-roster__head-summary"
-              title="idle = no tool call in the last minute (may be mid-reasoning), not gone"
+              title="live/idle/inactive are projections of the shared session-state oracle; heartbeat age is fallback only"
             >
               <span className="pc-roster__count pc-roster__count--shown">
                 <b>
@@ -664,15 +700,15 @@ export function SessionsRosterList({
             </span>
             {staleCount > 0 && filters.liveness !== 'stale' ? (
               <Tooltip label={showStale
-                    ? 'Hide stale (>10m idle) sessions'
-                    : 'Show stale (>10m idle) sessions — hidden by default to keep the roster fast'}><button
+                    ? 'Hide inactive sessions'
+                    : 'Show inactive sessions (ended, suspect, draining, or stale-heartbeat fallback)'}><button
                 type="button"
                 className="pc-roster__stale-toggle"
                 aria-pressed={showStale}
                 onClick={() => onToggleStale?.()}
 
               >
-                {showStale ? 'hide' : 'show'} {staleCount} stale
+                {showStale ? 'hide' : 'show'} {staleCount} inactive
               </button></Tooltip>
             ) : null}
           </header>

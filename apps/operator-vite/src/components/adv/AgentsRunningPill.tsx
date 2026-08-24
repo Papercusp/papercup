@@ -89,9 +89,13 @@ export interface RosterAgent {
   /** The omp thread id — an OMP session's transcript handle
    *  (~/.omp/agent/sessions jsonl). */
   ompThreadId?: string | null;
-  /** Whether this agent is ACTIVELY thinking right now (transcript appended within
-   *  the last few seconds) — drives the roster's pulsing "in the middle of
-   *  thinking" indicator. */
+  /** Whether transcript output changed within the recent display window.
+   *  Decoration only: this does not establish a live turn. */
+  transcriptFresh?: boolean | null;
+  /**
+   * @deprecated Compatibility alias for transcriptFresh from older roster
+   * payloads. Do not use it as a liveness/activity verdict.
+   */
   thinking?: boolean | null;
   /** Whether a transcript actually RESOLVES for this agent's live-thinking pane.
    *  Stamped by the server for interactive CLAUDE sessions: false when the recorded
@@ -175,6 +179,13 @@ export function hasThinking(
     || (a.agent === 'codex' && a.advSessionId != null)
     || a.ompThreadId,
   );
+}
+
+/** Canonical transcript-freshness read with one payload-skew fallback. */
+export function isTranscriptFresh(
+  a: Pick<RosterAgent, 'transcriptFresh' | 'thinking'>,
+): boolean {
+  return a.transcriptFresh ?? a.thinking ?? false;
 }
 
 /** The stream URL for an agent's thinking: the bee run-log stream when it has a
@@ -466,7 +477,7 @@ export default function AgentsRunningPill() {
   const { data } = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
     args: advRosterArgs(null),
-    // `thinking` is derived from transcript mtimes rather than a database row,
+    // `transcriptFresh` is derived from transcript mtimes rather than a database row,
     // so no SSE invalidation can announce either edge of its 10s activity
     // window. Keep this always-mounted header observer on a small explicit
     // cadence; all roster consumers share the same structurally keyed query.
@@ -545,7 +556,7 @@ export default function AgentsRunningPill() {
 
   const groups = groupByFleet(running);
   const fleetDots = groups.filter((g) => g.slug !== null && g.color).slice(0, 6);
-  const thinkingCount = running.filter((a) => a.thinking).length;
+  const thinkingCount = running.filter(isTranscriptFresh).length;
   const machineCount = distinctMachineCount(running);
 
   return (
@@ -1054,7 +1065,7 @@ export function AgentsRoster({
                   onKeyDown={(e) => e.stopPropagation()}
                 />
                 <span className="pc-agents-roster__live">
-                  {a.thinking ? (
+                  {isTranscriptFresh(a) ? (
                     <ThinkingDot size={7} title={`${displayName(a, lex)} — thinking`} />
                   ) : (
                     <LivenessDot
@@ -1158,7 +1169,7 @@ function AgentDetailStrip({
         {agentGlyph(agent)} <strong>{displayName(agent, lex)}</strong>
         {agent.fleetSlug ? <span className="pc-agents-roster__detail-fleet"> · {agent.fleetSlug}</span> : null}
         <span className="pc-agents-roster__detail-live" title={activityLivenessTitle(agent, nowMs)}> · {activityLiveness(agent, nowMs)}{agent.loopArmed ? ' (loop armed)' : ''}</span>
-        {agent.thinking ? (
+        {isTranscriptFresh(agent) ? (
           <span className="pc-agents-roster__detail-thinking" style={{ marginLeft: 6, display: 'inline-flex', alignItems: 'center', gap: 4, color: '#6aa84f' }}>
             <ThinkingDot size={6} /> thinking
           </span>
