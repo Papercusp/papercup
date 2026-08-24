@@ -32,7 +32,7 @@ import {
   type LoopStopReason,
   type LoopTool,
 } from './loop';
-import { createAnthropicPort } from './anthropic-port';
+import { createRoutedModelPort } from './provider-router';
 import {
   awaitLoopApprovalDecision,
   createLoopApproval,
@@ -72,7 +72,7 @@ export interface LoopChatTurnOpts {
   priority?: string;
   /** Loop toolset (host-wired capability doors). Default: none. */
   tools?: LoopTool[];
-  /** Injectable seams (tests). Defaults: gateway-native port; PG approvals. */
+  /** Injectable seams (tests). Defaults: provider-routing port; PG approvals. */
   port?: ModelPort;
   approvals?: ApprovalPort;
   /** P-009 session store: when provided, the turn RESUMES from the stored
@@ -160,7 +160,7 @@ export function pgApprovalPort(args: {
  * like the legacy lane).
  */
 export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatTurnResult> {
-  const port = opts.port ?? createAnthropicPort();
+  const port = opts.port ?? createRoutedModelPort();
   const approvals =
     opts.approvals ??
     pgApprovalPort({
