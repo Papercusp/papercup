@@ -140,7 +140,17 @@ export async function readWorkerParityRuns(
   }>>`
     WITH recent AS (
       SELECT run_id, harness_slug, exit_code, ended_at,
-             reverse(split_part(reverse(rtrim(jsonl_body)), E'\n', 1)) AS meta_line
+             -- finalizeInvocation deliberately newline-terminates every JSONL
+             -- event, including papercusp.run_meta. PostgreSQL's one-argument
+             -- rtrim removes spaces only, so it would leave that final newline
+             -- and split_part(reverse(...), newline, 1) would select an empty
+             -- segment. Trim the JSONL line-ending whitespace explicitly before
+             -- taking the terminal event.
+             reverse(split_part(
+               reverse(rtrim(jsonl_body, chr(10) || chr(13) || chr(9) || ' ')),
+               chr(10),
+               1
+             )) AS meta_line
         FROM harness_shared.harness_run_output
        WHERE workspace_id = ${args.workspaceId}
          AND role = 'worker'

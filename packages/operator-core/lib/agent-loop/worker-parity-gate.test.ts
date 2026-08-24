@@ -157,5 +157,10 @@ describe('readWorkerParityRuns', () => {
       mcpToolNames: ['capability:read'],
     }]);
     expect(query).toHaveBeenCalledOnce();
+    const sql = (query.mock.calls[0]![0] as readonly string[]).join('?');
+    expect(sql).toContain(
+      "rtrim(jsonl_body, chr(10) || chr(13) || chr(9) || ' ')",
+    );
+    expect(sql).not.toContain('reverse(rtrim(jsonl_body))');
   });
 });
