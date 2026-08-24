@@ -368,6 +368,24 @@ function minimalPipelineResult(
   ]) {
     if (source[field] !== undefined) out[field] = compactPipelineValue(source[field], opts);
   }
+  const serving = pickPipelineFields(
+    source.serving,
+    [
+      'host',
+      'unit',
+      'pid',
+      'startedAtMs',
+      'codeAsOfMs',
+      'codeAsOfSource',
+      'startedSinceCodeChange',
+      'behindMin',
+      'restartLever',
+      'restartSupersededBy',
+      'unknownReason',
+    ],
+    opts,
+  );
+  if (serving) out.serving = serving;
   const gate = compactPipelineGate(source.gate, opts);
   if (gate) out.gate = gate;
   for (const field of ['verdictProvenance', 'changeInCandidate']) {

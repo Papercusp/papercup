@@ -82,6 +82,19 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
       mainBehindStaging: 'caught-up',
     },
     deployedSha: 'sha0000001',
+    serving: {
+      host: 'operator-release',
+      unit: 'papercup-dev-api.service',
+      pid: 99,
+      startedAtMs: 1,
+      codeAsOfMs: 1,
+      codeAsOfSource: 'deploy',
+      startedSinceCodeChange: true,
+      behindMin: null,
+      restartLever: 'deploy',
+      restartSupersededBy: null,
+      unknownReason: null,
+    },
     verdictUnknown: [{ leg: 'gate.consecutiveReds', unknown: { code: 'resolver-failed', detail: 'fixture' } }],
     gate: {
       stalled: false,
@@ -146,6 +159,11 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     ]);
     expect(out.data.assessments).toEqual(oversized.assessments);
     expect(projection.omittedFields).not.toContain('assessments');
+    expect(out.data.serving).toMatchObject({
+      host: 'operator-release',
+      startedSinceCodeChange: true,
+      restartLever: 'deploy',
+    });
     expect(out.data.runtimeGenerations).toMatchObject([
       {
         unit: 'papercup-bg-host.service',
