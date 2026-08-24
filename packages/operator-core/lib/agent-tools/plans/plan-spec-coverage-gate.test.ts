@@ -94,7 +94,10 @@ function deps(over: Partial<PlanSpecCoverageDeps> = {}): PlanSpecCoverageDeps {
     // SILENTLY TURNS ENFORCEMENT OFF, and every refusal assertion in this file passes for
     // the wrong reason while proving nothing. That is a fail-open no typecheck can see, so
     // the stub is the guard.
-    readPlanStatuses: vi.fn(async ({ planSlugs }) => new Map(planSlugs.map((slug) => [slug, 'active']))),
+    readPlanStatuses: vi.fn(
+      async (input: { harnessSlug?: string; planSlugs: string[] }): Promise<Map<string, string>> =>
+        new Map(input.planSlugs.map((slug) => [slug, 'active'])),
+    ),
     ...over,
   };
 }
@@ -172,7 +175,10 @@ describe('evaluatePlanSpecCoverageGate — proof freshness', () => {
       { harnessSlug: 'papercusp', planSlug: PLAN },
       deps({
         listClauses: vi.fn(async () => [clause({ specId: 'SPEC-UNCOVERED' })]),
-        readPlanStatuses: vi.fn(async ({ planSlugs }) => new Map(planSlugs.map((s) => [s, 'shipped']))),
+        readPlanStatuses: vi.fn(
+          async (input: { harnessSlug?: string; planSlugs: string[] }): Promise<Map<string, string>> =>
+            new Map(input.planSlugs.map((slug) => [slug, 'shipped'])),
+        ),
       }),
     );
 
