@@ -914,6 +914,27 @@ export default defineTool({
                   : null
             : null;
         /**
+         * EI-21282889275455257: checks are rendered INTO the checkpoint body. A
+         * checks-only patch promises to preserve that body, but the transform below
+         * used to front-trim it when the newly-rendered checks pushed the note over
+         * CHECKPOINT_CAP. Refuse that metadata patch before the transform can evict
+         * narrative bytes; callers can retry without checks or deliberately opt into
+         * the destructive path with confirmShrink:true.
+         */
+        const bodyPreservationGuard: CheckpointGuard | null =
+          !wantsConfirmShrink && isBodyPreservingPatch && (suppliedChecks?.length ?? 0) > 0
+            ? (priorNote) => {
+                const priorSplit = splitCarryNoteChecks(priorNote);
+                const priorChecks = priorSplit.checks;
+                const effectiveChecks = additiveChecks ? [...(suppliedChecks ?? []), ...priorChecks] : suppliedChecks;
+                const merged = normalizeCheckEntries(effectiveChecks ?? [], priorChecks);
+                const rendered = withCarryNoteChecks(priorSplit.body, merged);
+                return rendered.length > CHECKPOINT_CAP
+                  ? `checks_body_overflow — this body-preserving checks patch would render ${rendered.length} chars, exceeding the ${CHECKPOINT_CAP}-char checkpoint cap and evicting the oldest narrative content. Refusing the write; retry without checks or shorten the checks before retrying, or pass { confirmShrink: true } only if that loss is intentional.`
+                  : null;
+              }
+            : null;
+        /**
          * Armed independently of `isPlainReplace` — that is the EI-21228214077347799 fix.
          * It also covers the shrink-retry below: that retry sets `preservePriorOnShrink`,
          * which makes the checks additive (see `effectiveChecks`), so the same closure —
@@ -938,7 +959,7 @@ export default defineTool({
           : null;
         let res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
           ...(checksTransform ? { transform: checksTransform } : {}),
-          guard: composeGuards(appendBaseGuard, overflowGuard, shrinkGuard),
+          guard: composeGuards(appendBaseGuard, bodyPreservationGuard, overflowGuard, shrinkGuard),
           ...depsOpt,
         });
         // EI-20232176364474286: retain the existing guard's no-loss behavior, but do
@@ -962,7 +983,7 @@ export default defineTool({
             checkpointToStore,
             {
               ...(checksTransform ? { transform: checksTransform } : {}),
-              guard: composeGuards(overflowGuard),
+              guard: composeGuards(bodyPreservationGuard, overflowGuard),
               ...depsOpt,
             },
           );
@@ -1000,10 +1021,14 @@ export default defineTool({
                     ? additiveRowsMode && !wantsAppend
                       ? { rowsMode: 'merge', checks: [] }
                       : { append: true, checks: [] }
+                    : errorCode === 'checks_body_overflow'
+                      ? { checks: [] }
                     : { append: true },
                 description:
                   errorCode === 'append_checks_overflow'
                     ? 'Retry as an additive body-only append (omit checks or pass checks: []) after separately retiring stale rows if needed.'
+                    : errorCode === 'checks_body_overflow'
+                      ? 'Retry without checks to preserve the narrative body, or shorten the checks before retrying the metadata patch.'
                     : 'Join this submitted checkpoint onto the existing note and preserve its prior content.',
               },
               replace: {
