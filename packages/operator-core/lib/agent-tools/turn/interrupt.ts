@@ -27,7 +27,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
 import { shortHandle } from '../../coord-schema';
 import { COORD_ROLES } from '../coordination/roles';
-import { latestAdvSessionByCoordOwner } from '../../adv-sessions';
+import { latestAdvSessionByCoordOwner, repairStaleAdvSessionTerminalMarkers } from '../../adv-sessions';
 import { interruptViaPty } from '../../events/await/psu-pty-discovery';
 import { readIdentity } from '../locks/identity';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
@@ -85,6 +85,8 @@ export interface InterruptDeps {
   recentInterrupts?: (actor: string) => Promise<number>;
   /** The target's live session pid, or null when not interruptibly live. */
   liveSessionPid?: (owner: string) => Promise<number | null>;
+  /** Repair an observer-written terminal marker before resolving liveness. */
+  repairStaleAdvSessionTerminalMarkers?: (owner: string) => Promise<number>;
   /** Managed-pty force inject over the session control socket (Ctrl+C `\x03` for 'sigint', ESC `\x1b` for
    *  'esc'); true on success. */
   ptyForce?: (owner: string, key: 'sigint' | 'esc') => Promise<boolean>;
@@ -184,6 +186,16 @@ export async function performInterrupt(input: InterruptInput, deps: InterruptDep
   let channel: 'pty-ctrl-c' | 'pty-esc' | 'sigint' | null = null;
   let err: string | null = null;
   let noLiveSession = false;
+
+  // A reconciler can persist ended_by before its ended_at update (for example,
+  // across a process/reconciler boundary). Repair that impossible state before
+  // either liveness channel is consulted, so a dead owner cannot be routed as a
+  // live turn merely because the timestamp half of the terminal tuple is stale.
+  try {
+    await deps.repairStaleAdvSessionTerminalMarkers?.(input.owner);
+  } catch {
+    /* fail-soft: the liveness read still handles ordinary live sessions */
+  }
 
   // (1) managed-pty keystroke over the session control socket (graceful for a TUI): ESC ('esc') aborts the
   //     turn back to the prompt; Ctrl+C ('sigint', default) interrupts. ESC is endTurn's choice (D-001).
@@ -331,6 +343,7 @@ export async function forceEndTurn(
       }
     },
     recentInterrupts: recentInterruptCount,
+    repairStaleAdvSessionTerminalMarkers,
     liveSessionPid,
     ptyForce: (owner, key) => interruptViaPty(owner, key),
     sigint: (pid) => {
@@ -434,6 +447,7 @@ export default defineTool({
         }
       },
       recentInterrupts: recentInterruptCount,
+      repairStaleAdvSessionTerminalMarkers,
       liveSessionPid,
       // Phase-3 seam: keystroke into a live managed-pty session (ESC or Ctrl+C), else false → SIGINT-to-pid.
       ptyForce: (owner, key) => interruptViaPty(owner, key),

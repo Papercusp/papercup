@@ -93,6 +93,27 @@ describe('turn:interrupt — performInterrupt (P-016/P-018; headless P-020)', ()
     expect(r.error).toMatch(/no live interruptible session/);
   });
 
+  it('repairs stale terminal evidence before attempting either force channel', async () => {
+    const events: string[] = [];
+    const { d } = makeDeps({
+      repairStaleAdvSessionTerminalMarkers: async (owner) => {
+        events.push(`repair:${owner}`);
+        return 1;
+      },
+      ptyForce: async () => {
+        events.push('pty');
+        return false;
+      },
+      liveSessionPid: async () => {
+        events.push('pid');
+        return null;
+      },
+    });
+
+    await performInterrupt(baseInput({ mode: 'force' }), d);
+    expect(events).toEqual(['repair:su-target', 'pty', 'pid']);
+  });
+
   it('force still proceeds on a critical section but WARNS (orphaned-edit hazard)', async () => {
     const { d } = makeDeps({ heldLockPaths: async () => ['mig.sql'], liveSessionPid: async () => 9 });
     const r = await performInterrupt(baseInput({ mode: 'force' }), d);

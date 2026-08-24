@@ -229,6 +229,25 @@ describe('killOne', () => {
     expect(released).toEqual(['su-ghost']);
   });
 
+  it('repairs stale terminal evidence before consulting unmanaged presence', async () => {
+    const events: string[] = [];
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => null,
+      repairStaleAdvSessionTerminalMarkers: async (ownerId) => {
+        events.push(`repair:${ownerId}`);
+        return 1;
+      },
+      findLiveUnmanaged: async () => {
+        events.push('unmanaged');
+        return null;
+      },
+    };
+
+    await killOne({ actor: 'su-me', target: 'su-stale', closeTerminal: true, reason: 'cleanup' }, deps);
+    expect(events).toEqual(['repair:su-stale', 'unmanaged']);
+  });
+
   it('reports live_unmanaged for a fresh OMP-hook presence without clearing it', async () => {
     let cleared = false;
     let released = false;
