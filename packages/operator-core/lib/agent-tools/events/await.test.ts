@@ -140,6 +140,12 @@ describe('events:await wrapper defaults', () => {
     expect(guidance!.when).toMatch(/before registration/);
   });
 
+  it('documents producer_health compatibility with the await selector', () => {
+    expect(awaitTool.args.shape.producer_health.description).toMatch(
+      /requires `event` or `fromMsg` and is rejected with a composed `spec`/,
+    );
+  });
+
   it('defaults: policy:wake, timeoutBehavior:wake, timeoutSec:AWAIT_DEFAULT_TIMEOUT_SEC (1800 = 30min), and the sweeper starts', async () => {
     await call({ event: 'lock:grant:t1' });
     expect(startAwaitSweeper).toHaveBeenCalledTimes(1);

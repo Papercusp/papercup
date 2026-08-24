@@ -122,7 +122,9 @@ export default defineTool({
       .describe(
         "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires. Omitted on event:'work-item:claimable'? EI-13846: it is auto-narrowed to YOUR OWN claim spec when one exists (see auto_scoped_payload_filter in the response) — pass this explicitly to override.",
       ),
-    producer_health: producerHealthInputSchema.optional(),
+    producer_health: producerHealthInputSchema
+      .optional()
+      .describe('Verified producer health for a single event/fromMsg wait; requires `event` or `fromMsg` and is rejected with a composed `spec`.'),
     fromMsg: hardText(LIMITS.IDENT)
       .optional()
       .describe(
