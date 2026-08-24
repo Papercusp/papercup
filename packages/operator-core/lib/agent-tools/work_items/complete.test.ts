@@ -1222,6 +1222,63 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
+    // P-016/D-013: the gate's advisory impact report has to REACH the caller — a report
+    // nobody receives is indistinguishable from no report, which is the state P-016 was
+    // in while the resolver had no production consumer. These two cases pin delivery on
+    // both paths, and pin that a populated report is NOT itself a refusal.
+    it('surfaces the advisory impact report on the success path without blocking the close', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedIssue, state: 'resolved' }));
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: true,
+        applicable: false,
+        checked: [],
+        impactReport: 'other-plan/SPEC-900-01@1. Reported, not enforced.',
+      });
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+        specAdequacy,
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.specAdequacy).toEqual({
+        applicable: false,
+        checked: [],
+        impactReport: 'other-plan/SPEC-900-01@1. Reported, not enforced.',
+      });
+      // The close still happened — reporting must never become enforcement (P-013 owns that).
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it('carries the advisory impact report onto a refusal too', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'SPEC-003-01@1: fail [freshness]',
+        checked: [],
+        impactReport: 'other-plan/SPEC-900-01@1. Reported, not enforced.',
+      });
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+        specAdequacy,
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.specAdequacy).toMatchObject({
+        applicable: true,
+        retryable: true,
+        impactReport: 'other-plan/SPEC-900-01@1. Reported, not enforced.',
+      });
+    });
+
     it('refuses before every completion/state write when current proof is insufficient', async () => {
       getWorkItem.mockResolvedValue(linkedIssue);
       specTestAdequacyCompletionGate.mockResolvedValue({
