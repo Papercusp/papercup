@@ -106,6 +106,8 @@ import {
 
 export const AGENTS = ["claude", "omp", "codex"];
 export const INTERACTIVE_CLIENTS = ["legacy", "pui"];
+/** Mirrored from agent-config-constants.ts; pinned by psu-launcher.test.ts. */
+export const DEFAULT_INTERACTIVE_CLIENT = "pui";
 
 /**
  * The side-effect-free CLI reference shown by `psu --help`.
@@ -121,7 +123,7 @@ scripted launch.
 
 Session selection:
   -h, --help                         Show this help and exit
-  --client=<legacy|pui>              UI to open (bare psu remains legacy until parity is green)
+  --client=<legacy|pui>              UI to open (bare interactive psu defaults to owned PUI)
   --resume[=<id>] [id]               Resume a tracked or native session
   --fork, --fork-session             Fork the selected session (with --resume)
   --brain                            Show the retired brain-session message
@@ -1035,16 +1037,11 @@ export function parseArgs(argv) {
   return out;
 }
 
-/**
- * Resolve the dependency-safe owned-client preview route prepared by P-013.
- * Bare `psu` and `--client=legacy` both return null and continue through the
- * existing launcher byte-for-byte. Only the explicit PUI choice launches the
- * owned chat dock; P-012 will consult the persisted default after D-015 is
- * GREEN. Reject legacy-session flags instead of silently ignoring them.
- */
-export function puiClientCommand(args) {
-  if (args.client !== "pui") return null;
-  const conflicts = [
+/** Flags that make an invocation a native/session-engine launch rather than
+ * the bare interactive front door. The stored UI preference never rewrites
+ * automation, fleet launches, or resumes into PUI. */
+export function puiClientConflicts(args) {
+  return [
     args.resume ? "--resume" : null,
     args.fork ? "--fork" : null,
     args.brain ? "--brain" : null,
@@ -1062,6 +1059,50 @@ export function puiClientCommand(args) {
     args.kickoffPromptText ? "--kickoff" : null,
     args.passthrough?.length ? "-- passthrough" : null,
   ].filter(Boolean);
+}
+
+/**
+ * Resolve P-012's interactive default. Explicit `--client` always wins.
+ * Scripted/session-bearing invocations retain the legacy engine path so this
+ * UI cutover cannot break fleets or resumes. A bare interactive invocation
+ * reads the canonical saved preference; an unreachable/old operator inherits
+ * the shipped PUI default rather than silently undoing the cutover.
+ */
+export async function resolveInteractiveClient(
+  args,
+  {
+    fetchImpl = fetch,
+    operatorUrl = OPERATOR_URL,
+    timeoutMs = 1500,
+  } = {},
+) {
+  if (args.client != null) return args.client;
+  if (args.picker === false || puiClientConflicts(args).length > 0) return "legacy";
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const base = String(operatorUrl || "").replace(/\/$/, "");
+    const response = await fetchImpl(`${base}/api/agent-config`, { signal: ac.signal });
+    if (!response?.ok) return DEFAULT_INTERACTIVE_CLIENT;
+    const body = await response.json();
+    const saved = body?.config?.interactiveClient;
+    return saved === "legacy" || saved === "pui"
+      ? saved
+      : DEFAULT_INTERACTIVE_CLIENT;
+  } catch {
+    return DEFAULT_INTERACTIVE_CLIENT;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Launch the owned chat dock, rejecting native-session flags instead of
+ * silently ignoring them. `--client=legacy` returns null and preserves the
+ * Claude/OMP/Codex escape-hatch path. */
+export function puiClientCommand(args) {
+  if (args.client !== "pui") return null;
+  const conflicts = puiClientConflicts(args);
   if (conflicts.length > 0) {
     throw new Error(
       `--client=pui opens the owned interactive client and cannot combine with legacy session flags: ${conflicts.join(", ")}. Use --client=legacy for those flags.`,
@@ -10654,10 +10695,10 @@ async function main() {
     clearClaudeTokenFlow();
     return;
   }
-  // P-013 / D-026: explicit owned-client preview. This deliberately runs
-  // before the legacy brain/resume/fresh-session branches. Bare psu and an
-  // explicit `--client=legacy` still flow through those branches unchanged;
-  // the persisted default is not consulted until P-012 clears D-015.
+  // P-012 / D-028: the deployed parity gate is GREEN, so the bare interactive
+  // front door now consults the saved preference (default PUI). Explicit
+  // legacy/session-bearing invocations keep the native client path.
+  args.client = await resolveInteractiveClient(args);
   const puiClient = puiClientCommand(args);
   if (puiClient) {
     const code = await runInstallerInherit(puiClient);

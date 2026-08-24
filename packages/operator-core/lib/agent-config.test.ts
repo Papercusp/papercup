@@ -37,7 +37,7 @@ describe('readAgentConfig default backend (no stored row)', () => {
     readOperatorStateMock.mockResolvedValueOnce(null);
     const c = await readAgentConfig();
     expect(c.backend).toBe('claude-code');
-    expect(c.interactiveClient).toBe('legacy');
+    expect(c.interactiveClient).toBe('pui');
     expect(effectiveBackend(c)).toBe('claude-code');
     expect(c.resolverProfiles).toEqual({
       'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
@@ -52,11 +52,11 @@ describe('readAgentConfig default backend (no stored row)', () => {
 });
 
 describe('parseInteractiveClient', () => {
-  it('accepts the owned PUI preference and otherwise fails closed to legacy', () => {
+  it('preserves the explicit legacy escape hatch and defaults old/unknown rows to PUI', () => {
     expect(parseInteractiveClient('pui')).toBe('pui');
     expect(parseInteractiveClient('legacy')).toBe('legacy');
-    expect(parseInteractiveClient('unknown')).toBe('legacy');
-    expect(parseInteractiveClient(null)).toBe('legacy');
+    expect(parseInteractiveClient('unknown')).toBe('pui');
+    expect(parseInteractiveClient(null)).toBe('pui');
   });
 });
 

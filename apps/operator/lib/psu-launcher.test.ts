@@ -23,6 +23,7 @@ import {
 import {
   parseArgs,
   PSU_HELP_TEXT,
+  DEFAULT_INTERACTIVE_CLIENT,
   planValue,
   parkRoleScopedMcpJson,
   ompDefaultModelAdvisory,
@@ -144,6 +145,7 @@ import {
   PTY_DEFAULT_ON,
   AGENTS,
   INTERACTIVE_CLIENTS,
+  resolveInteractiveClient,
   puiClientCommand,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
@@ -2208,8 +2210,9 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
-  it("prepares the owned PUI route without changing the bare/legacy default", () => {
+  it("keeps explicit owned and legacy client routes", () => {
     expect(INTERACTIVE_CLIENTS).toEqual(["legacy", "pui"]);
+    expect(DEFAULT_INTERACTIVE_CLIENT).toBe("pui");
     expect(puiClientCommand(parseArgs([]))).toBeNull();
     expect(puiClientCommand(parseArgs(["--client=legacy"]))).toBeNull();
     expect(puiClientCommand(parseArgs(["--client=pui"]))).toEqual({
@@ -2218,6 +2221,55 @@ describe("psu-launcher arg parsing", () => {
     });
     expect(parseArgs(["--client", "pui"]).client).toBe("pui");
     expect(() => parseArgs(["--client=unknown"])).toThrow(/legacy\|pui/);
+  });
+
+  it("resolves bare psu from the saved preference and defaults to PUI after D-028", async () => {
+    const savedLegacy = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ config: { interactiveClient: "legacy" } }),
+    }));
+    expect(
+      await resolveInteractiveClient(parseArgs([]), {
+        fetchImpl: savedLegacy,
+        operatorUrl: "http://operator.test",
+      }),
+    ).toBe("legacy");
+    expect(savedLegacy).toHaveBeenCalledWith(
+      "http://operator.test/api/agent-config",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+
+    const savedPui = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ config: { interactiveClient: "pui" } }),
+    }));
+    expect(
+      await resolveInteractiveClient(parseArgs([]), {
+        fetchImpl: savedPui,
+        operatorUrl: "http://operator.test/",
+      }),
+    ).toBe("pui");
+
+    const unavailable = vi.fn(async () => {
+      throw new Error("operator unavailable");
+    });
+    expect(
+      await resolveInteractiveClient(parseArgs([]), { fetchImpl: unavailable }),
+    ).toBe("pui");
+  });
+
+  it("does not apply the interactive PUI default to scripted/session launches", async () => {
+    const fetchImpl = vi.fn();
+    expect(
+      await resolveInteractiveClient(
+        parseArgs(["--no-picker", "--agent=omp", "--harness=papercusp", "--no-plan"]),
+        { fetchImpl },
+      ),
+    ).toBe("legacy");
+    expect(
+      await resolveInteractiveClient(parseArgs(["--client=pui"]), { fetchImpl }),
+    ).toBe("pui");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("fails loud when an owned-PUI launch carries legacy session flags", () => {

@@ -39,6 +39,10 @@ export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 export const INTERACTIVE_CLIENTS = ['legacy', 'pui'] as const;
 export type InteractiveClient = (typeof INTERACTIVE_CLIENTS)[number];
 
+/** D-028 / P-012: owned PUI is the interactive front door after the worker
+ * parity gate turned GREEN. `legacy` remains an explicit escape hatch. */
+export const DEFAULT_INTERACTIVE_CLIENT: InteractiveClient = 'pui';
+
 /**
  * The in-app brain surfaces that support a per-surface backend override. Keep in
  * sync with the call sites that pass `surfaceBackend('<key>')` and the

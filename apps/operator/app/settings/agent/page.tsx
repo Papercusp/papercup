@@ -33,6 +33,7 @@ import { agentRoleLabel, agentTermKey } from '../../harness/agent-display';
 import { ROLE_ROUTING_ROWS } from './role-routing-rows';
 import {
   AGENT_BACKENDS,
+  DEFAULT_INTERACTIVE_CLIENT,
   DEFAULT_MODEL_TIERS,
   defaultCompactionLimitForSpec,
   type AgentBackend,
@@ -156,7 +157,7 @@ export default function AgentSettingsPage() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [interactiveClient, setInteractiveClient] = useState<InteractiveClient>('legacy');
+  const [interactiveClient, setInteractiveClient] = useState<InteractiveClient>(DEFAULT_INTERACTIVE_CLIENT);
   const [backend, setBackend] = useState<GlobalBackend>('omp');
   const [cmd, setCmd] = useState('');
   const [roleModels, setRoleModels] = useState<Record<string, string>>({});
@@ -202,7 +203,7 @@ export default function AgentSettingsPage() {
       if (hydrationAppliedRef.current) return;
       hydrationAppliedRef.current = true;
       setSnapshot(d);
-      setInteractiveClient(d.config.interactiveClient ?? 'legacy');
+      setInteractiveClient(d.config.interactiveClient ?? DEFAULT_INTERACTIVE_CLIENT);
       setBackend(d.config.backend);
       setCmd(d.config.cmd);
       const nextRoleModels = filteredRoleModels(d.config.models);
@@ -351,23 +352,23 @@ export default function AgentSettingsPage() {
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
         <h2>Interactive client</h2>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginTop: 4 }}>
-          The terminal UI opened by the <code>psu</code> front door. The owned PUI route is
-          available explicitly as <code>psu --client=pui</code>; changing the bare-command
-          default stays locked until the deployed worker-parity gate is green.
+          The terminal UI opened by a bare interactive <code>psu</code>. D-028 records the
+          deployed GREEN worker-parity gate, so owned PUI is now the default; scripted,
+          fleet, and resume launches keep their native engine path.
         </p>
         <Select
           value={interactiveClient}
           onChange={(value) => setInteractiveClient(value as InteractiveClient)}
           ariaLabel="Interactive client"
           options={[
-            { value: 'legacy', label: 'Legacy native clients (current default)' },
-            { value: 'pui', label: 'Owned PUI (activation waits for parity)', disabled: true },
+            { value: 'pui', label: 'Owned PUI (default)' },
+            { value: 'legacy', label: 'Legacy native clients (escape hatch)' },
           ]}
         />
         <p style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 8, marginBottom: 0 }}>
           Escape hatch: <code>psu --client=legacy</code> keeps the Claude, OMP, and Codex
-          picker reachable after the eventual cutover. D-015 remains fail-closed; this
-          preparation does not flip the default.
+          picker reachable. To pin OMP directly, use{' '}
+          <code>psu --client=legacy --agent=omp</code>.
         </p>
       </section>
 

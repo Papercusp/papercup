@@ -10,8 +10,8 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * the two merged into one, since both are "the omp settings page" to a user.
  *
  * Layout:
- * - Integration panel first (install/uninstall the papercusp-su MCP wiring +
- *   omp-su wrapper) — a fixed section, not a collapsible one, since it's a
+ * - Integration panel first (install/uninstall the optional legacy OMP MCP
+ *   wiring and clean any retired omp-su residue) — a fixed section, since it's a
  *   one-time setup action rather than a config value to search/edit.
  * - Search bar (filters across all `omp config` sections below).
  * - Each config section ([providers], [tools], [memory], …) is a collapsible
@@ -312,7 +312,7 @@ function OmpIntegrationPanel() {
   const uninstall = useCallback(async () => {
     if (!await askConfirm({
       title: 'Uninstall OMP integration?',
-      body: 'This removes the papercusp-su MCP entry and the omp-su wrapper.',
+      body: 'This removes the papercusp-su MCP entry, the gateway provider, and any stale retired omp-su wrapper.',
       confirmLabel: 'Uninstall',
       destructive: true,
     })) return;
@@ -340,11 +340,12 @@ function OmpIntegrationPanel() {
     <section style={{ ...S.section, padding: '14px 16px', marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
       {confirmEl}
       <div>
-        <h2 style={{ fontSize: 14, margin: 0 }}>Engineer-collaborator integration</h2>
+        <h2 style={{ fontSize: 14, margin: 0 }}>Legacy OMP escape hatch</h2>
         <p className="pc-settings-intro" style={{ marginBottom: 0, marginTop: 4 }}>
-          Wires Papercusp into your local OMP (oh-my-pi) install so <code>omp-su</code> launches OMP in
-          engineer-collaborator mode (playbook + coordination extension + this operator as an MCP server).
-          Plain <code>omp</code> stays vanilla.
+          Owned PUI is Papercusp&apos;s interactive default. This optional integration keeps OMP
+          available through the explicit legacy lane:{' '}
+          <code>psu --client=legacy --agent=omp</code> (playbook + coordination extension +
+          this operator as an MCP server). Plain <code>omp</code> stays vanilla.
         </p>
       </div>
 
@@ -367,10 +368,12 @@ function OmpIntegrationPanel() {
             <strong>MCP server in mcp.json:</strong>
             <span>{state.mcpServerInstalled ? <span style={{ color: 'var(--good, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}</span>
 
-            <strong>omp-su wrapper:</strong>
+            <strong>Retired omp-su residue:</strong>
             <span>
               <code>{state.wrapperPath}</code>{' '}
-              {state.wrapperInstalled ? <span style={{ color: 'var(--good, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}
+              {state.wrapperInstalled
+                ? <span style={{ color: 'var(--warn, #b80)' }}>present — uninstall removes it</span>
+                : <em style={{ color: 'var(--muted)' }}>none (expected)</em>}
             </span>
 
             <strong>Legacy CLAUDE.md block:</strong>

@@ -29,6 +29,7 @@ import {
   AGENT_BACKENDS,
   BULK_RESOLVER_CARRY_MODES,
   BULK_RESOLVER_PROFILE_KINDS,
+  DEFAULT_INTERACTIVE_CLIENT,
   MODEL_EFFORT_LEVELS,
   SURFACE_KEYS,
   defaultBulkResolverLaunchProfiles,
@@ -61,9 +62,9 @@ export type {
 };
 
 export interface AgentConfig {
-  /** Preferred UI for a bare interactive `psu` launch. P-013 persists the
-      preference while D-015 keeps activation fail-closed; `legacy` therefore
-      remains the effective default until P-012 records a green parity gate. */
+  /** Preferred UI for a bare interactive `psu` launch. D-028 records the
+      deployed GREEN parity verdict that activated PUI in P-012; callers may
+      still persist `legacy` as the explicit native-client escape hatch. */
   interactiveClient?: InteractiveClient;
   /** Which backend to drive. 'auto' lets resolveBackend infer from the
       binary name; explicit values force-select. */
@@ -127,7 +128,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   // omp agents in any freshly-created workspace (e.g. the New-Plan button —
   // launch-su.ts resolves an agent-less launch via effectiveBackend(readAgentConfig())),
   // ignoring the configured/boot backend. Owner ask 2026-06-18.
-  interactiveClient: 'legacy',
+  interactiveClient: DEFAULT_INTERACTIVE_CLIENT,
   backend: 'claude-code',
   cmd: '',
   models: {},
@@ -165,10 +166,10 @@ export async function readAgentConfig(): Promise<AgentConfig> {
   };
 }
 
-/** Fail-closed normalization for the `psu` UI preference. Unknown/legacy
- * rows stay on the existing native clients rather than activating PUI. */
+/** Normalize the `psu` UI preference. An explicit legacy choice survives the
+ * cutover; absent/unknown pre-cutover rows inherit P-012's owned-PUI default. */
 export function parseInteractiveClient(raw: unknown): InteractiveClient {
-  return raw === 'pui' ? 'pui' : 'legacy';
+  return raw === 'legacy' ? 'legacy' : DEFAULT_INTERACTIVE_CLIENT;
 }
 
 /** Normalize one stored resolver profile without letting one malformed field
