@@ -353,7 +353,7 @@ function checksSpec() {
         'you omit them, so re-sending a claim never loses its evidence. Supplying `verified` clears an inherited ' +
         '`contested` and vice versa — they are two renderings of ONE evidence slot, not independent fields — and ' +
         'evidence that contradicts itself (for example "STILL RUNNING") is auto-downgraded to ⚠ CONTESTED rather ' +
-        'than rendering as ✓ VERIFIED. Rows dropped come back as `checksDropped`.',
+        'than rendering as ✓ VERIFIED. Rows dropped come back as `checksDropped`. A bare string row is accepted as shorthand for `{ claim: <that string> }`.',
     );
 }
 

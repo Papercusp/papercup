@@ -1146,6 +1146,24 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).not.toContain('ignored command');
       expect(stored).not.toContain('ignored result');
     });
+    it('EI-21268881673610011: accepts a bare-string shorthand checks list through the handler', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'string shorthand evidence list',
+        checks: [
+          'the checkpoint write succeeded',
+          { claim: 'object rows still work beside strings', recheck: 'run probe S' },
+          'stored note carries every rendered row',
+        ],
+      });
+
+      expect(r).toMatchObject({ ok: true, checks: 3 });
+      const stored = await lastStored();
+      expect(stored).toContain('- ? the checkpoint write succeeded');
+      expect(stored).toContain('- ? object rows still work beside strings — re-check: run probe S');
+      expect(stored).toContain('- ? stored note carries every rendered row');
+    });
 
     it('applies the same boolean compatibility repair inside items[]', async () => {
       withPrior(null);
