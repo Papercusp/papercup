@@ -2192,4 +2192,22 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
     expect(result.provenanceLint?.matches.map((match: { line: string }) => match.line)).toEqual([current]);
     expect(result.retainedProvenance?.matches.map((match: { line: string }) => match.line)).toEqual([retained]);
   });
+
+  it('EI-21306957457076433: does not retain a factual timeout classification as bare imperative lint', async () => {
+    const current = 'Fresh checkpoint evidence for the next wake.';
+    const retained =
+      'The green-checkpoint:inconclusive notification was a TIMEOUT, not a verdict; ' +
+      'do not treat it as a verdict until release:trace confirms the state.';
+    const stored = [retained, current].join('\n');
+
+    getWorkItem.mockResolvedValue({ id: 'WI-PROVENANCE-TIMEOUT', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: retained.length });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-PROVENANCE-TIMEOUT', checkpoint: current });
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint).toBeUndefined();
+    expect(result.retainedProvenance).toBeUndefined();
+  });
 });

@@ -268,6 +268,23 @@ function isOwnerDirectiveNounPossibleMention(line: string): boolean {
 const BARE_GATE_IMPERATIVE_RE = /(?<![A-Za-z0-9]\s*)\bdo not\b.{0,80}\buntil\b/i;
 const INLINE_CODE_SEGMENT_RE = /`([^`\n]*)`/g;
 
+/**
+ * A writer-backed gate status can be followed by a reader-safety instruction
+ * without asserting owner authority. In particular, an inconclusive checkpoint
+ * notification may be classified as a TIMEOUT (not a verdict), then explained
+ * with "do not ... until release:trace ...". That interpretation is factual
+ * evidence, not an unverified owner imperative; keep the exemption tied to the
+ * known gate/status markers and the explicit timeout-vs-verdict classification
+ * so ordinary bare gates remain loud (EI-21306957457076433).
+ */
+const FACTUAL_GATE_STATUS_RE = /\b(?:green-checkpoint:inconclusive|events:status|release:trace)\b/i;
+const FACTUAL_TIMEOUT_CLASSIFICATION_RE =
+  /\b(?:was|is|were|are|returned|reported|classified|marked)\s+(?:a\s+)?(?:TIMEOUT|TIMED[ -]OUT)\b[^.;\n]{0,80}\bnot\s+(?:a|an|the)\s+verdict\b[^.\n]{0,40}(?:[;.!?])\s*do not\b/i;
+
+function isFactualTimeoutClassification(line: string): boolean {
+  return FACTUAL_GATE_STATUS_RE.test(line) && FACTUAL_TIMEOUT_CLASSIFICATION_RE.test(line);
+}
+
 // EI-20246140574201628: a backtick-quoted gate is a cited phrase, not a new directive.
 function isBareGateInsideInlineCode(line: string, match: RegExpExecArray): boolean {
   for (const segmentMatch of line.matchAll(INLINE_CODE_SEGMENT_RE)) {
@@ -486,7 +503,12 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       continue;
     }
     const bareGateMatch = BARE_GATE_IMPERATIVE_RE.exec(line);
-    if (!hasTaggedProvenanceBlock && bareGateMatch && !isBareGateInsideInlineCode(line, bareGateMatch)) {
+    if (
+      !hasTaggedProvenanceBlock &&
+      bareGateMatch &&
+      !isBareGateInsideInlineCode(line, bareGateMatch) &&
+      !isFactualTimeoutClassification(line)
+    ) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'bare-gate-imperative' });
     }
   }

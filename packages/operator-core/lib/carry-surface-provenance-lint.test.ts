@@ -73,6 +73,19 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0].kind).toBe('bare-gate-imperative');
   });
 
+  it('EI-21306957457076433: does not flag a writer-backed timeout classification as an owner imperative', () => {
+    const text =
+      'The green-checkpoint:inconclusive notification was a TIMEOUT, not a verdict; ' +
+      'do not treat it as a verdict until release:trace confirms the state.';
+    expect(lintCarrySurfaceProvenance(text)).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('EI-21306957457076433: keeps an ordinary timeout-adjacent gate loud', () => {
+    const r = lintCarrySurfaceProvenance('The last run timed out; do not deploy until release:trace confirms the state.');
+    expect(r.flagged).toBe(true);
+    expect(r.matches[0]?.kind).toBe('bare-gate-imperative');
+  });
+
   it('EI-20246140574201628: does NOT flag an inline-code quoted factual pending-verdict gate', () => {
     const r = lintCarrySurfaceProvenance(
       'The evidence records the safety phrase `do not act on the 18-red names until a real verdict is rendered` as a factual pending-verdict constraint.',
