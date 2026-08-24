@@ -37,6 +37,7 @@ const ROW: GoalRowForExport = {
   launchSettings: { maxAgents: 2 },
   inputSchema: { type: 'object' },
   outputSchema: null,
+  propertySchema: null,
 };
 
 const reader = async (id: string) => (id === ROW.id ? ROW : null);
@@ -80,6 +81,7 @@ describe('publishGoalToCupboard (exportOnly)', () => {
       launchSettings: { maxAgents: 2 },
       inputSchema: { type: 'object' },
       outputSchema: null,
+      propertySchema: null,
     });
     // No live-state keys exist on the export shape at all.
     expect(exported).not.toHaveProperty('status');

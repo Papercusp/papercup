@@ -42,6 +42,7 @@ function pkg(overrides: Partial<LocalGoalPackage> = {}): LocalGoalPackage {
     launchSettings: null,
     inputSchema: null,
     outputSchema: null,
+    propertySchema: null,
     description: 'the standing steward',
     requiresRubrics: [],
     version: '1.2.0',
@@ -67,6 +68,7 @@ function stubRow(overrides: Partial<Stub> = {}): Stub {
     launch_settings: null,
     input_schema: null,
     output_schema: null,
+    property_schema: null,
     inputs: null,
     metadata: { goalPackageRef: REF },
     ...overrides,
@@ -85,6 +87,7 @@ function content(overrides: Partial<GoalPackageContent> = {}): GoalPackageConten
     launchSettings: null,
     inputSchema: null,
     outputSchema: null,
+    propertySchema: null,
     ...overrides,
   };
 }
@@ -112,6 +115,8 @@ function makeDeps(overrides: Partial<StartGoalFromPackageDeps> = {}) {
       created: true,
       specRevision: 1,
     })) as unknown as StartGoalFromPackageDeps['mintDrain'],
+    ensurePropertyDatatypes: vi.fn(async () => {}),
+    validatePropertySchema: vi.fn(async () => ({ ok: true as const })),
     buildBrief: vi.fn(() => 'KICKOFF BRIEF'),
     ...overrides,
   };
@@ -256,6 +261,56 @@ describe('startGoalFromPackage — adopt vs mint', () => {
     expect(res).toMatchObject({ ok: false, reason: 'no-harness' });
     expect(res.ok === false && res.detail).toContain('re-seed');
     expect(deps.adoptStub).not.toHaveBeenCalled();
+  });
+});
+
+describe('startGoalFromPackage — typed property declarations (P-025)', () => {
+  const DECL = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both' } };
+
+  it('mint ensures the datatypes, validates the declaration, and threads it to the minted row', async () => {
+    const { deps } = makeDeps({ resolvePackage: vi.fn(() => pkg({ propertySchema: DECL })) });
+    const res = await run(deps, { harness: 'papercusp' });
+    expect(res).toMatchObject({ ok: true, adopted: false });
+    expect(deps.ensurePropertyDatatypes).toHaveBeenCalledWith(SQL, { workspaceId: WS });
+    expect(deps.validatePropertySchema).toHaveBeenCalledWith(SQL, { workspaceId: WS, doc: DECL });
+    expect(deps.mintRow).toHaveBeenCalledWith(
+      SQL,
+      expect.objectContaining({ content: expect.objectContaining({ propertySchema: DECL }) }),
+    );
+  });
+
+  it('refuses the mint when the declaration cannot bind — nothing written, nothing started', async () => {
+    const { deps, startById } = makeDeps({
+      resolvePackage: vi.fn(() => pkg({ propertySchema: DECL })),
+      validatePropertySchema: vi.fn(async () => ({
+        ok: false as const,
+        issues: ["worklist: unknown datatype 'plan-ref-list'"],
+      })),
+    });
+    const res = await run(deps, { harness: 'papercusp' });
+    expect(res).toMatchObject({ ok: false, reason: 'property-schema-invalid' });
+    expect(res.ok === false && res.detail).toContain('unknown datatype');
+    expect(deps.mintRow).not.toHaveBeenCalled();
+    expect(deps.adoptStub).not.toHaveBeenCalled();
+    expect(startById).not.toHaveBeenCalled();
+  });
+
+  it('adopt maps the stub row property_schema and never re-validates (seed-time already did)', async () => {
+    const { deps } = makeDeps({
+      readInstances: vi.fn(async () => [stubRow({ property_schema: DECL })]),
+    });
+    const res = await run(deps);
+    expect(res).toMatchObject({ ok: true, adopted: true });
+    expect(deps.ensurePropertyDatatypes).not.toHaveBeenCalled();
+    expect(deps.validatePropertySchema).not.toHaveBeenCalled();
+  });
+
+  it('a package with no declaration skips the gate entirely', async () => {
+    const { deps } = makeDeps();
+    const res = await run(deps, { harness: 'papercusp' });
+    expect(res).toMatchObject({ ok: true });
+    expect(deps.ensurePropertyDatatypes).not.toHaveBeenCalled();
+    expect(deps.validatePropertySchema).not.toHaveBeenCalled();
   });
 });
 

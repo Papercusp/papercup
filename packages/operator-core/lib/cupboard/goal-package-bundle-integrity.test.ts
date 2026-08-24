@@ -51,6 +51,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { listLocalGoalPackages, type LocalGoalPackage } from './goal-package-store';
 import { CUPBOARD_TEST_ROW_PATTERN } from './prod-hygiene';
 import { BLENDER_GOAL_BODY_MARKER } from '../scout/nudge-recipient';
+import {
+  PLAN_REF_LIST_DATATYPE,
+  planRefListPayloadSchema,
+} from '../goals/package-property-datatypes';
+import { checkAgainstJsonSchema } from '../json-schema-validation';
 
 /** Repo root: walk up from this file until the root package.json (the one with `workspaces`). */
 function repoRoot(): string {
@@ -159,6 +164,26 @@ describe('goal-package bundle integrity — the bundled floor a release ships', 
   it('requires_rubrics declares goal-mode-e2e', () => {
     const woe = workOnEverything();
     expect(woe.requiresRubrics.some((r) => r.rubricRef === 'goal-mode-e2e')).toBe(true);
+  });
+
+  it('declares the worklist typed property (plan-ref-list, default [], editable_by both) — P-025', () => {
+    const woe = workOnEverything();
+    const decl = (woe.propertySchema ?? {}) as Record<string, Record<string, unknown>>;
+    expect(
+      decl.worklist,
+      'the worklist declaration is the P-025 contract the HUD panel and the goal agent both drive from',
+    ).toBeDefined();
+    expect(decl.worklist).toMatchObject({ datatype: PLAN_REF_LIST_DATATYPE, editable_by: 'both' });
+    expect(decl.worklist.default).toEqual([]);
+    // The declared default must satisfy the datatype's own payload schema —
+    // the exact check validatePropertySchemaDeclaration runs at seed time.
+    expect(checkAgainstJsonSchema(planRefListPayloadSchema(), decl.worklist.default).ok).toBe(true);
+  });
+
+  it('the body carries the Worklist duties section the declaration exists to drive', () => {
+    const woe = workOnEverything();
+    expect(woe.body ?? '').toContain('## Worklist');
+    expect(woe.body ?? '').toContain('LIST ORDER IS PRIORITY');
   });
 
   it('every bundled ref + title is prod-hygiene clean (cannot become purgeable junk)', () => {

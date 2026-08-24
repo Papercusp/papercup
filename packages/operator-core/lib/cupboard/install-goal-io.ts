@@ -118,7 +118,8 @@ async function defaultGoalStubSeeder({
     ]);
   const workspaceId = activeWorkspaceId();
   if (!workspaceId) return { seeded: false, reason: 'no concrete workspace in scope' };
-  const sql = getOrgPg().sql as unknown as GoalSqlTag;
+  const pg = getOrgPg().sql;
+  const sql = pg as unknown as GoalSqlTag;
 
   // NO-CLOBBER on package identity (D-002 rule 2): ANY goal carrying this
   // package stamp — whatever its status — wins over a re-install.
@@ -129,6 +130,24 @@ async function defaultGoalStubSeeder({
      LIMIT 1
   `;
   if (existing.length > 0) return { seeded: false, reason: 'exists' };
+
+  // Typed property declarations (P-025): ensure the first-party datatype(s)
+  // exist (insert-if-absent — a fresh workspace has never declared any), then
+  // validate the declaration. REFUSE the seed rather than landing a stub whose
+  // declared properties could never be checked at write time (the same
+  // refuse-don't-degrade rule the IO-schema gate holds).
+  if (pkg.propertySchema && Object.keys(pkg.propertySchema).length > 0) {
+    const [{ ensurePlanRefListDatatype }, { validatePropertySchemaDeclaration }] =
+      await Promise.all([
+        import('../goals/package-property-datatypes'),
+        import('../typed-properties-db'),
+      ]);
+    await ensurePlanRefListDatatype(pg, workspaceId);
+    const check = await validatePropertySchemaDeclaration(pg, workspaceId, pkg.propertySchema);
+    if (!check.ok) {
+      return { seeded: false, reason: `propertySchema invalid: ${check.issues.join('; ')}` };
+    }
+  }
 
   const id = goalId(pkg.title);
   await insertGoalRow(sql, {
@@ -147,6 +166,7 @@ async function defaultGoalStubSeeder({
     // `inputs` deliberately NOT written: per-instance provenance (P-021),
     // resolved at start time, never shipped in a package.
     outputSchema: pkg.outputSchema,
+    propertySchema: pkg.propertySchema,
     status: 'paused',
     metadata: stampGoalPause(
       { installedFrom: 'cupboard', goalPackageRef: ref, packageVersion: pkg.version },

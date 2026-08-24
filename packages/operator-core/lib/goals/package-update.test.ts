@@ -27,6 +27,7 @@ const mkPkg = (over: Partial<LocalGoalPackage> = {}): LocalGoalPackage => ({
   launchSettings: null,
   inputSchema: null,
   outputSchema: null,
+  propertySchema: null,
   description: 'd',
   requiresRubrics: [],
   version: '0.2.0',

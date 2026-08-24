@@ -41,7 +41,7 @@ const SAFE_REF_RE = /^[A-Za-z0-9._-]+$/;
 
 /** The live-state fields the serializer NEVER reads — reported on every export
  *  so a sanitizer nobody inspects is not one nobody notices has stopped. */
-const LIVE_STATE_OMITTED = ['status', 'inputs', 'metadata', 'tripwires[].current'] as const;
+const LIVE_STATE_OMITTED = ['status', 'inputs', 'metadata', 'properties', 'tripwires[].current'] as const;
 
 export interface PublishGoalInput {
   /** The SOURCE goal's id in this workspace — what gets serialized. */
@@ -96,6 +96,9 @@ export interface GoalRowForExport {
   launchSettings: unknown;
   inputSchema: unknown;
   outputSchema: unknown;
+  /** Typed property DECLARATIONS (P-023 shape) — the runtime `properties`
+   *  VALUES are live state and are never read by this export. */
+  propertySchema: unknown;
 }
 
 /** Read the source goal row. Injected so the core is testable without a live
@@ -124,7 +127,8 @@ async function defaultGoalRowReader(
            budget_window_sec AS "budgetWindowSec",
            launch_settings  AS "launchSettings",
            input_schema     AS "inputSchema",
-           output_schema    AS "outputSchema"
+           output_schema    AS "outputSchema",
+           property_schema  AS "propertySchema"
       FROM harness_shared.goals
      WHERE id = ${goalId}
        AND workspace_id = ${workspaceId}
@@ -214,6 +218,7 @@ export async function publishGoalToCupboard(
     launchSettings: isPlainObject(row.launchSettings) ? row.launchSettings : null,
     inputSchema: isPlainObject(row.inputSchema) ? row.inputSchema : null,
     outputSchema: isPlainObject(row.outputSchema) ? row.outputSchema : null,
+    propertySchema: isPlainObject(row.propertySchema) ? row.propertySchema : null,
     description,
     requiresRubrics,
   };

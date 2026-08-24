@@ -27,6 +27,7 @@ const EXPORT: GoalPackageExport = {
   launchSettings: { maxAgents: 3 },
   inputSchema: { type: 'object' },
   outputSchema: { type: 'object', properties: {} },
+  propertySchema: { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both' } },
   description: 'A standing stewardship goal package',
   requiresRubrics: [{ rubricRef: 'quality-bar' }],
 };
@@ -58,6 +59,7 @@ describe('writeGoalPackageDir → readGoalPackageDirForInstall roundtrip', () =>
       budgetWindowSec: 604_800,
       launchSettings: { maxAgents: 3 },
       inputSchema: { type: 'object' },
+      propertySchema: { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both' } },
       version: '0.1.0',
       source: 'exported',
       layer: 'user',
@@ -108,6 +110,7 @@ describe('the reader refuses malformed substantive fields (never degrades)', () 
     ['inputSchema an array', { title: 'x', inputSchema: [] }],
     ['outputSchema a string', { title: 'x', outputSchema: 'nope' }],
     ['launchSettings a string', { title: 'x', launchSettings: 'nope' }],
+    ['propertySchema an array', { title: 'x', propertySchema: [] }],
     ['non-string body', { title: 'x', body: 42 }],
   ];
   for (const [label, manifest] of cases) {
@@ -133,6 +136,7 @@ describe('the reader refuses malformed substantive fields (never degrades)', () 
       launchSettings: null,
       inputSchema: null,
       outputSchema: null,
+      propertySchema: null,
       requiresRubrics: [],
       version: '0.1.0',
       source: 'installed',

@@ -57,6 +57,8 @@ import {
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import { GOAL_HOLDER_DEFAULTS } from '../goal-launch-settings-shared';
 import { evaluateGoalStartInputs } from './goal-io-validation';
+import { ensurePlanRefListDatatype } from './package-property-datatypes';
+import { validatePropertySchemaDeclaration } from '../typed-properties-db';
 import { startGoalById } from './start-goal-by-id';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal } from './drain-fleet-mint';
 
@@ -92,6 +94,10 @@ export interface GoalPackageContent {
   launchSettings: Record<string, unknown> | null;
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
+  /** Typed property DECLARATIONS (P-023 shape), landed on the minted row's
+   *  `property_schema`. Declarations are SHAPE — runtime `properties` values
+   *  are live state and never ride package content. */
+  propertySchema: Record<string, unknown> | null;
 }
 
 export interface EffectiveGoalContent extends GoalPackageContent {
@@ -165,6 +171,7 @@ interface StubRow {
   launch_settings: Record<string, unknown> | null;
   input_schema: Record<string, unknown> | null;
   output_schema: Record<string, unknown> | null;
+  property_schema: Record<string, unknown> | null;
   inputs: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
 }
@@ -242,6 +249,14 @@ export interface StartGoalFromPackageDeps {
   startById: typeof startGoalById;
   drainEnabled: () => Promise<boolean>;
   mintDrain: typeof mintDrainFleetForGoal;
+  /** Ensure the first-party package datatypes exist (insert-if-absent) before a
+   *  minted declaration is validated against the registry (P-025). */
+  ensurePropertyDatatypes: (sql: Sql, opts: { workspaceId: string }) => Promise<void>;
+  /** Validate a propertySchema declaration document against the registry. */
+  validatePropertySchema: (
+    sql: Sql,
+    opts: { workspaceId: string; doc: Record<string, unknown> },
+  ) => Promise<{ ok: true } | { ok: false; issues: string[] }>;
   buildBrief: (opts: {
     goalId: string;
     title: string;
@@ -262,7 +277,7 @@ const DEFAULT_DEPS: StartGoalFromPackageDeps = {
     return (await sql`
       SELECT id, title, status, install_slug, body, standing, kill_criterion, tripwires,
              budget_cents, budget_window_sec, launch_settings, input_schema, output_schema,
-             inputs, metadata
+             property_schema, inputs, metadata
         FROM harness_shared.goals
        WHERE workspace_id = ${workspaceId}
          AND metadata->>'goalPackageRef' = ${ref}
@@ -304,6 +319,7 @@ const DEFAULT_DEPS: StartGoalFromPackageDeps = {
       inputSchema: content.inputSchema,
       inputs,
       outputSchema: content.outputSchema,
+      propertySchema: content.propertySchema,
       status: 'active',
       metadata,
     });
@@ -319,6 +335,13 @@ const DEFAULT_DEPS: StartGoalFromPackageDeps = {
   startById: startGoalById,
   drainEnabled: drainFleetAutoMintEnabled,
   mintDrain: mintDrainFleetForGoal,
+  ensurePropertyDatatypes: async (sql, { workspaceId }) => {
+    await ensurePlanRefListDatatype(sql, workspaceId);
+  },
+  validatePropertySchema: async (sql, { workspaceId, doc }) => {
+    const check = await validatePropertySchemaDeclaration(sql, workspaceId, doc);
+    return check.ok ? { ok: true } : { ok: false, issues: check.issues };
+  },
   buildBrief: buildGoalKickoffBrief,
 };
 
@@ -390,6 +413,7 @@ export async function startGoalFromPackage(
         launchSettings: asObj(stub.launch_settings),
         inputSchema: asObj(stub.input_schema),
         outputSchema: asObj(stub.output_schema),
+        propertySchema: asObj(stub.property_schema),
       }
     : pkg;
   const effective = effectiveGoalContent(content);
@@ -403,6 +427,27 @@ export async function startGoalFromPackage(
       detail: `inputs refused (${inputsVerdict.code}): ${inputsVerdict.hint}`,
       activeInstances,
     };
+  }
+
+  // ── 4b. typed property declarations (P-025) — MINT path only: an adopted
+  // stub's declaration was validated at install-seed time and already rides
+  // the row untouched by adoptStub. Ensure the first-party datatypes exist
+  // (insert-if-absent), then validate — refuse rather than minting a row whose
+  // declared properties could never be checked at write time.
+  if (!adopting && effective.propertySchema && Object.keys(effective.propertySchema).length > 0) {
+    await deps.ensurePropertyDatatypes(sql, { workspaceId });
+    const schemaCheck = await deps.validatePropertySchema(sql, {
+      workspaceId,
+      doc: effective.propertySchema,
+    });
+    if (!schemaCheck.ok) {
+      return {
+        ok: false,
+        reason: 'property-schema-invalid',
+        detail: `the package's propertySchema cannot bind: ${schemaCheck.issues.join('; ')}`,
+        activeInstances,
+      };
+    }
   }
 
   // ── 5. adopt or mint ────────────────────────────────────────────────────

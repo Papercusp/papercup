@@ -27,6 +27,7 @@ function pkg(over: Partial<LocalGoalPackage> & { ref: string }): LocalGoalPackag
     launchSettings: null,
     inputSchema: null,
     outputSchema: null,
+    propertySchema: null,
     description: '',
     requiresRubrics: [],
     version: '1.0.0',

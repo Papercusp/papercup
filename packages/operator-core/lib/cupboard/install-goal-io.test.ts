@@ -42,6 +42,7 @@ const PKG: LocalGoalPackage = {
   launchSettings: { autoStart: true },
   inputSchema: { type: 'object' },
   outputSchema: null,
+  propertySchema: null,
   description: 'A standing stewardship package',
   requiresRubrics: [],
   version: '1.0.0',
