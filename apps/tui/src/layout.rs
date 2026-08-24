@@ -142,12 +142,23 @@ layout {
 /// `:dock`/`:layout` (D-008). The first entry is the default arrangement.
 pub const SWAP_PRESETS: &[&str] = &["stacked", "stacked-left", "split", "grid"];
 
-/// Name for an app-managed zellij session: `pui-<kind>-<pid>` (kind = `wb` |
-/// `dock`). Encoding OUR pid is what makes the leak reapable (EI-186): a later
-/// launch can tell a session whose owning pui died (host terminal closed, dock
-/// relaunched) from one still in use, and [`crate::reap`] kills only the former.
+/// Name for an app-managed zellij session: STABLE `pui-<kind>` (kind = `wb` |
+/// `dock`) — P-001, own-tui-full-divorce-2026-08-24. One well-known session per
+/// kind: a relaunch ATTACHES to a live survivor (crash recovery) instead of
+/// leaking a fresh uniquely-named server beside it. LEGACY `pui-<kind>-<pid>`
+/// sessions (the EI-186 scheme) are still recognized + swept by [`crate::reap`].
 pub fn session_name(kind: &str) -> String {
-    format!("pui-{kind}-{}", std::process::id())
+    format!("pui-{kind}")
+}
+
+/// Argv to attach to an existing LIVE app-managed session (attach-if-exists,
+/// P-001): plain `zellij attach <name>`.
+pub fn attach_argv(session: &str) -> Vec<String> {
+    vec![
+        "zellij".to_string(),
+        "attach".to_string(),
+        session.to_string(),
+    ]
 }
 
 /// Argv to start a zellij session with the workbench layout. The session is
@@ -857,13 +868,14 @@ mod tests {
     }
 
     #[test]
-    fn session_name_encodes_kind_and_own_pid() {
-        let name = session_name("dock");
-        assert_eq!(
-            name,
-            format!("pui-dock-{}", std::process::id()),
-            "owner pid in the name is what makes the session reapable"
-        );
+    fn session_name_is_stable_per_kind() {
+        assert_eq!(session_name("dock"), "pui-dock");
+        assert_eq!(session_name("wb"), "pui-wb");
+    }
+
+    #[test]
+    fn attach_argv_attaches_by_name() {
+        assert_eq!(attach_argv("pui-wb"), vec!["zellij", "attach", "pui-wb"]);
     }
 
     #[test]

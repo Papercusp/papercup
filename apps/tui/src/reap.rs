@@ -1,14 +1,17 @@
-//! Reap leaked app-managed zellij sessions (EI-186).
+//! Reap leaked app-managed zellij sessions (EI-186) + the attach-if-exists
+//! probe (P-001, own-tui-full-divorce-2026-08-24).
 //!
-//! Every `pui workbench` / `pui chat` launch creates a zellij session. When the
-//! hosting terminal dies (desktop dock relaunch, pty close) the zellij client
-//! dies with it but the detached SERVER survives — and a dead pane's PTY makes
-//! the server busy-spin (observed 2026-06-09: ~85 leaked sessions, 11 spinning,
-//! ~9 cores). App-managed sessions therefore carry their owner in the name
-//! (`pui-<kind>-<pid>`, see [`crate::layout::session_name`]): on every launch we
-//! sweep `pui-*` sessions whose owner pid is gone, and on clean exit we kill our
-//! own. Sessions not named `pui-*` are never touched — they belong to humans or
-//! other tools.
+//! Every `pui workbench` / `pui chat` launch creates (or attaches to) a zellij
+//! session. When the hosting terminal dies (desktop dock relaunch, pty close)
+//! the zellij client dies with it but the detached SERVER survives — and a dead
+//! pane's PTY makes the server busy-spin (observed 2026-06-09: ~85 leaked
+//! sessions, 11 spinning, ~9 cores). Sessions now carry STABLE names
+//! (`pui-<kind>`, see [`crate::layout::session_name`]): a live survivor is the
+//! attach target ([`session_is_live`]), an EXITED husk is deleted before
+//! re-create, and LEGACY pid-keyed sessions (`pui-<kind>-<pid>`, the pre-refit
+//! scheme) are still swept when their owner pid is gone. On clean exit we kill
+//! our own. Sessions not named `pui-*` are never touched — they belong to
+//! humans or other tools.
 
 use std::process::Command;
 
@@ -35,6 +38,36 @@ pub fn session_kind(name: &str) -> Option<&str> {
     Some(rest.rsplit_once('-')?.0)
 }
 
+/// Kind of a STABLE app-managed name (`pui-<kind>`, no pid suffix — P-001):
+/// `pui-dock` → `dock`. `None` for legacy pid-keyed and foreign names.
+pub fn stable_kind(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("pui-")?;
+    if rest.is_empty() || rest.contains('-') {
+        return None;
+    }
+    Some(rest)
+}
+
+/// True when `list-sessions` output shows a LIVE (non-EXITED) session named
+/// exactly `name` — the attach-if-exists probe (P-001). Pure for testability.
+pub fn session_is_live(list_output: &str, name: &str) -> bool {
+    list_output
+        .lines()
+        .any(|l| l.split_whitespace().next() == Some(name) && !l.contains("EXITED"))
+}
+
+/// Run `zellij list-sessions` and report whether `name` is live (the attach
+/// target). Errors (zellij absent, no server) read as "not live".
+pub fn live_session_exists(name: &str) -> bool {
+    let Ok(out) = Command::new("zellij")
+        .args(["list-sessions", "--no-formatting"])
+        .output()
+    else {
+        return false;
+    };
+    session_is_live(&String::from_utf8_lossy(&out.stdout), name)
+}
+
 /// Decide what to reap from `zellij list-sessions --no-formatting` output before
 /// launching the session named `own`. `is_alive` is injected so the decision
 /// logic is unit-testable.
@@ -51,7 +84,8 @@ pub fn session_kind(name: &str) -> Option<&str> {
 ///     Scoped to `own` being a dock — a `wb`/`reap` pass never reaps live docks,
 ///     and `pui-wb-*` / foreign sessions are never touched by this rule.
 pub fn plan(list_output: &str, own: &str, is_alive: impl Fn(u32) -> bool) -> Vec<Action> {
-    let launching_dock = session_kind(own) == Some("dock");
+    let launching_dock =
+        session_kind(own) == Some("dock") || stable_kind(own) == Some("dock");
     let mut actions = Vec::new();
     for line in list_output.lines() {
         let Some(name) = line.split_whitespace().next() else {
@@ -95,9 +129,10 @@ pub fn kill_and_delete(name: &str) {
     zellij(&["delete-session", name]);
 }
 
-/// Sweep stale app-managed sessions, then free `own` if a pid-reuse collision
-/// left a session with our exact name (it cannot be ours — we have not
-/// launched yet, and `zellij --session` refuses a taken name).
+/// Sweep stale app-managed sessions, then free `own` ONLY if it lingers as an
+/// EXITED husk — a LIVE session with our stable name is the attach-if-exists
+/// target (P-001), never reaped here. (Pre-refit, pid-keyed names made any
+/// own-name survivor a pid-reuse collision and killed it unconditionally.)
 pub fn reap_stale(own: &str) {
     let Ok(out) = Command::new("zellij")
         .args(["list-sessions", "--no-formatting"])
@@ -112,11 +147,13 @@ pub fn reap_stale(own: &str) {
             Action::KillAndDelete(n) => kill_and_delete(&n),
         }
     }
-    if list
+    if let Some(line) = list
         .lines()
-        .any(|l| l.split_whitespace().next() == Some(own))
+        .find(|l| l.split_whitespace().next() == Some(own))
     {
-        kill_and_delete(own);
+        if line.contains("EXITED") {
+            kill_and_delete(own);
+        }
     }
 }
 
@@ -213,5 +250,43 @@ pui-wb-200 [Created 1h ago]
         assert!(plan("", "pui-dock-1", |_| true).is_empty());
         // zellij prints this to stderr normally, but be robust to it on stdout.
         assert!(plan("No active zellij sessions found.\n", "pui-dock-1", |_| true).is_empty());
+    }
+
+    #[test]
+    fn stable_kind_parses_only_unsuffixed_names() {
+        assert_eq!(stable_kind("pui-dock"), Some("dock"));
+        assert_eq!(stable_kind("pui-wb"), Some("wb"));
+        assert_eq!(stable_kind("pui-dock-123"), None);
+        assert_eq!(stable_kind("likable-petunia"), None);
+        assert_eq!(stable_kind(""), None);
+    }
+
+    #[test]
+    fn session_is_live_finds_only_live_exact_names() {
+        let list = "\
+pui-wb [Created 1h ago]
+pui-dock [Created 2h ago] (EXITED - attach to resurrect)
+pui-wb-300 [Created 3h ago]
+";
+        assert!(session_is_live(list, "pui-wb"));
+        assert!(!session_is_live(list, "pui-dock")); // EXITED husk is not live
+        assert!(!session_is_live(list, "pui-hud")); // absent
+        assert!(session_is_live(list, "pui-wb-300")); // legacy names probe too
+    }
+
+    #[test]
+    fn plan_single_dock_fires_for_stable_dock_launch() {
+        // Launching the STABLE dock still supersedes legacy live pid-keyed
+        // docks (transition path) — the single-dock invariant holds across
+        // the naming-scheme change.
+        let list = "\
+pui-dock-100 [Created 2days ago]
+pui-wb-200 [Created 1h ago]
+";
+        let alive = |_pid: u32| true;
+        assert_eq!(
+            plan(list, "pui-dock", alive),
+            vec![Action::KillAndDelete("pui-dock-100".into())]
+        );
     }
 }

@@ -48,6 +48,7 @@ import {
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
 import { describeRefireBudget } from './release/in-flight-retriage';
+import { gateAbortLever, gateAbortRefireClause } from './release/gate-abort-status';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
 import { listRuntimeVintage, type RuntimeVintageRow } from './runtime-vintage';
@@ -1110,14 +1111,18 @@ export interface PipelinePosition {
      *  Null when there is no verdict, or on a blob predating this field. */
     observedCandidate: string | null;
     /**
-     * EI-19405864032365760: the last tick ABORTED without rendering a verdict, and none is coming
-     * until the named condition clears. Two statuses reach here: `'migrations-pending'` (aborted
-     * BEFORE judging, against a schema known to be behind) and — EI-20767792192323374 —
-     * `'infra-inconclusive'` (the suite ran, but the gate's own vite-node module cache was deleted
-     * underneath it mid-run, so its ~4,800 failing files are a HOST fault and not a claim about the
-     * code). They differ in their lever: the first needs the migration applied, the second needs
-     * only a quieter box, so `nextAction` branches on the status rather than treating both as a
-     * standing blocker.
+     * EI-19405864032365760: the last tick ABORTED without rendering a verdict.
+     *
+     * ⚠ "and none is coming until the named condition clears" is TRUE ONLY FOR SOME OF THESE —
+     * EI-21290961259437085. The statuses that reach here are `RECORDED_INCONCLUSIVE_STATUSES`
+     * (release/gate-abort-status.ts), and they split three ways: a STANDING condition
+     * (`migrations-pending` — a schema known to be behind; `repair-staging-mismatch`), a TRANSIENT
+     * kill that latches nothing (`infra-inconclusive` per EI-20767792192323374, where the gate's own
+     * vite-node cache was deleted mid-run so its ~4,800 failing files are a HOST fault and not a
+     * claim about the code; `deadline-exceeded`; `cancelled`, an external SIGTERM), and PEER-OWNED
+     * progress (`repair-in-progress`). `nextAction` and the summary sentence BOTH branch on that
+     * classification — treating them uniformly as a standing blocker is precisely the defect that
+     * told a fleet to clear a nonexistent condition while warning it off the one action that helps.
      *
      * ⚠ READ BEFORE `consecutiveReds`/`failingTests`. An abort is deliberately not counted as a
      * red, which leaves those counters frozen on the PREVIOUS verdict — so when this is non-null
@@ -2954,13 +2959,20 @@ export function computeStages(
         // "fire one with release:checkpoint-run" advice would be actively wrong — a fresh run
         // aborts at the same preflight.
         g.inconclusive
-        ? `Gate ABORTED before judging (${g.inconclusive.status}) — it rendered NO verdict, and firing another run will abort the same way. ${
-            g.inconclusive.detail ?? 'See the green-checkpoint log for the blocking condition.'
-          }${
+        ? // EI-21290961259437085: the refire clause is DERIVED, never asserted here. This
+          // sentence used to claim "firing another run will abort the same way" for every
+          // abort — already false for the two statuses whose LEVERS had been corrected
+          // (deadline-exceeded/WI-39841, infra-inconclusive/EI-20767792192323374) and false
+          // again for 'cancelled', which merely RECORDS an external SIGTERM. Both this
+          // sentence and the lever below now read the same table, so a status cannot be
+          // right in one and wrong in the other.
+          `Gate ABORTED before judging (${g.inconclusive.status}) — it rendered NO verdict${gateAbortRefireClause(
+            g.inconclusive.status,
+          )} ${g.inconclusive.detail ?? 'See the green-checkpoint log for the blocking condition.'}${
             g.consecutiveReds > 0
               ? ` ⚠ The gate counters still show ${g.consecutiveReds} consecutive red(s)${
                   g.observedCandidate ? ` on ${g.observedCandidate}` : ''
-                } — that is the PREVIOUS verdict, not this one. Do not chase those failing tests; clear the abort above first.`
+                } — that is the PREVIOUS verdict, not this one. Do not chase those failing tests: this tick judged no code at all.`
               : ''
           }`
         : g.fireStale
@@ -3034,7 +3046,16 @@ export function computeStages(
                     // failing files still on display belong to an older run.
                     g.inconclusive.status === 'deadline-exceeded'
                     ? 'release:checkpoint-run (the last run was SIGTERMd at its suite budget before it could record a verdict — nothing is blocking a re-fire; ⚠ do NOT triage the files an earlier red named, they are not what stopped it. If it keeps dying at the deadline, the run needs more budget or less work — that is the fix, not triage)'
-                    : `clear the gate's abort condition (${g.inconclusive.status}) — it renders no verdict until then, and re-firing aborts the same way`
+                    : // EI-21290961259437085: the remaining recorded statuses route through the
+                      // shared classification instead of inheriting the standing-condition
+                      // wording. 'cancelled' is the live case that motivated this: an external
+                      // SIGTERM (exit 143) RECORDS a kill and latches nothing, so both clauses of
+                      // the old generic text — "clear the abort condition" and "re-firing aborts
+                      // the same way" — were false, and it told a whole fleet to wait on nothing.
+                      // ⚠ The generic wording is still CORRECT for a genuine standing condition
+                      // and is still what `gateAbortLever` returns for one; this is a routing fix,
+                      // not a blanket claim that aborts never block a re-fire.
+                      gateAbortLever(g.inconclusive.status)
               : g.fireStale
                 ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
                 : gateHealth === 'stalled'

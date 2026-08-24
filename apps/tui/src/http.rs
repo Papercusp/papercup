@@ -161,10 +161,52 @@ fn discover_operator() -> Result<(String, Option<String>)> {
     Ok((base, token))
 }
 
+/// Best-effort bearer from `~/.papercusp/operator.json` — for EXPLICIT operator
+/// selection (`PUI_OPERATOR`, P-001 refit): the URL is pinned by the user but
+/// the locally-provisioned token still applies. Missing/unreadable → `None`.
+pub fn discovered_token() -> Option<String> {
+    discover_operator().ok().and_then(|(_, token)| token)
+}
+
+/// Map an explicit operator selection to a base URL (P-001 refit): the
+/// well-known names `staging` (:3170, runs the staging tree) and `release`
+/// (:3070, runs green `main`), or any full http(s) URL. Anything else is an
+/// error — explicit means explicit, no guessing.
+pub fn base_for_selection(sel: &str) -> Result<String> {
+    Ok(match sel {
+        "staging" => "http://127.0.0.1:3170".to_string(),
+        "release" => "http://127.0.0.1:3070".to_string(),
+        s if s.starts_with("http://") || s.starts_with("https://") => {
+            s.trim_end_matches('/').to_string()
+        }
+        other => anyhow::bail!(
+            "PUI_OPERATOR must be `staging`, `release`, or an http(s) URL — got {other:?}"
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn base_for_selection_maps_names_and_urls() {
+        assert_eq!(
+            base_for_selection("staging").unwrap(),
+            "http://127.0.0.1:3170"
+        );
+        assert_eq!(
+            base_for_selection("release").unwrap(),
+            "http://127.0.0.1:3070"
+        );
+        assert_eq!(
+            base_for_selection("https://op.example:9443/").unwrap(),
+            "https://op.example:9443"
+        );
+        assert!(base_for_selection("prod").is_err());
+        assert!(base_for_selection("").is_err());
+    }
     use tokio::net::TcpListener;
 
     #[test]

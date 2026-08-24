@@ -49,6 +49,7 @@ import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../relea
 // does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
 import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
+import { isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import {
   FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
@@ -1795,14 +1796,11 @@ export async function trackGateStall(
     // still — the suite ran and may even have REACHED a verdict, but the process was killed
     // before it could record one, so nothing about the code was established. Recording it here
     // is what stops the abort going silent once it no longer counts as a red.
-    if (
-      status === 'migrations-pending' ||
-      status === 'infra-inconclusive' ||
-      status === 'deadline-exceeded' ||
-      status === 'cancelled' ||
-      status === 'repair-in-progress' ||
-      status === 'repair-staging-mismatch'
-    ) {
+    // EI-21290961259437085: this list IS the set a reader can later be advised about, so it
+    // is now the single source both sides share (RECORDED_INCONCLUSIVE_STATUSES) rather than
+    // a literal chain here and a second, subtly different one in the advice path. Adding a
+    // status here without classifying it there is what the guard test catches.
+    if (isRecordedInconclusiveStatus(status)) {
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines

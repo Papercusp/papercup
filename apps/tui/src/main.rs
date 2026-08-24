@@ -257,15 +257,21 @@ async fn main() -> Result<()> {
 
 /// Materialise the workbench layout and hand off to zellij. Replaces this
 /// process's foreground with the zellij session; on exit we mirror its code.
-/// The session is app-managed (named via `layout::session_name`, EI-186):
-/// stale leftovers are reaped before launch, and zellij returning — exit OR
-/// detach — ends the workbench, so the session is killed rather than left as
-/// a detached server (whose dead-pane PTYs busy-spin).
+/// The session is app-managed with a STABLE name (`pui-wb`, P-001 refit): a
+/// live survivor from a crashed/detached predecessor is ATTACHED to instead of
+/// leaked around; otherwise stale leftovers (EXITED husks + legacy pid-keyed
+/// sessions, EI-186) are reaped and a fresh session is created. zellij
+/// returning — exit OR detach — still kills the session, so no detached server
+/// (whose dead-pane PTYs busy-spin) is left behind.
 fn run_workbench() -> Result<()> {
     let session = layout::session_name("wb");
-    reap::reap_stale(&session);
-    let path = layout::materialize()?;
-    let argv = layout::launch_argv(&path.to_string_lossy(), &session);
+    let argv = if reap::live_session_exists(&session) {
+        layout::attach_argv(&session)
+    } else {
+        reap::reap_stale(&session);
+        let path = layout::materialize()?;
+        layout::launch_argv(&path.to_string_lossy(), &session)
+    };
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
     reap::kill_and_delete(&session);
@@ -278,36 +284,37 @@ fn run_workbench() -> Result<()> {
 /// pane is the backend-neutral shared brain view. Override the whole brain
 /// command with PAPERCUSP_BRAIN_CMD for local experiments.
 async fn run_chat_dock() -> Result<()> {
-    let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
-    let brain_argv = layout::default_brain_argv(env.as_deref());
-    // Resolve the active Hive lexicon (pane DISPLAY names) from the operator;
-    // unreachable → classic lexicon. (The hive-agent-tabs flag is RETIRED —
-    // the live-TUI dock shape is the only shape, so no flag read here.)
-    let lex = match OperatorClient::from_discovery().await {
-        Ok(c) => match c.lexicon_active_pack().await {
-            Ok(pack) => lexicon::Lexicon::from_payload(&pack),
-            Err(_) => lexicon::Lexicon::default(),
-        },
-        Err(_) => lexicon::Lexicon::default(),
-    };
-    let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
-    // SINGLE dock (owner decision 2026-06-25, supersedes per-window-dock 2026-06-17):
-    // exactly ONE chat dock exists at a time. Each launch is still its own PID-keyed
-    // session (`session_name("dock")`, sized to its window, full interactive TUI), but
-    // `reap_stale` now also KILLS every OTHER live `pui-dock-*` on launch — so opening
-    // a second desktop window supersedes the first window's dock instead of running a
-    // parallel one. WHY: the Sentinel voice-in path keys off a single global
-    // `~/.papercusp/sentinel-pane` registration; with several live docks the
-    // last-writer-wins, sending voice to a background window's pane. One dock removes
-    // that race. (Trade-off vs 2026-06-17: a second window no longer keeps its own
-    // dock — acceptable per the single-dock decision.) The queen/overwatch panes stay
-    // read-only views of the SHARED BACKEND roster, so dock content is identical
-    // regardless of which window owns it. EI-186: reap also clears stale leftovers (the
-    // desktop relaunches this dock constantly — each relaunch used to leak a detached
-    // server) and kills our own when zellij returns.
+    // SINGLE dock, STABLE name (`pui-dock`, P-001 refit; owner decision
+    // 2026-06-25 stands): exactly ONE chat dock exists at a time — with a
+    // stable name that is now STRUCTURAL (a second launch attaches to the
+    // first's session) rather than enforced by killing uniquely-named peers.
+    // WHY single: the Sentinel voice-in path keys off one global
+    // `~/.papercusp/sentinel-pane` registration; several live docks race
+    // last-writer-wins, sending voice to a background window's pane. The
+    // queen/overwatch panes stay read-only views of the SHARED BACKEND roster,
+    // so dock content is identical regardless of which window owns it.
+    // Legacy pid-keyed `pui-dock-*` sessions (EI-186 scheme) are still reaped
+    // on the create path, and zellij returning kills our own session.
     let session = layout::session_name("dock");
-    reap::reap_stale(&session);
-    let argv = layout::launch_argv(&path.to_string_lossy(), &session);
+    let argv = if reap::live_session_exists(&session) {
+        layout::attach_argv(&session)
+    } else {
+        let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
+        let brain_argv = layout::default_brain_argv(env.as_deref());
+        // Resolve the active Hive lexicon (pane DISPLAY names) from the
+        // operator; unreachable → classic lexicon. (The hive-agent-tabs flag
+        // is RETIRED — the live-TUI dock shape is the only shape.)
+        let lex = match OperatorClient::from_discovery().await {
+            Ok(c) => match c.lexicon_active_pack().await {
+                Ok(pack) => lexicon::Lexicon::from_payload(&pack),
+                Err(_) => lexicon::Lexicon::default(),
+            },
+            Err(_) => lexicon::Lexicon::default(),
+        };
+        let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
+        reap::reap_stale(&session);
+        layout::launch_argv(&path.to_string_lossy(), &session)
+    };
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
     reap::kill_and_delete(&session);

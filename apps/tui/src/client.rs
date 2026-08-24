@@ -131,8 +131,18 @@ pub struct OperatorClient {
 }
 
 impl OperatorClient {
-    /// Resolve a backend: prefer local IPC (socket), fall back to HTTP+bearer.
+    /// Resolve a backend. EXPLICIT selection wins (P-001 refit): `PUI_OPERATOR`
+    /// = `staging` (:3170) | `release` (:3070) | a full http(s) URL pins the
+    /// operator over HTTP — no guessing, and pane children inherit the choice
+    /// through the zellij server env. Unset/empty → the legacy chain: local
+    /// IPC socket, else HTTP+bearer from `~/.papercusp/operator.json`.
     pub async fn from_discovery() -> Result<Self> {
+        if let Ok(sel) = std::env::var("PUI_OPERATOR") {
+            let sel = sel.trim();
+            if !sel.is_empty() {
+                return Self::from_selection(sel);
+            }
+        }
         match IpcClient::connect_discovered().await {
             Ok(ipc) => Ok(Self {
                 transport: Transport::Ipc(Arc::new(ipc)),
@@ -146,6 +156,17 @@ impl OperatorClient {
                 )),
             },
         }
+    }
+
+    /// Build the client for an explicit operator selection (P-001): HTTP
+    /// transport; bearer from `~/.papercusp/operator.json` when present —
+    /// harmless on endpoints that don't require it.
+    pub fn from_selection(sel: &str) -> Result<Self> {
+        let base = crate::http::base_for_selection(sel)?;
+        let token = crate::http::discovered_token();
+        Ok(Self {
+            transport: Transport::Http(HttpClient::new(base, token)),
+        })
     }
 
     /// Construct over an existing IPC client (tests / shared client).
