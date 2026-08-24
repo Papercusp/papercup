@@ -69,7 +69,7 @@ describe('work-item flight record', () => {
       'The agent-authored checkpoint.',
       '',
       '## Checks',
-      '✓ existing claim — re-check: run the probe — evidence: still true',
+      '- ✓ existing claim — re-check: run the probe — evidence: still true',
       '',
       '## Walls',
       '- owner gate — re-check: ask the owner',
