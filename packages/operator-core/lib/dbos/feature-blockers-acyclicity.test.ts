@@ -19,9 +19,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The live blocks graph the mocked getFeatureBlockers read will return, as coord_links rows
-// (dst_ref = BLOCKED, src_ref = BLOCKER). Each test sets this before calling a helper.
-const g = vi.hoisted(() => ({ rows: [] as Array<{ dst_ref: string; src_ref: string }> }));
+// The live blocks graph the mocked getFeatureBlockers read will return, as canonical
+// work_item_deps rows (blocked_ref = BLOCKED, blocker_ref = BLOCKER). Each test sets this
+// before calling a helper.
+const g = vi.hoisted(() => ({ rows: [] as Array<{ blocked_ref: string; blocker_ref: string }> }));
 
 // A minimal fake `sql` tagged-template that returns the canned graph rows for the one SELECT
 // getFeatureBlockers issues. The helpers under test issue no other query.
@@ -39,11 +40,11 @@ const {
 
 const H = 'demo';
 const ref = (id: string) => `${H}#${id}`;
-/** Express a graph as blocked-id -> [blocker-ids] and load it as coord_links rows. */
+/** Express a graph as blocked-id -> [blocker-ids] and load it as work_item_deps rows. */
 function setGraph(graph: Record<string, string[]>) {
   g.rows = [];
   for (const [blocked, blockers] of Object.entries(graph)) {
-    for (const blocker of blockers) g.rows.push({ dst_ref: ref(blocked), src_ref: ref(blocker) });
+    for (const blocker of blockers) g.rows.push({ blocked_ref: ref(blocked), blocker_ref: ref(blocker) });
   }
 }
 
