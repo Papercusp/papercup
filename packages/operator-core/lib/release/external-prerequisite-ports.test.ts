@@ -270,7 +270,10 @@ describe('readScopePrerequisiteReadiness — the gate PULLS a derived verdict', 
     expect(got.map((g) => g.satisfied)).toEqual([false, true, false]);
   });
 
-  it('does not query at all for an empty spec list', async () => {
+  // NOTE the precise claim: the loader is consulted ONCE with an empty key list (and
+  // the production loader short-circuits before touching Postgres). It is emphatically
+  // never called per-spec — an N+1 against the release gate's read path.
+  it('consults the loader once with zero keys for an empty spec list, never per-spec', async () => {
     let called = 0;
     const got = await readScopePrerequisiteReadiness(SCOPE, [], {
       nowMs: NOW,
