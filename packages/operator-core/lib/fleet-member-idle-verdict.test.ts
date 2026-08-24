@@ -124,13 +124,54 @@ describe('computeMemberIdleVerdict — dominance (the P-002 inversion)', () => {
     expect(v.remedy).not.toContain('wake:required');
   });
 
-  it.each(['fleet-paused', 'inference-pool', 'spec-scope', 'claim-floors', 'members'] as const)(
+  // 'members' is deliberately NOT in this list — it is the no-upstream-layer sentinel, not a
+  // dominating layer. See the WI-41198 block below.
+  it.each(['fleet-paused', 'inference-pool', 'spec-scope', 'claim-floors'] as const)(
     'carries the dominating layer %s verbatim rather than re-deriving one',
     (layer) => {
       const v = computeMemberIdleVerdict(idle(), ctx({ blockedAtLayer: layer }));
       expect(v.dominatedBy).toBe(layer);
     },
   );
+
+  // WI-41198 / WI-41183. 'members' is the LAST arm of FleetBlockLayer: the arbiter returns it
+  // when NO upstream layer is blocking, i.e. the member level IS where to act. Reporting that
+  // as 'fleet-blocked' inverts its meaning and — worse — masks the member-level causes below,
+  // which are the only ones carrying an executable remedy. Measured: 16 of 31 members sat
+  // unactionable for 3h+ under this, while actually being dead sessions with no pid.
+  it("blockedAtLayer 'members' is NOT a fleet block — it is the sentinel for the opposite", () => {
+    const v = computeMemberIdleVerdict(idle(), ctx({ blockedAtLayer: 'members' }));
+    expect(v.cause).not.toBe('fleet-blocked');
+    expect(v.dominatedBy).toBeUndefined();
+    // and it must not tell the leader to go act on some other layer
+    expect(v.remedy ?? '').not.toContain('blockedAt.remedy');
+  });
+
+  it("blockedAtLayer 'members' does not mask a dead session", () => {
+    const v = computeMemberIdleVerdict(
+      idle({ sessionState: 'ended' }),
+      ctx({ blockedAtLayer: 'members' }),
+    );
+    expect(v.cause).toBe('session-ending');
+  });
+
+  it("blockedAtLayer 'members' does not mask a member with no wake source", () => {
+    const v = computeMemberIdleVerdict(
+      idle({ loopMode: null, nextFireAt: null }),
+      ctx({ blockedAtLayer: 'members' }),
+    );
+    expect(v.cause).toBe('no-self-wake');
+  });
+
+  // A genuine upstream layer must still dominate — the fix must not disarm branch 4 wholesale.
+  it('a real upstream layer still dominates a member-level cause', () => {
+    const v = computeMemberIdleVerdict(
+      idle({ loopMode: null, nextFireAt: null }),
+      ctx({ blockedAtLayer: 'inference-pool' }),
+    );
+    expect(v.cause).toBe('fleet-blocked');
+    expect(v.dominatedBy).toBe('inference-pool');
+  });
 
   it('mid-turn beats a fleet block — an active member is not being prevented from anything', () => {
     const v = computeMemberIdleVerdict(

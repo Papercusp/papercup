@@ -184,7 +184,25 @@ export function computeMemberIdleVerdict(
   // 4. A fleet-level block dominates every member-level explanation below it. Reported as the
   //    CONSEQUENCE it is, naming the layer, so the leader acts once on the fleet rather than
   //    N times on members.
-  if (fleet.blockedAtLayer) {
+  //
+  //    EXCEPT 'members' (WI-41198). That arm of FleetBlockLayer is the SENTINEL the arbiter
+  //    returns when NO upstream layer is blocking — i.e. the member level is precisely where
+  //    to act. Treating it as a dominating layer inverts its meaning twice over: it renders
+  //    "act at the member level" as "not an independent member-level fault ... acting on this
+  //    member cannot clear it", AND it swallows every branch below (throttled, session-ending,
+  //    no-self-wake, parked-awaiting-event, context-exhausted, genuinely-idle) — the only
+  //    causes that carry a remedy a leader can actually execute.
+  //
+  //    This is the rule the module header already states: fleet-blocked exists because
+  //    spec-mismatched/floor-blocked are "properties of the SPEC AND THE QUEUE, not of the
+  //    member". 'members' is the exact opposite of such a property.
+  //
+  //    Measured cost (WI-41183): 16 of 31 members in one drain fleet reported
+  //    cause='fleet-blocked'/dominatedBy='members' for 3h+ while actually being DEAD sessions
+  //    with no pid. The masked 'no-self-wake' branch would have named it; instead the fleet
+  //    verdict's own remedy ("wake them") was followed and produced nothing. Falling through
+  //    to the member-level branches IS the fix.
+  if (fleet.blockedAtLayer && fleet.blockedAtLayer !== 'members') {
     return {
       cause: 'fleet-blocked',
       reason:
