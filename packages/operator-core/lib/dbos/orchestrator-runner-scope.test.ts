@@ -157,8 +157,10 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     // name is the ledger key that makes the subtree addressable, and naming a scope
     // does not change its child-of-us semantics.
     expect(args).toContain('--scope'); // child stays OUR pgid
-    expect(args).toContain('--collect');
-    expect(args).toContain('--property=CollectMode=inactive-or-failed');
+    // P-012: task-manager scopes retain FAILED units only until the ledger writer
+    // snapshots Result/MemoryPeak/InvocationID, then reset-failed releases them.
+    expect(args).not.toContain('--collect');
+    expect(args).not.toContain('--property=CollectMode=inactive-or-failed');
     /* Flag ON + a landed probe ⇒ the NAMED task-manager scope (`buildTaskScopeArgv`),
        which spells the cap as a BYTE INTEGER. The `6G` shorthand belongs to the
        unnamed WI-1499 builder (`buildIsolatedScopeArgv`), pinned by the flag-OFF and
