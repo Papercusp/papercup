@@ -308,18 +308,14 @@ async function announce(
     );
   }
 
-  // The scorecard is refreshed on EVERY run, not only on a transition: a
-  // criterion that is never re-stated goes stale, which is the exact "green
-  // while the wall changed" failure this plan exists to close.
-  await safely('refreshScorecardCriterion', () =>
-    ports.refreshScorecardCriterion({
-      prerequisiteKey: spec.key,
-      owningWorkItem: spec.owningWorkItem,
-      readiness,
-      satisfied,
-    }),
-  );
-
+  // D-003: nothing is pushed on a non-transition run. The concern the removed
+  // `refreshScorecardCriterion` port addressed — "a criterion that is never
+  // re-stated goes stale, the exact 'green while the wall changed' failure this
+  // plan exists to close" — is met by DERIVATION instead: every run returns a
+  // freshly-resolved `readiness` on {@link ProbeRunResult}, and the gate reads
+  // readiness from the store at evaluation time rather than trusting a value
+  // some earlier run wrote. A derived verdict cannot go stale; a re-stated one
+  // can drift, which is why the push was removed rather than re-pointed.
   return problems.length > 0 ? problems.join('; ') : undefined;
 }
 
