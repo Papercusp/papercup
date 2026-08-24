@@ -1467,6 +1467,10 @@ pub struct App {
     pub chat_scroll: u16,
     pub chat_streaming: bool,
     pub conversation_id: Option<String>,
+    /// The native agent-chat id this pane's turns run on (P-005 / D-011).
+    /// Distinct from `conversation_id`, which is the legacy operator-converse
+    /// lane — kept alongside until native parity is proven.
+    pub agent_chat_id: Option<String>,
     pub chat_has_more_earlier: bool,
     /// The lowest `seq` currently loaded — the cursor for paginating older turns
     /// (`GET …/turns?beforeSeq=<this>`). `None` when the transcript is empty.
@@ -1734,6 +1738,7 @@ impl App {
             chat_scroll: 0,
             chat_streaming: false,
             conversation_id: None,
+            agent_chat_id: None,
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
             chat_loading_earlier: false,
@@ -4713,6 +4718,10 @@ impl App {
             }
             Event::ChatDone => {
                 self.finish_chat_turn();
+                Action::Render
+            }
+            Event::AgentChatBound(id) => {
+                self.agent_chat_id = Some(id);
                 Action::Render
             }
             Event::ChatError(e) => {
@@ -10634,6 +10643,35 @@ mod tests {
         assert!(!a.chat_streaming);
         assert!(!a.chat_messages[1].streaming);
         assert_eq!(a.chat_messages[1].content, "hello");
+    }
+
+    #[test]
+    fn native_agent_chat_binds_once_and_plain_deltas_survive_finalization() {
+        // P-005 / D-011: the native loop streams PLAIN text (no <say> tag
+        // document), and `done` carries no transcript snapshot — the bubble
+        // finalizes from the deltas already rendered. `finalize` must therefore
+        // pass untagged text through untouched; if it ever stops doing so,
+        // every native turn renders EMPTY, which is why this is pinned here.
+        let mut a = App::new();
+        assert_eq!(a.agent_chat_id, None);
+
+        // The turn task announces the chat it opened; later turns reuse the id
+        // instead of opening a fresh transcript per message.
+        a.update(Event::AgentChatBound("chat_42".into()));
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat_42"));
+
+        a.begin_user_send("hi");
+        a.update(Event::ChatDelta("plain ".into()));
+        a.update(Event::ChatDelta("native text".into()));
+        a.update(Event::ChatDone);
+        assert!(!a.chat_streaming);
+        assert!(!a.chat_messages[1].streaming);
+        assert_eq!(a.chat_messages[1].content, "plain native text");
+
+        // Re-announcing just moves the pane to the new chat — it never opens a
+        // parallel transcript alongside the old one.
+        a.update(Event::AgentChatBound("chat_43".into()));
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat_43"));
     }
 
     #[test]

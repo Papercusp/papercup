@@ -940,15 +940,16 @@ async fn run<B: Backend>(
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::SendChat(text) => {
-                // Operator chat turn (tui-operator-surface P1). The reducer already
-                // appended the user message + a streaming bubble; spawn the converse
-                // task with a snapshot of the transcript + conversation id.
-                tokio::spawn(converse_send(
+                // Native chat turn on the operator-owned loop (P-005 / D-011).
+                // The reducer already appended the user message + a streaming
+                // bubble; spawn the native turn against the active harness's
+                // agent-chat. No transcript snapshot is sent — the loop owns the
+                // history in PG, keyed by `agent_chat_id`.
+                tokio::spawn(stream_agent_chat_turn(
                     text,
-                    app.conversation_id.clone(),
-                    app.chat_history_for_send(),
-                    workbench::workbench_owner(),
-                    None, // typed turn — no spoken reply
+                    app.harness.clone(),
+                    app.agent_chat_id.clone(),
+                    None, // server-side default model (PAPERCUSP_LOOP_CHAT_MODEL)
                     tx.clone(),
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -2956,6 +2957,116 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
 /// the finalized reply is also synthesized via the operator TTS proxy and played
 /// through `player`, and the turn's voice phase transitions (Speaking → Finished)
 /// ride `Event::Voice`.
+/// One chat turn on the operator-owned loop — the native session seam (P-005,
+/// contract D-011). This is the replacement for the legacy `converse_send`
+/// brain lane: `start_agent_chat_turn` pins `engine:"loop"`, so the turn runs
+/// in-process against the PG-backed transcript with the shared streaming lock,
+/// cost caps and HITL approvals, and no CLI is spawned.
+///
+/// The loop's `LoopEvent` vocabulary is mapped onto the pane's existing
+/// streaming-bubble events, so the reducer and renderer are untouched.
+async fn stream_agent_chat_turn(
+    text: String,
+    harness: String,
+    chat_id: Option<String>,
+    model: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    use crate::agent_chats::{AgentChatEvent, AgentChatTurnRequest, NewAgentChat};
+
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::ChatError(format!("{e}")));
+            return;
+        }
+    };
+
+    // The seam is per-chat, so a first turn opens one and announces it; every
+    // later turn reuses that id via `Event::AgentChatBound` rather than opening
+    // a fresh chat per message.
+    let chat_id = match chat_id {
+        Some(id) => id,
+        None => {
+            let request = NewAgentChat {
+                role: "operator".to_string(),
+                feature_id: None,
+                title: None,
+            };
+            match client.create_agent_chat(&harness, &request).await {
+                Ok(chat) => {
+                    let _ = tx.send(Event::AgentChatBound(chat.id.clone()));
+                    chat.id
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::ChatError(format!("open agent chat: {e}")));
+                    return;
+                }
+            }
+        }
+    };
+
+    let request = AgentChatTurnRequest {
+        content: text,
+        model,
+    };
+    let mut stream = match client
+        .start_agent_chat_turn(&harness, &chat_id, &request)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = tx.send(Event::ChatError(format!("{e}")));
+            return;
+        }
+    };
+
+    while let Some(decoded) = stream.recv().await {
+        let ev = match decoded {
+            Ok(ev) => ev,
+            // A single unsupported/garbled frame must not abort a live turn —
+            // the stream stays open and the next frame is still delivered.
+            Err(_) => continue,
+        };
+        match ev {
+            AgentChatEvent::TextDelta { text, .. } => {
+                let _ = tx.send(Event::ChatDelta(text));
+            }
+            AgentChatEvent::ToolCall {
+                call,
+                needs_approval,
+                ..
+            } => {
+                // HITL belongs to this seam, but the pane's approval round-trip
+                // is not wired yet (the next P-005 slice). An approval-gated
+                // call parks server-side in `agent_loop_approvals`, so the turn
+                // STALLS here rather than failing — label the chip so that stall
+                // is legible instead of looking like a hung stream.
+                let name = if needs_approval {
+                    format!("{} · awaiting approval", call.name)
+                } else {
+                    call.name
+                };
+                let _ = tx.send(Event::ChatToolCall(models::ChatToolCall { name }));
+            }
+            AgentChatEvent::Error { message } => {
+                let _ = tx.send(Event::ChatError(message));
+                return;
+            }
+            // `done` closes the turn. It carries `finalText` but NO transcript
+            // snapshot (D-011) — the bubble finalizes from the deltas already
+            // rendered, so no re-read is needed to complete the turn.
+            AgentChatEvent::Done { .. } => break,
+            // Reasoning, per-step and tool-result frames belong to the richer
+            // pane surfaces (reasoning fold, tool-call cards) and the approval
+            // round-trip; the streaming bubble ignores them for now.
+            _ => {}
+        }
+    }
+
+    let _ = tx.send(Event::ChatDone);
+}
+
 async fn converse_send(
     text: String,
     mut conversation_id: Option<String>,

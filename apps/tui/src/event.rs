@@ -242,6 +242,11 @@ pub enum Event {
     ChatDone,
     /// The operator converse stream errored (`error`, or transport failure).
     ChatError(String),
+    /// The native agent-chat this pane sends through resolved (P-005 / D-011).
+    /// Emitted by the native turn task once it has opened (or reused) the chat,
+    /// so every later turn lands on the same PG-backed transcript instead of
+    /// opening a fresh chat per message.
+    AgentChatBound(String),
     // --- Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a) ---
     /// One per-run state-channel snapshot from `/api/operator/state-snapshot` —
     /// the union of open `chat:ask_choice` cards for a run. The reducer folds it
