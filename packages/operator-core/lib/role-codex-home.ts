@@ -472,6 +472,16 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * escape — the same objective the Claude statusline renders as its leading 🔭
  * segment. Fires for su AND role (both want their tab/window title to say what
  * they're doing). PAPERCUSP_SID=<objectiveSid> is baked (codex's minimal hook env).
+ *
+ * LIFECYCLE HOOK (su + role) — Codex 0.149 exposes SessionStart/SessionEnd in
+ * hooks.json, but the managed home used to omit both. That made an owner-visible
+ * "end session" invisible to Papercusp: no lifecycle row, no lease cleanup, and
+ * — most importantly — no handoff to the managed-host teardown path, so `psu
+ * --resume` correctly found the old host still alive and refused a double host.
+ * Register the SAME lifecycle-report.sh used by Claude. SessionEnd runs
+ * synchronously because the script first asks activity:report whether this is a
+ * genuine terminal end or a carry/reset continuation, then reuses the audited
+ * admin fleet:kill route only for the terminal verdict (WI-41305).
  */
 export function writeCodexLockHooks(
   codexHome: string,
@@ -553,6 +563,27 @@ export function writeCodexLockHooks(
     });
   }
 
+  const lifecycle = join(dir, 'lifecycle-report.sh');
+  const sessionStart: CodexHook[] = [];
+  const sessionEnd: CodexHook[] = [];
+  if (opts.activitySid && existsSync(lifecycle)) {
+    const lifecycleIdentity =
+      `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex ` + `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)}`;
+    sessionStart.push({
+      matcher: '.*',
+      hooks: [{ type: 'command', command: `${lifecycleIdentity} ${lifecycle}` }],
+    });
+    sessionEnd.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `${lifecycleIdentity} PAPERCUSP_ACTIVITY_SYNC=1 ${lifecycle}`,
+        },
+      ],
+    });
+  }
+
   // CONTEXT-INJECTION hooks (codex-context-injection-parity-2026-08-09 P-004).
   // Both ports go through the ONE shared dispatcher (D-001) — never a codex-
   // specific copy of the transport. The dispatcher is installed BESIDE the cc
@@ -628,6 +659,8 @@ export function writeCodexLockHooks(
       PreToolUse: preToolUse,
       PostToolUse: postToolUse,
       ...(userPromptSubmit.length > 0 ? { UserPromptSubmit: userPromptSubmit } : {}),
+      ...(sessionStart.length > 0 ? { SessionStart: sessionStart } : {}),
+      ...(sessionEnd.length > 0 ? { SessionEnd: sessionEnd } : {}),
     },
   };
   writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify(hooks, null, 2), { mode: 0o600 });
@@ -710,7 +743,24 @@ export function repairSuCodexHomeIdentity(
     : hookOwners.length === 0;
   const diagnosticsMatch = diagnostics.lockOwnerSid === sid;
   const sentinelMatches = existingCodexHomeOwnerSid(codexHome) === sid;
-  if (hooksMatch && diagnosticsMatch && sentinelMatches) {
+  const lifecycleHooksMatch = (() => {
+    if (!hooksExpected) return true;
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+      };
+      return ['SessionStart', 'SessionEnd'].every((event) =>
+        parsed.hooks?.[event]?.some((group) =>
+          group.hooks?.some(
+            (hook) => hook.command?.includes('lifecycle-report.sh') && hook.command.includes(`PAPERCUSP_SID='${sid}'`),
+          ),
+        ),
+      );
+    } catch {
+      return false;
+    }
+  })();
+  if (hooksMatch && diagnosticsMatch && sentinelMatches && lifecycleHooksMatch) {
     return { repaired: false, hooksInstalled: hooksExpected };
   }
 

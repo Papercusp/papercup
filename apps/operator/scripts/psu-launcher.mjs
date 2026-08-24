@@ -9554,9 +9554,25 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
       hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g),
       (match) => match[1],
     );
+    const hooks = JSON.parse(hooksText);
+    // WI-41305: an otherwise healthy, same-owner home can still predate the
+    // Codex SessionStart/SessionEnd registration. Treat that as a repair input:
+    // without SessionEnd, the owner's logical "end session" never reaches the
+    // existing continuation classifier + audited fleet:kill teardown, leaving
+    // this exact managed host alive to block the next resume.
+    const lifecycleReady = ["SessionStart", "SessionEnd"].every((event) =>
+      hooks?.hooks?.[event]?.some((group) =>
+        group?.hooks?.some(
+          (hook) =>
+            String(hook?.command || "").includes("lifecycle-report.sh") &&
+            String(hook.command).includes(`PAPERCUSP_SID='${expectedOwner}'`),
+        ),
+      ),
+    );
     return (
       hookOwners.length > 0 &&
-      hookOwners.every((owner) => owner === expectedOwner)
+      hookOwners.every((owner) => owner === expectedOwner) &&
+      lifecycleReady
     );
   } catch {
     return false;

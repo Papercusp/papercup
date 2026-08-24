@@ -60,6 +60,40 @@ const CODEX_STUB = `[projects."${join(homedir(), 'workspace', 'repo')}"]
 trust_level = "trusted"
 `;
 
+function managedHooks(owner: string, includeLifecycle = true) {
+  return {
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              command: `PAPERCUSP_LOCK_SID='${owner}' PAPERCUSP_SID='${owner}' lock.sh`,
+            },
+          ],
+        },
+      ],
+      ...(includeLifecycle
+        ? {
+            SessionStart: [
+              {
+                hooks: [
+                  { command: `PAPERCUSP_SID='${owner}' lifecycle-report.sh` },
+                ],
+              },
+            ],
+            SessionEnd: [
+              {
+                hooks: [
+                  { command: `PAPERCUSP_SID='${owner}' lifecycle-report.sh` },
+                ],
+              },
+            ],
+          }
+        : {}),
+    },
+  };
+}
+
 describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usable home', () => {
   it('true for a real papercusp home (has the coordination MCP block)', () => {
     writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
@@ -103,8 +137,8 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
       JSON.stringify({ lockOwnerSid: oldOwner }),
     );
     writeFileSync(
-      join(dir, 'hooks.json'),
-      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: `PAPERCUSP_LOCK_SID='${oldOwner}' PAPERCUSP_SID='${oldOwner}' lock.sh` }] }] } }),
+      join(dir, "hooks.json"),
+      JSON.stringify(managedHooks(oldOwner)),
     );
 
     expect(isCodexHomeLaunchReady(dir, currentOwner)).toBe(false);
@@ -119,10 +153,33 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
       JSON.stringify({ lockOwnerSid: currentOwner }),
     );
     writeFileSync(
-      join(dir, 'hooks.json'),
-      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: `PAPERCUSP_LOCK_SID='${currentOwner}' PAPERCUSP_SID='${currentOwner}' lock.sh` }] }] } }),
+      join(dir, "hooks.json"),
+      JSON.stringify(managedHooks(currentOwner)),
     );
     expect(isCodexHomeLaunchReady(dir, currentOwner)).toBe(true);
+  });
+
+  it("FALSE for a same-owner pre-WI-41305 home that omits SessionStart/SessionEnd", () => {
+    const owner = "su-lifecycle-gap";
+    writeFileSync(
+      join(dir, "config.toml"),
+      `${REAL_CONFIG}\n[mcp_servers.papercusp-su]\nurl = "http://x/api/mcp?superuser=1&client=${owner}"\n`,
+    );
+    writeFileSync(
+      join(dir, "papercusp-diagnostics.json"),
+      JSON.stringify({ lockOwnerSid: owner }),
+    );
+    writeFileSync(
+      join(dir, "hooks.json"),
+      JSON.stringify(managedHooks(owner, false)),
+    );
+
+    expect(isCodexHomeLaunchReady(dir, owner)).toBe(false);
+    writeFileSync(
+      join(dir, "hooks.json"),
+      JSON.stringify(managedHooks(owner, true)),
+    );
+    expect(isCodexHomeLaunchReady(dir, owner)).toBe(true);
   });
 });
 

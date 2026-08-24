@@ -9,7 +9,8 @@
  * The hook is bash+python, so we spawn it as a subprocess with crafted stdin.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
@@ -600,6 +601,81 @@ function runLifecycle(
   return { status: r.status, stdout: (r.stdout ?? "").trim() };
 }
 
+async function runLifecycleAgainstDisposition(
+  disposition: "terminal" | "continuation",
+) {
+  const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        /* asserted below */
+      }
+      requests.push({ path: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url?.startsWith("/api/mcp")) {
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    ok: true,
+                    session_end_disposition: disposition,
+                  }),
+                },
+              ],
+            },
+          }),
+        );
+      } else {
+        res.end(JSON.stringify({ ok: true, results: [{ ok: true }] }));
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("fixture server did not bind TCP");
+  const child = spawn("bash", [LIFECYCLE_HOOK], {
+    env: {
+      ...process.env,
+      HOME: home,
+      PAPERCUSP_SID: "su-lifecycle-terminal",
+      PAPERCUSP_AGENT: "codex",
+      PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdin.end(
+    payload({
+      hook_event_name: "SessionEnd",
+      session_id: "codex-thread-1",
+      cwd: repo,
+    }),
+  );
+  const exitCode = await Promise.race([
+    new Promise<number | null>((resolve) => child.once("close", resolve)),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("lifecycle hook timed out")), 5_000),
+    ),
+  ]);
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  return { exitCode, requests };
+}
+
 describe("cc lifecycle hook — operator-independent paths", () => {
   it("no PAPERCUSP_SID → no-op (exit 0, no stdout)", () => {
     const r = runLifecycle({
@@ -640,6 +716,36 @@ describe("cc lifecycle hook — operator-independent paths", () => {
     );
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("");
+  });
+
+  it("a terminal SessionEnd reports first, then reuses the audited admin fleet:kill route", async () => {
+    const { exitCode, requests } =
+      await runLifecycleAgainstDisposition("terminal");
+    expect(exitCode).toBe(0);
+    expect(requests.map((r) => r.path)).toEqual([
+      expect.stringMatching(/^\/api\/mcp\?/),
+      "/api/admin/coordination/fleet/kill",
+    ]);
+    const reportArgs = (
+      requests[0].body.params as { arguments?: Record<string, unknown> }
+    ).arguments;
+    expect(reportArgs).toMatchObject({
+      owner: "su-lifecycle-terminal",
+      kind: "lifecycle",
+      summary: "■ session ended",
+    });
+    expect(requests[1].body).toMatchObject({
+      owner: "su-lifecycle-terminal",
+      close_terminal: true,
+    });
+  });
+
+  it("a carry/reset continuation SessionEnd never kills the managed host", async () => {
+    const { exitCode, requests } =
+      await runLifecycleAgainstDisposition("continuation");
+    expect(exitCode).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].path).toMatch(/^\/api\/mcp\?/);
   });
 });
 

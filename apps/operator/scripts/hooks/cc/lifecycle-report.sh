@@ -7,12 +7,15 @@
 #
 # SHARED by Claude AND Codex (the cc/ contract). One script handles both events: it
 # reads `hook_event_name` from stdin (SessionStart → "▶ session started";
-# SessionEnd / Stop → "■ session ended"). Same psu-gate + DETACHED fire-and-forget +
-# fail-open + always-empty-stdout discipline as the activity hook.
+# SessionEnd / Stop → "■ session ended"). SessionStart keeps the detached
+# fire-and-forget path. SessionEnd is synchronously bounded: activity:report
+# classifies it with the existing carry/reset guards, and only a genuine terminal
+# verdict reuses the audited admin fleet:kill route to reap an otherwise-live
+# managed host (WI-41305). All paths remain fail-open + always-empty-stdout.
 #
-# Attached: Claude `SessionStart` + `SessionEnd` settings.json entries; Codex
-# hooks.json (best-effort — codex's lifecycle event coverage is a subset, so it's
-# inert if codex doesn't fire them, which is fine).
+# Attached: Claude `SessionStart` + `SessionEnd` settings.json entries; managed
+# Codex homes register the same two events in hooks.json (verified against the
+# installed Codex 0.149.1 hook schema in WI-41305).
 
 set -euo pipefail
 
@@ -25,6 +28,17 @@ fi
 
 INPUT=$(cat)
 AGENT="${PAPERCUSP_AGENT:-}"
+EVENT_NAME=$(python3 -c 'import json,sys
+try:
+    o=json.load(sys.stdin)
+    print((o.get("hook_event_name") or o.get("hookEventName") or "").strip() if isinstance(o,dict) else "")
+except Exception:
+    pass' <<<"$INPUT" 2>/dev/null || true)
+
+case "$EVENT_NAME" in
+  SessionStart|SessionEnd|Stop) ;;
+  *) exit 0 ;;
+esac
 
 report() {
   python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
@@ -76,13 +90,73 @@ req = urllib.request.Request(
              'Accept': 'application/json, text/event-stream'},
     method='POST')
 try:
-    urllib.request.urlopen(req, timeout=HTTP_TIMEOUT).read()
+    response_body = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT).read()
 except Exception:
     sys.exit(0)
+
+# WI-41305: Codex can end the logical session while its managed PTY host remains
+# alive. The response carries activity:report's existing continuation classifier;
+# never reproduce that state machine here. Only the exact terminal verdict may
+# invoke the already-audited owner-targeted kill path.
+if name not in ('SessionEnd', 'Stop'):
+    sys.exit(0)
+
+def response_json(raw):
+    candidates = [raw.decode('utf-8', 'replace')]
+    candidates.extend(
+        line[5:].strip()
+        for line in candidates[0].splitlines()
+        if line.startswith('data:') and line[5:].strip()
+    )
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+    return None
+
+outer = response_json(response_body)
+result = outer.get('result', outer) if isinstance(outer, dict) else {}
+content = result.get('content') if isinstance(result, dict) else None
+reported = None
+if isinstance(content, list):
+    for block in content:
+        if not isinstance(block, dict) or block.get('type') != 'text':
+            continue
+        try:
+            reported = json.loads(block.get('text') or '')
+        except Exception:
+            pass
+        if isinstance(reported, dict):
+            break
+
+if not isinstance(reported, dict) or reported.get('session_end_disposition') != 'terminal':
+    sys.exit(0)
+
+kill_args = {
+    'owner': owner,
+    'close_terminal': True,
+    'reason': 'Native SessionEnd reported a genuine terminal end; reaping its managed PTY host (WI-41305).',
+}
+kill_req = urllib.request.Request(
+    operator_url.rstrip('/') + '/api/admin/coordination/fleet/kill',
+    data=json.dumps(kill_args).encode(),
+    headers={'Content-Type': 'text/plain'},
+    method='POST')
+try:
+    # The successful request kills this hook's own managed ancestor, so a broken
+    # response is expected and irrelevant; dispatching the audited kill is the
+    # commitment point.
+    urllib.request.urlopen(kill_req, timeout=HTTP_TIMEOUT).read()
+except Exception:
+    pass
 PYEOF
 }
 
-if [ -n "${PAPERCUSP_ACTIVITY_SYNC:-}" ]; then
+if [ "$EVENT_NAME" = "SessionEnd" ] || [ "$EVENT_NAME" = "Stop" ]; then
+  # Must consume the terminal-vs-continuation verdict before this hook exits.
+  report >/dev/null 2>&1 || true
+elif [ -n "${PAPERCUSP_ACTIVITY_SYNC:-}" ]; then
   report >/dev/null 2>&1 || true
 else
   ( report >/dev/null 2>&1 & ) >/dev/null 2>&1 || true

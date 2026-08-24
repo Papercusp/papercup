@@ -76,6 +76,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'pretooluse-locks-acquire.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'lifecycle-report.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
@@ -344,6 +345,15 @@ describe('writeRoleCodexHome', () => {
     expect(objective).toBeTruthy();
     expect(objective.matcher).toBe('.*');
     expect(objective.hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+
+    // WI-41305: a Codex session end must enter the same lifecycle bridge as
+    // Claude. SessionEnd is synchronous because it consumes the bridge's
+    // terminal-vs-continuation verdict before reusing fleet:kill.
+    expect(hooks.hooks.SessionStart).toHaveLength(1);
+    expect(hooks.hooks.SessionEnd).toHaveLength(1);
+    expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain('lifecycle-report.sh');
+    expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+    expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
   });
 
   it('writeCodexLockHooks no-ops (no hooks.json) when the hook scripts are absent', async () => {
@@ -954,6 +964,42 @@ describe('writeSuCodexHome', () => {
     expect(objective).toBeTruthy();
     expect(objective.matcher).toBe('.*');
     expect(objective.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+
+    expect(hooks.hooks.SessionStart).toHaveLength(1);
+    expect(hooks.hooks.SessionEnd).toHaveLength(1);
+    for (const event of ['SessionStart', 'SessionEnd']) {
+      expect(hooks.hooks[event][0].hooks[0].command).toContain('lifecycle-report.sh');
+      expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+    }
+    expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
+  });
+
+  it('repairs a same-owner managed home whose pre-WI-41305 hooks omit Codex lifecycle events', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const home = writeSuCodexHome({
+      sessionKey: 'lifecycle-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-lifecycle-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    const oldHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    delete oldHooks.hooks.SessionStart;
+    delete oldHooks.hooks.SessionEnd;
+    writeFileSync(hooksPath, JSON.stringify(oldHooks, null, 2));
+
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'lifecycle-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-lifecycle-upgrade',
+    });
+
+    expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
+    const nextHooks = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    expect(nextHooks.hooks.SessionStart).toHaveLength(1);
+    expect(nextHooks.hooks.SessionEnd).toHaveLength(1);
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
   });
 
   it('no coord/activity hooks when only the lock scripts are installed', async () => {

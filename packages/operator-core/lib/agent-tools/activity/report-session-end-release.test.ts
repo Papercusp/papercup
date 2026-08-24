@@ -62,6 +62,8 @@ const tool = (await import('./report')).default;
 const ctx = { principal: { workspaceId: '*' } } as unknown as Parameters<typeof tool.handler>[1];
 const run = (args: Record<string, unknown>) =>
   tool.handler(args as Parameters<typeof tool.handler>[0], ctx);
+const responseBody = (res: Awaited<ReturnType<typeof run>>) =>
+  JSON.parse((res as { content: Array<{ text: string }> }).content[0].text) as Record<string, unknown>;
 
 beforeEach(() => {
   h.arm.mockReset().mockResolvedValue({ awaitId: 1, eventKey: 'coord:inbox-wake:x', handleNote: 'ok' });
@@ -82,13 +84,14 @@ beforeEach(() => {
 describe('activity:report SessionEnd → work-item lease release (P-002 fast path)', () => {
   it('SessionEnd (■ session ended) triggers releaseAllWorkItemLeasesForOwner for the ending owner', async () => {
     h.release.mockResolvedValueOnce({ releasedIds: ['WI-1', 'WI-2'], claimsCleared: 1 });
-    await run({ owner: 'su-dead', kind: 'lifecycle', summary: '■ session ended' });
+    const res = await run({ owner: 'su-dead', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).toHaveBeenCalledTimes(1);
     expect(h.release).toHaveBeenCalledWith('su-dead');
     expect(h.releaseLocks).toHaveBeenCalledTimes(1);
     expect(h.releaseLocks).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-dead' }));
     // The existing inbox-wake cancel still fires too — this is additive, not a replacement.
     expect(h.cancel).toHaveBeenCalledTimes(1);
+    expect(responseBody(res).session_end_disposition).toBe('terminal');
   });
 
   it('SessionStart (▶ session started) does NOT trigger a release — only the end transition', async () => {
@@ -147,7 +150,7 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
     // The marker short-circuits: no wake-ledger round-trip is spent when it already answers.
     expect(h.resetWake).not.toHaveBeenCalled();
     expect(h.cancel).toHaveBeenCalledTimes(1);
-    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true });
+    expect(responseBody(res)).toMatchObject({ ok: true, session_end_disposition: 'continuation' });
   });
 
   it('an UNMARKED owner still gets the normal force-release (no regression to the P-002 fast path)', async () => {
@@ -189,7 +192,7 @@ describe('activity:report SessionEnd → a recent context-reset wake suppresses 
     expect(h.release).not.toHaveBeenCalled();
     expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(h.cancel).toHaveBeenCalledTimes(1);
-    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true });
+    expect(responseBody(res)).toMatchObject({ ok: true, session_end_disposition: 'continuation' });
   });
 
   it('a psu-socket-recycle wake is treated the same (it also re-execs the child)', async () => {

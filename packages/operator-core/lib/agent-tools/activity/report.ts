@@ -70,6 +70,15 @@ const todoSchema = z
   })
   .passthrough();
 
+/**
+ * WI-41305: lifecycle-report needs the SAME terminal-vs-continuation verdict
+ * this handler already computes for lease safety. Carry it on the ordinary
+ * activity result so the hook never grows a second, drifting classifier.
+ */
+type ActivityReportResult = Awaited<ReturnType<typeof recordActivity>> & {
+  session_end_disposition?: 'terminal' | 'continuation';
+};
+
 export default defineTool({
   name: 'activity:report',
   description:
@@ -178,7 +187,7 @@ export default defineTool({
     // wide "tool activity:report is failing" watchdog signal (EI-7439). This mirrors the
     // best-effort/swallowed treatment of every other write in this handler (the inbox-wake
     // arm + watermark below). Non-contention errors (a genuine bug / DB-down) still surface.
-    let result: Awaited<ReturnType<typeof recordActivity>>;
+    let result: ActivityReportResult;
     try {
       result = await recordActivity(createPgTelemetryStore(), {
         owner,
@@ -307,15 +316,18 @@ export default defineTool({
               return null;
             });
         if (respawnExpected) {
+          result.session_end_disposition = 'continuation';
           console.log(
             `[activity:report] session-end lease release SKIPPED for ${owner}: a carry-respawn is expected (same-owner continuation, not a death)`,
           );
         } else if (resetWake) {
+          result.session_end_disposition = 'continuation';
           console.log(
             `[activity:report] session-end lease release SKIPPED for ${owner}: a ${resetWake.channel} wake landed ${resetWake.ageMs}ms ago ` +
               `(context reset, same-owner continuation, not a death) — claims stay held; a reset that never lands is freed by the scheduled lease reap`,
           );
         } else {
+          result.session_end_disposition = 'terminal';
           // session-death-claim-release-2026-07-11 P-002 (the FAST PATH): the
           // SAME SessionEnd/Stop lifecycle event that already fires on every
           // psu session (hooks/cc/lifecycle-report.sh → THIS call, unchanged)
@@ -391,14 +403,16 @@ export default defineTool({
       ? await buildActivityHookBundle(owner, args.hook_bundle, ctx).catch(() => null)
       : undefined;
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          ok: true,
-          ...result,
-          ...(hookBundle ? { hook_bundle: hookBundle } : {}),
-        }),
-      }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            ...result,
+            ...(hookBundle ? { hook_bundle: hookBundle } : {}),
+          }),
+        },
+      ],
     };
   },
 });
