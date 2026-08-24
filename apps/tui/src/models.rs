@@ -1777,6 +1777,14 @@ pub struct ChatToolCall {
     /// per D-017 even though only the card lane reads it — re-widening a mapping
     /// every time a later slice needs a field is what cost a wake on slice 2.
     pub input: Option<serde_json::Value>,
+    /// The edit this call makes, extracted and BOUNDED at ingest (D-018 #4).
+    ///
+    /// Deliberately not derived at render time from `input`: doing that would
+    /// mean retaining the raw `old_string`/`new_string`/`content` bodies for the
+    /// life of the session, which is exactly the retention D-018 #4 forbids.
+    /// `input` above is bounded on arrival, so by render time the raw edit is
+    /// already gone — this field is what survives it.
+    pub diff: Option<crate::diff::ToolDiff>,
     /// Terminal outcome, or `Pending` while the loop is still working.
     pub outcome: ToolOutcome,
 }
@@ -1792,6 +1800,7 @@ impl ChatToolCall {
             id: None,
             needs_approval: false,
             input: None,
+            diff: None,
             outcome: ToolOutcome::Pending,
         }
     }

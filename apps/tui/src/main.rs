@@ -18,6 +18,7 @@ mod card_view;
 mod chat_tags;
 mod client;
 mod companion;
+mod diff;
 mod event;
 mod fleet;
 mod framing;
@@ -3092,6 +3093,13 @@ async fn stream_agent_chat_turn(
                 // approval" label is applied at RENDER time from
                 // `needs_approval` — baking it into the name would corrupt both
                 // the prompt text and the resolve POST.
+                // D-018 #4's bounding policy, applied ON ARRIVAL. The diff is
+                // extracted from the RAW arguments and the arguments are then
+                // bounded for retention — one call because that order is
+                // load-bearing and must not be splittable at the call site.
+                // Note this runs for a call that is still awaiting approval, so
+                // the operator sees WHAT they are approving, not just its name.
+                let (diff, input) = diff::ingest_tool_input(call.input);
                 let _ = tx.send(Event::ChatToolCall(models::ChatToolCall {
                     name: call.name,
                     id: Some(call.id),
@@ -3099,7 +3107,8 @@ async fn stream_agent_chat_turn(
                     // Carried for the card lane per D-017 #2 — an identifier or
                     // payload the seam hands us goes through the mapping even
                     // when the current lane has no use for it.
-                    input: Some(call.input),
+                    input,
+                    diff,
                     outcome: models::ToolOutcome::Pending,
                 }));
             }

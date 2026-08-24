@@ -10848,6 +10848,7 @@ mod tests {
             id: Some("call-a".into()),
             needs_approval: true,
             input: None,
+            diff: None,
             outcome: crate::models::ToolOutcome::Pending,
         }));
         assert_eq!(a.pending_approvals.len(), 1);
@@ -10917,6 +10918,7 @@ mod tests {
             id: Some("call-1".into()),
             needs_approval: false,
             input: Some(serde_json::json!({ "command": "ls" })),
+            diff: None,
             outcome: ToolOutcome::Pending,
         }));
         a.update(Event::ChatToolCall(ChatToolCall {
@@ -10924,6 +10926,7 @@ mod tests {
             id: Some("call-2".into()),
             needs_approval: true,
             input: Some(serde_json::json!({ "command": "rm -rf /" })),
+            diff: None,
             outcome: ToolOutcome::Pending,
         }));
         assert_eq!(a.pending_approvals.len(), 1);

@@ -1813,6 +1813,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     Theme::dim(),
                 )));
             }
+            // The edit itself, when this call makes one. Rendered for a PENDING
+            // call too: an approval prompt that names a tool but not its edit
+            // asks the operator to consent to something they cannot see.
+            if let Some(d) = tc.diff.as_ref() {
+                lines.extend(diff_lines(d, inner_w.saturating_sub(4)));
+            }
             if let ToolOutcome::Failed(msg) = &tc.outcome {
                 for wl in wrap_text(msg, inner_w.saturating_sub(4)) {
                     lines.push(Line::from(Span::styled(
@@ -3413,6 +3419,52 @@ pub(crate) fn trunc(s: &str, n: usize) -> String {
         out.push('…');
         out
     }
+}
+
+/// Paint a bounded [`ToolDiff`] as card rows.
+///
+/// Rows are TRUNCATED, never wrapped — the same rule argument lines follow
+/// (D-018 #5). A wrapped diff row would break the one property that makes a diff
+/// skimmable, that a row's first column tells you whether it is an addition, and
+/// would silently grow a card whose height the transcript layout already sized.
+///
+/// The two elision markers say DIFFERENT things and must not be merged: `+N more
+/// lines` means more rows were computed and cut, while the truncation notice
+/// means the diff itself was computed over a prefix of the edit. Only the second
+/// makes the shown rows an incomplete account of the change.
+pub(crate) fn diff_lines(d: &crate::diff::ToolDiff, width: usize) -> Vec<Line<'static>> {
+    use crate::diff::DiffLine;
+
+    let mut out = Vec::with_capacity(d.lines.len() + 2);
+    let head = match d.path.as_deref() {
+        Some(p) => format!("    ± {p}  +{} −{}", d.added, d.removed),
+        None => format!("    ± +{} −{}", d.added, d.removed),
+    };
+    out.push(Line::from(Span::styled(trunc(&head, width + 4), Theme::dim())));
+
+    for line in &d.lines {
+        let (text, style) = match line {
+            DiffLine::Added(s) => (format!("    + {s}"), Theme::success()),
+            DiffLine::Removed(s) => (format!("    - {s}"), Theme::danger()),
+            DiffLine::Context(s) => (format!("      {s}"), Theme::dim()),
+            DiffLine::Gap(n) => (format!("    ⋯ {n} unchanged"), Theme::dim()),
+        };
+        out.push(Line::from(Span::styled(trunc(&text, width + 4), style)));
+    }
+
+    if d.elided > 0 {
+        out.push(Line::from(Span::styled(
+            format!("    … +{} more lines", d.elided),
+            Theme::dim(),
+        )));
+    }
+    if d.source_truncated {
+        out.push(Line::from(Span::styled(
+            "    … edit truncated on arrival".to_string(),
+            Theme::dim(),
+        )));
+    }
+    out
 }
 
 /// One-line, width-bounded rendering of a tool call's arguments for its card.
@@ -5252,6 +5304,78 @@ mod tests {
         assert_eq!(wrap_text("abcdef", 3), vec!["abc", "def"]);
         // An empty line is preserved (paragraph break).
         assert_eq!(wrap_text("x\n\ny", 80), vec!["x", "", "y"]);
+    }
+
+    #[test]
+    fn diff_rows_are_truncated_never_wrapped() {
+        use crate::diff::{DiffLine, ToolDiff};
+
+        let d = ToolDiff {
+            path: Some("src/a.rs".into()),
+            lines: vec![DiffLine::Added("y".repeat(200))],
+            added: 1,
+            removed: 0,
+            elided: 0,
+            source_truncated: false,
+        };
+        let rows = diff_lines(&d, 30);
+        // Header + exactly ONE row for the one diff line. A wrapped row would
+        // grow the card past the height the transcript layout already sized.
+        assert_eq!(rows.len(), 2, "one diff line must stay one row");
+        for r in &rows {
+            let text: String = r.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(text.chars().count() <= 34, "row overflowed: {text}");
+        }
+    }
+
+    #[test]
+    fn the_two_elision_markers_say_different_things() {
+        use crate::diff::{DiffLine, ToolDiff};
+
+        let text = |d: &ToolDiff| -> String {
+            diff_lines(d, 60)
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let base = ToolDiff {
+            path: None,
+            lines: vec![DiffLine::Gap(9), DiffLine::Removed("a".into())],
+            added: 0,
+            removed: 1,
+            elided: 0,
+            source_truncated: false,
+        };
+        let plain = text(&base);
+        assert!(plain.contains("⋯ 9 unchanged"), "{plain}");
+        assert!(!plain.contains("more lines"), "{plain}");
+        assert!(!plain.contains("truncated"), "{plain}");
+
+        // Rows computed and cut — the change itself is fully accounted for.
+        let cut_rows = ToolDiff {
+            elided: 7,
+            ..base.clone()
+        };
+        let a = text(&cut_rows);
+        assert!(a.contains("+7 more lines"), "{a}");
+        assert!(!a.contains("truncated"), "{a}");
+
+        // The EDIT was cut before alignment — the shown rows are a prefix, which
+        // is a strictly stronger caveat and must not collapse into the first.
+        let cut_source = ToolDiff {
+            source_truncated: true,
+            ..base
+        };
+        let b = text(&cut_source);
+        assert!(b.contains("truncated on arrival"), "{b}");
+        assert!(!b.contains("more lines"), "{b}");
     }
 
     #[test]
