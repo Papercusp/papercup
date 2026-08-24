@@ -93,8 +93,21 @@ describe('work_items:search bounded result projection', () => {
     const result = (await search.handler({ query: 'summary', semantic: false } as never, {} as never)) as {
       data: { ok: boolean; count: number; items: Array<Record<string, unknown>>; legs: unknown };
     };
-    expect(result.data).toMatchObject({ ok: true, count: 1, legs: { degraded: false } });
+    expect(result.data).toMatchObject({ ok: true, count: 1, legs: { degraded: false }, retryable: false });
     expect(result.data.items[0]).not.toHaveProperty('payload');
     expect(result.data.items[0]).toMatchObject({ id: 'EI-1', title: 'A useful title' });
+  });
+
+  it('marks degraded searches retryable instead of presenting count zero as verified empty', async () => {
+    mockResolvedOnceTyped(searchMock, {
+      items: [],
+      legs: { ...emptyLegs(), degraded: true, warning: 'semantic leg blocked: query embedder warming up' },
+      applied: { minScore: null, recency: false, policyRegistered: false },
+    });
+
+    const result = (await search.handler({ query: 'cross-word duplicate', semantic: true } as never, {} as never)) as {
+      data: { ok: boolean; count: number; items: Array<Record<string, unknown>>; retryable: boolean };
+    };
+    expect(result.data).toMatchObject({ ok: true, count: 0, items: [], retryable: true });
   });
 });
