@@ -290,7 +290,7 @@ describe('readCell — axis 3 caller-relativity and the `as` subject', () => {
 
 describe('readCell — an event-signalled cell has nothing to poll', () => {
   it('is not-measured and points at state:subscribe, rather than pretending to be absent', async () => {
-    registerCell(spec({ changeSignal: { kind: 'event', key: 'deploy:landed' } }));
+    registerCell(spec({ assessment: null, changeSignal: { kind: 'event', key: 'deploy:landed' } }));
 
     const r = await readCell('test.cell', READER, ENV);
     expect(r.status).toBe('unknown');
@@ -1088,7 +1088,8 @@ describe('readCell — pointers (P-006)', () => {
   };
 
   /** A registrable target for the pointer to resolve to. */
-  const target = (over: Partial<CellSpec> = {}) => spec({ cell: 'other.cell', ...over });
+  const target = (over: Partial<CellSpec> = {}) =>
+    spec({ cell: 'other.cell', resolver: 'other-cell-resolver.ts', ...over });
 
   it('carries the declared pointer on a VALUE read, resolved clean', async () => {
     registerCell(spec({ pointers: [ptr] }));
