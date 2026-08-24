@@ -54,6 +54,8 @@ export interface AgentFactWireRow {
   source_provenance?: Record<string, unknown> | null;
   /** mig 795: moving-subject snapshot metadata. Optional so pre-795 ops remain valid. */
   measurement?: Record<string, unknown> | null;
+  /** mig 940: repeatable verification + concrete disproof pair. */
+  recheck?: { probe: string; falsifier: string } | null;
   /** mig 671 (WI-6052): evidence-strength tier ('verified'|'provisional'|
    *  'suspected'). CONTENT, same as audience_scope/source_provenance — a
    *  receiving peer must see the sender's own stated confidence, never
@@ -74,6 +76,24 @@ const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'];
 // locally rather than imported — same style already used for FACT_SCOPES
 // above, keeping this wire-validation module dependency-free of the store.
 const FACT_CONFIDENCES = ['verified', 'provisional', 'suspected'];
+const FACT_RECHECK_FIELD_MAX_CHARS = 500;
+
+function isFactRecheck(v: unknown): v is { probe: string; falsifier: string } {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const r = v as Record<string, unknown>;
+  const keys = Object.keys(r).sort();
+  return (
+    keys.length === 2 &&
+    keys[0] === 'falsifier' &&
+    keys[1] === 'probe' &&
+    typeof r.probe === 'string' &&
+    r.probe.trim().length > 0 &&
+    r.probe.trim().length <= FACT_RECHECK_FIELD_MAX_CHARS &&
+    typeof r.falsifier === 'string' &&
+    r.falsifier.trim().length > 0 &&
+    r.falsifier.trim().length <= FACT_RECHECK_FIELD_MAX_CHARS
+  );
+}
 
 export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
   if (!input || typeof input !== 'object') return false;
@@ -105,6 +125,7 @@ export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
       if (m.subjectVolatile !== true || typeof m.measuredAt !== 'string' || !m.measuredAt) return false;
     }
   }
+  if (r.recheck !== undefined && r.recheck !== null && !isFactRecheck(r.recheck)) return false;
   // mig 671 (WI-6052) — optional (pre-671 history ops omit it), but when
   // present must be a recognized string tier or the op is malformed (never
   // trust an arbitrary sender-supplied value into the confidence dimension).
@@ -179,6 +200,7 @@ async function writeToPg(
   const audienceScope = row.audience_scope ?? null;
   const sourceProvenance = row.source_provenance != null ? JSON.stringify(row.source_provenance) : null;
   const measurement = row.measurement != null ? JSON.stringify(row.measurement) : null;
+  const recheck = row.recheck != null ? JSON.stringify(row.recheck) : null;
   const confidence = row.confidence ?? null;
   const retractedBy = row.retracted_by ?? null;
   const retractionReason = row.retraction_reason ?? null;
@@ -186,14 +208,14 @@ async function writeToPg(
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref,
        created_by, expires_at, retracted_at, retracted_by, retraction_reason, shareable,
-       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, measurement, confidence)
+       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, measurement, recheck, confidence)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.scope}, ${row.scope_ref},
        ${row.key}, ${row.body}, ${row.source_ref}, ${row.created_by},
        ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz,
        ${retractedBy}, ${retractionReason}, true,
        ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive},
-       ${audienceScope}, ${sourceProvenance}::text::jsonb, ${measurement}::text::jsonb, ${confidence})
+       ${audienceScope}, ${sourceProvenance}::text::jsonb, ${measurement}::text::jsonb, ${recheck}::text::jsonb, ${confidence})
     -- ⚠ P-008 (a) / migration 689: the identity index is now PARTIAL
     -- (agent_facts_identity_current ... WHERE superseded_at IS NULL), and an
     -- ON CONFLICT inference spec that omits the predicate matches NO index —
@@ -221,6 +243,7 @@ async function writeToPg(
       audience_scope    = EXCLUDED.audience_scope,
       source_provenance = EXCLUDED.source_provenance,
       measurement       = EXCLUDED.measurement,
+      recheck           = EXCLUDED.recheck,
       confidence        = EXCLUDED.confidence,
       updated_at    = now()
     WHERE harness_shared.fed_order_key(NULL, EXCLUDED.fed_ts)

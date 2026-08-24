@@ -21,6 +21,7 @@ import {
   clampFactBody,
   FACT_SCOPES,
   FACT_BODY_MAX_CHARS,
+  FACT_RECHECK_FIELD_MAX_CHARS,
   FACT_CONFIDENCE_LEVELS,
   CONVENTION_ENFORCEMENT_TIERS,
   FACT_MAX_DEPENDENCIES,
@@ -75,6 +76,41 @@ export interface OverwroteAuthorDisclosure {
   bodyExcerpt: string;
   /** Actionable warning, intentionally loud because the write is still allowed. */
   note: string;
+}
+
+const FACT_RECHECK_SCHEMA = z
+  .object({
+    probe: z
+      .string()
+      .min(1)
+      .max(FACT_RECHECK_FIELD_MAX_CHARS)
+      .describe('The concrete query/tool/measurement a future reader can run to verify the fact again.'),
+    falsifier: z
+      .string()
+      .min(1)
+      .max(FACT_RECHECK_FIELD_MAX_CHARS)
+      .describe('The concrete result or observation that means this fact is false and must be retracted or corrected.'),
+  })
+  .strict()
+  .optional()
+  .describe(
+    `P-010: paired re-verification contract. Supply BOTH probe and falsifier (max ${FACT_RECHECK_FIELD_MAX_CHARS} chars each). The pair folds verbatim beside the fact so a future reader knows how to test it and what result disproves it. Omission remains compatible but the success receipt warns loudly that the fact has no recheck contract.`,
+  );
+
+/** Compatibility is intentional, silence is not: teach an ordinary fact's
+ * writer that TTL/retraction are its only freshness controls when no executable
+ * recheck pair was supplied. An undecidable already requires settledBy, so its
+ * mandatory exit probe covers the same question without a duplicate warning. */
+export function recheckReceiptField(fact: Pick<AgentFact, 'recheck' | 'kind'>): {
+  recheckMissing?: { note: string; required: string[] };
+} {
+  if (fact.recheck || fact.kind === 'undecidable') return {};
+  return {
+    recheckMissing: {
+      note: '⚠ RECHECK CONTRACT MISSING — this fact will keep folding as standing context until expiry/retraction, but it carries no repeatable probe and no concrete falsifier. Re-assert the SAME key with recheck:{ probe, falsifier }; probe says exactly how to verify it again, falsifier says which result means it is false and must be retracted or corrected.',
+      required: ['probe', 'falsifier'],
+    },
+  };
 }
 
 /**
@@ -503,13 +539,14 @@ export default defineTool({
     const shareableDescription =
       'OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. A shareable fact MUST have a resolvable federation harness: pass a concrete `harness` for workspace, role, owner, or work_item scopes, or pass `scope:"harness"` with its canonical `scopeRef`. Omit or set false to keep the fact pot-private.';
     const modalityBranches = <T extends z.ZodRawShape>(fields: T) => {
+      const fieldsWithRecheck = { ...fields, recheck: FACT_RECHECK_SCHEMA };
       const undecidableArgs = z.object({
-        ...fields,
+        ...fieldsWithRecheck,
         kind: z.literal('undecidable').describe(kindDescription),
         settledBy: z.string().min(1).max(500).describe(settledByDescription),
       });
       const declaredArgs = z.object({
-        ...fields,
+        ...fieldsWithRecheck,
         kind: z
           .enum(['conclusion', 'assumption', 'convention'])
           .optional()
@@ -632,6 +669,12 @@ export default defineTool({
     // outright" applies here exactly as it does to the truncation path below.
     const safeBody = neutralizeToolCallTags(args.body);
     const safeSettledBy = neutralizeToolCallTags(args.settledBy);
+    const safeRecheck = args.recheck
+      ? {
+          probe: neutralizeToolCallTags(args.recheck.probe),
+          falsifier: neutralizeToolCallTags(args.recheck.falsifier),
+        }
+      : null;
     const slotted =
       args.slot === 'dead-end'
         ? normalizeDeadEndSlot(args.key, safeBody)
@@ -722,6 +765,7 @@ export default defineTool({
       measuredAt: args.measuredAt ?? null,
       kind: args.kind ?? null,
       settledBy: safeSettledBy ?? null,
+      ...(safeRecheck ? { recheck: safeRecheck } : {}),
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
       ...(args.claim ? { claim: args.claim } : {}),
       // P-018: validated inside assertFact (validateConventionEnforcement), not
@@ -949,6 +993,7 @@ export default defineTool({
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),
+            ...recheckReceiptField(fact),
             ...(measurementWarning ? { measurementWarning } : {}),
             ...(fact.measurement?.subjectVolatile
               ? {

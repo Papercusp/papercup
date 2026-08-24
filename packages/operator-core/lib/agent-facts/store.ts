@@ -176,6 +176,67 @@ export interface ConventionEnforcement {
 // still guarantees a write is never lost outright for genuine overflow.
 // Keep in sync with the DB CHECK constraint (agent_facts_body_check, mig 664).
 export const FACT_BODY_MAX_CHARS = 1200;
+/** P-010: each half of a standing fact's executable recheck contract is a
+ * compact instruction, not a runbook. Keep this in sync with migration 940. */
+export const FACT_RECHECK_FIELD_MAX_CHARS = 500;
+
+/**
+ * How a future reader can actively re-verify a standing fact, and the concrete
+ * observation that disproves it. The pair is atomic: a probe without a
+ * falsifier produces evidence with no verdict, while a falsifier without a
+ * probe cannot be sought repeatably.
+ */
+export interface FactRecheck {
+  probe: string;
+  falsifier: string;
+}
+
+/** Store-boundary validation for the recheck pair. PURE. */
+export function validateFactRecheck(input: unknown): string | null {
+  if (input == null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    return 'recheck must be an object with exactly { probe, falsifier }';
+  }
+  const raw = input as Record<string, unknown>;
+  const keys = Object.keys(raw).sort();
+  if (keys.length !== 2 || keys[0] !== 'falsifier' || keys[1] !== 'probe') {
+    return 'recheck must contain exactly probe and falsifier';
+  }
+  for (const field of ['probe', 'falsifier'] as const) {
+    const value = raw[field];
+    if (typeof value !== 'string' || value.trim() === '') {
+      return `recheck.${field} must be a non-empty string`;
+    }
+    if (value.trim().length > FACT_RECHECK_FIELD_MAX_CHARS) {
+      return `recheck.${field} exceeds the ${FACT_RECHECK_FIELD_MAX_CHARS}-character cap`;
+    }
+  }
+  return null;
+}
+
+/** Validate + canonicalize a caller-supplied recheck pair at the store seam. */
+export function normalizeFactRecheck(input: unknown): FactRecheck | null {
+  const error = validateFactRecheck(input);
+  if (error) throw new InvalidInputError(`facts:assert — ${error}`);
+  if (input == null) return null;
+  const raw = input as Record<'probe' | 'falsifier', string>;
+  return { probe: raw.probe.trim(), falsifier: raw.falsifier.trim() };
+}
+
+/** Defensive DB/wire read: malformed legacy or out-of-band data never folds. */
+export function parseFactRecheck(raw: unknown): FactRecheck | null {
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (validateFactRecheck(raw)) return null;
+  if (raw == null) return null;
+  const value = raw as Record<'probe' | 'falsifier', string>;
+  return { probe: value.probe.trim(), falsifier: value.falsifier.trim() };
+}
 /** P-007: bounded verbatim quote inside a source-provenance stamp (fold-friendly —
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
 export const FACT_PROVENANCE_QUOTE_CHARS = 160;
@@ -422,6 +483,8 @@ export interface AgentFact {
   confidence: FactConfidence | null;
   /** EI-20191740437408337: assert-time snapshot metadata; absent on legacy rows. */
   measurement?: FactMeasurement | null;
+  /** P-010 / migration 940: executable re-verification + falsification pair. */
+  recheck?: FactRecheck | null;
   /** P-008 (b) / D-019: the claim MODALITY (see {@link FactKind}); null = not
    *  declared (every pre-migration-690 row). Distinct from `scope`. */
   kind: FactKind | null;
@@ -686,6 +749,8 @@ export interface AssertFactInput {
    *  {@link validateUndecidableSettledBy}. An UNKNOWN with no stated exit
    *  invites the re-derivation it exists to prevent. */
   settledBy?: string | null;
+  /** P-010: how to re-run the claim and what concrete result disproves it. */
+  recheck?: FactRecheck | null;
   createdBy: string;
   /** Explicit TTL; omitted conventions are permanent, other facts default to 7d. */
   ttlSec?: number;
@@ -1268,7 +1333,9 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // every pre-existing TTL path is unchanged.
   const permanentConvention = input.kind === 'convention' && input.ttlSec == null && !subjectVolatile;
   const ttl = subjectVolatile
-    ? (effectiveTtlSec && effectiveTtlSec > 0 ? effectiveTtlSec : FACT_VOLATILE_MAX_TTL_SEC)
+    ? effectiveTtlSec && effectiveTtlSec > 0
+      ? effectiveTtlSec
+      : FACT_VOLATILE_MAX_TTL_SEC
     : effectiveTtlSec && effectiveTtlSec > 0
       ? effectiveTtlSec
       : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
@@ -1280,9 +1347,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // InvalidInputError names the actual mistake (EI-7463's class — a caller-input
   // error must not surface as a 500 that inflates the tool's error rate).
   if (input.kind != null && !(FACT_KINDS as readonly string[]).includes(input.kind)) {
-    throw new InvalidInputError(
-      `facts:assert — unknown kind '${input.kind}' — one of ${FACT_KINDS.join('|')}`,
-    );
+    throw new InvalidInputError(`facts:assert — unknown kind '${input.kind}' — one of ${FACT_KINDS.join('|')}`);
   }
   const kind = input.kind ?? null;
   // P-018 / D-016 / D-075 R3. Validated here rather than only in the tool layer
@@ -1300,6 +1365,10 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     throw new InvalidInputError(`facts:assert — ${settledByError}`);
   }
   const settledBy = input.settledBy?.trim() ? input.settledBy.trim() : null;
+  // P-010: validate in the store as well as the tool. Direct callers (routines,
+  // migrations, tests) must not be able to persist a half-contract or an
+  // unbounded instruction around the published Zod schema.
+  const recheck = normalizeFactRecheck(input.recheck);
   const dependsOn = normalizeFactDependencies(input.dependsOn);
   const claim = input.claim && typeof input.claim === 'object' ? input.claim : null;
   // P-008 (a): APPEND-VERSIONING, not upsert-in-place (migration 689).
@@ -1346,7 +1415,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     ), inserted AS (
       INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
-       audience_scope, source_provenance, confidence, measurement, supersedes_id, kind, depends_on, claim,
+       audience_scope, source_provenance, confidence, measurement, recheck, supersedes_id, kind, depends_on, claim,
        enforcement, settled_by)
     VALUES
       (${ws},
@@ -1362,6 +1431,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
        ${confidence},
        ${measurement ? JSON.stringify(measurement) : null}::text::jsonb,
+       ${recheck ? JSON.stringify(recheck) : null}::text::jsonb,
        (SELECT id FROM superseded),
        ${kind},
        ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
@@ -1370,7 +1440,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${settledBy})
       RETURNING id, superseded_at::text, supersedes_id,
                 scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-                confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
+                confidence, measurement, recheck, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
     ), retired AS (
       UPDATE harness_shared.agent_facts
          SET retracted_at = now(),
@@ -1522,9 +1592,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // need a COUNT on every assert, which is why that is not reported: a non-empty
   // `evicted` already implies at-cap (the sweep fires only past CAP-1).
   const writtenId = rows[0].id ?? null;
-  const evictedRows = await sql<
-    { key: string; confidence: string | null; expires_at: string; created_by: string }[]
-  >`
+  const evictedRows = await sql<{ key: string; confidence: string | null; expires_at: string; created_by: string }[]>`
     UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
        AND superseded_at IS NULL
@@ -1598,9 +1666,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     }
     fact.normalized = {
       ...(volatileInferred ? { subjectVolatileInferred: true as const } : {}),
-      ...(ttlClampedFrom !== null
-        ? { ttlClampedFrom, ttlClampedTo: FACT_VOLATILE_MAX_TTL_SEC }
-        : {}),
+      ...(ttlClampedFrom !== null ? { ttlClampedFrom, ttlClampedTo: FACT_VOLATILE_MAX_TTL_SEC } : {}),
       note: parts.join(' '),
     };
   }
@@ -1694,8 +1760,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
         SELECT id, confidence, expires_at, created_at, updated_at
           FROM harness_shared.agent_facts
          WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}`;
-      const confRank = (c: FactConfidence | null): number =>
-        c === 'verified' ? 0 : c === 'suspected' ? 2 : 1;
+      const confRank = (c: FactConfidence | null): number => (c === 'verified' ? 0 : c === 'suspected' ? 2 : 1);
       const values = new Set<FactConfidence | null>();
       for (const r of survivors) values.add(parseFactConfidence(r.confidence));
       for (const v of evicted) values.add(v.confidence);
@@ -1734,9 +1799,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           // is reported as next-victim too: it is one of the two candidates,
           // and warning is the conservative side of an ambiguity.
           nextVictim: isLast,
-          survivingFractionFloor: neighbourAbove
-            ? sweepRemainingFraction(neighbourAbove, nowMs)
-            : null,
+          survivingFractionFloor: neighbourAbove ? sweepRemainingFraction(neighbourAbove, nowMs) : null,
         };
       }
     } catch {
@@ -2276,7 +2339,7 @@ export async function foldFacts(
              -- is stored but never surfaced cannot stop re-derivation — the reader would
              -- see "nobody could determine this" with no way to act on it, which is the
              -- half-finish this modality exists to prevent.
-             confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text,
+             confidence, measurement, recheck, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text,
              -- P-008 (c): the cell version, so the fold can mark what changed since
              -- the reader's cursor without a second query.
              fed_hlc
@@ -2547,14 +2610,12 @@ export async function listConventionFacts(
   const refs = (opts.scopeRefs ?? []).map((r) => r.trim()).filter(Boolean);
   const rows = await sql<AgentFactRow[]>`
     SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, measurement, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
+           confidence, measurement, recheck, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
       FROM harness_shared.agent_facts
      WHERE workspace_id = ${ws} AND kind = 'convention'
        AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
        AND ${
-         refs.length > 0
-           ? sql`(scope = 'workspace' OR coalesce(scope_ref,'') = ANY(${refs as string[]}))`
-           : sql`TRUE`
+         refs.length > 0 ? sql`(scope = 'workspace' OR coalesce(scope_ref,'') = ANY(${refs as string[]}))` : sql`TRUE`
        }
      ORDER BY updated_at DESC
      LIMIT ${opts.limit ?? 100}`;
@@ -2617,7 +2678,7 @@ export async function factVersions(
   const rows = await sql<AgentFactRow[]>`
     SELECT id, superseded_at::text, supersedes_id,
            scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, measurement, kind, depends_on, claim, enforcement, settled_by,
+           confidence, measurement, recheck, kind, depends_on, claim, enforcement, settled_by,
            created_by, updated_at::text, expires_at::text, retracted_at::text,
            retracted_by, retraction_reason
       FROM harness_shared.agent_facts
@@ -2760,6 +2821,17 @@ export function renderEnforcement(e: ConventionEnforcement): string {
   return `${e.tier}${floor}${by}`;
 }
 
+/** Compact age label for the deterministic fold. PURE and future-clock safe. */
+export function renderFactAge(updatedAt: string, now: number = Date.now()): string {
+  const updated = Date.parse(updatedAt);
+  if (!Number.isFinite(updated)) return 'age unknown';
+  const ageMs = Math.max(0, now - updated);
+  if (ageMs < 60_000) return 'age <1m';
+  if (ageMs < 3_600_000) return `age ~${Math.max(1, Math.floor(ageMs / 60_000))}m`;
+  if (ageMs < 86_400_000) return `age ~${Math.max(1, Math.floor(ageMs / 3_600_000))}h`;
+  return `age ~${Math.max(1, Math.floor(ageMs / 86_400_000))}d`;
+}
+
 /**
  * P-018: the modality badge. Rendered ONLY for a declared `kind`, so an unbadged
  * line still reads as "modality not declared" — mig 690's rule (absent means not
@@ -2782,6 +2854,7 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     const expiry = isPermanentFactExpiry(f.expiresAt)
       ? 'permanent'
       : `expires ~${Math.max(0, Math.round((Date.parse(f.expiresAt) - now) / 86_400_000))}d`;
+    const age = renderFactAge(f.updatedAt, now);
     const rendered = renderFactSrc(f);
     const src = rendered ? `, src ${rendered}` : '';
     // P-018: the MODALITY, which this fold previously dropped entirely — so a
@@ -2805,7 +2878,8 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     // judged by its values"). Without it the fold says only "nobody could
     // determine this", which reads as an invitation to go determine it.
     const settles = f.kind === 'undecidable' && f.settledBy ? ` — SETTLED BY: ${f.settledBy}` : '';
-    return `• [${scope}${aud}] ${badge}${snapshot}${f.body}${settles} (${expiry}${src}${cite})`;
+    const recheck = f.recheck ? ` — RECHECK: ${f.recheck.probe} — FALSIFIED IF: ${f.recheck.falsifier}` : '';
+    return `• [${scope}${aud}] ${badge}${snapshot}${f.body}${settles}${recheck} (${expiry}, ${age}${src}${cite})`;
   });
   return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}`;
 }
@@ -2821,6 +2895,8 @@ interface AgentFactRow {
   confidence: string | null;
   /** EI-20191740437408337 — migration 795. */
   measurement?: unknown;
+  /** P-010 — migration 940. */
+  recheck?: unknown;
   /** P-008 (b) — migration 690. */
   kind?: string | null;
   depends_on?: unknown;
@@ -2895,6 +2971,10 @@ function rowToFact(r: AgentFactRow): AgentFact {
     // EI-20191740437408337: a malformed measurement is dropped rather than
     // allowing an unmarked timestamp to look like a safe snapshot.
     measurement: parseFactMeasurement(r.measurement),
+    // P-010: malformed data fails closed to "no contract" instead of becoming
+    // executable fold text. Ordinary writes are already protected by the store
+    // validator and migration-940 CHECK; this is the read-side backstop.
+    recheck: parseFactRecheck(r.recheck),
     // P-008 (b), migration 690. `dependsOn` normalizes to [] rather than null so
     // every consumer can iterate without a null guard — the absence of
     // dependencies and an empty set mean the same thing to a reader ("this fact

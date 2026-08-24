@@ -56,6 +56,10 @@ describe('decodeValue — defensive on every field', () => {
     ).not.toBeNull();
     expect(decodeValue(row({ retracted_by: 'su-1', retraction_reason: 'superseded by live evidence' }))).not.toBeNull();
     expect(decodeValue({ ...row(), retraction_reason: 42 })).toBeNull();
+    expect(decodeValue(row({ recheck: { probe: 'run status', falsifier: 'pin differs' } }))).not.toBeNull();
+    expect(decodeValue({ ...row(), recheck: { probe: 'only half' } })).toBeNull();
+    expect(decodeValue({ ...row(), recheck: { probe: 'run', falsifier: 'no', extra: true } })).toBeNull();
+    expect(decodeValue(row({ recheck: { probe: 'x'.repeat(501), falsifier: 'no' } }))).toBeNull();
   });
 });
 
@@ -106,6 +110,16 @@ describe('writeToPg — H6 source partitioning', () => {
     );
     expect(calls[0]).toContain('su-author');
     expect(calls[0]).toContain('condition cleared');
+  });
+
+  it('carries the recheck pair across federation', async () => {
+    const { sql, calls } = fakeSql();
+    const recheck = { probe: 'run release status', falsifier: 'the pins differ' };
+    await buildAgentFactsProjection(opts(sql)).writeToPg(row({ recheck }), {
+      authorPubkey: 'stamped-source-log-key',
+      origin: 'remote',
+    } as never);
+    expect(calls[0]).toContain(JSON.stringify(recheck));
   });
 });
 

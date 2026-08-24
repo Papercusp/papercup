@@ -136,6 +136,9 @@ beforeAll(async () => {
     '795-agent-facts-volatile-measurements.sql',
     // EI-20212953856919248: deliberate retractions retain their actor and reason.
     '801-agent-facts-retraction-reason.sql',
+    // P-010: optional executable re-verification pair. The fixture audit makes
+    // the store INSERT/SELECT shape and the real DB CHECK move together.
+    '940-agent-facts-recheck-contract.sql',
   ];
   // EI-18808675015292160: applies the list (EI-6887 strip semantics unchanged)
   // but AUDITS it first against the real sql/ dir — so the "list DRIFTED from the
@@ -1640,6 +1643,80 @@ describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
     await assertFact({ ...base, body: 'two', kind: 'conclusion' }, db.sql);
     const hist = await factVersions({ scope: 'owner', scopeRef: 'su-d', key: 'dep', workspaceId: WS }, db.sql);
     expect(hist.map((h) => h.kind)).toEqual(['conclusion', 'assumption']);
+  });
+});
+
+describe('P-010 standing-fact recheck contract (migration 940)', () => {
+  const base = {
+    scope: 'owner' as const,
+    scopeRef: 'su-recheck',
+    key: 'deploy-position',
+    body: 'the release is at the green pin',
+    createdBy: 'su-int',
+    workspaceId: WS,
+  };
+  const recheck = {
+    probe: 'Run release:deploy { op:"status" } and read the deployed pin.',
+    falsifier: 'The deployed pin differs from the current green checkpoint pin.',
+  };
+
+  it('round-trips through assert, fold, version history, and does not carry forward implicitly', async () => {
+    const written = await assertFact({ ...base, recheck }, db.sql);
+    expect(written.recheck).toEqual(recheck);
+    const folded = await foldFacts(
+      [{ scope: 'owner', scopeRef: 'su-recheck' }],
+      { workspaceId: WS, audiences: 'all' },
+      db.sql,
+    );
+    expect(folded.find((f) => f.key === base.key)?.recheck).toEqual(recheck);
+    expect(renderFactsFold([written], Date.parse(written.updatedAt) + 2 * 86_400_000)).toContain(
+      `RECHECK: ${recheck.probe} — FALSIFIED IF: ${recheck.falsifier}`,
+    );
+
+    await assertFact({ ...base, body: 'corrected without a new recheck observation' }, db.sql);
+    const history = await factVersions(
+      { scope: 'owner', scopeRef: 'su-recheck', key: base.key, workspaceId: WS },
+      db.sql,
+    );
+    expect(history.map((f) => f.recheck ?? null)).toEqual([null, recheck]);
+  });
+
+  it('surfaces the pair through the cross-scope convention read', async () => {
+    await assertFact(
+      {
+        scope: 'workspace',
+        key: 'recheck-convention',
+        body: 'apply migrations through the runner',
+        kind: 'convention',
+        recheck,
+        createdBy: 'su-int',
+        workspaceId: WS,
+      },
+      db.sql,
+    );
+    expect((await listConventionFacts({ workspaceId: WS }, db.sql))[0].recheck).toEqual(recheck);
+  });
+
+  it('the store refuses malformed pairs before SQL', async () => {
+    await expect(assertFact({ ...base, recheck: { probe: 'only one half' } as never }, db.sql)).rejects.toThrow(
+      /exactly probe and falsifier/,
+    );
+    await expect(assertFact({ ...base, recheck: { probe: 'x'.repeat(501), falsifier: 'no' } }, db.sql)).rejects.toThrow(
+      /500-character cap/,
+    );
+  });
+
+  it('the DB CHECK rejects half-contracts and extra keys written around the store', async () => {
+    const insertRaw = (key: string, value: Record<string, unknown>) => db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, recheck)
+      VALUES
+        (${WS}, 'owner', 'su-db-recheck', ${key}, 'raw write', 'su-int', now() + interval '1 day',
+         ${JSON.stringify(value)}::text::jsonb)`;
+    await expect(insertRaw('half', { probe: 'run it' })).rejects.toThrow();
+    await expect(insertRaw('extra', { ...recheck, surprise: true })).rejects.toThrow();
+    await expect(insertRaw('too-long', { probe: 'x'.repeat(501), falsifier: 'no' })).rejects.toThrow();
+    await expect(insertRaw('valid', recheck)).resolves.toBeDefined();
   });
 });
 
