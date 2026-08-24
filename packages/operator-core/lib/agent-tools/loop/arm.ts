@@ -754,10 +754,10 @@ export default defineTool({
     let livePush: LivePushChannels = { status: 'unknown' };
     if (args.blockedOn && !args.blockedOn.event) {
       try {
-        const awaits = await listWakeAwaitsForSubscriber(ownerId);
+        const { totalCount, sample } = await listWakeAwaitsForSubscriber(ownerId);
         livePush =
-          awaits.length > 0
-            ? { status: 'found', count: awaits.length, sample: awaits.slice(0, 2).map((a) => a.eventKey) }
+          totalCount > 0
+            ? { status: 'found', count: totalCount, sample: sample.slice(0, 2).map((a) => a.eventKey) }
             : { status: 'none' };
       } catch (e) {
         console.warn(

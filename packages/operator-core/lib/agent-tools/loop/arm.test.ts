@@ -72,7 +72,7 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: vi.fn(async 
 // EI-19447204017443244: the arm-time live-wake-await lookup behind the cap message.
 // Defaults to EMPTY so every pre-existing handler test keeps its exact prior wording.
 vi.mock('../../events/await/store', () => ({
-  listWakeAwaitsForSubscriber: vi.fn(async () => [] as Array<{ eventKey: string }>),
+  listWakeAwaitsForSubscriber: vi.fn(async () => ({ totalCount: 0, sample: [] })),
 }));
 vi.mock('../../events/await/wake-reachability', () => ({
   probeWakeReachability: vi.fn(async () => ({
@@ -174,7 +174,7 @@ beforeEach(() => {
   // EI-18221784742583615: default no prior loop ⇒ no overwrite note (every existing test).
   priorLoopM.mockResolvedValue(null as never);
   // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
-  wakeAwaitsM.mockResolvedValue([] as never);
+  wakeAwaitsM.mockResolvedValue({ totalCount: 0, sample: [] } as never);
   homePotM.mockResolvedValue('papercusp');
   briefM.mockResolvedValue(null);
   potHomeM.mockReturnValue('papercusp');
@@ -1137,9 +1137,10 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
     // case below differs from the default (empty ⇒ 'none') in exactly ONE input.
     describe('live wake-await lookup wiring (EI-19447204017443244)', () => {
       it('QUERIES the caller and threads a HIT into the cap message', async () => {
-        wakeAwaitsM.mockResolvedValue([
-          { eventKey: 'predicate:44071', expiresTs: null, rootId: null },
-        ] as never);
+        wakeAwaitsM.mockResolvedValue({
+          totalCount: 1,
+          sample: [{ eventKey: 'predicate:44071', expiresTs: null, rootId: null }],
+        } as never);
         const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'waiting on a deploy' } }));
         // Queried for the ARMING owner — a lookup against anyone else answers the wrong question.
         expect(wakeAwaitsM).toHaveBeenCalledWith('su-caller-own-id');
