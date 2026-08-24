@@ -27,10 +27,18 @@ import { registerOverrideConcern, type OverrideEntry } from './config-overrides/
 import { papercuspPath } from './papercusp-root';
 import {
   AGENT_BACKENDS,
+  BULK_RESOLVER_CARRY_MODES,
+  BULK_RESOLVER_PROFILE_KINDS,
+  MODEL_EFFORT_LEVELS,
   SURFACE_KEYS,
+  defaultBulkResolverLaunchProfiles,
+  isLaunchAccountValue,
   isValidModelSpec,
   clampCompactionLimitForTier,
   type AgentBackend,
+  type BulkResolverLaunchProfile,
+  type BulkResolverLaunchProfiles,
+  type BulkResolverProfileKind,
   type ModelTier,
   type SurfaceKey,
 } from './agent-config-constants';
@@ -41,7 +49,14 @@ import {
 // here for backward compat — existing server callers still `import … from
 // './agent-config'`.
 export { AGENT_BACKENDS, SURFACE_KEYS };
-export type { AgentBackend, ModelTier, SurfaceKey };
+export type {
+  AgentBackend,
+  BulkResolverLaunchProfile,
+  BulkResolverLaunchProfiles,
+  BulkResolverProfileKind,
+  ModelTier,
+  SurfaceKey,
+};
 
 export interface AgentConfig {
   /** Which backend to drive. 'auto' lets resolveBackend infer from the
@@ -93,6 +108,10 @@ export interface AgentConfig {
       `$TERMINAL`, then use Papercusp's existing desktop-aware auto-detection.
       Stored per workspace; never changes another installation's default. */
   terminal?: string;
+  /** Separate next-run defaults for the Inbox and Plans bulk resolvers.
+      Optional only for legacy stored rows/older clients; `readAgentConfig`
+      always returns both normalized profiles. */
+  resolverProfiles?: BulkResolverLaunchProfiles;
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -111,11 +130,12 @@ const DEFAULT_CONFIG: AgentConfig = {
   tiers: [],
   tierCeilings: {},
   terminal: '',
+  resolverProfiles: defaultBulkResolverLaunchProfiles(),
 };
 
 export async function readAgentConfig(): Promise<AgentConfig> {
   const raw = await readOperatorState<Partial<AgentConfig>>('operator_agent_config');
-  if (!raw) return { ...DEFAULT_CONFIG };
+  if (!raw) return { ...DEFAULT_CONFIG, resolverProfiles: defaultBulkResolverLaunchProfiles() };
   return {
     backend: validBackend(raw.backend) ?? DEFAULT_CONFIG.backend,
     cmd: typeof raw.cmd === 'string' ? raw.cmd : '',
@@ -133,7 +153,107 @@ export async function readAgentConfig(): Promise<AgentConfig> {
     tiers: parseTiers(raw.tiers),
     tierCeilings: parseTierCeilings(raw.tierCeilings, raw.tiers),
     terminal: parseTerminalEmulator(raw.terminal),
+    resolverProfiles: parseBulkResolverLaunchProfiles(raw.resolverProfiles),
   };
+}
+
+/** Normalize one stored resolver profile without letting one malformed field
+ * erase the other saved defaults. Reads are deliberately lenient; the POST
+ * route calls `bulkResolverLaunchProfilesProblem` first and stays strict. */
+function parseBulkResolverLaunchProfile(raw: unknown, fallback: BulkResolverLaunchProfile): BulkResolverLaunchProfile {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...fallback };
+  const value = raw as Record<string, unknown>;
+  const rawModel = value.model;
+  const model =
+    rawModel === null
+      ? null
+      : typeof rawModel === 'string' && rawModel.trim() && rawModel.trim().length <= 120
+        ? rawModel.trim()
+        : fallback.model;
+  const rawEffort = value.effort;
+  const effort =
+    rawEffort === null
+      ? null
+      : typeof rawEffort === 'string' &&
+          (MODEL_EFFORT_LEVELS as readonly string[]).includes(rawEffort.trim().toLowerCase())
+        ? (rawEffort.trim().toLowerCase() as BulkResolverLaunchProfile['effort'])
+        : fallback.effort;
+  const rawAccount = value.account;
+  const account =
+    typeof rawAccount === 'string' && isLaunchAccountValue(rawAccount.trim()) ? rawAccount.trim() : fallback.account;
+  const carry = (BULK_RESOLVER_CARRY_MODES as readonly unknown[]).includes(value.carry)
+    ? (value.carry as BulkResolverLaunchProfile['carry'])
+    : fallback.carry;
+  return { model, effort: model ? effort : null, account, carry };
+}
+
+/**
+ * Normalize the additive settings document. `fallback` makes a partial update
+ * preserve the other pane instead of resetting it to defaults; ordinary reads
+ * omit it and inherit the backward-compatible pre-feature behavior.
+ */
+export function parseBulkResolverLaunchProfiles(
+  raw: unknown,
+  fallback: BulkResolverLaunchProfiles = defaultBulkResolverLaunchProfiles(),
+): BulkResolverLaunchProfiles {
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  return Object.fromEntries(
+    BULK_RESOLVER_PROFILE_KINDS.map((kind) => [kind, parseBulkResolverLaunchProfile(value[kind], fallback[kind])]),
+  ) as BulkResolverLaunchProfiles;
+}
+
+/** Strict write-side validation for the additive resolver-profile document. */
+export function bulkResolverLaunchProfilesProblem(
+  raw: unknown,
+  fallback: BulkResolverLaunchProfiles = defaultBulkResolverLaunchProfiles(),
+): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'must be an object keyed by run kind';
+  const value = raw as Record<string, unknown>;
+  const unknownKinds = Object.keys(value).filter(
+    (kind) => !(BULK_RESOLVER_PROFILE_KINDS as readonly string[]).includes(kind),
+  );
+  if (unknownKinds.length > 0) return `unknown run kind ${unknownKinds[0]}`;
+  const allowedFields = new Set(['model', 'effort', 'account', 'carry']);
+  for (const kind of BULK_RESOLVER_PROFILE_KINDS) {
+    if (!(kind in value)) continue;
+    const rawProfile = value[kind];
+    if (!rawProfile || typeof rawProfile !== 'object' || Array.isArray(rawProfile)) {
+      return `${kind} must be an object`;
+    }
+    const profile = rawProfile as Record<string, unknown>;
+    const unknownField = Object.keys(profile).find((field) => !allowedFields.has(field));
+    if (unknownField) return `${kind}.${unknownField} is not a resolver launch setting`;
+    if (
+      'model' in profile &&
+      profile.model !== null &&
+      (typeof profile.model !== 'string' || !profile.model.trim() || profile.model.trim().length > 120)
+    ) {
+      return `${kind}.model must be null or a non-empty model id up to 120 characters`;
+    }
+    if (
+      'effort' in profile &&
+      profile.effort !== null &&
+      (typeof profile.effort !== 'string' ||
+        !(MODEL_EFFORT_LEVELS as readonly string[]).includes(profile.effort.trim().toLowerCase()))
+    ) {
+      return `${kind}.effort must be null or one of ${MODEL_EFFORT_LEVELS.join('|')}`;
+    }
+    if (
+      'account' in profile &&
+      (typeof profile.account !== 'string' || !isLaunchAccountValue(profile.account.trim()))
+    ) {
+      return `${kind}.account is not a valid launch account value`;
+    }
+    if ('carry' in profile && !(BULK_RESOLVER_CARRY_MODES as readonly unknown[]).includes(profile.carry)) {
+      return `${kind}.carry must be warm or cold`;
+    }
+    const effectiveModel = 'model' in profile ? profile.model : fallback[kind].model;
+    const effectiveEffort = 'effort' in profile ? profile.effort : fallback[kind].effort;
+    if (effectiveEffort !== null && effectiveEffort !== undefined && effectiveModel === null) {
+      return `${kind}.effort requires an explicit model`;
+    }
+  }
+  return null;
 }
 
 /** A terminal preference is a binary name, not a shell command. Keeping the
@@ -170,9 +290,7 @@ export function parseTiers(raw: unknown): ModelTier[] {
     // (D-001 — the ceiling IS the model-derived default).
     const rawWindow = (entry as ModelTier).contextWindow;
     const contextWindow =
-      typeof rawWindow === 'number' && Number.isFinite(rawWindow) && rawWindow > 0
-        ? Math.floor(rawWindow)
-        : undefined;
+      typeof rawWindow === 'number' && Number.isFinite(rawWindow) && rawWindow > 0 ? Math.floor(rawWindow) : undefined;
     const rawLimit = (entry as ModelTier).compactionLimit;
     const compactionLimit =
       typeof rawLimit === 'number' && Number.isFinite(rawLimit)

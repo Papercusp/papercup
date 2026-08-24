@@ -4,13 +4,17 @@ import {
   readAgentConfig,
   parseSurfaceModels,
   parseBackends,
+  parseBulkResolverLaunchProfiles,
   parseRoleBackends,
   parseTiers,
   parseTierCeilings,
   parseTerminalEmulator,
+  bulkResolverLaunchProfilesProblem,
   agentCmdBootWarning,
   type AgentConfig,
 } from './agent-config';
+import { BULK_RESOLVER_PROFILE_KINDS } from './agent-config-constants';
+import { BULK_RUN_KINDS } from './attention/bulk-run-store';
 
 // Mock the PG-backed operator-state read so readAgentConfig exercises the
 // no-row fallback without touching a database.
@@ -33,11 +37,53 @@ describe('readAgentConfig default backend (no stored row)', () => {
     const c = await readAgentConfig();
     expect(c.backend).toBe('claude-code');
     expect(effectiveBackend(c)).toBe('claude-code');
+    expect(c.resolverProfiles).toEqual({
+      'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
+      'plan-cleanup': { model: null, effort: null, account: 'default', carry: 'warm' },
+    });
   });
 
   it('an invalid stored backend falls back to the claude-code default', async () => {
     readOperatorStateMock.mockResolvedValueOnce({ backend: 'gemini' });
     expect((await readAgentConfig()).backend).toBe('claude-code');
+  });
+});
+
+describe('bulk resolver launch profiles', () => {
+  it('covers every generalized bulk-run kind', () => {
+    expect([...BULK_RESOLVER_PROFILE_KINDS]).toEqual([...BULK_RUN_KINDS]);
+  });
+
+  it('normalizes separate Inbox and Plans defaults with canonical launch values', () => {
+    expect(
+      parseBulkResolverLaunchProfiles({
+        'inbox-resolve': { model: ' sonnet ', effort: 'HIGH', account: 'auto', carry: 'cold' },
+        'plan-cleanup': { model: 'openrouter/anthropic/claude', effort: null, account: 'pool:2', carry: 'warm' },
+      }),
+    ).toEqual({
+      'inbox-resolve': { model: 'sonnet', effort: 'high', account: 'auto', carry: 'cold' },
+      'plan-cleanup': { model: 'openrouter/anthropic/claude', effort: null, account: 'pool:2', carry: 'warm' },
+    });
+  });
+
+  it('preserves the untouched pane when a partial document is merged', () => {
+    const current = parseBulkResolverLaunchProfiles({
+      'inbox-resolve': { model: 'sonnet', effort: 'high', account: 'auto', carry: 'warm' },
+      'plan-cleanup': { model: 'opus', effort: 'xhigh', account: 'default', carry: 'cold' },
+    });
+    expect(parseBulkResolverLaunchProfiles({ 'inbox-resolve': { account: 'pool-a' } }, current)).toEqual({
+      'inbox-resolve': { model: 'sonnet', effort: 'high', account: 'pool-a', carry: 'warm' },
+      'plan-cleanup': { model: 'opus', effort: 'xhigh', account: 'default', carry: 'cold' },
+    });
+  });
+
+  it('reports strict write problems instead of silently dropping them', () => {
+    expect(bulkResolverLaunchProfilesProblem({ nope: {} })).toMatch(/unknown run kind/);
+    expect(bulkResolverLaunchProfilesProblem({ 'inbox-resolve': { account: 'has spaces' } })).toMatch(/account/);
+    expect(bulkResolverLaunchProfilesProblem({ 'inbox-resolve': { effort: 'high' } })).toMatch(
+      /requires an explicit model/,
+    );
+    expect(bulkResolverLaunchProfilesProblem({ 'plan-cleanup': { carry: 'tepid' } })).toMatch(/warm or cold/);
   });
 });
 
@@ -210,19 +256,25 @@ describe('parseTiers compactionLimit (context-trimming-tiers D-001/D-002)', () =
   });
 
   it('preserves a backend-catalog window and clamps against that real window', () => {
-    expect(parseTiers([{
-      name: 'ox-alpha',
-      spec: 'openrouter/stealth/ox-alpha:max',
-      backend: 'omp',
-      contextWindow: 1_048_576,
-      compactionLimit: 400_000,
-    }])).toEqual([{
-      name: 'ox-alpha',
-      spec: 'openrouter/stealth/ox-alpha:max',
-      backend: 'omp',
-      contextWindow: 1_048_576,
-      compactionLimit: 400_000,
-    }]);
+    expect(
+      parseTiers([
+        {
+          name: 'ox-alpha',
+          spec: 'openrouter/stealth/ox-alpha:max',
+          backend: 'omp',
+          contextWindow: 1_048_576,
+          compactionLimit: 400_000,
+        },
+      ]),
+    ).toEqual([
+      {
+        name: 'ox-alpha',
+        spec: 'openrouter/stealth/ox-alpha:max',
+        backend: 'omp',
+        contextWindow: 1_048_576,
+        compactionLimit: 400_000,
+      },
+    ]);
   });
 });
 
