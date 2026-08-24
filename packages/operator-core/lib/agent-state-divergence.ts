@@ -207,6 +207,16 @@ export function isSuccessStatus(status: string | null | undefined): boolean {
  */
 export const CONVERGENCE_SETTLE_MS = 2 * 60_000;
 
+/** Existing fleet-registry evidence that a launch-shaped call committed work. */
+export interface LaunchOutcomeEvidence {
+  fleet: string;
+  transactionId: string;
+  state: string;
+  openedMemberIds: readonly string[];
+  verifiedMemberIds: readonly string[];
+  failedOwnerIds: readonly string[];
+}
+
 /** One `tool_invocations` row, reduced to the fields a verdict can rest on. */
 export interface DivergenceCall {
   id: number;
@@ -227,6 +237,14 @@ export interface DivergenceCall {
   /** Raw args; digested internally. Absent is fine — the retry leg then cannot
    *  fire for that call, which is reported, not guessed at. */
   args?: unknown;
+  /** Hydrated only when telemetry matches the fleet's persisted launch transaction. */
+  launchOutcome?: LaunchOutcomeEvidence;
+}
+
+/** A launch is committed when at least one member was opened or verified. */
+export function hasCommittedLaunchOutcome(call: Pick<DivergenceCall, 'toolName' | 'launchOutcome'>): boolean {
+  if (call.toolName !== 'fleet:launch-on-plan' || !call.launchOutcome) return false;
+  return call.launchOutcome.openedMemberIds.length > 0 || call.launchOutcome.verifiedMemberIds.length > 0;
 }
 
 /** The namespace half of a `group:verb` tool name; '' when unnamespaced. */
@@ -365,8 +383,12 @@ export interface DivergenceCoverage {
    * Buckets that COULD have been compared before the terminal filter and could
    * not after. This is the suppression rate — the number that says how much of
    * the detector's old output was unactionable noise about finished work.
-   */
+  */
   bucketsCollapsedByTerminal: number;
+  /** Fleet launch calls whose telemetry matched a persisted launch transaction. */
+  launchOutcomeCalls: number;
+  /** Failure-shaped fleet launch calls reconciled as committed success boundaries. */
+  launchFailuresReconciled: number;
 }
 
 export interface DivergenceReport {
@@ -631,6 +653,8 @@ export function detectIntentActionDivergence(
   let thrashRuns = 0;
   let convergedRuns = 0;
   let unsettledRuns = 0;
+  let launchOutcomeCalls = 0;
+  let launchFailuresReconciled = 0;
   for (const owned of byOwner.values()) {
     // Calls of ONE tool, in time order — SUCCESSES INCLUDED. Grouping by tool
     // before running the window is what makes "the same call keeps failing"
@@ -645,14 +669,21 @@ export function detectIntentActionDivergence(
     const callsByTool = new Map<string, DivergenceCall[]>();
     for (const c of owned) {
       const isFailure = isFailureStatus(c.status);
+      const committedLaunch = hasCommittedLaunchOutcome(c);
+      if (c.launchOutcome) launchOutcomeCalls += 1;
       if (isFailure) failuresSeen += 1;
+      if (isFailure && committedLaunch) launchFailuresReconciled += 1;
       // A status that is neither a known failure nor a known success is NEUTRAL:
       // it neither extends a run nor ends one. Letting an unknown status close a
       // run would manufacture convergence out of a gap in the input.
       if (!isFailure && !isSuccessStatus(c.status)) continue;
+      // A failure-shaped launch that opened a member is a committed action, not
+      // an unsuccessful retry. Normalize it to an explicit success boundary so
+      // later genuine failures start a fresh episode.
+      const timelineCall = committedLaunch ? { ...c, status: 'ok' } : c;
       const b = callsByTool.get(c.toolName);
-      if (b) b.push(c);
-      else callsByTool.set(c.toolName, [c]);
+      if (b) b.push(timelineCall);
+      else callsByTool.set(c.toolName, [timelineCall]);
     }
 
     for (const [toolName, timeline] of callsByTool) {
@@ -793,6 +824,8 @@ export function detectIntentActionDivergence(
     terminalFilterApplied,
     terminalGoalCallsExcluded,
     bucketsCollapsedByTerminal,
+    launchOutcomeCalls,
+    launchFailuresReconciled,
   };
 
   return {
