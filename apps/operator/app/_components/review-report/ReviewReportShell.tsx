@@ -20,6 +20,11 @@
  * hundreds of row ids into the URL is the exact anti-pattern the guide bans.
  * The takeover OPEN state — the user-meaningful bit — IS in the URL, owned by
  * the consumer's param.
+ *
+ * Mount it keyed by the RUN (`<ReviewReportShell key={runId} …>`, the
+ * PlanDashboard `key={planSlug}` pattern) so a fresh run resets selection and
+ * collapse state; within one run, rows flipping pending→applied are handled
+ * live (selection self-intersects with what is still pending).
  */
 import { useMemo, useState, type ReactNode } from 'react';
 import './review-report.css';

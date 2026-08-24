@@ -10,6 +10,7 @@ import {
   buildAnthropicParams,
   createAnthropicPort,
   parseAnthropicStream,
+  withCost,
 } from './anthropic-port';
 import { runAgentLoop, type LoopTool } from './loop';
 import { textMessage, type ModelStreamEvent } from './model-port';
@@ -208,11 +209,96 @@ describe('createAnthropicPort + runAgentLoop end-to-end (fake wire)', () => {
     };
     expect(done.stopReason).toBe('complete');
     expect(done.finalText).toBe('answer');
-    expect(done.usage).toEqual({ inputTokens: 30, outputTokens: 5 });
+    // P-009: the port stamps per-step costUsd (priced model) and the loop
+    // sums it — 10in+3out then 20in+2out at $3/$15 per MTok.
+    expect(done.usage).toEqual({
+      inputTokens: 30,
+      outputTokens: 5,
+      costUsd: expect.closeTo(0.000165, 9) as unknown as number,
+    });
     // the second wire call carried the tool_result back on the wire shape
     const m2 = sentParams[1].messages as Array<{ role: string; content: Array<{ type: string }> }>;
     expect(m2.at(-1)!.content[0].type).toBe('tool_result');
     // the request carried the tool defs
     expect(sentParams[0].tools).toEqual([{ name: 'echo', input_schema: { type: 'object' } }]);
+  });
+});
+
+// ── P-009: usage → cost stamping ───────────────────────────────────────────
+
+describe('withCost', () => {
+  const stop = (usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  }): Extract<ModelStreamEvent, { type: 'stop' }> => ({
+    type: 'stop',
+    reason: 'end_turn',
+    ...(usage ? { usage } : {}),
+  });
+
+  it('stamps costUsd for a priced model ($3/$15 per MTok for sonnet 4.6)', () => {
+    const out = withCost(
+      'claude-sonnet-4-6',
+      stop({ inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+    );
+    expect(out.usage?.costUsd).toBeCloseTo(18.0, 6);
+  });
+
+  it('prices the cache tiers with the documented defaults (0.1× / 1.25×)', () => {
+    const out = withCost(
+      'claude-sonnet-4-6',
+      stop({
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 1_000_000,
+        cacheCreationTokens: 1_000_000,
+      }),
+    );
+    expect(out.usage?.costUsd).toBeCloseTo(0.3 + 3.75, 6);
+  });
+
+  it('leaves an unknown model un-stamped — never a fabricated $0', () => {
+    const out = withCost('totally-unknown-model-x', stop({ inputTokens: 5, outputTokens: 5 }));
+    expect(out.usage).toBeDefined();
+    expect(out.usage?.costUsd).toBeUndefined();
+  });
+
+  it('passes a usage-less stop through untouched', () => {
+    const ev = stop();
+    expect(withCost('claude-sonnet-4-6', ev)).toBe(ev);
+  });
+
+  it('the port stamps cost on the live stream path (fake wire)', async () => {
+    const port = createAnthropicPort({
+      rawStream: () =>
+        (async function* () {
+          yield { type: 'message_start', message: { usage: { input_tokens: 1_000_000 } } };
+          yield {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'hi' },
+          };
+          yield {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn' },
+            usage: { output_tokens: 1_000_000 },
+          };
+          yield { type: 'message_stop' };
+        })(),
+    });
+    const events: ModelStreamEvent[] = [];
+    for await (const ev of port.stream({
+      model: 'claude-sonnet-4-6',
+      messages: [textMessage('user', 'hi')],
+    })) {
+      events.push(ev);
+    }
+    const stopEv = events.find((e) => e.type === 'stop') as Extract<
+      ModelStreamEvent,
+      { type: 'stop' }
+    >;
+    expect(stopEv.usage?.costUsd).toBeCloseTo(18.0, 6);
   });
 });

@@ -79,11 +79,15 @@ function sentinelFromDenylist(): string {
 }
 
 function have(bin: string): boolean {
-  return spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status === 0;
+  return spawnSync('sh', ['-c', `command -v ${bin}`], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
+  }).status === 0;
 }
 
 function runGate(args: string[]) {
-  const r = spawnSync('python3', [GATE, ...args], { encoding: 'utf8', env: GATE_ENV });
+  const r = spawnSync('python3', [GATE, ...args], { encoding: 'utf8', env: GATE_ENV, timeout: 60_000, killSignal: 'SIGKILL' });
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -113,10 +117,12 @@ describe('release identity gate: .tar.zst is read MEMBER-WISE like every other t
       execFileSync(
         'tar',
         ['-c', '-f', plain, '--owner=markeruname', '--group=markergname', '-C', stage, '.'],
-        { stdio: 'ignore' },
+        { stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' },
       );
       execFileSync('zstd', ['-q', '-f', plain, '-o', path.join(dir, 'a.tar.zst')], {
         stdio: 'ignore',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
       });
       const probe = `
 import importlib.util, os
@@ -127,7 +133,7 @@ aud._expand_archive(os.path.join(${JSON.stringify(dir)}, "a.tar.zst"), d)
 p = os.path.join(d, "__member_names__.txt")
 print("MANIFEST:", open(p).read().replace("\\n", "|") if os.path.exists(p) else "<NONE>")
 `;
-      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV });
+      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV, timeout: 60_000, killSignal: 'SIGKILL' });
       expect(r.status, `probe failed: ${r.stderr}`).toBe(0);
       const manifest = r.stdout;
       expect(manifest, '.tar.zst wrote NO manifest — WI-39462 regression').not.toMatch(/<NONE>/);
@@ -166,9 +172,15 @@ print("MANIFEST:", open(p).read().replace("\\n", "|") if os.path.exists(p) else 
       writeFileSync(path.join(stage, 'readme.txt'), 'clean\n');
       symlinkSync('/marker-link-target/x', path.join(stage, 'link'));
       const plain = path.join(dir, 'a.tar');
-      execFileSync('tar', ['-c', '-f', plain, '-C', stage, '.'], { stdio: 'ignore' });
+      execFileSync('tar', ['-c', '-f', plain, '-C', stage, '.'], {
+        stdio: 'ignore',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
       execFileSync('zstd', ['-q', '-f', plain, '-o', path.join(dir, 'a.tar.zst')], {
         stdio: 'ignore',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
       });
       // Force the pre-3.14 world: no zstd codec, so is_tarfile says False and the
       // generic tar branch cannot rescue a missing .tar.zst branch.
@@ -182,7 +194,7 @@ aud._expand_archive(os.path.join(${JSON.stringify(dir)}, "a.tar.zst"), d)
 p = os.path.join(d, "__member_names__.txt")
 print("MANIFEST:", open(p).read().replace("\\n", "|") if os.path.exists(p) else "<NONE>")
 `;
-      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV });
+      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV, timeout: 60_000, killSignal: 'SIGKILL' });
       expect(r.status, `probe failed: ${r.stderr}`).toBe(0);
       expect(
         r.stdout,
@@ -214,10 +226,12 @@ print("MANIFEST:", open(p).read().replace("\\n", "|") if os.path.exists(p) else 
       execFileSync(
         'tar',
         ['-c', '-f', plain, '--owner=0', '--group=0', '--numeric-owner', '-C', stage, '.'],
-        { stdio: 'ignore' },
+        { stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' },
       );
       execFileSync('zstd', ['-q', '-f', plain, '-o', path.join(dir, 'a.tar.zst')], {
         stdio: 'ignore',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
       });
 
       // Drive _expand_archive directly for BOTH routings — the whole defect was a
@@ -237,7 +251,7 @@ for name in ("a.tar", "a.tar.zst"):
                  "carries": (body is not None and ${JSON.stringify(`/home/${sentinel}`)} in body)}
 print(json.dumps(out))
 `;
-      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV });
+      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV, timeout: 60_000, killSignal: 'SIGKILL' });
       expect(r.status, `probe failed: ${r.stderr}`).toBe(0);
       const got = JSON.parse(r.stdout.trim().split('\n').pop()!);
 
@@ -277,7 +291,7 @@ aud = importlib.util.module_from_spec(spec); spec.loader.exec_module(aud)
 print("RESULT:", aud._expand_archive(os.path.join(${JSON.stringify(dir)}, "bad.tar.zst"),
                                      os.path.join(${JSON.stringify(dir)}, "dest")))
 `;
-      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV });
+      const r = spawnSync('python3', ['-c', probe], { encoding: 'utf8', env: GATE_ENV, timeout: 60_000, killSignal: 'SIGKILL' });
       expect(r.stdout).toMatch(/RESULT: False/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -304,15 +318,23 @@ describe('release identity gate: symlink TARGETS are scanned (WI-39462)', () => 
       execFileSync(
         'tar',
         ['-c', '-f', plain, '--owner=0', '--group=0', '--numeric-owner', '-C', stage, '.'],
-        { stdio: 'ignore' },
+        { stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' },
       );
-      execFileSync('zstd', ['-q', '-f', plain, '-o', bundle], { stdio: 'ignore' });
+      execFileSync('zstd', ['-q', '-f', plain, '-o', bundle], {
+        stdio: 'ignore',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
       rmSync(plain, { force: true });
 
       // PRECONDITION: the target must really be hidden from a raw grep, or this
       // fixture would pass with the fix backed out (the trap the WI-39458 probe
       // caught: a payload small enough that the container stored it uncompressed).
-      const raw = spawnSync('grep', ['-acF', `/home/${sentinel}`, bundle], { encoding: 'utf8' });
+      const raw = spawnSync('grep', ['-acF', `/home/${sentinel}`, bundle], {
+        encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
       expect(raw.stdout.trim(), 'link target was not actually compressed away').toBe('0');
 
       // The DEFAULT (positional) mode — this is the leg stage-source-tree.sh runs

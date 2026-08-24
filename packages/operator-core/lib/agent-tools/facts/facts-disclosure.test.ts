@@ -35,7 +35,9 @@ beforeAll(() => {
     cell: 'git.pipelinePosition',
     owner: 'test',
     headline: 'positions.deployed',
-    falsifier: { field: 'serving.startedSinceCodeChange', measurement: 'test probe', kills: 'test' },
+    // Event-signalled ⇒ `null` is the required answer (D-016): no resolver payload to
+    // read a code out of, so a non-null assessment would be refused.
+    assessment: null,
     nullable: false,
     callerRelativity: { kind: 'parameter', param: 'path' },
     provenance: { obtainedBy: 'test', liveExercised: true, evidence: 'test' },

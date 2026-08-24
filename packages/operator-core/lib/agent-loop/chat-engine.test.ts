@@ -10,12 +10,18 @@ import type { ModelPort, ModelStreamEvent } from './model-port';
 import type { ApprovalPort, LoopTool } from './loop';
 import {
   clampForWire,
+  DEFAULT_LOOP_CHAT_MODEL,
   runLoopChatTurn,
   transcriptToMessages,
   WIRE_RESULT_MAX_CHARS,
   type LoopChatSink,
 } from './chat-engine';
 import type { TranscriptTurn } from '../agent-chats-data';
+import type {
+  LoopSessionRow,
+  LoopSessionStore,
+  SaveLoopSessionTurnArgs,
+} from './session-store';
 
 function scriptedPort(scripts: ModelStreamEvent[][]) {
   const requests: Parameters<ModelPort['stream']>[0][] = [];
@@ -246,5 +252,192 @@ describe('runLoopChatTurn', () => {
     expect(events.some((e) => e.name === 'error')).toBe(true);
     // The loop still reports done('error') after an in-stream error.
     expect(result.stopReason).toBe('error');
+  });
+});
+
+// ── P-009: session resume + persistence ────────────────────────────────────
+
+function fakeSessions(row: LoopSessionRow | null) {
+  const saves: SaveLoopSessionTurnArgs[] = [];
+  const store: LoopSessionStore = {
+    load: async () => row,
+    saveTurn: async (a) => {
+      saves.push(a);
+    },
+  };
+  return { store, saves };
+}
+
+function mkRow(over: Partial<LoopSessionRow> = {}): LoopSessionRow {
+  return {
+    workspaceId: 'ws',
+    chatId: 'c9',
+    messages: [],
+    summary: null,
+    compactedCount: 0,
+    transcriptTurns: 0,
+    model: null,
+    turnCount: 0,
+    totals: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: 0,
+      unpricedTurns: 0,
+    },
+    ...over,
+  };
+}
+
+describe('P-009 session resume + persist', () => {
+  const storedMessages = [
+    { role: 'user' as const, content: [{ type: 'text' as const, text: 'q1' }] },
+    {
+      role: 'assistant' as const,
+      content: [{ type: 'tool_call' as const, id: 'c1', name: 'do_thing', input: { x: 1 } }],
+    },
+    {
+      role: 'user' as const,
+      content: [{ type: 'tool_result' as const, toolCallId: 'c1', content: 'ok' }],
+    },
+    { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'a1' }] },
+  ];
+  // Transcript the TEXT projection of those turns produced: 2 text turns,
+  // then the freshly-appended user turn.
+  const transcript = [turn('user', 'q1'), turn('assistant', 'a1'), turn('user', 'q2')];
+
+  it('resumes from the stored working set (tool detail replayed) + summary in system', async () => {
+    const { store, saves } = fakeSessions(
+      mkRow({ messages: storedMessages, summary: 'earlier stuff', compactedCount: 3, transcriptTurns: 2 }),
+    );
+    const { port, requests } = scriptedPort([
+      textStop('a2', { inputTokens: 10, outputTokens: 5 }),
+    ]);
+    const { sink } = recordingSink();
+    const result = await runLoopChatTurn({
+      chatId: 'c9',
+      workspaceId: 'ws',
+      system: 'SYS',
+      transcript,
+      sink,
+      port,
+      sessions: store,
+    });
+    expect(result.errorMessage).toBeNull();
+    // The model saw the FULL stored history — tool parts included — plus the
+    // fresh user turn (not the lossy text rebuild).
+    expect(requests[0].messages).toEqual([
+      ...storedMessages,
+      { role: 'user', content: [{ type: 'text', text: 'q2' }] },
+    ]);
+    expect(requests[0].system).toContain('SYS');
+    expect(requests[0].system).toContain('## Earlier conversation (compacted summary)');
+    expect(requests[0].system).toContain('earlier stuff');
+    // Persisted: done snapshot, anchored one turn past the incoming transcript.
+    expect(saves.length).toBe(1);
+    const save = saves[0];
+    expect(save.transcriptTurns).toBe(transcript.length + 1);
+    expect(save.model).toBe(DEFAULT_LOOP_CHAT_MODEL);
+    expect(save.summary).toBe('earlier stuff');
+    expect(save.compactedCount).toBe(3);
+    expect(save.usage).toEqual({ inputTokens: 10, outputTokens: 5 });
+    expect(save.priced).toBe(false); // no costUsd on usage ⇒ unpriced turn
+    expect(save.messages).toEqual([
+      ...storedMessages,
+      { role: 'user', content: [{ type: 'text', text: 'q2' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },
+    ]);
+  });
+
+  it('falls back to the text rebuild when the anchor mismatches', async () => {
+    const { store, saves } = fakeSessions(
+      mkRow({ messages: storedMessages, transcriptTurns: 7 }), // stale anchor
+    );
+    const { port, requests } = scriptedPort([textStop('a2')]);
+    const { sink } = recordingSink();
+    await runLoopChatTurn({
+      chatId: 'c9',
+      workspaceId: 'ws',
+      system: 'SYS',
+      transcript,
+      sink,
+      port,
+      sessions: store,
+    });
+    expect(requests[0].messages).toEqual(transcriptToMessages(transcript));
+    expect(requests[0].system).toBe('SYS'); // no summary section
+    // The save re-anchors the session for the next turn.
+    expect(saves.length).toBe(1);
+    expect(saves[0].transcriptTurns).toBe(transcript.length + 1);
+  });
+
+  it('marks the turn priced when usage carries costUsd', async () => {
+    const { store, saves } = fakeSessions(null);
+    const { port } = scriptedPort([
+      [
+        { type: 'text_delta', text: 'hi' },
+        {
+          type: 'stop',
+          reason: 'end_turn',
+          usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.00105 },
+        },
+      ],
+    ]);
+    const { sink } = recordingSink();
+    const result = await runLoopChatTurn({
+      chatId: 'c9',
+      workspaceId: 'ws',
+      system: 'SYS',
+      transcript: [turn('user', 'q1')],
+      sink,
+      port,
+      sessions: store,
+    });
+    expect(result.costUsd).toBeCloseTo(0.00105, 8);
+    expect(saves[0].priced).toBe(true);
+    expect(saves[0].usage.costUsd).toBeCloseTo(0.00105, 8);
+  });
+
+  it('persists the session even when the stream errors (user turn is real)', async () => {
+    const { store, saves } = fakeSessions(null);
+    const { port } = scriptedPort([[{ type: 'error', message: 'boom' }]]);
+    const { sink } = recordingSink();
+    const result = await runLoopChatTurn({
+      chatId: 'c9',
+      workspaceId: 'ws',
+      system: 'SYS',
+      transcript: [turn('user', 'q1')],
+      sink,
+      port,
+      sessions: store,
+    });
+    expect(result.errorMessage).toBe('boom');
+    expect(saves.length).toBe(1);
+    expect(saves[0].messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+    ]);
+  });
+
+  it('a saveTurn failure never fails the completed turn', async () => {
+    const store: LoopSessionStore = {
+      load: async () => null,
+      saveTurn: async () => {
+        throw new Error('pg down');
+      },
+    };
+    const { port } = scriptedPort([textStop('fine')]);
+    const { sink } = recordingSink();
+    const result = await runLoopChatTurn({
+      chatId: 'c9',
+      workspaceId: 'ws',
+      system: 'SYS',
+      transcript: [turn('user', 'q1')],
+      sink,
+      port,
+      sessions: store,
+    });
+    expect(result.errorMessage).toBeNull();
+    expect(result.finalText).toBe('fine');
   });
 });

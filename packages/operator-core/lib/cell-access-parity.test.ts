@@ -94,11 +94,9 @@ const eventCell = (over: Partial<CellSpec> = {}): CellSpec => ({
   cell: 'test.wideCell',
   owner: OWNER_A,
   headline: 'some.headline',
-  falsifier: {
-    field: 'some.otherField',
-    measurement: 'an independent apparatus that shares no input with the headline',
-    kills: 'the headline being read as a health verdict when it is only a counter',
-  },
+  // Event-signalled ⇒ `null` is the required answer (D-016). See the note above on why
+  // these fixtures are deliberately event-kind rather than poll.
+  assessment: null,
   nullable: true,
   unknownHoist: 'someUnknown',
   callerRelativity: { kind: 'global' },

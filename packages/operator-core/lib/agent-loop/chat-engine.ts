@@ -168,7 +168,41 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
       workspaceId: opts.workspaceId,
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
-  const messages = transcriptToMessages(opts.transcript);
+  const model = opts.model ?? DEFAULT_LOOP_CHAT_MODEL;
+
+  // ── P-009 resume: prefer the stored ModelMessage working set ────────────
+  let stored: LoopSessionRow | null = null;
+  if (opts.sessions) {
+    try {
+      stored = await opts.sessions.load({ chatId: opts.chatId, workspaceId: opts.workspaceId });
+    } catch {
+      stored = null; // unreadable store ⇒ text rebuild (anchor self-heals later)
+    }
+  }
+  const lastTurn = opts.transcript[opts.transcript.length - 1];
+  const freshUserText =
+    lastTurn && lastTurn.role === 'user' ? (lastTurn.content ?? '').trim() : '';
+  // Freshness anchor: the stored row was saved against transcript length N
+  // (base + the assistant turn the route persisted); this call's transcript
+  // must be exactly N + 1 (the just-appended user turn). Anything else means
+  // another lane (legacy CLI-spawn) or a failed persist moved the chat —
+  // replaying the stored session would silently drop those turns, so fall
+  // back to the text rebuild instead.
+  const session =
+    stored && freshUserText && stored.transcriptTurns + 1 === opts.transcript.length
+      ? stored
+      : null;
+  const messages: ModelMessage[] = session
+    ? [
+        ...session.messages,
+        { role: 'user' as const, content: [{ type: 'text' as const, text: freshUserText }] },
+      ]
+    : transcriptToMessages(opts.transcript);
+  const priorSummary = session ? session.summary : null;
+  const priorCompactedCount = session ? session.compactedCount : 0;
+  const system = priorSummary
+    ? `${opts.system}\n\n## Earlier conversation (compacted summary)\n\n${priorSummary}`
+    : opts.system;
 
   const result: LoopChatTurnResult = {
     stopReason: null,
@@ -180,10 +214,13 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     stepCount: 0,
   };
 
+  let doneMessages: ModelMessage[] | null = null;
+  let doneUsage: ModelUsage | null = null;
+
   const loop = runAgentLoop({
     port,
-    model: opts.model ?? DEFAULT_LOOP_CHAT_MODEL,
-    system: opts.system,
+    model,
+    system,
     messages,
     ...(opts.tools ? { tools: opts.tools } : {}),
     stopWhen: [stepCountIs(opts.maxSteps ?? DEFAULT_LOOP_CHAT_MAX_STEPS)],
@@ -233,6 +270,8 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
           result.tokensOut = ev.usage.outputTokens;
           result.costUsd = ev.usage.costUsd ?? 0;
           result.stepCount = ev.steps.length;
+          doneMessages = ev.messages;
+          doneUsage = ev.usage;
           // Wire `done` = totals + finalText; the full messages snapshot is
           // NOT streamed (P-009 persists it — the pane re-reads the chat).
           opts.sink.event('done', {
@@ -255,6 +294,64 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     const message = e instanceof Error ? e.message : String(e);
     result.errorMessage = result.errorMessage ?? message;
     opts.sink.event('error', { type: 'error', message });
+  }
+
+  // ── P-009 persist: compact if over budget, then save the working set ────
+  // Runs for EVERY done (error stops included — the user turn is real even
+  // when the stream died) so the session never lags the transcript.
+  if (opts.sessions && doneMessages && doneUsage) {
+    try {
+      const compact = await maybeCompactSession({
+        messages: doneMessages,
+        priorSummary,
+        priorCompactedCount,
+        port,
+        model,
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+      });
+      let turnUsage: ModelUsage = doneUsage;
+      if (compact.summarizeUsage) {
+        const s = compact.summarizeUsage;
+        turnUsage = {
+          inputTokens: turnUsage.inputTokens + s.inputTokens,
+          outputTokens: turnUsage.outputTokens + s.outputTokens,
+          ...(turnUsage.cacheReadTokens !== undefined || s.cacheReadTokens !== undefined
+            ? { cacheReadTokens: (turnUsage.cacheReadTokens ?? 0) + (s.cacheReadTokens ?? 0) }
+            : {}),
+          ...(turnUsage.cacheCreationTokens !== undefined || s.cacheCreationTokens !== undefined
+            ? {
+                cacheCreationTokens:
+                  (turnUsage.cacheCreationTokens ?? 0) + (s.cacheCreationTokens ?? 0),
+              }
+            : {}),
+          ...(turnUsage.costUsd !== undefined || s.costUsd !== undefined
+            ? { costUsd: (turnUsage.costUsd ?? 0) + (s.costUsd ?? 0) }
+            : {}),
+        };
+        // The summarize call is real spend — surface it on the turn result
+        // too, so the route's cost-cap accounting sees it.
+        result.tokensIn += s.inputTokens;
+        result.tokensOut += s.outputTokens;
+        if (s.costUsd !== undefined) result.costUsd += s.costUsd;
+      }
+      await opts.sessions.saveTurn({
+        chatId: opts.chatId,
+        workspaceId: opts.workspaceId,
+        messages: compact.messages,
+        summary: compact.summary,
+        compactedCount: compact.compactedCount,
+        // The route persists ONE more turn (assistant or failure marker) on
+        // top of the transcript this call received — anchor to that length.
+        transcriptTurns: opts.transcript.length + 1,
+        model,
+        usage: turnUsage,
+        priced: turnUsage.costUsd !== undefined,
+      });
+    } catch {
+      // Degraded persistence: the anchor mismatch on the next load falls back
+      // to the text rebuild — never fail a completed turn over the store.
+    }
   }
 
   return result;

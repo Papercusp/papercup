@@ -72,11 +72,10 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
     cell: 'test.cell',
     owner: 'test',
     headline: 'positions.deployed',
-    falsifier: {
-      field: 'serving.startedSinceCodeChange',
-      measurement: 'process start time vs code mtime',
-      kills: '"deployed ✓" read as "the running process executes my code"',
-    },
+    // P-006/D-016 — a POLL cell, so a real assessment is REQUIRED. Tests that are about
+    // the assessment itself override it; tests that are not get a valid one so the
+    // registry never refuses for a reason unrelated to what they assert.
+    assessment: assessment(),
     nullable: false,
     callerRelativity: { kind: 'global' },
     provenance: { obtainedBy: 'git rev-list', liveExercised: true, evidence: 'run live 2026-07-27' },
