@@ -84,6 +84,20 @@ describe('pgReadQuery (real PG)', () => {
     expect(r.rows.map((x) => x.n)).toEqual([1, 2, 3]);
   });
 
+  it('runs an absence query and its known-positive control in the same read-only transaction', async () => {
+    const r = await pgReadQuery('SELECT 1 AS n WHERE false', {
+      client: db.adminSql,
+      positiveControlSql: 'SELECT 1 AS n',
+    });
+    expect(r.rowCount).toBe(0);
+    expect(r.positiveControl).toEqual({
+      rows: [{ n: 1 }],
+      rowCount: 1,
+      truncated: false,
+      fields: ['n'],
+    });
+  });
+
   it('rejects a plain write before it reaches the DB (guard 1)', async () => {
     await expect(
       pgReadQuery('DELETE FROM harness_shared.harness_plans', { client: db.adminSql }),
