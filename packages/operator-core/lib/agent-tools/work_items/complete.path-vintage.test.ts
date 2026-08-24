@@ -59,6 +59,43 @@ describe('preExistingChangedPathsInCompletion', () => {
     expect(result?.paths.map((entry) => entry.path)).toEqual(item.payload.paths);
   });
 
+  it('limits a broad claim to the explicit filesChanged census when one is supplied', () => {
+    const result = preExistingChangedPathsInCompletion(
+      item,
+      {
+        summary: 'All named target files were remediated',
+        filesChanged: ['packages/old.ts'],
+      },
+      { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+    );
+
+    expect(result?.paths).toEqual([{ path: 'packages/old.ts', lastCommitAt: BEFORE }]);
+  });
+
+  it('does not attribute a generic all-changed-files evidence phrase to unrelated item targets', () => {
+    const result = preExistingChangedPathsInCompletion(
+      {
+        createdAt: CREATED,
+        payload: {
+          paths: [
+            'packages/operator-core/lib/release-checkpoint-launch.ts',
+            'apps/operator/lib/release/green-checkpoint.ts',
+          ],
+        },
+      },
+      {
+        testsRun: 'lint:tsc over all 5 changed files (run twice)',
+        filesChanged: [
+          'packages/operator-core/lib/release-checkpoint-config.ts',
+          'packages/operator-core/lib/harness/routines/release-actions.ts',
+        ],
+      },
+      { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+    );
+
+    expect(result).toBeUndefined();
+  });
+
   /**
    * WI-41246: the all-claim branch returns payload.paths WHOLESALE, so an AUDIT claim must not
    * trigger it. The tool's own schema asks for an enumerated verification.coverage census, and

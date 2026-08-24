@@ -1039,10 +1039,18 @@ function completionClaimsTargetPaths(itemPaths: string[], completion: unknown): 
     .map(repoRelativePath)
     .filter((path): path is string => Boolean(path));
   const prose = completionTextParts(completion).join('\n');
-  if (PATH_CLAIM_ALL_RE.test(prose)) return itemPaths;
-  return itemPaths.filter(
+  const explicitlyClaimed = itemPaths.filter(
     (target) => filesChanged.some((file) => sameRepoPath(file, target)) || prose.includes(target),
   );
+  if (PATH_CLAIM_ALL_RE.test(prose)) {
+    // A broad phrase can legitimately stand in for the item's target list when the
+    // completion does not provide a file census. Once `filesChanged` is present,
+    // however, it is the closer's explicit claim set. Do not widen that set back to
+    // every item target: a generic evidence phrase such as "all 5 changed files"
+    // otherwise makes an unrelated prescribed path look positively claimed.
+    return filesChanged.length > 0 ? explicitlyClaimed : itemPaths;
+  }
+  return explicitlyClaimed;
 }
 
 function epochSeconds(value: unknown): number | undefined {
