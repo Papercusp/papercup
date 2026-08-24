@@ -203,7 +203,10 @@ export function beginSyncEnrolment(
         },
       );
       environmentTransport = built.transport;
-      const wrapped = { binary: built.argv[0]!, argv: built.argv.slice(1) };
+      const wrapped: ReturnType<SyncEnrolment['wrap']> = {
+        binary: built.argv[0]!,
+        argv: built.argv.slice(1),
+      };
       if (built.transport) wrapped.release = releaseEnvironmentTransport;
       return wrapped;
     },
