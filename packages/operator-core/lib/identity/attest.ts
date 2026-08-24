@@ -20,6 +20,7 @@
 
 import { keychainStore, keychainLoad } from './keychain';
 import { getGhAuthToken, clearGhAuthTokenCache } from './gh-token';
+import { makeTimeoutFetch, resolveGithubTimeoutMs } from './octokit-client';
 import {
   generateEd25519KeypairDer,
   pubkeyBase64FromDer,
@@ -407,6 +408,12 @@ const UNVERIFIED_EMAIL_RE = /verif(?:y|ied)\s+(?:your\s+)?email/i;
  * run. Never throws — the caller decides how loud the failure is.
  */
 export async function probeGistWriteCapability(token: string): Promise<GistWriteCapability> {
+  // Reuse the canonical GitHub timeout policy. This preflight runs inside the
+  // live-federation release gate, which holds a pc-heavy slot for its lifetime;
+  // a bare fetch that never settles therefore blocks every checkpoint waiting
+  // to drain that shared slot. Both the authority-bearing POST and best-effort
+  // DELETE must be bounded (EI-21337927829979820).
+  const githubFetch = makeTimeoutFetch(resolveGithubTimeoutMs());
   const headers = {
     Authorization: 'token ' + token,
     'Content-Type': 'application/json',
@@ -416,7 +423,7 @@ export async function probeGistWriteCapability(token: string): Promise<GistWrite
 
   let resp: { ok: boolean; status: number; text(): Promise<string>; json(): Promise<unknown> };
   try {
-    resp = (await fetch('https://api.github.com/gists', {
+    resp = (await githubFetch('https://api.github.com/gists', {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -466,7 +473,7 @@ export async function probeGistWriteCapability(token: string): Promise<GistWrite
 
   // Best-effort cleanup: the probe gist has served its purpose the moment it
   // exists. A delete failure never invalidates the capability we just proved.
-  const cleanedUp = await fetch('https://api.github.com/gists/' + created.id, {
+  const cleanedUp = await githubFetch('https://api.github.com/gists/' + created.id, {
     method: 'DELETE',
     headers,
   })

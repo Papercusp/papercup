@@ -1141,6 +1141,64 @@ describe('probeGistWriteCapability', () => {
     expect(calls[1].url).toContain('/gists/g-probe');
   });
 
+  it('bounds a stalled GitHub write probe and returns unavailable', async () => {
+    const priorTimeout = process.env.PAPERCUSP_GITHUB_TIMEOUT_MS;
+    process.env.PAPERCUSP_GITHUB_TIMEOUT_MS = '5';
+    const fetchMock = vi.fn(
+      (_url: unknown, init?: { signal?: AbortSignal | null }) =>
+        new Promise<never>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) return reject(new Error('expected the canonical GitHub timeout signal'));
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { probeGistWriteCapability } = await import('./attest');
+      const cap = await probeGistWriteCapability('tok');
+      expect(cap.ok).toBe(false);
+      if (cap.ok) throw new Error('unreachable');
+      expect(cap).toMatchObject({ code: 'unavailable', status: null });
+      expect(cap.detail).toContain('timed out after 5ms');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      if (priorTimeout === undefined) delete process.env.PAPERCUSP_GITHUB_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GITHUB_TIMEOUT_MS = priorTimeout;
+    }
+  });
+
+  it('bounds stalled probe cleanup without discarding the successful write proof', async () => {
+    const priorTimeout = process.env.PAPERCUSP_GITHUB_TIMEOUT_MS;
+    process.env.PAPERCUSP_GITHUB_TIMEOUT_MS = '5';
+    const fetchMock = vi.fn(async (_url: unknown, init?: { method?: string; signal?: AbortSignal | null }) => {
+      if (init?.method === 'POST') {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ id: 'g-probe-timeout-cleanup' }),
+          text: async () => '',
+        };
+      }
+      return await new Promise<never>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return reject(new Error('expected the canonical GitHub timeout signal'));
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { probeGistWriteCapability } = await import('./attest');
+      const cap = await probeGistWriteCapability('tok');
+      expect(cap).toEqual({ ok: true, probedGistId: 'g-probe-timeout-cleanup', cleanedUp: false });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      if (priorTimeout === undefined) delete process.env.PAPERCUSP_GITHUB_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GITHUB_TIMEOUT_MS = priorTimeout;
+    }
+  });
+
   it('CONTROL: a read-only probe cannot detect a blocked account — which is why this exists', async () => {
     // ensureAttestationGist on the SAME write-blocked account: the list path
     // returns an already-valid gist, so it succeeds and never reaches the POST
