@@ -63,7 +63,8 @@ import { groupByAgent, lastToolCallAtByOwner, listFleetAssignments } from '../..
 import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages';
 import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import { resolveFleetClaimSpec } from '../../scheduler/claim-spec-store';
+import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
+import { claimSpecReferencesField } from '../../scheduler/claim-spec';
 import { readIssueClaimability } from '../../scheduler/get-next';
 import { boundedUnguardedHaltSweep } from '../../turn-end-tracking-io';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -171,7 +172,7 @@ export function rescueBody(fleetSlug: string, claimable: number): string {
     `system-side unguarded-halt sweep, not from a peer — there is no one to reply to.`,
     ``,
     `You were woken because WORK IS ACTUALLY WAITING: ${claimable} item(s) are claimable`,
-    `right now under fleet "${fleetSlug}"'s own claim spec. If you stopped because your`,
+    `right now under your effective claim spec inside fleet "${fleetSlug}". If you stopped because your`,
     `lane looked drained, that verdict had a TIMESTAMP and is stale — "drained" is a`,
     `measurement, not a state.`,
     ``,
@@ -205,19 +206,37 @@ export async function readHaltCandidates(): Promise<HaltCandidate[]> {
 }
 
 /**
- * Claimable count under a fleet's OWN claim spec — the "is there a reason to
- * wake anyone here" question, asked once per fleet and reused for every member.
+ * Claimable count under one candidate's EFFECTIVE claim spec — the "is there a
+ * reason to wake this member" question. The scheduler resolves specs in the
+ * order bee override → fleet inheritance → default, and every caller-relative
+ * floor must receive the same member/fleet context as `scheduler:get_next`.
  * Fail-soft to 0, i.e. "rescue nobody", the safe direction for a billable wake.
  */
-export async function claimableForFleet(fleetSlug: string, workspaceId: string): Promise<number> {
+export async function claimableForCandidate(
+  candidate: Pick<HaltCandidate, 'agentId' | 'fleetSlug'>,
+  workspaceId: string,
+): Promise<number> {
+  if (!candidate.agentId || !candidate.fleetSlug) return 0;
   try {
-    const resolved = await resolveFleetClaimSpec({ spec: fleetSlug, workspaceId });
-    const spec = resolved?.record.spec;
-    const harness = resolved?.record.harnessSlug;
+    const resolved = await getClaimSpecRecord({ cupId: candidate.agentId, workspaceId });
+    // A fleet member whose sentinel is missing/invalid is in the same
+    // fail-closed transition state as scheduler:get_next. Never turn that
+    // uncertainty into a broad default-backlog rescue wake.
+    if (resolved.source === 'default' && resolved.fleetSlug) return 0;
+    const spec = resolved.spec;
+    const harness = resolved.harnessSlug;
     if (!spec || !harness) return 0;
     const { breakdown } = await readIssueClaimability(
       spec.view?.filter,
-      { harness, states: spec.states, spec, workspaceId },
+      {
+        harness,
+        states: spec.states,
+        spec,
+        workspaceId,
+        assignee: candidate.agentId,
+        ...(resolved.fleetSlug ? { claimantFleetSlug: resolved.fleetSlug } : {}),
+        claimSpecReferencesFleet: claimSpecReferencesField(spec, 'fleet'),
+      },
       { limit: 1, breakdownOnly: true },
     );
     return breakdown.claimable;
@@ -282,14 +301,18 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
     return;
   }
 
-  // Is there work for each fleet? Asked once per fleet, not once per member.
-  const claimableByFleet = new Map<string, number>();
+  // Is there work for each candidate? The effective spec, assignee-relative
+  // cooldown, and fleet authorization can differ even within one fleet.
+  const claimableByCandidate = new Map<string, number>();
   await Promise.all(
-    [...new Set(candidates.map((c) => c.fleetSlug!))].map(async (slug) => {
-      claimableByFleet.set(slug, await claimableForFleet(slug, ctx.workspaceId));
+    candidates.map(async (candidate) => {
+      claimableByCandidate.set(
+        candidate.agentId,
+        await claimableForCandidate(candidate, ctx.workspaceId),
+      );
     }),
   );
-  const withWork = candidates.filter((c) => (claimableByFleet.get(c.fleetSlug!) ?? 0) > 0);
+  const withWork = candidates.filter((c) => (claimableByCandidate.get(c.agentId) ?? 0) > 0);
 
   // Only now — for agents that are idle in an active fleet WITH work waiting — is
   // the (more expensive, per-agent) halt predicate worth evaluating.
@@ -307,7 +330,7 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
 
   for (const { c } of rescuing) {
     const slug = c.fleetSlug!;
-    const claimable = claimableByFleet.get(slug) ?? 0;
+    const claimable = claimableByCandidate.get(c.agentId) ?? 0;
     // Durable inbox row first (the record survives even if the wake fan fails),
     // then the wake — the same ordering coord:send uses.
     await sendMessage(RESCUE_IDENTITY, {
