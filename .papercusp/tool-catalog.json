@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 813,
+  "count": 814,
   "tools": [
     {
       "name": "ablation:report",
@@ -12587,6 +12587,36 @@
         "when": "Starting a NEW outcome that needs an agent to own it end-to-end — the \"+ Start a goal\" path. One call: goal + its agent + the join between them.",
         "notWhen": "Recording a goal with NO agent (a goal you or an existing session will own): goals:create. Proposing one for the owner to confirm: goals:propose. Launching an agent for a non-goal task: capability:launch-agent.",
         "chaining": "goals:start → the spawned agent orients in GOAL mode with the goal as its subject and works the portfolio itself. Watch it on the Goals board, or coord:presence by the returned ownerId."
+      }
+    },
+    {
+      "name": "goals:start-from-package",
+      "http": {
+        "path": "/api/agent-tools/goals/start-from-package",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "START an installed goal PACKAGE: adopt its seeded inactive stub (or mint a fresh instance) and spawn the GOAL-mode holder — the deliberate second half of install ≠ start. { ref, harness?, inputs?, startBlocked?, startBlockedReason? }. Typed inputs are validated against the package inputSchema; standing packages get holder { requireLive: true, onLoss: 'respawn' } and a weekly budget window unless the package pins its own; already-active instances of the same package are reported as info, never a gate. Returns the goal id, the holder ownerId, and every default applied.",
+      "capabilities": [
+        "goals:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Starting a goal that exists as an INSTALLED package (cupboard:install-goal landed a paused stub, or a bundled package ships in the release) — e.g. the work-on-everything standing goal.",
+        "notWhen": "A brand-new goal stated ad hoc: goals:start. Installing the package (no start): cupboard:install-goal. Re-activating an arbitrary existing goal that came from no package: flip its status deliberately, then the trigger/schedule legs or goals:start family.",
+        "chaining": "cupboard:search { kind: 'goal' } → cupboard:install-goal → goals:start-from-package. The spawned holder orients in GOAL mode; watch coord:presence by the returned ownerId."
       }
     },
     {
