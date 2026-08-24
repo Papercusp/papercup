@@ -34,6 +34,7 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 const {
   seedFindings,
   executeCleanupFindingAction,
+  markCleanupFindingAccepted,
   reportFindingOutcomes,
   getRunFindings,
   getPendingReviewFindings,
@@ -341,18 +342,41 @@ describe('plan-cleanup run store (real PG)', () => {
     const pending = await getPendingReviewFindings(run.runId);
     expect(pending.map((f) => f.findingId)).toEqual(['stale-now:papercusp/plan-a']);
 
-    // NOTE: after settle the run is in 'review', where the RESOLVER's authority
-    // is revoked — the owner's verdict write path (the review UI's accept /
-    // dismiss, P-004+) lands directly, mirroring markItemAccepted. Simulate it.
-    await (h.sql as import('postgres').Sql)`
-      UPDATE harness_shared.plan_cleanup_run_findings
-         SET outcome = 'accepted', decided_at = now(), updated_at = now()
-       WHERE workspace_id = ${h.ws} AND run_id = ${run.runId}
-         AND finding_id = 'stale-now:papercusp/plan-a'
-    `;
+    // Owner review is resolve-first/record-second through its dedicated seam;
+    // the resolver's report/action APIs remain revoked in review.
+    const accepted = await markCleanupFindingAccepted({
+      runId: run.runId,
+      findingId: 'stale-now:papercusp/plan-a',
+      note: 'Approved from the grouped report',
+    });
+    expect(accepted.finding).toMatchObject({ outcome: 'accepted' });
+    expect(accepted.finding?.evidence.at(-1)?.note).toMatch(/owner accepted/i);
     const done = await settleRunPhase({ runId: run.runId });
     expect(done?.phase).toBe('complete');
     expect(done?.finishedAt).not.toBeNull();
+  });
+
+  it('owner acceptance is review-only and refuses non-recommended findings', async () => {
+    const run = await createCleanupRun();
+    await seedFindings({ runId: run.runId, findings: scanFindings() });
+    expect(
+      (await markCleanupFindingAccepted({
+        runId: run.runId,
+        findingId: 'stale-now:papercusp/plan-a',
+      })).finding,
+    ).toBeNull();
+
+    await reportFindingOutcomes({
+      runId: run.runId,
+      reports: scanFindings().map((f) => ({ findingId: f.findingId, outcome: 'recommended' as const })),
+    });
+    expect((await settleRunPhase({ runId: run.runId }))?.phase).toBe('review');
+    expect(
+      (await markCleanupFindingAccepted({
+        runId: run.runId,
+        findingId: 'flip-to-done:papercusp/plan-NOPE#P-9',
+      })).finding,
+    ).toBeNull();
   });
 
   it('keeps a run with an unreached (still-pending) finding OUT of complete', async () => {

@@ -91,6 +91,13 @@ const PUSH_EXEMPT: Record<string, string> = {
   'plans.attentionBulkRun :: harness_shared.attention_bulk_run_items':
     'producer-push: item outcome batches are followed by one notifySyncInvalidate from the same writers; a per-row trigger on the batch is the notify-storm shape.',
 
+  // cleanup-report-flows-2026-08-24 P-005: same bounded producer-push contract
+  // on the generalized run table and the cleanup finding batch.
+  'plans.cleanupRun :: harness_shared.attention_bulk_runs':
+    'producer-push: every cleanup run phase transition fires notifyPlanCleanupRunChanged after commit.',
+  'plans.cleanupRun :: harness_shared.plan_cleanup_run_findings':
+    'producer-push: finding outcome batches are followed by one dedupe-disabled cleanup-run invalidation.',
+
   // Continuous heartbeat gauge: shared_presence is rewritten by every agent's keepalive, so a
   // per-row notify is the notify-storm anti-pattern (/internal/docs/performance) for a panel whose
   // entire content is "who is alive right now" — polling IS the semantics here.

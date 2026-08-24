@@ -3849,6 +3849,36 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       }
     },
   },
+  // plans.cleanupRun — the Plans-pane cleanup strip + grouped report. Same
+  // generalized run table as Inbox bulk resolve, with per-finding rows from
+  // migration 937. Writers push one dedupe-disabled invalidation per persisted
+  // transition through notifyPlanCleanupRunChanged().
+  'plans.cleanupRun': {
+    backingTables: [
+      'harness_shared.attention_bulk_runs',
+      'harness_shared.plan_cleanup_run_findings',
+    ],
+    resolve: async (args) => {
+      const [{ getRun, getLatestRun }, { getRunFindings }] = await Promise.all([
+        import('../attention/bulk-run-store'),
+        import('../plan-cleanup/run-store'),
+      ]);
+      const runId = typeof (args as { runId?: unknown })?.runId === 'string'
+        ? String((args as { runId: string }).runId)
+        : null;
+      try {
+        const run = runId
+          ? await getRun(runId)
+          : await getLatestRun(undefined, 'plan-cleanup');
+        if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [] }];
+        return [{ run, findings: await getRunFindings(run.runId, run.workspaceId) }];
+      } catch {
+        // Cleanup is additive: a substrate read failure must not break the
+        // Plans pane or mis-render a partially known run.
+        return [{ run: null, findings: [] }];
+      }
+    },
+  },
   // plans.attentionCounts — the AGGREGATE half of the attention feed (WI-5955).
   // The sidebar "needs you" badge and the Plans-face badge are mounted on every
   // app start and used to derive two integers by pulling the whole ~1MB unscoped

@@ -13,12 +13,21 @@
  */
 
 export const BULK_RUN_SYNC_QUERY = 'plans.attentionBulkRun';
+export const PLAN_CLEANUP_RUN_SYNC_QUERY = 'plans.cleanupRun';
 export const BULK_RUN_SYNC_DEDUPE_MS = 0;
 
 /** Push the durable run/item state to every mounted bulk strip. */
 export async function notifyBulkRunChanged(): Promise<void> {
   const { notifySyncInvalidate } = await import('../sync-sse');
   await notifySyncInvalidate(BULK_RUN_SYNC_QUERY, undefined, undefined, {
+    dedupeWindowMs: BULK_RUN_SYNC_DEDUPE_MS,
+  });
+}
+
+/** Push one persisted plan-cleanup transition to its mounted strip/report. */
+export async function notifyPlanCleanupRunChanged(): Promise<void> {
+  const { notifySyncInvalidate } = await import('../sync-sse');
+  await notifySyncInvalidate(PLAN_CLEANUP_RUN_SYNC_QUERY, undefined, undefined, {
     dedupeWindowMs: BULK_RUN_SYNC_DEDUPE_MS,
   });
 }

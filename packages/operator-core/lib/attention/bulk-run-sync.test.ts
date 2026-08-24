@@ -7,8 +7,10 @@ vi.mock('../sync-sse', () => ({ notifySyncInvalidate: h.notifySyncInvalidate }))
 
 import {
   BULK_RUN_SYNC_QUERY,
+  PLAN_CLEANUP_RUN_SYNC_QUERY,
   notifyBulkRunAndAttentionChanged,
   notifyBulkRunChanged,
+  notifyPlanCleanupRunChanged,
 } from './bulk-run-sync';
 
 beforeEach(() => {
@@ -42,5 +44,19 @@ describe('bulk-run sync invalidation', () => {
       undefined,
       { dedupeWindowMs: 0 },
     );
+  });
+
+  it('pushes every persisted plan-cleanup transition on its distinct query name', async () => {
+    await notifyPlanCleanupRunChanged();
+    await notifyPlanCleanupRunChanged();
+    expect(h.notifySyncInvalidate).toHaveBeenCalledTimes(2);
+    for (const call of h.notifySyncInvalidate.mock.calls) {
+      expect(call).toEqual([
+        PLAN_CLEANUP_RUN_SYNC_QUERY,
+        undefined,
+        undefined,
+        { dedupeWindowMs: 0 },
+      ]);
+    }
   });
 });

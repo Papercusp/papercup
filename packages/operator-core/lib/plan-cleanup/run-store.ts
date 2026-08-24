@@ -432,6 +432,77 @@ export async function reportFindingOutcomes(input: {
 }
 
 /**
+ * Record the OWNER's acceptance after the client has successfully dispatched
+ * the canonical hand-edit path. Resolve-first/record-second mirrors
+ * `markItemAccepted` for Inbox bulk resolve: a bookkeeping failure may leave a
+ * stale review row, but can never claim a plan mutation happened when it did
+ * not. Owner review is intentionally allowed only in `review`; the resolver's
+ * pending/running authority uses executeCleanupFindingAction instead.
+ */
+export async function markCleanupFindingAccepted(input: {
+  runId: string;
+  findingId: string;
+  note?: string | null;
+  workspaceId?: string;
+}): Promise<{ finding: CleanupRunFindingRow | null; run: BulkRunRow | null }> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+
+  return await sql.begin(async (tx) => {
+    const runRows = await tx<Parameters<typeof mapRunLoose>[0][]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    const run = runRows[0] ? mapRunLoose(runRows[0]) : null;
+    if (!run || run.runKind !== 'plan-cleanup' || run.phase !== 'review') {
+      return { finding: null, run };
+    }
+
+    const rows = await tx<RawFindingRow[]>`
+      SELECT ${tx.unsafe(FINDING_COLUMNS)}
+        FROM harness_shared.plan_cleanup_run_findings
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+         AND finding_id = ${input.findingId}
+       FOR UPDATE
+    `;
+    const current = rows[0] ? mapFinding(rows[0]) : null;
+    if (!current || current.outcome !== 'recommended') {
+      return { finding: null, run };
+    }
+
+    const evidence = input.note?.trim()
+      ? [
+          ...current.evidence,
+          { kind: 'plan' as const, ref: current.planSlug, note: `owner accepted: ${input.note.trim()}` },
+        ]
+      : current.evidence;
+    const updatedRows = await tx<RawFindingRow[]>`
+      UPDATE harness_shared.plan_cleanup_run_findings
+         SET outcome = 'accepted',
+             evidence = ${JSON.stringify(evidence)}::jsonb,
+             error = NULL,
+             decided_at = now(),
+             updated_at = now()
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+         AND finding_id = ${input.findingId}
+      RETURNING ${tx.unsafe(FINDING_COLUMNS)}
+    `;
+    await recomputeCountersFromFindings(tx, input.runId, ws);
+    const afterRows = await tx<Parameters<typeof mapRunLoose>[0][]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    return {
+      finding: updatedRows[0] ? mapFinding(updatedRows[0]) : null,
+      run: afterRows[0] ? mapRunLoose(afterRows[0]) : null,
+    };
+  });
+}
+
+/**
  * Minimal run mapper for this module's refreshed-run read. Kept local (rather
  * than importing bulk-run-store's private mapRun) but shaped identically to
  * BulkRunRow, so callers see one run type either way.

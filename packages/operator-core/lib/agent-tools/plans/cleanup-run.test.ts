@@ -6,7 +6,7 @@ const h = vi.hoisted(() => ({
   getRun: vi.fn(),
   setRunPhase: vi.fn(),
   settleRunPhase: vi.fn(),
-  notifyBulkRunChanged: vi.fn(),
+  notifyPlanCleanupRunChanged: vi.fn(),
   gatherCleanupInputs: vi.fn(),
   scanForCleanupFindings: vi.fn(),
   getRunFindings: vi.fn(),
@@ -25,7 +25,9 @@ vi.mock('../../attention/bulk-run-store', () => ({
   setRunPhase: h.setRunPhase,
   settleRunPhase: h.settleRunPhase,
 }));
-vi.mock('../../attention/bulk-run-sync', () => ({ notifyBulkRunChanged: h.notifyBulkRunChanged }));
+vi.mock('../../attention/bulk-run-sync', () => ({
+  notifyPlanCleanupRunChanged: h.notifyPlanCleanupRunChanged,
+}));
 vi.mock('../../plan-cleanup/gather', () => ({ gatherCleanupInputs: h.gatherCleanupInputs }));
 vi.mock('../../plan-cleanup/scanner', () => ({ scanForCleanupFindings: h.scanForCleanupFindings }));
 vi.mock('../../plan-cleanup/run-store', () => ({
@@ -97,7 +99,7 @@ beforeEach(() => {
   h.seedFindings.mockResolvedValue({ findings: [stored], refused: null });
   h.inProcessCall.mockReturnValue(h.innerCall);
   h.dispatchCleanupFindingAction.mockResolvedValue({ ok: true });
-  h.notifyBulkRunChanged.mockResolvedValue(undefined);
+  h.notifyPlanCleanupRunChanged.mockResolvedValue(undefined);
   h.reportFindingOutcomes.mockResolvedValue({ updated: [], missing: [], run, refused: null });
 });
 
