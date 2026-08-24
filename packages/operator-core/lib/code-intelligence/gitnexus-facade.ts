@@ -386,10 +386,147 @@ function parseEnvelope(raw: unknown): {
 }
 
 interface GnxSymbol {
+  uid?: string;
   name?: string;
   kind?: string;
   filePath?: string;
   startLine?: number;
+}
+
+interface IndexHealth {
+  freshness: {
+    health: BackendHealth;
+    indexedAt: string | null;
+    staleVsDisk: boolean | null;
+    indexedCommit: string | null;
+  };
+  /** Non-null only when the index-health probe was itself unmeasured. */
+  error: string | null;
+}
+
+function unknownIndexHealth(error: string): IndexHealth {
+  return {
+    freshness: {
+      health: 'unknown',
+      indexedAt: null,
+      staleVsDisk: null,
+      indexedCommit: null,
+    },
+    error,
+  };
+}
+
+/**
+ * Parse the authoritative `list_repos` health response.
+ *
+ * The bridge decorates query responses with a best-effort prose note, but the
+ * note is intentionally omitted for fresh positive hits. `list_repos` is the
+ * structured source of truth, so every facade call probes it once and carries
+ * the same freshness envelope onto hits, misses, and the dedicated health op.
+ */
+function parseIndexHealth(raw: unknown, repo: string): IndexHealth {
+  const { json, text, truncated } = parseEnvelope(raw);
+  if (!json) {
+    return unknownIndexHealth(
+      truncated
+        ? truncationNotice('health')
+        : `gitnexus list_repos returned an unparseable envelope: ${text.slice(0, 200)}`,
+    );
+  }
+
+  const repositories = Array.isArray(json.repositories) ? json.repositories : [];
+  const entry = repositories.find(
+    (candidate): candidate is Record<string, unknown> =>
+      candidate !== null && typeof candidate === 'object' && candidate.name === repo,
+  );
+  if (!entry) {
+    return unknownIndexHealth(
+      `gitnexus list_repos did not report repository '${repo}'; index health is UNMEASURED. ` +
+        'Do not treat graph results as current.',
+    );
+  }
+
+  const indexedAt = typeof entry.indexedAt === 'string' ? entry.indexedAt : null;
+  const indexedCommit = typeof entry.lastCommit === 'string' ? entry.lastCommit.slice(0, 40) : null;
+  const staleness = entry.staleness;
+  const commitsBehind =
+    staleness !== null && typeof staleness === 'object'
+      ? (staleness as { commitsBehind?: unknown }).commitsBehind
+      : undefined;
+  if (typeof commitsBehind !== 'number' || !Number.isFinite(commitsBehind) || commitsBehind < 0) {
+    return unknownIndexHealth(
+      `gitnexus list_repos returned repository '${repo}' without a valid staleness.commitsBehind ` +
+        'value; index health is UNMEASURED. Do not treat graph results as current.',
+    );
+  }
+
+  const staleVsDisk = commitsBehind > 0;
+  return {
+    freshness: {
+      health: staleVsDisk ? 'degraded' : 'healthy',
+      indexedAt,
+      staleVsDisk,
+      indexedCommit,
+    },
+    error: null,
+  };
+}
+
+async function readIndexHealth(dispatch: GitnexusDispatch, repo: string): Promise<IndexHealth> {
+  try {
+    // list_repos enumerates the bridge's structured registry. Filter by repo
+    // locally because the upstream tool's schema does not take a repo name.
+    return parseIndexHealth(await dispatch('list_repos', {}), repo);
+  } catch (e) {
+    return unknownIndexHealth(
+      `gitnexus list_repos health probe threw: ${e instanceof Error ? e.message : String(e)}. ` +
+        'Index health is UNMEASURED; do not treat graph results as current.',
+    );
+  }
+}
+
+function joinErrors(...errors: Array<string | null | undefined>): string | null {
+  const present = errors.filter((error): error is string => Boolean(error));
+  return present.length > 0 ? present.join(' ') : null;
+}
+
+async function enrichEdge(
+  edge: GnxSymbol,
+  dispatch: GitnexusDispatch,
+  repo: string,
+): Promise<GnxSymbol> {
+  // GitNexus's edge rows often carry only uid/name/filePath. Resolve the UID
+  // through context so callers and callees are navigable without a second
+  // grep. Keep the original edge when the enrichment call is unavailable or
+  // returns a mismatched symbol; a bad side probe must not rewrite topology.
+  if (!edge.uid || (edge.kind !== undefined && edge.startLine !== undefined)) return edge;
+  try {
+    const { json } = parseEnvelope(await dispatch('context', { uid: edge.uid, repo }));
+    const symbol = json?.symbol;
+    if (!symbol || typeof symbol !== 'object') return edge;
+    const detail = symbol as GnxSymbol;
+    if (detail.uid && detail.uid !== edge.uid) return edge;
+    return {
+      ...edge,
+      name: edge.name ?? detail.name,
+      kind: edge.kind ?? detail.kind,
+      filePath: edge.filePath ?? detail.filePath,
+      startLine: edge.startLine ?? detail.startLine,
+    };
+  } catch {
+    return edge;
+  }
+}
+
+async function sitesFromEdges(
+  edges: GnxSymbol[],
+  dispatch: GitnexusDispatch,
+  repo: string,
+): Promise<SymbolSite[]> {
+  const enriched = await Promise.all(edges.map((edge) => enrichEdge(edge, dispatch, repo)));
+  return enriched
+    .map((edge) => siteOf(edge, edge.name))
+    .filter((site): site is SymbolSite => site !== null);
 }
 
 /**
@@ -474,6 +611,18 @@ export async function gitnexusFacade(
   const repo = args.repo ?? 'papercusp';
 
   try {
+    // Freshness is a property of the index, not of whether this particular
+    // query happened to hit. Probe it before every operation so a positive hit
+    // cannot silently turn a stale graph into `health:"healthy"`.
+    const indexHealth = await readIndexHealth(activeDispatch, repo);
+
+    if (op === 'health') {
+      return answer(op, query, startedAt, {
+        ...indexHealth.freshness,
+        error: indexHealth.error,
+      });
+    }
+
     if (op === 'impact') {
       // BOTH `target` and `direction` are required upstream. Omitting
       // `direction` does not error — it returns an envelope whose fields are
@@ -485,8 +634,7 @@ export async function gitnexusFacade(
         repo,
         limit,
       });
-      const { json, text, truncated } = parseEnvelope(raw);
-      const fresh = parseFreshnessNote(text);
+      const { json, truncated } = parseEnvelope(raw);
 
       if (truncated) {
         // Explicit truncation, per the Truncation contract: say the answer was
@@ -497,8 +645,10 @@ export async function gitnexusFacade(
           health: 'degraded',
           truncated: true,
           totalAvailable: null,
-          ...fresh,
-          error: truncationNotice(op),
+          indexedAt: indexHealth.freshness.indexedAt,
+          staleVsDisk: indexHealth.freshness.staleVsDisk,
+          indexedCommit: indexHealth.freshness.indexedCommit,
+          error: joinErrors(indexHealth.error, truncationNotice(op)),
         });
       }
 
@@ -507,16 +657,15 @@ export async function gitnexusFacade(
         // An unknown target returns an explicit error rather than an empty
         // set — an honest failure, and it must stay one.
         return answer(op, query, startedAt, {
-          health: 'healthy',
-          error: upstreamError,
-          ...fresh,
+          ...indexHealth.freshness,
+          error: joinErrors(indexHealth.error, upstreamError),
         });
       }
 
       const impacted = typeof json?.impactedCount === 'number' ? json.impactedCount : null;
       const risk = typeof json?.risk === 'string' ? json.risk : null;
       return answer(op, query, startedAt, {
-        health: 'healthy',
+        ...indexHealth.freshness,
         // `impact` answers a COUNT + risk grade, not a site list. The count
         // rides on totalAvailable and the grade on the site detail, so an
         // empty `sites` here is structural rather than an absence claim.
@@ -524,66 +673,58 @@ export async function gitnexusFacade(
           ? [{ path: '(impact summary)', line1: null, kind: 'impact', detail: `risk=${risk}` }]
           : [],
         totalAvailable: impacted,
-        ...fresh,
-        error:
+        error: joinErrors(
+          indexHealth.error,
           impacted === null
             ? 'gitnexus impact returned no impactedCount; treat this as unmeasured, not zero.'
             : null,
+        ),
       });
     }
 
-    // symbol | callers | callees | health all read through `context`.
+    // symbol | callers | callees read through `context`.
     const raw = await activeDispatch('context', {
-      ...(op === 'health' ? {} : { name: query }),
+      name: query,
       ...(args.kind ? { kind: args.kind } : {}),
       repo,
     });
     const { json, text, truncated } = parseEnvelope(raw);
-    const fresh = parseFreshnessNote(text);
 
     if (!json) {
       counters.failed += 1;
       return answer(op, query, startedAt, {
         health: truncated ? 'degraded' : 'unhealthy',
+        indexedAt: indexHealth.freshness.indexedAt,
+        staleVsDisk: indexHealth.freshness.staleVsDisk,
+        indexedCommit: indexHealth.freshness.indexedCommit,
         truncated,
-        ...fresh,
-        error: truncated
-          ? truncationNotice(op)
-          : `gitnexus returned an unparseable envelope: ${text.slice(0, 200)}`,
+        error: joinErrors(
+          indexHealth.error,
+          truncated
+            ? truncationNotice(op)
+            : `gitnexus returned an unparseable envelope: ${text.slice(0, 200)}`,
+        ),
       });
     }
 
     const status = typeof json.status === 'string' ? json.status : null;
-    if (op === 'health') {
-      // An indeterminate probe must carry an error, or an empty answer with
-      // health:'unknown' and error:null would fail isTrustworthyEmpty() — a
-      // silent, unbranchable "I don't know" is the one shape this plane
-      // forbids.
-      return answer(op, query, startedAt, {
-        health: status ? 'healthy' : 'unknown',
-        ...fresh,
-        error: status
-          ? null
-          : 'gitnexus health probe returned no status field; liveness is ' +
-            'UNMEASURED. Do not read this as a healthy backend.',
-      });
-    }
 
     if (status !== 'found') {
       // Not found is a real answer, but only from a backend that is itself
       // healthy AND current. If the index is behind HEAD, a symbol written
       // since is reported exactly like one that never existed, so this
       // degrades rather than asserting absence.
-      const degraded = fresh.staleVsDisk === true;
       return answer(op, query, startedAt, {
-        health: degraded ? 'degraded' : 'healthy',
+        ...indexHealth.freshness,
         sites: [],
-        ...fresh,
-        error: degraded
-          ? 'gitnexus index is behind HEAD; a symbol written since the last ' +
-            'analyze is reported identically to one that does not exist. ' +
-            'Confirm with rg before concluding absence.'
-          : null,
+        error: joinErrors(
+          indexHealth.error,
+          indexHealth.freshness.staleVsDisk === true
+            ? 'gitnexus index is behind HEAD; a symbol written since the last ' +
+                'analyze is reported identically to one that does not exist. ' +
+                'Confirm with rg before concluding absence.'
+            : null,
+        ),
       });
     }
 
@@ -595,19 +736,19 @@ export async function gitnexusFacade(
       if (s) sites = [s];
     } else if (op === 'callers') {
       const incoming = (json.incoming as { calls?: GnxSymbol[] } | undefined)?.calls ?? [];
-      sites = incoming.map((c) => siteOf(c, c.name)).filter((s): s is SymbolSite => s !== null);
+      sites = await sitesFromEdges(incoming, activeDispatch, repo);
     } else if (op === 'callees') {
       const outgoing = json.outgoing as Record<string, GnxSymbol[]> | undefined;
       const flat = outgoing ? Object.values(outgoing).flat() : [];
-      sites = flat.map((c) => siteOf(c, c?.name)).filter((s): s is SymbolSite => s !== null);
+      sites = await sitesFromEdges(flat, activeDispatch, repo);
     }
 
     return applyBudget(
       answer(op, query, startedAt, {
-        health: 'healthy',
+        ...indexHealth.freshness,
         sites,
         totalAvailable: sites.length,
-        ...fresh,
+        error: indexHealth.error,
       }),
       limit,
     );
