@@ -15,6 +15,41 @@ const { upsertRoutineSpy, sqlStub } = vi.hoisted(() => ({
   upsertRoutineSpy: vi.fn(),
   sqlStub: (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),
 }));
+
+/**
+ * Fake postgres client for tests that inject a client into boundedPgReadTxn.
+ * Keep the query function as the tagged-template implementation so existing
+ * tests can still capture strings/values or use a vi.fn mock, while begin()
+ * supplies the same client as the transaction and preserves unsafe/array
+ * interpolation helpers.
+ */
+type TransactionalFakeSql = {
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
+  begin: <T>(callback: (tx: TransactionalFakeSql) => Promise<T>) => Promise<T>;
+  unsafe: (identifier: string) => unknown;
+  array: (values: unknown[]) => unknown;
+};
+
+function transactionalSql(
+  query: (strings: TemplateStringsArray, ...values: unknown[]) => unknown | Promise<unknown> = () => [],
+): TransactionalFakeSql {
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) =>
+    Promise.resolve(query(strings, ...values))) as TransactionalFakeSql;
+  const tx = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    // boundedPgReadTxn installs this setting before invoking the caller. It is
+    // transaction plumbing, not one of the injected query's results/captures.
+    if (/set_config\(\s*'statement_timeout'/i.test(strings.join(''))) return Promise.resolve([]);
+    return Promise.resolve(query(strings, ...values));
+  }) as TransactionalFakeSql;
+  sql.begin = async <T>(callback: (tx: TransactionalFakeSql) => Promise<T>) => callback(tx);
+  tx.begin = sql.begin;
+  for (const client of [sql, tx]) {
+    client.unsafe = (identifier: string) => identifier;
+    client.array = (values: unknown[]) => values;
+  }
+  return sql;
+}
+
 // EI-14928 root-cause class: a MINIMAL factory here (only getOrgPg/upsertRoutine)
 // crashes vitest COLLECTION whenever some OTHER db-org export is dereferenced at
 // module scope anywhere in this file's transitive import graph (e.g. autoloop.ts's
@@ -836,7 +871,7 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
   });
 
   it('reads only the strict customWakePrompt marker; legacy rows remain non-custom', async () => {
-    const sql = vi.fn(async () => [
+    const query = vi.fn(async () => [
       {
         active: true,
         reschedule_interval_sec: 60,
@@ -854,10 +889,11 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
         armed_at: null,
       },
     ]);
+    const sql = transactionalSql(query);
     const facts = await readActiveLoopFacts('o', { sql: sql as never });
     expect(facts).toMatchObject({ kickoff: 'custom wake instruction', customWakePrompt: true });
 
-    sql.mockResolvedValueOnce([
+    query.mockResolvedValueOnce([
       {
         active: true,
         reschedule_interval_sec: 60,
@@ -978,7 +1014,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
   // ⇒ not-armed) and materializeLoop's FOR-UPDATE existing-check (0 rows ⇒ the
   // insert branch, which routes through the mocked `upsertRoutine` regardless
   // of which sql instance was passed in).
-  const emptySql = (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]);
+  const emptySql = transactionalSql();
 
   beforeEach(() => {
     getFlagSpy.mockReset().mockResolvedValue(true);
@@ -1054,11 +1090,11 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
     // Classify by query text: the DISTINCT-ON status read gets the active row;
     // everything else (materializeLoop would never even run past the early
     // return, but keep it inert regardless) gets [].
-    const statusSql = (strings: TemplateStringsArray, ..._values: unknown[]) => {
+    const statusSql = transactionalSql((strings: TemplateStringsArray, ..._values: unknown[]) => {
       const text = strings.join(' ? ');
       if (/DISTINCT ON/.test(text)) return Promise.resolve([activeRow]);
       return Promise.resolve([]);
-    };
+    });
     const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: statusSql as any });
     expect(res).toEqual({ armed: false, reason: 'already-armed', loopName: 'loop-su-member-1' });
     expect(upsertRoutineSpy).not.toHaveBeenCalled();
@@ -1096,7 +1132,7 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
       presence_last_active_at: null,
       ...over,
     };
-    return (_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([row]);
+    return transactionalSql(() => [row]);
   }
 
   // THE DEFECT. These are the real numbers measured on su-7854d874's own loop, which is what
@@ -1334,15 +1370,15 @@ describe('computeCadenceDrift (EI-20247200923975596 — advisory sustained drift
 
 describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un-checkpointed-work evidence check)', () => {
   function countSql(n: number) {
-    const sql = ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([{ n }])) as any;
-    sql.unsafe = (identifier: string) => identifier;
-    sql.array = (values: unknown[]) => values;
-    return sql;
+    return transactionalSql(() => [{ n }]);
   }
   function throwingSql() {
-    const sql = ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.reject(new Error('boom'))) as any;
-    sql.array = (values: unknown[]) => values;
-    return sql;
+    // agentToolInvocationPredicate builds a SQL fragment before the bounded
+    // transaction starts, so throw synchronously here; a rejected promise at
+    // that pre-query composition point would become an unhandled rejection.
+    return transactionalSql(() => {
+      throw new Error('boom');
+    });
   }
 
   it('returns the row count when the query succeeds', async () => {
@@ -1357,12 +1393,10 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
 
   it('filters explicit automatic origins while retaining legacy NULL rows', async () => {
     const calls: { strings: readonly string[]; values: unknown[] }[] = [];
-    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const sql = transactionalSql((strings: TemplateStringsArray, ...values: unknown[]) => {
       calls.push({ strings: [...strings], values });
       return Promise.resolve([{ n: 1 }]);
-    }) as any;
-    sql.unsafe = (identifier: string) => identifier;
-    sql.array = (values: unknown[]) => values;
+    });
 
     const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
 
@@ -1382,12 +1416,11 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
     // predicate, which is why the semantic proof lives in loop.integration.test.ts.
     const calls: { strings: readonly string[]; values: unknown[] }[] = [];
     const array = vi.fn((values: unknown[]) => ({ values }));
-    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const sql = transactionalSql((strings: TemplateStringsArray, ...values: unknown[]) => {
       if (values.some(Array.isArray)) throw new Error('Received an instance of Array');
       calls.push({ strings: [...strings], values });
       return Promise.resolve([{ n: 0 }]);
-    }) as any;
-    sql.unsafe = (identifier: string) => identifier;
+    });
     sql.array = array;
 
     await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
