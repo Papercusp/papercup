@@ -75,7 +75,11 @@ export function countUnboundedSyncSpawns(source: string): number {
 
 /** Pure-lane files (workspace-relative, no leading `./`) that currently have >=1 unbounded call. */
 function scanPureLane(): { roster: string[]; offenders: string[] } {
-  const roster = resolveLaneInclude(WORKSPACE_ROOT, 'pure').include.map((f) => f.replace(/^\.\//, ''));
+  // `.include` is `string[] | null` — null means the lane resolved to nothing. Coerce to [] rather
+  // than throwing, so that case surfaces as the DENOMINATOR test failing (a scan of nothing is not
+  // a pass) instead of as an opaque TypeError from a helper.
+  const selected = resolveLaneInclude(WORKSPACE_ROOT, 'pure').include ?? [];
+  const roster = selected.map((f) => f.replace(/^\.\//, ''));
   const offenders: string[] = [];
   for (const rel of roster) {
     if (rel === SELF) continue;
