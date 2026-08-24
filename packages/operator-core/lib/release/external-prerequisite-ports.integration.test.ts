@@ -188,6 +188,40 @@ describe('the gate read against real Postgres', () => {
   });
 });
 
+/**
+ * FALSIFIABILITY CONTROL — the deliberately-wrong implementation, kept permanently.
+ *
+ * The round-trip assertions above are only meaningful if the explicit UTC `to_char`
+ * rendering is load-bearing. This runs the NAIVE `::text` variant of the very same
+ * SELECT against the very same row, and pins what it actually produces. If Postgres
+ * ever starts rendering `::text` as strict ISO-8601 UTC — or if someone "simplifies"
+ * the production query to `::text` — the control below stops differing and this test
+ * fails, which is the signal that the guard has gone vacuous.
+ *
+ * The repo's mutation-probe tiers prefer exactly this over an in-tree mutation: no
+ * shared-tree write, no sweep race, and the control cannot rot out of the suite.
+ */
+describe('falsifiability control: the ::text rendering really is wrong', () => {
+  it('differs from the ISO rendering the production query uses', async () => {
+    const ports = createProbeRunnerPorts(SCOPE);
+    await ports.saveAttestation(receipt({ key: 'control', observedAt: '2026-08-24T11:00:00.000Z' }));
+
+    const naive = await db.adminSql<{ observed_at: string }[]>`
+      SELECT observed_at::text AS observed_at
+        FROM harness_shared.external_prerequisite_attestations
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND prerequisite_key = 'control'
+    `;
+    const strict = await ports.loadAttestation('control');
+
+    // The production path yields exactly the contract's "ISO-8601 UTC instant".
+    expect(strict?.observedAt).toBe('2026-08-24T11:00:00.000Z');
+    // The naive path does NOT — this is what the explicit rendering exists to avoid.
+    // (Postgres renders a timestamptz in the session timezone, e.g.
+    // "2026-08-24 11:00:00+00", which is not the ISO form and carries an offset.)
+    expect(naive[0].observed_at).not.toBe(strict?.observedAt);
+  });
+});
+
 describe('the store refuses what the contract forbids', () => {
   it('rejects a receipt already spent on arrival (expiry_chk)', async () => {
     // expires_at > observed_at is a CHECK constraint, not just an application rule.
