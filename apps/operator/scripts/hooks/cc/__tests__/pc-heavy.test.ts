@@ -462,6 +462,118 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   }, 15_000);
 
+  it('keeps an opt-in run preemptible until it publishes the after-ready marker', async () => {
+    const readyDir = join(dir, 'after-ready-before');
+    const started = join(dir, 'after-ready-before-started');
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '8',
+      PC_HEAVY_PREEMPT_AFTER_READY: '1',
+      PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+      PC_HEAVY_PREEMPT_GRACE_SEC: '0',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const holder = spawn('bash', [PC_HEAVY, 'bash', '-c', [
+      `echo started > ${JSON.stringify(started)}`,
+      'while :; do sleep 1; done',
+    ].join('; ')], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    const holderExit = new Promise<number>((res) => holder.on('exit', (c) => res(c ?? -1)));
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the before-ready holder taking a slot');
+      await waitFor('the before-ready workload starting', () => existsSync(started));
+      expect(existsSync(readyDir)).toBe(true);
+      // The wrapper allocates an absent path up front, but the child must publish
+      // it only after its irreversible derivation. This run intentionally never
+      // publishes, so the exclusive materializer must still be allowed to win.
+      expect(readdirSync(readyDir)).toEqual([]);
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo before-ready-barrier-ran'],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(barrier, barrierErr, (t) => t.includes('exclusive materialization barrier waiting'), 'the before-ready barrier waiting');
+
+      const [holderCode, barrierCode] = await Promise.all([holderExit, barrierExit]);
+      expect(holderCode, `holder stderr:\n${holderErr.text()}`).toBe(75);
+      expect(barrierCode, `barrier stderr:\n${barrierErr.text()}`).toBe(0);
+      expect(holderErr.text()).toContain('PREEMPTING ordinary holder for exclusive materialization');
+      expect(holderErr.text()).toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
+      expect(barrierErr.text()).toContain('exclusive materialization barrier acquired');
+      expect(readdirSync(readyDir)).toEqual([]);
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+    }
+  }, 15_000);
+
+  it('lets a marked run finish before an exclusive materializer and cleans the marker', async () => {
+    const readyDir = join(dir, 'after-ready-after');
+    const readyPublished = join(dir, 'after-ready-published');
+    const finished = join(dir, 'after-ready-finished');
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '8',
+      PC_HEAVY_PREEMPT_AFTER_READY: '1',
+      PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+      PC_HEAVY_PREEMPT_GRACE_SEC: '0',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const workload = [
+      `test -n "$PC_HEAVY_PREEMPT_READY_FILE"`,
+      `printf '%s\\n' "$$" > "$PC_HEAVY_PREEMPT_READY_FILE"`,
+      `echo published > ${JSON.stringify(readyPublished)}`,
+      'sleep 2',
+      `echo finished > ${JSON.stringify(finished)}`,
+    ].join('; ');
+    const holder = spawn('bash', [PC_HEAVY, 'bash', '-c', workload], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    const holderExit = new Promise<number>((res) => holder.on('exit', (c) => res(c ?? -1)));
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the after-ready holder taking a slot');
+      await waitFor('the after-ready marker being published', () => {
+        if (!existsSync(readyPublished) || !existsSync(readyDir)) return false;
+        return readdirSync(readyDir).length === 1;
+      });
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo after-ready-barrier-ran'],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(barrier, barrierErr, (t) => t.includes('exclusive materialization barrier waiting'), 'the after-ready barrier waiting');
+
+      const [holderCode, barrierCode] = await Promise.all([holderExit, barrierExit]);
+      expect(holderCode, `holder stderr:\n${holderErr.text()}`).toBe(0);
+      expect(barrierCode, `barrier stderr:\n${barrierErr.text()}`).toBe(0);
+      expect(existsSync(finished)).toBe(true);
+      expect(holderErr.text()).not.toContain('PREEMPTING ordinary holder for exclusive materialization');
+      expect(holderErr.text()).not.toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
+      expect(barrierErr.text()).toContain('exclusive materialization barrier acquired');
+      // The monitor is the last-resort cleanup owner for a TERM/KILL, and also
+      // clears a marker a command published itself after the normal exit path.
+      expect(readdirSync(readyDir)).toEqual([]);
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+    }
+  }, 15_000);
+
   it('WI-41318: reaps the workload group when a caller hard-kills the outer wrapper', async () => {
     const workloadPidFile = join(dir, 'hard-killed-workload.pid');
     const terminatedFile = join(dir, 'hard-killed-workload.terminated');
