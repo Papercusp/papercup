@@ -117,8 +117,6 @@ describe('with the task manager ON', () => {
         '--pipe',
         '--wait',
         '--quiet',
-        '--collect',
-        '--property=CollectMode=inactive-or-failed',
         `--unit=${e.scopeUnit}`,
         '--slice=papercusp-bash-job.slice',
         '--property=KillMode=control-group',
@@ -199,8 +197,6 @@ describe('with the task manager ON', () => {
         '--user',
         '--scope',
         '--quiet',
-        '--collect',
-        '--property=CollectMode=inactive-or-failed',
         `--unit=${e.scopeUnit}`,
         '--slice=papercusp-sidecar.slice',
         '/bin/node',
@@ -329,6 +325,41 @@ describe('with the task manager ON', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
     finishSyncEnrolment(e, { state: 'exited', exitCode: 0 });
     expect(closeTask).toHaveBeenCalledWith(e.taskId, { state: 'exited', exitCode: 0 });
+  });
+
+  it('captures a retained OOM verdict before resetting the failed service', async () => {
+    const e = beginSyncEnrolment({ class: 'bash-job', memoryMaxBytes: 32 * 1024 * 1024 });
+    const terminal = {
+      capturedAt: '2026-08-24T16:00:00.000Z',
+      scopeUnit: e.scopeUnit!,
+      cgroupPath: null,
+      invocationId: 'oom-invocation',
+      loadState: 'loaded',
+      activeState: 'failed',
+      serviceResult: 'oom-kill',
+      execMainCode: 2,
+      execMainStatus: 9,
+      memoryMaxBytes: 32 * 1024 * 1024,
+      peakMemoryBytes: 32 * 1024 * 1024,
+      peakMemorySource: 'systemd' as const,
+    };
+    const inspect = vi.fn(async () => new Map([[e.scopeUnit!, terminal]]));
+    const reset = vi.fn(async () => true);
+
+    finishSyncEnrolment(
+      e,
+      { state: 'exited', exitCode: 1 },
+      { inspectTaskUnitTerminals: inspect, resetFailedTaskUnit: reset },
+    );
+
+    await vi.waitFor(() =>
+      expect(closeTask).toHaveBeenCalledWith(e.taskId, {
+        state: 'exited',
+        exitCode: 1,
+        terminalProvenance: terminal,
+      }),
+    );
+    expect(reset).toHaveBeenCalledWith(terminal);
   });
 
   it('leaves a live row when the confined client exits before its scope payload', () => {

@@ -38,6 +38,7 @@ import {
 } from './cgroup-read';
 import { taskManagerEnabledSync } from './enabled';
 import { scopeSupportKnown } from './managed-spawn';
+import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
 import {
   bindAgentSessionTaskToLatestNativeSession,
   closeTask,
@@ -282,7 +283,12 @@ export function completeSyncEnrolment(
 export function finishSyncEnrolment(
   enrolment: SyncEnrolment,
   outcome: { state: 'exited' | 'killed' | 'timed_out'; exitCode?: number | null; exitReason?: string | null },
-  opts: { scopeCgroupPath?: string | null; fs?: CgroupFs } = {},
+  opts: {
+    scopeCgroupPath?: string | null;
+    fs?: CgroupFs;
+    inspectTaskUnitTerminals?: typeof inspectTaskUnitTerminals;
+    resetFailedTaskUnit?: typeof resetFailedTaskUnit;
+  } = {},
 ): void {
   if (!enrolment.enrolled) return;
   // `systemd-run --scope` forks the payload away from the client process. A
@@ -302,7 +308,27 @@ export function finishSyncEnrolment(
   }
   const close = () => {
     enrolment.releaseEnvironmentTransport();
-    void closeTask(enrolment.taskId, outcome).catch(() => {});
+    void (async () => {
+      const abnormal = outcome.state !== 'exited' || outcome.exitCode !== 0 || Boolean(outcome.exitReason);
+      const candidate =
+        abnormal && enrolment.confined && enrolment.scopeUnit
+          ? ((await (opts.inspectTaskUnitTerminals ?? inspectTaskUnitTerminals)([enrolment.scopeUnit])).get(
+              enrolment.scopeUnit,
+            ) ?? null)
+          : null;
+      const terminal =
+        candidate && (candidate.serviceResult || candidate.invocationId || candidate.loadState === 'loaded')
+          ? candidate
+          : null;
+      await closeTask(
+        enrolment.taskId,
+        terminal ? { ...outcome, terminalProvenance: terminal } : outcome,
+      );
+      if (terminal) await (opts.resetFailedTaskUnit ?? resetFailedTaskUnit)(terminal);
+    })().catch(() => {
+      // A retained failed unit is deliberately left in systemd when persistence
+      // fails, so the reconciler can capture and close it on the next tick.
+    });
   };
   // `completeSyncEnrolment` is deliberately fire-and-forget for synchronous spawn
   // callers, so the INSERT may still be in flight here. UPDATE-before-INSERT is a

@@ -32,6 +32,9 @@ import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 const L = vi.hoisted(() => ({
   closed: [] as { taskId: string; state: string; exitReason: string | null }[],
   marked: [] as { cgroupPath: string | null; confined: boolean }[],
+  terminal: [] as unknown[],
+  inspectTaskUnitTerminals: vi.fn(async () => new Map()),
+  resetFailedTaskUnit: vi.fn(async () => false),
 }));
 
 vi.mock('./enabled', () => ({
@@ -51,7 +54,13 @@ vi.mock('./store', () => ({
   },
   closeTask: async (taskId: string, v: { state: string; exitReason: string | null }) => {
     L.closed.push({ taskId, state: v.state, exitReason: v.exitReason });
+    L.terminal.push((v as { terminalProvenance?: unknown }).terminalProvenance ?? null);
   },
+}));
+
+vi.mock('./scope-terminal-state', () => ({
+  inspectTaskUnitTerminals: (...args: unknown[]) => L.inspectTaskUnitTerminals(...args),
+  resetFailedTaskUnit: (...args: unknown[]) => L.resetFailedTaskUnit(...args),
 }));
 
 import {
@@ -143,6 +152,9 @@ describe('confined task exit recording (WI-37509)', () => {
   beforeEach(() => {
     L.closed.length = 0;
     L.marked.length = 0;
+    L.terminal.length = 0;
+    L.inspectTaskUnitTerminals.mockReset().mockResolvedValue(new Map());
+    L.resetFailedTaskUnit.mockReset().mockResolvedValue(false);
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -269,6 +281,32 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(L.closed).toHaveLength(1);
     expect(L.closed[0]!.state).toBe('killed');
     expect(L.closed[0]!.exitReason).toBe('signal SIGKILL');
+  });
+
+  it('attaches and then releases a retained systemd OOM verdict before it disappears', async () => {
+    const terminal = {
+      capturedAt: '2026-08-24T16:00:00.000Z',
+      scopeUnit: 'placeholder',
+      cgroupPath: null,
+      invocationId: 'invocation-oom',
+      loadState: 'loaded',
+      activeState: 'failed',
+      serviceResult: 'oom-kill',
+      execMainCode: 2,
+      execMainStatus: 9,
+      memoryMaxBytes: 32 * 1024 * 1024,
+      peakMemoryBytes: 32 * 1024 * 1024,
+      peakMemorySource: 'systemd' as const,
+    };
+    const { emitter, result } = await spawnConfined([]);
+    terminal.scopeUnit = result.scopeUnit!;
+    L.inspectTaskUnitTerminals.mockResolvedValueOnce(new Map([[result.scopeUnit!, terminal]]));
+
+    emitter.emit('exit', 137, null);
+    await flushAfterHandoff();
+
+    expect(L.terminal).toEqual([terminal]);
+    expect(L.resetFailedTaskUnit).toHaveBeenCalledWith(terminal);
   });
 
   it('counts a payload that made its own sub-cgroups, via recursive pids.current', async () => {

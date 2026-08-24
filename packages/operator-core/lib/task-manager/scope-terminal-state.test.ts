@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkScopesReleased, parseActiveStateValues, type ExecFileFn } from './scope-terminal-state';
+import {
+  checkScopesReleased,
+  inspectTaskUnitTerminals,
+  parseActiveStateValues,
+  parseTaskUnitTerminalSnapshots,
+  resetFailedTaskUnit,
+  type ExecFileFn,
+} from './scope-terminal-state';
 
 /**
  * Build an ExecFileFn returning systemd's REAL output shape.
@@ -203,5 +210,86 @@ describe('parseActiveStateValues (WI-38163)', () => {
     // get classified `ended_unobserved`.
     expect(BUGGY_LEGACY_PARSE('inactive\n', 1)).toEqual(['inactive']);
     expect(parseActiveStateValues('inactive\n', 1)).toEqual(['inactive']);
+  });
+});
+
+describe('P-012 terminal provenance', () => {
+  const OOM_SHOW = [
+    'Result=oom-kill',
+    'ExecMainCode=2',
+    'ExecMainStatus=9',
+    'ControlGroup=',
+    'MemoryPeak=33554432',
+    'MemoryMax=33554432',
+    'Id=pc-oom123.service',
+    'LoadState=loaded',
+    'ActiveState=failed',
+    'InvocationID=19c08745790c46f9a337d563da055385',
+  ].join('\n');
+
+  it('parses a failed unit by Id and preserves its disappearing terminal facts', () => {
+    const captured = parseTaskUnitTerminalSnapshots(
+      `${OOM_SHOW}\n\nResult=success\nId=pc-gone123.scope\nLoadState=not-found\nActiveState=inactive\n`,
+      ['pc-gone123.scope', 'pc-oom123.service'],
+      '2026-08-24T16:00:00.000Z',
+    );
+
+    expect(captured.get('pc-oom123.service')).toEqual({
+      capturedAt: '2026-08-24T16:00:00.000Z',
+      scopeUnit: 'pc-oom123.service',
+      cgroupPath: null,
+      invocationId: '19c08745790c46f9a337d563da055385',
+      loadState: 'loaded',
+      activeState: 'failed',
+      serviceResult: 'oom-kill',
+      execMainCode: 2,
+      execMainStatus: 9,
+      memoryMaxBytes: 33_554_432,
+      peakMemoryBytes: 33_554_432,
+      peakMemorySource: 'systemd',
+    });
+    // An unknown/collected unit may say Result=success, but that is a default,
+    // not a historical verdict. Keep the release fact and suppress the fiction.
+    expect(captured.get('pc-gone123.scope')?.serviceResult).toBeNull();
+  });
+
+  it('reads all properties in one systemctl call and fails soft on command errors', async () => {
+    const exec = vi.fn(async () => ({ stdout: `${OOM_SHOW}\n`, stderr: '' }));
+    const captured = await inspectTaskUnitTerminals(
+      ['pc-oom123.service'],
+      exec as unknown as ExecFileFn,
+      () => new Date('2026-08-24T16:00:00.000Z'),
+    );
+    expect(captured.get('pc-oom123.service')?.serviceResult).toBe('oom-kill');
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec.mock.calls[0]![1]).toEqual(
+      expect.arrayContaining(['show', expect.stringMatching(/^--property=.*Result.*MemoryPeak/), 'pc-oom123.service']),
+    );
+
+    const broken = vi.fn(async () => {
+      throw new Error('no user bus');
+    });
+    expect((await inspectTaskUnitTerminals(['pc-oom123.service'], broken as unknown as ExecFileFn)).size).toBe(0);
+  });
+
+  it('resets only a loaded failed task unit, after the caller has persisted it', async () => {
+    const terminal = parseTaskUnitTerminalSnapshots(`${OOM_SHOW}\n`, ['pc-oom123.service']).get(
+      'pc-oom123.service',
+    )!;
+    const exec = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    expect(await resetFailedTaskUnit(terminal, exec as unknown as ExecFileFn)).toBe(true);
+    expect(exec).toHaveBeenCalledWith(
+      'systemctl',
+      ['--user', 'reset-failed', 'pc-oom123.service'],
+      expect.objectContaining({ timeout: 10_000 }),
+    );
+
+    expect(
+      await resetFailedTaskUnit(
+        { ...terminal, activeState: 'inactive' },
+        exec as unknown as ExecFileFn,
+      ),
+    ).toBe(false);
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 });
