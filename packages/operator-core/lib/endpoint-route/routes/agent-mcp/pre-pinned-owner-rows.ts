@@ -125,9 +125,6 @@ export function resolvePrePinnedOwnerLiveness(
 
 /**
  * The per-row evidence appended to a refusal, e.g.
-
-/**
- * The per-row evidence appended to a refusal, e.g.
  * `14746(display=terminal,session=bound)`.
  *
  * The refusal is launch-blocking and owner-visible (psu prints it, and since
