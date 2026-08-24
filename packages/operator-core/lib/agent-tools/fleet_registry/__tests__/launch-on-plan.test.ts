@@ -254,6 +254,22 @@ import tool, {
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
 import { standardValidate } from '@papercusp/tooldef';
 
+// Unprofiled local launches must choose terminal visibility explicitly. Existing
+// handler fixtures predate that fail-closed guard and intentionally exercise the
+// visible-terminal path, so make that choice at the test boundary while keeping
+// the guard itself covered by a direct handler test below.
+const invokeLaunchHandler = (
+  args: Record<string, unknown>,
+  context: unknown = {},
+  defaultHeadless: boolean | null = false,
+) =>
+  tool.handler(
+    defaultHeadless !== null && args.headless === undefined
+      ? { ...args, headless: defaultHeadless }
+      : args,
+    context as never,
+  );
+
 describe('fleet:launch-on-plan bounded response race (EI-21200981774877112)', () => {
   it('returns a pending response at the deadline without cancelling detached completion', async () => {
     let finish!: () => void;
@@ -420,6 +436,21 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
   });
 
+  it('refuses an unprofiled local launch when visibility is omitted', async () => {
+    const res = await tool.handler(
+      { name: 'Unprofiled Visibility', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const text = (res as { content: { text: string }[] }).content[0].text;
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(text).toContain('unprofiled_visibility_required');
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('reuses the persisted headcount launch profile for an existing-fleet top-up/takeover with an omitted recipe (D-008)', async () => {
     getFleetHeadcountTargetMock.mockResolvedValueOnce({
       workspaceId: 'ws-1',
@@ -444,7 +475,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       lastError: null,
     });
 
-    const res = await tool.handler({ name: 'Profiled Fleet' } as never, {} as never);
+    const res = await invokeLaunchHandler({ name: 'Profiled Fleet' } as never, {} as never, null);
     const payload = JSON.parse((res as any).content[0].text);
 
     expect(spawnHeadlessMock).toHaveBeenCalled();
@@ -489,7 +520,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       lastError: null,
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Profiled Fleet', account: 'auto', headless: false } as never,
       {} as never,
     );
@@ -515,7 +546,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       Array.from({ length: 4 }, () => ({ class: 'agent-session', memoryMaxBytes: 6 * 1024 ** 3 })),
     );
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Memory Full Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
       {} as never,
     );
@@ -548,7 +579,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       })),
     );
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Measured Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
       {} as never,
     );
@@ -571,7 +602,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       );
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Bad Role',
         plan: 'my-plan',
@@ -597,7 +628,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     claimSlot.mockClear();
     launchTransaction.persist.mockClear();
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Unlaunchable Codex Fleet',
         plan: 'my-plan',
@@ -628,7 +659,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     claimSlot.mockClear();
     launchTransaction.persist.mockClear();
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Mixed Context Fleet',
         plan: 'my-plan',
@@ -653,7 +684,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
   });
 
   it('installs caller-led control immediately after the presence role and reports its health', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Caller Led', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -680,7 +711,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       created: true,
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Spawn Led',
         plan: 'my-plan',
@@ -721,7 +752,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       created: false,
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Spawn Retry',
         plan: 'my-plan',
@@ -760,7 +791,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       created: false,
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Unrelated Top Up',
         plan: 'my-plan',
@@ -951,7 +982,7 @@ describe('memberLaunchCommand', () => {
       },
     });
 
-    const warned = await tool.handler(
+    const warned = await invokeLaunchHandler(
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -979,7 +1010,7 @@ describe('memberLaunchCommand', () => {
       },
     });
 
-    const notWarned = await tool.handler(
+    const notWarned = await invokeLaunchHandler(
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -1428,7 +1459,7 @@ describe('fleet:launch-on-plan handler — P-006 start gate', () => {
       },
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -1454,7 +1485,7 @@ describe('fleet:launch-on-plan handler — P-006 start gate', () => {
       row: { planSlug: 'my-plan', template: 42, inputSchema: null, templateData: null },
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -1478,7 +1509,7 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
 
   it('composes the member baseline and threads its path into every member command', async () => {
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -1524,7 +1555,7 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
   it('EI-19276371920501216: composes MULTI-LINE launchContext TEXT into the baseline file — no ENAMETOOLONG, no briefReadError', async () => {
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
     const briefText = 'MISSION: full drain of the non-P2P backlog.\nDo NOT touch WI-1234 — a peer owns it.';
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Text Brief Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, launchContext: briefText } as never,
       {} as never,
     );
@@ -1549,7 +1580,7 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
   // terminal spawn — the fix must not swallow real path-read failures.
   it('a short single-line nonexistent PATH refuses before opening any terminal', async () => {
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Missing Brief Fleet',
         plan: 'my-plan',
@@ -1582,7 +1613,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
   it('gives each listed member its OWN composed context, index-aligned', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Per-Member Fleet',
         plan: 'my-plan',
@@ -1618,7 +1649,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
   it('gives each members[i] its own model/account, falling back to the fleet arg when unset', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Per-Member Fleet',
         plan: 'my-plan',
@@ -1649,7 +1680,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
   it('composes members[i].brief inline text into that member OWN context file', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Per-Member Fleet',
         plan: 'my-plan',
@@ -1669,7 +1700,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
   it('falls back to the shared baseline for members BEYOND the perMemberLaunchContext array — never errors', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Partial Fleet',
         plan: 'my-plan',
@@ -1695,7 +1726,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
   it('a per-member unreadable file refuses before opening any terminal', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Resilient Fleet',
         plan: 'my-plan',
@@ -1713,7 +1744,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
 
   it('a members[i].launchContext path is preflighted and refuses before opening any terminal', async () => {
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 101 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Declarative Brief Fleet',
         plan: 'my-plan',
@@ -1741,7 +1772,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
 
   it('rejects launch-from-seats + a per-member model/effort/account (contradicts the delegated slot)', async () => {
     for (const bad of [{ model: 'opus' }, { effort: 'high' }, { account: 'auto' }]) {
-      const res = await tool.handler(
+      const res = await invokeLaunchHandler(
         {
           name: 'Seat Fleet',
           plan: 'my-plan',
@@ -1771,7 +1802,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
   it('HONORS a per-member carry override — member 1 gets a COLD baseline, member 2 the fleet-wide WARM', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Carry Fleet',
         plan: 'my-plan',
@@ -1797,7 +1828,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
   it('echoes resolvedMembers (model/account/carry/compactionLimit/claimKinds) so the leader confirms each member', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Echo Fleet',
         plan: 'my-plan',
@@ -1828,7 +1859,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
 
   it('resolvedMembers is null for a homogeneous (no-`members`) launch — no needless breakdown', async () => {
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Plain Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -1840,7 +1871,7 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
   it('WARNS that a per-member claimKinds is not applied at launch (only the fleet claim spec is)', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Lane Fleet',
         plan: 'my-plan',
@@ -1872,7 +1903,7 @@ describe('fleet:launch-on-plan handler — EI-8289 display disclosure', () => {
       display: ':1',
       desktopEnvResolvedVia: 'active-seat',
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Display Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -1890,7 +1921,7 @@ describe('fleet:launch-on-plan handler — EI-8289 display disclosure', () => {
       display: ':93',
       desktopEnvResolvedVia: 'socket-scan',
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Xvfb Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -1926,7 +1957,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
         'org.freedesktop.DBus ServiceUnknown (:1.113), fallback StartServiceByName org.gnome.Terminal timed out',
       code: 502,
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'DBus Fail Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -1947,7 +1978,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
   it('releases the fleet-launch idempotency slot when EVERY spawn failed, so an immediate legitimate retry is not suppressed', async () => {
     spawnConsoleMock.mockReturnValue({ status: 'error', error: 'no window opened', code: 502 });
     const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
-    await tool.handler(
+    await invokeLaunchHandler(
       { name: 'DBus Fail Fleet 2', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -1961,7 +1992,7 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
       if (call < 3) return { status: 'ok', terminal: `term-${call}`, pid: 220 + call };
       return { status: 'error', error: 'spawn 3 failed: no window opened', code: 502 };
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Partial DBus Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
@@ -1996,7 +2027,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     launchTransaction.verify
       .mockResolvedValueOnce({ agentStarted: null, waitedMs: 10_000, sessions: [], note: 'UNVERIFIED' })
       .mockResolvedValueOnce({ agentStarted: null, waitedMs: 30_000, sessions: [], note: 'UNVERIFIED' });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Canary Stop Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
@@ -2042,7 +2073,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       });
       launchTransaction.verify.mockReturnValue(verification);
 
-      const responsePromise = tool.handler(
+      const responsePromise = invokeLaunchHandler(
         { name: 'Bounded Response Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
         {} as never,
       );
@@ -2084,7 +2115,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       sessions: [],
       note: 'UNVERIFIED',
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Slow Canary Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
@@ -2107,7 +2138,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       .mockResolvedValueOnce({ agentStarted: null, waitedMs: 30_000, sessions: [], note: 'UNVERIFIED wave' })
       .mockResolvedValueOnce({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified final wave' });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Slow Later Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
@@ -2127,7 +2158,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
   });
 
   it('rolls out one canary then bounded waves, with exact pre-pinned identities', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Bounded Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 8 } as never,
       {} as never,
     );
@@ -2164,7 +2195,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       return { status: 'ok', terminal: `term-${spawn}`, pid: 500 + spawn };
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Partial Fifty Fleet', plan: 'my-plan', harness: 'papercusp', count: 50 } as never,
       {} as never,
     );
@@ -2204,7 +2235,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     launchTransaction.verify
       .mockResolvedValueOnce({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' })
       .mockResolvedValueOnce({ agentStarted: false, waitedMs: 1, sessions: [], note: 'ATTESTATION MISMATCH' });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Mismatch Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
@@ -2239,7 +2270,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
   it('refuses a relaunch when the fleet already has >= count LIVE members — no spawn at all', async () => {
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1', 'm-2']);
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -2260,7 +2291,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1']);
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Beta Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -2294,7 +2325,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
       },
     });
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Capacity Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
@@ -2325,7 +2356,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
         tiers: [{ tier: 3, cap: 0, inFlight: 0, queued: 0 }],
       },
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Full Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -2344,7 +2375,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const ownerId = vi.mocked(resolveFleetCaller)({} as never).ownerId as string;
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([ownerId]);
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Gamma Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -2386,7 +2417,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       priorAt: Date.now() - 5_000,
       priorCount: 2,
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Refire Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
     );
@@ -2441,7 +2472,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     });
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term', pid: 123 });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Resume Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
@@ -2503,7 +2534,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     });
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term', pid: 123 });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Resume Expired Fleet', plan: 'my-plan', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
@@ -2537,7 +2568,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       priorAt: Date.now() - 12_000,
       priorCount: 3,
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Refire Fleet', plan: 'drain-me', harness: 'papercusp', count: 3 } as never,
       {} as never,
     );
@@ -2576,7 +2607,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       },
       created: false,
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Partial Notice Fleet', plan: 'drain-me', harness: 'papercusp', count: 5 } as never,
       {} as never,
     );
@@ -2594,7 +2625,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       priorAt: Date.now() - 1_000,
       priorCount: 1,
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Solo Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -2632,7 +2663,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       callOrder.push('spawnConsole');
       return { status: 'ok', terminal: 'term-1', pid: 123 };
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'] } as never,
       {} as never,
     );
@@ -2666,7 +2697,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
   });
 
   it('EI-21148090110387275: claimKinds alone (no plan) still gets the global kind-only filter — P-003 pure claim-spec fleet', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Pure Drain Fleet', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'] } as never,
       {} as never,
     );
@@ -2679,7 +2710,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
   });
 
   it('#4: ALWAYS sets a PLAN-scoped claim spec even when claimKinds is omitted', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'No Kinds Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -2698,7 +2729,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
 
   it('best-effort: a claim-spec write failure never blocks the launch', async () => {
     setClaimSpecMock.mockRejectedValue(new Error('db unavailable'));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Resilient Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['task'] } as never,
       {} as never,
     );
@@ -2714,7 +2745,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
   // about the launch's own harness scope changed. That stranded a live canary member whose
   // scheduler:get_next filters by harness_slug: the spec existed, but scoped to nothing.
   it('EI-21177728511242093: threads the launch\'s resolved harness through as the claim-spec potSlug — never a hardcoded null', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'] } as never,
       {} as never,
     );
@@ -2731,7 +2762,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     // top-up/relaunch, not a fresh create — the exact shape of the reported bug.
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValueOnce(['su-existing-member']);
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 2, claimKinds: ['bug'] } as never,
       {} as never,
     );
@@ -2767,7 +2798,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
       refuse: true,
       errors: ['spec matches 0 of 12 claimable row(s) — the starved-fleet shape'],
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Starved Fleet', plan: 'my-plan', harness: 'papercusp', count: 3, claimKinds: ['bug'] } as never,
       {} as never,
     );
@@ -2790,7 +2821,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
       errors: [],
       warning: 'pool-collapse confirmed by caller',
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Prestaged Fleet',
         plan: 'my-plan',
@@ -2808,7 +2839,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
   });
 
   it('a fed lane launches and SURFACES poolEffect.matched (the counter-signal to starvation)', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Fed Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'] } as never,
       {} as never,
     );
@@ -2843,7 +2874,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
       refuse: true,
       errors: ['spec matches 0 of 12 claimable row(s) — the starved-fleet shape'],
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Starved Plan Fleet', plan: 'my-plan', harness: 'papercusp', count: 10 } as never,
       {} as never,
     );
@@ -2862,7 +2893,7 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
 
   it('WARNS (never refuses) a PLAN-ONLY fleet whose lane matches fewer rows than requested members — the exact live-incident shape (matched:1, count:10)', async () => {
     previewSpecPoolEffectMock.mockResolvedValue({ matched: 1, pool: 1719, states: ['open'], harness: 'papercusp' });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Nonp2p Bug Drain', plan: 'bug-drain-tracking-plan', harness: 'papercusp', count: 10 } as never,
       {} as never,
     );
@@ -2921,7 +2952,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
   });
 
   const launch = async (args: Record<string, unknown> = {}) =>
-    tool.handler(
+    invokeLaunchHandler(
       {
         name: 'Drain Fleet',
         plan: 'my-plan',
@@ -3035,7 +3066,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
   // checks now run uniformly for every freshly-built spec (plan-only included).
   it('DOES run the composition read for a pure plan fleet too (no claimKinds) — a fresh plan-only lane is just as characterizable', async () => {
     aggregateAdmittedCompositionMock.mockResolvedValue(HEALTHY_COMPOSITION);
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Plan Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -3072,7 +3103,7 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
       callOrder.push('spawnConsole');
       return { status: 'ok', terminal: 'term-1', pid: 123 };
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Fresh Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -3086,7 +3117,7 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
 
   it('warns in the message when it had to backstop a missing plans:start (promoted > 0)', async () => {
     promotePlanItemsMock.mockResolvedValue({ promoted: 2, skipped: 0 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Forgot Start', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -3096,7 +3127,7 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
 
   it('stays silent (no warning) when the plan was already promoted upstream (idempotent no-op)', async () => {
     promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 5 });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Already Started', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -3113,7 +3144,7 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
       specTriadMissing: ['requirements', 'design'],
       specTriadWorkItem: 'EI-TRIAD-1',
     });
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Missing Triad', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -3131,7 +3162,7 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
 
   it('never blocks the launch when promotion throws (best-effort)', async () => {
     promotePlanItemsMock.mockRejectedValue(new Error('promotion boom'));
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Resilient Promote', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -3150,7 +3181,7 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
       message: 'Actionable promoted families disagree with the exact-plan lane reachability/counts.',
     });
 
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Refused Admission', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
@@ -3218,7 +3249,7 @@ describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads thr
   });
 
   it('WITHOUT override: a gateway-routed launch is zeroed by healthyAccounts:0 (the repro — opened:[])', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       { name: 'Override Fleet', plan: 'my-plan', harness: 'papercusp', count: 4, account: 'auto' } as never,
       {} as never,
     );
@@ -3237,7 +3268,7 @@ describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads thr
   });
 
   it('WITH overrideCapacityClamp:true: all 4 members launch despite healthyAccounts:0, and the override is legible', async () => {
-    const res = await tool.handler(
+    const res = await invokeLaunchHandler(
       {
         name: 'Override Fleet',
         plan: 'my-plan',
