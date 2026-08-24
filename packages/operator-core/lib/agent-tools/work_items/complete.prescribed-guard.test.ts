@@ -101,6 +101,29 @@ describe('prescribedRecurrenceGuardCoverageGap', () => {
     ).toBeUndefined();
   });
 
+  it('credits a repo-relative prescribed test path in structured evidence when filesChanged names only the writer', () => {
+    const item = {
+      title: 'dev:restart guidance exceeds the enforced prompt-weight budget',
+      summary:
+        'The writer-backed assertion requires the guidance to stay below 1500 characters; rerun the focused budget suite after trimming.',
+      payload: {
+        paths: [
+          'packages/operator-core/lib/__tests__/tools-md-sync.test.ts',
+          'packages/operator-core/lib/__tests__/tool-guidance-budget.shared.ts',
+        ],
+      },
+    };
+    const evidence = {
+      testsRun: 'npx vitest run --silent=true lib/__tests__/tools-md-sync.test.ts',
+      testResult: 'PASS: tools-md-sync.test.ts 57/57',
+      verifiedHow: 'Read the prompt-weight writer, then reran the focused budget suite.',
+      filesChanged: ['packages/operator-core/lib/agent-tools/dev/restart.ts'],
+    };
+
+    expect(prescribedRecurrenceGuardCoverageGap(item, { verification: evidence })).toBeUndefined();
+    expect(prescribedRecurrenceGuardCoverageGap(item, evidence)).toBeUndefined();
+  });
+
   // EI-20551121122206657 — the three cases below pin the PER-PART matching rule. The first
   // is the observed false alarm; the second is the flag placement the tool's own description
   // recommends; the third is the calibration that keeps the fix from being a blanket

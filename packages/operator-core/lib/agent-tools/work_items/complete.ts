@@ -911,12 +911,14 @@ function completionTextParts(completion: unknown): string[] {
     ...strings(rec.tests),
     ...strings(rec.testsRun),
     ...strings(rec.testResult),
+    ...strings(rec.verifiedHow),
     ...strings(rec.coordNotes),
     ...strings(rec.whatLanded),
     ...strings(rec.deferred),
     ...strings(rec.migrations),
     ...strings(nested.testsRun),
     ...strings(nested.testResult),
+    ...strings(nested.verifiedHow),
   ];
 }
 
@@ -947,6 +949,68 @@ function completionFilesChanged(completion: unknown): string[] {
     Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
   return [...strings(rec.filesChanged), ...strings(nested.filesChanged)];
 }
+
+function completionStructuredEvidenceTexts(completion: unknown): {
+  testsRun: string[];
+  testResult: string[];
+  verifiedHow: string[];
+} {
+  if (!completion || typeof completion !== 'object' || Array.isArray(completion)) {
+    return { testsRun: [], testResult: [], verifiedHow: [] };
+  }
+  const rec = completion as Record<string, unknown>;
+  const nested =
+    rec.verification && typeof rec.verification === 'object' && !Array.isArray(rec.verification)
+      ? (rec.verification as Record<string, unknown>)
+      : {};
+  const strings = (value: unknown): string[] =>
+    typeof value === 'string'
+      ? [value]
+      : Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+  return {
+    // `verification` is canonical; the top-level fields are legacy aliases. Keep the
+    // same precedence as completionEvidenceFromRecord so a stale alias cannot make a
+    // structured test citation disappear from this advisory.
+    testsRun: strings(nested.testsRun ?? rec.testsRun ?? rec.tests),
+    testResult: strings(nested.testResult ?? rec.testResult),
+    verifiedHow: strings(nested.verifiedHow ?? rec.verifiedHow),
+  };
+}
+
+function prescribedItemPaths(item: { payload?: unknown }): string[] {
+  if (!item.payload || typeof item.payload !== 'object' || Array.isArray(item.payload)) return [];
+  const payload = item.payload as Record<string, unknown>;
+  const pathValues = ['paths', 'testPaths', 'guardPaths'].flatMap((key) =>
+    Array.isArray(payload[key]) ? payload[key] : [],
+  );
+  return Array.from(
+    new Set(
+      pathValues
+        .map(repoRelativePath)
+        .filter((path): path is string => Boolean(path)),
+    ),
+  );
+}
+
+function pathMentionedInEvidence(text: string, declaredPath: string): boolean {
+  const normalizedPath = repoRelativePath(declaredPath);
+  if (!normalizedPath) return false;
+  const normalizedText = text.replaceAll('\\', '/');
+  const segments = normalizedPath.split('/');
+  const variants = [normalizedPath];
+  // Commands run from a package workspace commonly omit the leading
+  // `packages/<package>/` segments. Try path suffixes with at least two segments,
+  // which recognizes `lib/__tests__/foo.test.ts` without reducing every basename
+  // mention to evidence for an unrelated test.
+  for (let start = 1; start < segments.length - 1; start += 1) {
+    variants.push(segments.slice(start).join('/'));
+  }
+  return variants.some((variant) => normalizedText.includes(variant));
+}
+
+const TEST_PATH_RE = /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)|\.(?:test|spec)\.[^.]+$/i;
 
 function repoRelativePath(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -1150,9 +1214,22 @@ export function prescribedRecurrenceGuardCoverageGap(
   const parts = completionTextParts(record);
   const partNegative = (part: string): boolean => COMPLETION_NEGATIVE_GUARD_RE.test(part);
   const filesChanged = completionFilesChanged(record);
-  const testPath = filesChanged.some((path) =>
-    /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)|\.(?:test|spec)\.[^.]+$/i.test(path),
-  );
+  const testPath = filesChanged.some((path) => TEST_PATH_RE.test(path));
+  const structuredEvidence = completionStructuredEvidenceTexts(record);
+  const structuredEvidenceParts = [
+    ...structuredEvidence.testsRun,
+    ...structuredEvidence.testResult,
+    ...structuredEvidence.verifiedHow,
+  ];
+  const declaredTestPath = prescribedItemPaths(item).filter((path) => TEST_PATH_RE.test(path));
+  // A completion may run the prescribed test from its package cwd, so its
+  // `testsRun` path can omit the repository's `packages/<package>/` prefix. Credit
+  // that structured citation only when it matches a test path declared by the item;
+  // an arbitrary passing unit test is not proof of the prescribed recurrence guard.
+  const pointsToDeclaredTest =
+    declaredTestPath.some((path) =>
+      structuredEvidenceParts.some((part) => pathMentionedInEvidence(part, path)),
+    ) && !structuredEvidenceParts.some(partNegative);
   // A disclaimer anywhere still withholds credit from the bare addedTests+path pair (that
   // pair carries no prose of its own to disclaim); it is now evaluated per part, so only a
   // real disclaimer counts, not one manufactured at a field boundary.
@@ -1160,7 +1237,7 @@ export function prescribedRecurrenceGuardCoverageGap(
   const pointsToGuard = parts.some((part) => COMPLETION_GUARD_RE.test(part) && !partNegative(part));
   const pointsToAddedTest = completionAddedTests(record) && testPath && !negativeSomewhere;
   const explicitWaiver = parts.some((part) => EXPLICIT_GUARD_WAIVER_RE.test(part));
-  if (pointsToGuard || pointsToAddedTest || explicitWaiver) return undefined;
+  if (pointsToGuard || pointsToAddedTest || pointsToDeclaredTest || explicitWaiver) return undefined;
   return { prescriptions };
 }
 
