@@ -1744,7 +1744,14 @@ case "$_preempt_mode" in
     ;;
 esac
 if [ "$_preemptible" = 1 ]; then
-  _runner=(bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_writer_path" "${_runner[@]}")
+  # Keep the monitor outside the outer wrapper's process group. A caller-side
+  # hard kill (for example a test/job deadline) can SIGKILL that wrapper and
+  # every member of its group, so a same-group monitor never gets a chance to
+  # reap the isolated workload. `setsid` gives the monitor its own session;
+  # `_outer_pid` still lets it detect the wrapper's death and reap the child
+  # group before returning. Normal TERM/EXIT paths continue to use the same
+  # cleanup function.
+  _runner=(setsid --fork --wait bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_writer_path" "${_runner[@]}")
 fi
 
 # Run holding the slot; the flock releases when this shell exits (normal, error,
