@@ -1273,7 +1273,11 @@ export function isVerificationWorkItem(item: {
   summary?: unknown;
   payload?: unknown;
 }): boolean {
-  if (item.kind === 'task') return true;
+  // `task` is a broad deliverable kind that also covers design exploration and other
+  // non-verification work. Treating it as a marker made universal language in an
+  // ordinary design summary demand a fabricated population partition. Verification
+  // tasks still opt in through the same explicit title/summary/metadata markers as
+  // every other work-item kind.
   const payload =
     item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
       ? (item.payload as Record<string, unknown>)
@@ -1905,7 +1909,7 @@ async function completeOne(
   const treeStamp = completionEvidenceBeforeStamp
     ? registeredRepoRoots
       ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
-      : completionTreeStamp()
+      : completionTreeStamp({ filesChanged: completionEvidenceBeforeStamp.filesChanged })
     : undefined;
   const completionEvidenceToPersist: CompletionVerificationEvidence | undefined =
     completionEvidenceBeforeStamp && treeStamp

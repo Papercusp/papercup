@@ -915,7 +915,7 @@ describe('work_items:complete (keyed-array)', () => {
         // stamp's presence AND to the real repo's current HEAD. What this test is FOR is
         // that every caller-supplied field rides through — which is what it still asserts.
         completionEvidence: expect.objectContaining({
-          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+          filesChanged: ['packages/operator-core/package.json'],
           testsRun: 'pnpm vitest complete.test.ts --run',
           testResult: '1/1 green',
           verifiedHow: 'unit',
@@ -1977,6 +1977,39 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.verificationCoverageError).toBeUndefined();
     });
 
+    it('does not classify an ordinary design task as verification when its prose is universal', async () => {
+      const designTask = {
+        ...item,
+        id: 'WI-design-task',
+        kind: 'task',
+        family: 'issue',
+        state: 'open',
+        title: 'Explore completion UX design',
+        summary: 'Sketch the proposed hand-edit flow.',
+      };
+      expect(isVerificationWorkItem(designTask)).toBe(false);
+      getWorkItem.mockResolvedValue(designTask);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...designTask, state: 'resolved' }));
+
+      const r = await one({
+        id: 'WI-design-task',
+        state: 'resolved',
+        completion: {
+          summary: 'The design covers every page and all content states in the proposed flow.',
+          verifiedHow: 'manual',
+          testResult: 'design sketch captured',
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-design-task',
+        'resolved',
+        expect.objectContaining({ completionEvidence: expect.objectContaining({ summary: expect.any(String) }) }),
+      );
+    });
+
     it('accepts an explicit empty residue array for an ordinary close without universal-claim wording', async () => {
       const ordinaryVerification = {
         ...item,
@@ -2033,6 +2066,13 @@ describe('work_items:complete (keyed-array)', () => {
 
     it('keeps the helper contract explicit for verification markers and coverage accounting', () => {
       expect(isVerificationWorkItem(verificationItem)).toBe(true);
+      expect(
+        isVerificationWorkItem({
+          kind: 'task',
+          title: 'Verify every rendered page',
+          summary: 'Run the source-backed verification pass.',
+        }),
+      ).toBe(true);
       expect(claimsUniversalVerification(universalCompletion)).toBe(true);
       expect(
         hasEnumeratedVerificationCoverage({
