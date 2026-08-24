@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 815,
+  "count": 819,
   "tools": [
     {
       "name": "ablation:report",
@@ -9621,7 +9621,7 @@
           "POST"
         ]
       },
-      "description": "Monitoring metrics for the operator-hosted worker:chunk-loop rollout (P-020), all six gate metrics: feature completion RATE, outcome DISTRIBUTION (completed/escalated/planning_failed/aborted), file-lock CONTENTION rate, replan FREQUENCY across all runs, crash-RESUME success rate, and per-chunk DURABILITY — split by execution PATH (subprocess vs the operator-hosted op) — plus the op−subprocess completion-rate delta. Reads harness_shared.worker_chunk_loop_outcomes for the active workspace over a lookback window. EMPTY (zeroed) until the dark-launch (per-harness workerChunkLoop knob) has run real features through the op path. Use to diff op vs subprocess parity before/while ramping.",
+      "description": "Worker rollout metrics. The default P-020 view compares worker:chunk-loop execution paths. Set includeOwnedLoopParity=true for the P-011 fail-closed owned-loop vs omp -p worker gate: paired task success, cost/task, stream fidelity, and MCP compatibility. A worker engine may flip only when ownedLoopParity.workerFlipAllowed is true.",
       "capabilities": [
         "intel:read"
       ],
@@ -9633,7 +9633,7 @@
         "cup"
       ],
       "guidance": {
-        "when": "Watch worker:chunk-loop dark-launch / ramp health — is the operator-hosted op at parity with the subprocess path on completion-rate + outcome distribution? Read before approving a ramp step.",
+        "when": "Watch worker:chunk-loop dark-launch/ramp health. For own-loop cutover, pass includeOwnedLoopParity=true and require its explicit green verdict before changing worker engine defaults.",
         "notWhen": "Live rate-limit pacing — dev:rate_governor_status. Per-feature chunk progress — the harness UI / harness_chunk_plans. Whether the op path is ROUTED on a harness — check the per-harness workerChunkLoop config knob."
       }
     },
@@ -9767,7 +9767,7 @@
           "POST"
         ]
       },
-      "description": "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'`/`harness:'engineering'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\". A workspace-scoped session gets `harness_forbidden` for `harness:'all'` — pass `harness:'engineering'` instead to reach the same corpus.",
+      "description": "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Pass `query` (or legacy alias `q`; `query` wins when both are supplied). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'`/`harness:'engineering'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\". A workspace-scoped session gets `harness_forbidden` for `harness:'all'` — pass `harness:'engineering'` instead to reach the same corpus.",
       "capabilities": [
         "docs:read"
       ],
@@ -15954,7 +15954,7 @@
           "POST"
         ]
       },
-      "description": "Write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, then supplied win and ? PREDICTED yields before ✓ VERIFIED); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
+      "description": "Read or write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { read:true, ownerId?, harness? } to read, or { did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, then supplied win and ? PREDICTED yields before ✓ VERIFIED); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
       "capabilities": [
         "routines:write"
       ],
@@ -15979,7 +15979,7 @@
       "guidance": {
         "when": "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Use rowsMode:'replace' only when retiring rows; default merge mode preserves them. Pair with work_items:checkpoint because a loop note can be lost if the session dies.",
         "notWhen": "WARM loops (carry:'warm', the default) carry the live transcript and need no note. Use work_items:checkpoint for work-item state.",
-        "chaining": "Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor recovery and facts:assert for durable conclusions."
+        "chaining": "Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor recovery and facts:assert for durable conclusions. When retuning carry, re-arm with every required field: loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes."
       }
     },
     {
@@ -18860,9 +18860,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before ready/active, use `phase:'activation'` after reading the full source conversation and map every requirement/constraint/decision to the current plan. Before shipped, use the default completion phase and compare every item to the ACTUAL CODE — not work-item records or memory.",
+        "when": "Before ready/active, use `phase:'activation'` after reading the COMPLETE source conversation (never memory/summary). Map every requirement, scope boundary, constraint, correction, rejected alternative, decision, dependency, sequence, acceptance condition, open question, and promised follow-up to current P-NNN/D-NNN/sections; repair omissions first. Before shipped, use the default completion phase and compare every item to the ACTUAL CODE — not work-item records or memory.",
         "notWhen": "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
-        "chaining": "sessions:search/read → plans:audit { phase:'activation' } → plans:set-plan-status { status:'ready' }; completion: plans:audit → rubric/scorecard → shipped."
+        "chaining": "sessions:search/read (complete source) → repair omissions → plans:audit { phase:'activation' } → plans:set-plan-status { status:'ready' }. Later edits preserve the audit and return activationAudit audited/current revision metadata: re-audit only when meaning changes; cosmetic-only edits do not require it. Completion: plans:audit → rubric/scorecard → shipped."
       }
     },
     {
@@ -19116,6 +19116,142 @@
         "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance.",
         "notWhen": "Authoring behavior — plans:set-specs. Running a test — testing:run.",
         "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints."
+      }
+    },
+    {
+      "name": "plans:cleanup-act",
+      "http": {
+        "path": "/api/agent-tools/plans/cleanup-act",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Apply ONE currently-provable cleanup finding. Holds the run authority lock across fresh re-verification, canonical plan/claim dispatch, outcome, and counters. If Stop won first, no mutation starts.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "The cleanup manifest marks one pending finding autoApply:true and you have a concise evidence-based rationale.",
+        "notWhen": "The finding is recommended, blocked by a live agent, stale, or only needs reporting."
+      }
+    },
+    {
+      "name": "plans:cleanup-manifest",
+      "http": {
+        "path": "/api/agent-tools/plans/cleanup-manifest",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a plan-cleanup run and its run-scoped findings with CURRENT autoApply verdicts. Omit runId for the active cleanup run. stopped:true means authority is revoked: halt without acting or reporting.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "First call as a plan-cleanup resolver, and again before each batch of actions.",
+        "notWhen": "Browsing plans generally (plans:list/plans:get) or editing one plan by hand."
+      }
+    },
+    {
+      "name": "plans:cleanup-report",
+      "http": {
+        "path": "/api/agent-tools/plans/cleanup-report",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record non-action cleanup outcomes: recommended with a rationale, or skipped/failed with an error. This verb cannot claim auto_applied; effects must use plans:cleanup-act.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "Batch the non-action outcomes after reviewing a cleanup manifest.",
+        "notWhen": "Applying a finding or ending the run."
+      }
+    },
+    {
+      "name": "plans:cleanup-settle",
+      "http": {
+        "path": "/api/agent-tools/plans/cleanup-settle",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "End a plan-cleanup pass. The final phase is derived from finding rows; pass failed:true with an error only when abandoning the run part-way.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "guidance": {
+        "when": "Last call after every cleanup finding was acted or reported.",
+        "notWhen": "Mid-pass."
       }
     },
     {
@@ -20269,7 +20405,7 @@
           "POST"
         ]
       },
-      "description": "The conversation behind a plan revision — scoped: paginated by cursor, narrowable by query, never a whole-transcript dump. Returns turns from the plan-run transcript; revisions from a direct editor save or a git backfill report available:false.",
+      "description": "The conversation behind a plan revision — scoped: paginated by cursor, narrowable by query, never a whole-transcript dump. Reads plan-run and ordinary Claude/OMP/Codex agent transcripts; direct editor saves and git backfills report available:false.",
       "capabilities": [
         "plans:read"
       ],
@@ -21412,7 +21548,7 @@
           "POST"
         ]
       },
-      "description": "Flip a plan's lifecycle status (draft→ready approve, ready→draft demote, →shipped = mark COMPLETE/FINISHED/archive it, →superseded reject). Plan-level frontmatter, not an item's status. Also the Mug↔Scout DEPRECATE handler: pass `learnings` with status='superseded' to also emit a salvage observation into Scout's digest (no dead ends) — see guidance.",
+      "description": "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`. This is plan frontmatter, not item status. For Mug↔Scout deprecation, status='superseded' plus `learnings` emits a salvage observation.",
       "capabilities": [
         "plans:write"
       ],
@@ -21473,9 +21609,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, marking it COMPLETE/FINISHED/DONE once every item is done (status='shipped' — archives it), or rejecting it (→superseded). DEPRECATING a Mug↔Blender draft that won't reach ready: status='superseded' + `learnings:{tried,stalled,salvageable}` — one atomic call deprecates AND records the salvage observation (don't file a separate improvements:capture).",
-        "notWhen": "Flipping a P-NNN item's status — use plans:set-status. Legacy plan without frontmatter — plans:set-frontmatter first (refused with no_status_line). `learnings` on a non-superseded status is ignored (deprecate-only). ⚠ 'shipped' refuses without a peer-graded acceptance rubric.",
-        "chaining": "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. Approving is optional before plans:start — starting a draft auto-approves it (draft→ready). Deprecate: plans:set-plan-status { slug, status:'superseded', learnings:{…} } → the returned learningsObservation reports the emitted observation."
+        "when": "Use for a plan lifecycle change. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), map requirements, constraints, corrections, rejected alternatives, decisions, acceptance conditions, open questions, and follow-ups; repair omissions; record `plans:audit { phase:'activation' }`. Other moves: ready→draft, ship after completion, or supersede. Mug↔Blender draft deprecation: status='superseded' + `learnings:{tried,stalled,salvageable}`.",
+        "notWhen": "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded. ⚠ `shipped` requires a peer-graded acceptance rubric.",
+        "chaining": "Activation: sessions:search/read → repair draft → `plans:audit { phase:'activation' }` → set status ready with `expectedCurrent:'draft'`. Re-audit after semantic edits; cosmetic-only edits do not need it. Starting a draft uses the same gate. Deprecate with status='superseded' + `learnings`."
       }
     },
     {
@@ -21990,7 +22126,7 @@
           "POST"
         ]
       },
-      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
+      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready', and that transition is refused until `plans:audit { phase:'activation' }` has recorded a complete source-conversation audit. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
       "capabilities": [
         "plans:write"
       ],
@@ -22051,9 +22187,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "An agent is asked to begin work on a specific plan — this starts its item-promotion path into work-items.",
+        "when": "After re-reading the complete plan-related conversation, mapping every requirement/constraint/correction/rejected alternative/decision/acceptance condition/open question/follow-up, repairing omissions, and recording `plans:audit { phase:'activation' }` — this starts the plan's item-promotion path into work-items.",
         "notWhen": "The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.",
-        "chaining": "plans:list to find the slug, then plans:start { slug }."
+        "chaining": "sessions:search/read (complete source conversation) → repair the draft → plans:audit { phase:'activation' } → plans:start { slug }. If an edit response carries activationAudit metadata, compare audited/current revisions and re-audit only for a material change; cosmetic-only edits do not require it."
       }
     },
     {
@@ -25790,7 +25926,7 @@
           "POST"
         ]
       },
-      "description": "Sleep until a monitored service transitions back to HEALTHY (service:up:<name>) instead of re-polling dev:service_health. Then END YOUR TURN.",
+      "description": "Sleep until a monitored service transitions back to HEALTHY (service:up:<name>) instead of re-polling dev:service_health. If it is already healthy, return immediately instead of arming a dead edge wait. Then END YOUR TURN.",
       "capabilities": [
         "coord:write"
       ],
@@ -28899,7 +29035,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and `assumptions` (`\"none\"` or fact keys). Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a complete population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`[\"none\"]` means zero), and residue is separate from the status buckets. In `completion.verification`, use only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; put descriptive tests/typecheck/diff in top-level aliases instead. Keep `deferred`/`coordNotes` outside verification; cite live-UI artifacts; use `completion.duplicateOf` for duplicates.",
+        "when": "After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys) — terminal closes cannot omit it. Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`[\"none\"]` means zero); residue is separate. Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `completion.duplicateOf` for duplicates.",
         "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.",
         "chaining": "work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits."
       }
