@@ -113,6 +113,7 @@ import {
   pipelineName,
   formatGateLineageLine,
   computeGateLineage,
+  retireInFlightCandidateAfterResult,
   matchFailingFilesToChanged,
   unmatchedFailingFiles,
   failingFilesUncommitted,
@@ -1408,6 +1409,32 @@ describe("in-flight candidate publication", () => {
 
     expect(order.slice(0, 2)).toEqual(["published", "setup"]);
   });
+});
+
+describe("in-flight candidate retirement ownership", () => {
+  it("does not let a skipped-locked process clear the live holder's marker", async () => {
+    const clear = vi.fn(async () => {});
+
+    await expect(
+      retireInFlightCandidateAfterResult(
+        { reason: "skipped-locked" },
+        clear,
+      ),
+    ).resolves.toBe(false);
+    expect(clear).not.toHaveBeenCalled();
+  });
+
+  it.each(["advanced", "not-green", "infra-inconclusive"] as const)(
+    "retires the marker for the lock-owning %s terminal path",
+    async (reason) => {
+      const clear = vi.fn(async () => {});
+
+      await expect(
+        retireInFlightCandidateAfterResult({ reason }, clear),
+      ).resolves.toBe(true);
+      expect(clear).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe("acquireCheckpointRunLock", () => {

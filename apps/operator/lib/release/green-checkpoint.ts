@@ -786,6 +786,24 @@ export interface CheckpointResult {
   crashed?: boolean;
 }
 
+/**
+ * Retire the published in-flight candidate only for a process that could own it.
+ *
+ * A `skipped-locked` process lost the per-root run lock before it selected or
+ * published any candidate. Clearing the shared marker from that terminal path
+ * erases the real lock holder's provenance while the holder is still running.
+ * Every other terminal result comes from the lock-owning path and preserves the
+ * existing terminal cleanup contract.
+ */
+export async function retireInFlightCandidateAfterResult(
+  result: Pick<CheckpointResult, "reason">,
+  clear: () => Promise<void>,
+): Promise<boolean> {
+  if (result.reason === "skipped-locked") return false;
+  await clear();
+  return true;
+}
+
 export interface CheckpointRunLock {
   acquired: boolean;
   lockDir: string;
@@ -13380,14 +13398,16 @@ if (require.main === module) {
     // constructs a whole deps object just to drop one row. AWAITED for the EI-10800 reason
     // above: the process exits immediately after this returns.
     try {
-      const { gateVerdictTargetFromEnv } =
-        await import("@papercusp/operator-core/lib/release/gate-verdict-target");
-      const target = gateVerdictTargetFromEnv();
-      if (target) {
-        const { clearInFlightCandidate } =
-          await import("@papercusp/operator-core/lib/release/in-flight-candidate");
-        await clearInFlightCandidate(target);
-      }
+      await retireInFlightCandidateAfterResult(r, async () => {
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
+        const target = gateVerdictTargetFromEnv();
+        if (target) {
+          const { clearInFlightCandidate } =
+            await import("@papercusp/operator-core/lib/release/in-flight-candidate");
+          await clearInFlightCandidate(target);
+        }
+      });
     } catch {
       /* best-effort — a marker we failed to clear ages out on its own freshness bound */
     }
