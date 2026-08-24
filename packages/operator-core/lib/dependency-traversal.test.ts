@@ -32,7 +32,7 @@ describe('dependencyTraversalStartKey', () => {
 
 describe('traverseDependencies result shaping', () => {
   it('dedupes multiply-reached nodes/edges and keeps the shallowest depth', async () => {
-    const query = vi.fn(async () => [
+    const query = vi.fn(async (_text: string, _params: readonly unknown[]) => [
       {
         node_key: 'plan_item:cloud-plan#P-046', node_kind: 'plan_item' as const, ref: 'P-046',
         status: 'todo', title: 'Cloud lane', harness_slug: 'papercusp', plan_slug: 'cloud-plan',
