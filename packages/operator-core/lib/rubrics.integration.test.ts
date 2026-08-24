@@ -448,7 +448,11 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
       status: 'active',
       methodRef: '/internal/docs/testing/agent-e2e',
     });
-    expect(amended.criteria.map((criterion) => criterion.key)).toEqual(['outcome-a', 'outcome-b']);
+    // amendRubric returns `Rubric | null`; assert the non-null contract explicitly
+    // rather than leaning on `!`, so a null return fails HERE with a readable
+    // message instead of as a downstream property access on null.
+    expect(amended).not.toBeNull();
+    expect(amended!.criteria.map((criterion) => criterion.key)).toEqual(['outcome-a', 'outcome-b']);
 
     const [stored] = await db.adminSql<{ template_data: { criteria: Record<string, unknown>[]; methodRef: string } }[]>`
       SELECT template_data FROM harness_shared.harness_plans
