@@ -14,6 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { toJsonSchema } from '@papercusp/tooldef';
 import readTool from './read';
 import writeTool from './write';
 import editTool from './edit';
@@ -255,6 +256,26 @@ describe('capability:read', () => {
     const shape = (readTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
     expect(shape.evidence_class.description).toMatch(/Mutually exclusive with content_indexes/);
     expect(shape.evidence_class.description).toMatch(/byte_offset/);
+
+    const published = toJsonSchema(readTool.args as never) as {
+      properties?: Record<string, { description?: string }>;
+    };
+    const peersByField: Record<string, string[]> = {
+      offset: ['byte_offset', 'byte_limit', 'content_indexes', 'evidence_class'],
+      limit: ['byte_offset', 'byte_limit', 'content_indexes', 'evidence_class'],
+      tail: ['byte_offset', 'byte_limit', 'content_indexes', 'evidence_class'],
+      byte_offset: ['offset', 'limit', 'tail', 'content_indexes', 'evidence_class'],
+      byte_limit: ['offset', 'limit', 'tail', 'content_indexes', 'evidence_class'],
+      content_indexes: ['offset', 'limit', 'tail', 'byte_offset', 'byte_limit', 'evidence_class'],
+      evidence_class: ['offset', 'limit', 'tail', 'byte_offset', 'byte_limit', 'content_indexes'],
+    };
+    for (const [field, peers] of Object.entries(peersByField)) {
+      const description = published.properties?.[field]?.description;
+      expect(description, `${field} must be described in the published schema`).toEqual(expect.any(String));
+      for (const peer of peers) {
+        expect(description, `${field} description must name ${peer}`).toContain(peer);
+      }
+    }
 
     const f = join(DIR, 'evidence-mixed-window.json');
     writeFileSync(f, '{}');

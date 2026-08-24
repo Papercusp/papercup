@@ -37,6 +37,15 @@ const MAX_LINE_CHARS = 2000;
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse absurd reads outright
 export const MAX_BYTE_PAGE = 4_096;
 
+const LINE_WINDOW_EXCLUSIVITY =
+  'Mutually exclusive with byte windows (byte_offset, byte_limit), content_indexes, and evidence_class.';
+const BYTE_WINDOW_EXCLUSIVITY =
+  'Mutually exclusive with line windows (offset, limit, tail), content_indexes, and evidence_class.';
+const CONTENT_INDEX_EXCLUSIVITY =
+  'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), and evidence_class.';
+const EVIDENCE_CLASS_EXCLUSIVITY =
+  'Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
+
 /** base64 encodes 3 bytes as 4 chars, padded up to the next multiple of 4. */
 function base64Chars(byteCount: number): number {
   return Math.ceil(byteCount / 3) * 4;
@@ -128,24 +137,24 @@ export default defineTool({
   args: z.object({
     file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
     uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
-    offset: z.number().int().nonnegative().optional().describe('1-based line to start from.'),
-    limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}).`),
+    offset: z.number().int().nonnegative().optional().describe(`1-based line to start from. ${LINE_WINDOW_EXCLUSIVITY}`),
+    limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}). ${LINE_WINDOW_EXCLUSIVITY}`),
     tail: z
       .number()
       .int()
       .positive()
       .optional()
-      .describe('Read the LAST N lines instead of reading forward — the `tail -n N` equivalent. Ignores offset.'),
+      .describe(`Read the LAST N lines instead of reading forward — the \`tail -n N\` equivalent. Ignores offset. ${LINE_WINDOW_EXCLUSIVITY}`),
     raw: z
       .boolean()
       .optional()
-      .describe('Return the selected text window without the path header, line-number prefixes, or paging footer. Use when the result will be written back.'),
+      .describe('Return the selected text window without the path header, line-number prefixes, or paging footer. Use when the result will be written back. Raw text windows are mutually exclusive with byte windows (byte_offset, byte_limit).'),
     byte_offset: z
       .number()
       .int()
       .nonnegative()
       .optional()
-      .describe('0-based byte offset for an exact base64 page. Use with byte_limit; mutually exclusive with line offset/limit/tail.'),
+      .describe(`0-based byte offset for an exact base64 page. Use with byte_limit. ${BYTE_WINDOW_EXCLUSIVITY}`),
     byte_limit: z
       .number()
       .int()
@@ -154,16 +163,16 @@ export default defineTool({
       .optional()
       .describe(
         `Bytes to return as base64 (max ${MAX_BYTE_PAGE}), an UPPER BOUND — the page is clamped to ` +
-        `fit the result door, so read byte_length and follow next_cursor. Use with byte_offset.`,
+        `fit the result door, so read byte_length and follow next_cursor. Use with byte_offset. ${BYTE_WINDOW_EXCLUSIVITY}`,
       ),
     content_indexes: z
       .array(z.number().int().nonnegative())
       .min(1)
       .max(64)
       .optional()
-      .describe('For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result.'),
+      .describe(`For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result. ${CONTENT_INDEX_EXCLUSIVITY}`),
     evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).optional().describe(
-      'For a stable result-door reference, resolve only the JSON values indexed for this evidence class. Mutually exclusive with content_indexes and all line/byte windows (offset, limit, tail, byte_offset, byte_limit).',
+      `For a stable result-door reference, resolve only the JSON values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
     ),
   }),
   async handler(args, ctx) {
