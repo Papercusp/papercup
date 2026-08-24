@@ -21,13 +21,13 @@ import {
 
 let gitAvailable = true;
 try {
-  execFileSync('git', ['--version'], { stdio: 'ignore' });
+  execFileSync('git', ['--version'], { stdio: 'ignore', timeout: 30_000, killSignal: 'SIGKILL' });
 } catch {
   gitAvailable = false;
 }
 
 function sh(cwd: string, args: string[]): void {
-  execFileSync('git', args, { cwd, stdio: 'ignore' });
+  execFileSync('git', args, { cwd, stdio: 'ignore', timeout: 30_000, killSignal: 'SIGKILL' });
 }
 
 function writeFileAt(root: string, rel: string, contents: string): void {
