@@ -4953,7 +4953,7 @@
           "POST"
         ]
       },
-      "description": "Ask \"who knows more than me about THIS?\" — routes your question over real cross-agent transcript history (embedding + recency/verification/authorship blend), opens a bounded consult thread with the top qualified responder, and wakes them with why-they-were-chosen evidence. ARCHIVE-FIRST: a question a closed consult already answered is served instantly from the archive (no wake). Honest by design: below the relevance floor the answer is a first-class no_qualified_responder (\"no one knows more than you do — proceed on your own judgment\"), never a costumed expert.",
+      "description": "Ask \"who knows more than me about THIS?\" — discovers a qualified peer from cross-agent history, opens a bounded consult thread, and wakes the selected responder. ARCHIVE-FIRST: closed-consult matches are served instantly. Below the relevance floor, returns an honest no_qualified_responder instead of inventing expertise.",
       "capabilities": [
         "coord:write"
       ],
@@ -4975,9 +4975,9 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "You face a question a PEER may have real context on — their transcripts, their code, a failure they already debugged — before burning hours re-deriving it. You do not know WHO: the router discovers the responder from evidence.",
-        "notWhen": "Live state (query it: locks:queue / fleet:assignments / work_items:get). An owner decision (coord:ask-owner). A SPECIFIC known agent (coord:send / coord:message-agent — this tool is who-knows DISCOVERY). Assigning work (a consult is advice, never a handoff — requester owns the outcome).",
-        "chaining": "get_feedback → 'served_from_archive'? use the cited answer in `archive`, or re-call with archive_floor: 2 if it does not fit → latency_contract:'hard-blocked' ⇒ events:await { event: park_key } + end turn (reply wakes you) → conversations:get { id: conversation_id } for the thread → declines/expiries advance the cascade server-side (D-005); re-call with exclude:[…] only after a terminal 'declined'/'expired'. The wake result's queued count is durable delivery, not proof of turn pickup; verify pickup separately when it matters."
+        "when": "A peer may already know the answer from their transcripts, code, or prior debugging, and you do not know who. Use this before re-deriving it.",
+        "notWhen": "Live state (query locks:queue / fleet:assignments / work_items:get); owner decisions (coord:ask-owner); a known agent (coord:send / coord:message-agent); or assigning work (consults advise, never hand off).",
+        "chaining": "get_feedback → served_from_archive? use `archive` or re-call with archive_floor: 2 → latency_contract:'hard-blocked' parks on park_key until reply → conversations:get { id } reads the thread → declines/expiries advance the cascade; re-call with exclude:[…] only after terminal 'declined'/'expired'. A queued wake proves delivery, not pickup; verify pickup when it matters."
       }
     },
     {
