@@ -323,8 +323,14 @@ const DEFAULT_DEPS: StartGoalFromPackageDeps = {
 };
 
 /** True for the seeded, never-started install stub: paused, and no agent was
- *  ever attached (the install seeder deliberately mints no identity). */
-function isAdoptableStub(row: StubRow): boolean {
+ *  ever attached (the install seeder deliberately mints no identity).
+ *  Exported (structurally typed) so the update door (package-update.ts,
+ *  P-018) splits stub-refresh vs live-contract on the SAME predicate the
+ *  adopt path uses — two definitions of "never started" would drift. */
+export function isAdoptableStub(row: {
+  status: string;
+  metadata: Record<string, unknown> | null;
+}): boolean {
   return row.status === 'paused' && !(row.metadata ?? {}).agentOwnerId;
 }
 

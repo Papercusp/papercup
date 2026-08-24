@@ -160,8 +160,10 @@ async function defaultGoalStubSeeder({
 }
 
 /** Refuse a stub whose declared contracts would read as configured while
- *  binding nothing (refuse, don't degrade). */
-function stubValidationProblem(pkg: LocalGoalPackage): string | null {
+ *  binding nothing (refuse, don't degrade). Exported for the update door
+ *  (goals/package-update.ts, P-018), which must hold the SAME gate: an
+ *  accepted update may not write a contract the installer would refuse. */
+export function goalPackageContractProblem(pkg: LocalGoalPackage): string | null {
   if (pkg.inputSchema && !isCompilableSchema(pkg.inputSchema)) {
     return "the package's inputSchema does not compile as a JSON Schema";
   }
@@ -268,7 +270,7 @@ export async function installGoalFromCupboard(
     };
   }
 
-  const problem = stubValidationProblem(result.pkg);
+  const problem = goalPackageContractProblem(result.pkg);
   if (problem) {
     // The dir is placed (it is the re-seedable source and harmless on its own),
     // but the install REFUSES rather than seeding a stub whose declared

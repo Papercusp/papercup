@@ -15,6 +15,7 @@ import { defineTool } from '@papercusp/tooldef';
 import { resolveGoalHolders } from '@papercusp/operator-core/lib/goals/holder';
 import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals/activity';
 import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
+import { goalPackageUpdateInfo } from '@papercusp/operator-core/lib/goals/package-update';
 import { readGoalReadiness } from './goal-deps';
 import { readGoalLastPause, readGoalPause } from './pause-record';
 import { readGoalHistory } from './history';
@@ -103,6 +104,10 @@ export default defineTool({
           pause,
           actionable: readiness.actionable,
           premiseInvalidated: readiness.premiseInvalidated,
+          // P-018: the package-update OFFER, folded where the owning agent
+          // already reads its goal. Null unless packaged; the accept is
+          // goals:apply-package-update, never automatic.
+          packageUpdate: goalPackageUpdateInfo(metadata),
         },
       };
     }
@@ -140,6 +145,8 @@ export default defineTool({
         actionable: readiness.actionable,
         premiseInvalidated: readiness.premiseInvalidated,
         blockedBy: readiness.blockers,
+        // P-018: see the summary branch's note.
+        packageUpdate: goalPackageUpdateInfo(metadata),
       },
     };
   },

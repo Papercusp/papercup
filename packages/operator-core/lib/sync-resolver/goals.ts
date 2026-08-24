@@ -59,6 +59,13 @@ export interface GoalTripwire {
   unit?: string;
 }
 
+import {
+  goalPackageUpdateInfo,
+  makeGoalPackageLookup,
+  type GoalPackageUpdateInfo,
+} from '../goals/package-update';
+import type { LocalGoalPackage } from '../cupboard/goal-package-store';
+
 export interface GoalSummaryRow {
   id: string;
   title: string;
@@ -159,6 +166,14 @@ export interface GoalSummaryRow {
    * particular drift impossible rather than merely unlikely.
    */
   spendRecentWindowDays: number;
+  /**
+   * Present when this goal was minted from a Cupboard goal package
+   * (metadata.goalPackageRef): the installed vs currently-shipped package
+   * version and whether a newer one is available to OFFER (P-018 — the offer
+   * is data; `goals:apply-package-update` is the accept). Null for unpackaged
+   * goals and when the package no longer resolves on disk.
+   */
+  goalPackage: GoalPackageUpdateInfo | null;
 }
 
 /**
@@ -296,7 +311,10 @@ type GoalSummaryRowBase = Omit<
   launchSettingsRaw: unknown;
 };
 
-function toSummary(r: RawGoal): GoalSummaryRowBase {
+function toSummary(
+  r: RawGoal,
+  pkgLookup: (ref: string) => LocalGoalPackage | null,
+): GoalSummaryRowBase {
   const metadata = r.metadata ?? {};
   const spentCents =
     // Either measured source: the agent-verified pots rollup (goals:update) or
@@ -342,6 +360,7 @@ function toSummary(r: RawGoal): GoalSummaryRowBase {
     spendUsd: num(r.spend_usd),
     spendRecentUsd: num(r.spend_recent_usd),
     spendRecentWindowDays: SPEND_RECENT_WINDOW_DAYS,
+    goalPackage: goalPackageUpdateInfo(metadata as Record<string, unknown> | null, pkgLookup),
     launchSettingsRaw: r.launch_settings ?? null,
   };
 }
@@ -618,7 +637,11 @@ export async function resolveGoalsList(args: {
   // P-001: liveness is folded in AFTER the transaction — the oracle is its own
   // read path (presence, wakeability, self-wake) and holding the goals tx open
   // across it would widen a hot-path transaction for no benefit.
-  const goals = await withHolderLiveness(workspaceId, rows.map(toSummary));
+  const pkgLookup = makeGoalPackageLookup();
+  const goals = await withHolderLiveness(
+    workspaceId,
+    rows.map((r) => toSummary(r, pkgLookup)),
+  );
 
   // The portfolio total, over DISTINCT pots. Deliberately returned
   // alongside the rows the client already has: the natural thing to do with a
@@ -999,7 +1022,7 @@ export async function resolveGoalDetail(args: {
     });
 
     const goal: GoalSummaryRow = {
-      ...toSummary(goalRow),
+      ...toSummary(goalRow, makeGoalPackageLookup()),
       agents: detailHolders.holders.map((h) => ({
         ownerId: h.ownerId,
         live: h.live,

@@ -332,6 +332,7 @@ import './goals/arm-schedule';
 import './goals/set-input-schema';
 import './goals/set-output-schema';
 import './goals/set-property';
+import './goals/apply-package-update';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive knowledge-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './knowledge_packs/list';
