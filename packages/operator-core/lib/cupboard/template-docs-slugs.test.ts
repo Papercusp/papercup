@@ -121,16 +121,31 @@ describe('official templates: every cited docs: slug resolves', () => {
     ).toEqual([]);
   });
 
-  it('cites the shared template pages from all five app-scope roots', () => {
+  it('cites the shared template pages from EVERY app-scope root', () => {
     // These are the pages the whole template system leans on; a silent drop of a
     // citation is a regression too, not only a dangling one.
-    for (const root of [
-      'papercusp-webapp',
-      'papercusp-desktop-app',
-      'papercusp-agentic-desktop-app',
-      'papercusp-android-app',
-      'papercusp-iphone-app',
-    ]) {
+    //
+    // The root list is DERIVED from the manifests, never hand-maintained. It used
+    // to be a hardcoded five, and that list was wrong in both directions at once:
+    // it had already gone stale (six app-scope roots existed; papercusp-agentic-webapp
+    // was silently unguarded), and it then broke outright when the four web/desktop
+    // roots collapsed into `papercusp-app` (plan unified-app-template-2026-08-23,
+    // P-004). A literal list of things the code already knows is a second copy that
+    // drifts; deriving it means adding or retiring a root updates this guard for free.
+    const appRoots = templates.filter((t) => {
+      const manifestPath = ['template.yaml', 'template.yml']
+        .map((n) => join(TEMPLATES_DIR, t, n))
+        .find((p) => existsSync(p));
+      if (!manifestPath) return false;
+      const m = parseYaml(readFileSync(manifestPath, 'utf8')) as { scope?: unknown };
+      return m?.scope === 'app';
+    });
+
+    // Guard the guard: if the derivation ever selects nothing, every assertion
+    // below passes vacuously and this test silently stops guarding anything.
+    expect(appRoots.length, 'derived zero app-scope roots — the derivation is broken, not the templates').toBeGreaterThan(0);
+
+    for (const root of appRoots) {
       const mine = citations.filter((c) => c.template === root).map((c) => c.slug);
       expect(mine, `${root} should cite the template-system pages`).toEqual(
         expect.arrayContaining([
