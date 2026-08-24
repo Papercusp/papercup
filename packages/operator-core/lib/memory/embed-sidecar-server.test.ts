@@ -263,6 +263,19 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(body.queue.active).toBe(body.concurrency);
     expect(body.queue.saturated).toBe(true);
 
+    // FALSIFIABILITY CONTROL, kept permanently rather than proven once by a
+    // mutation probe. A guard that has never failed is a guard nobody has
+    // tested, and the failure mode being guarded here is subtle: a depth field
+    // that silently saturates at `concurrency` looks correct in every reading
+    // below the cap, which is exactly how the original gauge passed for months.
+    //
+    // So model that wrong implementation explicitly and assert the observed
+    // value DISTINGUISHES itself from it. If someone reintroduces a cap, the
+    // control collapses onto the real value and this fails — on every run, in
+    // the tree, with no mutation of the shared checkout.
+    const cappedGaugeWouldReport = Math.min(body.queue.depth, body.concurrency);
+    expect(cappedGaugeWouldReport).not.toBe(body.queue.depth);
+
     release();
     await Promise.all(inFlight);
   });
