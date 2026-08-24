@@ -3,7 +3,8 @@
 
 use crate::app::{App, HarnessFocus, PluginsFocus, Tab, TestingFocus};
 use crate::models::{
-    contribution_count, contribution_names, tier_glyph, tier_label, Notif, INBOX_TIERS,
+    contribution_count, contribution_names, tier_glyph, tier_label, Notif, ToolOutcome,
+    INBOX_TIERS,
 };
 use crate::theme::Theme;
 use ratatui::{
@@ -1759,16 +1760,59 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(wl));
         }
         for tc in &m.tools {
-            // The approval suffix is a RENDER concern, not part of the tool's
-            // name: `name` stays the raw tool so the approve/deny prompt and the
-            // resolve POST both read it cleanly, and a decided call simply stops
-            // rendering the suffix.
-            let label = if tc.needs_approval {
-                format!("  ⚙ {} · awaiting approval", tc.name)
-            } else {
-                format!("  ⚙ {}", tc.name)
+            // Every label here is a RENDER concern applied from raw model fields
+            // (D-017 #1): `name` stays the bare tool so the approval prompt and
+            // the resolve POST both read it cleanly, and the status is derived
+            // from `outcome`/`needs_approval` rather than baked into the name.
+            let (status, status_style) = match &tc.outcome {
+                // Parked beats running: an approval-gated call is not slow, it is
+                // STOPPED and waiting on this user, and the two must never look
+                // alike or nobody learns the turn needs them.
+                ToolOutcome::Pending if tc.needs_approval => (
+                    format!("  {} awaiting approval", crate::glyph::status::NEEDS_HUMAN),
+                    Theme::warn(),
+                ),
+                ToolOutcome::Pending => {
+                    (format!("  {}", crate::glyph::status::WIP), Theme::dim())
+                }
+                ToolOutcome::Ok => (
+                    format!("  {}", crate::glyph::status::DONE),
+                    Theme::success(),
+                ),
+                ToolOutcome::Failed(_) => (
+                    format!("  {}", crate::glyph::status::FAILED),
+                    Theme::danger(),
+                ),
+                ToolOutcome::Denied => (
+                    format!("  {} denied", crate::glyph::status::BLOCKED),
+                    Theme::warn(),
+                ),
             };
-            lines.push(Line::from(Span::styled(label, Theme::dim())));
+            lines.push(Line::from(vec![
+                Span::styled(format!("  ⚙ {}", tc.name), Theme::dim()),
+                Span::styled(status, status_style),
+            ]));
+            // Arguments are TRUNCATED, never wrapped: a tool call carrying a file
+            // body would otherwise push the whole transcript off screen, and the
+            // card exists to let a turn be skimmed.
+            if let Some(args) = tc
+                .input
+                .as_ref()
+                .and_then(|v| tool_input_summary(v, inner_w.saturating_sub(4)))
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("    {args}"),
+                    Theme::dim(),
+                )));
+            }
+            if let ToolOutcome::Failed(msg) = &tc.outcome {
+                for wl in wrap_text(msg, inner_w.saturating_sub(4)) {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {wl}"),
+                        Theme::danger(),
+                    )));
+                }
+            }
         }
         lines.push(Line::from("")); // blank separator between turns
     }
@@ -1861,8 +1905,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.chat_composing {
         (
-            " Message — Enter send · Esc cancel ",
-            format!("> {}", app.chat_input),
+            " Message — Enter send · ↑↓ history · Esc cancel ",
+            // Newlines from a bracketed paste are shown as ⏎ rather than stripped:
+            // the model keeps the text verbatim (D-017 #1), and a raw \n inside a
+            // single-line Span would render as a blank or a tofu box, hiding from
+            // the user that their paste spans several lines.
+            format!("> {}", app.chat_input.replace('\n', "⏎")),
             Theme::selected(),
         )
     } else if app.convai_phase != crate::app::ConvAiPhase::Off {
@@ -3357,6 +3405,29 @@ pub(crate) fn trunc(s: &str, n: usize) -> String {
         out.push('…');
         out
     }
+}
+
+/// One-line, width-bounded rendering of a tool call's arguments for its card.
+///
+/// `None` means "render no argument line at all", which is the right answer for
+/// arguments that would be pure noise: absent, `null`, or an empty object. A
+/// no-argument tool then gets a clean one-line card instead of an empty bracket
+/// pair dressed up as information.
+pub(crate) fn tool_input_summary(input: &serde_json::Value, width: usize) -> Option<String> {
+    if width == 0 || input.is_null() {
+        return None;
+    }
+    match input {
+        serde_json::Value::Object(m) if m.is_empty() => return None,
+        serde_json::Value::Array(a) if a.is_empty() => return None,
+        _ => {}
+    }
+    let compact = serde_json::to_string(input).ok()?;
+    // Collapse embedded newlines BEFORE truncating: this is a single-line
+    // summary, and a multi-line argument value must not smuggle extra rows into
+    // a card whose height the transcript layout has already accounted for.
+    let flat = compact.replace('\n', " ");
+    Some(trunc(&flat, width))
 }
 
 #[cfg(test)]
@@ -5173,6 +5244,37 @@ mod tests {
         assert_eq!(wrap_text("abcdef", 3), vec!["abc", "def"]);
         // An empty line is preserved (paragraph break).
         assert_eq!(wrap_text("x\n\ny", 80), vec!["x", "", "y"]);
+    }
+
+    #[test]
+    fn tool_input_summary_is_one_bounded_line_or_nothing() {
+        use serde_json::json;
+
+        // Nothing worth a line: absent, null, or empty containers.
+        assert_eq!(tool_input_summary(&json!(null), 40), None);
+        assert_eq!(tool_input_summary(&json!({}), 40), None);
+        assert_eq!(tool_input_summary(&json!([]), 40), None);
+        // A zero width has no room for a summary at all.
+        assert_eq!(tool_input_summary(&json!({ "a": 1 }), 0), None);
+
+        assert_eq!(
+            tool_input_summary(&json!({ "command": "ls" }), 40),
+            Some(r#"{"command":"ls"}"#.to_string())
+        );
+
+        // Bounded to the given width, never wider.
+        let long = tool_input_summary(&json!({ "command": "x".repeat(200) }), 30).unwrap();
+        assert_eq!(long.chars().count(), 30);
+        assert!(long.ends_with('…'));
+
+        // A multi-line value collapses: a single-line card must not smuggle in
+        // extra rows the transcript layout has not accounted for.
+        let multi = tool_input_summary(&json!({ "body": "one\ntwo" }), 80).unwrap();
+        assert!(!multi.contains('\n'), "summary must stay one line: {multi}");
+
+        // Multibyte truncation must not panic or split a char.
+        let uni = tool_input_summary(&json!({ "s": "café☕".repeat(50) }), 12).unwrap();
+        assert_eq!(uni.chars().count(), 12);
     }
 
     #[test]

@@ -1469,6 +1469,14 @@ pub struct App {
     pub chat_messages: Vec<ChatMessage>,
     pub chat_input: String,
     pub chat_composing: bool,
+    /// Submitted composer lines, oldest last — the Up/Down recall ring.
+    pub chat_history: Vec<String>,
+    /// Cursor into `chat_history` while recalling. `None` means "editing a fresh
+    /// line", which is the state Down returns to at the end of the walk.
+    pub chat_history_idx: Option<usize>,
+    /// The half-typed line stashed when recall STARTS, so walking back past the
+    /// newest entry restores it instead of destroying unsent work.
+    pub chat_draft: String,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
     pub conversation_id: Option<String>,
@@ -1744,6 +1752,9 @@ impl App {
             chat_messages: Vec::new(),
             chat_input: String::new(),
             chat_composing: false,
+            chat_history: Vec::new(),
+            chat_history_idx: None,
+            chat_draft: String::new(),
             chat_scroll: 0,
             chat_streaming: false,
             conversation_id: None,
@@ -1864,6 +1875,73 @@ impl App {
     /// arrives twice (our own POST's confirmation and the loop's own
     /// `approval_resolved` frame), and a call decided on another surface arrives
     /// with no local pending row at all.
+    /// Step BACK through submitted composer lines (Up).
+    ///
+    /// The first step stashes whatever is half-typed, so walking forward again
+    /// gives it back rather than destroying unsent work — the one behaviour a
+    /// recall ring must never get wrong.
+    fn chat_history_prev(&mut self) {
+        if self.chat_history.is_empty() {
+            return;
+        }
+        let next = match self.chat_history_idx {
+            None => {
+                self.chat_draft = self.chat_input.clone();
+                self.chat_history.len() - 1
+            }
+            // Already at the oldest entry: stay put rather than wrapping, so a
+            // held key cannot silently cycle back to the newest.
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.chat_history_idx = Some(next);
+        self.chat_input = self.chat_history[next].clone();
+    }
+
+    /// Step FORWARD (Down). Walking past the newest entry restores the stashed
+    /// draft instead of clearing the line.
+    fn chat_history_next(&mut self) {
+        let Some(i) = self.chat_history_idx else {
+            return; // not recalling — Down is inert, never destructive
+        };
+        if i + 1 < self.chat_history.len() {
+            self.chat_history_idx = Some(i + 1);
+            self.chat_input = self.chat_history[i + 1].clone();
+        } else {
+            self.chat_history_idx = None;
+            self.chat_input = std::mem::take(&mut self.chat_draft);
+        }
+    }
+
+    /// Record a submitted line and leave recall mode.
+    ///
+    /// Consecutive duplicates collapse (re-sending the same line should not pad
+    /// the ring), and the ring is BOUNDED: a long-lived pane must not retain
+    /// every line typed all session.
+    fn chat_history_push(&mut self, text: &str) {
+        const MAX_HISTORY: usize = 200;
+        if self.chat_history.last().map(String::as_str) != Some(text) {
+            self.chat_history.push(text.to_string());
+        }
+        if self.chat_history.len() > MAX_HISTORY {
+            let excess = self.chat_history.len() - MAX_HISTORY;
+            self.chat_history.drain(0..excess);
+        }
+        self.chat_history_idx = None;
+        self.chat_draft.clear();
+    }
+
+    /// Append bracketed-paste text to the composer.
+    ///
+    /// Newlines are KEPT verbatim — the user pasted them deliberately, and the
+    /// whole point of bracketed paste is that they are data rather than submits.
+    /// The single-line composer renders them as `⏎` at draw time (D-017 #1:
+    /// decorate at render, never rewrite the model).
+    fn chat_paste(&mut self, text: &str) {
+        self.chat_history_idx = None; // a paste is an edit — leave recall mode
+        self.chat_input.push_str(text);
+    }
+
     fn resolve_approval(&mut self, call_id: &str) {
         self.pending_approvals.retain(|p| p.call_id != call_id);
         for m in self.chat_messages.iter_mut() {
@@ -4127,6 +4205,18 @@ impl App {
     /// The single reducer. Pure w.r.t. I/O, so it is unit-testable.
     pub fn update(&mut self, ev: Event) -> Action {
         match ev {
+            Event::Paste(text) => {
+                // Only the composer consumes pastes today. Anywhere else a paste
+                // is DROPPED rather than replayed as keystrokes — silently doing
+                // nothing beats a stray paste triggering single-key bindings
+                // (`d`, `q`, …) across a pane that never asked for text.
+                if self.operator_input_active() && self.chat_composing {
+                    self.chat_paste(&text);
+                    Action::Render
+                } else {
+                    Action::None
+                }
+            }
             Event::Key(key) => {
                 // Voice-tab hold-to-talk (P-009): swallow auto-repeat of the PTT
                 // key so a held key doesn't flap the transmit toggle (Press starts,
@@ -4759,6 +4849,25 @@ impl App {
             Event::AgentChatApprovalResolved { call_id, approved } => {
                 let _ = approved;
                 self.resolve_approval(&call_id);
+                Action::Render
+            }
+            Event::ChatToolResult { call_id, outcome } => {
+                // A result is proof the call is no longer parked — whatever the
+                // outcome: approved-and-ran, failed, or refused. `resolve_approval`
+                // is idempotent (D-017 #3), so clearing a prompt some other route
+                // already cleared is a no-op, not a double decision.
+                self.resolve_approval(&call_id);
+                // Correlate by call id, NEVER by name: one turn can call the same
+                // tool several times, so names collide immediately and a
+                // name-matched result would land on the wrong card.
+                for m in self.chat_messages.iter_mut() {
+                    for tc in m.tools.iter_mut() {
+                        if tc.id.as_deref() == Some(call_id.as_str()) {
+                            tc.needs_approval = false;
+                            tc.outcome = outcome.clone();
+                        }
+                    }
+                }
                 Action::Render
             }
             Event::AgentChatApprovalsHydrated(pending) => {
@@ -5445,14 +5554,29 @@ impl App {
                         return Action::Render;
                     }
                     self.chat_input.clear();
+                    self.chat_history_push(&text);
                     self.begin_user_send(&text);
                     Action::SendChat(text)
                 }
+                // Up/Down recall submitted lines. They were previously inert here
+                // (the composer captures all input, so they fell to Action::None).
+                KeyCode::Up => {
+                    self.chat_history_prev();
+                    Action::Render
+                }
+                KeyCode::Down => {
+                    self.chat_history_next();
+                    Action::Render
+                }
                 KeyCode::Backspace => {
+                    // Editing leaves recall mode, so Down can never overwrite the
+                    // edit with the next history entry.
+                    self.chat_history_idx = None;
                     self.chat_input.pop();
                     Action::Render
                 }
                 KeyCode::Char(c) => {
+                    self.chat_history_idx = None;
                     self.chat_input.push(c);
                     Action::Render
                 }
@@ -10723,6 +10847,8 @@ mod tests {
             name: "capability:bash".into(),
             id: Some("call-a".into()),
             needs_approval: true,
+            input: None,
+            outcome: crate::models::ToolOutcome::Pending,
         }));
         assert_eq!(a.pending_approvals.len(), 1);
         assert_eq!(a.pending_approvals[0].call_id, "call-a");
@@ -10774,6 +10900,151 @@ mod tests {
         // leaving a decision on screen the loop has already moved past.
         a.update(Event::AgentChatApprovalsHydrated(Vec::new()));
         assert!(a.pending_approvals.is_empty());
+    }
+
+    #[test]
+    fn tool_result_lands_on_its_own_card_and_clears_the_park() {
+        use crate::models::ToolOutcome;
+
+        let mut a = App::new();
+        a.agent_chat_id = Some("chat-1".into());
+        a.begin_user_send("run them");
+
+        // The SAME tool called twice in one turn — the case that makes
+        // correlation-by-name silently wrong.
+        a.update(Event::ChatToolCall(ChatToolCall {
+            name: "capability:bash".into(),
+            id: Some("call-1".into()),
+            needs_approval: false,
+            input: Some(serde_json::json!({ "command": "ls" })),
+            outcome: ToolOutcome::Pending,
+        }));
+        a.update(Event::ChatToolCall(ChatToolCall {
+            name: "capability:bash".into(),
+            id: Some("call-2".into()),
+            needs_approval: true,
+            input: Some(serde_json::json!({ "command": "rm -rf /" })),
+            outcome: ToolOutcome::Pending,
+        }));
+        assert_eq!(a.pending_approvals.len(), 1);
+
+        // A result for call-1 must move call-1 ONLY.
+        a.update(Event::ChatToolResult {
+            call_id: "call-1".into(),
+            outcome: ToolOutcome::Ok,
+        });
+        let tools = &a.chat_messages[1].tools;
+        assert_eq!(tools[0].outcome, ToolOutcome::Ok);
+        assert_eq!(tools[1].outcome, ToolOutcome::Pending);
+        // The second call is still parked — a sibling's result is not a decision.
+        assert_eq!(a.pending_approvals.len(), 1);
+        assert!(tools[1].needs_approval);
+
+        // Denying call-2 clears its park AND stops it rendering as in-flight.
+        a.update(Event::ChatToolResult {
+            call_id: "call-2".into(),
+            outcome: ToolOutcome::Denied,
+        });
+        let tools = &a.chat_messages[1].tools;
+        assert_eq!(tools[1].outcome, ToolOutcome::Denied);
+        assert!(!tools[1].needs_approval);
+        assert!(a.pending_approvals.is_empty());
+
+        // Idempotent (D-017 #3): the same result arriving again — our POST echo
+        // and the loop's own frame both land here — changes nothing.
+        a.update(Event::ChatToolResult {
+            call_id: "call-2".into(),
+            outcome: ToolOutcome::Denied,
+        });
+        assert!(a.pending_approvals.is_empty());
+        assert_eq!(a.chat_messages[1].tools.len(), 2);
+
+        // A result for an unknown call is ignored, not panicked on: a late frame
+        // from a previous chat must never take down the pane.
+        a.update(Event::ChatToolResult {
+            call_id: "call-nope".into(),
+            outcome: ToolOutcome::Failed("boom".into()),
+        });
+        assert_eq!(a.chat_messages[1].tools.len(), 2);
+    }
+
+    #[test]
+    fn composer_recalls_history_and_takes_a_paste_as_one_edit() {
+        fn arrow(code: KeyCode) -> Event {
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+        }
+        fn send_line(a: &mut App, s: &str) {
+            a.chat_input.clear();
+            for c in s.chars() {
+                a.update(key(c, KeyModifiers::NONE));
+            }
+            a.update(arrow(KeyCode::Enter));
+            a.update(Event::ChatDone); // finish the turn so the next Enter is allowed
+        }
+
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('i', KeyModifiers::NONE)); // enter compose
+        assert!(a.chat_composing);
+
+        send_line(&mut a, "first");
+        send_line(&mut a, "second");
+        assert_eq!(a.chat_history, vec!["first".to_string(), "second".to_string()]);
+        assert!(a.chat_input.is_empty());
+
+        // Half-typed work is stashed on the FIRST Up, not destroyed.
+        a.chat_input.clear();
+        for c in "draft".chars() {
+            a.update(key(c, KeyModifiers::NONE));
+        }
+        a.update(arrow(KeyCode::Up));
+        assert_eq!(a.chat_input, "second");
+        a.update(arrow(KeyCode::Up));
+        assert_eq!(a.chat_input, "first");
+        // The oldest entry HOLDS rather than wrapping — a held key must not
+        // silently cycle back around to the newest line.
+        a.update(arrow(KeyCode::Up));
+        assert_eq!(a.chat_input, "first");
+        a.update(arrow(KeyCode::Down));
+        assert_eq!(a.chat_input, "second");
+        // Walking past the newest restores the stashed draft.
+        a.update(arrow(KeyCode::Down));
+        assert_eq!(a.chat_input, "draft");
+        // Down with nothing to recall is inert, never destructive.
+        a.update(arrow(KeyCode::Down));
+        assert_eq!(a.chat_input, "draft");
+
+        // Editing leaves recall mode, so a later Down cannot overwrite the edit.
+        a.update(arrow(KeyCode::Up));
+        assert_eq!(a.chat_input, "second");
+        a.update(key('!', KeyModifiers::NONE));
+        assert_eq!(a.chat_input, "second!");
+        a.update(arrow(KeyCode::Down));
+        assert_eq!(a.chat_input, "second!", "Down must not clobber an edited line");
+
+        // THE POINT OF BRACKETED PASTE: multi-line text lands as ONE edit with
+        // its newlines intact, and does NOT submit. Before this, each newline
+        // arrived as Enter and sent a separate half-message.
+        a.chat_input.clear();
+        a.update(Event::Paste("alpha\nbeta".into()));
+        assert_eq!(a.chat_input, "alpha\nbeta");
+        assert!(!a.chat_streaming, "a paste must never submit the turn");
+        assert_eq!(a.chat_history.len(), 2, "a paste must not enter history");
+
+        // Re-sending the same line collapses instead of padding the ring.
+        send_line(&mut a, "second");
+        assert_eq!(a.chat_history, vec!["first".to_string(), "second".to_string()]);
+    }
+
+    #[test]
+    fn paste_outside_the_composer_is_dropped_not_replayed_as_keys() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        assert!(!a.chat_composing);
+        // A stray paste while not composing must not reach single-key bindings.
+        assert_eq!(a.update(Event::Paste("dq".into())), Action::None);
+        assert!(a.chat_input.is_empty());
+        assert!(!a.should_quit, "a pasted 'q' must never quit the app");
     }
 
     #[test]

@@ -214,7 +214,15 @@ async fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    // Bracketed paste makes the terminal hand us a paste as ONE `Paste` frame
+    // instead of replaying it as keystrokes. Without it every newline in a
+    // pasted snippet arrives as `Enter` and submits, so pasting three lines sent
+    // three separate half-messages. Disabled again on teardown below.
+    execute!(
+        out,
+        EnterAlternateScreen,
+        crossterm::event::EnableBracketedPaste
+    )?;
     // Voice hold-to-talk (voice-mode-tui-port-2026-06-05 D-007): request key
     // RELEASE events when the terminal speaks the kitty keyboard protocol, so
     // holding `v` can drive PTT. Without support no release events arrive and
@@ -251,7 +259,14 @@ async fn main() -> Result<()> {
         );
     }
     disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    // Paired with the EnableBracketedPaste above: leaving it armed would outlive
+    // the TUI and corrupt pastes in the user's shell after pui exits.
+    execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableBracketedPaste,
+        LeaveAlternateScreen
+    )
+    .ok();
     terminal.show_cursor().ok();
     result
 }
@@ -3080,6 +3095,11 @@ async fn stream_agent_chat_turn(
                     name: call.name,
                     id: Some(call.id),
                     needs_approval,
+                    // Carried for the card lane per D-017 #2 — an identifier or
+                    // payload the seam hands us goes through the mapping even
+                    // when the current lane has no use for it.
+                    input: Some(call.input),
+                    outcome: models::ToolOutcome::Pending,
                 }));
             }
             AgentChatEvent::ApprovalResolved {
@@ -3090,6 +3110,30 @@ async fn stream_agent_chat_turn(
                 // pane keeps offering a decision the loop has already moved past.
                 let _ = tx.send(Event::AgentChatApprovalResolved { call_id, approved });
             }
+            AgentChatEvent::ToolResult {
+                call_id,
+                result,
+                error,
+                denied,
+                ..
+            } => {
+                // Until this arm existed the seam reported every outcome and the
+                // pane dropped it, so a finished turn still rendered each tool as
+                // though it were in flight. Denial is NOT an error: the tool never
+                // ran and nothing went wrong, so it carries its own outcome rather
+                // than a failure glyph that reads as "your decision broke it".
+                let outcome = if denied {
+                    models::ToolOutcome::Denied
+                } else if let Some(message) = error {
+                    models::ToolOutcome::Failed(message)
+                } else {
+                    // The payload itself belongs to a later slice (result bodies
+                    // want folding/scrolling); the card only needs that it landed.
+                    let _ = result;
+                    models::ToolOutcome::Ok
+                };
+                let _ = tx.send(Event::ChatToolResult { call_id, outcome });
+            }
             AgentChatEvent::Error { message } => {
                 let _ = tx.send(Event::ChatError(message));
                 return;
@@ -3098,9 +3142,10 @@ async fn stream_agent_chat_turn(
             // snapshot (D-011) — the bubble finalizes from the deltas already
             // rendered, so no re-read is needed to complete the turn.
             AgentChatEvent::Done { .. } => break,
-            // Reasoning, per-step and tool-result frames belong to the richer
-            // pane surfaces (reasoning fold, tool-call cards) and the approval
-            // round-trip; the streaming bubble ignores them for now.
+            // Reasoning and per-step frames belong to the richer pane surfaces
+            // (reasoning fold, per-step usage); the streaming bubble ignores them
+            // for now. Tool-result frames are handled ABOVE, as of slice 3 — do
+            // not read this arm as evidence they are still dropped.
             _ => {}
         }
     }

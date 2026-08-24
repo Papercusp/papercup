@@ -23,6 +23,14 @@ use tokio::sync::mpsc::UnboundedSender;
 pub enum Event {
     /// A terminal key press.
     Key(KeyEvent),
+    /// A bracketed paste — the literal pasted text, delivered as ONE event.
+    ///
+    /// This exists because of what happens WITHOUT it: the terminal replays a
+    /// paste as ordinary keystrokes, so every embedded newline arrives as
+    /// `Enter` and SUBMITS. Pasting a three-line snippet into the composer sent
+    /// three separate half-messages. The paste must therefore reach the reducer
+    /// as data, never as input to the key bindings.
+    Paste(String),
     /// Idle tick (emitted when no input arrives within the poll window).
     Tick,
     /// Fresh plans list from the backend poller.
@@ -257,6 +265,14 @@ pub enum Event {
     /// parked before this pane attached (or during a disconnect) is otherwise
     /// invisible here, leaving the turn stalled with no way to answer it.
     AgentChatApprovalsHydrated(Vec<crate::models::PendingApproval>),
+    /// A tool call reached a terminal outcome (the seam's `tool_result` frame).
+    /// Correlated back to its card by `call_id` — the same id the approvals
+    /// route is keyed by. Without this the card never leaves its running state,
+    /// so a finished turn still renders every tool as though it were in flight.
+    ChatToolResult {
+        call_id: String,
+        outcome: crate::models::ToolOutcome,
+    },
     // --- Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a) ---
     /// One per-run state-channel snapshot from `/api/operator/state-snapshot` —
     /// the union of open `chat:ask_choice` cards for a run. The reducer folds it
@@ -317,12 +333,19 @@ pub fn spawn_input_listener(tx: UnboundedSender<Event>) {
     std::thread::spawn(move || loop {
         match event::poll(Duration::from_millis(250)) {
             Ok(true) => {
-                if let Ok(CtEvent::Key(key)) = event::read() {
-                    let ev = match key.kind {
-                        KeyEventKind::Release => Event::KeyRelease(key),
+                let ev = match event::read() {
+                    Ok(CtEvent::Key(key)) => match key.kind {
+                        KeyEventKind::Release => Some(Event::KeyRelease(key)),
                         // Press + Repeat → Key (preserves pre-enhancement behavior).
-                        _ => Event::Key(key),
-                    };
+                        _ => Some(Event::Key(key)),
+                    },
+                    // Only arrives while bracketed paste is enabled (main pushes
+                    // it alongside the alternate screen). Forwarded as DATA so a
+                    // pasted newline can never be mistaken for a submit.
+                    Ok(CtEvent::Paste(text)) => Some(Event::Paste(text)),
+                    _ => None,
+                };
+                if let Some(ev) = ev {
                     if tx.send(ev).is_err() {
                         break;
                     }
