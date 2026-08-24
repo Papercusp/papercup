@@ -13831,7 +13831,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them.",
+        "when": "The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. Free-text observation evidence belongs in the top-level body; observation.evidence is not a valid field. For a rubric scorecard, put evidence in each observation.ratings[criterion].evidence.",
         "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:\"self\" to claim and observation.refs for evidence attribution.",
         "chaining": "improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them."
       }
@@ -21548,7 +21548,7 @@
           "POST"
         ]
       },
-      "description": "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`. This is plan frontmatter, not item status. For Mug↔Scout deprecation, status='superseded' plus `learnings` emits a salvage observation.",
+      "description": "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` requires a current code-truth `plans:audit { phase:'completion' }` and a peer-graded acceptance rubric. Plan frontmatter, not item status. `superseded` + `learnings` emits a salvage observation.",
       "capabilities": [
         "plans:write"
       ],
@@ -21609,9 +21609,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Use for a plan lifecycle change. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), map requirements, constraints, corrections, rejected alternatives, decisions, acceptance conditions, open questions, and follow-ups; repair omissions; record `plans:audit { phase:'activation' }`. Other moves: ready→draft, ship after completion, or supersede. Mug↔Blender draft deprecation: status='superseded' + `learnings:{tried,stalled,salvageable}`.",
-        "notWhen": "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded. ⚠ `shipped` requires a peer-graded acceptance rubric.",
-        "chaining": "Activation: sessions:search/read → repair draft → `plans:audit { phase:'activation' }` → set status ready with `expectedCurrent:'draft'`. Re-audit after semantic edits; cosmetic-only edits do not need it. Starting a draft uses the same gate. Deprecate with status='superseded' + `learnings`."
+        "when": "Lifecycle changes. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), repair omissions, and record `plans:audit { phase:'activation' }`. Before shipped/`done`, run `plans:audit { phase:'completion', items:[...] }` against current code/tests, then satisfy the peer-graded acceptance rubric. Other moves: ready→draft or supersede; deprecate with `status:'superseded'` + `learnings`.",
+        "notWhen": "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded; shipped has code-truth and rubric gates.",
+        "chaining": "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: `plans:audit { phase:'completion', items:[...] }` → peer-graded rubric → shipped/`done`. Re-audit after semantic edits, not cosmetic ones. Start uses the same activation gate."
       }
     },
     {
