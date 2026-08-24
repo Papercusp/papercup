@@ -256,7 +256,7 @@ const wakeArg = z
   })
   .optional()
   .describe(
-    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when the caller has verified a durable backstop will re-dispatch a miss — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify `queued>0`, then confirm pickup separately) or coord:handoff. The response's `queued` count is durable wake delivery queued, NOT proof that a turn executed; `woken` stays 0 until an execution-confirming handshake exists. Read `wakeOutcome` ('queued'/'partial-staged'/'staged-manual-mode'/'missed'/'unknown') and `pickupConfirmed` to distinguish queueing from pickup. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when the caller has verified a durable backstop will re-dispatch a miss — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify `queued>0`, then confirm pickup separately) or coord:handoff. The response's `queued` count is durable wake delivery queued, NOT proof that a turn executed; legacy `woken` mirrors that queue count for backward compatibility and also does NOT prove pickup. Read `wakeOutcome` ('queued'/'partial-staged'/'staged-manual-mode'/'missed'/'unknown') and `pickupConfirmed` to distinguish queueing from pickup. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
   );
 
 const wakeOnReplyArg = z
@@ -1138,7 +1138,7 @@ async function sendOne(
         target: string;
         /** Durable wake deliveries matched/queued; not execution-confirmed. */
         queued: number;
-        /** Execution-confirmed turn pickups. The current wake substrate has no receipt, so 0. */
+        /** Legacy queue-count alias retained for callers that predate `queued`; not pickup-confirmed. */
         woken: number;
         /** False until a later checkpoint/activity observation proves pickup. */
         pickupConfirmed?: boolean;
@@ -1207,7 +1207,7 @@ async function sendOne(
               payload: { msg_id: env.msg_id },
             });
             const queued = fan.queued ?? fan.woken;
-            replyWake = { target: originalFrom, queued, woken: 0, pickupConfirmed: false };
+            replyWake = { target: originalFrom, queued, woken: queued, pickupConfirmed: false };
           }
         }
       }
@@ -1283,7 +1283,7 @@ async function sendOne(
         targets: string[];
         /** Durable wake deliveries matched/queued; not execution-confirmed. */
         queued: number;
-        /** Execution-confirmed turn pickups. The current wake substrate has no receipt, so 0. */
+        /** Legacy queue-count alias retained for callers that predate `queued`; not pickup-confirmed. */
         woken: number;
         /** False until a later checkpoint/activity observation proves pickup. */
         pickupConfirmed: boolean;
@@ -1364,7 +1364,7 @@ async function sendOne(
       },
     });
     const queued = fan.queued ?? fan.woken;
-    wake = { mode: wakeMode, targets: fan.targets, queued, woken: 0, pickupConfirmed: false };
+    wake = { mode: wakeMode, targets: fan.targets, queued, woken: queued, pickupConfirmed: false };
     if (fan.staged > 0) wake.staged = fan.staged;
     if (fan.timedOutTargets?.length) wake.timedOutTargets = fan.timedOutTargets;
     // EI-19965318428068990: compute the explicit discriminant BEFORE the staged-note /
