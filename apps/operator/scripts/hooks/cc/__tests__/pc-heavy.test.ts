@@ -812,6 +812,59 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('EI-21356396390408722: focused verification is not preempted after the 30-second grace', async () => {
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '45',
+      PC_HEAVY_FOCUSED_SLOTS: '1',
+      PC_HEAVY_PREEMPT_GRACE_SEC: '30',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const barrier = spawn(
+      'bash',
+      [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'sleep 45'],
+      { env: baseEnv(env), cwd: dir, detached: true },
+    );
+    const barrierErr = createTextCollector(barrier.stderr);
+    let focused: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(
+        barrier,
+        barrierErr,
+        (t) => t.includes('exclusive materialization barrier acquired'),
+        'the exclusive materialization barrier acquiring every ordinary slot',
+      );
+      focused = spawn(
+        'bash',
+        [PC_HEAVY, 'bash', '-c', 'sleep 35; echo focused-long-run-ok', 'scripts/test-files.mjs'],
+        { env: baseEnv(env), cwd: dir },
+      );
+      const focusedProcess = focused;
+      const focusedOut = createTextCollector(focusedProcess.stdout);
+      const focusedErr = createTextCollector(focusedProcess.stderr);
+      const focusedExited = new Promise<number>((res) => focusedProcess.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(
+        focusedProcess,
+        focusedErr,
+        (t) => t.includes('slot acquired'),
+        'focused test:file taking its independent lane',
+      );
+
+      expect(heldSlotCount(join(dir, 'focused'), 1)).toBe(1);
+      expect(await focusedExited).toBe(0);
+      expect(focusedOut.text()).toContain('focused-long-run-ok');
+      expect(focusedErr.text()).not.toContain('PREEMPTING ordinary holder for exclusive materialization');
+      expect(focusedErr.text()).not.toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
+    } finally {
+      killGroup(barrier);
+      if (focused) {
+        try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }
+      }
+    }
+  }, 50_000);
+
   it('serializes concurrent exclusive materializers before either can split the slot domain', async () => {
     const env = {
       PC_HEAVY_SLOTS: '2',

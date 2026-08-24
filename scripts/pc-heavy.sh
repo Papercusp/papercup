@@ -1927,6 +1927,13 @@ case "$_preempt_mode" in
     exit 75
     ;;
 esac
+# Focused verification owns an independent slot domain, so an exclusive
+# materializer cannot be blocked by its holder. Keep the default cooperative
+# preemption monitor off for that lane; an explicit PC_HEAVY_PREEMPTIBLE=1
+# remains an intentional caller opt-in.
+if [ "$_focused_lane" = 1 ] && [ "$_preempt_mode" = auto ]; then
+  _preemptible=0
+fi
 if [ "$_preemptible" = 1 ]; then
   # Keep the monitor outside the outer wrapper's process group. Do NOT use
   # `setsid --fork --wait` here: its waitable parent stays in the outer group,
