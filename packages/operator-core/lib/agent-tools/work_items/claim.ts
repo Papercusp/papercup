@@ -577,6 +577,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       priorAttemptBrief,
       retractionAdvisory,
       planContradiction,
+      behaviorContractHint,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -650,6 +651,25 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         workItemId: workItem.id ?? it.id,
         payload: workItem.payload,
       }).catch(() => null),
+      // P-011: WHICH behavior clauses this claim puts the agent on the hook for, at
+      // WHICH revision. Advisory (D-017) — reported, never enforced; P-013 owns any
+      // refusal. Same port the completion gate uses, so what a claimant is told here
+      // cannot drift from what they will be refused on later. Same fail-soft seam as
+      // every sibling hint above.
+      import('../../behavior-contract-claim-port')
+        .then((m) =>
+          m.getClaimTimeBehaviorContract(
+            {
+              id: workItem.id ?? it.id,
+              payload: workItem.payload,
+              harness: workItem.harness ?? it.harness ?? null,
+              sourcePlanSlug: workItem.sourcePlanSlug,
+              sourcePlanItemIds: workItem.sourcePlanItemIds,
+            },
+            workItem.harness ?? it.harness ?? null,
+          ),
+        )
+        .catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
@@ -710,6 +730,12 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
           ...(priorAttemptBrief ? { priorAttemptBrief } : {}),
+          ...(behaviorContractHint
+            ? {
+                behaviorContract: behaviorContractHint.behaviorContract,
+                behaviorContractNote: behaviorContractHint.behaviorContractNote,
+              }
+            : {}),
         }
       : {
           ok: true,
@@ -743,6 +769,12 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
           ...(priorAttemptBrief ? { priorAttemptBrief } : {}),
+          ...(behaviorContractHint
+            ? {
+                behaviorContract: behaviorContractHint.behaviorContract,
+                behaviorContractNote: behaviorContractHint.behaviorContractNote,
+              }
+            : {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
