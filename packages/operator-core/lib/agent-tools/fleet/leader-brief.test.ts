@@ -14,18 +14,21 @@ import {
   computeFleetHeadcountVsExecutableFrontierAlert,
   computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
+  computeIntentAttention,
   computeSpecStarvedFleetAlert,
   computeSpecAuthorshipAlert,
   computeDeclaredPlanSpecDivergenceAlert,
   computeSpinningAlert,
   computeStrandedFleetAlert,
   compactLeaderBriefBenchSuggestions,
+  compactLeaderBriefIntentAttention,
   compactLeaderBriefMemberVerdicts,
   decorateComposedParkedOn,
   exactPositiveSinglePlanSlugFromFilter,
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
   projectMember,
+  prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
   reconcilePsuHostLiveness,
@@ -526,7 +529,102 @@ describe('bench target identity index (EI-21242929839064139)', () => {
   });
 });
 
+describe('intent attention actionability (WI-41174 / P-012)', () => {
+  it('maps stale ownership evidence to verification and lets staleness dominate divergence', () => {
+    expect(
+      computeIntentAttention({
+        agentId: 'su-stale',
+        sessionState: 'parked',
+        intentAgeSec: 3_600,
+        intentStale: true,
+        intentDivergent: true,
+      }),
+    ).toMatchObject({
+      kind: 'intent-stale',
+      action: 'verify-ownership-before-reclaim',
+      reason: expect.stringMatching(/assignments.*checkpoint.*before reclaiming/i),
+    });
+  });
+
+  it('maps active intent drift to a concrete declaration refresh and stays absent for false/unknown', () => {
+    expect(
+      computeIntentAttention({
+        agentId: 'su-active',
+        sessionState: 'live',
+        intentAgeSec: 1_901,
+        intentStale: false,
+        intentDivergent: true,
+      }),
+    ).toMatchObject({
+      kind: 'intent-divergent',
+      action: 'request-intent-refresh',
+      reason: expect.stringContaining('coord:declare-intent'),
+    });
+    expect(computeIntentAttention({ agentId: 'su-unknown', intentStale: null, intentDivergent: null })).toBeUndefined();
+    expect(computeIntentAttention({ agentId: 'su-clean', intentStale: false, intentDivergent: false })).toBeUndefined();
+  });
+
+  it('keeps every target+action in the compact index and prioritizes actionable detail rows', () => {
+    const members = [
+      { agentId: 'ordinary' },
+      {
+        agentId: 'stale',
+        intentAttention: {
+          kind: 'intent-stale' as const,
+          action: 'verify-ownership-before-reclaim' as const,
+          reason: 'verify first',
+        },
+      },
+      {
+        agentId: 'divergent',
+        intentAttention: {
+          kind: 'intent-divergent' as const,
+          action: 'request-intent-refresh' as const,
+          reason: 'refresh now',
+        },
+      },
+    ];
+
+    expect(compactLeaderBriefIntentAttention(members)).toEqual([
+      { agentId: 'stale', kind: 'intent-stale', action: 'verify-ownership-before-reclaim' },
+      { agentId: 'divergent', kind: 'intent-divergent', action: 'request-intent-refresh' },
+    ]);
+    expect(prioritizeActionableMembers(members).map((member) => member.agentId)).toEqual([
+      'stale',
+      'divergent',
+      'ordinary',
+    ]);
+  });
+});
+
 describe('projectMember (pure)', () => {
+  it('projects canonical intent signals with their resolving attention block', () => {
+    const m = projectMember(
+      baseAgent({
+        sessionState: 'live',
+        intentAgeSec: 1_901,
+        intentStale: false,
+        intentDivergent: true,
+      }),
+      NOW,
+    );
+    expect(m).toMatchObject({
+      intentAgeSec: 1_901,
+      intentStale: false,
+      intentDivergent: true,
+      intentAttention: {
+        kind: 'intent-divergent',
+        action: 'request-intent-refresh',
+      },
+    });
+  });
+
+  it('keeps unknown intent measurements in-band without fabricating attention', () => {
+    const m = projectMember(baseAgent({}), NOW);
+    expect(m).toMatchObject({ intentAgeSec: null, intentStale: null, intentDivergent: null });
+    expect(m.intentAttention).toBeUndefined();
+  });
+
   it('keeps authoritative verified-wait evidence and its owner/takeover remedy beside the member', () => {
     const alert = {
       subscriberId: 'su-worker',

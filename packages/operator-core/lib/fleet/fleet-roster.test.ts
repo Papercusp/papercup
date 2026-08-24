@@ -238,6 +238,45 @@ describe('foldFleetRoster', () => {
     expect(e.federated).toBe(false);
   });
 
+  it('carries active-but-divergent intent evidence into the canonical roster', () => {
+    const p = pres({
+      ownerId: 'su-divergent',
+      fleetSlug: 'f',
+      lastActiveAt: new Date(NOW - 30_000).toISOString(),
+      intentDeclaredAt: new Date(NOW - 1_901_000).toISOString(),
+    });
+    const [e] = foldFleetRoster(
+      [p],
+      [asg({ agentId: 'su-divergent', alive: true })],
+      tier1({}),
+      NOW,
+      wake({ 'su-divergent': { wakeable: true, liveTurn: true } }),
+    );
+    expect(e.intentAgeSec).toBe(1_901);
+    expect(e.lastActiveSecAgo).toBe(30);
+    expect(e.intentStale).toBe(false);
+    expect(e.intentDivergent).toBe(true);
+  });
+
+  it('marks a parked member intent stale immediately even when activity age is fresh', () => {
+    const p = pres({
+      ownerId: 'su-parked-intent',
+      fleetSlug: 'f',
+      lastActiveAt: new Date(NOW - 60_000).toISOString(),
+      intentDeclaredAt: new Date(NOW - 120_000).toISOString(),
+    });
+    const [e] = foldFleetRoster(
+      [p],
+      [asg({ agentId: 'su-parked-intent', alive: true })],
+      tier1({}),
+      NOW,
+      wake({ 'su-parked-intent': { wakeable: true, liveTurn: false } }),
+    );
+    expect(e.sessionState).toBe('parked');
+    expect(e.intentStale).toBe(true);
+    expect(e.intentDivergent).toBe(false);
+  });
+
   it('includes a presence-only idle member with empty work-detail + its fleet label', () => {
     const p = pres({ ownerId: 'su-idle', intent: 'thinking', fleetSlug: 'ui-fleet', fleetRole: 'member' });
     const [e] = foldFleetRoster([p], [], tier1({}), NOW);
