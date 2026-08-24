@@ -2546,9 +2546,22 @@ export async function setIssueState(
                                 WHEN ${preserveExistingCompletionRecord}
                                   THEN authority
                                 ELSE ${opts.completionAuthority ?? null} END,
-               payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
-                              THEN payload
-                              ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
+               -- EI-21238720089733298: a terminal issue is no longer eligible for any
+               -- claim-hold semantics. Leaving "_claimHold" or either provenance family
+               -- behind makes a completed row read like a live compatibility hold, even
+               -- though the terminal state and claim release are authoritative. Clear the
+               -- hold metadata in this same UPDATE so readers cannot observe a half-closed
+               -- row, while preserving unrelated payload and completion evidence.
+               payload = CASE
+                           WHEN payload IS NULL AND ${evidencePayloadJson}::text::jsonb IS NULL
+                             THEN NULL
+                           ELSE (
+                             CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
+                                  THEN COALESCE(payload, '{}'::jsonb)
+                                  ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
+                             END
+                           ) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
+                             - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
                          END
          WHERE workspace_id = ${ws} AND feature_id = ${id}
            AND item_kind IN ('bug', 'change', 'task')
