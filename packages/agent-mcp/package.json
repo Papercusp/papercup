@@ -19,7 +19,7 @@
   },
   "scripts": {
     "test": "vitest",
-    "typecheck": "bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc-agent-mcp.mjs",
+    "typecheck": "node ../../scripts/lint-tsc-agent-mcp.mjs",
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {

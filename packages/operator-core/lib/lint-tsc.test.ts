@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   utimesSync,
@@ -446,6 +447,46 @@ describe('per-project lint:tsc entrypoints (EI-21311288080670514)', () => {
         'pc-heavy',
       );
       expect(scripts[name]).toMatch(/^node scripts\/lint-tsc(?:-[a-z-]+)?\.mjs$/);
+    }
+
+    // Workspace fan-out invokes each package's `typecheck` script from inside its own
+    // aggregate pc-heavy reservation. Any workspace script that delegates to a shared
+    // baseline gate must therefore leave admission to that gate too; otherwise the
+    // aggregate reservation and the gate's compile reservation can deadlock when the
+    // focused lane is clamped to one slot.
+    for (const root of ['apps', 'packages']) {
+      for (const entry of readdirSync(join(repoRoot, root), { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const workspacePackage = join(repoRoot, root, entry.name, 'package.json');
+        if (!existsSync(workspacePackage)) continue;
+        const workspace = JSON.parse(readFileSync(workspacePackage, 'utf8')) as {
+          scripts?: Record<string, string>;
+        };
+        const typecheck = workspace.scripts?.typecheck;
+        if (!typecheck?.includes('lint-tsc')) continue;
+        expect(typecheck, `${root}/${entry.name} typecheck must not nest pc-heavy`).not.toContain(
+          'pc-heavy',
+        );
+      }
+    }
+
+    const submoduleWorkspace = join(
+      repoRoot,
+      'libs',
+      'papercusp',
+      'packages',
+      'orchestrator',
+      'package.json',
+    );
+    if (existsSync(submoduleWorkspace)) {
+      const workspace = JSON.parse(readFileSync(submoduleWorkspace, 'utf8')) as {
+        scripts?: Record<string, string>;
+      };
+      const typecheck = workspace.scripts?.typecheck;
+      expect(typecheck, 'libs/papercusp orchestrator typecheck must be present').toBeDefined();
+      expect(typecheck, 'libs/papercusp orchestrator typecheck must not nest pc-heavy').not.toContain(
+        'pc-heavy',
+      );
     }
   });
 });
