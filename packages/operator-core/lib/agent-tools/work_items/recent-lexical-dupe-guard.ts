@@ -14,8 +14,10 @@
  * STRICTLY ADVISORY — unlike the semantic guard's hard band, this NEVER refuses a
  * create (word-overlap on this repo's long, jargon-dense titles is too coarse a signal
  * to safely block on; two genuinely distinct items routinely share "WI-4070" / "p2p" /
- * "tower" tokens). A match is only ever surfaced via the same `similarOpen` advisory
- * field the semantic guard uses, tagged `source: 'lexical-recent'`.
+ * "tower" tokens). A match is merged into the same candidate set the semantic guard
+ * feeds, tagged `source: 'lexical-recent'`. ⚠ That tag is load-bearing, not decoration:
+ * this leg's score is Jaccard word-overlap, NOT cosine, so the create-time edge writer
+ * excludes it from `dedup_edges` (D-010) — the census metric is cosine-only.
  *
  * FAIL-OPEN, same contract as semantic-dupe-guard: any DB error, timeout, or the kill
  * switch returns null ("no verdict") — the caller proceeds silently. Kill switch:

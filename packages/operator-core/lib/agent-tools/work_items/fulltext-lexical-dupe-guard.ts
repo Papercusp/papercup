@@ -28,9 +28,10 @@
  * the recent-lexical guard: it never refuses a create (the two existing guards
  * already own blocking, and this repo's titles are jargon-dense enough that a
  * third blocking net would risk false-positive refusals) — a hit is merged into
- * the same `similarOpen` field, tagged `source: 'lexical-fulltext'`, so the filer
- * sees "this looks already filed" even when the embedding legs missed it
- * (EI-19298062354262754's suggested fix #2).
+ * the same candidate set, tagged `source: 'lexical-fulltext'`, so a near-duplicate is
+ * still SEEN even when the embedding legs missed it (EI-19298062354262754's suggested
+ * fix #2). ⚠ The tag is load-bearing: this leg scores title-token similarity, not
+ * cosine, so the create-time edge writer excludes it from `dedup_edges` (D-010).
  *
  * FAIL-OPEN, same contract as its siblings: any search error, timeout, or the kill
  * switch (PAPERCUSP_WI_FULLTEXT_DUPE=off) returns null — the caller proceeds

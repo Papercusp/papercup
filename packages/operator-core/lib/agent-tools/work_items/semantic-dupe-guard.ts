@@ -12,8 +12,11 @@
  *
  *   similarity ≥ hard (default 0.93) → the create is REFUSED
  *     (`duplicate_semantic`, force:true overrides — same contract as EI-316);
- *   similarity ≥ soft (default 0.85) → the create PROCEEDS with an advisory
- *     `similarOpen[]` on the result.
+ *   similarity ≥ soft (default 0.85) → the create PROCEEDS, and the soft band is
+ *     PERSISTED as similarity edges for the promoter (work-queue-admission-and-bulk-
+ *     dedup-2026-08-24 D-010) rather than returned to the filer as an advisory. The
+ *     hard band still ships as `similarOpen[]` on the REFUSAL, where it names the
+ *     item the caller should work instead.
  *
  * FAIL-OPEN is the prime directive: a create must never be blocked by embedder
  * health. Any error, a missing migration, a dims mismatch (harrier@1024), or
@@ -120,7 +123,8 @@ export interface SemanticDupeCandidate {
 export interface SemanticDupeResult {
   /** ≥ hard threshold — refuse the create unless force:true. */
   hard: SemanticDupeCandidate[];
-  /** ≥ soft, < hard — create proceeds, surfaced as advisory `similarOpen`. */
+  /** ≥ soft, < hard — create proceeds; persisted to `dedup_edges` for the promoter
+   *  (D-010), not returned to the filing agent. */
   soft: SemanticDupeCandidate[];
   thresholds: { hard: number; soft: number };
 }
