@@ -36,6 +36,7 @@ import {
   isValidModelSpec,
   clampCompactionLimitForTier,
   type AgentBackend,
+  type InteractiveClient,
   type BulkResolverLaunchProfile,
   type BulkResolverLaunchProfiles,
   type BulkResolverProfileKind,
@@ -51,6 +52,7 @@ import {
 export { AGENT_BACKENDS, SURFACE_KEYS };
 export type {
   AgentBackend,
+  InteractiveClient,
   BulkResolverLaunchProfile,
   BulkResolverLaunchProfiles,
   BulkResolverProfileKind,
@@ -59,6 +61,10 @@ export type {
 };
 
 export interface AgentConfig {
+  /** Preferred UI for a bare interactive `psu` launch. P-013 persists the
+      preference while D-015 keeps activation fail-closed; `legacy` therefore
+      remains the effective default until P-012 records a green parity gate. */
+  interactiveClient?: InteractiveClient;
   /** Which backend to drive. 'auto' lets resolveBackend infer from the
       binary name; explicit values force-select. */
   backend: AgentBackend | 'auto';
@@ -121,6 +127,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   // omp agents in any freshly-created workspace (e.g. the New-Plan button —
   // launch-su.ts resolves an agent-less launch via effectiveBackend(readAgentConfig())),
   // ignoring the configured/boot backend. Owner ask 2026-06-18.
+  interactiveClient: 'legacy',
   backend: 'claude-code',
   cmd: '',
   models: {},
@@ -137,6 +144,7 @@ export async function readAgentConfig(): Promise<AgentConfig> {
   const raw = await readOperatorState<Partial<AgentConfig>>('operator_agent_config');
   if (!raw) return { ...DEFAULT_CONFIG, resolverProfiles: defaultBulkResolverLaunchProfiles() };
   return {
+    interactiveClient: parseInteractiveClient(raw.interactiveClient),
     backend: validBackend(raw.backend) ?? DEFAULT_CONFIG.backend,
     cmd: typeof raw.cmd === 'string' ? raw.cmd : '',
     models:
@@ -155,6 +163,12 @@ export async function readAgentConfig(): Promise<AgentConfig> {
     terminal: parseTerminalEmulator(raw.terminal),
     resolverProfiles: parseBulkResolverLaunchProfiles(raw.resolverProfiles),
   };
+}
+
+/** Fail-closed normalization for the `psu` UI preference. Unknown/legacy
+ * rows stay on the existing native clients rather than activating PUI. */
+export function parseInteractiveClient(raw: unknown): InteractiveClient {
+  return raw === 'pui' ? 'pui' : 'legacy';
 }
 
 /** Normalize one stored resolver profile without letting one malformed field
