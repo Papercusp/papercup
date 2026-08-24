@@ -501,6 +501,30 @@ describe('turn-start-orientation — what it says', () => {
     });
   });
 
+  it('re-emits the toolless warning while hook evidence keeps increasing', () => {
+    const first: OrientationState = {
+      ...base,
+      unansweredDirected: 1,
+      toolSurface: { hookCalls: 20, windowMinutes: 3 },
+    };
+    const firstBlock = composeOrientationBlock({ state: first, committed: null, epoch: EPOCH });
+    expect(firstBlock).toContain('MCP TOOLS NOT REGISTERED');
+    expect(firstBlock).toContain('20 harness beats OK');
+
+    const committed = fingerprintOrientation(first, EPOCH);
+    const second: OrientationState = {
+      ...first,
+      toolSurface: { hookCalls: 21, windowMinutes: 3 },
+    };
+    const secondBlock = composeOrientationBlock({ state: second, committed, epoch: EPOCH });
+    expect(orientationUnchanged(committed, fingerprintOrientation(second, EPOCH))).toBe(false);
+    expect(secondBlock).toContain('MCP TOOLS NOT REGISTERED');
+    expect(secondBlock).toContain('21 harness beats OK');
+    expect(secondBlock.indexOf('MCP TOOLS NOT REGISTERED')).toBeLessThan(
+      secondBlock.indexOf('directed msg(s) awaiting YOUR reply'),
+    );
+  });
+
   it('degrades a failed improvement read to silence instead of a false zero', async () => {
     const state = await resolveOrientationState('su-1', 'ws-1', {
       held: async () => [],
