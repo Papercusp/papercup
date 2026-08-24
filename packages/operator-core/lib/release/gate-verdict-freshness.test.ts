@@ -479,6 +479,16 @@ describe('evaluateGateVerdictFreshness', () => {
       expect(out.reason).toMatch(/do NOT fire release:checkpoint-run/);
     });
 
+    it('reclassifies writer-starved during measured pre-lock process authority', () => {
+      const out = reconcileGateVerdictFreshnessWithCheckpointRun(writerStarved, {
+        active: true,
+        activeSource: 'process-authority',
+      });
+      expect(out.reasonCode).toBe('run-in-flight');
+      expect(out.reason).toMatch(/authority environment \+ cgroup/);
+      expect(out.reason).toMatch(/do NOT fire release:checkpoint-run/);
+    });
+
     it.each([
       ['measured idle', { active: false, activeSource: 'run-lock' as const }],
       ['unknown', null],
