@@ -106,7 +106,7 @@ export function createOperatorOwnedLoopPort(
           },
         },
         model: request.model,
-        signal: request.signal,
+        ...(request.signal !== undefined ? { signal: request.signal } : {}),
         tools,
         approvals: unattendedApprovalPort,
         ...(options.modelPort ? { port: options.modelPort } : {}),
