@@ -2224,10 +2224,12 @@ describe("psu-launcher arg parsing", () => {
   });
 
   it("resolves bare psu from the saved preference and defaults to PUI after D-028", async () => {
-    const savedLegacy = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ config: { interactiveClient: "legacy" } }),
-    }));
+    const savedLegacy = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ config: { interactiveClient: "legacy" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
     expect(
       await resolveInteractiveClient(parseArgs([]), {
         fetchImpl: savedLegacy,
@@ -2239,10 +2241,12 @@ describe("psu-launcher arg parsing", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
 
-    const savedPui = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ config: { interactiveClient: "pui" } }),
-    }));
+    const savedPui = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ config: { interactiveClient: "pui" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
     expect(
       await resolveInteractiveClient(parseArgs([]), {
         fetchImpl: savedPui,
@@ -8479,6 +8483,21 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(claim).toBeGreaterThan(-1);
     expect(configRepair).toBeGreaterThan(claim);
     expect(spawn).toBeGreaterThan(claim);
+  });
+
+  it("exits immediately when the ended-session resume claim is lost", () => {
+    const claim = body.indexOf(
+      "const claimed = await reportSessionResumed(session.id);",
+    );
+    const refusal = body.indexOf("if (!claimed) {", claim);
+    const nextClaimState = body.indexOf("resumeClaimed = true;", refusal);
+    const refusalBody = body.slice(refusal, nextClaimState);
+
+    expect(claim).toBeGreaterThan(-1);
+    expect(refusal).toBeGreaterThan(claim);
+    expect(nextClaimState).toBeGreaterThan(refusal);
+    expect(refusalBody).toContain("process.exit(2);");
+    expect(refusalBody).not.toContain("process.exitCode = 2;");
   });
 
   it("wraps every post-claim setup failure in launch-failed cleanup", () => {
