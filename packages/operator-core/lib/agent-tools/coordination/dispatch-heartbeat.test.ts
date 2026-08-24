@@ -24,7 +24,7 @@ describe('maybeBeatPresenceOnDispatch', () => {
     __resetDispatchHeartbeatThrottle();
   });
 
-  test('beats the resolved owner exactly once per throttle window', async () => {
+  test('beats once per throttle window even when owner repair returns an already-live false no-op', async () => {
     const beat = vi.fn(async (_ownerId: string) => {});
     const reactivate = vi.fn(async (_ownerId: string) => false);
     let t = 1_000_000;

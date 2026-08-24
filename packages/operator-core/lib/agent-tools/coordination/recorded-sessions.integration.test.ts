@@ -13,7 +13,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
-import { claimAdvSessionResume, listRecordedLiveSessions } from '../../adv-sessions';
+import {
+  claimAdvSessionResume,
+  listRecordedLiveSessions,
+  reactivateAdvSessionByOwner,
+} from '../../adv-sessions';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
@@ -158,5 +162,36 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
 
   it('returns false for an unknown id', async () => {
     expect(await claimAdvSessionResume(99999999)).toBe(false);
+  });
+});
+
+describe('reactivateAdvSessionByOwner (non-exclusive genuine-activity repair)', () => {
+  it('lets concurrent repairs settle safely, then degrades to an already-live no-op', async () => {
+    const owner = 's-owner-repair';
+    await seedAdv({ coordOwnerId: owner, ended: true });
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET exit_code = 137
+       WHERE coord_owner_id = ${owner}`;
+
+    // D-001: these are best-effort activity repairs, not competing launch claims.
+    // Both callers must be allowed to finish. Depending on statement interleaving,
+    // the second writer may update the same selected row or observe it already live.
+    const results = await Promise.all([
+      reactivateAdvSessionByOwner(owner),
+      reactivateAdvSessionByOwner(owner),
+    ]);
+    expect(results).toContain(true);
+    expect(results.every((result) => typeof result === 'boolean')).toBe(true);
+
+    const [row] = await admin`
+      SELECT ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${owner}`;
+    expect(row.ended_at).toBeNull();
+    expect(row.exit_code).toBeNull();
+
+    // Once live, false means harmless no-op. It is not an exclusive-claim loss.
+    await expect(reactivateAdvSessionByOwner(owner)).resolves.toBe(false);
   });
 });

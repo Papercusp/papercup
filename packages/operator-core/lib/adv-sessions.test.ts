@@ -85,6 +85,15 @@ describe('accepted session shutdown marker (EI-21266145962856513)', () => {
   });
 });
 
+describe('resume helper contract separation (psu-resume-claim-cutover D-001)', () => {
+  it('retires the numeric helper while preserving the owner-keyed activity repair', () => {
+    // The negative assertion is paired with a positive control deliberately: a moved,
+    // renamed, or empty source file must not make selective retirement look green.
+    expect(SOURCE).not.toMatch(/export async function reactivateAdvSession\s*\(/);
+    expect(SOURCE).toMatch(/export async function reactivateAdvSessionByOwner\s*\(/);
+  });
+});
+
 describe('stale adv-session terminal marker repair (EI-21365346411486602)', () => {
   it('treats either half of the terminal tuple as positive death evidence', () => {
     expect(hasAdvSessionTerminalEvidence({ endedAt: null, endedBy: 'reconciler' })).toBe(true);
