@@ -1046,6 +1046,29 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
       expect(merged.droppedChecks).toEqual([]);
     });
 
+    it('promotes a matching legacy unkeyed row when a caller first adds its stable id', () => {
+      const priorNote = priorNoteWith([
+        { claim: 'the gate is green', recheck: 'probe gate', verified: 'saw green at the old write' },
+      ]);
+      const merged = mergeCarryRows({
+        priorNote,
+        baseNote: 'body',
+        checks: [{ id: 'gate', claim: 'the gate is green', recheck: 'probe gate' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+
+      expect(merged.checks).toHaveLength(1);
+      expect(merged.checks[0]).toMatchObject({
+        id: 'gate',
+        claim: 'the gate is green',
+        recheck: 'probe gate',
+        verified: expect.stringContaining('saw green at the old write'),
+      });
+      expect(merged.droppedChecks).toEqual([]);
+      expect(merged.note.match(/^- [✓?⚠]/gm)).toHaveLength(1);
+    });
+
     it('CONTROL — the same reword WITHOUT an id loses the evidence and reads as a drop', () => {
       // Calibration: without this, the case above would also pass for an implementation
       // that simply never drops anything.

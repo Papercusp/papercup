@@ -637,6 +637,28 @@ export function carryRowKey(row: { id?: string; claim?: string }): string {
   return id ? `id:${id}` : `claim:${(row.claim ?? '').trim()}`;
 }
 
+/**
+ * Resolve the prior row for an incoming entry. A stable id is authoritative once
+ * it exists, but an id can be introduced after a note was already carrying an
+ * id-less row. In that one migration shape, match the new keyed entry to the
+ * legacy row by its unchanged claim so evidence/age are promoted instead of
+ * duplicated. Never match an id-less entry to a keyed prior row: the two
+ * namespaces are intentionally distinct once both sides have an identity.
+ */
+function priorRowForIncoming<T extends { id?: string; claim: string }>(
+  entry: { id?: string; claim?: string },
+  prior: ReadonlyArray<T>,
+  priorByKey: ReadonlyMap<string, T>,
+): T | undefined {
+  const exact = priorByKey.get(carryRowKey(entry));
+  if (exact) return exact;
+
+  if (!sanitizeCarryRowId(entry.id)) return undefined;
+  const claim = (entry.claim ?? '').trim();
+  if (!claim) return undefined;
+  return prior.find((candidate) => !sanitizeCarryRowId(candidate.id) && candidate.claim.trim() === claim);
+}
+
 /** One wall as a parseable single line: `- [#id] <claim> — re-check: <cmd> (since <ISO>)`.
  *  The `[#…]` prefix, " — re-check: " and trailing " (since …)" markers are the
  *  round-trip anchors. */
@@ -964,7 +986,7 @@ export function normalizeWallEntries(
     const key = carryRowKey(e);
     if (!claim || seen.has(key)) continue;
     seen.add(key);
-    const existing = priorByKey.get(key);
+    const existing = priorRowForIncoming(e, prior, priorByKey);
     const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
     out.push({
@@ -1021,7 +1043,7 @@ export function normalizeCheckEntries(
     const key = carryRowKey(e);
     if (!claim || seen.has(key)) continue;
     seen.add(key);
-    const existing = priorByKey.get(key);
+    const existing = priorRowForIncoming(e, prior, priorByKey);
     const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
     // An explicit evidence field is an update, including an empty string that
@@ -1280,15 +1302,53 @@ function upsertOntoPrior<T extends { id?: string; claim: string }>(
 ): ReadonlyArray<T | { id?: string; claim: string }> {
   if (!merging || prior.length === 0) return supplied;
   const suppliedByKey = new Map(supplied.map((r) => [carryRowKey(r), r] as const));
-  const suppliedKeys = new Set(suppliedByKey.keys());
-  const unionKeys = new Set([...prior.map(carryRowKey), ...suppliedKeys]);
+  const priorByKey = new Map(prior.map((r) => [carryRowKey(r), r] as const));
+  /**
+   * A caller may add ids to an existing note in order to make future rewrites
+   * wording-independent. Treat that as an in-place migration when the claim is
+   * unchanged, rather than as a second row in the merge union. This is deliberately
+   * narrower than changing carryRowKey itself: an id and a claim remain separate
+   * namespaces once both rows are explicitly keyed.
+   */
+  const suppliedToPriorKey = new Map<string, string>();
+  const suppliedForPrior = new Map<string, T>();
+  const matchedPriorKeys = new Set<string>();
+  for (const row of supplied) {
+    const suppliedKey = carryRowKey(row);
+    if (suppliedToPriorKey.has(suppliedKey)) continue;
+
+    let priorKey = priorByKey.has(suppliedKey) ? suppliedKey : undefined;
+    if (!priorKey && sanitizeCarryRowId(row.id)) {
+      const claim = row.claim.trim();
+      const legacy = claim
+        ? prior.find(
+            (candidate) =>
+              !sanitizeCarryRowId(candidate.id) &&
+              !matchedPriorKeys.has(carryRowKey(candidate)) &&
+              candidate.claim.trim() === claim,
+          )
+        : undefined;
+      priorKey = legacy ? carryRowKey(legacy) : undefined;
+    }
+
+    if (priorKey && !matchedPriorKeys.has(priorKey)) {
+      suppliedToPriorKey.set(suppliedKey, priorKey);
+      suppliedForPrior.set(priorKey, suppliedByKey.get(suppliedKey)!);
+      matchedPriorKeys.add(priorKey);
+    }
+  }
+
+  const unionKeys = new Set(prior.map(carryRowKey));
+  for (const suppliedKey of suppliedByKey.keys()) {
+    if (!suppliedToPriorKey.has(suppliedKey)) unionKeys.add(suppliedKey);
+  }
 
   // Preserve the established carried-first order while the union fits. Once the cap
   // would evict a row, prefer the caller's supplied rows and let the carried tail yield.
   // This is intentionally conditional: reordering every additive write would make
   // otherwise stable carry notes churn on every wake.
   if (unionKeys.size > maxRows) {
-    const yielding = prior.filter((p) => !suppliedKeys.has(carryRowKey(p)));
+    const yielding = prior.filter((p) => !suppliedForPrior.has(carryRowKey(p)));
     return [...supplied, ...evidenceFirst(yielding)];
   }
 
@@ -1296,8 +1356,8 @@ function upsertOntoPrior<T extends { id?: string; claim: string }>(
   const used = new Set<string>();
   for (const p of prior) {
     const key = carryRowKey(p);
-    const replacement = suppliedByKey.get(key);
-    if (replacement) used.add(key);
+    const replacement = suppliedForPrior.get(key);
+    if (replacement) used.add(carryRowKey(replacement));
     out.push(replacement ?? p);
   }
   for (const s of supplied) {
@@ -1331,18 +1391,26 @@ function evidenceFirst<T extends { verified?: string; contested?: string }>(rows
 
 /** Prior claims absent from the surviving set, compared on the SAME {@link carryRowKey}
  *  the normalizers dedup by — so a row that merely changed its recheck/evidence, was
- *  re-passed with surrounding whitespace, or (P-013) was RE-WORDED under a stable `id`
- *  never reads as dropped. The reported string is still the human-readable claim, since
- *  that is what a caller needs to re-send. Blank prior claims are ignored: they can never
- *  be re-passed (the normalizers skip them), so counting them would report a permanent
- *  phantom loss on every write. */
+ *  re-passed with surrounding whitespace, (P-013) was RE-WORDED under a stable `id`, or
+ *  was just promoted from an id-less legacy row never reads as dropped. The reported
+ *  string is still the human-readable claim, since that is what a caller needs to
+ *  re-send. Blank prior claims are ignored: they can never be re-passed (the normalizers
+ *  skip them), so counting them would report a permanent phantom loss on every write. */
 function droppedClaims(
   prior: ReadonlyArray<{ id?: string; claim: string }>,
   kept: ReadonlyArray<{ id?: string; claim: string }>,
 ): string[] {
   const keptKeys = new Set(kept.map((r) => carryRowKey(r)));
+  const promotedLegacyClaims = new Set(
+    kept.filter((r) => sanitizeCarryRowId(r.id)).map((r) => (r.claim ?? '').trim()),
+  );
   return prior
-    .filter((r) => (r.claim ?? '').trim().length > 0 && !keptKeys.has(carryRowKey(r)))
+    .filter(
+      (r) =>
+        (r.claim ?? '').trim().length > 0 &&
+        !keptKeys.has(carryRowKey(r)) &&
+        (Boolean(sanitizeCarryRowId(r.id)) || !promotedLegacyClaims.has((r.claim ?? '').trim())),
+    )
     .map((r) => (r.claim ?? '').trim());
 }
 
