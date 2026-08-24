@@ -4042,8 +4042,15 @@ export async function gitPipelinePosition(
   deps: PipelinePositionDeps = {},
 ): Promise<PipelinePosition> {
   const git = deps.git ?? realGit;
-  const loadDeploy = deps.loadDeploy ?? devDeployState;
-  const loadSnapshot = deps.loadSnapshot ?? (() => gitPipelineSnapshot());
+  // This is a read-only diagnostic hot path.  Do not lazily boot or queue behind
+  // the host spawner sidecar while resolving the release refs: when the checkpoint
+  // gate is already stalled, that IPC hop can hold the whole pipeline-position read
+  // until the MCP deadline.  The release status/trace readers use the same local-git
+  // policy; keep the defaults here aligned so the primary diagnostic cannot wedge
+  // while reporting on the wedge (EI-21306970701615848).
+  const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: false }));
+  const loadSnapshot =
+    deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));
 
   const notes: string[] = [];
   const deploy = await loadDeploy();

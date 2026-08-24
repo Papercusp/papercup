@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 /**
  * P-003: `gitPipelinePosition`'s serving probe really shells out to
@@ -344,6 +345,19 @@ const snap = (
     gitSync: { lastStatus },
     deploy: snapDeploy(deployOver),
   }) as GitPipelineSnapshot;
+
+describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () => {
+  it('keeps the default release readers on local git instead of the spawner sidecar', () => {
+    const source = readFileSync(new URL('./git-pipeline-position.ts', import.meta.url), 'utf8');
+
+    expect(source).toContain(
+      'const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: false }));',
+    );
+    expect(source).toContain(
+      'deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));',
+    );
+  });
+});
 
 describe('gitPipelinePosition (P-002)', () => {
   it('a fully-promoted+deployed superproject path reads committed→staging→main→deployed (live)', async () => {
