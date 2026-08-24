@@ -177,4 +177,46 @@ export default [
       });
     },
   }),
+  // P-005: pane-level resolver controls update ONE profile without replacing
+  // the rest of operator_agent_config. POST intentionally remains the legacy
+  // full-document save used by /settings/agent; teaching a small command-strip
+  // control to round-trip that whole document would let a stale browser tab
+  // overwrite unrelated model/routing edits. PATCH reuses the same document,
+  // parser, validator and writer while merging only resolverProfiles.
+  defineTool({
+    method: 'PATCH',
+    path: '/agent-config',
+    auth: 'loopback',
+    async handler(req) {
+      const body = (await req.json().catch(() => null)) as Partial<AgentConfig> | null;
+      if (!body || typeof body !== 'object' || body.resolverProfiles === undefined) {
+        return Response.json(
+          { error: 'resolverProfiles is required for a partial agent-config update' },
+          { status: 400 },
+        );
+      }
+      const extra = Object.keys(body).filter((key) => key !== 'resolverProfiles');
+      if (extra.length > 0) {
+        return Response.json(
+          { error: `partial agent-config update accepts only resolverProfiles (got ${extra.join(', ')})` },
+          { status: 400 },
+        );
+      }
+
+      const current = await readAgentConfig();
+      const problem = bulkResolverLaunchProfilesProblem(body.resolverProfiles, current.resolverProfiles);
+      if (problem) {
+        return Response.json(
+          { error: `config rejected — resolverProfiles: ${problem}` },
+          { status: 422 },
+        );
+      }
+      const next: AgentConfig = {
+        ...current,
+        resolverProfiles: parseBulkResolverLaunchProfiles(body.resolverProfiles, current.resolverProfiles),
+      };
+      await writeAgentConfig(next);
+      return Response.json({ config: next });
+    },
+  }),
 ];

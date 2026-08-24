@@ -40,6 +40,8 @@ import {
 } from './use-inbox-bulk-run';
 import { formatRunElapsed } from "../review-report/bulk-run-time";
 export { formatRunElapsed } from "../review-report/bulk-run-time";
+import BulkResolverSettingsControl from '../bulk-resolver/BulkResolverSettingsControl';
+import { useBulkResolverSettings } from '../bulk-resolver/bulk-resolver-settings';
 import './inbox-bulk.css';
 
 export interface InboxBulkStripProps {
@@ -86,16 +88,17 @@ export default function InboxBulkStrip({
   acceptingCount,
 }: InboxBulkStripProps) {
   const { start, stop, dismiss } = useBulkRunOps();
+  const resolverSettings = useBulkResolverSettings('inbox-resolve');
   const [starting, setStarting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const counts = deriveRunCounts(items, run);
 
   const onStart = useCallback(async () => {
-    if (visible.length === 0 || starting) return;
+    if (visible.length === 0 || starting || !resolverSettings.ready) return;
     setStarting(true);
     setNotice(null);
     try {
-      const res = await start(toBulkSeed(visible), filterSnapshot);
+      const res = await start(toBulkSeed(visible), filterSnapshot, null, resolverSettings.profile);
       if (!res.ok) {
         setNotice(res.error ?? 'could not start the run');
         return;
@@ -109,12 +112,17 @@ export default function InboxBulkStrip({
     } finally {
       setStarting(false);
     }
-  }, [visible, starting, start, filterSnapshot, onRunStarted]);
+  }, [visible, starting, start, filterSnapshot, onRunStarted, resolverSettings]);
 
   /* ── RUNNING ─────────────────────────────────────────────────────────── */
   if (isRunning && run) {
     return (
       <div className="op-inbox__bulk op-inbox__bulk--running" data-testid="inbox-bulk-running">
+        <BulkResolverSettingsControl
+          kind="inbox-resolve"
+          settings={resolverSettings}
+          effective={run.launchSnapshot ?? {}}
+        />
         <div className="op-inbox__bulk-head">
           <span className="op-inbox__bulk-spin" aria-hidden="true">
             <Loader2 size={15} />
@@ -165,6 +173,11 @@ export default function InboxBulkStrip({
     const pending = recommendations.length;
     return (
       <div className="op-inbox__bulk op-inbox__bulk--review" data-testid="inbox-bulk-review">
+        <BulkResolverSettingsControl
+          kind="inbox-resolve"
+          settings={resolverSettings}
+          effective={run.launchSnapshot ?? {}}
+        />
         <div className="op-inbox__bulk-head">
           <span className="op-inbox__bulk-icon op-inbox__bulk-icon--review" aria-hidden="true">
             <Sparkles size={16} />
@@ -218,11 +231,12 @@ export default function InboxBulkStrip({
   const n = visible.length;
   return (
     <div className="op-inbox__bulk-slot">
+      <BulkResolverSettingsControl kind="inbox-resolve" settings={resolverSettings} />
       <button
         type="button"
         className="op-inbox__bulk-start"
         data-testid="inbox-bulk-start"
-        disabled={n === 0 || starting}
+        disabled={n === 0 || starting || !resolverSettings.ready}
         aria-label={`Bulk resolve ${n} filtered item${n === 1 ? '' : 's'}`}
         onClick={() => void onStart()}
       >

@@ -30,15 +30,11 @@ import { Button } from '@/app/harness/Button';
 import { Combobox, type ComboboxEntry, type ComboboxOption } from '@/app/harness/Combobox';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent, OWNER_LAUNCH_HEADLESS } from '@papercusp/operator-core/lib/launch-agent';
-import type { SuAgent } from '@papercusp/operator-core/lib/su-agents';
 // WI-6300: the canonical model/effort vocabulary psu itself launches with. This
 // module is deliberately client-safe (no node/server imports) — see its header —
 // so the renderer can read it without dragging the PG/fs subtree into the bundle.
 import {
-  CLOUD_MODEL_MENU,
-  MODEL_EFFORT_LEVELS,
   composeLaunchModelSpec,
-  LAUNCH_ACCOUNT_MODES,
   SU_CONTEXT_SIZES,
   SU_CONTEXT_TOKEN_ESTIMATES,
 } from '@papercusp/operator-core/lib/agent-config-constants';
@@ -48,7 +44,29 @@ import {
 // is: registry.ts has ZERO imports (pure data + pure functions), so reading it
 // here drags no node/server subtree into the renderer bundle.
 import { launchableModes } from '@papercusp/operator-core/lib/modes/registry';
-import { useSuLaunchOptions, type OmpLaunchModel } from './use-su-launch-options';
+import { useSuLaunchOptions } from './use-su-launch-options';
+import {
+  ACCOUNT_SELECT_DEFAULT,
+  EFFORT_OPTIONS,
+  EFFORT_SELECT_DEFAULT,
+  MODEL_SELECT_DEFAULT,
+  OMP_MODEL_OPTIONS,
+  buildAccountOptions,
+  buildEffortOptions,
+  buildModelOptions,
+  modelBackend,
+} from './su-launch-option-entries';
+export {
+  ACCOUNT_SELECT_DEFAULT,
+  EFFORT_OPTIONS,
+  EFFORT_SELECT_DEFAULT,
+  MODEL_SELECT_DEFAULT,
+  OMP_MODEL_OPTIONS,
+  buildAccountOptions,
+  buildEffortOptions,
+  buildModelOptions,
+  modelBackend,
+} from './su-launch-option-entries';
 import {
   formatAbsoluteUpdated,
   formatRelativeUpdated,
@@ -56,146 +74,6 @@ import {
 import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 
 export const PLAN_SELECT_PLACEHOLDER = '__select_plan__';
-export const MODEL_SELECT_DEFAULT = '__default_model__';
-
-/**
- * The base-model choices, DERIVED from `CLOUD_MODEL_MENU` — the client-safe twin
- * of psu-launcher's own `RESUME_MODEL_MENU`, held to it by a parity test in
- * apps/operator/lib/psu-launcher.test.ts.
- *
- * WI-6300 (owner ask 2026-07-27: "why is the model list missing so many levels?
- * Don't we have a list somewhere in our repo that launching our psu utility
- * uses?"). We did, and this list was NOT it: it was a hand-maintained rival that
- * had fallen four models behind psu (no fable / sol / terra / luna) while still
- * offering `gpt-5.2`, which is not a recognized alias at all — the OpenAI
- * families are the GPT-5.6 sol/terra/luna trio. Derive; never re-declare. The
- * backend tag rides along as `detail` so it is visible WHICH CLI a pick launches
- * (a codex model starts a codex session, not a claude one).
- */
-export const OMP_MODEL_OPTIONS: ComboboxOption[] = [
-  { value: MODEL_SELECT_DEFAULT, label: 'Default' },
-  ...CLOUD_MODEL_MENU.map((m) => ({
-    value: m.value,
-    label: m.label,
-    detail: m.backend === 'codex' ? 'codex CLI' : 'claude CLI',
-  })),
-];
-
-function formatTokenCount(value: number | null): string | null {
-  if (value === null) return null;
-  if (value >= 1_000_000) return `${value / 1_000_000}M context`;
-  if (value >= 1_000) return `${Math.round(value / 1_000)}k context`;
-  return `${value} context`;
-}
-
-/** Native aliases stay stable; host-local OMP selectors live in their own group. */
-export function buildModelOptions(models: OmpLaunchModel[]): ComboboxEntry[] {
-  const native = OMP_MODEL_OPTIONS.filter((option) => option.value !== MODEL_SELECT_DEFAULT);
-  const groups: ComboboxEntry[] = [
-    OMP_MODEL_OPTIONS[0],
-    { kind: 'group', label: 'Papercusp aliases', options: native },
-  ];
-  if (models.length > 0) {
-    groups.push({
-      kind: 'group',
-      label: 'OMP installed models',
-      options: models.map((model) => ({
-        value: model.selector,
-        label: model.name,
-        detail: [model.provider, formatTokenCount(model.contextWindow), model.reasoning ? 'reasoning' : null]
-          .filter(Boolean)
-          .join(' · '),
-        keywords: [model.provider, model.id, model.selector, ...model.input],
-      })),
-    });
-  }
-  return groups;
-}
-
-export const EFFORT_SELECT_DEFAULT = '__default_effort__';
-
-/** Display label + blurb per effort level. Keyed off MODEL_EFFORT_LEVELS so a
-    level added to psu still RENDERS (falling back to the raw token) instead of
-    silently vanishing from the menu — the failure mode this whole change fixes.
-    Labels keep psu's own token recognizable (`xhigh`, not "Extra high"), because
-    the value here is exactly what gets sent as `<model>:<effort>`. */
-const EFFORT_LABELS: Record<string, { label: string; detail: string }> = {
-  low: { label: 'Low', detail: 'Fastest, cheapest — shallow reasoning' },
-  medium: { label: 'Medium', detail: 'Balanced reasoning depth vs cost' },
-  high: { label: 'High', detail: 'Deep reasoning' },
-  xhigh: { label: 'xHigh', detail: 'Deeper still — slower and pricier' },
-  max: { label: 'Max', detail: 'Strongest reasoning available' },
-};
-
-/**
- * Effort levels (P-008, owner ask 2026-07-26), DERIVED from `MODEL_EFFORT_LEVELS`.
- * These are the reasoning-depth suffixes appended to the model spec — psu has no
- * `--effort` flag; effort rides the spec as `<modelId>[:<effort>]`, so "sonnet" +
- * "high" is sent as "sonnet:high". Kept as its own control rather than exploding
- * the model list into model×effort combinations.
- *
- * WI-6300 (owner ask 2026-07-27: "Some models support an xhigh settins but the
- * effort is only low medium high"). psu accepts five — low|medium|high|xhigh|max
- * — and this list hardcoded three, so xhigh and max were unreachable from the UI
- * even though the launcher would have honoured them. Now derived + parity-tested.
- */
-export const EFFORT_OPTIONS: ComboboxOption[] = [
-  { value: EFFORT_SELECT_DEFAULT, label: 'Default effort' },
-  ...MODEL_EFFORT_LEVELS.map((level) => ({
-    value: level,
-    label: EFFORT_LABELS[level]?.label ?? level,
-    detail: EFFORT_LABELS[level]?.detail,
-  })),
-];
-
-/** OMP publishes per-model effort support; never offer a suffix it did not. */
-export function buildEffortOptions(model?: OmpLaunchModel | null): ComboboxOption[] {
-  if (!model) return EFFORT_OPTIONS;
-  return [
-    EFFORT_OPTIONS[0],
-    ...(model.thinking ?? []).map((level) => ({
-      value: level,
-      label: EFFORT_LABELS[level]?.label ?? level,
-      detail: EFFORT_LABELS[level]?.detail,
-    })),
-  ];
-}
-
-/**
- * Compose the `--model` spec from the two controls. Effort is meaningless
- * without an explicit model (the default model's effort is the backend's to
- * choose), so it is dropped rather than sent as a bare ":high".
- *
- * Pure — exported for unit-test access.
- */
-/**
- * The CLI backend the picked model belongs to, or undefined for "no explicit model"
- * (→ launch-su resolves the configured default agent, unchanged).
- *
- * Load-bearing, not cosmetic: `CLOUD_MODEL_MENU` spans backends, so a model pick IS
- * implicitly an agent pick. Sending the model without its backend produced a launch psu
- * rejects outright ("model `sol` belongs to the `codex` backend, but this launch requested
- * `--agent=claude`"), which it reports by exiting 0 before recording anything — a terminal
- * that flashes and closes, plus a success toast. Derived from the SAME menu the options
- * are built from, so a model added there can never disagree with the agent we send.
- *
- * Pure — exported for unit-test access.
- */
-export function modelBackend(model: string): SuAgent | undefined {
-  const m = model.trim();
-  if (!m || m === MODEL_SELECT_DEFAULT) return undefined;
-  // Tolerate a "<model>:<effort>" spec as well as a bare model id.
-  const colon = m.lastIndexOf(':');
-  const base = colon > 0 && (MODEL_EFFORT_LEVELS as readonly string[]).includes(m.slice(colon + 1))
-    ? m.slice(0, colon)
-    : m;
-  const native = CLOUD_MODEL_MENU.find((c) => c.value === base)?.backend as SuAgent | undefined;
-  if (native) return native;
-  // OMP's validated launch identity is always `provider/id`. The exact selector
-  // is the wire value; do not collapse it to a friendly alias.
-  return base.includes('/') ? 'omp' : undefined;
-}
-
 /**
  * WI-6321 (owner ask 2026-07-27: the GUI "should share the same code for getting
  * the options"): this used to be a THIRD private copy of spec composition, and it
@@ -219,7 +97,6 @@ export function composeModelSpec(model: string, effort: string): string | null {
 
 export const FLEET_SELECT_NONE = '__no_fleet__';
 export const FLEET_SELECT_NEW = '__new_fleet__';
-export const ACCOUNT_SELECT_DEFAULT = 'default';
 export const CONTEXT_SELECT_NATIVE = '__native_context__';
 export const MODE_SELECT_NONE = '__no_mode__';
 /**
@@ -250,32 +127,6 @@ export function buildFleetOptions(
       label: f.title?.trim() || f.slug,
       detail: f.color?.name ? `join · ${f.color.name}` : 'join',
       keywords: [f.slug],
-    })),
-  ];
-}
-
-/** Account rows: psu's two non-pool modes, then any gateway pool accounts. The
- *  pool is empty unless the gateway is on, exactly as psu's picker shows it.
- *
- *  Pure — exported for unit-test access. */
-export function buildAccountOptions(
-  accounts: Array<{ id: string; label?: string | null; detail?: string | null }>,
-): ComboboxOption[] {
-  const MODE_DETAIL: Record<string, string> = {
-    default: 'System / CLI login — no gateway pin',
-    auto: 'Gateway-routed with failover across the pool',
-  };
-  return [
-    ...LAUNCH_ACCOUNT_MODES.map((m) => ({
-      value: m,
-      label: m === 'default' ? 'Default account' : 'Auto (gateway)',
-      detail: MODE_DETAIL[m],
-    })),
-    ...accounts.map((a) => ({
-      value: a.id,
-      label: a.label?.trim() || a.id,
-      detail: a.detail?.trim() || `Pinned pool account`,
-      keywords: [a.id],
     })),
   ];
 }

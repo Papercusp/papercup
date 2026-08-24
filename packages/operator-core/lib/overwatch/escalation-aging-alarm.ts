@@ -47,7 +47,8 @@
  * Best-effort + fail-soft: never throws, never blocks the request worker it runs on.
  */
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { computeSystemHealth } from '../system-health/compute';
+import { readSharedSystemHealthSnapshot } from '../system-health/compute';
+import type { SystemHealth } from '../system-health/types';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
   openEscalation,
@@ -75,9 +76,12 @@ const DEFAULT_INTERVAL_MS = 5 * 60_000;
 
 export interface EscalationAgingAlarmDeps {
   /** Read the current human-attention aging-escalation count. Default: a fresh
-   *  `computeSystemHealth(activeWorkspaceId()).panels.escalations.data.aging`
+   *  shared SystemHealth snapshot's `panels.escalations.data.aging`
    *  (the SAME count `detectAnomalies` sources via the C-1 brief mapping). */
-  readAging?: () => Promise<number>;
+  readAging?: () => Promise<number | null>;
+  /** Test seam for the production shared-snapshot reader. Null means unknown;
+   *  it never falls back to a request-worker `computeSystemHealth`. */
+  readSharedHealth?: (workspaceId: string) => Promise<SystemHealth | null>;
   escalate?: (input: {
     severity: 'advisory';
     summary: string;
@@ -88,9 +92,15 @@ export interface EscalationAgingAlarmDeps {
   resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
 }
 
-async function defaultReadAging(): Promise<number> {
-  const health = await computeSystemHealth(activeWorkspaceId());
-  return health.panels.escalations.data?.aging ?? 0;
+async function defaultReadAging(
+  readHealth: (workspaceId: string) => Promise<SystemHealth | null> = readSharedSystemHealthSnapshot,
+): Promise<number | null> {
+  const health = await readHealth(activeWorkspaceId());
+  if (!health) return null;
+  const panel = health.panels.escalations;
+  if (panel.status === 'unknown' || panel.error != null) return null;
+  const aging = panel.data?.aging;
+  return typeof aging === 'number' && Number.isFinite(aging) ? aging : null;
 }
 
 /**
@@ -104,8 +114,8 @@ async function defaultReadAging(): Promise<number> {
  */
 export async function runEscalationAgingAlarmTick(
   deps: EscalationAgingAlarmDeps = {},
-): Promise<{ aging: number; fired: boolean; resolved: string[] }> {
-  const readAging = deps.readAging ?? defaultReadAging;
+): Promise<{ aging: number | null; fired: boolean; resolved: string[] }> {
+  const readAging = deps.readAging ?? (() => defaultReadAging(deps.readSharedHealth));
   const escalate =
     deps.escalate ?? ((input) => openEscalation(ESCALATION_AGING_ALARM_IDENTITY, input));
   const listOpen =
@@ -133,13 +143,16 @@ export async function runEscalationAgingAlarmTick(
         resolver: ESCALATION_AGING_ALARM_IDENTITY.ownerId,
       }));
 
-  let aging = 0;
+  let aging: number | null = null;
   try {
     aging = await readAging();
   } catch {
     // A read failure must never crash the request worker nor look like "all clear".
-    return { aging: 0, fired: false, resolved: [] };
+    return { aging: null, fired: false, resolved: [] };
   }
+  // Missing/stale shared evidence is unknown: do not list, resolve, or open an
+  // escalation from a value we could not observe.
+  if (aging === null) return { aging: null, fired: false, resolved: [] };
 
   let openRows: EscalationRecord[] = [];
   try {

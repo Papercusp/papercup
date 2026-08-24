@@ -43,6 +43,8 @@
  *                                          pendingWakeStaleHours + grace — a sweep
  *                                          failure, not the human's normal review
  *                                          backlog; EI-8664)
+ *       · session_turn_parts COPY convoy (a long-running COPY or queued lock
+ *                                          waiters on the faithful transcript table)
  *     Each violation files ONE deduped improvement with a STABLE title (the
  *     dedup key), so a persisting violation never floods the backlog.
  *
@@ -585,6 +587,13 @@ export interface InvariantThresholds {
    *  above the observed cost of a legitimate bounded/indexed coord_event_log
    *  read (~0.1-140ms) and well under the multi-second genuine-furnace range. */
   coordLogFurnaceProvenFastPathMs: number;
+  /** EI-21363741549000811: a faithful transcript COPY should not hold an
+   *  AccessShareLock for longer than this after the backup hook's data
+   *  exclusion. A queued waiter is actionable even when the COPY is young. */
+  sessionTurnPartsCopyMaxSeconds: number;
+  /** A queued relation lock waiter alongside an active COPY is a convoy. The
+   *  default zero means any waiter observed by the hourly monitor is a breach. */
+  sessionTurnPartsCopyQueuedWaitersMax: number;
 }
 
 export const DEFAULT_THRESHOLDS: InvariantThresholds = {
@@ -599,6 +608,8 @@ export const DEFAULT_THRESHOLDS: InvariantThresholds = {
   coordLogFurnaceRowsPerCall: 50_000,
   coordLogFurnaceMeanExecMs: 2_000,
   coordLogFurnaceProvenFastPathMs: 500,
+  sessionTurnPartsCopyMaxSeconds: 60,
+  sessionTurnPartsCopyQueuedWaitersMax: 0,
 };
 
 /**
@@ -657,6 +668,23 @@ export interface CoordLogActiveOffender {
   durationSeconds: number;
 }
 
+/** A currently-running COPY of the faithful transcript parts table. */
+export interface SessionTurnPartsCopyHolder {
+  pid: number;
+  applicationName: string | null;
+  durationSeconds: number;
+}
+
+/** A backend waiting on a relation lock for the faithful transcript parts
+ *  table. Query text is bounded for incident evidence. */
+export interface SessionTurnPartsLockWaiter {
+  pid: number;
+  applicationName: string | null;
+  mode: string;
+  durationSeconds: number;
+  queryPreview: string | null;
+}
+
 export interface InvariantSnapshot {
   openHandoffTs: string[];
   openEscalations: OpenEscalationLite[];
@@ -671,6 +699,10 @@ export interface InvariantSnapshot {
   /** WI-3959: currently-running queries matching the same pattern, for naming
    *  the live offender when one is caught mid-scan. */
   coordLogActiveOffenders: CoordLogActiveOffender[];
+  /** EI-21363741549000811: active faithful-parts COPY holders and bounded
+   *  relation-lock waiters observed in the same monitor pass. */
+  sessionTurnPartsCopyHolders: SessionTurnPartsCopyHolder[];
+  sessionTurnPartsLockWaiters: SessionTurnPartsLockWaiter[];
 }
 
 export interface Violation {
@@ -784,6 +816,37 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
       title: 'coord invariant: wake-queue depth/age growth',
       detail: `pending_wakes depth=${snap.wakeQueueDepth} (max ${t.wakeQueueDepthMax}), oldest=${oldestH.toFixed(1)}h (auto-expiry ${t.pendingWakeStaleHours}h + ${graceH.toFixed(0)}h grace) — the stale-wake sweep is not keeping the queue bounded.`,
       severity: 'minor',
+    });
+  }
+  // EI-21363741549000811: the backup hook excludes session_turn_parts data and
+  // bounds its pg_dump session. This catches an older/deployed hook or another
+  // dump path that still runs a long COPY, especially when application writers
+  // are queued behind its AccessShareLock. The monitor samples only currently
+  // active COPYs and a bounded waiter list, so it never turns the detector into
+  // another unbounded diagnostic query.
+  const longPartsCopies = snap.sessionTurnPartsCopyHolders.filter(
+    (copy) => copy.durationSeconds > t.sessionTurnPartsCopyMaxSeconds,
+  );
+  const queuedPartsWaiters = snap.sessionTurnPartsLockWaiters.length;
+  if (
+    snap.sessionTurnPartsCopyHolders.length > 0 &&
+    (longPartsCopies.length > 0 || queuedPartsWaiters > t.sessionTurnPartsCopyQueuedWaitersMax)
+  ) {
+    const holderDetail = snap.sessionTurnPartsCopyHolders
+      .map((copy) => `pid=${copy.pid} app=${copy.applicationName ?? 'unknown'} running=${copy.durationSeconds.toFixed(1)}s`)
+      .join(', ');
+    const waiterDetail = snap.sessionTurnPartsLockWaiters.length
+      ? `; waiters: ${snap.sessionTurnPartsLockWaiters
+          .map((waiter) => `pid=${waiter.pid} mode=${waiter.mode} app=${waiter.applicationName ?? 'unknown'} running=${waiter.durationSeconds.toFixed(1)}s${waiter.queryPreview ? ` query=${waiter.queryPreview}` : ''}`)
+          .join(' | ')}`
+      : '';
+    out.push({
+      title: 'coord invariant: session_turn_parts COPY lock convoy',
+      detail:
+        `${snap.sessionTurnPartsCopyHolders.length} active COPY holder(s) on harness_shared.session_turn_parts ` +
+        `(long-copy threshold ${t.sessionTurnPartsCopyMaxSeconds}s): ${holderDetail}; ` +
+        `${queuedPartsWaiters} queued relation-lock waiter(s)${waiterDetail}`,
+      severity: 'major',
     });
   }
   // WI-3959: recurrence guard for the WI-3937/WI-3869 class — an unbounded
@@ -999,6 +1062,70 @@ export async function gatherCoordLogActiveOffenders(sql: postgres.Sql, limit = 1
   return rows.map((r) => ({ pid: r.pid, applicationName: r.application_name, durationSeconds: r.duration_seconds }));
 }
 
+/** EI-21363741549000811: gather only the live COPY holders and queued relation
+ *  waiters for the faithful transcript parts table. Both result sets are
+ *  explicitly capped because this routine runs on the hourly monitor path. */
+export async function gatherSessionTurnPartsCopyLocks(
+  sql: postgres.Sql,
+  holderLimit = 10,
+  waiterLimit = 20,
+): Promise<{
+  copyHolders: SessionTurnPartsCopyHolder[];
+  lockWaiters: SessionTurnPartsLockWaiter[];
+}> {
+  const holders = await sql<
+    { pid: number; application_name: string | null; duration_seconds: number }[]
+  >`
+    SELECT DISTINCT ON (a.pid)
+      a.pid,
+      a.application_name,
+      COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - a.query_start)), 0)::float AS duration_seconds
+    FROM pg_stat_activity a
+    JOIN pg_locks l
+      ON l.pid = a.pid
+     AND l.relation = 'harness_shared.session_turn_parts'::regclass
+     AND l.granted
+    WHERE a.datname = current_database()
+      AND a.state = 'active'
+      AND a.query ~* '^[[:space:]]*COPY[[:space:]]+harness_shared[.]session_turn_parts([[:space:](]|$)'
+    ORDER BY a.pid, a.query_start ASC
+    LIMIT ${holderLimit}
+  `;
+  const waiters = await sql<
+    { pid: number; application_name: string | null; mode: string; duration_seconds: number; query_preview: string | null }[]
+  >`
+    SELECT
+      a.pid,
+      a.application_name,
+      l.mode,
+      COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - a.query_start)), 0)::float AS duration_seconds,
+      LEFT(a.query, 400) AS query_preview
+    FROM pg_stat_activity a
+    JOIN pg_locks l
+      ON l.pid = a.pid
+     AND l.relation = 'harness_shared.session_turn_parts'::regclass
+     AND NOT l.granted
+    WHERE a.datname = current_database()
+      AND a.pid <> pg_backend_pid()
+    ORDER BY a.query_start ASC NULLS LAST
+    LIMIT ${waiterLimit}
+  `;
+  return {
+    copyHolders: holders.map((row) => ({
+      pid: row.pid,
+      applicationName: row.application_name,
+      durationSeconds: Number(row.duration_seconds),
+    })),
+    lockWaiters: waiters.map((row) => ({
+      pid: row.pid,
+      applicationName: row.application_name,
+      mode: row.mode,
+      durationSeconds: Number(row.duration_seconds),
+      queryPreview: row.query_preview,
+    })),
+  };
+}
+
 /** Gather the live snapshot. Every leg is isolated — a failing query zeroes
  *  its own check (and notes it), never the fire. */
 async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot> {
@@ -1011,6 +1138,8 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
     wakeQueueOldestMs: null,
     coordLogFurnaces: [],
     coordLogActiveOffenders: [],
+    sessionTurnPartsCopyHolders: [],
+    sessionTurnPartsLockWaiters: [],
   };
   try {
     snap.openHandoffTs = (await listHandoffs({ status: 'open' })).map((h) => h.record.ts);
@@ -1068,6 +1197,14 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
   try {
     const { sql } = getOrgPg();
     snap.coordLogActiveOffenders = await gatherCoordLogActiveOffenders(sql);
+  } catch {
+    /* check degraded */
+  }
+  try {
+    const { sql } = getOrgPg();
+    const partsLocks = await gatherSessionTurnPartsCopyLocks(sql);
+    snap.sessionTurnPartsCopyHolders = partsLocks.copyHolders;
+    snap.sessionTurnPartsLockWaiters = partsLocks.lockWaiters;
   } catch {
     /* check degraded */
   }

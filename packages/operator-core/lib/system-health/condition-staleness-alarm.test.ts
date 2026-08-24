@@ -4,11 +4,14 @@ import {
   runConditionStalenessTick,
   selectReconcilableConditions,
   selectAbsentConditions,
+  readInfraLivenessHealthFromSharedSnapshot,
   toBridgeConditionStates,
   _resetConditionStalenessDebounce,
 } from './condition-staleness-alarm';
 import type { ConditionState } from '../agent-tools/coordination/tools/conditions';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
+import { PANEL_ORDER } from './types';
+import type { HealthPanel, SystemHealth } from './types';
 
 function mkState(over: Partial<ConditionState> = {}): ConditionState {
   return {
@@ -26,6 +29,56 @@ function mkState(over: Partial<ConditionState> = {}): ConditionState {
     ...over,
   };
 }
+
+function mkHealthySystemHealth(): SystemHealth {
+  const panels = Object.fromEntries(
+    PANEL_ORDER.map((key) => [
+      key,
+      { key, label: key, status: 'ok', summary: 'ok', metrics: [], data: null } satisfies HealthPanel<unknown>,
+    ]),
+  ) as unknown as SystemHealth['panels'];
+  return {
+    workspaceId: 'ws-shared',
+    evaluatedAt: Date.now(),
+    overall: 'ok',
+    crossMonitor: { queenAlive: true, overwatchAlive: null },
+    panels,
+  };
+}
+
+describe('readInfraLivenessHealthFromSharedSnapshot', () => {
+  const key = 'infra-liveness:panel:overwatch';
+
+  it('maps a fresh shared snapshot without invoking any local health aggregation', async () => {
+    let healthReads = 0;
+    const result = await readInfraLivenessHealthFromSharedSnapshot([key], {
+      workspaceId: () => 'ws-shared',
+      readHealth: async () => {
+        healthReads += 1;
+        return mkHealthySystemHealth();
+      },
+      readBeesLiveness: async () => undefined,
+    });
+
+    expect(healthReads).toBe(1);
+    expect(result).toEqual(new Map([[key, true]]));
+  });
+
+  it('treats a missing/stale shared snapshot as unknown and never false-clears a key', async () => {
+    let beesReads = 0;
+    const result = await readInfraLivenessHealthFromSharedSnapshot([key], {
+      workspaceId: () => 'ws-shared',
+      readHealth: async () => null,
+      readBeesLiveness: async () => {
+        beesReads += 1;
+        return undefined;
+      },
+    });
+
+    expect(result).toEqual(new Map());
+    expect(beesReads).toBe(0);
+  });
+});
 
 describe('evaluateStaleConditions (pure)', () => {
   it('an OPEN condition younger than staleMs → no signal', () => {

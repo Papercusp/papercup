@@ -156,11 +156,15 @@ describe('classifier revision 3', () => {
         nowNext: 'P-006 migrates the remaining rows through agent review.',
       }),
       plan({
+        planSlug: 'authoritative-account-routing-all-backends-2026-07-16',
+        title: 'Make account routing authoritative across every spawn path',
         nowState: 'P-001 through P-004 are done.',
         nowNext: 'P-005 (now unblocked): run live credential/provider probes and close out the plan.',
       }),
       plan({
-        nowState: 'Phase 1 is done.',
+        planSlug: 'design-simplification-2026-07-09',
+        title: 'Design simplification + design-doc violation fixes',
+        nowState: 'P-014 is owner-gated; P-015 remains a coordinated refactor.',
         nowNext: 'Recommend the owner weighs in on one API question; P-016 is fully agent-executable.',
       }),
       plan({

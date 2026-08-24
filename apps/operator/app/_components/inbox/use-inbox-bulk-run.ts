@@ -32,6 +32,11 @@ import {
   replyToAttentionItem,
   resolveAttentionAction,
 } from '@/app/admin/plans/attention-card';
+import type {
+  BulkResolverLaunchProfile,
+  EffectiveBulkResolverLaunch,
+} from '@papercusp/operator-core/lib/agent-config-constants';
+import { loadResolverLaunchProfile } from '../bulk-resolver/bulk-resolver-settings';
 
 /** Mirrors `BulkRunPhase` in packages/operator-core/lib/attention/bulk-run-store.ts. */
 export type BulkRunPhase = 'pending' | 'running' | 'review' | 'complete' | 'failed';
@@ -53,6 +58,8 @@ export interface BulkRun {
   skipped: number;
   failed: number;
   error: string | null;
+  /** Exact settings persisted at click time; empty only on legacy rows. */
+  launchSnapshot?: Partial<EffectiveBulkResolverLaunch>;
   filterSnapshot?: {
     tier?: string | null;
     kinds?: string[];
@@ -235,7 +242,12 @@ export function useInboxBulkRun(
 
 /** The owner-side ops, as stable callbacks. */
 export function useBulkRunOps(): {
-  start: (items: BulkSeedItem[], filter: Record<string, unknown>, harness?: string | null) => Promise<StartResult>;
+  start: (
+    items: BulkSeedItem[],
+    filter: Record<string, unknown>,
+    harness?: string | null,
+    launch?: BulkResolverLaunchProfile,
+  ) => Promise<StartResult>;
   stop: (runId: string) => Promise<void>;
   dismiss: (runId: string) => Promise<void>;
   acceptRecommendation: (
@@ -249,11 +261,14 @@ export function useBulkRunOps(): {
       seed: BulkSeedItem[],
       filter: Record<string, unknown>,
       harness?: string | null,
+      launch?: BulkResolverLaunchProfile,
     ): Promise<StartResult> => {
       try {
+        const clickTimeLaunch = launch ?? await loadResolverLaunchProfile('inbox-resolve');
         const json = await postOp({
           items: seed,
           filter,
+          launch: clickTimeLaunch,
           ...(harness ? { harness } : {}),
         });
         return {

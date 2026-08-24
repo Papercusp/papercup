@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   evaluateLivenessAlarm,
   diagnoseHealthTickStall,
@@ -746,6 +746,57 @@ describe('evaluateLivenessAlarm — EI-9794 autoloop fire-staleness (5c)', () =>
 
 describe('runLivenessAlarmTick (debounced, transition-only)', () => {
   beforeEach(() => _resetLivenessAlarmDebounce());
+
+  it('request-worker shared-snapshot hit drives recovery without any computeSystemHealth fallback', async () => {
+    const now = 100 * 60_000;
+    const fresh = mkHealth({ evaluatedAt: now });
+    const readSharedHealth = vi.fn(async () => fresh);
+    const computeHealth = vi.fn(async () => fresh);
+    const resolve = vi.fn(async () => undefined);
+    const openRec = {
+      msg_id: 'shared-open',
+      severity: 'blocker',
+      summary: '[infra-liveness] dead routines',
+      from: INFRA_LIVENESS_IDENTITY.ownerId,
+      livenessSignature: 'dead-routines',
+    } as unknown as EscalationRecord;
+
+    const result = await runLivenessAlarmTick('ws', {
+      readLast: () => mkHealth({ evaluatedAt: 0 }),
+      readSharedHealth,
+      computeHealth,
+      listOpen: async () => [openRec],
+      resolve,
+      escalate: async () => {},
+      readAutoloopFireRows: async () => [],
+      readBeeCapacity: async () => ({ dispatchBudget: null, restartRecovering: false }),
+      now: () => now,
+    });
+
+    expect(readSharedHealth).toHaveBeenCalledTimes(2); // initial read + recovery re-check
+    expect(computeHealth).not.toHaveBeenCalled();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(result.resolved).toEqual(['shared-open']);
+  });
+
+  it('request-worker shared-snapshot miss is unknown/no-op and never computes or reconciles', async () => {
+    const readSharedHealth = vi.fn(async () => null);
+    const computeHealth = vi.fn(async () => mkHealth());
+    const listOpen = vi.fn(async () => [] as EscalationRecord[]);
+
+    const result = await runLivenessAlarmTick('ws', {
+      readLast: () => mkHealth({ evaluatedAt: 0 }),
+      readSharedHealth,
+      computeHealth,
+      listOpen,
+      now: () => 100 * 60_000,
+    });
+
+    expect(result).toEqual({ fired: [], signals: [], resolved: [] });
+    expect(readSharedHealth).toHaveBeenCalledOnce();
+    expect(computeHealth).not.toHaveBeenCalled();
+    expect(listOpen).not.toHaveBeenCalled();
+  });
 
   it('computes fresh on a stale cache, escalates each new signal, then debounces repeats', async () => {
     const escalate = (() => {

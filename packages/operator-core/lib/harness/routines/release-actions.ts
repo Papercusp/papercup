@@ -674,8 +674,8 @@ export interface CheckpointVerdict {
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
 export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
-  if (v.candidateSource) detail.candidateSource = v.candidateSource;
-  else if (v.diagnostic === 'candidate-pinned') detail.candidateSource = 'pinned';
+  if (isPinnedCheckpointVerdict(v)) detail.candidateSource = 'pinned';
+  else if (v.candidateSource) detail.candidateSource = v.candidateSource;
   if (v.diagnostic) detail.diagnostic = v.diagnostic;
   if (v.promotionPending === true) detail.promotionPending = true;
   if (v.candidate) detail.candidate = v.candidate.slice(0, 12);

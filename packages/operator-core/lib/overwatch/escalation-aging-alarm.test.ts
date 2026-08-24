@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   runEscalationAgingAlarmTick,
   ESCALATION_AGING_CONDITION_KEY,
@@ -10,6 +10,42 @@ import {
   SELF_RECONCILING_META_KEY,
   type StaleEscalationInput,
 } from '../attention/reconcile-escalations';
+import type { SystemHealth } from '../system-health/types';
+
+function healthWithAging(aging: number): SystemHealth {
+  return {
+    workspaceId: 'ws-shared',
+    evaluatedAt: Date.now(),
+    overall: 'ok',
+    crossMonitor: { queenAlive: true, overwatchAlive: null },
+    panels: {
+      escalations: {
+        key: 'escalations',
+        label: 'Escalations',
+        status: 'ok',
+        summary: 'ok',
+        metrics: [],
+        data: { aging },
+      },
+    } as unknown as SystemHealth['panels'],
+  };
+}
+
+function healthWithUnknownEscalations(): SystemHealth {
+  const health = healthWithAging(0);
+  return {
+    ...health,
+    panels: {
+      ...health.panels,
+      escalations: {
+        ...health.panels.escalations,
+        status: 'unknown',
+        data: null,
+        error: 'collector unavailable',
+      },
+    },
+  };
+}
 
 /** A minimal in-memory escalation store mirroring the append-only open/resolve log
  *  (same shape condition-staleness-alarm.test.ts uses). */
@@ -41,6 +77,42 @@ function makeStore() {
 }
 
 describe('runEscalationAgingAlarmTick (EI-16151)', () => {
+  it('reads the shared SystemHealth snapshot on a request-worker hit', async () => {
+    const store = makeStore();
+    const result = await runEscalationAgingAlarmTick({
+      readSharedHealth: async () => healthWithAging(42),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+    });
+
+    expect(result.aging).toBe(42);
+    expect(result.fired).toBe(true);
+    expect(store.openCount()).toBe(1);
+  });
+
+  it('treats a missing/stale shared snapshot as unknown and does not reconcile', async () => {
+    const listOpen = vi.fn(async () => [] as EscalationRecord[]);
+    const result = await runEscalationAgingAlarmTick({
+      readSharedHealth: async () => null,
+      listOpen,
+    });
+
+    expect(result).toEqual({ aging: null, fired: false, resolved: [] });
+    expect(listOpen).not.toHaveBeenCalled();
+  });
+
+  it('treats an unreadable escalation panel as unknown rather than a false zero/all-clear', async () => {
+    const listOpen = vi.fn(async () => [] as EscalationRecord[]);
+    const result = await runEscalationAgingAlarmTick({
+      readSharedHealth: async () => healthWithUnknownEscalations(),
+      listOpen,
+    });
+
+    expect(result).toEqual({ aging: null, fired: false, resolved: [] });
+    expect(listOpen).not.toHaveBeenCalled();
+  });
+
   it('aging === 0 → no escalation, no-op', async () => {
     const store = makeStore();
     const result = await runEscalationAgingAlarmTick({
@@ -123,7 +195,7 @@ describe('runEscalationAgingAlarmTick (EI-16151)', () => {
       listOpen: store.listOpen,
       resolve: store.resolve,
     });
-    expect(result).toEqual({ aging: 0, fired: false, resolved: [] });
+    expect(result).toEqual({ aging: null, fired: false, resolved: [] });
     expect(store.openCount()).toBe(0);
   });
 

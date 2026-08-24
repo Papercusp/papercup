@@ -181,7 +181,7 @@ const FINDING_COLUMNS = `workspace_id, run_id, finding_id, finding_kind, plan_sl
 const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
                      run_kind, seed_refs, filter_snapshot, launch_snapshot,
                      total_items, auto_resolved, recommended, skipped, failed,
-                     error, created_at, updated_at, started_at, finished_at`;
+                     error, created_at, updated_at, started_at, finished_at, heartbeat_at`;
 
 type StoreSql = Sql | TransactionSql;
 
@@ -528,6 +528,7 @@ function mapRunLoose(r: {
   updated_at: Date | string;
   started_at: Date | string | null;
   finished_at: Date | string | null;
+  heartbeat_at: Date | string | null;
 }): BulkRunRow {
   return {
     runId: r.run_id,
@@ -550,6 +551,7 @@ function mapRunLoose(r: {
     updatedAt: iso(r.updated_at)!,
     startedAt: iso(r.started_at),
     finishedAt: iso(r.finished_at),
+    heartbeatAt: iso(r.heartbeat_at),
   };
 }
 

@@ -3031,10 +3031,11 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
  *  version when `SystemHealth`'s shape changes so a reader never maps a stale shape. */
 const SYSTEM_HEALTH_SNAPSHOT_KEY = 'system.health';
 const SYSTEM_HEALTH_SNAPSHOT_VERSION = 1;
-/** A reader accepts a shared snapshot up to this old before falling back to a local
- *  recompute. Comfortably above the 30s tick cadence so a healthy writer always
- *  keeps it fresh, but bounded so a DEAD writer eventually forces a local compute. */
-const SHARED_SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
+/** A reader accepts a shared snapshot up to this old. Comfortably above the 30s
+ *  tick cadence so a healthy writer keeps it fresh, but bounded so a dead writer
+ *  produces UNKNOWN instead of letting request workers act on stale evidence. A
+ *  tick host may still choose its own explicit local-refresh path. */
+export const SHARED_SYSTEM_HEALTH_MAX_AGE_MS = 5 * 60_000;
 
 const cache = new Map<string, SystemHealth>();
 
@@ -3053,16 +3054,20 @@ async function precomputeSharedHealthEnabled(): Promise<boolean> {
  * NEVER a local aggregation (P-001). Used by reader processes that don't run the
  * tick, and on any host's cold-cache path. On a hit it also refreshes the
  * in-process cache so `lastSystemHealth()` stays coherent for this process.
- * Returns null on a miss / version mismatch / too-stale row / flag off, letting
- * the caller decide whether to pay a blocking recompute.
+ * Returns null on a miss / version mismatch / too-stale row / flag off. Request-
+ * worker callers must treat null as unknown; only the dedicated tick host may
+ * explicitly choose to compute.
  */
-async function readSharedSystemHealth(ws: string): Promise<SystemHealth | null> {
+export async function readSharedSystemHealthSnapshot(
+  ws: string,
+  maxAgeMs = SHARED_SYSTEM_HEALTH_MAX_AGE_MS,
+): Promise<SystemHealth | null> {
   if (!(await precomputeSharedHealthEnabled())) return null;
   const shared = await readSharedSnapshot<SystemHealth>(
     SYSTEM_HEALTH_SNAPSHOT_KEY,
     ws,
     SYSTEM_HEALTH_SNAPSHOT_VERSION,
-    SHARED_SNAPSHOT_MAX_AGE_MS,
+    maxAgeMs,
   ).catch(() => null);
   if (!shared) return null;
   cache.set(ws, shared.payload);
@@ -3088,12 +3093,12 @@ export async function resolveSystemHealth(
   if (cached) {
     if (Date.now() - cached.evaluatedAt > maxAgeMs) {
       if (isTickHost) void runSystemHealthTick(ws).catch(() => {});
-      else void readSharedSystemHealth(ws).catch(() => {});
+      else void readSharedSystemHealthSnapshot(ws).catch(() => {});
     }
     return cached;
   }
   // Cold cache — a shared SELECT before a blocking recompute.
-  const shared = await readSharedSystemHealth(ws);
+  const shared = await readSharedSystemHealthSnapshot(ws);
   if (shared) return shared;
   // A reader host has no tick owner and must never turn a shared-snapshot miss
   // back into the expensive inline aggregation. The next writer tick will

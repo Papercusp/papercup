@@ -78,6 +78,7 @@ describe('rebindIdentity — mid-hold compaction survival (real Postgres)', () =
         item_kind    text NOT NULL DEFAULT 'feature',
         status       text,
         taken_by     text,
+        admission text, admitted_at timestamptz, admitted_by text,
         PRIMARY KEY (workspace_id, harness_slug, feature_id)
       );
 

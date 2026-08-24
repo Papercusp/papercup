@@ -90,6 +90,7 @@ const BASE_DDL = `
     terminal_owner          text,
     terminal_completion_ref text,
     authority               text,
+    admission text, admitted_at timestamptz, admitted_by text,
     PRIMARY KEY (workspace_id, feature_id)
   );
 

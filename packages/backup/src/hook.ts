@@ -53,7 +53,12 @@ const EXCLUDED_TABLE_DATA = [
   'harness_shared.tool_invocations',
   'harness_shared.harness_run_output',
   'harness_shared.test_runs',
+  // Transcript stores are short-lived operational state. The hourly host-level
+  // dump remains the recovery path for them; keeping them out of this hot
+  // snapshot prevents a faithful-parts COPY from holding an AccessShareLock
+  // across the whole pre-snapshot dump.
   'harness_shared.session_turns',
+  'harness_shared.session_turn_parts',
   'harness_shared.decision_ledger',
   'harness_shared.agent_activity',
   'harness_shared.coord_event_log',
@@ -84,6 +89,11 @@ const EXCLUDED_TABLE_DATA = [
 
 const MIN_RESTORABLE_DUMP_BYTES = 10_000;
 const PG_DUMP_TIMEOUT_MS = 15 * 60_000;
+// Keep the database-side cancellation ahead of the Node watchdog. Killing the
+// client alone can leave pg_dump's backend holding its transaction lock until
+// PostgreSQL notices the broken connection (EI-21363741549000811).
+const PG_DUMP_STATEMENT_TIMEOUT_MS = 10 * 60_000;
+const PG_DUMP_LOCK_WAIT_TIMEOUT_MS = 30_000;
 const GIB = 1024n * 1024n * 1024n;
 
 /**
@@ -274,6 +284,13 @@ async function dumpPg(opts: {
     ...process.env,
     PGPASSWORD: opts.password,
     PGCONNECT_TIMEOUT: '5',
+    // PGOPTIONS is parsed by libpq for the pg_dump session. Keep any caller
+    // options, then append bounds that apply to this dump only.
+    PGOPTIONS: [
+      process.env.PGOPTIONS,
+      `-c statement_timeout=${PG_DUMP_STATEMENT_TIMEOUT_MS}`,
+      `-c lock_timeout=${PG_DUMP_LOCK_WAIT_TIMEOUT_MS}`,
+    ].filter(Boolean).join(' '),
   };
   return new Promise<PreSnapshotHookResult>((resolve) => {
     const dump = spawn('pg_dump', [
@@ -285,6 +302,11 @@ async function dumpPg(opts: {
       '--no-owner',
       '--no-privileges',
       '-n', 'harness_shared',
+      // Do not wait indefinitely behind a concurrent schema/table lock. The
+      // session-level lock_timeout above also covers locks acquired by the
+      // dump's own SQL, while this pg_dump flag gives its lock phase a clear
+      // diagnostic failure.
+      '--lock-wait-timeout=30s',
       // Every extension the harness_shared schema actually depends on at
       // DDL time must be dumped, not just `vector`. EI-13868: a restore
       // drill found the dump omitted `pg_trgm`, so importing into a fresh

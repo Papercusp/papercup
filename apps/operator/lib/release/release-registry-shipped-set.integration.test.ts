@@ -44,6 +44,7 @@ beforeAll(async () => {
       source_plan_slug text,
       status           text,
       updated_ts       bigint,
+      admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (workspace_id, harness_slug, feature_id)
     )
   `);

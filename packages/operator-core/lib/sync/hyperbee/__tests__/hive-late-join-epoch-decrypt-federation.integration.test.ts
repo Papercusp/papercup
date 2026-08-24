@@ -197,6 +197,7 @@ const CONTENT_AND_KEY_DDL = `
     -- (swallowed by the drain's best-effort try/catch → the row silently never lands).
     terminal_owner          text,
     terminal_completion_ref text,
+    admission text, admitted_at timestamptz, admitted_by text,
     PRIMARY KEY (harness_slug, feature_id)
   );
 `;

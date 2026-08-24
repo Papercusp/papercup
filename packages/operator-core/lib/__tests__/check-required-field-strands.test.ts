@@ -273,18 +273,28 @@ describe('submoduleRevisionAt — follow the superproject gitlink before queryin
   const submoduleFile = `${submodulePrefix}/src/backend.ts`;
 
   it('resolves a superproject base to the submodule commit recorded at that base', () => {
-    const base = execFileSync('git', ['rev-parse', 'HEAD^'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    const base = execFileSync('git', ['rev-parse', 'HEAD^'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    }).trim();
     const expected = execFileSync(
       'git',
       ['rev-parse', '--verify', '--end-of-options', `${base}:${submodulePrefix}`],
-      { cwd: ROOT, encoding: 'utf8' },
+      { cwd: ROOT, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
     ).trim();
 
     expect(submoduleRevisionAt(base, submodulePrefix)).toBe(expected);
   });
 
   it('examines a declared submodule file instead of treating the superproject SHA as its base', () => {
-    const base = execFileSync('git', ['rev-parse', 'HEAD^'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    const base = execFileSync('git', ['rev-parse', 'HEAD^'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    }).trim();
     const result = spawnSync(
       'node',
       ['scripts/check-required-field-strands.mjs', '--base', base, `--files=${submoduleFile}`, '--json'],

@@ -144,7 +144,8 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_items (
       workspace_id text NOT NULL DEFAULT 'default', feature_id text NOT NULL, status text,
       harness_slug text NOT NULL DEFAULT 'papercusp', condition_key text,
-      taken_by text, last_progress_at timestamptz
+      taken_by text, last_progress_at timestamptz,
+      admission text, admitted_at timestamptz, admitted_by text
     )`);
   hb.sql = rootSql;
 }, 90_000);

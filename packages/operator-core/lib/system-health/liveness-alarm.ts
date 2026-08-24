@@ -61,7 +61,7 @@
  */
 import { PANEL_LABELS, type SystemHealth, type PanelKey, type InfraHealth } from './types';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { computeSystemHealth, lastSystemHealth } from './compute';
+import { lastSystemHealth, readSharedSystemHealthSnapshot } from './compute';
 import {
   openEscalation,
   listEscalationsPaginated,
@@ -1275,6 +1275,17 @@ const DEFAULT_FLAP_THRESHOLD = 2;
 const lastPostmasterStartMs = new Map<string, number>();
 
 export interface AlarmDeps {
+  /**
+   * Fresh cross-process SystemHealth reader used by request workers. Production
+   * defaults to `readSharedSystemHealthSnapshot`, which NEVER computes. A null
+   * result means missing/stale evidence and makes the tick a no-op.
+   */
+  readSharedHealth?: (ws: string) => Promise<SystemHealth | null>;
+  /**
+   * Legacy hermetic test seam for exercising stale-cache transitions. Production
+   * never supplies or defaults this dependency: request workers must not run the
+   * full `computeSystemHealth` graph.
+   */
   computeHealth?: (ws: string) => Promise<SystemHealth>;
   readLast?: (ws: string) => SystemHealth | null;
   /**
@@ -1549,8 +1560,9 @@ async function defaultPageResolved(sigs: string[]): Promise<void> {
 const OPEN_SCAN_WINDOW = 500;
 
 /**
- * One alarm tick: prefer the warm cache (cheap when the bg tick is alive), else
- * compute fresh (and the staleness is itself a signal). Then, against the OPEN
+ * One alarm tick: request workers read the fresh cross-process snapshot written
+ * by the bg tick; hermetic tests may still exercise the legacy cache seam. A
+ * missing/stale shared row is unknown/no-op. Then, against the OPEN
  * infra-liveness escalations (EI-2146):
  *   - auto-resolve every open escalation whose condition no longer fires (the
  *     one-time backlog sweep on the first post-deploy tick), and
@@ -1565,7 +1577,15 @@ export async function runLivenessAlarmTick(
   const ws = workspaceId ?? activeWorkspaceId();
   const now = (deps.now ?? Date.now)();
   const readLast = deps.readLast ?? lastSystemHealth;
-  const compute = deps.computeHealth ?? computeSystemHealth;
+  const compute = deps.computeHealth;
+  const readSharedHealth = deps.readSharedHealth ?? readSharedSystemHealthSnapshot;
+  // Production has neither of the hermetic cache/recompute seams. It MUST read
+  // the cross-process snapshot directly so a cold/stale request-worker cache can
+  // never fall through into the full health aggregation. Supplying
+  // readSharedHealth explicitly takes the same path in recurrence tests even
+  // when legacy seams are also injected.
+  const useSharedSnapshot =
+    deps.readSharedHealth !== undefined || (deps.readLast === undefined && deps.computeHealth === undefined);
   const escalate = deps.escalate ?? ((input) => openEscalation(INFRA_LIVENESS_IDENTITY, input));
   const listOpen =
     deps.listOpen ??
@@ -1643,7 +1663,18 @@ export async function runLivenessAlarmTick(
   const cached = readLast(ws);
   const localSnapshotAgeMs = cached ? now - cached.evaluatedAt : null;
   const localSnapshotStale = localSnapshotAgeMs === null || localSnapshotAgeMs > staleMs;
-  const health = localSnapshotStale ? await compute(ws) : (cached as SystemHealth);
+  let health: SystemHealth | null;
+  if (useSharedSnapshot) {
+    health = await readSharedHealth(ws).catch(() => null);
+  } else if (localSnapshotStale) {
+    health = compute ? await compute(ws).catch(() => null) : null;
+  } else {
+    health = cached;
+  }
+  // Missing or stale shared evidence is UNKNOWN, never an all-clear and never a
+  // reason to recreate the full graph on a request worker. No open row is read,
+  // fired, or reconciled from an unobservable snapshot.
+  if (!health) return { fired: [], signals: [], resolved: [] };
 
   // D-026 evidence is intentionally read only for production/default ticks unless a
   // caller explicitly injects it. A hermetic `readLast` seam must never shell out to
@@ -1673,17 +1704,23 @@ export async function runLivenessAlarmTick(
         () => ({ stale: false, unknown: true, lastTickMs: null, staleMs: null }) as RoutineEngineLiveness,
       )
     : null;
-  // If we recomputed fresh due to local cache staleness, report the freshly-computed
-  // snapshot as fresh (null age) so it isn't double-penalized as "stale" by the alarm
-  // evaluator. Otherwise use the routine-engine staleness or local cache age.
-  const snapshotAgeMs = localSnapshotStale
-    ? null  // We just recomputed fresh, so don't report it as stale
-    : routineEngine
+  // A successfully-read shared snapshot is fresh by construction; the independent
+  // routine-engine watermark can still prove the bg host stale. Hermetic legacy
+  // callers that recomputed through their injected seam also report fresh.
+  const snapshotAgeMs = useSharedSnapshot
+    ? routineEngine
       ? routineEngine.unknown || !routineEngine.stale
         ? null
         : (routineEngine.staleMs ?? staleMs + 1)
-      : localSnapshotAgeMs;
-  const lastSuccessfulTickMs = routineEngine?.lastTickMs ?? cached?.evaluatedAt ?? null;
+      : null
+    : localSnapshotStale
+      ? null  // A hermetic test seam just recomputed fresh.
+      : routineEngine
+        ? routineEngine.unknown || !routineEngine.stale
+          ? null
+          : (routineEngine.staleMs ?? staleMs + 1)
+        : localSnapshotAgeMs;
+  const lastSuccessfulTickMs = routineEngine?.lastTickMs ?? health.evaluatedAt ?? cached?.evaluatedAt ?? null;
 
   // P-008: the PG-restart drift baseline. Read the previous postmaster-start value,
   // evaluate against it, then advance it to the current reading — but ONLY when PG
@@ -1751,7 +1788,7 @@ export async function runLivenessAlarmTick(
   }
 
   // WI-4878: if there are open escalations but no newly-firing signals, ensure
-  // we use fresh health data (not a stale cache) when checking for recovery.
+  // we use fresh health data when checking for recovery.
   // A cached snapshot can blind the auto-resolve detector: if the cache was
   // computed while failures were active, it would keep showing those failures
   // even after they roll out of the 1h window, so the signal would never stop
@@ -1762,11 +1799,10 @@ export async function runLivenessAlarmTick(
   // BUGFIX: recovery detection must run REGARDLESS of cache freshness. If the
   // cache was stale (> 6 min old), line 762 already computed a fresh snapshot.
   // If there are open escalations, we must check if they've recovered against
-  // that fresh data. The prior condition `&& !localSnapshotStale` was inverted:
-  // it skipped recovery detection WHEN the cache was stale, which is exactly
-  // when we'd just computed fresh and should CHECK. Now we always check when
-  // escalations are open; if the cache is merely fresh (< 6 min), we recompute
-  // once more to be sure; if stale, we use the fresh snapshot from line 762.
+  // fresh data. Production re-reads the shared row; if it disappeared or aged
+  // out, the tick stops with no reconciliation. The prior condition
+  // `&& !localSnapshotStale` was inverted and skipped recovery detection exactly
+  // when a hermetic caller had just refreshed a stale cache.
   // EI-19462267124852221: track WHICH snapshot produced `currentSigs`, so the
   // unobservability check below judges the same evidence the signals came from.
   let healthForSignals = health;
@@ -1775,7 +1811,17 @@ export async function runLivenessAlarmTick(
     if (sigsShouldRecover) {
       // Recompute fresh health snapshot for accurate recovery detection
       // (or verify the fresh snapshot we computed on line 762).
-      const freshHealth = localSnapshotStale ? health : await compute(ws);
+      const freshHealth = useSharedSnapshot
+        ? await readSharedHealth(ws).catch(() => null)
+        : localSnapshotStale
+          ? health
+          : compute
+            ? await compute(ws).catch(() => null)
+            : null;
+      // A recovery decision requires current evidence. If the shared row aged
+      // out between the initial read and this re-check, preserve every open row
+      // and make the whole tick a no-op rather than false-clearing it.
+      if (!freshHealth) return { fired: [], signals: [], resolved: [] };
       healthForSignals = freshHealth;
       beesLivenessForSignals = beesLivenessFromHealth(freshHealth, beeCapacity);
       signals = evaluateLivenessAlarm(freshHealth, null, {

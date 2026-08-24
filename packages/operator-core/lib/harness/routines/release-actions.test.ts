@@ -1579,6 +1579,65 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
   });
 
+  it.each([
+    { candidateSource: 'pinned' as const },
+    { diagnostic: 'candidate-pinned' as const },
+    {
+      candidateSource: 'tip' as const,
+      diagnostic: 'candidate-pinned' as const,
+    },
+  ])(
+    'EI-213458: a pinned diagnostic keeps pipeline history but never mutates gate_health ($candidateSource$diagnostic)',
+    async (provenance) => {
+      const recorded = await recordCheckpointVerdict(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        {
+          reason: 'not-green',
+          green: false,
+          candidate: 'abc123def456789',
+          failingTests: ['lib/x.test.ts'],
+          ...provenance,
+        },
+      );
+
+      expect(recorded).toBe(true);
+      expect(appendPipelineEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'not-green',
+          detail: expect.objectContaining({
+            green: false,
+            candidateSource: 'pinned',
+            failingTests: ['lib/x.test.ts'],
+          }),
+        }),
+      );
+      expect(fakeSql.unsafe).not.toHaveBeenCalled();
+    },
+  );
+
+  it('EI-213458: a pending pinned diagnostic is history-only too', async () => {
+    const recorded = await recordPendingCheckpointVerdict(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      {
+        reason: 'not-green',
+        green: false,
+        candidate: 'abc123def456789',
+        candidateSource: 'pinned',
+        promotionPending: true,
+        runId: 'pinned-pending-1',
+      },
+    );
+
+    expect(recorded).toBe(true);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'decision-pending',
+        detail: expect.objectContaining({ candidateSource: 'pinned' }),
+      }),
+    );
+    expect(fakeSql.unsafe).not.toHaveBeenCalled();
+  });
+
   it('EI-20810521712303819: decision-pending records the red once, then finalizes without double-counting', async () => {
     const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
     const pendingRecorded = await recordPendingCheckpointVerdict(target, {
@@ -2097,6 +2156,30 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     await getSystemAction('green-checkpoint')!(ctx);
     expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'not-green' }));
     expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
+  });
+
+  it('EI-213458: a pinned old-CLI fallback retains history but emits no red wake and mutates no gate health', async () => {
+    emitAwaitedEvent.mockClear();
+    const stdout = `${GREEN_MARKER} ${JSON.stringify({
+      reason: 'not-green',
+      green: false,
+      candidate: 'abc123def456789',
+      candidateSource: 'pinned',
+      diagnostic: 'candidate-pinned',
+      failingTests: ['lib/x.test.ts'],
+    })}\n`;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'not-green',
+        detail: expect.objectContaining({ candidateSource: 'pinned' }),
+      }),
+    );
+    expect(fakeSql.unsafe).not.toHaveBeenCalledWith(expect.stringContaining('gate_health'), expect.anything());
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
   });
 
   it('EI-20981232855780375: an OLD CLI red fallback emits global + pipeline-scoped await keys', async () => {

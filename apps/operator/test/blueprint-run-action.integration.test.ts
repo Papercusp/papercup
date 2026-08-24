@@ -86,6 +86,7 @@ beforeAll(async () => {
       ts                 bigint,
       created_ts         bigint,
       updated_ts         bigint,
+      admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
     )
   `);

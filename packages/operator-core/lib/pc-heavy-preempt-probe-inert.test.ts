@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -97,13 +97,34 @@ describe('pc-heavy preempt probe is inert (EI-21355065353185484)', () => {
   });
 
   it('is syntactically valid bash', () => {
-    expect(() => execFileSync('bash', ['-n', SCRIPT])).not.toThrow();
+    expect(() =>
+      execFileSync('bash', ['-n', SCRIPT], {
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      }),
+    ).not.toThrow();
   });
 });
 
 describe('flock semantics the fix depends on', () => {
   let dir = '';
   let intent = '';
+  const activeHolders = new Set<ChildProcess>();
+
+  /** The flock wrapper starts `sleep` via `-c`; kill its whole group so teardown cannot orphan it. */
+  function killHolderTree(child: ChildProcess): void {
+    const pid = child.pid;
+    if (!pid) return;
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // It exited between the liveness check and teardown.
+      }
+    }
+  }
 
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'pc-heavy-probe-'));
@@ -112,13 +133,29 @@ describe('flock semantics the fix depends on', () => {
   });
 
   afterAll(() => {
+    for (const child of activeHolders) killHolderTree(child);
+    activeHolders.clear();
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
   /** Hold `mode` on the intent file for `ms`, resolving once the lock is held. */
   function hold(mode: '-x' | '-s', ms: number): { done: Promise<void>; ready: Promise<void> } {
-    const child = spawn('flock', [mode, intent, '-c', `sleep ${ms / 1000}`], { stdio: 'ignore' });
-    const done = new Promise<void>((res) => child.on('exit', () => res()));
+    const child = spawn('flock', [mode, intent, '-c', `sleep ${ms / 1000}`], {
+      stdio: 'ignore',
+      detached: true,
+    });
+    activeHolders.add(child);
+    const watchdog = setTimeout(() => killHolderTree(child), Math.max(ms + 5_000, 10_000));
+    watchdog.unref();
+    const done = new Promise<void>((res) => {
+      const settled = () => {
+        clearTimeout(watchdog);
+        activeHolders.delete(child);
+        res();
+      };
+      child.once('exit', settled);
+      child.once('error', settled);
+    });
     // The lock is not held at spawn time; give flock a moment to acquire it.
     const ready = new Promise<void>((res) => setTimeout(res, 400));
     return { done, ready };
@@ -127,7 +164,7 @@ describe('flock semantics the fix depends on', () => {
   function probeSucceeds(mode: '-s' | ''): boolean {
     const args = mode ? [mode, '-n', intent, '-c', 'true'] : ['-n', intent, '-c', 'true'];
     try {
-      execFileSync('flock', args, { stdio: 'ignore' });
+      execFileSync('flock', args, { stdio: 'ignore', timeout: 5_000, killSignal: 'SIGKILL' });
       return true;
     } catch {
       return false;

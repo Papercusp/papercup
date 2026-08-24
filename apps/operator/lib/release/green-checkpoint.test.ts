@@ -17,6 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   runGreenCheckpoint,
+  checkpointCandidateProvenance,
+  checkpointCandidateSourceFromCli,
   runCmd,
   quietCutSecFromEnv,
   extractFailingTests,
@@ -2014,6 +2016,31 @@ describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
   });
 });
 
+describe("EI-213458 candidate-source normalization", () => {
+  it("fails closed when canonical and legacy provenance conflict", () => {
+    expect(
+      checkpointCandidateProvenance({
+        candidateSource: "tip",
+        diagnostic: "candidate-pinned",
+      }),
+    ).toEqual({
+      candidateSource: "pinned",
+      diagnostic: "candidate-pinned",
+    });
+  });
+
+  it("keeps raw --candidate diagnostic-only, while an authoritative launcher can say tip", () => {
+    expect(checkpointCandidateSourceFromCli("a".repeat(40), undefined)).toBe(
+      "pinned",
+    );
+    expect(checkpointCandidateSourceFromCli("a".repeat(40), "tip")).toBe("tip");
+    expect(checkpointCandidateSourceFromCli(undefined, undefined)).toBe("tip");
+    expect(() =>
+      checkpointCandidateSourceFromCli("a".repeat(40), "unknown"),
+    ).toThrow("expected pinned|tip");
+  });
+});
+
 describe("runGreenCheckpoint", () => {
   it("records gate-run integration-root evidence through the orchestrator logger", async () => {
     const c1 = await commit("a", "1", "c1");
@@ -2093,15 +2120,36 @@ describe("runGreenCheckpoint", () => {
   });
 
   it.each([
-    { green: true, reason: "up-to-date" as const, failingTests: undefined },
+    {
+      green: true,
+      reason: "up-to-date" as const,
+      failingTests: undefined,
+      provenance: { candidateSource: "pinned" as const },
+    },
     {
       green: false,
       reason: "not-green" as const,
       failingTests: ["lib/broken.test.ts"],
+      provenance: { candidateSource: "pinned" as const },
+    },
+    {
+      green: true,
+      reason: "up-to-date" as const,
+      failingTests: undefined,
+      provenance: { diagnostic: "candidate-pinned" as const },
+    },
+    {
+      green: true,
+      reason: "up-to-date" as const,
+      failingTests: undefined,
+      provenance: {
+        candidateSource: "tip" as const,
+        diagnostic: "candidate-pinned" as const,
+      },
     },
   ])(
     "EI-213458: a $reason pinned diagnostic retains the suite result but performs no live-gate side effect",
-    async ({ green, reason, failingTests }) => {
+    async ({ green, reason, failingTests, provenance }) => {
       const ready = await commit("a", "1", "ready");
       await git(repo, ["branch", "ready", ready]);
       const candidate = await commit("a", "2", "candidate");
@@ -2110,18 +2158,20 @@ describe("runGreenCheckpoint", () => {
         Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0]
       > = [];
       const readFrozenRepairQueue = vi.fn(async () => null);
+      const reportAbandonedInFlightCandidate = vi.fn(async () => "lost run");
       const recordPendingVerdict = vi.fn(async () => true);
       const flakeLookup = vi.fn(async () => ({}));
       deps.recordInFlightCandidate = async (info) => {
         markers.push(info);
       };
       deps.readFrozenRepairQueue = readFrozenRepairQueue;
+      deps.reportAbandonedInFlightCandidate = reportAbandonedInFlightCandidate;
       deps.recordPendingVerdict = recordPendingVerdict;
       deps.flakeLookup = flakeLookup;
 
       const result = await runGreenCheckpoint(cfg(), deps, {
         candidate,
-        candidateSource: "pinned",
+        ...provenance,
       });
 
       expect(result).toMatchObject({
@@ -2135,9 +2185,13 @@ describe("runGreenCheckpoint", () => {
       });
       expect(result.summary).toContain("Candidate-pinned diagnostic");
       expect(markers).toHaveLength(1);
-      expect(markers[0]).toMatchObject({ candidate, candidateSource: "pinned" });
+      expect(markers[0]).toMatchObject({
+        candidate,
+        candidateSource: "pinned",
+      });
       expect(await revParse(repo, "ready")).toBe(ready);
       expect(readFrozenRepairQueue).not.toHaveBeenCalled();
+      expect(reportAbandonedInFlightCandidate).not.toHaveBeenCalled();
       expect(recordPendingVerdict).not.toHaveBeenCalled();
       expect(flakeLookup).not.toHaveBeenCalled();
       expect(calls).toEqual([`setup:${candidate.slice(0, 7)}`, "runGreen"]);

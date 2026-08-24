@@ -62,6 +62,7 @@ const WORK_ITEMS_DDL = `
     status text,
     updated_ts bigint,
     last_progress_at timestamptz,
+    admission text, admitted_at timestamptz, admitted_by text,
     PRIMARY KEY (workspace_id, harness_slug, feature_id))`;
 const ENGINEER_ISSUES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (

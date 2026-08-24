@@ -29,6 +29,31 @@ const H = vi.hoisted(() => ({
   resolveAttentionAction: vi.fn(),
   replyToAttentionItem: vi.fn(),
   calls: [] as string[],
+  resolverProfile: {
+    model: 'sonnet',
+    effort: 'high' as const,
+    account: 'auto',
+    carry: 'warm' as const,
+  },
+}));
+
+vi.mock('../bulk-resolver/bulk-resolver-settings', () => ({
+  loadResolverLaunchProfile: async () => H.resolverProfile,
+  useBulkResolverSettings: () => ({
+    profile: H.resolverProfile,
+    loading: false,
+    saving: false,
+    error: null,
+    validationError: null,
+    ready: true,
+    updateProfile: vi.fn(),
+    retry: vi.fn(),
+  }),
+}));
+vi.mock('../bulk-resolver/BulkResolverSettingsControl', () => ({
+  default: ({ kind, effective }: { kind: string; effective?: unknown }) => (
+    <div data-testid={`${kind}-settings-control`} data-effective={effective ? JSON.stringify(effective) : undefined} />
+  ),
 }));
 
 // The client resolve helpers are the SEAM under test: we assert they are
@@ -276,6 +301,25 @@ describe('acceptRecommendation — resolve FIRST, record SECOND', () => {
     render(<Probe />);
     return () => ops!;
   }
+
+  it('posts the pane’s click-time resolver profile with the start snapshot', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, runId: 'run-new', launched: true }),
+    });
+    const ops = useOps();
+    await ops().start(
+      [{ itemId: 'a', kind: 'coord-escalation', title: 'A', ref: {}, ownerAgentId: null }],
+      { tier: 'decision' },
+      null,
+      H.resolverProfile,
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toMatchObject({
+      items: [{ itemId: 'a' }],
+      filter: { tier: 'decision' },
+      launch: H.resolverProfile,
+    });
+  });
 
   it('dispatches resolveAttentionAction, THEN records the acceptance', async () => {
     H.resolveAttentionAction.mockResolvedValue({ resolved: true });

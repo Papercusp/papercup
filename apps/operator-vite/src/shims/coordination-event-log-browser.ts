@@ -21,6 +21,20 @@
 export const DEFAULT_COORD_WORKSPACE = 'default';
 
 /**
+ * Browser stand-in for the coordination log's schema bootstrap.
+ *
+ * A client-reachable operator-core module imports this value while assembling a
+ * server-side composition rig. The browser build therefore needs the binding to
+ * link, but actually invoking it from the SPA would still be a boundary breach.
+ * Throw loudly instead of pretending the Postgres schema exists in the browser.
+ */
+export async function ensureCoordEventLogTable(..._args: unknown[]): Promise<never> {
+  throw new Error(
+    '[browser] ensureCoordEventLogTable() is server-only. The SPA cannot bootstrap the coordination event-log schema.',
+  );
+}
+
+/**
  * Browser stand-in for the Postgres CoordEventLog backend.
  *
  * `agent-tools/coordination/log.ts` constructs one at MODULE SCOPE

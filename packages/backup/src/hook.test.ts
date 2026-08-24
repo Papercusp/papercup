@@ -165,6 +165,7 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(c.args).toContain('--exclude-table-data=harness_shared.route_invocations');
     expect(c.args).toContain('--exclude-table-data=harness_shared.tool_invocations');
     expect(c.args).toContain('--exclude-table-data=harness_shared.benchmark_run_result');
+    expect(c.args).toContain('--exclude-table-data=harness_shared.session_turn_parts');
     expect(c.args).not.toContain('-t');
   });
 
@@ -205,6 +206,14 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
   it('sets a connect timeout in the spawn env', async () => {
     await runPreSnapshotHook(ctx);
     expect(pgDumpCall()!.env?.PGCONNECT_TIMEOUT).toBe('5');
+  });
+
+  it('bounds PostgreSQL lock acquisition and statement lifetime below the client watchdog', async () => {
+    await runPreSnapshotHook(ctx);
+    const c = pgDumpCall()!;
+    expect(c.args).toContain('--lock-wait-timeout=30s');
+    expect(c.env?.PGOPTIONS).toContain('-c statement_timeout=600000');
+    expect(c.env?.PGOPTIONS).toContain('-c lock_timeout=30000');
   });
 
   it('includes the vector extension required by harness_shared vector columns', async () => {

@@ -2002,6 +2002,24 @@ export function coalesceWatermarkFor({ root, files, updateFlag }) {
 }
 
 /**
+ * Build the argv handed to pc-heavy for one compiler pass.
+ *
+ * `--files` scopes the GATE verdict, not TypeScript itself, so it is deliberately
+ * absent from {@link executableTscCommand}. pc-heavy still needs to know that this
+ * is an explicitly scoped lint:tsc call: during a release-gate materialization it
+ * routes only those calls through the independent focused lane. Put stable sentinel
+ * argv after `sh -c`'s command string — `sh` consumes them only as `$0`/`$1`, while
+ * pc-heavy sees them during admission. The sentinel is identical for every scoped
+ * caller, preserving the compile coalescing that would be defeated by forwarding
+ * each caller's real comma-separated file list.
+ */
+export function pcHeavyCompileArgv(executableTscCommand, scoped) {
+  const argv = ['sh', '-c', `${executableTscCommand} 2>&1`];
+  if (scoped) argv.push('lint:tsc', '--files=__pc_heavy_scoped__');
+  return argv;
+}
+
+/**
  * Which scope the caller asked this gate to judge — reported on the completion marker so a
  * reader can tell a whole-project verdict from one scoped to a handful of files. `--update`
  * leads because it MUTATES the baseline rather than judging against it.
@@ -2254,11 +2272,14 @@ export async function runTscBaselineGate({
   // N agents each paid for a byte-identical ~104s compile while the semaphore queued 49
   // deep (measured 2026-08-02: load1 186, three concurrent identical compiles).
   //
-  // Wrapping only the compile makes argv IDENTICAL across callers, so concurrent runs
-  // coalesce onto ONE compile. Each caller still filters the RAW diagnostics by its own
-  // `--files` and computes its OWN exit code below, so a caller-specific VERDICT is never
-  // shared — that sharing is what made naive coalescing-key widening unsafe (a red for
-  // file A is a green for a caller who named only file B).
+  // Wrapping only the compile makes argv IDENTICAL across callers in the same admission
+  // class, so concurrent runs coalesce onto ONE compile. Scoped callers carry one stable
+  // sentinel (never their real file list) so pc-heavy can route them through its focused
+  // lane during gate materialization without reintroducing per-file-set coalescing keys.
+  // Each caller still filters the RAW diagnostics by its own `--files` and computes its
+  // OWN exit code below, so a caller-specific VERDICT is never shared — that sharing is
+  // what made naive coalescing-key widening unsafe (a red for file A is a green for a
+  // caller who named only file B).
   //
   // pc-heavy's own stderr is deliberately kept OUT of the captured stream (only tsc's own
   // `2>&1` is captured, inside the wrapped child). If pc-heavy's chatter were captured, a
@@ -2341,7 +2362,7 @@ export async function runTscBaselineGate({
   const executableTscCommand = resolvePinnedTscCommand(root, tscCommand);
   try {
     tscOutput = existsSync(pcHeavyPath)
-      ? execFileSync('bash', [pcHeavyPath, 'sh', '-c', `${executableTscCommand} 2>&1`], {
+      ? execFileSync('bash', [pcHeavyPath, ...pcHeavyCompileArgv(executableTscCommand, explicitFiles !== null)], {
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,

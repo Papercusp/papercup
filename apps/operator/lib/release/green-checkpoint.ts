@@ -6505,6 +6505,33 @@ export function stampGatePromotion(
   }
 }
 
+export function checkpointCandidateProvenance(
+  opts: Pick<CheckpointOpts, "candidateSource" | "diagnostic">,
+): {
+  candidateSource: CheckpointCandidateSource;
+  diagnostic?: CheckpointDiagnostic;
+} {
+  const pinned =
+    opts.candidateSource === "pinned" || opts.diagnostic === "candidate-pinned";
+  return {
+    candidateSource: pinned ? "pinned" : (opts.candidateSource ?? "tip"),
+    ...(pinned ? { diagnostic: "candidate-pinned" as const } : {}),
+  };
+}
+
+export function checkpointCandidateSourceFromCli(
+  candidateArg: string | undefined,
+  sourceArg: string | undefined,
+): CheckpointCandidateSource {
+  if (sourceArg === "pinned" || sourceArg === "tip") return sourceArg;
+  if (sourceArg !== undefined) {
+    throw new Error(
+      `invalid --candidate-source '${sourceArg}' (expected pinned|tip)`,
+    );
+  }
+  return candidateArg ? "pinned" : "tip";
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -6517,11 +6544,7 @@ async function runGreenCheckpointInner(
   // refiring straight past the suite timeout, be killed mid-suite, and record NO verdict at all.
   const passStartedAtMs = Date.now();
   const runStartedAtMs = opts.runStartedAtMs ?? passStartedAtMs;
-  const candidateSource: CheckpointCandidateSource =
-    opts.candidateSource ??
-    (opts.diagnostic === "candidate-pinned" ? "pinned" : "tip");
-  const diagnostic: CheckpointDiagnostic | undefined =
-    candidateSource === "pinned" ? "candidate-pinned" : opts.diagnostic;
+  const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const diagnosticOnly = candidateSource === "pinned";
   // EI-19346606967082413: `opts.runStartedAtMs` is threaded ONLY by nextRefireOpts, so it is
   // undefined exactly on the OUTERMOST pass — i.e. this is the once-per-RUN seam. Resetting the
@@ -7290,7 +7313,9 @@ async function runGreenCheckpointInner(
   // only instant that question can be asked — our own write destroys the evidence. A loss detected
   // here is announced into the transcript AND persisted to `gate_health.lastLostRun`, so "a run
   // died judging that sha" stops being indistinguishable from "a run is judging that sha".
-  const abandonedNote = await deps.reportAbandonedInFlightCandidate?.();
+  const abandonedNote = diagnosticOnly
+    ? null
+    : await deps.reportAbandonedInFlightCandidate?.();
   if (abandonedNote) deps.log(abandonedNote);
   await deps.recordInFlightCandidate?.({
     candidate,
@@ -9028,11 +9053,7 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
-  const candidateSource: CheckpointCandidateSource =
-    opts.candidateSource ??
-    (opts.diagnostic === "candidate-pinned" ? "pinned" : "tip");
-  const diagnostic: CheckpointDiagnostic | undefined =
-    candidateSource === "pinned" ? "candidate-pinned" : opts.diagnostic;
+  const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const result = await runGreenCheckpointInner(cfg, deps, {
     ...opts,
     candidateSource,
@@ -13409,12 +13430,11 @@ if (require.main === module) {
   };
 
   const candidateArg = arg("--candidate");
-  const candidateSource: CheckpointCandidateSource = candidateArg
-    ? "pinned"
-    : "tip";
-  const diagnostic: CheckpointDiagnostic | undefined = candidateArg
-    ? "candidate-pinned"
-    : undefined;
+  const candidateSource = checkpointCandidateSourceFromCli(
+    candidateArg,
+    arg("--candidate-source"),
+  );
+  const { diagnostic } = checkpointCandidateProvenance({ candidateSource });
   // WI-4957: ONE runId for this whole process, shared by the normal verdict path
   // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
   // own event payload independently) — so every event this process could possibly emit

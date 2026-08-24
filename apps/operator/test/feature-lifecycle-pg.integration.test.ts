@@ -90,6 +90,7 @@ const FEATURES_DDL = `
     taken_at           TIMESTAMPTZ,
     expires_at         TIMESTAMPTZ,
     item_kind          TEXT        NOT NULL DEFAULT 'feature',
+    admission TEXT, admitted_at TIMESTAMPTZ, admitted_by TEXT,
     PRIMARY KEY (harness_slug, feature_id)
   );
   CREATE VIEW harness_features AS

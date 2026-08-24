@@ -885,6 +885,19 @@ export function coalesceWatermarkFor({ root, files, updateFlag }: {
     updateFlag: any;
 }): number | null;
 /**
+ * Build the argv handed to pc-heavy for one compiler pass.
+ *
+ * `--files` scopes the GATE verdict, not TypeScript itself, so it is deliberately
+ * absent from {@link executableTscCommand}. pc-heavy still needs to know that this
+ * is an explicitly scoped lint:tsc call: during a release-gate materialization it
+ * routes only those calls through the independent focused lane. Put stable sentinel
+ * argv after `sh -c`'s command string — `sh` consumes them only as `$0`/`$1`, while
+ * pc-heavy sees them during admission. The sentinel is identical for every scoped
+ * caller, preserving the compile coalescing that would be defeated by forwarding
+ * each caller's real comma-separated file list.
+ */
+export function pcHeavyCompileArgv(executableTscCommand: any, scoped: any): string[];
+/**
  * Which scope the caller asked this gate to judge — reported on the completion marker so a
  * reader can tell a whole-project verdict from one scoped to a handful of files. `--update`
  * leads because it MUTATES the baseline rather than judging against it.

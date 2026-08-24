@@ -1547,9 +1547,10 @@ export function buildCheckpointSystemdArgv(
       ? `PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='${capacityMode}' `
       : '';
   const gateEnv = `${partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : ''}${capacity}`;
-  const candidateArg = candidateSha && /^[0-9a-f]{40}$/.test(candidateSha)
-    ? ` --candidate '${candidateSha}'`
-    : '';
+  const candidateArg =
+    candidateSha && /^[0-9a-f]{40}$/.test(candidateSha)
+      ? ` --candidate '${candidateSha}' --candidate-source 'tip'`
+      : '';
   // Keep detached manual runs under the same cgroup memory policy as the periodic gate.
   // The capacity argument is the already-validated contract forwarded below; an omitted or
   // unrecognised value deliberately uses the conservative shared-mode cap. TasksMax is not

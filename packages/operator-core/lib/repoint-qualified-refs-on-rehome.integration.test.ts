@@ -69,6 +69,7 @@ beforeAll(async () => {
       expected_cost_cents bigint,
       workspace_id text NOT NULL, harness_slug text NOT NULL, feature_id text NOT NULL,
       item_kind text NOT NULL DEFAULT 'bug', status text NOT NULL DEFAULT 'open',
+      admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id));
     CREATE TABLE harness_shared.coord_links (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',

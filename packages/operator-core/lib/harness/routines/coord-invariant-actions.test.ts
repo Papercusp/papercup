@@ -204,6 +204,8 @@ describe('evaluateInvariants', () => {
     wakeQueueOldestMs: null,
     coordLogFurnaces: [],
     coordLogActiveOffenders: [],
+    sessionTurnPartsCopyHolders: [],
+    sessionTurnPartsLockWaiters: [],
   };
   const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
   const TTL_H = OPERATIONAL_ESCALATION_TTL_MS / 3_600_000;
@@ -231,6 +233,14 @@ describe('evaluateInvariants', () => {
         { queryid: '123', queryPreview: 'SELECT body FROM harness_shared.coord_event_log ...', calls: 285_000, rowsPerCall: 80_000, meanExecMs: 500 },
       ],
       coordLogActiveOffenders: [],
+      sessionTurnPartsCopyHolders: [{ pid: 1176879, applicationName: 'pg_dump', durationSeconds: 690 }],
+      sessionTurnPartsLockWaiters: [{
+        pid: 1177000,
+        applicationName: 'operator',
+        mode: 'RowExclusiveLock',
+        durationSeconds: 600,
+        queryPreview: 'INSERT INTO harness_shared.session_turn_parts ...',
+      }],
     };
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations.map((v) => v.title)).toEqual([
@@ -239,6 +249,7 @@ describe('evaluateInvariants', () => {
       'coord invariant: file locks held past TTL without sweep',
       'coord invariant: presence ghosts lingering past 72h',
       'coord invariant: wake-queue depth/age growth',
+      'coord invariant: session_turn_parts COPY lock convoy',
       'coord invariant: unbounded coord_event_log read pattern (furnace class)',
     ]);
     // Stability: re-evaluating yields the SAME titles (the dedup key).
@@ -360,6 +371,37 @@ describe('evaluateInvariants', () => {
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations).toHaveLength(1);
     expect(violations[0].title).toBe('coord invariant: wake-queue depth/age growth');
+  });
+
+  it('EI-21363741549000811: detects long parts COPYs and queued waiters, but not a short unqueued COPY', () => {
+    const shortCopy = {
+      ...cleanSnap,
+      sessionTurnPartsCopyHolders: [{ pid: 1, applicationName: 'pg_dump', durationSeconds: 10 }],
+    };
+    expect(evaluateInvariants(shortCopy, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+
+    const queued = {
+      ...shortCopy,
+      sessionTurnPartsLockWaiters: [{
+        pid: 2,
+        applicationName: 'operator',
+        mode: 'RowExclusiveLock',
+        durationSeconds: 2,
+        queryPreview: 'UPDATE harness_shared.session_turn_parts ...',
+      }],
+    };
+    const queuedViolations = evaluateInvariants(queued, DEFAULT_THRESHOLDS, NOW);
+    expect(queuedViolations).toHaveLength(1);
+    expect(queuedViolations[0].title).toBe('coord invariant: session_turn_parts COPY lock convoy');
+    expect(queuedViolations[0].detail).toContain('UPDATE harness_shared.session_turn_parts');
+
+    const longCopy = {
+      ...cleanSnap,
+      sessionTurnPartsCopyHolders: [{ pid: 3, applicationName: 'pg_dump', durationSeconds: 61 }],
+    };
+    expect(evaluateInvariants(longCopy, DEFAULT_THRESHOLDS, NOW).map((v) => v.title)).toEqual([
+      'coord invariant: session_turn_parts COPY lock convoy',
+    ]);
   });
 
   it('EI-10177: does NOT fire on normal live-owner review backlog (depth under the runaway cap)', () => {

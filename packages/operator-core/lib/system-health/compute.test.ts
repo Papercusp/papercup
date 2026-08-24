@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { backgroundWorkersEnabledMock, getFlagMock, readSharedSnapshotMock, statfsMock, homedirMock, tmpdirMock } = vi.hoisted(() => ({
   backgroundWorkersEnabledMock: vi.fn(() => false),
   getFlagMock: vi.fn(async () => true),
-  readSharedSnapshotMock: vi.fn(async () => null),
+  readSharedSnapshotMock: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
   statfsMock: vi.fn(),
   homedirMock: vi.fn(() => '/home/tester'),
   tmpdirMock: vi.fn(() => '/tmp'),
@@ -35,7 +35,7 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, _resetSystemHealthCache, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, _resetSystemHealthCache, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
@@ -90,6 +90,20 @@ describe('resolveSystemHealth — reader cold-cache guard (EI-203357)', () => {
     expect(health).toBeNull();
     expect(backgroundWorkersEnabledMock).toHaveBeenCalledOnce();
     expect(readSharedSnapshotMock).toHaveBeenCalledOnce();
+  });
+
+  it('exposes the shared snapshot payload with the caller freshness bound and no aggregation fallback', async () => {
+    const shared = {
+      workspaceId: 'ws-shared-hit',
+      evaluatedAt: 123_456,
+      overall: 'ok',
+      crossMonitor: { queenAlive: true, overwatchAlive: null },
+      panels: {},
+    } as unknown as SystemHealth;
+    readSharedSnapshotMock.mockResolvedValue({ payload: shared, computedAt: 123_456, ageMs: 10 });
+
+    await expect(readSharedSystemHealthSnapshot('ws-shared-hit', 4_321)).resolves.toBe(shared);
+    expect(readSharedSnapshotMock).toHaveBeenCalledWith('system.health', 'ws-shared-hit', 1, 4_321);
   });
 });
 

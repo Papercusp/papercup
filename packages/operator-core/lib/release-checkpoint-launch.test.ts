@@ -129,6 +129,7 @@ describe('buildCheckpointSystemdArgv', () => {
       candidate,
     ).at(-1)!;
     expect(inner).toContain(`green-checkpoint.ts --candidate '${candidate}'`);
+    expect(inner).toContain("--candidate-source 'tip'");
   });
 
   it('EI-211596: never forwards an unvalidated candidate into the bash command', () => {
@@ -143,6 +144,7 @@ describe('buildCheckpointSystemdArgv', () => {
       "bad'; touch /tmp/pwned; '",
     ).at(-1)!;
     expect(inner).not.toContain('--candidate');
+    expect(inner).not.toContain('--candidate-source');
     expect(inner).not.toContain('touch /tmp/pwned');
   });
 
@@ -393,6 +395,7 @@ describe('launchDetachedCheckpoint', () => {
     const r = await p;
     expect(r).toMatchObject({ launched: true, willJudge: { candidate, tip: movingTip } });
     expect(r.argv.at(-1)).toContain(`green-checkpoint.ts --candidate '${candidate}'`);
+    expect(r.argv.at(-1)).toContain("--candidate-source 'tip'");
   });
 
   it('EI-211596: rejects an invalid explicit candidate before spawn', async () => {

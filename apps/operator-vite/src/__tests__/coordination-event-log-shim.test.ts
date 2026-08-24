@@ -9,7 +9,11 @@
 // server surface reached over the API. A silent no-op stub would swallow coord
 // writes and surface as "flaky coordination" instead of a stack trace.
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_COORD_WORKSPACE, PgCoordLog } from '../shims/coordination-event-log-browser';
+import {
+  DEFAULT_COORD_WORKSPACE,
+  ensureCoordEventLogTable,
+  PgCoordLog,
+} from '../shims/coordination-event-log-browser';
 
 describe('PgCoordLog browser stub', () => {
   it('constructs silently — log.ts builds one at module scope, in the browser', () => {
@@ -32,5 +36,9 @@ describe('PgCoordLog browser stub', () => {
 
   it('still exports the workspace constant the client actually uses', () => {
     expect(DEFAULT_COORD_WORKSPACE).toBe('default');
+  });
+
+  it('links the schema-bootstrap binding but fails loudly if the browser calls it', async () => {
+    await expect(ensureCoordEventLogTable(null)).rejects.toThrow(/server-only/);
   });
 });

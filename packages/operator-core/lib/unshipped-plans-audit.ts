@@ -287,17 +287,24 @@ function textSignals(input: ClassifierInput) {
   // "run credential/provider probes" a human blocker even when the same Next
   // sentence said "now unblocked". Require blocker-shaped syntax in ## Now.
   const nowText = [input.plan.nowState, input.plan.nowNext].filter(Boolean).join(' ');
+  // A prose-only blocker is plan-level triage, so an explicitly executable
+  // current lane must win over a different deferred/owner-gated sub-item.
+  // Typed item evidence still takes priority later in classifyUnshippedPlan.
+  const hasAgentExecutableNext =
+    /\b(?:now unblocked|fully[- ]agent[- ]executable|agent[- ]executable)\b/i.test(input.plan.nowNext ?? '');
   const human =
-    /\b(?:owner[- ]gated|owner[- ]run|needs[- ]human|owner (?:action|decision|approval|review|ratification)|human (?:action|decision|approval)|purchase required)\b/i.test(nowText) ||
-    /\b(?:blocked|waiting|awaiting|depends)\b.{0,80}\b(?:owner|human|approval|decision|review|ratification|credential|api key)\b/i.test(nowText) ||
-    /\b(?:credential|api key)\b.{0,40}\b(?:required|needed|missing|unavailable)\b/i.test(nowText) ||
-    /\b(?:provide|supply|needs?|requires?)\b.{0,40}\b(?:credential|api key)\b/i.test(nowText);
+    !hasAgentExecutableNext &&
+    (/\b(?:owner[- ]gated|owner[- ]run|needs[- ]human|owner (?:action|decision|approval|review|ratification)|human (?:action|decision|approval)|purchase required)\b/i.test(nowText) ||
+      /\b(?:blocked|waiting|awaiting|depends)\b.{0,80}\b(?:owner|human|approval|decision|review|ratification|credential|api key)\b/i.test(nowText) ||
+      /\b(?:credential|api key)\b.{0,40}\b(?:required|needed|missing|unavailable)\b/i.test(nowText) ||
+      /\b(?:provide|supply|needs?|requires?)\b.{0,40}\b(?:credential|api key)\b/i.test(nowText));
   const external =
-    /\b(?:blocked (?:on|by|until)|waiting (?:on|for)|time[- ]gated|deploy[- ]gated|release[- ]gated|external blocker|provider blocker|remote blocker)\b/i.test(nowText) ||
-    /\b(?:release|deploy(?:ment)?) gate\b.{0,40}\b(?:red|blocked|pending|stalled|waiting)\b/i.test(nowText) ||
-    /\b(?:quota|capacity)\b.{0,30}\b(?:exhausted|walled|blocked|unavailable)\b/i.test(nowText) ||
-    /\b(?:cannot|hold|wait)\b.{0,80}\buntil\b.{0,40}\b(?:lands|ships|completes|recovers)\b/i.test(nowText) ||
-    /\b(?:once|when)\b.{0,80}\b(?:reaches|lands|ships|completes|recovers)\b/i.test(nowText);
+    !hasAgentExecutableNext &&
+    (/\b(?:blocked (?:on|by|until)|waiting (?:on|for)|time[- ]gated|deploy[- ]gated|release[- ]gated|external blocker|provider blocker|remote blocker)\b/i.test(nowText) ||
+      /\b(?:release|deploy(?:ment)?) gate\b.{0,40}\b(?:red|blocked|pending|stalled|waiting)\b/i.test(nowText) ||
+      /\b(?:quota|capacity)\b.{0,30}\b(?:exhausted|walled|blocked|unavailable)\b/i.test(nowText) ||
+      /\b(?:cannot|hold|wait)\b.{0,80}\buntil\b.{0,40}\b(?:lands|ships|completes|recovers)\b/i.test(nowText) ||
+      /\b(?:once|when)\b.{0,80}\b(?:reaches|lands|ships|completes|recovers)\b/i.test(nowText));
   return {
     fixture: /(?:^|[-\s])(fixture|smoke|drill|demo|canary|heartbeat|behaviou?r[-\s]grade[-\s]run)(?:[-\s]|$)/i.test(text),
     deferred: /\b(awaiting (?:owner|review|approval)|designed[,;:]? not built|not approved|deferred|paused indefinitely|draft[,;:]? awaiting)\b/i.test(text),

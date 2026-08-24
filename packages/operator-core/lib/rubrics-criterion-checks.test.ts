@@ -16,12 +16,14 @@ import { join } from 'node:path';
 import {
   validateCriterionCheckPaths,
   assertCriterionCheckPathsResolve,
+  selectCriterionCheckRoot,
   evaluateCriterionTestChecks,
   evaluateCriterionCoverageChecks,
   type CriterionCheckRunner,
   type CoverageMeasurement,
   type CoverageReader,
 } from './rubrics-criterion-checks';
+import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
 

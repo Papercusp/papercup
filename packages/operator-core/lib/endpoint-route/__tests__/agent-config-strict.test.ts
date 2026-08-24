@@ -91,6 +91,19 @@ async function callPost(body: unknown): Promise<Response> {
   return route.handler(req);
 }
 
+async function callPatch(body: unknown): Promise<Response> {
+  const mod = await import('../routes/agent-config');
+  const route = (
+    mod.default as unknown as Array<{ method: string; handler: (req: Request) => Promise<Response> }>
+  ).find((r) => r.method === 'PATCH')!;
+  const req = new Request('http://localhost:3070/api/agent-config', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return route.handler(req);
+}
+
 const VALID_BODY = {
   interactiveClient: 'legacy',
   backend: 'claude-code',
@@ -244,5 +257,49 @@ describe('POST /agent-config strict save', () => {
     expect(res.status).toBe(422);
     expect(writeMock).not.toHaveBeenCalled();
     expect((await res.json()).error).toMatch(/resolverProfiles.*effort requires an explicit model/);
+  });
+});
+
+describe('PATCH /agent-config resolver profiles', () => {
+  it('merges one pane profile without replacing unrelated configuration or the other pane', async () => {
+    readMock.mockResolvedValueOnce({
+      ...VALID_BODY,
+      interactiveClient: 'pui',
+      terminal: 'alacritty',
+      resolverProfiles: {
+        'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
+        'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
+      },
+    });
+
+    const res = await callPatch({
+      resolverProfiles: {
+        'inbox-resolve': { model: 'sol', effort: 'xhigh', account: 'pool-a', carry: 'cold' },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const written = writeMock.mock.calls[0][0] as typeof VALID_BODY & { terminal: string };
+    expect(written.interactiveClient).toBe('pui');
+    expect(written.models).toEqual(VALID_BODY.models);
+    expect(written.terminal).toBe('alacritty');
+    expect(written.resolverProfiles).toEqual({
+      'inbox-resolve': { model: 'sol', effort: 'xhigh', account: 'pool-a', carry: 'cold' },
+      'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
+    });
+  });
+
+  it('rejects an invalid profile and refuses unrelated patch fields', async () => {
+    const invalid = await callPatch({
+      resolverProfiles: {
+        'inbox-resolve': { model: null, effort: 'high', account: 'default', carry: 'warm' },
+      },
+    });
+    expect(invalid.status).toBe(422);
+    expect(writeMock).not.toHaveBeenCalled();
+
+    const broad = await callPatch({ resolverProfiles: VALID_BODY.resolverProfiles, backend: 'omp' });
+    expect(broad.status).toBe(400);
+    expect(writeMock).not.toHaveBeenCalled();
   });
 });

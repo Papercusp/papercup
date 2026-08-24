@@ -80,6 +80,7 @@ beforeAll(async () => {
         setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
         setweight(to_tsvector('english', coalesce(notes, '')), 'C')
       ) STORED,
+      admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
     )`);
   await sql.unsafe(`

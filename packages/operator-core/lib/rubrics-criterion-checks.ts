@@ -24,6 +24,7 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { normalizeTestFilePaths, runTestFilesCore, type TestFilesCoreResult } from './agent-tools/testing/run';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import type {
@@ -146,16 +147,60 @@ export function validateCriterionCheckPaths(
   };
 }
 
+/** Where a selected check-validation root came from — echoed on results so a
+ *  canonical-repo validation is visible, never silent (the WI-7189 lesson). */
+export type CriterionCheckRootSource = 'requested' | 'canonical-repo';
+
+export interface SelectedCriterionCheckRoot {
+  root: string;
+  source: CriterionCheckRootSource;
+  /** The validation computed against the SELECTED root — callers use this instead of
+   *  re-running, so selection and enforcement can never disagree. */
+  validation: CriterionCheckPathValidation;
+}
+
+/**
+ * WI-41394 — the WI-41365 phantom-root class, this validator's own rung. A hive-scoped
+ * session resolves its workspace root from a stale registry entry (e.g. /tmp/devboard),
+ * a tree that does not exist — so every tests-check path was refused for a reason that
+ * had nothing to do with the paths, and a hive-commissioned rubric whose evidence lives
+ * in the canonical repo could not carry a structured check at all.
+ *
+ * Precedence mirrors selectHarnessCitationRepoRoot (plan-audits.ts): the REQUESTED root
+ * stays authoritative whenever every tests-check path resolves there; the canonical repo
+ * is accepted only when it resolves them ALL; otherwise the requested root is kept, so
+ * failures report against the tree the agent claims to edit rather than a tree that
+ * happens to be missing different files. Scope faults are root-independent and play no
+ * part in selection.
+ */
+export function selectCriterionCheckRoot(
+  criteria: ReadonlyArray<CheckedCriterion>,
+  requested: string,
+  canonicalRepoRoot: string = REPO_ROOT,
+): SelectedCriterionCheckRoot {
+  const requestedV = validateCriterionCheckPaths(criteria, { root: requested });
+  if (requestedV.failures.length === 0 || resolve(requested) === resolve(canonicalRepoRoot)) {
+    return { root: requested, source: 'requested', validation: requestedV };
+  }
+  const canonicalV = validateCriterionCheckPaths(criteria, { root: canonicalRepoRoot });
+  return canonicalV.failures.length === 0
+    ? { root: canonicalRepoRoot, source: 'canonical-repo', validation: canonicalV }
+    : { root: requested, source: 'requested', validation: requestedV };
+}
+
 /**
  * The refusing form, called from the proposeRubric LIB write path (like the WI-4287
  * loss-guards, so every caller inherits it). `invalid_args:` prefix per EI-10148 —
- * this is a CALLER error, never a structural tool bug.
+ * this is a CALLER error, never a structural tool bug. Root selection runs first
+ * (WI-41394): a requested root that cannot resolve the paths falls back to the
+ * canonical repo when — and only when — every path resolves there.
  */
 export function assertCriterionCheckPathsResolve(
   criteria: ReadonlyArray<CheckedCriterion>,
   opts: { root?: string } = {},
 ): void {
-  const v = validateCriterionCheckPaths(criteria, opts);
+  const requested = opts.root ?? resolveAgentWorkspaceRoot({});
+  const v = selectCriterionCheckRoot(criteria, requested).validation;
   if (v.ok) return;
   const parts: string[] = [];
   if (v.failures.length > 0) {
@@ -270,7 +315,14 @@ export async function evaluateCriterionTestChecks(input: {
   runner?: CriterionCheckRunner;
   nowIso?: () => string;
 }): Promise<CriterionCheckEvaluation> {
-  const root = input.root ?? resolveAgentWorkspaceRoot({});
+  // WI-41394: select the validation/run root over the rated tests-check subset — the
+  // same subset validated below — so a phantom requested root (a stale hive registry
+  // entry) falls back to the canonical repo exactly when every checked path resolves
+  // there, and propose-time acceptance cannot diverge from grading-time refusal.
+  const ratedTestsChecks = input.criteria.filter(
+    (c) => c.check?.kind === 'tests' && input.ratings[c.key] !== undefined,
+  );
+  const root = selectCriterionCheckRoot(ratedTestsChecks, input.root ?? resolveAgentWorkspaceRoot({})).root;
   const runner = input.runner ?? runTestFilesCore;
   const nowIso = input.nowIso ?? (() => new Date().toISOString());
   const deadline = input.timeoutMs !== undefined ? Date.now() + input.timeoutMs : null;

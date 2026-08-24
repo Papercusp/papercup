@@ -1165,7 +1165,7 @@ defineTestDomain({
         'apps/operator/bin/**/*.test.ts',
         'apps/operator/scripts/**/*.test.ts',
         'apps/operator/scripts/**/*.test.mjs',
-        'scripts/npm-install-safe.test.mjs',
+        'scripts/*.test.mjs',
       ] },
     { id: 'integration', label: 'Integration (test/)', globs: [
         'apps/operator/test/**/*.test.ts',

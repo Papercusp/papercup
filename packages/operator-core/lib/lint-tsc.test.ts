@@ -74,6 +74,7 @@ import {
 // eslint-disable-next-line import/no-relative-packages
 import {
   TSC_HEAP_MB,
+  pcHeavyCompileArgv,
   resolvePinnedTscBin,
   resolvePinnedTscCommand,
   tscChildEnv,
@@ -2948,6 +2949,28 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       expect(
         coalesceWatermarkFor({ root: dir, files: new Set(['a.test.ts']), updateFlag: false }),
       ).toBe(Math.floor(1_700_000_000_000 / 1000) + 1);
+    });
+  });
+
+  describe('pcHeavyCompileArgv — scoped focused-lane admission without per-file coalescing drift', () => {
+    it('keeps an unscoped compile on the ordinary pc-heavy argv', () => {
+      expect(pcHeavyCompileArgv('npx tsc -p tsconfig.json', false)).toEqual([
+        'sh',
+        '-c',
+        'npx tsc -p tsconfig.json 2>&1',
+      ]);
+    });
+
+    it('adds stable lint:tsc and --files sentinels for pc-heavy while leaving the shell command unchanged', () => {
+      const argv = pcHeavyCompileArgv("printf 'compile-ok'", true);
+      expect(argv).toEqual([
+        'sh',
+        '-c',
+        "printf 'compile-ok' 2>&1",
+        'lint:tsc',
+        '--files=__pc_heavy_scoped__',
+      ]);
+      expect(execFileSync(argv[0], argv.slice(1), { encoding: 'utf8' })).toBe('compile-ok');
     });
   });
 

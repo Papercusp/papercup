@@ -129,6 +129,7 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       feature_id text NOT NULL,
       source_plan_slug text,
+      admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.test_runs (

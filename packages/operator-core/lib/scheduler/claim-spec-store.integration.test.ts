@@ -92,6 +92,7 @@ beforeAll(async () => {
     expected_cost_cents bigint,
     workspace_id text NOT NULL,
     feature_id text PRIMARY KEY,
+    admission text, admitted_at timestamptz, admitted_by text,
     taken_by text,
     status text NOT NULL DEFAULT 'todo',
     item_kind text NOT NULL DEFAULT 'change'

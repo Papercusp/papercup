@@ -42,6 +42,10 @@ const {
   getPendingReviewItems,
   markItemAccepted,
   settleRunPhase,
+  recordRunHeartbeat,
+  classifyRunLiveness,
+  restartRun,
+  RUN_HEARTBEAT_STALE_MS,
 } = await import('./bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
@@ -596,5 +600,155 @@ describe('attention bulk-run store (real PG)', () => {
     // a resolution that did not happen.
     expect(auditedAfterStop).toBe(false);
     expect((await getRunItems(lateRun.runId, ws))[0]!.outcome).toBe('pending');
+  });
+
+  // P-007. The properties here are the ones that fail SILENTLY: a heartbeat that
+  // keeps writing after the owner pressed Stop, a restart that quietly re-opens
+  // items the previous resolver already finished, or one that widens the run past
+  // what the owner saw. Each test below is paired with the control that would pass
+  // if the guard were absent.
+  describe('P-007 — resolver heartbeat, derived staleness, safe restart', () => {
+    const ws = () => h.ws as string;
+    const age = async (runId: string, interval: string) =>
+      (h.sql as typeof db.adminSql)`
+        UPDATE harness_shared.attention_bulk_runs
+           SET heartbeat_at = now() - ${interval}::interval
+         WHERE workspace_id = ${ws()} AND run_id = ${runId}`;
+
+    it('records a heartbeat on an executing run and exposes it on the row', async () => {
+      const run = await createRun({ items: seed('hb'), runId: `hb-${Date.now()}` });
+      expect(run.heartbeatAt).toBeNull(); // a fresh run has NEVER reported
+
+      const beat = await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-resolver' });
+      expect(beat).not.toBeNull();
+      expect(beat!.heartbeatAt).not.toBeNull();
+      expect(beat!.resolverOwner).toBe('su-resolver');
+      // and it is durable, not just returned
+      expect((await getRun(run.runId, ws()))!.heartbeatAt).not.toBeNull();
+    });
+
+    it('REFUSES a heartbeat once the run is no longer executing — a late beat cannot resurrect it', async () => {
+      const run = await createRun({ items: seed('hb-late'), runId: `hb-late-${Date.now()}` });
+      // CONTROL: while executing, the same call succeeds.
+      expect(await recordRunHeartbeat({ runId: run.runId })).not.toBeNull();
+
+      await setRunPhase({ runId: run.runId, phase: 'review' });
+      expect(await recordRunHeartbeat({ runId: run.runId })).toBeNull();
+      await setRunPhase({ runId: run.runId, phase: 'complete' });
+      expect(await recordRunHeartbeat({ runId: run.runId })).toBeNull();
+    });
+
+    it('derives liveness from the heartbeat, and from the START time when nothing has beaten yet', () => {
+      const t0 = Date.parse('2026-08-24T12:00:00.000Z');
+      const at = (ms: number) => new Date(t0 + ms).toISOString();
+      const base = { phase: 'running' as const, startedAt: at(0), createdAt: at(0) };
+
+      // never reported: measured from the start, so a just-launched run is LIVE …
+      expect(classifyRunLiveness({ ...base, heartbeatAt: null }, t0 + 1_000)).toMatchObject({
+        state: 'live',
+      });
+      // … and one that never beat at all eventually goes stale, measured from start.
+      expect(
+        classifyRunLiveness({ ...base, heartbeatAt: null }, t0 + RUN_HEARTBEAT_STALE_MS + 1_000),
+      ).toMatchObject({ state: 'stale', measuredFrom: 'start' });
+
+      // reported recently → live; reported long ago → stale, measured from the beat.
+      expect(
+        classifyRunLiveness({ ...base, heartbeatAt: at(60_000) }, t0 + 61_000),
+      ).toMatchObject({ state: 'live' });
+      expect(
+        classifyRunLiveness(
+          { ...base, heartbeatAt: at(0) },
+          t0 + RUN_HEARTBEAT_STALE_MS + 1_000,
+        ),
+      ).toMatchObject({ state: 'stale', measuredFrom: 'heartbeat' });
+
+      // a run that is not executing is not a liveness question at all
+      expect(
+        classifyRunLiveness({ ...base, phase: 'review', heartbeatAt: null }, t0 + 10 ** 9),
+      ).toMatchObject({ state: 'not-executing', phase: 'review' });
+    });
+
+    it('REFUSES to restart a HEALTHY executing run — restarting one would race a live resolver', async () => {
+      const run = await createRun({ items: seed('rs-live'), runId: `rs-live-${Date.now()}` });
+      await recordRunHeartbeat({ runId: run.runId });
+
+      const refused = await restartRun({ runId: run.runId });
+      expect(refused).toEqual({ ok: false, reason: 'not_restartable', phase: 'pending' });
+      // and nothing moved
+      expect((await getRun(run.runId, ws()))!.heartbeatAt).not.toBeNull();
+    });
+
+    it('restarts a STALE executing run, preserving completed outcomes and NOT widening membership', async () => {
+      const run = await createRun({ items: seed('rs-stale'), runId: `rs-stale-${Date.now()}` });
+      await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-dead' });
+      await reportOutcomes({
+        runId: run.runId,
+        outcomes: [
+          {
+            itemId: 'coord-escalation:rs-stale-1',
+            outcome: 'auto_resolved',
+            actionId: 'quarantine',
+            rationale: 'finished before the resolver died',
+            confidence: 'high',
+          },
+        ],
+      });
+      await age(run.runId, '1 hour');
+
+      const res = await restartRun({ runId: run.runId, resolverOwner: 'su-fresh' });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+
+      // handed to a new resolver, with liveness reset so it must prove itself again
+      expect(res.run.phase).toBe('pending');
+      expect(res.run.resolverOwner).toBe('su-fresh');
+      expect(res.run.heartbeatAt).toBeNull();
+      expect(res.run.error).toBeNull();
+
+      // THE GUARANTEE: the finished item is still finished, and still counted.
+      const items = await getRunItems(run.runId, ws());
+      expect(items).toHaveLength(3); // membership NOT widened
+      const done = items.find((i) => i.itemId === 'coord-escalation:rs-stale-1')!;
+      expect(done.outcome).toBe('auto_resolved');
+      expect(done.actionId).toBe('quarantine');
+      expect(res.run.autoResolved).toBe(1);
+      expect(res.preservedOutcomes).toBe(1);
+      expect(items.filter((i) => i.outcome === 'pending')).toHaveLength(2);
+    });
+
+    it('restarts a FAILED run and reuses its click-time launch snapshot rather than current defaults', async () => {
+      const run = await createRun({
+        items: seed('rs-failed'),
+        runId: `rs-failed-${Date.now()}`,
+        launchSnapshot: { model: 'opus' },
+      });
+      await failRunIfExecuting({ runId: run.runId, error: 'resolver exited 137' });
+      expect((await getRun(run.runId, ws()))!.phase).toBe('failed');
+
+      const res = await restartRun({ runId: run.runId, resolverOwner: 'su-fresh' });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.run.phase).toBe('pending');
+      expect(res.run.error).toBeNull();
+      // D-003: the restart must relaunch with what the OWNER chose, not today's default.
+      expect(res.run.launchSnapshot.model).toBe('opus');
+    });
+
+    it('distinguishes an unknown run from one it refused, so a diagnostic cannot report a live run as missing', async () => {
+      const run = await createRun({ items: seed('rs-404'), runId: `rs-404-${Date.now()}` });
+      await recordRunHeartbeat({ runId: run.runId });
+
+      expect(await restartRun({ runId: 'no-such-run' })).toEqual({
+        ok: false,
+        reason: 'run_not_found',
+        phase: null,
+      });
+      expect(await restartRun({ runId: run.runId })).toEqual({
+        ok: false,
+        reason: 'not_restartable',
+        phase: 'pending',
+      });
+    });
   });
 });

@@ -195,6 +195,16 @@ export interface BulkRunRow {
   updatedAt: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  /**
+   * Last liveness report from the resolver process owning this run (migration 945).
+   *
+   * `null` means NEVER REPORTED — a run created before 945, or one that has not begun
+   * executing yet. That is deliberately distinguishable from "reported, but long ago":
+   * the two warrant different owner-facing language, and collapsing them is exactly the
+   * conflation a stored `stale` flag would force. Staleness is DERIVED from this value
+   * (see {@link classifyRunLiveness}), never persisted.
+   */
+  heartbeatAt: string | null;
 }
 
 export interface BulkRunItemRow {
@@ -290,6 +300,7 @@ interface RawRunRow {
   updated_at: Date | string | null;
   started_at: Date | string | null;
   finished_at: Date | string | null;
+  heartbeat_at: Date | string | null;
 }
 
 function mapRun(r: RawRunRow): BulkRunRow {
@@ -314,6 +325,7 @@ function mapRun(r: RawRunRow): BulkRunRow {
     updatedAt: iso(r.updated_at),
     startedAt: iso(r.started_at),
     finishedAt: iso(r.finished_at),
+    heartbeatAt: iso(r.heartbeat_at),
   };
 }
 
@@ -360,7 +372,7 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
 const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
                      run_kind, seed_refs, filter_snapshot, launch_snapshot,
                      total_items, auto_resolved, recommended, skipped, failed,
-                     error, created_at, updated_at, started_at, finished_at`;
+                     error, created_at, updated_at, started_at, finished_at, heartbeat_at`;
 
 const ITEM_COLUMNS = `run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id,
                       outcome, action_id, rationale, draft_answer, confidence, consulted,
@@ -762,6 +774,169 @@ export async function failRunIfExecuting(input: {
     RETURNING ${sql.unsafe(RUN_COLUMNS)}
   `;
   return rows[0] ? mapRun(rows[0]) : null;
+}
+
+/**
+ * How long a run may go without evidence of life before it reads as stale.
+ *
+ * Deliberately generous relative to any sane heartbeat cadence: the cost of calling a
+ * working resolver stale (an owner restarts a run that was fine, losing in-flight work)
+ * is far higher than the cost of noticing a dead one a minute later.
+ */
+export const RUN_HEARTBEAT_STALE_MS = 5 * 60_000;
+
+export type RunLiveness =
+  /** Terminal, or `review` — the run is not executing, so liveness is not a question. */
+  | { state: 'not-executing'; phase: BulkRunPhase }
+  /** Executing and reporting. */
+  | { state: 'live'; ageMs: number; measuredFrom: 'heartbeat' }
+  /** Executing, but nothing has reported for longer than the threshold. */
+  | { state: 'stale'; ageMs: number; measuredFrom: 'heartbeat' | 'start' };
+
+/**
+ * DERIVE whether an executing run is still alive. Never stored — see migration 945.
+ *
+ * ⚠ The subtlety worth keeping: staleness is measured from the last EVIDENCE OF LIFE,
+ * which is `heartbeat_at` when the resolver has reported and the run's own start time
+ * when it has not. Measuring a never-reported run from `heartbeat_at` alone would make
+ * it either permanently stale (NULL reads as infinitely old) or permanently live (NULL
+ * skipped) — the first restarts a run that launched two seconds ago and has not had a
+ * chance to beat yet, the second never notices a resolver that died before its first
+ * heartbeat. Both are real failures; COALESCE across the two is what avoids each.
+ *
+ * `measuredFrom` is reported rather than inferred so a caller (and an owner-facing
+ * diagnostic) can say "never reported since launch" instead of the much weaker "stale",
+ * which is the distinction the nullable column exists to preserve.
+ */
+export function classifyRunLiveness(
+  run: Pick<BulkRunRow, 'phase' | 'heartbeatAt' | 'startedAt' | 'createdAt'>,
+  nowMs: number = Date.now(),
+  staleAfterMs: number = RUN_HEARTBEAT_STALE_MS,
+): RunLiveness {
+  if (!RUNNING_PHASES.includes(run.phase)) return { state: 'not-executing', phase: run.phase };
+
+  const measuredFrom = run.heartbeatAt ? 'heartbeat' : 'start';
+  const since = run.heartbeatAt ?? run.startedAt ?? run.createdAt;
+  // No timestamp at all is not something a live row can produce (created_at is NOT
+  // NULL); treat it as stale rather than inventing liveness we cannot evidence.
+  if (!since) return { state: 'stale', ageMs: Number.POSITIVE_INFINITY, measuredFrom };
+
+  const ageMs = nowMs - Date.parse(since);
+  if (!Number.isFinite(ageMs)) return { state: 'stale', ageMs: Number.POSITIVE_INFINITY, measuredFrom };
+  return ageMs > staleAfterMs
+    ? { state: 'stale', ageMs, measuredFrom }
+    : { state: 'live', ageMs, measuredFrom: 'heartbeat' };
+}
+
+/**
+ * Record that the resolver owning this run is alive.
+ *
+ * Conditional on an EXECUTING phase, exactly like {@link failRunIfExecuting}: a
+ * heartbeat arriving after the owner pressed Stop, or after the run settled, must not
+ * resurrect any part of it. Returns `null` when it did not apply, which is the signal
+ * the caller should stop — it means the run is no longer theirs.
+ *
+ * ⚠ Deliberately does NOT touch `updated_at`. A heartbeat is liveness, not a state
+ * change, and `updated_at` is what readers key on to decide something happened; bumping
+ * it every cadence would turn a silent keep-alive into a steady stream of spurious
+ * "this run changed" signals through the sync layer.
+ */
+export async function recordRunHeartbeat(input: {
+  runId: string;
+  resolverOwner?: string | null;
+  workspaceId?: string;
+}): Promise<BulkRunRow | null> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<RawRunRow[]>`
+    UPDATE harness_shared.attention_bulk_runs
+       SET heartbeat_at = now(),
+           resolver_owner = COALESCE(${input.resolverOwner ?? null}, resolver_owner)
+     WHERE workspace_id = ${ws}
+       AND run_id = ${input.runId}
+       AND phase IN ('pending', 'running')
+    RETURNING ${sql.unsafe(RUN_COLUMNS)}
+  `;
+  return rows[0] ? mapRun(rows[0]) : null;
+}
+
+export type RestartRunResult =
+  | { ok: true; run: BulkRunRow; preservedOutcomes: number }
+  | { ok: false; reason: 'run_not_found' | 'not_restartable'; phase: BulkRunPhase | null };
+
+/**
+ * Hand a stranded run to a fresh resolver WITHOUT losing what the previous one achieved.
+ *
+ * Three guarantees, each of which is a way this could go wrong:
+ *
+ * 1. ONLY a stale-executing or failed run is restartable. A healthy executing run is
+ *    refused — restarting one would race a resolver that is still working and produce
+ *    two agents acting on the same items. The staleness test lives INSIDE the UPDATE's
+ *    WHERE clause rather than in a preceding read, so a resolver that beats between a
+ *    check and a write wins the race and the restart cleanly does nothing.
+ * 2. COMPLETED OUTCOMES ARE NEVER RESET. This function does not write to
+ *    `attention_bulk_run_items` at all. Counters are recomputed from the surviving item
+ *    rows by {@link reportCountersOnly}, so already-resolved items stay resolved and
+ *    stay counted; only `outcome = 'pending'` items are left for the new resolver.
+ * 3. MEMBERSHIP IS NEVER WIDENED — for the same reason `reportOutcomes` ignores unknown
+ *    item ids: the run must keep acting on exactly what the owner saw when they clicked.
+ *
+ * The launch settings are NOT re-derived from current defaults: `launch_snapshot` stays
+ * on the row untouched (D-003), so the restarted run relaunches with the owner's
+ * click-time configuration rather than whatever the defaults happen to be now.
+ */
+export async function restartRun(input: {
+  runId: string;
+  resolverOwner?: string | null;
+  workspaceId?: string;
+  staleAfterMs?: number;
+}): Promise<RestartRunResult> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const staleSecs = Math.max(0, input.staleAfterMs ?? RUN_HEARTBEAT_STALE_MS) / 1000;
+
+  const rows = await sql<RawRunRow[]>`
+    UPDATE harness_shared.attention_bulk_runs
+       SET phase = 'pending',
+           resolver_owner = ${input.resolverOwner ?? null},
+           error = NULL,
+           finished_at = NULL,
+           heartbeat_at = NULL,
+           updated_at = now()
+     WHERE workspace_id = ${ws}
+       AND run_id = ${input.runId}
+       AND (
+             phase = 'failed'
+             OR (
+                  phase IN ('pending', 'running')
+                  -- last evidence of life: the heartbeat, else when the run started.
+                  -- Same COALESCE as classifyRunLiveness, and it must stay in step.
+                  AND COALESCE(heartbeat_at, started_at, created_at)
+                        < now() - make_interval(secs => ${staleSecs})
+                )
+           )
+    RETURNING ${sql.unsafe(RUN_COLUMNS)}
+  `;
+
+  if (!rows[0]) {
+    // Distinguish "no such run" from "refused because it is healthy" — an owner-facing
+    // diagnostic must not report a live run as missing.
+    const current = await getRun(input.runId, ws);
+    return current
+      ? { ok: false, reason: 'not_restartable', phase: current.phase }
+      : { ok: false, reason: 'run_not_found', phase: null };
+  }
+
+  // Counters are DERIVED from the surviving item rows, so this both preserves completed
+  // outcomes and re-states them correctly on the restarted run.
+  await reportCountersOnly(input.runId, ws);
+  const refreshed = (await getRun(input.runId, ws)) ?? mapRun(rows[0]);
+  const items = await getRunItems(input.runId, ws);
+  return {
+    ok: true,
+    run: refreshed,
+    preservedOutcomes: items.filter((i) => i.outcome !== 'pending').length,
+  };
 }
 
 /**

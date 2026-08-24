@@ -21,6 +21,7 @@ beforeAll(async () => {
       title text, summary text, status text, payload jsonb, item_kind text,
       completion_ref text, terminal_completion_ref text, terminal_owner text,
       authority text, closed_ts bigint, updated_ts bigint NOT NULL DEFAULT 0,
+      admission text, admitted_at timestamptz, admitted_by text,
       fed_hlc text, PRIMARY KEY (harness_slug, feature_id));
     CREATE TABLE harness_shared.coord_links (
       id bigint PRIMARY KEY, workspace_id text NOT NULL, src_kind text NOT NULL,

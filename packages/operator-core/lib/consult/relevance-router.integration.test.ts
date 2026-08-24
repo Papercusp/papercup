@@ -116,6 +116,7 @@ beforeAll(async () => {
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.work_items (
       feature_id text PRIMARY KEY,
+      admission text, admitted_at timestamptz, admitted_by text,
       terminal_owner text,
       authority text,
       closed_ts bigint,

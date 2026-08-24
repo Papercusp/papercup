@@ -72,6 +72,7 @@ beforeAll(async () => {
       workspace_id text NOT NULL, harness_slug text NOT NULL, feature_id text NOT NULL,
       item_kind text NOT NULL DEFAULT 'bug', origin text NOT NULL DEFAULT 'local',
       status text NOT NULL DEFAULT 'open',
+      admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id));`);
   // papercusp-workspace HAS the platform Pot ⇒ enforced; generic-test has pots but
   // NO platform Pot ⇒ fail-open.

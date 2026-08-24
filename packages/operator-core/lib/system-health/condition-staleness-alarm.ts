@@ -55,6 +55,8 @@ import {
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { evaluateGitSyncStall } from '../release/git-sync-stall-watchdog';
 import { readRoutineEngineLiveness } from '../release/routine-engine-liveness';
+import type { SystemHealth } from './types';
+import type { BeesLivenessContext } from './liveness-alarm';
 
 export const CONDITION_STALENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:condition-staleness-alarm',
@@ -350,7 +352,7 @@ export function selectReconcilableConditions(
 }
 
 /**
- * Default health source for the `infra-liveness:*` family: recompute a FRESH
+ * Default health source for the `infra-liveness:*` family: read a FRESH shared
  * SystemHealth snapshot and re-run the exact `evaluateLivenessAlarm` the source
  * watchdog fires from (liveness-alarm.ts) — so this reconciler can never disagree
  * with "is this infra-liveness signal actually firing right now". Any open
@@ -358,21 +360,35 @@ export function selectReconcilableConditions(
  * set is verified healthy. Fail-soft: a read error leaves every key unset
  * (unknown), never a false clear.
  */
-async function defaultReadInfraLivenessHealth(
+export async function readInfraLivenessHealthFromSharedSnapshot(
   openInfraKeys: readonly string[],
+  deps: {
+    readHealth?: (workspaceId: string) => Promise<SystemHealth | null>;
+    readBeesLiveness?: (health: SystemHealth) => Promise<BeesLivenessContext | undefined>;
+    workspaceId?: () => string;
+  } = {},
 ): Promise<Map<string, boolean>> {
   const out = new Map<string, boolean>();
   if (openInfraKeys.length === 0) return out;
   try {
-    const [{ computeSystemHealth }, { evaluateLivenessAlarm, readBeesLivenessContext }, { activeWorkspaceId }] =
-      await Promise.all([import('./compute'), import('./liveness-alarm'), import('../workspace-registry')]);
-    const health = await computeSystemHealth(activeWorkspaceId());
+    const [{ evaluateLivenessAlarm, readBeesLivenessContext }, { activeWorkspaceId }] =
+      await Promise.all([import('./liveness-alarm'), import('../workspace-registry')]);
+    const workspaceId = deps.workspaceId ?? activeWorkspaceId;
+    const readHealth =
+      deps.readHealth ??
+      (async (ws: string) => (await import('./compute')).readSharedSystemHealthSnapshot(ws));
+    const health = await readHealth(workspaceId());
+    // Missing/stale shared evidence is UNKNOWN. Leave every key unset so this
+    // reconciler cannot false-clear an open condition and cannot fall back to a
+    // request-worker compute.
+    if (!health) return out;
     // EI-15006: thread the SAME cup-placeable + capacity gate the source alarm
     // uses so this reconciler can never disagree with it on whether `panel:bees`
     // is firing — otherwise it would re-derive the pre-fix raw-frontier gate and
     // either falsely clear a genuine no-bees blocker or falsely keep a healthy
     // idle one open.
-    const beesLiveness = await readBeesLivenessContext(health).catch(() => undefined);
+    const readBeesLiveness = deps.readBeesLiveness ?? readBeesLivenessContext;
+    const beesLiveness = await readBeesLiveness(health).catch(() => undefined);
     const firing = new Set(evaluateLivenessAlarm(health, null, { beesLiveness }).map((s) => s.key));
     for (const key of openInfraKeys) {
       const sig = key.slice(INFRA_LIVENESS_PREFIX.length);
@@ -472,8 +488,8 @@ export interface ConditionStalenessDeps {
    *  DEFAULT_SIGNAL_ABSENCE_MS. */
   absenceMs?: number;
   /** EI-14072 guard #2: resolve the health of currently-open `infra-liveness:*`
-   *  condition keys. Default = `defaultReadInfraLivenessHealth` (a fresh
-   *  computeSystemHealth + evaluateLivenessAlarm re-check). Injectable so tests
+   *  condition keys. Default = `readInfraLivenessHealthFromSharedSnapshot` (a
+   *  fresh shared SystemHealth read + evaluateLivenessAlarm re-check). Injectable so tests
    *  never hit real I/O. */
   readHealthByKey?: (openInfraKeys: readonly string[]) => Promise<Map<string, boolean>>;
   /** EI-14072 guard #2: broadcast the reconciled keys' recovery so the NEXT
@@ -585,7 +601,7 @@ export async function runConditionStalenessTick(
   const staleMs = deps.staleMs ?? DEFAULT_STALE_OPEN_MS;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const absenceMs = deps.absenceMs ?? DEFAULT_SIGNAL_ABSENCE_MS;
-  const readHealthByKey = deps.readHealthByKey ?? defaultReadInfraLivenessHealth;
+  const readHealthByKey = deps.readHealthByKey ?? readInfraLivenessHealthFromSharedSnapshot;
   const readGitSyncHealthByKey = deps.readGitSyncHealthByKey ?? defaultReadGitSyncHealth;
   const broadcastResolvedMany = deps.broadcastResolvedMany ?? broadcastSevereEventResolvedMany;
 
