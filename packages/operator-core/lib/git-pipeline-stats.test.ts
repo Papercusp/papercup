@@ -10,6 +10,7 @@ import {
   toRoutineInfo,
   pinProvenGateCorrection,
   mapActiveRun,
+  applyCheckpointProcessAuthority,
   selectActiveCheckpointRoot,
   pickRetriageVerdict,
   projectGreenCheckpointFireFreshness,
@@ -461,6 +462,46 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
     const m = mapActiveRun({ active: true, candidate: 'abc12345', elapsed_sec: 10 });
     expect(Object.prototype.hasOwnProperty.call(m, 'refireObserved')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(m, 'initialCandidate')).toBe(false);
+  });
+});
+
+describe('applyCheckpointProcessAuthority (P-009 pre-lock liveness)', () => {
+  const idle = mapActiveRun({ active: false });
+
+  it('overturns idle during gate-authorized materialization and keeps candidate null', () => {
+    expect(
+      applyCheckpointProcessAuthority(idle, {
+        active: true,
+        probeFailed: false,
+        pid: 4242,
+        startedAtMs: 1_000,
+        elapsedSec: 30,
+        cgroupPath: '/user.slice/run-u42.scope',
+        workspace: 'papercusp-workspace',
+        harness: 'papercusp',
+      }),
+    ).toEqual({
+      ...idle,
+      active: true,
+      preLockAuthority: {
+        workspace: 'papercusp-workspace',
+        harness: 'papercusp',
+        cgroupPath: '/user.slice/run-u42.scope',
+        pid: 4242,
+      },
+      candidate: null,
+      startedAtMs: 1_000,
+      progressAtMs: 1_000,
+      currentPhase: 'materializing',
+      elapsedSec: 30,
+    });
+  });
+
+  it.each([
+    ['inactive', { active: false, probeFailed: false, pid: null, startedAtMs: null, elapsedSec: null, cgroupPath: null, workspace: null, harness: null }],
+    ['missing authority', { active: true, probeFailed: false, pid: 42, startedAtMs: null, elapsedSec: null, cgroupPath: '/run.scope', workspace: null, harness: null }],
+  ])('leaves the systemd reading unchanged when the process signal is %s', (_label, authority) => {
+    expect(applyCheckpointProcessAuthority(idle, authority)).toBe(idle);
   });
 });
 

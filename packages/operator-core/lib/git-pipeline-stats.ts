@@ -829,6 +829,40 @@ export function mapActiveRun(r: {
   };
 }
 
+/** P-009: overlay the live pre-lock process authority onto the systemd/run-lock
+ * snapshot. Pure so the dangerous transition (`active:false` → active setup with
+ * no candidate) has a direct behavioural guard rather than existing only in the
+ * production wiring. */
+export function applyCheckpointProcessAuthority(
+  activeRun: GitPipelineSnapshot['activeRun'],
+  authority: CheckpointProcessAuthorityReading | null | undefined,
+): GitPipelineSnapshot['activeRun'] {
+  if (
+    !authority?.active ||
+    authority.pid === null ||
+    !authority.cgroupPath ||
+    !authority.workspace ||
+    !authority.harness
+  ) {
+    return activeRun;
+  }
+  return {
+    ...activeRun,
+    active: true,
+    preLockAuthority: {
+      workspace: authority.workspace,
+      harness: authority.harness,
+      cgroupPath: authority.cgroupPath,
+      pid: authority.pid,
+    },
+    candidate: null,
+    startedAtMs: authority.startedAtMs,
+    progressAtMs: authority.startedAtMs,
+    currentPhase: 'materializing',
+    elapsedSec: authority.elapsedSec,
+  };
+}
+
 /**
  * Resolve the checkout whose checkpoint unit belongs to `pipeline`.
  *
@@ -1126,23 +1160,7 @@ export async function gitPipelineSnapshot(
             ? null
             : (await import('./release-checkpoint-launch')).readCheckpointProcessAuthorityCheap);
         const authority = authorityProbe?.(resolvedActiveRunRoot) ?? null;
-        if (authority?.active && authority.pid !== null && authority.cgroupPath && authority.workspace && authority.harness) {
-          activeRun = {
-            ...activeRun,
-            active: true,
-            preLockAuthority: {
-              workspace: authority.workspace,
-              harness: authority.harness,
-              cgroupPath: authority.cgroupPath,
-              pid: authority.pid,
-            },
-            candidate: null,
-            startedAtMs: authority.startedAtMs,
-            progressAtMs: authority.startedAtMs,
-            currentPhase: 'materializing',
-            elapsedSec: authority.elapsedSec,
-          };
-        }
+        activeRun = applyCheckpointProcessAuthority(activeRun, authority);
       }
     } catch {
       activeRun = null;

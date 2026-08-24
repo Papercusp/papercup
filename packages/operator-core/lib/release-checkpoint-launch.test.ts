@@ -29,6 +29,7 @@ import {
   parseCheckpointCandidates,
   defaultReadLogTail,
   isCheckpointRunLockHeldCheap,
+  readCheckpointProcessAuthorityCheap,
   readCheckpointRunPhaseCheap,
   stopActiveCheckpointUnit,
   terminateActiveCheckpointUnit,
@@ -1087,6 +1088,67 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       const readLockOwner = vi.fn(() => ({ pid: process.pid, startedAt: new Date().toISOString() }));
       const r = isCheckpointRunLockHeldCheap('/tree', undefined, readLockOwner);
       expect(r.held).toBe(true);
+    });
+  });
+
+  describe('readCheckpointProcessAuthorityCheap (P-009 pre-lock materialization)', () => {
+    const now = Date.parse('2026-08-24T18:00:00.000Z');
+    const env = (over: Record<string, string> = {}) =>
+      Object.entries({
+        PAPERCUSP_GATE_VERDICT_WORKSPACE: 'papercusp-workspace',
+        PAPERCUSP_GATE_VERDICT_HARNESS: 'papercusp',
+        PAPERCUSP_INTEGRATION_ROOT: '/tree',
+        ...over,
+      })
+        .map(([key, value]) => `${key}=${value}`)
+        .join('\0');
+    const probe = (over: Parameters<typeof readCheckpointProcessAuthorityCheap>[1] = {}) =>
+      readCheckpointProcessAuthorityCheap('/tree', {
+        listPids: () => [4242],
+        readEnvironment: () => env(),
+        readCgroup: () => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.scope\n',
+        readProcessStartMs: () => now - 45_000,
+        nowMs: () => now,
+        ...over,
+      });
+
+    it('detects a live pre-lock gate process from authority env + exact root + cgroup, without argv', () => {
+      expect(probe()).toEqual({
+        active: true,
+        probeFailed: false,
+        pid: 4242,
+        startedAtMs: now - 45_000,
+        elapsedSec: 45,
+        cgroupPath: '/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.scope',
+        workspace: 'papercusp-workspace',
+        harness: 'papercusp',
+      });
+    });
+
+    it.each([
+      ['workspace authority', { PAPERCUSP_GATE_VERDICT_WORKSPACE: '' }, '/tree', '0::/run-u42.scope\n'],
+      ['harness authority', { PAPERCUSP_GATE_VERDICT_HARNESS: '' }, '/tree', '0::/run-u42.scope\n'],
+      ['exact integration root', {}, '/other-tree', '0::/run-u42.scope\n'],
+      ['unified cgroup', {}, '/tree', '2:cpu:/legacy-only\n'],
+    ])('does not manufacture liveness when %s is absent', (_label, envOver, integrationRoot, cgroup) => {
+      const reading = probe({
+        readEnvironment: () => env({ ...envOver, PAPERCUSP_INTEGRATION_ROOT: integrationRoot }),
+        readCgroup: () => cgroup,
+      });
+      expect(reading.active).toBe(false);
+      expect(reading.probeFailed).toBe(false);
+    });
+
+    it('returns UNKNOWN provenance when procfs enumeration itself fails', () => {
+      const reading = probe({ listPids: () => { throw new Error('proc unavailable'); } });
+      expect(reading.active).toBe(false);
+      expect(reading.probeFailed).toBe(true);
+    });
+
+    it('ignores an authority-stamped residue beyond the run-lock stale horizon', () => {
+      expect(
+        probe({ readProcessStartMs: () => now - CHECKPOINT_RUN_LOCK_STALE_MS - 1_000 }).active,
+      ).toBe(false);
     });
   });
 
