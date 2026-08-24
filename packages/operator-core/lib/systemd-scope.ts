@@ -172,6 +172,22 @@ export function buildServiceEnvPayloadWithTransport(
   return buildSecretEnvironmentPayload(base, env, 'credential');
 }
 
+/**
+ * Escape a payload argument for systemd's transient SERVICE ExecStart parser.
+ *
+ * systemd expands `$` expressions in ExecStart arguments before it launches
+ * the payload. A shell command passed as `bash -c <command>` therefore loses
+ * Bash parameter expansions such as `${PIPESTATUS[0]}` unless each `$` is
+ * escaped as `$$`. Doubling every dollar also preserves shell `$$` (it becomes
+ * `$$$$` for systemd, which leaves `$$` for Bash).
+ */
+export function escapeSystemdServiceArgument(value: string): string {
+  // Use a replacer function: a string replacement of `$$` has JavaScript's
+  // special replacement meaning "insert one literal `$`", which would make
+  // the attempted escaping a silent no-op.
+  return value.replaceAll('$', () => '$$');
+}
+
 /** Shared per-agent scope budget. Headless fleet members and orchestrated agent
  * turns are the same resource shape, so they must resolve the same override and
  * default instead of drifting into capped vs uncapped launch paths. */
@@ -376,10 +392,14 @@ export interface BuiltTaskArgv {
 }
 
 function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope' | 'service'): BuiltTaskArgv {
+  // A transient SERVICE is parsed by systemd's ExecStart machinery, unlike a
+  // transient SCOPE whose payload is forked from this process. Keep the scope
+  // path byte-for-byte compatible while protecting every service payload arg.
+  const payloadBase = kind === 'service' ? base.map(escapeSystemdServiceArgument) : base;
   const payload = props.env
     ? kind === 'service'
-      ? buildServiceEnvPayloadWithTransport(base, props.env)
-      : buildExactEnvPayloadWithTransport(base, props.env)
+      ? buildServiceEnvPayloadWithTransport(payloadBase, props.env)
+      : buildExactEnvPayloadWithTransport(payloadBase, props.env)
     : null;
   const argv = [
     'systemd-run',
@@ -402,7 +422,7 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   }
   if (payload?.credentialProperty) argv.push(payload.credentialProperty);
   appendTaskProperties(argv, props);
-  argv.push(...(payload?.argv ?? base));
+  argv.push(...(payload?.argv ?? payloadBase));
   return { argv, transport: payload?.transport ?? null };
 }
 
