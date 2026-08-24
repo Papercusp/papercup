@@ -773,9 +773,10 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
    * obviously beats the boolean it wraps. `mainBehindStaging: true` carries TWO
    * opposite meanings that no amount of reading the boolean can separate:
    * `normal-buffer` (proceed, this is the steady state) and `gate-stalled` (recover
-   * the producer). Only `gate.fireStale` tells them apart, which is why the retiring
-   * falsifier's measurement is preserved verbatim as the evidence below rather than
-   * discarded with its `kills` prose.
+   * the producer). Only `gate.fireStale` tells them apart, which is why that
+   * SCHEDULER-LIVENESS measurement — the green-checkpoint routine's own last-fire
+   * timestamp against its fire interval, sharing no input with any commit-graph read —
+   * is carried as evidence below rather than discarded with the retired axis-1 field.
    *
    * The safe action on `normal-buffer` is deliberately a REFUSAL to escalate. This is
    * the reading that made the deploy stage report degraded essentially always and
@@ -845,16 +846,6 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
   owner: 'su-30c473f3-c5b8-43d0-bba2-8d6b40e1aabd',
   headline: 'memory.pressure',
 
-  /** PSI measures tasks STALLING on reclaim; freemem measures immediately-free
-   *  capacity. Different inputs can disagree legitimately, making the latter a
-   *  real falsifier instead of a second rendering of the headline. */
-  falsifier: {
-    field: 'host.memFreePct',
-    measurement:
-      'node:os freemem()/totalmem() sampled in-process at read time — independent of the periodic /proc/pressure PSI capture that produces the headline',
-    kills:
-      '"memory pressure is ok" read as "the host has abundant free RAM". A low-free-memory host can be reclaim-stable right now, while a high-free-memory reading can coexist with a transient PSI window; pressure and capacity are not the same claim.',
-  },
 
   /**
    * D-010. `stable-low-free` is the code this table exists for: PSI says reclaim is
@@ -945,31 +936,6 @@ export const AGENT_GOAL_CELL: CellSpec = {
   owner: 'unified-agent-state-plane-2026-07-27',
   headline: 'goalRef',
 
-  /**
-   * Axis 1. NOT staleness — `HolderContext` rule (e) already carries that, and
-   * reusing it here would add interpretation without new information.
-   *
-   * The independent measurement is the `coord_links` LINK GRAPH, which shares no
-   * input with either claim row, and it kills a false reading the precedence rule
-   * cannot see on its own: measured 2026-07-27, **3 of 19 holders hold TWO
-   * work-items at once**, so "the one ref returned is what this agent is doing"
-   * is a coin flip exactly when it matters. `agreement` says whether the legs
-   * corroborate, diverge, or stand alone.
-   */
-  falsifier: {
-    /**
-     * ⚠ FLAT, for the reason the headline is flat — P-011 found this declared as
-     * `goal.agreement`, which does not exist against a goal-less agent (`goal:
-     * null`), making the falsifier unreadable in the most ordinary case there is.
-     * `coord:goal` hoists it (goal.ts). Re-nesting this reintroduces the bug
-     * silently, because every fixture with a goal in it still passes.
-     */
-    field: 'goalAgreement',
-    measurement:
-      "the coord_links `implements` edge joining a held work-item to a separately-claimed plan item — a link-graph read sharing no input with work_items.taken_by or plan_item_claims",
-    kills:
-      '"the single ref returned IS this agent\'s goal", when the agent holds several claims naming different work and precedence picked one arbitrarily. Measured: 3 of 19 holders hold two work-items; the edge is what says which one serves the claimed lane.',
-  },
 
   /**
    * D-010. The three ref-bearing codes differ ONLY in how well-supported the ref is —
@@ -1106,25 +1072,6 @@ export const TESTING_CENSUS_POPULATION_CELL: CellSpec = {
   registeredOn: '2026-08-18',
   owner: 'deterministic-coverage-census-2026-08-17',
   headline: 'census.surfaces',
-
-  /**
-   * Axis 1. The independent leg is a DIFFERENT TABLE —
-   * `census_provider_registrations`, which says whether the census loop had
-   * anything to iterate at all, and shares no input with the surface rows.
-   *
-   * It kills the exact reading that hid this feature's total inertness for a day:
-   * measured 2026-08-18, all four census tables sat at 0 rows and the cadence
-   * reported healthy fires, because nothing had ever registered a provider
-   * (WI-39809). "Zero surfaces" read as "this project has no testable surfaces";
-   * the registration count is what distinguishes that from "nobody ever looked".
-   */
-  falsifier: {
-    field: 'census.providersRegistered',
-    measurement:
-      'a count over harness_shared.census_provider_registrations for this scope — the list runCensus iterates, written by registration (template/detected/manual) and never by a census run',
-    kills:
-      '"0 testable surfaces" read as "this project has nothing to test". With no registration row the census loop body never executes, so it CANNOT write a surface however healthy its fires look — measured live 2026-08-18 (WI-39809). A zero population and an unasked question are indistinguishable without this.',
-  },
 
   /**
    * D-010. Three of these four codes are reached with `surfaces === 0`, and they are
