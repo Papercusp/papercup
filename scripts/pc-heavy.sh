@@ -101,7 +101,7 @@
 #                         ordinary command may outlive the exclusive 900s drain.
 #   PC_HEAVY_PREEMPT_GRACE_SEC / PC_HEAVY_PREEMPT_TERM_GRACE_SEC /
 #   PC_HEAVY_PREEMPT_POLL_SEC  finish-before-TERM grace, TERM-before-KILL
-#                         grace, and writer-poll cadence (defaults 30/30/1).
+#                         grace, and writer-poll cadence (defaults 30/30/0.1).
 #   PC_HEAVY_SCOPED_TIMEOUT_SEC  bounded wait for `test:file`'s
 #                         `scripts/test-files.mjs` command (default 30). Exact-file
 #                         verification is deliberately narrow and must not inherit
@@ -202,11 +202,13 @@ main() {
 # owns the interruptible process group. This is an implementation mode, not a
 # public second semaphore: it never acquires a slot of its own.
 _pc_heavy_internal_preempt_run() {
+  local _outer_pid="$1"
+  shift
   local _writer_path="$1"
   shift
   local _preempt_grace="${PC_HEAVY_PREEMPT_GRACE_SEC:-30}"
   local _preempt_term_grace="${PC_HEAVY_PREEMPT_TERM_GRACE_SEC:-30}"
-  local _preempt_poll="${PC_HEAVY_PREEMPT_POLL_SEC:-1}"
+  local _preempt_poll="${PC_HEAVY_PREEMPT_POLL_SEC:-0.1}"
   local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_writer_path")}"
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at=''
@@ -214,12 +216,29 @@ _pc_heavy_internal_preempt_run() {
 
   case "$_preempt_grace" in ''|*[!0-9]*) _preempt_grace=30 ;; esac
   case "$_preempt_term_grace" in ''|*[!0-9]*) _preempt_term_grace=30 ;; esac
-  case "$_preempt_poll" in ''|*[!0-9.]*) _preempt_poll=1 ;; esac
+  case "$_preempt_poll" in ''|*[!0-9.]*) _preempt_poll=0.1 ;; esac
   mkdir -p "$_preempt_pid_dir" 2>/dev/null || true
   rm -f "$_preempt_pid_file" 2>/dev/null || true
 
+  # The OUTER wrapper alone owns the semaphore slot. The monitor and real
+  # command must not inherit it: if the wrapper is killed, its kernel flock is
+  # the crash-safe lifetime boundary and releases immediately even while this
+  # helper takes a moment to reap the child group. This also preserves the
+  # coalescing capture invariant that passive helpers never retain a slot.
+  local _inherited_fd_path='' _inherited_fd=''
+  for _inherited_fd_path in /proc/self/fd/*; do
+    _inherited_fd="${_inherited_fd_path##*/}"
+    case "$_inherited_fd" in
+      0|1|2) ;;
+      *) eval "exec ${_inherited_fd}>&-" 2>/dev/null || true ;;
+    esac
+  done
+
   _preempt_group_alive() {
     [ -n "$_preempt_child_pid" ] && kill -0 -- "-${_preempt_child_pid}" 2>/dev/null
+  }
+  _preempt_leader_alive() {
+    [ -n "$_preempt_wait_pid" ] && kill -0 "$_preempt_wait_pid" 2>/dev/null
   }
   _preempt_writer_is_held() {
     local _probe_fd=''
@@ -296,7 +315,18 @@ _pc_heavy_internal_preempt_run() {
       ;;
   esac
 
-  while _preempt_group_alive; do
+  # The waitable leader defines COMMAND completion. A command may deliberately
+  # daemonize a stdio-detached descendant; waiting for the whole process group
+  # would turn that legitimate pattern into a 20s+ wrapper hang. The group is
+  # still the termination boundary on preemption/signal, while normal leader
+  # exit preserves the established daemon-detach behavior.
+  while _preempt_leader_alive; do
+    if ! kill -0 "$_outer_pid" 2>/dev/null; then
+      echo "[pc-heavy] outer slot wrapper exited — reaping its interruptible child group" >&2
+      _preempt_reap_group
+      trap - EXIT TERM INT HUP
+      return 143
+    fi
     if _preempt_writer_is_held; then
       _preempt_now=$(date +%s)
       if [ -z "$_preempt_seen_at" ]; then
@@ -1714,7 +1744,7 @@ case "$_preempt_mode" in
     ;;
 esac
 if [ "$_preemptible" = 1 ]; then
-  _runner=(bash "$0" --pc-heavy-internal-preempt-run "$_exclusive_writer_path" "${_runner[@]}")
+  _runner=(bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_writer_path" "${_runner[@]}")
 fi
 
 # Run holding the slot; the flock releases when this shell exits (normal, error,

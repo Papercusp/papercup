@@ -154,9 +154,9 @@ async function untilStderr(
   });
 }
 
-/** SIGKILL a detached child's whole process GROUP — see the note at the first holder below. */
+/** TERM a detached child's whole process GROUP so pc-heavy can reap its isolated runner. */
 const killGroup = (p: ReturnType<typeof spawn>) => {
-  try { process.kill(-(p.pid as number), 'SIGKILL'); } catch { /* already gone */ }
+  try { process.kill(-(p.pid as number), 'SIGTERM'); } catch { /* already gone */ }
 };
 
 /**
@@ -360,7 +360,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       killGroup(holder);
       if (barrier) killGroup(barrier);
     }
-  });
+  }, 10_000);
 
   it('keeps the holder diagnostic silent when fuser reports a pid that exits before /proc opens', async () => {
     const env = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0', PC_HEAVY_TIMEOUT_SEC: '3', PC_HEAVY_HEARTBEAT_SEC: '1' };
