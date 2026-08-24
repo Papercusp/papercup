@@ -12,6 +12,18 @@
  * Each test below names the specific wrong behaviour it would catch, because several of the
  * failure modes here produce a CLEAN-LOOKING result (an empty offender list) rather than an
  * error — which is exactly how this class hides.
+ *
+ * FALSIFIABILITY — the cases are deliberately TWO-SIDED against the real subject, which is
+ * what makes them a control rather than a restatement of the implementation:
+ *   - "reports a registered standing action that has NO routine row" kills any mutant that
+ *     returns an empty offender list (the silent-pass direction, the one that would let this
+ *     guard ship as decoration);
+ *   - the on-demand / inactive-row / empty-registry cases kill the opposite mutant that
+ *     reports everything it sees (the false-positive direction, which discredits the report
+ *     and gets it ignored — a slower version of the same failure).
+ * No in-tree mutation probe is used: this subject is an imported MODULE, which the repo's
+ * falsifiability tiers put at the fixture-control tier, and mutating a tracked file here would
+ * race the git-sync sweep that commits the whole tree on a timer.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
