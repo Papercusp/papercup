@@ -211,8 +211,31 @@ _pc_heavy_internal_preempt_run() {
   local _preempt_poll="${PC_HEAVY_PREEMPT_POLL_SEC:-0.1}"
   local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_writer_path")}"
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
+  local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at=''
   local _preempt_now='' _preempt_start_deadline='' _preempt_term_deadline=''
+
+  # Coalescing leaders route stdout/stderr through FIFOs whose readers belong
+  # to the outer wrapper. If that wrapper is hard-killed, a diagnostic write to
+  # the now-readerless stderr FIFO would deliver SIGPIPE and kill this detached
+  # monitor before it can reap the workload group. Keep the monitor alive; a
+  # failed write is harmless once the caller has gone away, and normal capture
+  # is unchanged while the reader is present. The disposition is inherited by
+  # the workload so a late diagnostic cannot defeat the same cleanup boundary.
+  trap '' PIPE
+
+  # The outer wrapper duplicates its original stderr before a coalescing
+  # leader redirects fd 2 through a capture FIFO. Accept that descriptor only
+  # when it is a valid, writeable numeric fd; an invalid inherited value must
+  # never turn a cleanup diagnostic into a redirection error.
+  case "$_preempt_notify_fd" in
+    ''|0|1|2|*[!0-9]*) _preempt_notify_fd='' ;;
+    *)
+      if [ ! -e "/proc/self/fd/$_preempt_notify_fd" ] || ! { : >&"$_preempt_notify_fd"; } 2>/dev/null; then
+        _preempt_notify_fd=''
+      fi
+      ;;
+  esac
 
   case "$_preempt_grace" in ''|*[!0-9]*) _preempt_grace=30 ;; esac
   case "$_preempt_term_grace" in ''|*[!0-9]*) _preempt_term_grace=30 ;; esac
@@ -229,10 +252,26 @@ _pc_heavy_internal_preempt_run() {
   for _inherited_fd_path in /proc/self/fd/*; do
     _inherited_fd="${_inherited_fd_path##*/}"
     case "$_inherited_fd" in
-      0|1|2) ;;
+      0|1|2|"$_preempt_notify_fd") ;;
       *) eval "exec ${_inherited_fd}>&-" 2>/dev/null || true ;;
     esac
   done
+  # A coalescing leader routes this monitor's stdio through FIFO readers owned
+  # by the outer wrapper. A caller-side process-group SIGKILL removes those
+  # readers first; the monitor must survive the resulting broken pipe long
+  # enough to reap the isolated workload. Reset PIPE to its normal disposition
+  # in the workload launcher below so user commands do not inherit this
+  # monitor-only policy.
+  trap '' PIPE
+
+  _preempt_notify() {
+    local _message="$1"
+    if [ -n "$_preempt_notify_fd" ]; then
+      printf '%s\n' "$_message" >&"$_preempt_notify_fd" 2>/dev/null || true
+    else
+      printf '%s\n' "$_message" >&2 2>/dev/null || true
+    fi
+  }
 
   _preempt_group_alive() {
     [ -n "$_preempt_child_pid" ] && kill -0 -- "-${_preempt_child_pid}" 2>/dev/null
@@ -282,6 +321,13 @@ _pc_heavy_internal_preempt_run() {
   # The parent trap reaps that group on every catchable exit; the caller/test
   # must TERM before KILL so the cleanup path gets a chance to run.
   setsid --fork --wait bash -c '
+    trap - PIPE
+    _notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
+    case "$_notify_fd" in
+      ""|0|1|2|*[!0-9]*) ;;
+      *) eval "exec ${_notify_fd}>&-" 2>/dev/null || true ;;
+    esac
+    unset PC_HEAVY_PREEMPT_NOTIFY_FD
     _pid_file="$1"
     shift
     printf "%s\n" "$$" > "$_pid_file"
@@ -322,7 +368,7 @@ _pc_heavy_internal_preempt_run() {
   # exit preserves the established daemon-detach behavior.
   while _preempt_leader_alive; do
     if ! kill -0 "$_outer_pid" 2>/dev/null; then
-      echo "[pc-heavy] outer slot wrapper exited — reaping its interruptible child group" >&2
+      _preempt_notify "[pc-heavy] outer slot wrapper exited — reaping its interruptible child group"
       _preempt_reap_group
       trap - EXIT TERM INT HUP
       return 143
@@ -1744,14 +1790,39 @@ case "$_preempt_mode" in
     ;;
 esac
 if [ "$_preemptible" = 1 ]; then
-  # Keep the monitor outside the outer wrapper's process group. A caller-side
-  # hard kill (for example a test/job deadline) can SIGKILL that wrapper and
-  # every member of its group, so a same-group monitor never gets a chance to
-  # reap the isolated workload. `setsid` gives the monitor its own session;
-  # `_outer_pid` still lets it detect the wrapper's death and reap the child
-  # group before returning. Normal TERM/EXIT paths continue to use the same
-  # cleanup function.
-  _runner=(setsid --fork --wait bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_writer_path" "${_runner[@]}")
+  # Keep the monitor outside the outer wrapper's process group. Do NOT use
+  # `setsid --fork --wait` here: its waitable parent stays in the outer group,
+  # and killing that group also tears down the forked monitor before it can reap
+  # the workload. Bash already executes this external command in a child that
+  # is not the existing process-group leader, so direct `setsid --wait` makes
+  # the waitable monitor itself the new session leader. `_outer_pid` then lets
+  # it detect wrapper death and reap the child group before returning.
+  _runner=(setsid --wait bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_writer_path" "${_runner[@]}")
+fi
+
+# Preserve the caller's original stderr for the detached monitor BEFORE the
+# coalescing leader redirects fd 2 through a FIFO. The capture reader is owned
+# by this outer wrapper and therefore disappears with it on a caller-side
+# SIGKILL; this duplicate remains attached to the caller's stderr pipe until
+# the monitor finishes its parent-death cleanup. Validate both the fd number
+# and its target so the monitor never receives an unrelated inherited fd.
+_preempt_notify_fd=''
+if [ "$_preemptible" = 1 ]; then
+  if { exec {_preempt_notify_fd}>&2; } 2>/dev/null; then
+    _preempt_notify_target="$(readlink "/proc/self/fd/$_preempt_notify_fd" 2>/dev/null || true)"
+    _preempt_stderr_target="$(readlink /proc/self/fd/2 2>/dev/null || true)"
+    case "$_preempt_notify_fd" in
+      ''|0|1|2|*[!0-9]*) _preempt_notify_fd='' ;;
+      *)
+        if [ -z "$_preempt_notify_target" ] || [ "$_preempt_notify_target" != "$_preempt_stderr_target" ] || ! { : >&"$_preempt_notify_fd"; } 2>/dev/null; then
+          eval "exec ${_preempt_notify_fd}>&-" 2>/dev/null || true
+          _preempt_notify_fd=''
+        else
+          export PC_HEAVY_PREEMPT_NOTIFY_FD="$_preempt_notify_fd"
+        fi
+        ;;
+    esac
+  fi
 fi
 
 # Run holding the slot; the flock releases when this shell exits (normal, error,
