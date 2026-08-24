@@ -803,6 +803,129 @@ export function validateCloudModelSpec(spec?: string | null): CloudModelSpecResu
   };
 }
 
+/** The exact settings a resolver run was launched with, after preflight. Every
+ *  field is resolved — no "inherit the default" remains — so the run row records
+ *  what ACTUALLY ran and the launcher needs no second opinion. Structurally
+ *  assignable to `attention/bulk-run-store`'s `BulkRunLaunchSnapshot`, which is
+ *  where it is persisted; this module deliberately does not import that one. */
+export interface EffectiveBulkResolverLaunch {
+  model: string | null;
+  effort: ModelEffort | null;
+  account: string;
+  carry: BulkResolverCarryMode;
+  /** DERIVED from `model` (D-002), never a separately editable truth. */
+  backend: LaunchAgentBackend;
+}
+
+/** {@link resolveBulkResolverLaunch}: the effective settings, or a corrective
+ *  message naming the ONE control the owner has to change. */
+export interface BulkResolverLaunchResolution {
+  ok: boolean;
+  message?: string;
+  /** Which control the message is about, so a pane can mark that field rather
+   *  than reddening the whole popover. */
+  field?: 'model' | 'effort' | 'account' | 'carry';
+  effective?: EffectiveBulkResolverLaunch;
+}
+
+/**
+ * Preflight a pane's click-time resolver launch settings — at the start route,
+ * BEFORE a run row exists.
+ *
+ * This is NOT a second copy of `bulkResolverLaunchProfilesProblem`. That guards
+ * the stored config DOCUMENT and answers a per-field SYNTAX question: is each
+ * value well-formed for its own type. This answers the COMPATIBILITY question
+ * the launch actually depends on — does the chosen model resolve to exactly one
+ * CLI backend, is the spec one psu can really run, does the effort have a model
+ * to ride on. The two are genuinely different questions: `sonnet-5` is a
+ * well-formed non-empty ≤120-char string, so it is a VALID stored profile, and
+ * it is also a model id psu cannot resolve. Only this function catches that.
+ *
+ * It runs before `createRun` on purpose. `buildAgentLaunchCommand` composes the
+ * spec through `composeModelSpec`, which THROWS on an impossible combination —
+ * and that throw would land inside the launcher's catch, recording a run that
+ * was created and then immediately failed. A setting the owner fixes by
+ * retyping one field belongs in a 400 with no run row at all, not in their run
+ * history as a failure.
+ *
+ * Every rule is delegated to the helper that already owns it
+ * (`composeLaunchModelSpec` for effort composition, `validateCloudModelSpec` for
+ * spec shape, `launchAgentBackendForModel` for backend inference,
+ * `isLaunchAccountValue` for account syntax) so there is one statement of each,
+ * not a second that can drift.
+ */
+export function resolveBulkResolverLaunch(
+  profile?: Partial<BulkResolverLaunchProfile> | null,
+): BulkResolverLaunchResolution {
+  const p = profile ?? {};
+
+  const rawCarry = p.carry ?? DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE.carry;
+  if (!(BULK_RESOLVER_CARRY_MODES as readonly unknown[]).includes(rawCarry)) {
+    return {
+      ok: false,
+      field: 'carry',
+      message: `carry must be ${BULK_RESOLVER_CARRY_MODES.join(' or ')} — got ${JSON.stringify(rawCarry)}.`,
+    };
+  }
+  const carry = rawCarry as BulkResolverCarryMode;
+
+  const rawAccount =
+    typeof p.account === 'string' ? p.account.trim() : DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE.account;
+  if (!rawAccount || !isLaunchAccountValue(rawAccount)) {
+    return {
+      ok: false,
+      field: 'account',
+      message:
+        `account ${JSON.stringify(p.account)} is not a valid launch account value — ` +
+        `use a pool account id, \`auto\` (gateway routing with failover), or \`default\` (the system credential).`,
+    };
+  }
+
+  const trimmedModel = typeof p.model === 'string' ? p.model.trim() : '';
+  const model = trimmedModel.length > 0 ? trimmedModel : null;
+  if (model && model.length > 120) {
+    return { ok: false, field: 'model', message: 'model must be at most 120 characters.' };
+  }
+
+  const trimmedEffort = typeof p.effort === 'string' ? p.effort.trim().toLowerCase() : '';
+  const effort = trimmedEffort.length > 0 ? trimmedEffort : null;
+
+  // composeLaunchModelSpec owns BOTH "effort needs a model" and "unrecognized
+  // effort", and throws them as prose. Converting the throw into a structured
+  // refusal keeps those rules stated exactly once.
+  let composed: string | undefined;
+  try {
+    composed = composeLaunchModelSpec(model, effort);
+  } catch (e) {
+    return { ok: false, field: 'effort', message: e instanceof Error ? e.message : String(e) };
+  }
+
+  // No model ⇒ inherit the launcher default, which is the pre-configuration
+  // behavior and the `claude` backend the resolver has always launched on.
+  let backend: LaunchAgentBackend = 'claude';
+  if (model) {
+    const spec = validateCloudModelSpec(composed ?? model);
+    if (!spec.ok) return { ok: false, field: 'model', message: spec.message };
+    const inferred = launchAgentBackendForModel(model);
+    if (!inferred) {
+      return {
+        ok: false,
+        field: 'model',
+        message:
+          `\`${model}\` does not resolve to a single CLI backend, so the resolver cannot be paired with one. ` +
+          `Pick a model from the launcher menu (${CLOUD_MODEL_MENU.map((c) => c.value).join('/')}), ` +
+          `or a host-local \`provider/id\`.`,
+      };
+    }
+    backend = inferred;
+  }
+
+  return {
+    ok: true,
+    effective: { model, effort: effort as ModelEffort | null, account: rawAccount, carry, backend },
+  };
+}
+
 /** Output-reservation + startup-attachment headroom subtracted from the hard
     window before deriving the soft limit. */
 export const COMPACTION_WINDOW_MARGIN_TOKENS = 10_000;
