@@ -23,8 +23,8 @@ vi.mock('../../release/checkpoint-serializer-authority', () => ({
   armPausedCheckpointTransition: vi.fn(async () => ({ status: 'unreadable', error: 'not configured in this test' })),
 }));
 
-const MAKE_CTX = (role = 'operator') =>
-  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role } as never);
+const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
+  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides } as never);
 
 function parse(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
@@ -2044,12 +2044,11 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     });
 
     const { default: tool } = await import('./checkpoint-run');
-    const b = parse((await tool.handler({}, {
-      ...MAKE_CTX(),
+    const b = parse((await tool.handler({}, MAKE_CTX('operator', {
       uiClientId: 'su-caller',
       workspaceId: 'papercusp-workspace',
       metadata: vi.fn(),
-    } as never)) as never);
+    }))) as never);
 
     expect(wakeRecipients).toHaveBeenCalledTimes(1);
     expect(assessForceRelease).not.toHaveBeenCalled();
@@ -2095,12 +2094,11 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       resumePausedRoutine: true,
       prerequisiteWorkItems: ['WI-41117'],
       reason: 'repairs terminal',
-    }, {
-      ...MAKE_CTX(),
+    }, MAKE_CTX('operator', {
       uiClientId: 'su-caller',
       workspaceId: 'papercusp-workspace',
       metadata: vi.fn(),
-    } as never)) as never);
+    }))) as never);
 
     expect(armPausedCheckpointTransition).toHaveBeenCalledWith({
       callerOwnerId: 'su-caller',

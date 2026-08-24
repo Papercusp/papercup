@@ -20,7 +20,13 @@ export const CHECKPOINT_SERIALIZER_TRANSITION_METADATA_KEY = 'checkpointSerializ
 
 export type PausedCheckpointTransitionResult =
   | {
-      status: 'armed' | 'already-armed';
+      status: 'armed';
+      gateWorkItemId: string;
+      prerequisiteWorkItems: string[];
+      armedAtMs: number;
+    }
+  | {
+      status: 'already-armed';
       gateWorkItemId: string;
       prerequisiteWorkItems: string[];
       armedAtMs: number;
