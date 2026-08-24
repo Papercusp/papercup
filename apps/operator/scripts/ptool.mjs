@@ -1034,6 +1034,27 @@ export function isExplicitHttpConnectFailure(error) {
   return false;
 }
 
+/**
+ * The initial MCP connect only performs the write-free initialize/tools-list
+ * handshake. A local resilient MCP proxy can answer that handshake with a 502
+ * after an upstream worker accepted the socket but stayed silent; that is a
+ * retryable proxy transport failure, not a terminal operator HTTP response.
+ * Keep this narrower than `isExplicitHttpConnectFailure`: auth, routing, and
+ * the proxy's exhausted refused-upstream 503 must still surface immediately.
+ */
+export function isRetryableLocalHttpConnectFailure(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function')) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const status = Number(current.code);
+    if (status === 502 && /mcp_proxy_upstream_error/i.test(errorDetail(current))) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 /** Preserve the proxy's HTTP status and typed JSON body in ptool's stderr. */
 export function formatOperatorConnectFailure(operatorUrl, error) {
   const status = Number(error?.code);
@@ -1156,7 +1177,7 @@ export async function connectWithLocalRetry(
         : null;
       if (
         !local ||
-        isExplicitHttpConnectFailure(error) ||
+        (isExplicitHttpConnectFailure(error) && !isRetryableLocalHttpConnectFailure(error)) ||
         attempt === maxAttempts ||
         (remainingTotalMs !== null && remainingTotalMs <= 0)
       ) {
