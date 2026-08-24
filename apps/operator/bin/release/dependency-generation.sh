@@ -90,15 +90,81 @@ dependency_generation_tree_fingerprint() {
   )
 }
 
-dependency_generation_set_manifest() {
-  local root="$1" nm rel fingerprint
+dependency_generation_emit_tree_record() {
+  local root="$1" nm="$2" rel fingerprint
+  rel="${nm#"$root"/}"
+  fingerprint="$(dependency_generation_tree_fingerprint "$nm")" || return 1
+  # One short record per tree. Kept to a single write so that parallel walkers
+  # cannot interleave a partial line on the shared pipe (a record is far below
+  # PIPE_BUF, for which POSIX guarantees an atomic write).
+  printf '%s\t%s\n' "$rel" "$fingerprint"
+}
+
+# Degree of parallelism for the manifest walk. Override with
+# DEPENDENCY_GENERATION_WALK_JOBS; 1 forces the serial walk.
+dependency_generation_walk_jobs() {
+  local jobs="${DEPENDENCY_GENERATION_WALK_JOBS:-}" cores
+  if [ -z "$jobs" ]; then
+    cores="$(nproc 2>/dev/null || printf '4')"
+    case "$cores" in '' | *[!0-9]*) cores=4 ;; esac
+    jobs="$cores"
+    # The walk is dentry/metadata bound, not CPU bound, so more workers than
+    # this buys nothing and only adds contention on a loaded box.
+    [ "$jobs" -gt 16 ] && jobs=16
+  fi
+  case "$jobs" in '' | *[!0-9]*) jobs=1 ;; esac
+  [ "$jobs" -lt 1 ] && jobs=1
+  printf '%s\n' "$jobs"
+}
+
+# Fail open to the serial walk on any xargs that lacks -0/-P/-I (BSD/macOS).
+dependency_generation_walk_supports_parallel() {
+  printf '' | xargs -0 -r -P 2 -I '{}' true >/dev/null 2>&1
+}
+
+dependency_generation_set_manifest_serial() {
+  local root="$1" nm
   (
     while IFS= read -r nm; do
-      rel="${nm#"$root"/}"
-      fingerprint="$(dependency_generation_tree_fingerprint "$nm")" || exit 1
-      printf '%s\t%s\n' "$rel" "$fingerprint"
+      dependency_generation_emit_tree_record "$root" "$nm" || exit 1
     done < <(dependency_generation_enumerate_node_modules "$root")
   ) | LC_ALL=C sort
+}
+
+# Each tree's fingerprint is computed independently and the manifest is globally
+# sorted below, so emission ORDER carries no meaning and this walk parallelises
+# without changing a single output byte. Identity classes, prune rules and the
+# metadata-only guarantee are untouched — only the scheduling changes.
+#
+# Why it matters: one serial walk over this repo's ~94 node_modules trees
+# measured 287s under real fleet load, and dependency_generation_ensure performs
+# three of them (~861s) against green-checkpoint's 900s materialisation budget,
+# so the walk alone could consume the entire budget before a byte was copied
+# (EI-21322804786723906).
+dependency_generation_set_manifest() {
+  local root="$1" jobs records status=0
+  jobs="$(dependency_generation_walk_jobs)"
+  if [ "$jobs" -le 1 ] || ! dependency_generation_walk_supports_parallel; then
+    dependency_generation_set_manifest_serial "$root"
+    return
+  fi
+  export -f dependency_generation_emit_tree_record \
+    dependency_generation_tree_fingerprint \
+    dependency_generation_sha256 \
+    dependency_generation_log
+  # Collected rather than streamed so that a failed walker fails the manifest
+  # with the SAME status the serial walk uses (xargs reports 123), instead of
+  # letting a truncated manifest reach the caller as a valid identity. The
+  # manifest is one short line per node_modules tree, so this stays small.
+  records="$(
+    dependency_generation_enumerate_node_modules "$root" \
+      | tr '\n' '\0' \
+      | DEPENDENCY_GENERATION_WALK_ROOT="$root" xargs -0 -r -P "$jobs" -I '{}' \
+        bash -c 'dependency_generation_emit_tree_record "$DEPENDENCY_GENERATION_WALK_ROOT" "$1"' _ '{}'
+  )" || status=1
+  [ "$status" -eq 0 ] || return 1
+  [ -n "$records" ] || return 0
+  printf '%s\n' "$records" | LC_ALL=C sort
 }
 
 dependency_generation_manifest_fingerprint() {
