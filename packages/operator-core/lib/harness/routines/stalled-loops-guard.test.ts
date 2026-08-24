@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { sweepStalledLoops, type StalledLoopsSweepDeps } from './stalled-loops-guard';
+import {
+  isLoopPopulationStarvation,
+  sweepStalledLoops,
+  type LoopPopulationSnapshot,
+  type StalledLoopsSweepDeps,
+} from './stalled-loops-guard';
 import { turnsStalledFloorMs, type LoopStatus } from './loop';
 
 // Bind the mocks to the REAL dep signatures (the convention session-ingest-lag-watchdog.test.ts
@@ -31,7 +36,11 @@ type ResolveOwnerWorkspacesFn = NonNullable<StalledLoopsSweepDeps['resolveOwnerW
 /** Minimal fake `harness_shared.routines` SELECT — the sweep's only direct SQL read. */
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
   const sql = ((strings: TemplateStringsArray) => {
-    if (/SELECT/i.test(strings.join('?'))) return Promise.resolve(rows);
+    const query = strings.join('?');
+    if (/WITH active_loops AS/i.test(query)) {
+      return Promise.resolve([{ active_loops: 0, parked_loops: 0, parked_zero_tool_3h: 0, owner_sample: [] }]);
+    }
+    if (/SELECT/i.test(query)) return Promise.resolve(rows);
     return Promise.resolve([]);
   }) as unknown as {
     (strings: TemplateStringsArray): Promise<unknown[]>;
@@ -130,7 +139,10 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const getStatuses = vi.fn();
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
     expect(res).toEqual({
       checked: 0,
       paused: 0,
@@ -145,6 +157,15 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       vetoedByToolActivity: [],
       revivedAfterDisarm: [],
       cadenceDrift: [],
+      population: {
+        status: 'measured',
+        active: 0,
+        parked: 0,
+        parkedRatio: null,
+        parkedZeroTool3h: 0,
+        parkedZeroToolRatio: null,
+        ownerSample: [],
+      },
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -158,17 +179,33 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       { id: 'rt_dead2', target_owner_id: 'su-dead2' },
       { id: 'rt_ok', target_owner_id: 'su-ok' },
     ]);
-    const getStatuses = vi.fn(async () =>
-      new Map([
-        ['su-dead1', status({ ownerId: 'su-dead1', turnsStalled: true, fireCount: 40, lastFiredAt: '2026-08-01T10:00:00.000Z', lastTurnAt: null })],
-        ['su-dead2', status({ ownerId: 'su-dead2', turnsStalled: true, fireCount: 12, lastTurnAt: '2026-07-30T00:00:00.000Z' })],
-        ['su-ok', status({ ownerId: 'su-ok', turnsStalled: false })],
-      ]),
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-dead1',
+            status({
+              ownerId: 'su-dead1',
+              turnsStalled: true,
+              fireCount: 40,
+              lastFiredAt: '2026-08-01T10:00:00.000Z',
+              lastTurnAt: null,
+            }),
+          ],
+          [
+            'su-dead2',
+            status({ ownerId: 'su-dead2', turnsStalled: true, fireCount: 12, lastTurnAt: '2026-07-30T00:00:00.000Z' }),
+          ],
+          ['su-ok', status({ ownerId: 'su-ok', turnsStalled: false })],
+        ]),
     );
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     expect(res.checked).toBe(3);
     expect(res.paused).toBe(2);
@@ -192,26 +229,27 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
 
   it('reports sustained cadence drift as an advisory without pausing a healthy loop', async () => {
     const sql = fakeSql([{ id: 'rt-slow', target_owner_id: 'su-slow' }]);
-    const getStatuses = vi.fn(async () =>
-      new Map([
-        [
-          'su-slow',
-          status({
-            ownerId: 'su-slow',
-            turnsStalled: false,
-            firesSinceArm: 5,
-            expectedFiresSinceArm: 62,
-            effectiveIntervalSec: 728.0376,
-            cadenceRatio: 12.13396,
-            longestObservedGapSec: 1207.28,
-            // The sweep calls computeCadenceDrift without a pinned clock, so overdue-ness is
-            // judged against real Date.now(). A far-past nextFireAt is overdue on any clock
-            // ahead of it — the same idiom the fixture's lastFiredAt already uses. The
-            // fixture DEFAULT stays null so no other case in this file starts drifting.
-            nextFireAt: '2026-08-01T00:00:00.000Z',
-          }),
-        ],
-      ]),
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-slow',
+            status({
+              ownerId: 'su-slow',
+              turnsStalled: false,
+              firesSinceArm: 5,
+              expectedFiresSinceArm: 62,
+              effectiveIntervalSec: 728.0376,
+              cadenceRatio: 12.13396,
+              longestObservedGapSec: 1207.28,
+              // The sweep calls computeCadenceDrift without a pinned clock, so overdue-ness is
+              // judged against real Date.now(). A far-past nextFireAt is overdue on any clock
+              // ahead of it — the same idiom the fixture's lastFiredAt already uses. The
+              // fixture DEFAULT stays null so no other case in this file starts drifting.
+              nextFireAt: '2026-08-01T00:00:00.000Z',
+            }),
+          ],
+        ]),
     );
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
@@ -294,23 +332,24 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
   // stay green while the advisory silently fired on every mid-turn loop.
   it('does NOT report cadence drift for a parked loop with the same drift statistics', async () => {
     const sql = fakeSql([{ id: 'rt-parked', target_owner_id: 'su-parked' }]);
-    const getStatuses = vi.fn(async () =>
-      new Map([
-        [
-          'su-parked',
-          status({
-            ownerId: 'su-parked',
-            turnsStalled: false,
-            firesSinceArm: 5,
-            expectedFiresSinceArm: 62,
-            effectiveIntervalSec: 728.0376,
-            cadenceRatio: 12.13396,
-            longestObservedGapSec: 1207.28,
-            parked: true,
-            nextFireAt: '2026-08-01T00:00:00.000Z',
-          }),
-        ],
-      ]),
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-parked',
+            status({
+              ownerId: 'su-parked',
+              turnsStalled: false,
+              firesSinceArm: 5,
+              expectedFiresSinceArm: 62,
+              effectiveIntervalSec: 728.0376,
+              cadenceRatio: 12.13396,
+              longestObservedGapSec: 1207.28,
+              parked: true,
+              nextFireAt: '2026-08-01T00:00:00.000Z',
+            }),
+          ],
+        ]),
     );
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
@@ -332,7 +371,10 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     expect(res.paused).toBe(0);
     expect(autoPause).not.toHaveBeenCalled();
@@ -345,7 +387,10 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     expect(res.paused).toBe(0);
     expect(autoPause).not.toHaveBeenCalled();
@@ -357,7 +402,10 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws', dryRun: true }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws', dryRun: true },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     expect(res.dryRun).toBe(true);
     expect(res.paused).toBe(1);
@@ -378,7 +426,10 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     // Map insertion order means the LAST row for a duplicate owner wins.
     expect(autoPause).toHaveBeenCalledWith(sql, 'rt_new', expect.anything());
@@ -404,26 +455,30 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
 
     it('REFUSES to disarm a turnsStalled owner that produced a real turn inside the floor', async () => {
       const sql = fakeSql([{ id: 'rt_live', target_owner_id: 'su-live' }]);
-      const getStatuses = vi.fn(async () =>
-        new Map([
-          [
-            'su-live',
-            // Exactly the measured false positive: last_turn_at hours stale, yet a real
-            // assistant turn landed ~2 min ago.
-            status({
-              ownerId: 'su-live',
-              turnsStalled: true,
-              intervalSec: 60,
-              lastTurnAt: ago(4 * 60 * 60_000),
-              lastRealTurnAt: ago(2 * 60_000),
-            }),
-          ],
-        ]),
+      const getStatuses = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-live',
+              // Exactly the measured false positive: last_turn_at hours stale, yet a real
+              // assistant turn landed ~2 min ago.
+              status({
+                ownerId: 'su-live',
+                turnsStalled: true,
+                intervalSec: 60,
+                lastTurnAt: ago(4 * 60 * 60_000),
+                lastRealTurnAt: ago(2 * 60_000),
+              }),
+            ],
+          ]),
       );
       const autoPause = vi.fn(async () => {});
       const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+      );
 
       expect(res.paused).toBe(0);
       expect(res.vetoedByRecentTurn).toEqual(['su-live']);
@@ -436,23 +491,27 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
 
     it('still disarms a comatose host — an ancient real turn must NOT engage the veto', async () => {
       const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-comatose' }]);
-      const getStatuses = vi.fn(async () =>
-        new Map([
-          [
-            'su-comatose',
-            status({
-              ownerId: 'su-comatose',
-              turnsStalled: true,
-              intervalSec: 60,
-              lastRealTurnAt: ago(6 * 60 * 60_000),
-            }),
-          ],
-        ]),
+      const getStatuses = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-comatose',
+              status({
+                ownerId: 'su-comatose',
+                turnsStalled: true,
+                intervalSec: 60,
+                lastRealTurnAt: ago(6 * 60 * 60_000),
+              }),
+            ],
+          ]),
       );
       const autoPause = vi.fn(async () => {});
       const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+      );
 
       expect(res.paused).toBe(1);
       expect(res.vetoedByRecentTurn).toEqual([]);
@@ -462,13 +521,16 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
 
     it('a MISSING lastRealTurnAt never engages the veto (liveness is never inferred from absent data)', async () => {
       const sql = fakeSql([{ id: 'rt_null', target_owner_id: 'su-null' }]);
-      const getStatuses = vi.fn(async () =>
-        new Map([['su-null', status({ ownerId: 'su-null', turnsStalled: true, lastRealTurnAt: null })]]),
+      const getStatuses = vi.fn(
+        async () => new Map([['su-null', status({ ownerId: 'su-null', turnsStalled: true, lastRealTurnAt: null })]]),
       );
       const autoPause = vi.fn(async () => {});
       const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+      );
 
       expect(res.paused).toBe(1);
       expect(res.vetoedByRecentTurn).toEqual([]);
@@ -480,17 +542,18 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       // floor(1200s) = 80min -> 45min is INSIDE, veto. Pins the guard's window to the verdict's.
       const mk = async (intervalSec: number) => {
         const sql = fakeSql([{ id: 'rt', target_owner_id: 'su-x' }]);
-        const getStatuses = vi.fn(async () =>
-          new Map([
-            [
-              'su-x',
-              status({ ownerId: 'su-x', turnsStalled: true, intervalSec, lastRealTurnAt: ago(45 * 60_000) }),
-            ],
-          ]),
+        const getStatuses = vi.fn(
+          async () =>
+            new Map([
+              ['su-x', status({ ownerId: 'su-x', turnsStalled: true, intervalSec, lastRealTurnAt: ago(45 * 60_000) })],
+            ]),
         );
         const autoPause = vi.fn(async () => {});
         const broadcast = vi.fn<BroadcastFn>(async () => true);
-        return sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+        return sweepStalledLoops(
+          { sql, workspaceId: 'ws' },
+          { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+        );
       };
 
       expect(turnsStalledFloorMs(60)).toBe(30 * 60_000);
@@ -571,8 +634,8 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
 
   it('recognizes the OTHER observer prefix too (resume-turn-death:) — matching only one was itself a past bug', async () => {
     const sql = fakeSql([{ id: 'rt_fast', target_owner_id: 'su-fast' }]);
-    const getStatuses = vi.fn(async () =>
-      new Map([['su-fast', walled('su-fast', { lastDeliveryOutcome: 'resume-turn-death:usage_limit' })]]),
+    const getStatuses = vi.fn(
+      async () => new Map([['su-fast', walled('su-fast', { lastDeliveryOutcome: 'resume-turn-death:usage_limit' })]]),
     );
     const autoPause = vi.fn(async () => {});
 
@@ -584,15 +647,19 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
 
   it('SINGLE CONDITION REMOVED — backoff has ELAPSED (next fire in the past) ⇒ genuinely stuck, DISARM', async () => {
     const sql = fakeSql([{ id: 'rt_elapsed', target_owner_id: 'su-elapsed' }]);
-    const getStatuses = vi.fn(async () =>
-      // Same wall, but the retry window has passed and STILL no turn followed. That is no
-      // longer "waiting out a transient condition" — it is wedged, and the guard must act.
-      new Map([['su-elapsed', walled('su-elapsed', { nextFireAt: ago(30 * 60_000) })]]),
+    const getStatuses = vi.fn(
+      async () =>
+        // Same wall, but the retry window has passed and STILL no turn followed. That is no
+        // longer "waiting out a transient condition" — it is wedged, and the guard must act.
+        new Map([['su-elapsed', walled('su-elapsed', { nextFireAt: ago(30 * 60_000) })]]),
     );
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     expect(res.vetoedByProviderWall).toEqual([]);
     expect(res.paused).toBe(1);
@@ -601,14 +668,18 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
 
   it('SINGLE CONDITION REMOVED — an ORDINARY stall outcome ⇒ DISARM (the exemption is not a blanket error-amnesty)', async () => {
     const sql = fakeSql([{ id: 'rt_plain', target_owner_id: 'su-plain' }]);
-    const getStatuses = vi.fn(async () =>
-      // A future nextFireAt alone must never exempt: every healthy armed loop has one.
-      new Map([['su-plain', walled('su-plain', { lastDeliveryOutcome: 'loop-stuck-backstop' })]]),
+    const getStatuses = vi.fn(
+      async () =>
+        // A future nextFireAt alone must never exempt: every healthy armed loop has one.
+        new Map([['su-plain', walled('su-plain', { lastDeliveryOutcome: 'loop-stuck-backstop' })]]),
     );
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     expect(res.vetoedByProviderWall).toEqual([]);
     expect(res.paused).toBe(1);
@@ -616,13 +687,14 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
 
   it('SINGLE CONDITION REMOVED — a comatose host with NO delivery outcome is still disarmed', async () => {
     const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
-    const getStatuses = vi.fn(async () =>
-      new Map([['su-dead', walled('su-dead', { lastDeliveryOutcome: null })]]),
-    );
+    const getStatuses = vi.fn(async () => new Map([['su-dead', walled('su-dead', { lastDeliveryOutcome: null })]]));
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     expect(res.paused).toBe(1);
     expect(res.vetoedByProviderWall).toEqual([]);
@@ -633,16 +705,20 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
       { id: 'rt_w', target_owner_id: 'su-walled' },
       { id: 'rt_d', target_owner_id: 'su-dead' },
     ]);
-    const getStatuses = vi.fn(async () =>
-      new Map([
-        ['su-walled', walled('su-walled')],
-        ['su-dead', walled('su-dead', { lastDeliveryOutcome: null, nextFireAt: null })],
-      ]),
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-walled', walled('su-walled')],
+          ['su-dead', walled('su-dead', { lastDeliveryOutcome: null, nextFireAt: null })],
+        ]),
     );
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
 
     // The whole point: one sweep, two populations, opposite dispositions.
     expect(res.vetoedByProviderWall).toEqual(['su-walled']);
@@ -686,10 +762,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
   it('re-arms a fire-starved loop and NEVER disarms it', async () => {
     const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([
-          ['su-starved', status({ ownerId: 'su-starved', turnsStalled: true, ...FIRE_STARVED })],
-        ]),
+      async () => new Map([['su-starved', status({ ownerId: 'su-starved', turnsStalled: true, ...FIRE_STARVED })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
@@ -715,8 +788,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     // have wrongly rescued.
     const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true, ...DEAD_SAME_SHAPE })]]),
+      async () => new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true, ...DEAD_SAME_SHAPE })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
@@ -761,15 +833,17 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
   it('still disarms the comatose population — the fix must not blunt the guard', async () => {
     const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true, ...COMATOSE })]]),
+      async () => new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true, ...COMATOSE })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, probeReachability, broadcast });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast },
+    );
 
     expect(rearm).not.toHaveBeenCalled();
     expect(autoPause).toHaveBeenCalledTimes(1);
@@ -798,7 +872,10 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, probeReachability, broadcast });
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast },
+    );
 
     expect(res.reArmedFireStarved).toEqual(['su-starved-a', 'su-starved-b']);
     expect(res.sample).toEqual(['su-dead-c']);
@@ -818,17 +895,17 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     // so "every live agent stopped receiving fires" produced no fleet-wide signal at all.
     const sql = fakeSql([{ id: 'rt_a', target_owner_id: 'su-starved-a' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([
-          ['su-starved-a', status({ ownerId: 'su-starved-a', turnsStalled: true, ...FIRE_STARVED })],
-        ]),
+      async () => new Map([['su-starved-a', status({ ownerId: 'su-starved-a', turnsStalled: true, ...FIRE_STARVED })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, probeReachability, broadcast });
+    await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast },
+    );
 
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(broadcast.mock.calls[0][0].summary).toContain('stopped RECEIVING fires');
@@ -837,10 +914,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
   it('dryRun reports the fire-starved set without writing', async () => {
     const sql = fakeSql([{ id: 'rt_a', target_owner_id: 'su-starved-a' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([
-          ['su-starved-a', status({ ownerId: 'su-starved-a', turnsStalled: true, ...FIRE_STARVED })],
-        ]),
+      async () => new Map([['su-starved-a', status({ ownerId: 'su-starved-a', turnsStalled: true, ...FIRE_STARVED })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
@@ -873,8 +947,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
   it('EI-19899301656065801: pages the OWNER when a still-REACHABLE session is disarmed', async () => {
     const sql = fakeSql([{ id: 'rt_comatose', target_owner_id: 'su-comatose' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
+      async () => new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
@@ -933,8 +1006,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     // Self-healing: the loop is re-armed, so there is nothing for a human to do.
     const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([['su-starved', status({ ownerId: 'su-starved', turnsStalled: true, ...FIRE_STARVED })]]),
+      async () => new Map([['su-starved', status({ ownerId: 'su-starved', turnsStalled: true, ...FIRE_STARVED })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
@@ -958,8 +1030,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     // back bookkeeping that already succeeded.
     const sql = fakeSql([{ id: 'rt_comatose', target_owner_id: 'su-comatose' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
+      async () => new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
@@ -988,8 +1059,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
   it('EI-19899301656065801: dryRun pages nobody', async () => {
     const sql = fakeSql([{ id: 'rt_comatose', target_owner_id: 'su-comatose' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
+      async () => new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
     );
     const autoPause = vi.fn(async () => {});
     const rearm = vi.fn<RearmFn>(async () => {});
@@ -1197,15 +1267,16 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
       const getStatuses = vi.fn(async () => new Map([['su-cold', coldDelivered('su-cold')]]));
       const autoPause = vi.fn(async () => {});
       const broadcast = vi.fn<BroadcastFn>(async () => true);
-      const readOwnerToolActivity = vi.fn(async () =>
-        new Map([
-          [
-            'su-cold',
-            // One tool, not OK, is intentional: the cold-specific grace is keyed on strict
-            // agent-authored activity, while the general retry-storm veto remains stricter.
-            { calls: 1, distinctTools: 1, okCalls: 0, lastCallAt: DELIVERED },
-          ],
-        ]),
+      const readOwnerToolActivity = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-cold',
+              // One tool, not OK, is intentional: the cold-specific grace is keyed on strict
+              // agent-authored activity, while the general retry-storm veto remains stricter.
+              { calls: 1, distinctTools: 1, okCalls: 0, lastCallAt: DELIVERED },
+            ],
+          ]),
       );
 
       const res = await sweepStalledLoops(
@@ -1236,7 +1307,6 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
       expect(res.vetoedByToolActivity).toEqual([]);
       expect(autoPause).toHaveBeenCalledWith(sql, 'rt-cold-wedged', expect.stringContaining('WI-6639'));
     });
-
   });
 
   it('a FAILED arm does not re-arm the loop and does not report a repair — it falls through to the disarm', async () => {
@@ -1720,8 +1790,7 @@ describe('sweepStalledLoops — UNADDRESSABLE HARNESS: naming WHY the disarm hap
     // record, so only a CONFIRMED different workspace qualifies.
     const sql = fakeSql([{ id: 'rt_unknown', target_owner_id: 'su-unknown' }]);
     const getStatuses = vi.fn(
-      async () =>
-        new Map([['su-unknown', status({ ownerId: 'su-unknown', turnsStalled: true, ...COMATOSE })]]),
+      async () => new Map([['su-unknown', status({ ownerId: 'su-unknown', turnsStalled: true, ...COMATOSE })]]),
     );
     const autoPause = vi.fn<AutoPauseFn>(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
@@ -1784,9 +1853,7 @@ describe('sweepStalledLoops — UNADDRESSABLE HARNESS: naming WHY the disarm hap
     );
     const autoPause = vi.fn<AutoPauseFn>(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
-    const resolveOwnerWorkspaces = vi.fn<ResolveOwnerWorkspacesFn>(
-      async () => new Map([['su-a', 'default']]),
-    );
+    const resolveOwnerWorkspaces = vi.fn<ResolveOwnerWorkspacesFn>(async () => new Map([['su-a', 'default']]));
 
     const res = await sweepStalledLoops(
       { sql, workspaceId: 'ws' },
@@ -1925,5 +1992,146 @@ describe('sweepStalledLoops — UNADDRESSABLE HARNESS: naming WHY the disarm hap
     expect(autoPause).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+describe('workspace loop-population starvation (P-007 / WI-41230)', () => {
+  const incident: LoopPopulationSnapshot = {
+    status: 'measured',
+    active: 12,
+    parked: 8,
+    parkedRatio: 8 / 12,
+    parkedZeroTool3h: 5,
+    parkedZeroToolRatio: 5 / 8,
+    ownerSample: ['su-zero-1', 'su-zero-2'],
+  };
+
+  it('pure control: a large parked zero-tool cohort is an incident', () => {
+    expect(isLoopPopulationStarvation(incident)).toBe(true);
+  });
+
+  it('pure healthy control: parked share alone is context, not the gate', () => {
+    expect(
+      isLoopPopulationStarvation({
+        status: 'measured',
+        active: 168,
+        parked: 76,
+        parkedRatio: 76 / 168,
+        parkedZeroTool3h: 6,
+        parkedZeroToolRatio: 6 / 76,
+        ownerSample: [],
+      }),
+    ).toBe(false);
+  });
+
+  it('pure small-population control: a perfect ratio cannot satisfy the absolute floors', () => {
+    expect(
+      isLoopPopulationStarvation({
+        status: 'measured',
+        active: 9,
+        parked: 9,
+        parkedRatio: 1,
+        parkedZeroTool3h: 9,
+        parkedZeroToolRatio: 1,
+        ownerSample: ['su-small'],
+      }),
+    ).toBe(false);
+  });
+
+  const healthySweep = (population: LoopPopulationSnapshot) => {
+    const owners = Array.from({ length: 12 }, (_, i) => `su-pop-${i + 1}`);
+    const sql = fakeSql(owners.map((ownerId) => ({ id: `rt-${ownerId}`, target_owner_id: ownerId })));
+    const getStatuses = vi.fn(
+      async () => new Map(owners.map((ownerId) => [ownerId, status({ ownerId, turnsStalled: false })])),
+    );
+    const autoPause = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const readPopulation: NonNullable<StalledLoopsSweepDeps['readPopulation']> = vi.fn(async () => population);
+    return { sql, getStatuses, autoPause, broadcast, readPopulation };
+  };
+
+  it('broadcasts one condition-keyed advisory for an incident and changes no loop state', async () => {
+    const fx = healthySweep(incident);
+    const result = await sweepStalledLoops(
+      { sql: fx.sql, workspaceId: 'ws-pop' },
+      {
+        getStatuses: fx.getStatuses,
+        autoPause: fx.autoPause,
+        broadcast: fx.broadcast,
+        readPopulation: fx.readPopulation,
+        probeReachability: reach(false),
+      },
+    );
+
+    expect(result.population).toEqual(incident);
+    expect(result.paused).toBe(0);
+    expect(fx.autoPause).not.toHaveBeenCalled();
+    expect(fx.broadcast).toHaveBeenCalledTimes(1);
+    expect(fx.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'loop-population-advisory',
+        conditionKey: 'loop-population-starvation:ws-pop',
+        oneShot: true,
+      }),
+    );
+    expect(fx.broadcast.mock.calls[0]?.[0].body).toContain('context only');
+  });
+
+  it('does not broadcast when the zero-tool share is healthy', async () => {
+    const healthy: LoopPopulationSnapshot = {
+      status: 'measured',
+      active: 168,
+      parked: 76,
+      parkedRatio: 76 / 168,
+      parkedZeroTool3h: 6,
+      parkedZeroToolRatio: 6 / 76,
+      ownerSample: [],
+    };
+    const fx = healthySweep(healthy);
+    const result = await sweepStalledLoops(
+      { sql: fx.sql, workspaceId: 'ws-pop' },
+      {
+        getStatuses: fx.getStatuses,
+        autoPause: fx.autoPause,
+        broadcast: fx.broadcast,
+        readPopulation: fx.readPopulation,
+        probeReachability: reach(false),
+      },
+    );
+
+    expect(result.population).toEqual(healthy);
+    expect(fx.broadcast).not.toHaveBeenCalled();
+    expect(fx.autoPause).not.toHaveBeenCalled();
+  });
+
+  it('a failed population read is explicit unknown and NEVER disables the existing reaper', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const sql = fakeSql([{ id: 'rt-dead', target_owner_id: 'su-dead' }]);
+      const getStatuses = vi.fn(async () => new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true })]]));
+      const autoPause = vi.fn(async () => {});
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const result = await sweepStalledLoops(
+        { sql, workspaceId: 'ws-pop' },
+        {
+          getStatuses,
+          autoPause,
+          broadcast,
+          readPopulation: vi.fn(async () => {
+            throw new Error('population source unavailable');
+          }),
+          probeReachability: reach(false),
+        },
+      );
+
+      expect(result.population).toEqual({ status: 'unknown', reason: 'population source unavailable' });
+      expect(result.paused).toBe(1);
+      expect(autoPause).toHaveBeenCalledTimes(1);
+      expect(broadcast).toHaveBeenCalledTimes(1);
+      expect(broadcast.mock.calls[0]?.[0].category).toBe('severe-event');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('existing reaper continues unchanged'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

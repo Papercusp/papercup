@@ -227,6 +227,157 @@ export const REVIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
  */
 export const MAX_REVIVALS = 2;
 
+/** P-007 — the behavior window used by the workspace-level starvation census. */
+export const LOOP_POPULATION_TOOL_WINDOW_MS = 3 * 60 * 60 * 1000;
+/** A ratio is not meaningful enough to page below this active-loop population. */
+export const LOOP_POPULATION_MIN_ACTIVE = 10;
+/** Never page on a ratio backed by fewer than this many affected owners. */
+export const LOOP_POPULATION_MIN_AFFECTED = 5;
+/** At least half of the parked population must have produced no agent-authored call. */
+export const LOOP_POPULATION_ZERO_TOOL_RATIO = 0.5;
+const LOOP_POPULATION_OWNER_SAMPLE_LIMIT = 10;
+
+/**
+ * P-007 — one workspace-wide loop census.
+ *
+ * `unknown` is deliberately a first-class result rather than an empty measured population. A
+ * failed advisory read must never disable the existing reaper, but reporting its failure as
+ * zero would make the population detector look healthy at exactly the moment it went blind.
+ */
+export type LoopPopulationSnapshot =
+  | {
+      status: 'measured';
+      active: number;
+      parked: number;
+      /** `parked / active`; null only for an empty active population. Context, never the alarm gate. */
+      parkedRatio: number | null;
+      /** Parked owners with no agent-authored, non-bookkeeping tool call in the last three hours. */
+      parkedZeroTool3h: number;
+      /** `parkedZeroTool3h / parked`; null only when no loop is parked. */
+      parkedZeroToolRatio: number | null;
+      ownerSample: string[];
+    }
+  | {
+      status: 'unknown';
+      reason: string;
+    };
+
+/**
+ * P-007 — the pure population verdict.
+ *
+ * The parked share is diagnostic context, not a fault: a long-running turn parks its loop at
+ * `infinity` by design. The incident discriminator is a LARGE share of those parked owners all
+ * producing zero agent-authored calls at once. Both absolute floors prevent tiny populations
+ * from satisfying a ratio vacuously.
+ */
+export function isLoopPopulationStarvation(
+  snapshot: LoopPopulationSnapshot,
+): snapshot is Extract<LoopPopulationSnapshot, { status: 'measured' }> {
+  return (
+    snapshot.status === 'measured' &&
+    snapshot.active >= LOOP_POPULATION_MIN_ACTIVE &&
+    snapshot.parkedZeroTool3h >= LOOP_POPULATION_MIN_AFFECTED &&
+    snapshot.parkedZeroToolRatio != null &&
+    snapshot.parkedZeroToolRatio >= LOOP_POPULATION_ZERO_TOOL_RATIO
+  );
+}
+
+function populationCount(value: unknown, field: string): number {
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(`invalid ${field} from loop population query: ${String(value)}`);
+  }
+  return count;
+}
+
+/**
+ * P-007 — one aggregate read for the whole active loop population in a workspace.
+ *
+ * Active routines are collapsed by owner before counting. That makes the invariant about agents,
+ * not rows, and keeps a transient duplicate from inflating both numerator and denominator. Tool
+ * activity is intentionally NOT workspace-scoped: owner identity is global, and an owner making
+ * real calls under another workspace is demonstrably not a zero-tool owner. The loop population
+ * itself remains tenant-scoped through `r.workspace_id`.
+ *
+ * This reader throws on SQL or shape failure. The sweep catches it into an explicit `unknown`
+ * snapshot in an isolated advisory leg, so it can never short-circuit the existing reaper.
+ */
+export async function readLoopPopulationSnapshot(o: {
+  sql: Sql;
+  workspaceId: string;
+  sinceMs?: number;
+  ownerSampleLimit?: number;
+}): Promise<LoopPopulationSnapshot> {
+  const sinceMs = o.sinceMs ?? Date.now() - LOOP_POPULATION_TOOL_WINDOW_MS;
+  if (!Number.isFinite(sinceMs)) throw new Error(`invalid loop population sinceMs: ${String(sinceMs)}`);
+  const sampleLimit = Math.max(1, Math.floor(o.ownerSampleLimit ?? LOOP_POPULATION_OWNER_SAMPLE_LIMIT));
+  const sinceIso = new Date(sinceMs).toISOString();
+  const rows = await o.sql<
+    Array<{
+      active_loops: number | string;
+      parked_loops: number | string;
+      parked_zero_tool_3h: number | string;
+      owner_sample: string[] | null;
+    }>
+  >`
+    WITH active_loops AS (
+      SELECT r.target_owner_id AS owner_id,
+             bool_or(r.next_fire_at = 'infinity'::timestamptz) AS parked
+        FROM harness_shared.routines r
+       WHERE r.workspace_id = ${o.workspaceId}
+         AND r.name LIKE 'loop-%'
+         AND r.target_owner_id IS NOT NULL
+         AND r.active = true
+       GROUP BY r.target_owner_id
+    ), recent_agent_tool_owners AS (
+      SELECT DISTINCT t.coord_owner_id AS owner_id
+        FROM harness_shared.tool_invocations t
+        JOIN active_loops l ON l.owner_id = t.coord_owner_id
+       WHERE t.invoked_at >= ${sinceIso}::timestamptz
+         AND ${agentToolInvocationPredicate(o.sql, 't')}
+         AND t.tool_name <> ALL(${o.sql.array([...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES])}::text[])
+    ), classified AS (
+      SELECT l.owner_id,
+             l.parked,
+             (a.owner_id IS NULL) AS zero_tool
+        FROM active_loops l
+        LEFT JOIN recent_agent_tool_owners a USING (owner_id)
+    )
+    SELECT count(*)::int AS active_loops,
+           count(*) FILTER (WHERE parked)::int AS parked_loops,
+           count(*) FILTER (WHERE parked AND zero_tool)::int AS parked_zero_tool_3h,
+           ARRAY(
+             SELECT owner_id
+               FROM classified
+              WHERE parked AND zero_tool
+              ORDER BY owner_id
+              LIMIT ${sampleLimit}
+           ) AS owner_sample
+      FROM classified
+  `;
+  const row = rows[0];
+  if (!row) throw new Error('loop population query returned no aggregate row');
+  const active = populationCount(row.active_loops, 'active_loops');
+  const parked = populationCount(row.parked_loops, 'parked_loops');
+  const parkedZeroTool3h = populationCount(row.parked_zero_tool_3h, 'parked_zero_tool_3h');
+  if (parked > active || parkedZeroTool3h > parked) {
+    throw new Error(
+      `inconsistent loop population query: active=${active}, parked=${parked}, parkedZeroTool3h=${parkedZeroTool3h}`,
+    );
+  }
+  return {
+    status: 'measured',
+    active,
+    parked,
+    parkedRatio: active > 0 ? parked / active : null,
+    parkedZeroTool3h,
+    parkedZeroToolRatio: parked > 0 ? parkedZeroTool3h / parked : null,
+    ownerSample: Array.isArray(row.owner_sample)
+      ? row.owner_sample.filter((owner): owner is string => typeof owner === 'string' && owner.length > 0)
+      : [],
+  };
+}
+
 /**
  * Keep database read failures fail-soft, but never turn a programmer/driver-surface error into
  * an empty activity map. A TypeError or ReferenceError means the reader itself is broken (for
@@ -317,6 +468,12 @@ export interface StalledLoopsSweepDeps {
     o: { sql: Sql },
   ) => Promise<Map<string, OwnerToolActivity>>;
   /**
+   * P-007 — injectable workspace-wide population census. It is an advisory leg and is caught
+   * independently: failure produces `population.status = 'unknown'` and never changes whether
+   * any loop is reaped, revived, repaired, or vetoed.
+   */
+  readPopulation?: typeof readLoopPopulationSnapshot;
+  /**
    * Injectable for tests; defaults to a plain read of `harness_shared.routines` (WI-37546).
    *
    * The revival pass's candidate set: loops THIS module disarmed as turn-stalled, recently
@@ -325,9 +482,12 @@ export interface StalledLoopsSweepDeps {
    * which is what keeps the 7/7-correct `dead-owner` disarms (and cost-cap / dead-man pauses)
    * structurally out of reach.
    */
-  readRevivableLoops?: (
-    o: { sql: Sql; workspaceId: string; pausedAfterMs: number; maxRevivals: number },
-  ) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>>;
+  readRevivableLoops?: (o: {
+    sql: Sql;
+    workspaceId: string;
+    pausedAfterMs: number;
+    maxRevivals: number;
+  }) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>>;
   /** Injectable for tests; defaults to the real wake-reachability probe — the SAME oracle
    *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
   probeReachability?: typeof probeWakeReachability;
@@ -518,6 +678,8 @@ export interface StalledLoopsSweepResult {
    * in the `turnsStalled` disarm decision.
    */
   cadenceDrift: string[];
+  /** P-007 workspace-wide population signal; explicit unknown on a failed census. */
+  population: LoopPopulationSnapshot;
   dryRun: boolean;
 }
 
@@ -654,8 +816,7 @@ export async function sweepStalledLoops(
          WHERE owner_id = ANY(${ownerIds}::text[])
       `;
       for (const b of briefs) {
-        if (typeof b.workspace_id === 'string' && b.workspace_id.length > 0)
-          out.set(b.owner_id, b.workspace_id);
+        if (typeof b.workspace_id === 'string' && b.workspace_id.length > 0) out.set(b.owner_id, b.workspace_id);
       }
       return out;
     });
@@ -672,6 +833,7 @@ export async function sweepStalledLoops(
       await notifyAttention(input);
     });
   const broadcast = deps.broadcast ?? broadcastSevereEvent;
+  const readPopulation = deps.readPopulation ?? readLoopPopulationSnapshot;
 
   // ── WI-37546: REVIVAL PASS ────────────────────────────────────────────────────────────────
   //
@@ -808,15 +970,13 @@ export async function sweepStalledLoops(
   // never a changed disposition.
   const ownerWorkspaces = !hasActiveLoops
     ? new Map<string, string>()
-    : await resolveOwnerWorkspaces([...routineIdByOwner.keys()], { sql }).catch(
-    (e) => {
-      console.warn(
-        `[stalled-loops-guard] owner-workspace resolve failed (${e instanceof Error ? e.message : e}) — ` +
-          `proceeding without the unaddressable-harness discriminator; disarm reasons stay generic.`,
-      );
-      return new Map<string, string>();
-    },
-  );
+    : await resolveOwnerWorkspaces([...routineIdByOwner.keys()], { sql }).catch((e) => {
+        console.warn(
+          `[stalled-loops-guard] owner-workspace resolve failed (${e instanceof Error ? e.message : e}) — ` +
+            `proceeding without the unaddressable-harness discriminator; disarm reasons stay generic.`,
+        );
+        return new Map<string, string>();
+      });
 
   // WI-37546 — one batched activity read for every owner the verdict has already condemned.
   //
@@ -831,31 +991,32 @@ export async function sweepStalledLoops(
   // stall floor, which is the same window `turnsStalled` itself judged over.
   const stalledCandidates = [...routineIdByOwner.keys()].filter((o) => statuses.get(o)?.turnsStalled === true);
   const nowMsForProbe = Date.now();
-  const toolActivity = stalledCandidates.length === 0
-    ? new Map<string, OwnerToolActivity>()
-    : await readOwnerToolActivity(
-    stalledCandidates.map((ownerId) => {
-      const s = statuses.get(ownerId);
-      const firedMs = s?.lastFiredAt ? Date.parse(s.lastFiredAt) : NaN;
-      const sinceMs = Number.isFinite(firedMs)
-        ? firedMs
-        : nowMsForProbe - turnsStalledFloorMs(s?.intervalSec ?? null);
-      return { ownerId, sinceIso: new Date(sinceMs).toISOString() };
-    }),
-    { sql },
-  ).catch((e) => {
-    rethrowProgrammingError(e);
-    // Fails toward the PRE-EXISTING behaviour (no veto), never toward a blanket exemption. A read
-    // fault must not silently disable the reaper for the whole workspace — that would be the
-    // WI-36792 lesson (blunting a reaper is invisible; it still reports `checked: N`) with a
-    // wider blast radius than any single wrong disarm.
-    console.warn(
-      `[stalled-loops-guard] tool-activity read failed (${e instanceof Error ? e.message : e}) — ` +
-        `proceeding WITHOUT the liveness veto; disarms this sweep are decided as they were before ` +
-        `WI-37546. A repeat here is a real fault: it re-opens the 18-of-19 false-disarm window.`,
-    );
-    return new Map<string, OwnerToolActivity>();
-  });
+  const toolActivity =
+    stalledCandidates.length === 0
+      ? new Map<string, OwnerToolActivity>()
+      : await readOwnerToolActivity(
+          stalledCandidates.map((ownerId) => {
+            const s = statuses.get(ownerId);
+            const firedMs = s?.lastFiredAt ? Date.parse(s.lastFiredAt) : NaN;
+            const sinceMs = Number.isFinite(firedMs)
+              ? firedMs
+              : nowMsForProbe - turnsStalledFloorMs(s?.intervalSec ?? null);
+            return { ownerId, sinceIso: new Date(sinceMs).toISOString() };
+          }),
+          { sql },
+        ).catch((e) => {
+          rethrowProgrammingError(e);
+          // Fails toward the PRE-EXISTING behaviour (no veto), never toward a blanket exemption. A read
+          // fault must not silently disable the reaper for the whole workspace — that would be the
+          // WI-36792 lesson (blunting a reaper is invisible; it still reports `checked: N`) with a
+          // wider blast radius than any single wrong disarm.
+          console.warn(
+            `[stalled-loops-guard] tool-activity read failed (${e instanceof Error ? e.message : e}) — ` +
+              `proceeding WITHOUT the liveness veto; disarms this sweep are decided as they were before ` +
+              `WI-37546. A repeat here is a real fault: it re-opens the 18-of-19 false-disarm window.`,
+          );
+          return new Map<string, OwnerToolActivity>();
+        });
 
   const stalledOwners: string[] = [];
   const vetoedByRecentTurn: string[] = [];
@@ -1529,13 +1690,13 @@ export async function sweepStalledLoops(
           ? `${revivedAfterDisarm.length} engine loop(s) on ${ws} were RE-ARMED after a wrong ` +
             `turn-stalled disarm — their owners were working all along (WI-37546).`
           : repairedWakeStarved.length === 0
-          ? `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
-            `answering them — re-armed, not disarmed (EI-19406534159939583).`
-          : reArmedFireStarved.length === 0
-            ? `${repairedWakeStarved.length} armed engine loop(s) on ${ws} had every fire reach NOBODY — no ` +
-              `standing inbox-wake await, so nothing was ever delivered; repaired, not disarmed (WI-36685).`
-            : `${starved.length} armed engine loop(s) on ${ws} were being STARVED of turns while still alive — ` +
-              `repaired, not disarmed (EI-19406534159939583 / WI-36685).`,
+            ? `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
+              `answering them — re-armed, not disarmed (EI-19406534159939583).`
+            : reArmedFireStarved.length === 0
+              ? `${repairedWakeStarved.length} armed engine loop(s) on ${ws} had every fire reach NOBODY — no ` +
+                `standing inbox-wake await, so nothing was ever delivered; repaired, not disarmed (WI-36685).`
+              : `${starved.length} armed engine loop(s) on ${ws} were being STARVED of turns while still alive — ` +
+                `repaired, not disarmed (EI-19406534159939583 / WI-36685).`,
       body:
         (reArmedFireStarved.length > 0
           ? `FIRE-STARVED (no fire emitted): ${reArmedFireStarved.join(', ')}. Each one's most recent turn ` +
@@ -1581,9 +1742,10 @@ export async function sweepStalledLoops(
         `(advisory only; no loop was paused).`,
       body:
         cadenceDriftDetails
-          .map(({ ownerId, status }) =>
-            `${ownerId}: ratio=${status.cadenceRatio}, firesSinceArm=${status.firesSinceArm}, ` +
-            `expected=${status.expectedFiresSinceArm}, longestGapSec=${status.longestObservedGapSec}`,
+          .map(
+            ({ ownerId, status }) =>
+              `${ownerId}: ratio=${status.cadenceRatio}, firesSinceArm=${status.firesSinceArm}, ` +
+              `expected=${status.expectedFiresSinceArm}, longestGapSec=${status.longestObservedGapSec}`,
           )
           .join('\n') +
         `\n\nThis signal requires multiple fires plus a large observed gap. Pure loops re-arm after ` +
@@ -1591,6 +1753,55 @@ export async function sweepStalledLoops(
         `turn duration before treating it as a defect. Cadence drift never disarms or re-arms a loop.`,
       category: 'loop-cadence-advisory',
       conditionKey: `loop-cadence-drift:${ws}`,
+      oneShot: true,
+    });
+  }
+
+  // P-007 — independent, fail-open advisory read. It deliberately runs AFTER every existing
+  // reaper/revival/repair decision and its reporting, so a broken or slow aggregate cannot alter
+  // their ordering, widen a veto, suppress a disarm, or prevent their broadcast. The explicit
+  // unknown result also keeps a blind monitor from masquerading as a healthy zero.
+  const population: LoopPopulationSnapshot = !hasActiveLoops
+    ? {
+        status: 'measured',
+        active: 0,
+        parked: 0,
+        parkedRatio: null,
+        parkedZeroTool3h: 0,
+        parkedZeroToolRatio: null,
+        ownerSample: [],
+      }
+    : await readPopulation({ sql, workspaceId: ws }).catch((e) => {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.warn(
+          `[stalled-loops-guard] population read failed (${reason}) — population status is UNKNOWN; ` +
+            `the existing reaper continues unchanged.`,
+        );
+        return { status: 'unknown' as const, reason };
+      });
+
+  // P-007 — forty individually ordinary-looking parked rows can be ONE workspace incident. The
+  // high zero-tool share is the gate; parkedRatio is included only as context because a healthy
+  // long turn is parked at infinity by design. One-shot prevents an inbox storm while the same
+  // episode persists.
+  if (isLoopPopulationStarvation(population) && !dryRun) {
+    await broadcast({
+      summary:
+        `${population.parkedZeroTool3h} of ${population.parked} parked engine-loop owners on ${ws} ` +
+        `made zero agent-authored tool calls in the last 3h — workspace population starvation.`,
+      body:
+        `Active loops: ${population.active}. Parked at infinity: ${population.parked} ` +
+        `(${(population.parkedRatio! * 100).toFixed(1)}% of active; context only). Parked with zero ` +
+        `agent-authored, non-bookkeeping tool calls in 3h: ${population.parkedZeroTool3h} ` +
+        `(${(population.parkedZeroToolRatio! * 100).toFixed(1)}% of parked). ` +
+        `Owner sample: ${population.ownerSample.join(', ') || '(none)'}.\n\n` +
+        `This is an aggregate scheduler/wake-path signal: each row may look like an ordinary ` +
+        `in-flight park, but a majority of the parked population going tool-silent together is ` +
+        `one systemic incident. The detector is advisory only and did not pause, re-arm, revive, ` +
+        `or otherwise change any loop. Start with the shared fire/delivery path and provider ` +
+        `availability, not the individual owners.`,
+      category: 'loop-population-advisory',
+      conditionKey: `loop-population-starvation:${ws}`,
       oneShot: true,
     });
   }
@@ -1609,6 +1820,7 @@ export async function sweepStalledLoops(
     vetoedByToolActivity,
     revivedAfterDisarm,
     cadenceDrift,
+    population,
     dryRun,
   };
 }
