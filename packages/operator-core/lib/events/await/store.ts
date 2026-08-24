@@ -1111,19 +1111,23 @@ async function terminalWorkItemIds(ids: readonly string[]): Promise<Set<string>>
  *    drift on what "live" means; `withEffectiveDeadlines` then drops composed leaves
  *    whose TREE has lapsed (zero extra queries when none are composed).
  *
- * Bounded (see `listActiveAwaitsForKey`'s note): this runs on loop:arm's hot path and
- * is purely advisory, so a stall must fail fast rather than hang the arm. Callers treat
- * a rejection as "unknown" — deliberately NOT as "none", which would launder an
+ * Bounded sample (see `listActiveAwaitsForKey`'s note): this runs on loop:arm's hot path
+ * and is purely advisory, so a stall must fail fast rather than hang the arm. The
+ * windowed total is deliberately returned separately from the bounded sample: callers
+ * must not mistake the sample cap for the number of live awaits. Callers treat a
+ * rejection as "unknown" — deliberately NOT as "none", which would launder an
  * unmeasurable into a measurement and re-create this very defect.
  */
+type WakeAwaitSample = { eventKey: string; expiresTs: string | null; rootId: number | null };
+
 export async function listWakeAwaitsForSubscriber(
   subscriberId: string,
   limit = 5,
-): Promise<Array<{ eventKey: string; expiresTs: string | null; rootId: number | null }>> {
+): Promise<{ totalCount: number; sample: WakeAwaitSample[] }> {
   const ws = eventsWs();
   const rows = await boundedOrgTxn(
     (tx) => tx`
-    SELECT event_key, expires_ts, root_id
+    SELECT event_key, expires_ts, root_id, COUNT(*) OVER() AS total_count
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
        AND subscriber_id = ${subscriberId}
@@ -1135,12 +1139,16 @@ export async function listWakeAwaitsForSubscriber(
      LIMIT ${limit}
   `,
   );
+  const totalCount = rows.length > 0 ? Number((rows[0] as any).total_count) : 0;
   const mapped = rows.map((r: any) => ({
     eventKey: r.event_key as string,
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
     rootId: r.root_id != null ? Number(r.root_id) : null,
   }));
-  return withEffectiveDeadlines(mapped, { workspaceId: ws, dropExpired: true });
+  return {
+    totalCount,
+    sample: await withEffectiveDeadlines(mapped, { workspaceId: ws, dropExpired: true }),
+  };
 }
 
 /** Active awaits matching an event key — peek without firing (sources may use
