@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * InboxPane (EI-13037, owner ask 2026-07-16 + placement correction) — the
@@ -46,14 +46,14 @@
  * behind a click bought nothing. The toolbar slot the toggle vacated now holds
  * the sort picker. A stale `?opcf=…` deep link is inert.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   useQueryState,
   useQueryStates,
   parseAsString,
   parseAsStringLiteral,
-} from 'nuqs';
+} from "nuqs";
 import {
   ArrowUpDown,
   ChevronDown,
@@ -63,44 +63,48 @@ import {
   MessageCircle,
   Search,
   X,
-} from 'lucide-react';
-import { Select } from '@/app/harness/Select';
-import { Tooltip } from '@/app/harness/Tooltip';
-import { OtherDetail, KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
+} from "lucide-react";
+import { Select } from "@/app/harness/Select";
+import { Tooltip } from "@/app/harness/Tooltip";
+import { OtherDetail, KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
 import {
   TIER_LABEL,
   type AttentionActionId,
   type AttentionItem,
   type AttentionTier,
-} from '@/app/admin/plans/plans-api';
-import { effectiveTier, scopeInboxItems, useInboxAttention } from './use-inbox-pending';
-import InboxBulkStrip from './InboxBulkStrip';
-import InboxBulkRecommendation from './InboxBulkRecommendation';
+} from "@/app/admin/plans/plans-api";
+import {
+  effectiveTier,
+  scopeInboxItems,
+  useInboxAttention,
+} from "./use-inbox-pending";
+import InboxBulkStrip from "./InboxBulkStrip";
+import InboxBulkRecommendation from "./InboxBulkRecommendation";
 import {
   INBOX_BULK_RUN_PARAM,
   useBulkRunOps,
   useInboxBulkRun,
   type BulkRunItem,
-} from './use-inbox-bulk-run';
-import { attentionWorkItemId } from './attention-work-item-ref';
-import { useFlag } from '@/lib/flag-hooks';
-import { FLAGS } from '@papercusp/flags';
-import SessionChatModal from '../chat/SessionChatModal';
+} from "./use-inbox-bulk-run";
+import { attentionWorkItemId } from "./attention-work-item-ref";
+import { useFlag } from "@/lib/flag-hooks";
+import { FLAGS } from "@papercusp/flags";
+import SessionChatModal from "../chat/SessionChatModal";
 import {
   CHAT_WORK_ITEM_POPUP_PARAM,
   decodeScopedRef,
   encodeScopedRef,
-} from '../chat/chat-ref-popup-params';
+} from "../chat/chat-ref-popup-params";
 import WorkItemDiscussion, {
   WORK_ITEM_DISCUSSION_PARAM,
-} from '../work-items/WorkItemDiscussion';
+} from "../work-items/WorkItemDiscussion";
 // The Queue detail card's styles (pc-items__*, pc-tier/pc-kind badges). Global
 // (non-module) CSS — importing it here makes the pane self-sufficient on
 // every route.
-import '@/app/admin/plans/plans.css';
-import './inbox-pane.css';
+import "@/app/admin/plans/plans.css";
+import "./inbox-pane.css";
 
-const FILTERS = ['needs', 'alerts', 'all'] as const;
+const FILTERS = ["needs", "alerts", "all"] as const;
 type InboxFilter = (typeof FILTERS)[number];
 
 /** Row-badge wording for a bulk run's per-item outcomes (P-006). `pending` is
@@ -108,37 +112,42 @@ type InboxFilter = (typeof FILTERS)[number];
  *  because a badge reading "pending" on every row is noise that hides the ones
  *  that actually moved. */
 const BULK_OUTCOME_LABEL: Record<string, string> = {
-  auto_resolved: 'resolved',
-  recommended: 'for review',
-  skipped: 'skipped',
-  failed: 'failed',
+  auto_resolved: "resolved",
+  recommended: "for review",
+  skipped: "skipped",
+  failed: "failed",
 };
 
 const FILTER_LABEL: Record<InboxFilter, string> = {
-  needs: 'Needs you',
-  alerts: 'Alerts',
-  all: 'All',
+  needs: "Needs you",
+  alerts: "Alerts",
+  all: "All",
 };
 
 /** Decisions first, then alerts — the order the owner should read. */
-const TIER_RANK: Record<AttentionTier, number> = { decision: 0, alert: 1, handled: 2, activity: 3 };
+const TIER_RANK: Record<AttentionTier, number> = {
+  decision: 0,
+  alert: 1,
+  handled: 2,
+  activity: 3,
+};
 
 /** Sort orders this pane offers (WI-40982). `priority` is the pane's original
  *  order and stays the default: tier first, newest within a tier. */
 export const INBOX_SORTS = [
-  { id: 'priority', label: 'Priority' },
-  { id: 'newest', label: 'Newest first' },
-  { id: 'oldest', label: 'Oldest first' },
-  { id: 'kind', label: 'Kind' },
-  { id: 'agent', label: 'Agent' },
-  { id: 'title', label: 'Title A–Z' },
+  { id: "priority", label: "Priority" },
+  { id: "newest", label: "Newest first" },
+  { id: "oldest", label: "Oldest first" },
+  { id: "kind", label: "Kind" },
+  { id: "agent", label: "Agent" },
+  { id: "title", label: "Title A–Z" },
 ] as const;
 
-export type InboxSort = (typeof INBOX_SORTS)[number]['id'];
+export type InboxSort = (typeof INBOX_SORTS)[number]["id"];
 
 export const INBOX_SORT_IDS = INBOX_SORTS.map((s) => s.id) as InboxSort[];
 
-export const DEFAULT_INBOX_SORT: InboxSort = 'priority';
+export const DEFAULT_INBOX_SORT: InboxSort = "priority";
 
 export function inboxSortLabel(sort: InboxSort): string {
   return INBOX_SORTS.find((s) => s.id === sort)?.label ?? sort;
@@ -176,15 +185,15 @@ function byText(a: string, b: string): number {
   if (!a && !b) return 0;
   if (!a) return 1;
   if (!b) return -1;
-  return a.localeCompare(b, undefined, { sensitivity: 'base' });
+  return a.localeCompare(b, undefined, { sensitivity: "base" });
 }
 
 function agentKey(i: AttentionItem): string {
-  return (i.ownerLabel ?? i.ownerAgentId ?? '').trim();
+  return (i.ownerLabel ?? i.ownerAgentId ?? "").trim();
 }
 
 function kindKey(i: AttentionItem): string {
-  return KIND_LABEL[i.kind] ?? i.kind ?? '';
+  return KIND_LABEL[i.kind] ?? i.kind ?? "";
 }
 
 /** Comparator for one inbox order. Pure — exported for unit tests. */
@@ -192,22 +201,23 @@ export function compareInboxItems(
   sort: InboxSort,
 ): (a: AttentionItem, b: AttentionItem) => number {
   switch (sort) {
-    case 'newest':
+    case "newest":
       return byNewest;
-    case 'oldest':
+    case "oldest":
       return byOldest;
-    case 'kind':
+    case "kind":
       return (a, b) => byText(kindKey(a), kindKey(b)) || byNewest(a, b);
-    case 'agent':
+    case "agent":
       return (a, b) => byText(agentKey(a), agentKey(b)) || byNewest(a, b);
-    case 'title':
-      return (a, b) => byText(a.title ?? '', b.title ?? '') || byNewest(a, b);
-    case 'priority':
+    case "title":
+      return (a, b) => byText(a.title ?? "", b.title ?? "") || byNewest(a, b);
+    case "priority":
     default:
       // The pane's original order: decisions on top, then alerts; newest within
       // a tier.
       return (a, b) =>
-        TIER_RANK[effectiveTier(a)] - TIER_RANK[effectiveTier(b)] || byNewest(a, b);
+        TIER_RANK[effectiveTier(a)] - TIER_RANK[effectiveTier(b)] ||
+        byNewest(a, b);
   }
 }
 
@@ -226,12 +236,15 @@ export function sortInboxItems(
 
 /** A relative "how long ago" label from an ISO timestamp — "just now", "5m",
  *  "3h", "2d", "3w", else an absolute short date. Null timestamp → null. */
-export function formatRelativeDate(iso: string | null | undefined, now = Date.now()): string | null {
+export function formatRelativeDate(
+  iso: string | null | undefined,
+  now = Date.now(),
+): string | null {
   if (!iso) return null;
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return null;
   const secs = Math.max(0, Math.round((now - t) / 1000));
-  if (secs < 45) return 'just now';
+  if (secs < 45) return "just now";
   const mins = Math.round(secs / 60);
   if (mins < 60) return `${mins}m`;
   const hrs = Math.round(mins / 60);
@@ -240,7 +253,10 @@ export function formatRelativeDate(iso: string | null | undefined, now = Date.no
   if (days < 7) return `${days}d`;
   const weeks = Math.round(days / 7);
   if (weeks < 5) return `${weeks}w`;
-  return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return new Date(t).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 /** Absolute timestamp for the date tooltip. */
@@ -263,13 +279,14 @@ function searchHaystack(i: AttentionItem): string {
     KIND_LABEL[i.kind] ?? i.kind,
   ]
     .filter(Boolean)
-    .join(' ')
+    .join(" ")
     .toLowerCase();
 }
 
-function InboxRowIcon({ kind }: { kind: AttentionItem['kind'] }) {
-  if (kind === 'plan-item') return <ClipboardList size={17} aria-hidden="true" />;
-  if (kind === 'blocked-session' || kind === 'conversation') {
+function InboxRowIcon({ kind }: { kind: AttentionItem["kind"] }) {
+  if (kind === "plan-item")
+    return <ClipboardList size={17} aria-hidden="true" />;
+  if (kind === "blocked-session" || kind === "conversation") {
     return <MessageCircle size={17} aria-hidden="true" />;
   }
   return <InboxIcon size={17} aria-hidden="true" />;
@@ -278,29 +295,41 @@ function InboxRowIcon({ kind }: { kind: AttentionItem['kind'] }) {
 export default function InboxPane() {
   const { items, loading, error, refresh } = useInboxAttention();
   const [filter, setFilter] = useQueryState(
-    'opci',
-    parseAsStringLiteral(FILTERS).withDefault('needs'),
+    "opci",
+    parseAsStringLiteral(FILTERS).withDefault("needs"),
   );
-  const [sel, setSel] = useQueryState('opcis', parseAsString);
+  const [sel, setSel] = useQueryState("opcis", parseAsString);
   // Free-text search over the scoped feed (deep-linkable/agent-driveable).
-  const [query, setQuery] = useQueryState('opcq', parseAsString.withDefault(''));
+  const [query, setQuery] = useQueryState(
+    "opcq",
+    parseAsString.withDefault(""),
+  );
   // Selected kind facets — comma-joined kind ids (a QueueFilterBar-style
   // per-kind narrowing). Empty ⇒ all kinds.
-  const [kindsParam, setKindsParam] = useQueryState('opck', parseAsString.withDefault(''));
+  const [kindsParam, setKindsParam] = useQueryState(
+    "opck",
+    parseAsString.withDefault(""),
+  );
   // Sort order over the filtered set (WI-40982).
   const [sort, setSort] = useQueryState(
-    'opcsort',
+    "opcsort",
     parseAsStringLiteral(INBOX_SORT_IDS).withDefault(DEFAULT_INBOX_SORT),
   );
   // The BULK RESOLVE run being shown (inbox-bulk-resolve-2026-08-23 P-006).
   // In the URL like every other pane selection, so a run is deep-linkable and
   // agent-driveable; empty ⇒ the strip reads the workspace's LATEST run, which
   // is what "is there a run I should be showing?" actually means on open.
-  const [bulkRunId, setBulkRunId] = useQueryState(INBOX_BULK_RUN_PARAM, parseAsString);
+  const [bulkRunId, setBulkRunId] = useQueryState(
+    INBOX_BULK_RUN_PARAM,
+    parseAsString,
+  );
   // The "chat-grade session context" popup (P-007): which agent's live session
   // to show, keyed by ownerAgentId.
-  const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
-  const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
+  const [chatOwner, setChatOwner] = useQueryState("opcsession", parseAsString);
+  const [, setOpenWorkItem] = useQueryState(
+    CHAT_WORK_ITEM_POPUP_PARAM,
+    parseAsString,
+  );
   const [discussionRef, setDiscussionRef] = useQueryState(
     WORK_ITEM_DISCUSSION_PARAM,
     parseAsString,
@@ -316,10 +345,10 @@ export default function InboxPane() {
     view: parseAsString,
   });
   const openQueue = useCallback(() => {
-    if (window.location.pathname.startsWith('/adv')) {
-      void setQueueParams({ tab: 'plans', view: 'queue' });
+    if (window.location.pathname.startsWith("/adv")) {
+      void setQueueParams({ tab: "plans", view: "queue" });
     } else {
-      window.location.assign('/adv?tab=plans&view=queue');
+      window.location.assign("/adv?tab=plans&view=queue");
     }
   }, [setQueueParams]);
 
@@ -343,11 +372,14 @@ export default function InboxPane() {
 
   const onNavigate = useCallback(
     (i: AttentionItem, actionId: AttentionActionId) => {
-      if ((actionId === 'message-owner' || actionId === 'chat') && i.ownerAgentId) {
+      if (
+        (actionId === "message-owner" || actionId === "chat") &&
+        i.ownerAgentId
+      ) {
         void setChatOwner(i.ownerAgentId);
         return true;
       }
-      if (actionId === 'open') {
+      if (actionId === "open") {
         const workItemId = attentionWorkItemId(i);
         if (workItemId && i.harnessSlug) {
           void setOpenWorkItem(encodeScopedRef(i.harnessSlug, workItemId));
@@ -356,7 +388,7 @@ export default function InboxPane() {
         openQueue();
         return true;
       }
-      if (actionId === 'view-log') {
+      if (actionId === "view-log") {
         // The Queue owns the source-specific smoke/log drill-ins. This is an
         // honest navigation, not the previous toast-only pseudo-action.
         openQueue();
@@ -373,7 +405,13 @@ export default function InboxPane() {
   const scoped = useMemo(() => scopeInboxItems(items), [items]);
 
   const selectedKinds = useMemo(
-    () => new Set(kindsParam.split(',').map((s) => s.trim()).filter(Boolean)),
+    () =>
+      new Set(
+        kindsParam
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
     [kindsParam],
   );
   const q = query.trim().toLowerCase();
@@ -383,18 +421,22 @@ export default function InboxPane() {
       const next = new Set(selectedKinds);
       if (next.has(kind)) next.delete(kind);
       else next.add(kind);
-      void setKindsParam([...next].join(','));
+      void setKindsParam([...next].join(","));
     },
     [selectedKinds, setKindsParam],
   );
 
   // Tier-chip counts (Needs / Alerts / All) over the SCOPED set.
   const counts = useMemo(() => {
-    const c: Record<InboxFilter, number> = { needs: 0, alerts: 0, all: scoped.length };
+    const c: Record<InboxFilter, number> = {
+      needs: 0,
+      alerts: 0,
+      all: scoped.length,
+    };
     for (const i of scoped) {
       const tier = effectiveTier(i);
-      if (tier === 'decision') c.needs += 1;
-      else if (tier === 'alert') c.alerts += 1;
+      if (tier === "decision") c.needs += 1;
+      else if (tier === "alert") c.alerts += 1;
     }
     return c;
   }, [scoped]);
@@ -406,7 +448,11 @@ export default function InboxPane() {
     const byKind = new Map<string, number>();
     for (const i of scoped) byKind.set(i.kind, (byKind.get(i.kind) ?? 0) + 1);
     return [...byKind.entries()]
-      .map(([id, count]) => ({ id, count, label: KIND_LABEL[id as AttentionItem['kind']] ?? id }))
+      .map(([id, count]) => ({
+        id,
+        count,
+        label: KIND_LABEL[id as AttentionItem["kind"]] ?? id,
+      }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [scoped]);
 
@@ -431,8 +477,8 @@ export default function InboxPane() {
   const visible = useMemo(() => {
     const filtered = scoped.filter((i) => {
       const tier = effectiveTier(i);
-      if (filter === 'needs' && tier !== 'decision') return false;
-      if (filter === 'alerts' && tier !== 'alert') return false;
+      if (filter === "needs" && tier !== "decision") return false;
+      if (filter === "alerts" && tier !== "alert") return false;
       if (selectedKinds.size > 0 && !selectedKinds.has(i.kind)) return false;
       if (q && !searchHaystack(i).includes(q)) return false;
       return true;
@@ -477,12 +523,18 @@ export default function InboxPane() {
     // resolver's text for this accept, so "Edit then Accept" delivers what they
     // actually wrote — a draft the owner corrected and that was then sent
     // unedited would be the worst possible outcome of offering the edit at all.
-    async (item: AttentionItem, rec: BulkRunItem, draftOverride?: string | null) => {
-      if (!bulk.run) return { ok: false, error: 'no active run' };
+    async (
+      item: AttentionItem,
+      rec: BulkRunItem,
+      draftOverride?: string | null,
+    ) => {
+      if (!bulk.run) return { ok: false, error: "no active run" };
       setAcceptingCount((n) => n + 1);
       try {
         const effective =
-          draftOverride === undefined ? rec : { ...rec, draftAnswer: draftOverride };
+          draftOverride === undefined
+            ? rec
+            : { ...rec, draftAnswer: draftOverride };
         const res = await acceptRecommendation(bulk.run.runId, item, effective);
         // A resolved row is about to leave the live feed — the same cleanup a
         // hand resolve does, through the same callback.
@@ -537,7 +589,7 @@ export default function InboxPane() {
     if (sel === lastScrolledSel.current) return;
     const idx = visible.findIndex((i) => i.id === sel);
     if (idx >= 0) {
-      rowVirtualizer.scrollToIndex(idx, { align: 'center' });
+      rowVirtualizer.scrollToIndex(idx, { align: "center" });
       lastScrolledSel.current = sel;
     }
   }, [sel, visible, rowVirtualizer]);
@@ -545,329 +597,370 @@ export default function InboxPane() {
   return (
     <div className="op-inbox" data-testid="inbox-tab">
       <section className="op-inbox__master" aria-label="Resolution inbox items">
-      <header className="op-inbox__masthead">
-        <span className="op-inbox__masthead-icon" aria-hidden="true">
-          <InboxIcon size={18} />
-        </span>
-        <span className="op-inbox__masthead-copy">
-          <strong>Needs you</strong>
-          <span>Resolve every owner-blocked item in one place.</span>
-        </span>
-        <span
-          className="op-inbox__masthead-count"
-          aria-label={`${counts.needs} items need you`}
-        >
-          {counts.needs}
-        </span>
-      </header>
-      {/* BULK RESOLVE command strip (P-006, direction A): between the masthead
+        <header className="op-inbox__masthead">
+          <span className="op-inbox__masthead-icon" aria-hidden="true">
+            <InboxIcon size={18} />
+          </span>
+          <span className="op-inbox__masthead-copy">
+            <strong>Needs you</strong>
+            <span>Resolve every owner-blocked item in one place.</span>
+          </span>
+          <span
+            className="op-inbox__masthead-count"
+            aria-label={`${counts.needs} items need you`}
+          >
+            {counts.needs}
+          </span>
+        </header>
+        {/* BULK RESOLVE command strip (P-006, direction A): between the masthead
           and the toolbar — above the filters it acts on, so what it will act on
           is what is on screen when it is pressed. */}
-      {bulkEnabled ? (
-        <InboxBulkStrip
-          visible={visible}
-          filterSnapshot={bulkFilterSnapshot}
-          run={bulk.run}
-          items={bulk.items}
-          recommendations={bulk.recommendations}
-          unreached={bulk.unreached}
-          isRunning={bulk.isRunning}
-          isReview={bulk.isReview}
-          onRunStarted={(runId) => void setBulkRunId(runId)}
-          onAcceptAll={acceptAllRecommendations}
-          acceptingCount={acceptingCount}
-        />
-      ) : null}
-      {/* Search + collapsible kind-facet filter (mimics the Queue's QueueFilterBar). */}
-      <div className="op-inbox__toolbar">
-        <div className="op-inbox__search">
-          <Search size={13} aria-hidden="true" className="op-inbox__search-icon" />
-          <input
-            type="text"
-            className="op-inbox__search-input"
-            placeholder="Search blockers…"
-            value={query}
-            data-testid="inbox-search"
-            aria-label="Search inbox"
-            onChange={(e) => void setQuery(e.target.value)}
+        {bulkEnabled ? (
+          <InboxBulkStrip
+            visible={visible}
+            filterSnapshot={bulkFilterSnapshot}
+            run={bulk.run}
+            items={bulk.items}
+            recommendations={bulk.recommendations}
+            unreached={bulk.unreached}
+            isRunning={bulk.isRunning}
+            isReview={bulk.isReview}
+            onRunStarted={(runId) => void setBulkRunId(runId)}
+            onAcceptAll={acceptAllRecommendations}
+            acceptingCount={acceptingCount}
           />
-          {query ? (
-            <button
-              type="button"
-              className="op-inbox__search-clear"
-              aria-label="Clear search"
-              data-testid="inbox-search-clear"
-              onClick={() => void setQuery('')}
-            >
-              <X size={13} aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
-        {/* Sort picker — the shared Radix Select (native <select> is banned by
+        ) : null}
+        {/* Search + collapsible kind-facet filter (mimics the Queue's QueueFilterBar). */}
+        <div className="op-inbox__toolbar">
+          <div className="op-inbox__search">
+            <Search
+              size={13}
+              aria-hidden="true"
+              className="op-inbox__search-icon"
+            />
+            <input
+              type="text"
+              className="op-inbox__search-input"
+              placeholder="Search blockers…"
+              value={query}
+              data-testid="inbox-search"
+              aria-label="Search inbox"
+              onChange={(e) => void setQuery(e.target.value)}
+            />
+            {query ? (
+              <button
+                type="button"
+                className="op-inbox__search-clear"
+                aria-label="Clear search"
+                data-testid="inbox-search-clear"
+                onClick={() => void setQuery("")}
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+          {/* Sort picker — the shared Radix Select (native <select> is banned by
             _lints/design-primitives), standing where the retired "Kinds" toggle
             was. A fixed toolbar slot: putting it down with the facet chips
             would let it move every time the chip row rewraps. */}
-        <Select
-          value={sort}
-          onChange={(v) =>
-            void setSort(v === DEFAULT_INBOX_SORT ? null : (v as InboxSort))
-          }
-          options={INBOX_SORTS.map((s) => ({ value: s.id, label: s.label }))}
-          ariaLabel="Sort inbox"
-          testId="inbox-sort"
-          triggerClassName="op-inbox__sort"
-          align="end"
-          triggerChildren={
-            <>
-              <ArrowUpDown size={13} aria-hidden="true" />
-              <span className="op-inbox__sort-label">{inboxSortLabel(sort)}</span>
-              <ChevronDown size={11} aria-hidden="true" />
-            </>
-          }
-        />
-      </div>
+          <Select
+            value={sort}
+            onChange={(v) =>
+              void setSort(v === DEFAULT_INBOX_SORT ? null : (v as InboxSort))
+            }
+            options={INBOX_SORTS.map((s) => ({ value: s.id, label: s.label }))}
+            ariaLabel="Sort inbox"
+            testId="inbox-sort"
+            triggerClassName="op-inbox__sort"
+            align="end"
+            triggerChildren={
+              <>
+                <ArrowUpDown size={13} aria-hidden="true" />
+                <span className="op-inbox__sort-label">
+                  {inboxSortLabel(sort)}
+                </span>
+                <ChevronDown size={11} aria-hidden="true" />
+              </>
+            }
+          />
+        </div>
 
-      <div className="op-inbox__chips" aria-label="Inbox filter">
-        {FILTERS.map((f) => (
-          <button
-            key={f}
-            type="button"
-            className={`op-inbox__chip${filter === f ? ' is-active' : ''}`}
-            aria-pressed={filter === f}
-            data-testid={`inbox-filter-${f}`}
-            onClick={() => void setFilter(f)}
-          >
-            {FILTER_LABEL[f]}
-            <span className="op-inbox__chip-count">{counts[f]}</span>
-          </button>
-        ))}
-      </div>
-
-      {/* Always open (WI-40982) — no disclosure, no toggle. Still conditional on
-          HAVING facets: an empty scoped feed has no kinds to chip. */}
-      {kindFacets.length > 0 ? (
-        <div className="op-inbox__facets" aria-label="Filter by kind">
-          {selectedKinds.size > 0 ? (
+        <div className="op-inbox__chips" aria-label="Inbox filter">
+          {FILTERS.map((f) => (
             <button
+              key={f}
               type="button"
-              className="op-inbox__facet op-inbox__facet--clear"
-              onClick={() => void setKindsParam('')}
-              data-testid="inbox-facet-clear"
+              className={`op-inbox__chip${filter === f ? " is-active" : ""}`}
+              aria-pressed={filter === f}
+              data-testid={`inbox-filter-${f}`}
+              onClick={() => void setFilter(f)}
             >
-              Clear kinds
+              {FILTER_LABEL[f]}
+              <span className="op-inbox__chip-count">{counts[f]}</span>
             </button>
-          ) : null}
-          {kindFacets.map((k) => {
-            const active = selectedKinds.has(k.id);
-            return (
+          ))}
+        </div>
+
+        {/* Always open (WI-40982) — no disclosure, no toggle. Still conditional on
+          HAVING facets: an empty scoped feed has no kinds to chip. */}
+        {kindFacets.length > 0 ? (
+          <div className="op-inbox__facets" aria-label="Filter by kind">
+            {selectedKinds.size > 0 ? (
               <button
-                key={k.id}
                 type="button"
-                className={`op-inbox__facet${active ? ' is-active' : ''}`}
-                aria-pressed={active}
-                data-testid={`inbox-facet-${k.id}`}
-                onClick={() => toggleKind(k.id)}
+                className="op-inbox__facet op-inbox__facet--clear"
+                onClick={() => void setKindsParam("")}
+                data-testid="inbox-facet-clear"
               >
-                <span className="op-inbox__facet-label">{k.label}</span>
-                <span className="op-inbox__facet-count">{k.count}</span>
+                Clear kinds
               </button>
-            );
-          })}
-        </div>
-      ) : null}
+            ) : null}
+            {kindFacets.map((k) => {
+              const active = selectedKinds.has(k.id);
+              return (
+                <button
+                  key={k.id}
+                  type="button"
+                  className={`op-inbox__facet${active ? " is-active" : ""}`}
+                  aria-pressed={active}
+                  data-testid={`inbox-facet-${k.id}`}
+                  onClick={() => toggleKind(k.id)}
+                >
+                  <span className="op-inbox__facet-label">{k.label}</span>
+                  <span className="op-inbox__facet-count">{k.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
 
-      {error ? (
-        <div className="op-inbox__error" role="alert">
-          <span>Could not load the Resolution Inbox: {error}</span>
-          <button type="button" onClick={refresh}>Retry</button>
-        </div>
-      ) : null}
-      {loading && items.length === 0 ? (
-        <div className="op-inbox__loading" data-testid="inbox-loading">Loading blockers…</div>
-      ) : null}
-      {!loading && !error && visible.length === 0 ? (
-        <div className="op-inbox__empty" data-testid="inbox-empty">
-          <InboxIcon size={20} className="op-inbox__empty-icon" aria-hidden="true" />
-          <strong>{q || selectedKinds.size > 0 ? 'No matches' : 'Inbox zero'}</strong>
-          <span>
-            {q || selectedKinds.size > 0
-              ? 'Nothing matches the current filters.'
-              : filter === 'needs'
-                ? 'Nothing needs you. New decisions and owner walls will land here.'
-                : 'Nothing here right now.'}
-          </span>
-        </div>
-      ) : null}
+        {error ? (
+          <div className="op-inbox__error" role="alert">
+            <span>Could not load the Resolution Inbox: {error}</span>
+            <button type="button" onClick={refresh}>
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {loading && items.length === 0 ? (
+          <div className="op-inbox__loading" data-testid="inbox-loading">
+            Loading blockers…
+          </div>
+        ) : null}
+        {!loading && !error && visible.length === 0 ? (
+          <div className="op-inbox__empty" data-testid="inbox-empty">
+            <InboxIcon
+              size={20}
+              className="op-inbox__empty-icon"
+              aria-hidden="true"
+            />
+            <strong>
+              {q || selectedKinds.size > 0 ? "No matches" : "Inbox zero"}
+            </strong>
+            <span>
+              {q || selectedKinds.size > 0
+                ? "Nothing matches the current filters."
+                : filter === "needs"
+                  ? "Nothing needs you. New decisions and owner walls will land here."
+                  : "Nothing here right now."}
+            </span>
+          </div>
+        ) : null}
 
-      <div className="op-inbox__list" ref={listRef}>
-        <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
-          {rowVirtualizer.getVirtualItems().map((vi) => {
-            const i = visible[vi.index]!;
-            const isSel = i.id === sel;
-            const tier = effectiveTier(i);
-            const bulkRow = bulkEnabled ? bulk.byItemId.get(i.id) : undefined;
-            const meta = [i.ownerLabel ?? i.ownerAgentId, i.planSlug ?? i.harnessSlug]
-              .filter(Boolean)
-              .join(' · ');
-            const rel = formatRelativeDate(i.occurredAt);
-            const abs = formatAbsoluteDate(i.occurredAt);
-            return (
-              <div
-                key={vi.key}
-                data-index={vi.index}
-                ref={rowVirtualizer.measureElement}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  paddingBottom: 4,
-                  transform: `translateY(${vi.start}px)`,
-                }}
-              >
-                <div className={`op-inbox__row op-inbox__row--${tier}${isSel ? ' is-selected' : ''}`}>
-              <div className="op-inbox__row-summary">
-              <span className="op-inbox__row-icon" aria-hidden="true">
-                <InboxRowIcon kind={i.kind} />
-              </span>
-              {/* A `div` (not `button`) — the row nests a real chat-launch
+        <div className="op-inbox__list" ref={listRef}>
+          <div
+            style={{
+              height: rowVirtualizer.getTotalSize(),
+              position: "relative",
+              width: "100%",
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((vi) => {
+              const i = visible[vi.index]!;
+              const isSel = i.id === sel;
+              const tier = effectiveTier(i);
+              const bulkRow = bulkEnabled ? bulk.byItemId.get(i.id) : undefined;
+              const meta = [
+                i.ownerLabel ?? i.ownerAgentId,
+                i.planSlug ?? i.harnessSlug,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              const rel = formatRelativeDate(i.occurredAt);
+              const abs = formatAbsoluteDate(i.occurredAt);
+              return (
+                <div
+                  key={vi.key}
+                  data-index={vi.index}
+                  ref={rowVirtualizer.measureElement}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    paddingBottom: 4,
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
+                  <div
+                    className={`op-inbox__row op-inbox__row--${tier}${isSel ? " is-selected" : ""}`}
+                  >
+                    <div className="op-inbox__row-summary">
+                      <span className="op-inbox__row-icon" aria-hidden="true">
+                        <InboxRowIcon kind={i.kind} />
+                      </span>
+                      {/* A `div` (not `button`) — the row nests a real chat-launch
                   <button>, and nested interactive elements are invalid HTML. */}
-              <div
-                role="button"
-                tabIndex={0}
-                className="op-inbox__rowbtn"
-                data-testid={`inbox-row-${i.id}`}
-                aria-expanded={isSel}
-                aria-controls={`inbox-expanded-${i.id}`}
-                onClick={() => void setSel(isSel ? null : i.id)}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter' && e.key !== ' ') return;
-                  e.preventDefault();
-                  void setSel(isSel ? null : i.id);
-                }}
-              >
-                <span className="op-inbox__rowhead">
-                  <span
-                    className={`op-inbox__tierdot op-inbox__tierdot--${tier}`}
-                    title={TIER_LABEL[tier]}
-                    aria-label={TIER_LABEL[tier]}
-                  />
-                  <span className="op-inbox__kind">{KIND_LABEL[i.kind] ?? i.kind}</span>
-                  {meta ? <span className="op-inbox__meta">{meta}</span> : null}
-                  <span className="op-inbox__rowhead-spacer" />
-                  {/* What the bulk run did to THIS row. Shown for every non-
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        className="op-inbox__rowbtn"
+                        data-testid={`inbox-row-${i.id}`}
+                        aria-expanded={isSel}
+                        aria-controls={`inbox-expanded-${i.id}`}
+                        onClick={() => void setSel(isSel ? null : i.id)}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter" && e.key !== " ") return;
+                          e.preventDefault();
+                          void setSel(isSel ? null : i.id);
+                        }}
+                      >
+                        <span className="op-inbox__rowhead">
+                          <span
+                            className={`op-inbox__tierdot op-inbox__tierdot--${tier}`}
+                            title={TIER_LABEL[tier]}
+                            aria-label={TIER_LABEL[tier]}
+                          />
+                          <span className="op-inbox__kind">
+                            {KIND_LABEL[i.kind] ?? i.kind}
+                          </span>
+                          {meta ? (
+                            <span className="op-inbox__meta">{meta}</span>
+                          ) : null}
+                          <span className="op-inbox__rowhead-spacer" />
+                          {/* What the bulk run did to THIS row. Shown for every non-
                       pending outcome, including `skipped` and `failed`: an item
                       the resolver could not judge must read differently from one
                       it never looked at. */}
-                  {bulkRow && bulkRow.outcome !== 'pending' ? (
-                    <span
-                      className={`op-inbox__rowstate op-inbox__rowstate--${bulkRow.outcome}`}
-                      data-testid={`inbox-bulk-state-${i.id}`}
-                      title={bulkRow.rationale ?? bulkRow.error ?? undefined}
-                    >
-                      {BULK_OUTCOME_LABEL[bulkRow.outcome]}
-                    </span>
-                  ) : null}
-                  {rel ? (
-                    <Tooltip label={abs ?? rel}>
-                      <span className="op-inbox__date" data-testid={`inbox-date-${i.id}`}>
-                        {rel}
-                      </span>
-                    </Tooltip>
-                  ) : null}
-                  {i.ownerAgentId ? (
-                    <Tooltip label="Open live chat with the originating agent">
-                      <button
-                        type="button"
-                        className="op-inbox__chat-button"
-                        data-testid={`inbox-chat-open-${i.id}`}
-                        aria-label={`Open live chat with ${i.ownerLabel ?? i.ownerAgentId}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void setChatOwner(i.ownerAgentId ?? null);
-                        }}
-                      >
-                        <MessageCircle size={13} aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  ) : null}
-                </span>
-                <span className="op-inbox__title">{i.title}</span>
-                <span className="op-inbox__status">{i.status}</span>
-                <ChevronRight className="op-inbox__row-chevron" size={16} aria-hidden="true" />
-              </div>
-              </div>
-              {/* The pre-picked resolution, in the row it belongs to (D-003).
+                          {bulkRow && bulkRow.outcome !== "pending" ? (
+                            <span
+                              className={`op-inbox__rowstate op-inbox__rowstate--${bulkRow.outcome}`}
+                              data-testid={`inbox-bulk-state-${i.id}`}
+                              title={
+                                bulkRow.rationale ?? bulkRow.error ?? undefined
+                              }
+                            >
+                              {BULK_OUTCOME_LABEL[bulkRow.outcome]}
+                            </span>
+                          ) : null}
+                          {rel ? (
+                            <Tooltip label={abs ?? rel}>
+                              <span
+                                className="op-inbox__date"
+                                data-testid={`inbox-date-${i.id}`}
+                              >
+                                {rel}
+                              </span>
+                            </Tooltip>
+                          ) : null}
+                          {i.ownerAgentId ? (
+                            <Tooltip label="Open live chat with the originating agent">
+                              <button
+                                type="button"
+                                className="op-inbox__chat-button"
+                                data-testid={`inbox-chat-open-${i.id}`}
+                                aria-label={`Open live chat with ${i.ownerLabel ?? i.ownerAgentId}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void setChatOwner(i.ownerAgentId ?? null);
+                                }}
+                              >
+                                <MessageCircle size={13} aria-hidden="true" />
+                              </button>
+                            </Tooltip>
+                          ) : null}
+                        </span>
+                        <span className="op-inbox__title">{i.title}</span>
+                        <span className="op-inbox__status">{i.status}</span>
+                        <ChevronRight
+                          className="op-inbox__row-chevron"
+                          size={16}
+                          aria-hidden="true"
+                        />
+                      </div>
+                    </div>
+                    {/* The pre-picked resolution, in the row it belongs to (D-003).
                   Rendered whenever this row still carries a recommendation —
                   NOT gated on selection: the review pass is reading several at
                   once, and making the owner expand each one to see what was
                   recommended would turn a one-screen review into N clicks. */}
-              {bulkRow?.outcome === 'recommended' && bulk.isReview ? (
-                <InboxBulkRecommendation
-                  item={i}
-                  rec={bulkRow}
-                  busy={acceptingCount > 0}
-                  onAccept={(draftOverride) =>
-                    acceptOneRecommendation(i, bulkRow, draftOverride)
-                  }
-                  onDiscuss={() => void onDiscuss(i)}
-                />
-              ) : null}
-              {isSel ? (
-                <div
-                  id={`inbox-expanded-${i.id}`}
-                  className="op-inbox__detail"
-                  data-testid={`inbox-expanded-${i.id}`}
-                >
-                  <OtherDetail
-                    key={i.id}
-                    item={i}
-                    actionsPlacement="after-body"
-                    onResolved={onResolved}
-                    onDiscuss={onDiscuss}
-                    onNavigate={onNavigate}
-                  />
-                  {(() => {
-                    const workItemId = attentionWorkItemId(i);
-                    const harnessMatches =
-                      !discussionTarget.harness || discussionTarget.harness === i.harnessSlug;
-                    if (
-                      !workItemId ||
-                      !i.harnessSlug ||
-                      discussionTarget.id !== workItemId ||
-                      !harnessMatches
-                    ) {
-                      return null;
-                    }
-                    return (
-                      <WorkItemDiscussion
-                        harnessSlug={i.harnessSlug}
-                        workItemId={workItemId}
-                        title={i.title}
-                        onClose={() => void setDiscussionRef(null)}
+                    {bulkRow?.outcome === "recommended" && bulk.isReview ? (
+                      <InboxBulkRecommendation
+                        item={i}
+                        rec={bulkRow}
+                        busy={acceptingCount > 0}
+                        onAccept={(draftOverride) =>
+                          acceptOneRecommendation(i, bulkRow, draftOverride)
+                        }
+                        onDiscuss={() => void onDiscuss(i)}
                       />
-                    );
-                  })()}
+                    ) : null}
+                    {isSel ? (
+                      <div
+                        id={`inbox-expanded-${i.id}`}
+                        className="op-inbox__detail"
+                        data-testid={`inbox-expanded-${i.id}`}
+                      >
+                        <OtherDetail
+                          key={i.id}
+                          item={i}
+                          actionsPlacement="after-body"
+                          onResolved={onResolved}
+                          onDiscuss={onDiscuss}
+                          onNavigate={onNavigate}
+                        />
+                        {(() => {
+                          const workItemId = attentionWorkItemId(i);
+                          const harnessMatches =
+                            !discussionTarget.harness ||
+                            discussionTarget.harness === i.harnessSlug;
+                          if (
+                            !workItemId ||
+                            !i.harnessSlug ||
+                            discussionTarget.id !== workItemId ||
+                            !harnessMatches
+                          ) {
+                            return null;
+                          }
+                          return (
+                            <WorkItemDiscussion
+                              harnessSlug={i.harnessSlug}
+                              workItemId={workItemId}
+                              title={i.title}
+                              onClose={() => void setDiscussionRef(null)}
+                            />
+                          );
+                        })()}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
-              ) : null}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
-      </div>
 
-      <div className="op-inbox__foot">
-        <span>{visible.length} shown</span>
-        <button
-          type="button"
-          className="op-inbox__queue-link"
-          data-testid="inbox-open-queue"
-          onClick={openQueue}
-        >
-          Open full queue →
-        </button>
-      </div>
+        <div className="op-inbox__foot">
+          <span>{visible.length} shown</span>
+          <button
+            type="button"
+            className="op-inbox__queue-link"
+            data-testid="inbox-open-queue"
+            onClick={openQueue}
+          >
+            Open full queue →
+          </button>
+        </div>
       </section>
 
       <SessionChatModal

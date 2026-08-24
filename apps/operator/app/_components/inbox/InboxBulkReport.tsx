@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * Grouped Inbox bulk-resolve report (cleanup-report-flows-2026-08-24 P-008).
@@ -9,77 +9,104 @@
  * existing InboxBulkRecommendation remains the per-row drill-in; its expensive
  * detail-tier attention read mounts only when that drill-in is opened.
  */
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
-import type { AttentionItem } from '@/app/admin/plans/plans-api';
-import { useHydratedAttentionItem } from '@/app/admin/plans/plans-api';
-import { isNavigateAction } from '@/app/admin/plans/attention-card';
-import { KIND_LABEL } from '@/app/admin/plans/PlanOtherList';
+import { useCallback, useMemo, useState, type ReactNode } from "react";
+import type { AttentionItem } from "@/app/admin/plans/plans-api";
+import { useHydratedAttentionItem } from "@/app/admin/plans/plans-api";
+import { isNavigateAction } from "@/app/admin/plans/attention-card";
+import { KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
 import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
   type ReviewRowStatus,
-} from '../review-report/ReviewReportShell';
-import InboxBulkRecommendation from './InboxBulkRecommendation';
+} from "../review-report/ReviewReportShell";
+import InboxBulkRecommendation from "./InboxBulkRecommendation";
 import {
   deriveRunCounts,
   useBulkRunOps,
   type BulkAcceptResult,
   type BulkRun,
   type BulkRunItem,
-} from './use-inbox-bulk-run';
-import './inbox-bulk-report.css';
+} from "./use-inbox-bulk-run";
+import "./inbox-bulk-report.css";
 
 function humanize(value: string): string {
   return value
-    .replace(/[-_]+/g, ' ')
+    .replace(/[-_]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function itemKind(item: AttentionItem | undefined, runItem: BulkRunItem): string {
-  return item?.kind ?? runItem.kind ?? 'unknown';
+function itemKind(
+  item: AttentionItem | undefined,
+  runItem: BulkRunItem,
+): string {
+  return item?.kind ?? runItem.kind ?? "unknown";
 }
 
 function kindLabel(kind: string): string {
   return (KIND_LABEL as Record<string, string>)[kind] ?? humanize(kind);
 }
 
-function actionLabel(item: AttentionItem | undefined, runItem: BulkRunItem): string {
+function actionLabel(
+  item: AttentionItem | undefined,
+  runItem: BulkRunItem,
+): string {
   const action = runItem.actionId;
   if (action) {
-    return item?.actions?.find((candidate) => candidate.id === action)?.label ?? humanize(action);
+    return (
+      item?.actions?.find((candidate) => candidate.id === action)?.label ??
+      humanize(action)
+    );
   }
-  if (runItem.outcome === 'pending') return 'Not reached';
-  if (runItem.outcome === 'skipped') return 'Skipped';
-  if (runItem.outcome === 'failed') return 'Failed';
-  return 'Resolved';
+  if (runItem.outcome === "pending") return "Not reached";
+  if (runItem.outcome === "skipped") return "Skipped";
+  if (runItem.outcome === "failed") return "Failed";
+  return "Resolved";
 }
 
 function reviewStatus(
   runItem: BulkRunItem,
   locallyApplied: ReadonlySet<string>,
 ): ReviewRowStatus {
-  if (locallyApplied.has(runItem.itemId) || runItem.outcome === 'auto_resolved') return 'applied';
-  if (runItem.outcome === 'recommended' || runItem.outcome === 'pending') return 'pending';
-  return 'dismissed';
+  if (locallyApplied.has(runItem.itemId) || runItem.outcome === "auto_resolved")
+    return "applied";
+  if (runItem.outcome === "recommended" || runItem.outcome === "pending")
+    return "pending";
+  return "dismissed";
 }
 
 function evidenceLines(runItem: BulkRunItem): string[] {
   const lines: string[] = [];
   if (runItem.rationale) lines.push(runItem.rationale);
   if (runItem.consulted) {
-    lines.push(runItem.consultReply ? 'Asker replied during consultation.' : 'Asker did not reply during consultation.');
+    lines.push(
+      runItem.consultReply
+        ? "Asker replied during consultation."
+        : "Asker did not reply during consultation.",
+    );
   }
   if (runItem.error) lines.push(`error · ${runItem.error}`);
   if (runItem.actionId) lines.push(`recommended action · ${runItem.actionId}`);
   return lines.length > 0 ? lines : [`run position · ${runItem.position + 1}`];
 }
 
-function fallbackDetail(runItem: BulkRunItem, localError: string | undefined): ReactNode {
-  if (localError) return <span className="inbox-bulk-report__row-error">{localError}</span>;
-  if (runItem.outcome === 'pending') return 'The resolver did not reach this item before the run settled.';
-  if (runItem.outcome === 'skipped') return runItem.rationale ?? 'The resolver could not safely recommend an action.';
-  if (runItem.outcome === 'failed') return runItem.error ?? 'The resolver failed while evaluating this item.';
-  if (runItem.outcome === 'auto_resolved') return runItem.rationale ?? 'Resolved automatically with recorded evidence.';
+function fallbackDetail(
+  runItem: BulkRunItem,
+  localError: string | undefined,
+): ReactNode {
+  if (localError)
+    return <span className="inbox-bulk-report__row-error">{localError}</span>;
+  if (runItem.outcome === "pending")
+    return "The resolver did not reach this item before the run settled.";
+  if (runItem.outcome === "skipped")
+    return (
+      runItem.rationale ?? "The resolver could not safely recommend an action."
+    );
+  if (runItem.outcome === "failed")
+    return runItem.error ?? "The resolver failed while evaluating this item.";
+  if (runItem.outcome === "auto_resolved")
+    return (
+      runItem.rationale ?? "Resolved automatically with recorded evidence."
+    );
   return null;
 }
 
@@ -93,7 +120,9 @@ export function buildInboxBulkReviewGroups(
   detailFor?: (item: AttentionItem, runItem: BulkRunItem) => ReactNode,
 ): ReviewReportGroup[] {
   const grouped = new Map<string, ReviewReportGroup>();
-  const ordered = [...runItems].sort((a, b) => a.position - b.position || a.itemId.localeCompare(b.itemId));
+  const ordered = [...runItems].sort(
+    (a, b) => a.position - b.position || a.itemId.localeCompare(b.itemId),
+  );
 
   for (const runItem of ordered) {
     const item = attentionById.get(runItem.itemId);
@@ -113,16 +142,22 @@ export function buildInboxBulkReviewGroups(
 
     const status = reviewStatus(runItem, locallyApplied);
     const localError = localErrors.get(runItem.itemId);
-    const hasAction = Boolean(runItem.actionId) && !isNavigateAction(runItem.actionId!);
+    const hasAction =
+      Boolean(runItem.actionId) && !isNavigateAction(runItem.actionId!);
     const row: ReviewReportRow = {
       id: runItem.itemId,
       title: item?.title ?? runItem.title ?? runItem.itemId,
       evidence: evidenceLines(runItem),
-      confidence: runItem.outcome === 'auto_resolved' ? 'provable' : 'recommended',
+      confidence:
+        runItem.outcome === "auto_resolved" ? "provable" : "recommended",
       status,
-      selectable: status === 'pending' && runItem.outcome === 'recommended' && hasAction && Boolean(item),
+      selectable:
+        status === "pending" &&
+        runItem.outcome === "recommended" &&
+        hasAction &&
+        Boolean(item),
       detail:
-        runItem.outcome === 'recommended' && item && detailFor
+        runItem.outcome === "recommended" && item && detailFor
           ? detailFor(item, runItem)
           : fallbackDetail(runItem, localError),
     };
@@ -136,7 +171,9 @@ interface HydratedRecommendationProps {
   listItem: AttentionItem;
   runItem: BulkRunItem;
   busy: boolean;
-  onAccept: (draftOverride: string | null) => Promise<{ ok: boolean; error?: string }>;
+  onAccept: (
+    draftOverride: string | null,
+  ) => Promise<{ ok: boolean; error?: string }>;
   onDiscuss?: () => void;
 }
 
@@ -150,7 +187,11 @@ function HydratedRecommendation({
   const hydrated = useHydratedAttentionItem(listItem);
   if (!hydrated.hydrated || !hydrated.item) {
     return (
-      <span className="inbox-bulk-report__detail-loading" role="status" aria-live="polite">
+      <span
+        className="inbox-bulk-report__detail-loading"
+        role="status"
+        aria-live="polite"
+      >
         Loading this item&rsquo;s live options…
       </span>
     );
@@ -170,7 +211,9 @@ export interface InboxBulkRecommendationDrillInProps extends HydratedRecommendat
 
 /** One-at-a-time detail hydration keeps a 200-row report from opening 200
  * detail subscriptions just to render its overview. */
-export function InboxBulkRecommendationDrillIn(props: InboxBulkRecommendationDrillInProps) {
+export function InboxBulkRecommendationDrillIn(
+  props: InboxBulkRecommendationDrillInProps,
+) {
   const [open, setOpen] = useState(false);
   return (
     <span className="inbox-bulk-report__drill">
@@ -181,7 +224,7 @@ export function InboxBulkRecommendationDrillIn(props: InboxBulkRecommendationDri
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        {open ? 'Hide recommendation' : 'Review recommendation'}
+        {open ? "Hide recommendation" : "Review recommendation"}
       </button>
       {open ? <HydratedRecommendation {...props} /> : null}
     </span>
@@ -208,8 +251,12 @@ export default function InboxBulkReport({
   const { acceptRecommendation, dismiss } = useBulkRunOps();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [locallyApplied, setLocallyApplied] = useState<Set<string>>(() => new Set());
-  const [localErrors, setLocalErrors] = useState<Map<string, string>>(() => new Map());
+  const [locallyApplied, setLocallyApplied] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [localErrors, setLocalErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const attentionById = useMemo(
     () => new Map(attentionItems.map((item) => [item.id, item])),
     [attentionItems],
@@ -226,11 +273,16 @@ export default function InboxBulkReport({
       draftOverride?: string | null,
     ): Promise<BulkAcceptResult> => {
       const effective =
-        draftOverride === undefined ? runItem : { ...runItem, draftAnswer: draftOverride };
+        draftOverride === undefined
+          ? runItem
+          : { ...runItem, draftAnswer: draftOverride };
       const result = await acceptRecommendation(run.runId, item, effective);
       if (!result.ok) {
         setLocalErrors((previous) =>
-          new Map(previous).set(runItem.itemId, result.error ?? 'The item did not accept that action.'),
+          new Map(previous).set(
+            runItem.itemId,
+            result.error ?? "The item did not accept that action.",
+          ),
         );
         return result;
       }
@@ -252,12 +304,16 @@ export default function InboxBulkReport({
       runItem: BulkRunItem,
       draftOverride: string | null,
     ): Promise<{ ok: boolean; error?: string }> => {
-      if (busy) return { ok: false, error: 'Another report action is already running.' };
+      if (busy)
+        return {
+          ok: false,
+          error: "Another report action is already running.",
+        };
       setBusy(true);
       setNotice(null);
       try {
         const result = await applyRecommendation(item, runItem, draftOverride);
-        if (result.phase === 'complete') onClose();
+        if (result.phase === "complete") onClose();
         return result;
       } finally {
         setBusy(false);
@@ -279,12 +335,22 @@ export default function InboxBulkReport({
             listItem={item}
             runItem={runItem}
             busy={busy}
-            onAccept={(draftOverride) => acceptSingle(item, runItem, draftOverride)}
+            onAccept={(draftOverride) =>
+              acceptSingle(item, runItem, draftOverride)
+            }
             onDiscuss={onOpenThread ? () => onOpenThread(item) : undefined}
           />
         ),
       ),
-    [runItems, attentionById, locallyApplied, localErrors, busy, acceptSingle, onOpenThread],
+    [
+      runItems,
+      attentionById,
+      locallyApplied,
+      localErrors,
+      busy,
+      acceptSingle,
+      onOpenThread,
+    ],
   );
 
   const onApply = useCallback(
@@ -303,13 +369,13 @@ export default function InboxBulkReport({
             setLocalErrors((previous) =>
               new Map(previous).set(
                 runItem.itemId,
-                'This item is no longer in the live attention feed; resolve it from the Inbox.',
+                "This item is no longer in the live attention feed; resolve it from the Inbox.",
               ),
             );
             continue;
           }
           const result = await applyRecommendation(item, runItem);
-          if (result.phase === 'complete') {
+          if (result.phase === "complete") {
             onClose();
             break;
           }
@@ -343,7 +409,8 @@ export default function InboxBulkReport({
       subtitle={
         <span className="inbox-bulk-report__subtitle">
           <span>
-            {counts.forReview} need your call · {counts.resolved} auto-resolved · {counts.skipped + counts.failed} need manual follow-up
+            {counts.forReview} need your call · {counts.resolved} auto-resolved
+            · {counts.skipped + counts.failed} need manual follow-up
           </span>
           {notice ? (
             <span role="alert" className="inbox-bulk-report__error">
@@ -360,7 +427,11 @@ export default function InboxBulkReport({
       onDismiss={() => void onDismiss()}
       footer={
         <span>
-          <strong>Resolve-first guarantee.</strong> Selected rows dispatch through the same live Inbox action path as a hand resolve, then record acceptance on the run. A failed resolve stays visible and unrecorded. Open <em>Review recommendation</em> to load the item&rsquo;s current options, edit a drafted reply, or open its discussion.
+          <strong>Resolve-first guarantee.</strong> Selected rows dispatch
+          through the same live Inbox action path as a hand resolve, then record
+          acceptance on the run. A failed resolve stays visible and unrecorded.
+          Open <em>Review recommendation</em> to load the item&rsquo;s current
+          options, edit a drafted reply, or open its discussion.
         </span>
       }
     />
