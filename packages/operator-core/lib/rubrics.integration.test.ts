@@ -237,9 +237,9 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
       by: 'author-a',
     });
     const afterPropose = await db.adminSql<
-      { seq: number; author_id: string; author_kind: string; rationale: string | null; content_snapshot: string }[]
+      { seq: number; content_hash: string; author_id: string; author_kind: string; rationale: string | null; content_snapshot: string }[]
     >`
-      SELECT seq, author_id, author_kind, rationale, content_snapshot
+      SELECT seq, content_hash, author_id, author_kind, rationale, content_snapshot
         FROM harness_shared.plan_revisions
        WHERE plan_slug = 'audited-rubric' ORDER BY seq ASC`;
     expect(afterPropose).toHaveLength(1); // the bug: this was 0
@@ -247,12 +247,23 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(afterPropose[0].author_kind).toBe('agent'); // a rubric write is an agent/Queen action
     expect(afterPropose[0].rationale).toContain('propose');
     expect(afterPropose[0].content_snapshot).toMatch(/status:\s*draft/); // proposed → draft plan
+    // The markdown plan body intentionally keeps rubric fields in template_data;
+    // the revision snapshot must nevertheless remain self-contained and retain
+    // the criterion's grading prose for forensic comparison/recovery.
+    expect(afterPropose[0].content_snapshot).toContain('Structured rubric data (`template_data`)');
+    expect(afterPropose[0].content_snapshot).toContain(sampleCriteria[0].model);
+    expect(afterPropose[0].content_snapshot).toContain(sampleCriteria[0].method);
+    expect(afterPropose[0].content_snapshot).toContain(sampleCriteria[0].driftMarkers);
+    expect(afterPropose[0].content_snapshot).toContain('"ratingScale"');
+    const [proposedPlan] = await db.adminSql<{ content_hash: string }[]>`
+      SELECT content_hash FROM harness_shared.harness_plans WHERE plan_slug = 'audited-rubric'`;
+    expect(afterPropose[0].content_hash).toBe(proposedPlan.content_hash); // canonical body hash, not enriched snapshot hash
 
     await rubrics.ratifyRubric('audited-rubric', 'queen-1');
     const afterRatify = await db.adminSql<
-      { seq: number; author_id: string; rationale: string | null; content_snapshot: string }[]
+      { seq: number; content_hash: string; author_id: string; rationale: string | null; content_snapshot: string }[]
     >`
-      SELECT seq, author_id, rationale, content_snapshot
+      SELECT seq, content_hash, author_id, rationale, content_snapshot
         FROM harness_shared.plan_revisions
        WHERE plan_slug = 'audited-rubric' ORDER BY seq ASC`;
     expect(afterRatify).toHaveLength(2); // a SECOND revision — the status-flip is now audited
@@ -260,6 +271,10 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(ratifyRev.author_id).toBe('queen-1'); // the ratifier, not the author
     expect(ratifyRev.rationale).toContain('ratify');
     expect(ratifyRev.content_snapshot).toMatch(/status:\s*active/); // the destructive-class flip is captured
+    expect(ratifyRev.content_snapshot).toContain(sampleCriteria[0].model); // structured prose survives the status flip
+    const [activePlan] = await db.adminSql<{ content_hash: string }[]>`
+      SELECT content_hash FROM harness_shared.harness_plans WHERE plan_slug = 'audited-rubric'`;
+    expect(ratifyRev.content_hash).toBe(activePlan.content_hash);
   });
 
   it('ratify PRESERVES every criterion replication drill in template_data (EI-10443 — the status-flip must not strip them)', async () => {

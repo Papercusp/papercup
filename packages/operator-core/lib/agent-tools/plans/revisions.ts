@@ -64,6 +64,12 @@ export interface RecordPlanRevisionArgs {
   /** The full markdown written to disk at this revision (D-011 — the
    *  snapshot is self-contained, never a hash-only reference). */
   content: string;
+  /**
+   * Canonical plan-body hash when `content` is an enriched audit snapshot
+   * (for example a rubric body plus its committed `template_data`). Omit for
+   * ordinary plan writes, whose snapshot and canonical body are identical.
+   */
+  contentHash?: string;
   /** Optional "why" — D-009; supplied by the writer in the same call
    *  that wrote the content. */
   rationale?: string | null;
@@ -105,7 +111,7 @@ export async function recordPlanRevision(
   args: RecordPlanRevisionArgs,
 ): Promise<RecordedRevision | null> {
   try {
-    const contentHash = hashPlanContent(args.content);
+    const contentHash = args.contentHash ?? hashPlanContent(args.content);
     const authorKind = classifyAuthor(args.identity);
     const createdAt = Date.now();
 

@@ -53,6 +53,7 @@ export {
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
 import { recordPlanRevision } from './agent-tools/plans/revisions';
+import { hashPlanContent } from './agent-tools/plans/content-hash';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import {
@@ -1370,11 +1371,31 @@ async function resolveRubricWriteScope(
  * `recordPlanRevision` never throws, so this can never fail the rubric write (it runs
  * post-commit, and withPlanLock awaits it).
  */
+function rubricRevisionSnapshot(writtenBody: string, templateData: unknown): string {
+  if (templateData === null || templateData === undefined) return writtenBody;
+  const serialized = JSON.stringify(templateData, null, 2);
+  if (serialized === undefined) return writtenBody;
+  const separator = writtenBody.endsWith('\n') ? '\n' : '\n\n';
+  return (
+    writtenBody +
+    separator +
+    '## Structured rubric data (`template_data`)\n\n' +
+    '~~~json\n' +
+    serialized +
+    '\n~~~\n'
+  );
+}
+
 function rubricRevisionAfterWrite(
   rubricId: string,
   by: string | undefined,
   rationale: string,
-): (writtenBody: string, scope?: { workspaceId: string; harnessSlug: string }) => Promise<void> {
+  fallbackTemplateData?: unknown,
+): (
+  writtenBody: string,
+  scope: { workspaceId: string; harnessSlug: string },
+  committedTemplateData: unknown,
+) => Promise<void> {
   const identity: AgentIdentity = {
     ownerId: by ?? 'rubrics:system',
     ownerLabel: by ?? 'rubrics:system',
@@ -1384,7 +1405,7 @@ function rubricRevisionAfterWrite(
     workspaceId: null,
     userId: null,
   };
-  return async (writtenBody, scope) => {
+  return async (writtenBody, scope, committedTemplateData) => {
     // Thread the (workspaceId, harnessSlug) withPlanLock resolved for THIS write so the
     // revision lands on the rubric plan's own PK (recordPlanRevision re-resolves through
     // the same resolvePlanScope — the operator-home short-circuit for the rubric harness).
@@ -1392,7 +1413,17 @@ function rubricRevisionAfterWrite(
       planSlug: rubricId,
       ...(scope?.harnessSlug ? { harnessSlug: scope.harnessSlug } : {}),
       ...(scope?.workspaceId ? { workspaceId: scope.workspaceId } : {}),
-      content: writtenBody,
+      // withPlanLock supplies the value committed by this exact transaction.
+      // The fallback keeps auditability best-effort for older callers/tests that
+      // invoke this helper without the third hook argument.
+      content: rubricRevisionSnapshot(
+        writtenBody,
+        committedTemplateData !== undefined ? committedTemplateData : fallbackTemplateData,
+      ),
+      // The revision hash remains the canonical plan-body fingerprint used by
+      // activation/current-revision comparisons. Only content_snapshot is
+      // enriched with structured rubric data.
+      contentHash: hashPlanContent(writtenBody),
       rationale,
       identity,
     });
@@ -1465,7 +1496,12 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
       intent: `rubrics:propose ${input.rubricId}`,
       ...scope,
       // EI-10443: record a plan_revisions audit row for the propose write.
-      afterWrite: rubricRevisionAfterWrite(input.rubricId, input.by, `rubrics:propose (${rubricStatus})`),
+      afterWrite: rubricRevisionAfterWrite(
+        input.rubricId,
+        input.by,
+        `rubrics:propose (${rubricStatus})`,
+        templateData,
+      ),
     },
     async () => ({ newBody: body, templateData: { data: templateData }, value: true }),
   );
@@ -1692,7 +1728,12 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
       // EI-10443: record a plan_revisions audit row for the status-flip write. afterWrite
       // only fires when a body was actually written (a no-op ratify — no frontmatter status
       // line — returns newBody:null and records nothing).
-      afterWrite: rubricRevisionAfterWrite(rubricId, by, 'rubrics:ratify → active'),
+      afterWrite: rubricRevisionAfterWrite(
+        rubricId,
+        by,
+        'rubrics:ratify → active',
+        rawData && by ? { ...rawData, ratifiedBy: by } : rawData,
+      ),
     },
     async (current) => {
       if (current === null) return { newBody: null, value: false };
@@ -1729,7 +1770,11 @@ export async function retireAcceptanceRubricForPlan(planSlug: string, by?: strin
         slug: rubric.rubricId,
         intent: `acceptance-rubric retire (subject plan '${planSlug}' shipped)`,
         ...scope,
-        afterWrite: rubricRevisionAfterWrite(rubric.rubricId, by, 'acceptance rubric retired with its shipped subject plan'),
+        afterWrite: rubricRevisionAfterWrite(
+          rubric.rubricId,
+          by,
+          'acceptance rubric retired with its shipped subject plan',
+        ),
       },
       async (current) => {
         if (current === null) return { newBody: null, value: false };
@@ -1792,7 +1837,12 @@ export async function setRubricHistoryReset(
       slug: rubricId,
       intent: `rubrics:set-history-reset ${rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:set-history-reset → ${iso}`),
+      afterWrite: rubricRevisionAfterWrite(
+        rubricId,
+        by,
+        `rubrics:set-history-reset → ${iso}`,
+        { ...rawData, historyResetAt: iso },
+      ),
     },
     async (current) => {
       if (current === null) return { newBody: null, value: false };
