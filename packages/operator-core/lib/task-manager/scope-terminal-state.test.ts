@@ -254,7 +254,13 @@ describe('P-012 terminal provenance', () => {
   });
 
   it('reads all properties in one systemctl call and fails soft on command errors', async () => {
-    const exec = vi.fn(async () => ({ stdout: `${OOM_SHOW}\n`, stderr: '' }));
+    // Declared with the real ExecFileFn parameter list so `exec.mock.calls[0][1]`
+    // (the systemctl argv this test asserts on) is a typed tuple element rather
+    // than an index into an empty tuple.
+    const exec = vi.fn(async (_file: string, _args: readonly string[]) => ({
+      stdout: `${OOM_SHOW}\n`,
+      stderr: '',
+    }));
     const captured = await inspectTaskUnitTerminals(
       ['pc-oom123.service'],
       exec as unknown as ExecFileFn,

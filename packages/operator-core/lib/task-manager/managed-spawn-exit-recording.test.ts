@@ -33,8 +33,10 @@ const L = vi.hoisted(() => ({
   closed: [] as { taskId: string; state: string; exitReason: string | null }[],
   marked: [] as { cgroupPath: string | null; confined: boolean }[],
   terminal: [] as unknown[],
-  inspectTaskUnitTerminals: vi.fn(async () => new Map()),
-  resetFailedTaskUnit: vi.fn(async () => false),
+  // Rest-typed so the pass-through mocks below can spread their `unknown[]` args in:
+  // a zero-parameter vi.fn() makes `L.fn(...args)` a TS2556 spread error.
+  inspectTaskUnitTerminals: vi.fn(async (..._args: unknown[]) => new Map()),
+  resetFailedTaskUnit: vi.fn(async (..._args: unknown[]) => false),
 }));
 
 vi.mock('./enabled', () => ({

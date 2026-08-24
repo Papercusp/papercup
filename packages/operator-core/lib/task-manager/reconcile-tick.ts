@@ -228,7 +228,13 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     // available for the next reconciler tick.
     const resetFailure = deps.resetFailedTaskUnit ?? resetFailedTaskUnit;
     for (const verdict of endedWithTerminal) {
-      if (verdict.terminalProvenance) await resetFailure(verdict.terminalProvenance);
+      // `endedWithTerminal` is a union: a bare StrandedVerdict for units with no
+      // terminal record, or that verdict widened with `terminalProvenance`. Narrow
+      // with `in` before reading it — the runtime condition is unchanged, since the
+      // property is present exactly when the spread above added it.
+      if ('terminalProvenance' in verdict && verdict.terminalProvenance) {
+        await resetFailure(verdict.terminalProvenance);
+      }
     }
 
     const groups = result.unaccounted.map((g) => ({
