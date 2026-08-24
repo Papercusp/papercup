@@ -30,11 +30,14 @@
  * intact per this plan's D-003 (which binds P-017 only if it takes that route;
  * it does not).
  *
- * THE P-022 CONSTRUCTOR SEAM (peer lane, in flight): a package may later carry
- * `construct(typedInputs) => spec`, pure + sandboxed, run at START never
- * install. When it lands, it interposes in exactly ONE place —
- * `effectiveGoalContent` below, which is already the single fold from package
- * content to the effective instance fields. Do not add a second content path.
+ * THE P-022 CONSTRUCTOR (LANDED): a package may carry `construct.js` —
+ * `construct(typedInputs) => spec`, pure + sandboxed + double-run-deterministic
+ * (package-constructor.ts is the runtime; this file is the ONE call site). Run
+ * at START never install. It interposes in exactly ONE place: after the
+ * typed-input gate, the validated spec merges OVER the static content and the
+ * merged content flows through `effectiveGoalContent` — still the single fold
+ * from package content to the effective instance fields. Do not add a second
+ * content path.
  *
  * COMPENSATION CONTRACT. `startGoalById` REFUSES (ok:false) strictly before
  * anything spawns, so a refusal is safe to compensate — the minted row is
@@ -51,9 +54,11 @@ import { goalId as mintGoalId, insertGoalRow, deleteGoalRow } from '@papercusp/a
 import { clearGoalPause } from '@papercusp/agent-mcp/goal-pause';
 import {
   resolveLocalGoalPackage,
+  readGoalPackageConstructScript,
   type LocalGoalPackage,
   type GoalPackageTripwire,
 } from '../cupboard/goal-package-store';
+import { runPackageConstructor, type PackageConstructorResult } from './package-constructor';
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import { GOAL_HOLDER_DEFAULTS } from '../goal-launch-settings-shared';
 import { evaluateGoalStartInputs } from './goal-io-validation';
@@ -203,6 +208,9 @@ export type StartGoalFromPackageResult =
       adopted: boolean;
       /** Disclosure: every standing/holder default the fold applied. */
       appliedDefaults: string[];
+      /** P-022 disclosure: the content keys construct.js built (empty for a
+       *  static package) — a start never silently swaps authored content. */
+      constructedKeys: string[];
       /** Already-active instances of the same package at start time — INFO. */
       activeInstances: PackageInstance[];
       drainFleet: string | null;
@@ -217,6 +225,14 @@ export type StartGoalFromPackageResult =
 
 export interface StartGoalFromPackageDeps {
   resolvePackage: (ref: string) => LocalGoalPackage | null;
+  /** P-022: read the package's construct script (`null` = static package). */
+  readConstructScript: (pkg: LocalGoalPackage) => string | null;
+  /** P-022: run it — sandboxed, strict-validated, double-run-deterministic.
+   *  A deps seam so tests exercise the wiring without a real worker. */
+  runConstructor: (
+    script: string,
+    typedInputs: Record<string, unknown> | null,
+  ) => Promise<PackageConstructorResult>;
   readInstances: (sql: Sql, opts: { workspaceId: string; ref: string }) => Promise<StubRow[]>;
   adoptStub: (
     sql: Sql,
@@ -226,6 +242,11 @@ export interface StartGoalFromPackageDeps {
       inputs: Record<string, unknown> | null;
       launchSettings: Record<string, unknown>;
       budgetWindowSec: number | null;
+      /** P-022: non-null when a constructor ran — the adopted row's static
+       *  content columns are rewritten to the constructed effective content
+       *  (the stub was seeded from static package content and cannot know
+       *  what construct built). */
+      constructedContent: EffectiveGoalContent | null;
       metadata: Record<string, unknown>;
     },
   ) => Promise<void>;
@@ -279,6 +300,8 @@ const asObj = (v: unknown): Record<string, unknown> | null =>
  */
 export const DEFAULT_DEPS: StartGoalFromPackageDeps = {
   resolvePackage: (ref) => resolveLocalGoalPackage(ref),
+  readConstructScript: (pkg) => readGoalPackageConstructScript(pkg),
+  runConstructor: (script, typedInputs) => runPackageConstructor(script, typedInputs),
   readInstances: async (sql, { workspaceId, ref }) => {
     return (await sql`
       SELECT id, title, status, install_slug, body, standing, kill_criterion, tripwires,
@@ -298,15 +321,43 @@ export const DEFAULT_DEPS: StartGoalFromPackageDeps = {
              budget_window_sec = ${o.budgetWindowSec},
              metadata = ${JSON.stringify(o.metadata)}::jsonb
        WHERE id = ${o.goalId} AND workspace_id = ${o.workspaceId}`;
+    // P-022: a constructor ran — the stub's static content columns are stale
+    // against the constructed effective content; rewrite them so the adopted
+    // instance matches what a fresh mint would have inserted.
+    if (o.constructedContent) {
+      const c = o.constructedContent;
+      await sql`
+        UPDATE harness_shared.goals
+           SET title = ${c.title},
+               body = ${c.body},
+               standing = ${c.standing},
+               kill_criterion = ${c.killCriterion},
+               tripwires = ${c.tripwires ? JSON.stringify(c.tripwires) : null}::jsonb,
+               budget_cents = ${c.budgetCents},
+               output_schema = ${c.outputSchema ? JSON.stringify(c.outputSchema) : null}::jsonb,
+               property_schema = ${c.propertySchema ? JSON.stringify(c.propertySchema) : null}::jsonb
+         WHERE id = ${o.goalId} AND workspace_id = ${o.workspaceId}`;
+    }
   },
   restoreStub: async (sql, { workspaceId, stub }) => {
+    // Restores the CONTENT columns too (not only the activation fields): a
+    // P-022 constructor may have rewritten them on adopt, and the stub row we
+    // hold carries the pre-adopt originals.
     await sql`
       UPDATE harness_shared.goals
          SET status = ${stub.status},
              inputs = ${stub.inputs ? JSON.stringify(stub.inputs) : null}::jsonb,
              launch_settings = ${stub.launch_settings ? JSON.stringify(stub.launch_settings) : null}::jsonb,
              budget_window_sec = ${stub.budget_window_sec},
-             metadata = ${stub.metadata ? JSON.stringify(stub.metadata) : null}::jsonb
+             metadata = ${stub.metadata ? JSON.stringify(stub.metadata) : null}::jsonb,
+             title = ${stub.title},
+             body = ${stub.body},
+             standing = ${stub.standing},
+             kill_criterion = ${stub.kill_criterion},
+             tripwires = ${Array.isArray(stub.tripwires) ? JSON.stringify(stub.tripwires) : null}::jsonb,
+             budget_cents = ${stub.budget_cents},
+             output_schema = ${stub.output_schema ? JSON.stringify(stub.output_schema) : null}::jsonb,
+             property_schema = ${stub.property_schema ? JSON.stringify(stub.property_schema) : null}::jsonb
        WHERE id = ${stub.id} AND workspace_id = ${workspaceId}`;
   },
   mintRow: async (sql, { workspaceId, id, installSlug, content, inputs, metadata }) => {
@@ -406,8 +457,8 @@ export async function startGoalFromPackage(
   const stub = rows.find(isAdoptableStub) ?? null;
   const adopting = stub !== null;
 
-  // ── 3. the effective content (the P-022 seam is inside the fold) ────────
-  const content: GoalPackageContent = adopting
+  // ── 3. the STATIC content (stub row when adopting, else the package) ────
+  const staticContent: GoalPackageContent = adopting
     ? {
         title: stub.title,
         body: stub.body,
@@ -422,10 +473,12 @@ export async function startGoalFromPackage(
         propertySchema: asObj(stub.property_schema),
       }
     : pkg;
-  const effective = effectiveGoalContent(content);
 
-  // ── 4. typed inputs (P-021) — the same gate goals:start consults ────────
-  const inputsVerdict = evaluateGoalStartInputs(effective.inputSchema, input.inputs ?? null);
+  // ── 4. typed inputs (P-021) — the same gate goals:start consults. Runs
+  // BEFORE the constructor on purpose: construct CONSUMES the validated typed
+  // inputs, and `inputSchema` is not constructible, so the gate's contract is
+  // fixed before any third-party package code executes. ───────────────────
+  const inputsVerdict = evaluateGoalStartInputs(staticContent.inputSchema, input.inputs ?? null);
   if (!inputsVerdict.ready) {
     return {
       ok: false,
@@ -435,12 +488,35 @@ export async function startGoalFromPackage(
     };
   }
 
-  // ── 4b. typed property declarations (P-025) — MINT path only: an adopted
-  // stub's declaration was validated at install-seed time and already rides
-  // the row untouched by adoptStub. Ensure the first-party datatypes exist
-  // (insert-if-absent), then validate — refuse rather than minting a row whose
-  // declared properties could never be checked at write time.
-  if (!adopting && effective.propertySchema && Object.keys(effective.propertySchema).length > 0) {
+  // ── 4b. P-022: the constructor — sandboxed, strict, double-run-checked
+  // (package-constructor.ts). The validated spec merges OVER the static
+  // content; the merged content then takes the SAME fold + rails as a static
+  // one. A refusal surfaces the runtime's typed reason verbatim.
+  let content: GoalPackageContent = staticContent;
+  let constructedKeys: string[] = [];
+  const constructScript = deps.readConstructScript(pkg);
+  if (constructScript !== null) {
+    const built = await deps.runConstructor(constructScript, inputsVerdict.inputs);
+    if (!built.ok) {
+      return { ok: false, reason: built.reason, detail: built.detail, activeInstances };
+    }
+    content = { ...staticContent, ...built.spec };
+    constructedKeys = built.overriddenKeys;
+  }
+  const effective = effectiveGoalContent(content);
+
+  // ── 4c. typed property declarations (P-025). MINT path — and, since P-022,
+  // ALSO an adopt whose constructor produced the declaration: the stub's
+  // schema was validated at install-seed time, but a CONSTRUCTED one never saw
+  // that gate. Ensure the first-party datatypes exist (insert-if-absent), then
+  // validate — refuse rather than landing a row whose declared properties
+  // could never be checked at write time.
+  const propertySchemaConstructed = constructedKeys.includes('propertySchema');
+  if (
+    (!adopting || propertySchemaConstructed) &&
+    effective.propertySchema &&
+    Object.keys(effective.propertySchema).length > 0
+  ) {
     await deps.ensurePropertyDatatypes(sql, { workspaceId });
     const schemaCheck = await deps.validatePropertySchema(sql, {
       workspaceId,
@@ -478,9 +554,11 @@ export async function startGoalFromPackage(
       inputs: inputsVerdict.inputs,
       launchSettings: effective.launchSettings,
       budgetWindowSec: effective.budgetWindowSec,
+      constructedContent: constructedKeys.length > 0 ? effective : null,
       metadata: {
         ...clearGoalPause(stub.metadata),
         startedBy,
+        ...(constructedKeys.length > 0 ? { packageConstructedKeys: constructedKeys } : {}),
       },
     });
   } else {
@@ -508,6 +586,7 @@ export async function startGoalFromPackage(
         packageVersion: pkg.version,
         startedFrom: 'package',
         startedBy,
+        ...(constructedKeys.length > 0 ? { packageConstructedKeys: constructedKeys } : {}),
       },
     });
   }
@@ -597,6 +676,7 @@ export async function startGoalFromPackage(
     ownerId: started.ownerId,
     adopted: adopting,
     appliedDefaults: effective.appliedDefaults,
+    constructedKeys,
     activeInstances,
     drainFleet,
     warnings,

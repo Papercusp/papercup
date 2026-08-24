@@ -47,6 +47,23 @@ import { parseRequiredRubrics, type RubricRequirement } from './types';
 /** The manifest file that MAKES a subdir a goal package. */
 export const GOAL_PACKAGE_MANIFEST = 'goal.json';
 
+/** The OPTIONAL constructor script beside goal.json (P-022): a pure, sandboxed
+ *  `(typedInputs) => spec` run at START, never install (package-constructor.ts
+ *  is the runtime; start-from-package.ts the one call site). Its PRESENCE makes
+ *  the package constructible. It rides install unchanged (the installer copies
+ *  the whole validated dir); publish-from-row never emits one — a construct
+ *  script is package-AUTHORED, and nothing on a goal row serializes to it. */
+export const GOAL_PACKAGE_CONSTRUCT_FILE = 'construct.js';
+
+/** Read the package's construct script. `null` = a static package (no file).
+ *  An EXISTING but unreadable/empty file is not silently "static": empty
+ *  content is returned as-is and refused by the runtime with a typed error. */
+export function readGoalPackageConstructScript(pkg: Pick<LocalGoalPackage, 'dir'>): string | null {
+  const path = join(pkg.dir, GOAL_PACKAGE_CONSTRUCT_FILE);
+  if (!existsSync(path)) return null;
+  return readFileSync(path, 'utf8');
+}
+
 export interface GoalPackageRoot {
   dir: string;
   layer: 'bundled' | 'user';
