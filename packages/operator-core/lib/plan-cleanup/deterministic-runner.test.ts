@@ -152,4 +152,30 @@ describe('runDeterministicPlanCleanup', () => {
     expect(rows[0]?.outcome).toBe('pending');
     expect(settle).not.toHaveBeenCalled();
   });
+
+  it('preserves the live run phase when deterministic write authority is revoked', async () => {
+    const settle = vi.fn();
+    const result = await runDeterministicPlanCleanup({
+      run: run(),
+      call: vi.fn(),
+      deps: {
+        scanRun: vi.fn(async () => [finding('flip-to-done', true)]),
+        seed: vi.fn(async () => ({
+          findings: [],
+          refused: { reason: 'run_authority_revoked', phase: 'review' },
+        })),
+        settle,
+        notify: vi.fn(async () => undefined),
+      } as never,
+    });
+
+    expect(result).toMatchObject({
+      needsResolver: false,
+      phase: 'review',
+      applied: 0,
+      authorityRevoked: true,
+      authorityRefusal: { reason: 'run_authority_revoked', phase: 'review' },
+    });
+    expect(settle).not.toHaveBeenCalled();
+  });
 });

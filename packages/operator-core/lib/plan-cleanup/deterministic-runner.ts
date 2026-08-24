@@ -34,6 +34,7 @@ import {
   reportFindingOutcomes,
   seedFindings,
   type CleanupFindingOutcomeReport,
+  type CleanupFindingWriteRefusal,
   type CleanupRunFindingRow,
 } from './run-store';
 
@@ -122,6 +123,7 @@ export interface DeterministicCleanupResult {
   reconciliationRequired: string[];
   fatalError: string | null;
   authorityRevoked: boolean;
+  authorityRefusal: CleanupFindingWriteRefusal | null;
 }
 
 interface RunnerDeps {
@@ -163,6 +165,7 @@ export async function runDeterministicPlanCleanup(input: {
   let passes = 0;
   let fatalError: string | null = null;
   let authorityRevoked = false;
+  let authorityRefusal: CleanupFindingWriteRefusal | null = null;
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
     passes = pass + 1;
@@ -174,6 +177,7 @@ export async function runDeterministicPlanCleanup(input: {
     });
     if (seeded.refused) {
       authorityRevoked = true;
+      authorityRefusal = seeded.refused;
       break;
     }
 
@@ -211,6 +215,7 @@ export async function runDeterministicPlanCleanup(input: {
         });
         if (result.refused) {
           authorityRevoked = true;
+          authorityRefusal = result.refused;
           break;
         }
         appliedFindingIds.push(row.findingId);
@@ -229,6 +234,7 @@ export async function runDeterministicPlanCleanup(input: {
         });
         if (reported.refused) {
           authorityRevoked = true;
+          authorityRefusal = reported.refused;
           break;
         }
         failed += 1;
@@ -242,7 +248,7 @@ export async function runDeterministicPlanCleanup(input: {
     await deps.notify().catch(() => undefined);
     return {
       needsResolver: false,
-      phase: fatalError ? 'failed' : 'complete',
+      phase: fatalError ? 'failed' : authorityRefusal?.phase ?? run.phase,
       passes,
       applied: appliedFindingIds.length,
       skipped,
@@ -252,6 +258,7 @@ export async function runDeterministicPlanCleanup(input: {
       reconciliationRequired,
       fatalError,
       authorityRevoked,
+      authorityRefusal,
     };
   }
 
@@ -263,7 +270,10 @@ export async function runDeterministicPlanCleanup(input: {
     findings: finalScan,
     workspaceId: run.workspaceId,
   });
-  if (finalSeed.refused) authorityRevoked = true;
+  if (finalSeed.refused) {
+    authorityRevoked = true;
+    authorityRefusal = finalSeed.refused;
+  }
   const rows = await deps.read(run.runId, run.workspaceId);
   const currentById = new Map(finalScan.map((finding) => [finding.findingId, finding]));
   const reports: CleanupFindingOutcomeReport[] = [];
@@ -297,10 +307,13 @@ export async function runDeterministicPlanCleanup(input: {
       workspaceId: run.workspaceId,
       reports,
     });
-    if (reported.refused) authorityRevoked = true;
+    if (reported.refused) {
+      authorityRevoked = true;
+      authorityRefusal = reported.refused;
+    }
   }
 
-  let phase: BulkRunPhase = run.phase;
+  let phase: BulkRunPhase = authorityRefusal?.phase ?? run.phase;
   const needsResolver = !authorityRevoked && recommendationFindingIds.length > 0;
   if (!needsResolver && !authorityRevoked) {
     phase = (await deps.settle({ runId: run.runId }))?.phase ?? 'complete';
@@ -319,5 +332,6 @@ export async function runDeterministicPlanCleanup(input: {
     reconciliationRequired,
     fatalError,
     authorityRevoked,
+    authorityRefusal,
   };
 }

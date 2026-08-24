@@ -267,6 +267,24 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
         launchError: deterministic.fatalError,
       });
     }
+    if (deterministic.authorityRevoked) {
+      await invalidateCleanupRun();
+      return Response.json(
+        {
+          error: {
+            code: 'plan_cleanup_authority_revoked',
+            message: `plan clean-up run ${run.runId} stopped accepting deterministic writes (${deterministic.phase})`,
+            runId: run.runId,
+            phase: deterministic.phase,
+            refusal: deterministic.authorityRefusal?.reason ?? 'run_authority_revoked',
+          },
+          deterministic,
+          launched: false,
+          resolverNeeded: false,
+        },
+        { status: 409 },
+      );
+    }
     if (!deterministic.needsResolver) {
       await invalidateCleanupRun();
       return Response.json({

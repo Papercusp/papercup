@@ -84,6 +84,7 @@ beforeEach(() => {
     reconciliationRequired: [],
     fatalError: null,
     authorityRevoked: false,
+    authorityRefusal: null,
   });
 });
 
@@ -120,6 +121,50 @@ describe('POST /admin/plan-cleanup deterministic start', () => {
     });
     expect(H.deterministic).toHaveBeenCalledTimes(1);
     expect(H.buildCall).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-det' }));
+    expect(H.setRunPhase).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflict without relaunching or mutating a run whose authority was revoked', async () => {
+    H.deterministic.mockResolvedValueOnce({
+      needsResolver: false,
+      phase: 'review',
+      passes: 1,
+      applied: 0,
+      skipped: 0,
+      failed: 0,
+      appliedFindingIds: [],
+      recommendationFindingIds: [],
+      reconciliationRequired: [],
+      fatalError: null,
+      authorityRevoked: true,
+      authorityRefusal: { reason: 'run_authority_revoked', phase: 'review' },
+    });
+
+    const response = await planCleanupHandler(
+      new Request('http://localhost/api/admin/plan-cleanup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ op: 'start', planSlugs: ['plan-a'] }),
+      }),
+      {
+        principal: null,
+        input: undefined,
+        params: {},
+        log: vi.fn(),
+        signal: new AbortController().signal,
+      },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: 'plan_cleanup_authority_revoked',
+        runId: 'run-det',
+        phase: 'review',
+      },
+      launched: false,
+      resolverNeeded: false,
+    });
     expect(H.setRunPhase).not.toHaveBeenCalled();
   });
 });
