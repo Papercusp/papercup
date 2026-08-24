@@ -42,7 +42,13 @@ import { getOrgPg } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import {
+  PLAN_ADVISORY_LOCK_NAMESPACE,
+  planAdvisoryLockKey,
+} from './agent-tools/plans/plan-lock-key';
+import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import {
   loadHarnessRegistry,
   resolveHarnessContentPath,
@@ -814,6 +820,90 @@ export interface RecordActivationAuditInput {
 
 export type RecordAuditInput = RecordCompletionAuditInput | RecordActivationAuditInput;
 
+export interface RecordCurrentActivationAuditInput {
+  workspaceId: string;
+  planSlug: string;
+  harnessSlug: string;
+  createdBy: string;
+  activation: ActivationAuditPayload;
+  summary?: string | null;
+}
+
+export interface ActivationAuditPlanTargetProblem {
+  mappingId: string;
+  target: string;
+  code: 'unknown_item' | 'unknown_decision' | 'unknown_section' | 'invalid_plan_target';
+  detail: string;
+}
+
+/** Validate every mapping destination against the exact plan bytes being audited. */
+export function validateActivationAuditPlanTargets(
+  activation: ActivationAuditPayload,
+  planContent: string,
+): ActivationAuditPlanTargetProblem[] {
+  const parsed = parsePlan(planContent);
+  const items = new Set(parsed.items.map((item) => item.id));
+  const decisions = new Set(parsed.decisions.map((decision) => decision.id));
+  const sections = new Set(
+    splitPlanSections(planContent).map((section) => section.heading.trim().toLowerCase()),
+  );
+  const problems: ActivationAuditPlanTargetProblem[] = [];
+  for (const mapping of activation.mappings) {
+    for (const target of mapping.planTargets) {
+      if (/^P-\d{3,}$/.test(target)) {
+        if (!items.has(target)) {
+          problems.push({
+            mappingId: mapping.id,
+            target,
+            code: 'unknown_item',
+            detail: `${mapping.id} targets item '${target}', which is absent from the current plan revision`,
+          });
+        }
+        continue;
+      }
+      if (/^D-\d{3,}$/.test(target)) {
+        if (!decisions.has(target)) {
+          problems.push({
+            mappingId: mapping.id,
+            target,
+            code: 'unknown_decision',
+            detail: `${mapping.id} targets decision '${target}', which is absent from the current plan revision`,
+          });
+        }
+        continue;
+      }
+      if (target.startsWith('section:')) {
+        const heading = target.slice('section:'.length).trim().toLowerCase();
+        if (!heading || !sections.has(heading)) {
+          problems.push({
+            mappingId: mapping.id,
+            target,
+            code: 'unknown_section',
+            detail: `${mapping.id} targets section '${target.slice('section:'.length).trim()}', which is absent from the current plan revision`,
+          });
+        }
+        continue;
+      }
+      problems.push({
+        mappingId: mapping.id,
+        target,
+        code: 'invalid_plan_target',
+        detail: `${mapping.id} target '${target}' must be P-NNN, D-NNN, or section:<heading>`,
+      });
+    }
+  }
+  return problems;
+}
+
+export type RecordCurrentActivationAuditResult =
+  | { ok: true; audit: PlanAudit; auditedPlanRevision: AuditedPlanRevision }
+  | {
+      ok: false;
+      error: 'plan_busy' | 'plan_not_found' | 'activation_blocked' | 'plan_targets_invalid' | 'plan_revision_unavailable';
+      message: string;
+      problems?: ActivationAuditPlanTargetProblem[];
+    };
+
 export interface AuditEntryValidationProblem {
   itemId: string;
   code:
@@ -916,7 +1006,13 @@ export function validatePersistedAuditEntries(items: AuditItemEntry[]): AuditEnt
  * they race anyway the primary key rejects the loser, which is a retryable error
  * rather than a silently overwritten audit.
  */
-export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudit> {
+type AuditSql = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
+
+async function insertPlanAudit(
+  input: RecordAuditInput,
+  sql: AuditSql,
+  workspaceId: string,
+): Promise<PlanAudit> {
   const auditKind: PlanAuditKind = input.auditKind ?? 'completion';
   let items: AuditItemEntry[];
   let activation: ActivationAuditPayload | null;
@@ -942,13 +1038,12 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
       `plan audit provenance invalid: ${provenanceProblems.map((problem) => problem.detail).join('; ')}`,
     );
   }
-  const { sql } = getOrgPg();
   const rows = await sql<PlanAuditRow[]>`
     INSERT INTO harness_shared.plan_audits
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind, audited_sha,
        activation, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash,
        items, findings, summary)
-    SELECT ${activeWorkspaceId()}, ${input.harnessSlug}, ${input.planSlug},
+    SELECT ${workspaceId}, ${input.harnessSlug}, ${input.planSlug},
            COALESCE(MAX(a.audit_seq), 0) + 1,
            ${input.createdBy}, ${auditKind}, ${auditedSha},
            ${activation ? JSON.stringify(activation) : null}::text::jsonb,
@@ -963,10 +1058,134 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
            ${JSON.stringify(findings)}::text::jsonb,
            ${input.summary ?? null}
       FROM harness_shared.plan_audits a
-     WHERE a.workspace_id = ${activeWorkspaceId()}
+     WHERE a.workspace_id = ${workspaceId}
        AND a.plan_slug = ${input.planSlug}
     RETURNING plan_slug, harness_slug, audit_seq, created_by, created_at, audit_kind, audited_sha,
               activation, audited_plan_revision_id, audited_plan_revision_seq,
               audited_plan_content_hash, items, findings, summary`;
   return rowToAudit(rows[0]);
+}
+
+export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudit> {
+  // Preserve the pure fail-fast boundary: unit callers with malformed completion
+  // entries must be rejected before getOrgPg is even resolved. insertPlanAudit
+  // repeats this assertion because the atomic activation path calls it directly.
+  if (input.auditKind !== 'activation') {
+    const problems = validatePersistedAuditEntries(input.items);
+    if (problems.length > 0) {
+      throw new Error(`plan audit provenance invalid: ${problems.map((problem) => problem.detail).join('; ')}`);
+    }
+  }
+  const { sql } = getOrgPg();
+  return insertPlanAudit(input, sql as unknown as AuditSql, activeWorkspaceId());
+}
+
+/**
+ * Record an activation audit against the exact current plan revision.
+ *
+ * The same advisory lock as every plans:* writer is held while current content,
+ * plan targets, revision identity, and the audit insert are read/written. A
+ * revision row must match BOTH current content hash and snapshot; the best-effort
+ * revision writer can lag or fail, and silently attaching an older revision would
+ * be worse than refusing with an actionable retry/repair error.
+ */
+export async function recordCurrentActivationAudit(
+  input: RecordCurrentActivationAuditInput,
+): Promise<RecordCurrentActivationAuditResult> {
+  if (
+    input.activation.unresolvedBlockers.length > 0 ||
+    input.activation.mappings.some((mapping) => mapping.disposition === 'open')
+  ) {
+    return {
+      ok: false,
+      error: 'activation_blocked',
+      message:
+        'Activation audit has unresolved blockers or open requirement mappings. Repair/map them before activation; no audit was recorded.',
+    };
+  }
+
+  const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
+  const { sql } = getOrgPg();
+  return sql.begin(async (tx) => {
+    const executor = tx as unknown as AuditSql;
+    const lock = await executor<Array<{ ok: boolean }>>`
+      SELECT pg_try_advisory_xact_lock(
+        hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}), hashtext(${lockKey})
+      ) AS ok`;
+    if (!lock[0]?.ok) {
+      return {
+        ok: false as const,
+        error: 'plan_busy' as const,
+        message: `Plan '${input.planSlug}' is being edited. Retry the activation audit after that write commits.`,
+      };
+    }
+
+    const plans = await executor<Array<{ content: string; content_hash: string }>>`
+      SELECT content, content_hash
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND plan_slug = ${input.planSlug}`;
+    const current = plans[0];
+    if (!current) {
+      return {
+        ok: false as const,
+        error: 'plan_not_found' as const,
+        message: `Plan '${input.planSlug}' does not exist in harness '${input.harnessSlug}'.`,
+      };
+    }
+
+    const problems = validateActivationAuditPlanTargets(input.activation, current.content);
+    if (problems.length > 0) {
+      return {
+        ok: false as const,
+        error: 'plan_targets_invalid' as const,
+        message: `${problems.length} mapping target(s) do not exist in the current plan revision; no audit was recorded.`,
+        problems,
+      };
+    }
+
+    const revisions = await executor<
+      Array<{ id: number | string; seq: number | string; content_hash: string }>
+    >`
+      SELECT id, seq, content_hash
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND plan_slug = ${input.planSlug}
+         AND content_hash = ${current.content_hash}
+         AND content_snapshot = ${current.content}
+       ORDER BY seq DESC
+       LIMIT 1`;
+    const revision = revisions[0];
+    if (!revision) {
+      return {
+        ok: false as const,
+        error: 'plan_revision_unavailable' as const,
+        message:
+          `The current bytes of plan '${input.planSlug}' have no matching plan_revisions row. ` +
+          'Retry if an edit just committed; otherwise repair/backfill the revision spine before auditing.',
+      };
+    }
+
+    const auditedPlanRevision: AuditedPlanRevision = {
+      id: Number(revision.id),
+      seq: Number(revision.seq),
+      contentHash: revision.content_hash,
+    };
+    const audit = await insertPlanAudit(
+      {
+        auditKind: 'activation',
+        planSlug: input.planSlug,
+        harnessSlug: input.harnessSlug,
+        createdBy: input.createdBy,
+        activation: input.activation,
+        auditedPlanRevision,
+        summary: input.summary ?? null,
+      },
+      executor,
+      input.workspaceId,
+    );
+    return { ok: true as const, audit, auditedPlanRevision };
+  });
 }
