@@ -27,6 +27,10 @@ import {
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { AccountProvider } from '../../deployment/account-pool';
 import type { AccountStatusRow } from '../../deployment/account-pool-store';
+import { advSessionsByCoordOwner } from '../../adv-sessions';
+import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
+import { resolveAgentIdentity, deriveFleetMembership, type AgentIdentity } from '../coordination/identity';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 
 // Re-exported so existing importers (tests, the queen-brief gather) can reach the read-model via either path.
 export { buildCapacityReport, type CapacityReport } from '../../fleet/capacity-dispatch';
@@ -42,10 +46,47 @@ export function providerForModel(model: string | undefined): AccountProvider | u
   return 'claude';
 }
 
+/**
+ * Resolve the inference backends represented by a fleet's CURRENT members.
+ *
+ * This is intentionally the same member-scoping rule used by fleet:leader-brief:
+ * dead historical rows and the observing leader do not describe the pool the
+ * workers pull from; visible sessions with no model tier use their authoritative
+ * adv-session backend. Unknown/OMP-only rows are ignored, but a fleet with no
+ * measured backend is never guessed as Claude.
+ */
+export function fleetCapacityProvidersForMembers(
+  members: ReadonlyArray<{
+    agentId?: string;
+    model?: string | null;
+    alive?: boolean;
+    sessionState?: string | null;
+    fleetRole?: string | null;
+  }>,
+  agentByOwner: ReadonlyMap<string, 'claude' | 'omp' | 'codex' | null | undefined> = new Map(),
+): AccountProvider[] {
+  const providers = new Set<AccountProvider>();
+  for (const member of members) {
+    if (member.alive === false || member.sessionState === 'ended' || member.sessionState === 'suspect') continue;
+    if (member.fleetRole === 'leader') continue;
+
+    const modelProvider = providerForModel(member.model ?? undefined);
+    if (modelProvider) {
+      providers.add(modelProvider);
+      continue;
+    }
+
+    const agent = member.agentId ? agentByOwner.get(member.agentId) : undefined;
+    if (agent === 'claude' || agent === 'codex') providers.add(agent);
+  }
+  return [...providers].sort();
+}
+
 interface CapacityScopeArgs {
   provider?: AccountProvider;
   model?: string;
   account?: string;
+  fleet?: string;
 }
 
 interface ResolvedCapacityScope {
@@ -53,6 +94,96 @@ interface ResolvedCapacityScope {
   modelProvider?: AccountProvider;
   accountRows?: AccountStatusRow[];
   accountFound?: boolean;
+}
+
+type ProviderSource = 'explicit' | 'fleet' | 'legacy-default';
+
+interface FleetScopeContext {
+  fleetSlug: string | null;
+  ownerId?: string;
+  workspaceId: string | null;
+}
+
+interface FleetProviderResolution {
+  providers: AccountProvider[];
+  reason?: string;
+}
+
+function resolveWorkspaceId(identity?: AgentIdentity): string | null {
+  if (identity?.workspaceId) return identity.workspaceId;
+  try {
+    return activeWorkspaceId();
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve explicit fleet scope or the caller's authoritative current membership. */
+async function resolveFleetScope(
+  args: CapacityScopeArgs,
+  ctx: unknown,
+  inferMembership: boolean,
+): Promise<FleetScopeContext> {
+  let identity: AgentIdentity | undefined;
+  try {
+    identity = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]);
+  } catch {
+    // Handler unit tests and non-coordination callers may not carry an identity.
+    // They can still use an explicit fleet, while an implicit fleet falls back to
+    // the launch label only when that label is available.
+  }
+
+  const launchMembership = deriveFleetMembership();
+  const explicitFleet = args.fleet?.trim() || null;
+  if (explicitFleet) {
+    return {
+      fleetSlug: explicitFleet,
+      ...(identity?.ownerId ? { ownerId: identity.ownerId } : {}),
+      workspaceId: resolveWorkspaceId(identity),
+    };
+  }
+  if (!inferMembership) {
+    return { fleetSlug: null, workspaceId: resolveWorkspaceId(identity) };
+  }
+
+  const membership = identity
+    ? await resolvePresenceFleet(identity.ownerId, launchMembership)
+    : launchMembership;
+  return {
+    fleetSlug: membership.fleetSlug,
+    ...(identity?.ownerId ? { ownerId: identity.ownerId } : {}),
+    workspaceId: resolveWorkspaceId(identity),
+  };
+}
+
+/** Read the fleet's provider set; every failure is UNKNOWN rather than legacy Claude. */
+async function resolveFleetProviders(
+  fleetSlug: string,
+  workspaceId: string | null,
+  ownerId?: string,
+): Promise<FleetProviderResolution> {
+  try {
+    const [roster, sessions] = await Promise.all([
+      listFleetRosterDiagnosed({ fleetSlug, workspaceId, leaderOwnerId: ownerId }),
+      advSessionsByCoordOwner(),
+    ]);
+    const agentByOwner = new Map(
+      [...sessions].map(([id, session]) => [id, session.agent] as const),
+    );
+    const providers = fleetCapacityProvidersForMembers(roster.entries, agentByOwner);
+    if (providers.length > 0) return { providers };
+    return {
+      providers,
+      reason: roster.degradedLegs.length > 0
+        ? `fleet '${fleetSlug}' roster was incomplete (${roster.degradedLegs.join(', ')}); no member backend was measured`
+        : `fleet '${fleetSlug}' has no live member backend with a measured provider`,
+    };
+  } catch {
+    return {
+      providers: [],
+      reason: `fleet '${fleetSlug}' provider scope could not be measured`,
+    };
+  }
 }
 
 /** Resolve the requested backend before reading either gateway or account-pool capacity. */
@@ -244,14 +375,70 @@ export async function readBeeProviderAvailability(accountId?: string): Promise<A
   return readProviderAvailability(BEE_PROVIDER, accountId);
 }
 
+async function readClampArmed(): Promise<boolean> {
+  try {
+    const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
+    return await getFlag(FLAGS.MUG_CAPACITY_DISPATCH, 'system').catch(() => false);
+  } catch {
+    return false;
+  }
+}
+
+interface ProviderCapacityReading {
+  provider: AccountProvider;
+  model: string | null;
+  account: string | null;
+  verdict: 'blind' | 'measured' | 'unknown';
+  [key: string]: unknown;
+}
+
+/** One provider-scoped reading, shared by uniform and mixed-fleet responses. */
+async function readCapacityForProvider(
+  args: CapacityScopeArgs,
+  provider: AccountProvider,
+  clampArmed: boolean,
+  preloadedRows?: AccountStatusRow[],
+): Promise<ProviderCapacityReading> {
+  const hr = await fetchGatewayHeadroom({ timeoutMs: 1500, provider });
+  const accountAvailability = await readProviderAvailability(provider, args.account, preloadedRows);
+  const tierMap = parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP);
+  const report = buildCapacityReport(hr, {
+    clampArmed,
+    headroom: args.headroom,
+    tierMap,
+    accountAvailability,
+  });
+  const accountPool = accountAvailability
+    ? {
+        provider: accountAvailability.provider ?? provider,
+        total: accountAvailability.total,
+        available: accountAvailability.available,
+        usable: accountAvailability.usable,
+        edgeThrottledAccounts: accountAvailability.edgeThrottledCount ?? null,
+        usageWalledAccounts: accountAvailability.usageWalledCount ?? null,
+        sustainedlyLimitedAccounts: accountAvailability.sustainedlyLimitedCount ?? null,
+        overrideExcludedAccounts: accountAvailability.overrideExcludedCount ?? null,
+        blindAccounts: accountAvailability.blindCount ?? null,
+      }
+    : null;
+  return {
+    provider,
+    model: args.model ?? null,
+    account: args.account ?? null,
+    verdict: !accountAvailability ? 'unknown' : report.blind ? 'blind' : 'measured',
+    ...report,
+    accountPool,
+  };
+}
+
 export default defineTool({
   name: 'fleet:capacity',
   description:
-    'Read live inference-pool capacity for an explicit provider/model/account scope (the gateway /stats oracle): dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. The legacy default is Claude; pass `provider:"codex"`, `model:"gpt-5.6-luna"`, or a Codex `account` to read the Codex backend. Cross-checks dispatchBudget against REAL account-pool availability and sets `poolExhausted:true` (with factor 0) only for the selected provider. An unmeasured or contradictory scope returns `verdict:"unknown"` instead of borrowing another provider\'s data. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, verdict, scope, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.',
+    'Read live inference-pool capacity for an explicit provider/model/account scope or the caller\'s current fleet scope (the gateway /stats oracle): dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. Pass `fleet` to inspect a named fleet; when omitted, a fleet member automatically resolves its current fleet. Explicit provider/model/account scope always wins. A fleet with mixed providers returns per-provider readings with no guessed aggregate. The legacy Claude default is used only outside a fleet. Cross-checks dispatchBudget against REAL account-pool availability and sets `poolExhausted:true` (with factor 0) only for the selected provider. An unmeasured or contradictory scope returns `verdict:"unknown"` instead of borrowing another provider\'s data. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, verdict, scope, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.',
   guidance: {
     when: 'Before a placement round, to size how many FRESH members to spawn: select the provider/model/account scope, then place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.',
     notWhen: 'Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.',
-    chaining: 'fleet:capacity { provider: "codex", model: "gpt-5.6-luna", headroom: <members you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first).',
+    chaining: 'fleet:capacity { fleet: "my-fleet", headroom: <members you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first).',
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -261,13 +448,23 @@ export default defineTool({
     provider: z.enum(['claude', 'codex']).optional().describe('Inference provider to inspect; defaults to Claude for backward compatibility.'),
     model: z.string().min(1).max(120).optional().describe('Requested model family; gpt/o/codex models select the Codex backend when provider is omitted.'),
     account: z.string().min(1).max(200).optional().describe('Optional pinned account id. An account-only request resolves its provider from accounts:status.'),
+    fleet: z.string().min(1).max(200).optional().describe('Optional named fleet to scope capacity to. Without an explicit backend, a caller in a fleet uses its current live member providers.'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const scope = await resolveCapacityScope(args);
+    const explicitBackend = Boolean(args.provider || args.model || args.account);
+    const fleetScope = await resolveFleetScope(args, ctx, !explicitBackend || !!args.fleet);
+    const providerSource: ProviderSource = explicitBackend
+      ? 'explicit'
+      : fleetScope.fleetSlug
+        ? 'fleet'
+        : 'legacy-default';
+    const fleetPayload = fleetScope.fleetSlug ? { fleet: fleetScope.fleetSlug } : {};
     const scopePayload = {
       provider: scope.provider,
       model: args.model ?? null,
       account: args.account ?? null,
+      ...fleetPayload,
     };
     const modelProviderMismatch = !!args.provider && !!scope.modelProvider && args.provider !== scope.modelProvider;
     const accountOnlyScopeUnknown =
@@ -280,60 +477,97 @@ export default defineTool({
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ ok: true, verdict: 'unknown', provider: scope.provider, model: args.model ?? null, account: args.account ?? null, scope: scopePayload, reason }),
+            text: JSON.stringify({
+              ok: true,
+              verdict: 'unknown',
+              provider: scope.provider,
+              model: args.model ?? null,
+              account: args.account ?? null,
+              scope: scopePayload,
+              providerSource,
+              ...fleetPayload,
+              reason,
+            }),
           },
         ],
       };
     }
-    let clampArmed = false;
-    try {
-      const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
-      clampArmed = await getFlag(FLAGS.MUG_CAPACITY_DISPATCH, 'system').catch(() => false);
-    } catch {
-      /* flags unavailable → report clampArmed:false (best-effort) */
+
+    let providers: AccountProvider[];
+    let fleetReason: string | undefined;
+    if (!explicitBackend && fleetScope.fleetSlug) {
+      const fleetResolution = await resolveFleetProviders(
+        fleetScope.fleetSlug,
+        fleetScope.workspaceId,
+        fleetScope.ownerId,
+      );
+      providers = fleetResolution.providers;
+      fleetReason = fleetResolution.reason;
+      if (providers.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                verdict: 'unknown',
+                provider: null,
+                model: null,
+                account: null,
+                scope: { ...scopePayload, provider: null },
+                providerSource,
+                ...fleetPayload,
+                providers: [],
+                reason: fleetReason,
+              }),
+            },
+          ],
+        };
+      }
+    } else {
+      providers = [scope.provider];
     }
-    const hr = await fetchGatewayHeadroom({ timeoutMs: 1500, provider: scope.provider });
-    const tierMap = parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP);
-    // EI-12282: cross-check the gateway's queue-slot dispatchBudget against REAL account-pool availability
-    // (accounts:status) for the SAME provider/account scope. The gateway's own healthyAccounts can be
-    // split-brain-stale; a cross-provider read is never a valid reason to reject a launch.
-    const accountAvailability = await readProviderAvailability(scope.provider, args.account, scope.accountRows);
-    const report = buildCapacityReport(hr, { clampArmed, headroom: args.headroom, tierMap, accountAvailability });
-    // These counts all come from the SAME provider-scoped account-pool projection. Keep them together and
-    // name the edge/usage breakdown explicitly; comparing usableAccounts with availableAccounts as if one
-    // were gateway state manufactures a store divergence and prescribes a self-referential reconcile loop.
-    const accountPool = accountAvailability
-      ? {
-          provider: accountAvailability.provider ?? scope.provider,
-          total: accountAvailability.total,
-          available: accountAvailability.available,
-          usable: accountAvailability.usable,
-          edgeThrottledAccounts: accountAvailability.edgeThrottledCount ?? null,
-          usageWalledAccounts: accountAvailability.usageWalledCount ?? null,
-          sustainedlyLimitedAccounts: accountAvailability.sustainedlyLimitedCount ?? null,
-          overrideExcludedAccounts: accountAvailability.overrideExcludedCount ?? null,
-          blindAccounts: accountAvailability.blindCount ?? null,
-        }
-      : null;
+    const clampArmed = await readClampArmed();
+    const readings = await Promise.all(
+      providers.map((provider) => readCapacityForProvider(args, provider, clampArmed, scope.accountRows)),
+    );
+
+    if (readings.length > 1) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              verdict: 'unknown',
+              provider: null,
+              model: null,
+              account: null,
+              scope: { ...scopePayload, provider: null },
+              providerSource,
+              ...fleetPayload,
+              providers,
+              providerReadings: readings,
+              reason:
+                fleetReason ??
+                `fleet '${fleetScope.fleetSlug ?? 'unknown'}' has mixed member providers; no single capacity verdict is valid`,
+            }),
+          },
+        ],
+      };
+    }
+
+    const reading = readings[0]!;
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            // `measured` USED TO MEAN "an availability object exists" — bookkeeping — while being read as
-            // "these numbers were measured". Those come apart precisely when it matters: on 2026-08-18 this
-            // returned verdict:'measured' with poolExhausted:true while `blind` was true for 6 of 7 accounts,
-            // i.e. the exhaustion verdict rested on stale/missing readings. A blind reading now DEMOTES the
-            // verdict instead of being a footnote under a confident one (EI-19928050541357086: one
-            // probe-capacity call flipped poolExhausted true→false with no other change).
-            verdict: !accountAvailability ? 'unknown' : report.blind ? 'blind' : 'measured',
-            provider: scope.provider,
-            model: args.model ?? null,
-            account: args.account ?? null,
-            scope: scopePayload,
-            ...report,
-            accountPool,
+            ...reading,
+            scope: { ...scopePayload, provider: reading.provider },
+            providerSource,
+            ...fleetPayload,
           }),
         },
       ],

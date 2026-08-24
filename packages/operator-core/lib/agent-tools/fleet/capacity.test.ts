@@ -13,7 +13,25 @@ const { mockAccountStatus, mockGetAccountOverride } = vi.hoisted(() => ({
     async (): Promise<AccountSessionOverride> => ({ forcedAccounts: [], excludeAccounts: [] }),
   ),
 }));
+const {
+  mockResolveAgentIdentity,
+  mockResolvePresenceFleet,
+  mockListFleetRosterDiagnosed,
+  mockAdvSessionsByCoordOwner,
+} = vi.hoisted(() => ({
+  mockResolveAgentIdentity: vi.fn(() => ({ ownerId: 'caller', workspaceId: 'test-ws' })),
+  mockResolvePresenceFleet: vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
+  mockListFleetRosterDiagnosed: vi.fn(async () => ({ entries: [], degradedLegs: [] })),
+  mockAdvSessionsByCoordOwner: vi.fn(async () => new Map()),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: mockResolveAgentIdentity,
+  deriveFleetMembership: () => ({ fleetSlug: null, fleetRole: null }),
+}));
+vi.mock('../coordination/presence-fleet', () => ({ resolvePresenceFleet: mockResolvePresenceFleet }));
+vi.mock('../../fleet/fleet-roster', () => ({ listFleetRosterDiagnosed: mockListFleetRosterDiagnosed }));
+vi.mock('../../adv-sessions', () => ({ advSessionsByCoordOwner: mockAdvSessionsByCoordOwner }));
 vi.mock('../../deployment/account-session-override', async (importOriginal) => {
   // Keep the REAL applyAccountOverride (a pure filter — worth exercising for real, not a
   // stand-in) and mock only getAccountOverride (the DB-backed read), default no-op so the
@@ -487,4 +505,97 @@ test('EI-21268415877542410: capacity reports one honest account-pool snapshot, n
   });
   assert.equal(body.divergence, undefined, 'usable and available are both account-pool fields, not stores to reconcile');
   headroomSpy.mockRestore();
+});
+
+test('WI-41067: an implicit live fleet scope selects its worker provider instead of legacy Claude', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  mockResolvePresenceFleet.mockResolvedValueOnce({ fleetSlug: 'codex-fleet', fleetRole: 'leader' });
+  mockListFleetRosterDiagnosed.mockResolvedValueOnce({
+    entries: [
+      { agentId: 'leader', model: null, alive: true, fleetRole: 'leader', sessionState: 'live' },
+      { agentId: 'worker', model: null, alive: true, fleetRole: 'member', sessionState: 'live' },
+    ],
+    degradedLegs: [],
+  });
+  mockAdvSessionsByCoordOwner.mockResolvedValueOnce(new Map([['worker', { agent: 'codex' }]]));
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('chatgpt-sub-cli', { provider: 'codex', readingStatus: 'fresh' }),
+  ]);
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
+
+  try {
+    const res = (await capacityMod.default.handler({ headroom: 2 } as never, {} as never)) as {
+      content: { text: string }[];
+    };
+    const body = JSON.parse(res.content[0]!.text);
+    assert.equal(body.provider, 'codex');
+    assert.equal(body.providerSource, 'fleet');
+    assert.equal(body.fleet, 'codex-fleet');
+    assert.equal(body.scope.fleet, 'codex-fleet');
+    assert.equal(headroomSpy.mock.calls[0]?.[0]?.provider, 'codex');
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('WI-41067: mixed live fleet providers return per-provider readings without a guessed aggregate', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  mockResolvePresenceFleet.mockResolvedValueOnce({ fleetSlug: 'mixed-fleet', fleetRole: 'leader' });
+  mockListFleetRosterDiagnosed.mockResolvedValueOnce({
+    entries: [
+      { agentId: 'codex-worker', model: 'gpt-5.6-luna', alive: true, fleetRole: 'member', sessionState: 'live' },
+      { agentId: 'claude-worker', model: 'claude-sonnet-4-5', alive: true, fleetRole: 'member', sessionState: 'live' },
+    ],
+    degradedLegs: [],
+  });
+  mockAdvSessionsByCoordOwner.mockResolvedValueOnce(new Map());
+  mockAccountStatus.mockResolvedValue([
+    acctRow('codex-account', { provider: 'codex', readingStatus: 'fresh' }),
+    acctRow('claude-account', { provider: 'claude', readingStatus: 'fresh' }),
+  ]);
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValue(tieredHr());
+
+  try {
+    const res = (await capacityMod.default.handler({ headroom: 2 } as never, {} as never)) as {
+      content: { text: string }[];
+    };
+    const body = JSON.parse(res.content[0]!.text);
+    assert.equal(body.verdict, 'unknown');
+    assert.equal(body.provider, null);
+    assert.equal(body.providerSource, 'fleet');
+    assert.deepEqual(body.providers, ['claude', 'codex']);
+    assert.deepEqual(
+      body.providerReadings.map((reading: { provider: string }) => reading.provider),
+      ['claude', 'codex'],
+    );
+    assert.equal(headroomSpy.mock.calls.length, 2);
+  } finally {
+    headroomSpy.mockRestore();
+    mockAccountStatus.mockReset();
+  }
+});
+
+test('WI-41067: a fleet with no measured provider is unknown and never falls back to Claude', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  mockResolvePresenceFleet.mockResolvedValueOnce({ fleetSlug: 'unmeasured-fleet', fleetRole: 'leader' });
+  mockListFleetRosterDiagnosed.mockResolvedValueOnce({ entries: [], degradedLegs: [] });
+  mockAdvSessionsByCoordOwner.mockResolvedValueOnce(new Map());
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom');
+
+  try {
+    const res = (await capacityMod.default.handler({} as never, {} as never)) as {
+      content: { text: string }[];
+    };
+    const body = JSON.parse(res.content[0]!.text);
+    assert.equal(body.verdict, 'unknown');
+    assert.equal(body.provider, null);
+    assert.equal(body.providerSource, 'fleet');
+    assert.equal(body.fleet, 'unmeasured-fleet');
+    assert.equal(headroomSpy.mock.calls.length, 0, 'do not read an arbitrary legacy provider');
+  } finally {
+    headroomSpy.mockRestore();
+  }
 });
