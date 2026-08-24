@@ -208,6 +208,11 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(pgDumpCall()!.env?.PGCONNECT_TIMEOUT).toBe('5');
   });
 
+  it('tags the workspace dump backend so migration preflight can avoid its relation locks', async () => {
+    await runPreSnapshotHook(ctx);
+    expect(pgDumpCall()!.env?.PGAPPNAME).toBe('pcbackup');
+  });
+
   it('bounds PostgreSQL lock acquisition and statement lifetime below the client watchdog', async () => {
     await runPreSnapshotHook(ctx);
     const c = pgDumpCall()!;

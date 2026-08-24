@@ -685,6 +685,26 @@ export interface SessionTurnPartsLockWaiter {
   queryPreview: string | null;
 }
 
+/** A relation-level AccessExclusiveLock waiter, reduced to bounded incident
+ * evidence. A waiting DDL is dangerous when ordinary AccessShare readers are
+ * queued behind it on the same relation. */
+export interface AccessExclusiveLockWaiter {
+  relation: string;
+  pid: number;
+  applicationName: string | null;
+  durationSeconds: number;
+  queryPreview: string | null;
+}
+
+/** A relation-level AccessShareLock waiter observed alongside a waiting DDL. */
+export interface AccessShareLockWaiter {
+  relation: string;
+  pid: number;
+  applicationName: string | null;
+  durationSeconds: number;
+  queryPreview: string | null;
+}
+
 export interface InvariantSnapshot {
   openHandoffTs: string[];
   openEscalations: OpenEscalationLite[];
@@ -703,6 +723,9 @@ export interface InvariantSnapshot {
    *  relation-lock waiters observed in the same monitor pass. */
   sessionTurnPartsCopyHolders: SessionTurnPartsCopyHolder[];
   sessionTurnPartsLockWaiters: SessionTurnPartsLockWaiter[];
+  /** EI-21374588273323330: bounded generic relation-lock snapshots. */
+  accessExclusiveLockWaiters: AccessExclusiveLockWaiter[];
+  accessShareLockWaiters: AccessShareLockWaiter[];
 }
 
 export interface Violation {
@@ -846,6 +869,57 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
         `${snap.sessionTurnPartsCopyHolders.length} active COPY holder(s) on harness_shared.session_turn_parts ` +
         `(long-copy threshold ${t.sessionTurnPartsCopyMaxSeconds}s): ${holderDetail}; ` +
         `${queuedPartsWaiters} queued relation-lock waiter(s)${waiterDetail}`,
+      severity: 'major',
+    });
+  }
+  // EI-21374588273323330: PostgreSQL queues ordinary AccessShare readers
+  // behind a waiting AccessExclusive DDL request. This is the generic form of
+  // the migration-947 incident; keep it separate from the session_turn_parts
+  // COPY-specific detector because it must catch any relation and any DDL
+  // writer, including an older/deployed migration path.
+  const waitingDdlByRelation = new Map<string, AccessExclusiveLockWaiter[]>();
+  for (const waiter of snap.accessExclusiveLockWaiters) {
+    const rows = waitingDdlByRelation.get(waiter.relation) ?? [];
+    rows.push(waiter);
+    waitingDdlByRelation.set(waiter.relation, rows);
+  }
+  const queuedReadersByRelation = new Map<string, AccessShareLockWaiter[]>();
+  for (const reader of snap.accessShareLockWaiters) {
+    if (!waitingDdlByRelation.has(reader.relation)) continue;
+    const rows = queuedReadersByRelation.get(reader.relation) ?? [];
+    rows.push(reader);
+    queuedReadersByRelation.set(reader.relation, rows);
+  }
+  const lockConvoys = [...queuedReadersByRelation.entries()]
+    .map(([relation, readers]) => ({
+      relation,
+      ddl: waitingDdlByRelation.get(relation) ?? [],
+      readers,
+    }))
+    .filter(({ ddl, readers }) =>
+      readers.some((reader) => ddl.some((waiter) => reader.pid !== waiter.pid)),
+    );
+  if (lockConvoys.length > 0) {
+    const detail = lockConvoys
+      .map(({ relation, ddl, readers }) => {
+        const ddlDetail = ddl
+          .map((waiter) =>
+            `pid=${waiter.pid} app=${waiter.applicationName ?? 'unknown'} running=${waiter.durationSeconds.toFixed(1)}s${waiter.queryPreview ? ` query=${waiter.queryPreview}` : ''}`,
+          )
+          .join(' | ');
+        const readerDetail = readers
+          .map((reader) =>
+            `pid=${reader.pid} app=${reader.applicationName ?? 'unknown'} running=${reader.durationSeconds.toFixed(1)}s${reader.queryPreview ? ` query=${reader.queryPreview}` : ''}`,
+          )
+          .join(' | ');
+        return `${relation}: waiting AccessExclusiveLock [${ddlDetail}]; queued AccessShareLock [${readerDetail}]`;
+      })
+      .join('\n');
+    out.push({
+      title: 'coord invariant: waiting AccessExclusiveLock queues AccessShare readers',
+      detail:
+        `${lockConvoys.length} relation-level lock convoy(s) detected — a waiting DDL is blocking ordinary readers; ` +
+        `this is the migration/backup lock-order inversion class.\n${detail}`,
       severity: 'major',
     });
   }
@@ -1126,6 +1200,79 @@ export async function gatherSessionTurnPartsCopyLocks(
   };
 }
 
+/** EI-21374588273323330: gather bounded generic relation-lock waiters. The
+ * two snapshots are intentionally separate so evaluateInvariants can require
+ * same-relation overlap; a lone waiting DDL or lone queued reader is not yet
+ * the lock-order inversion this detector exists to catch. */
+export async function gatherGenericRelationLockWaiters(
+  sql: postgres.Sql,
+  limit = 20,
+): Promise<{
+  accessExclusiveWaiters: AccessExclusiveLockWaiter[];
+  accessShareWaiters: AccessShareLockWaiter[];
+}> {
+  type Row = {
+    relation: string;
+    pid: number;
+    application_name: string | null;
+    duration_seconds: number;
+    query_preview: string | null;
+  };
+  const [exclusiveRows, shareRows] = await Promise.all([
+    sql<Row[]>`
+      SELECT
+        n.nspname || '.' || c.relname AS relation,
+        a.pid,
+        a.application_name,
+        COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - a.query_start)), 0)::float AS duration_seconds,
+        LEFT(a.query, 400) AS query_preview
+      FROM pg_stat_activity a
+      JOIN pg_locks l
+        ON l.pid = a.pid
+       AND l.locktype = 'relation'
+       AND l.mode = 'AccessExclusiveLock'
+       AND NOT l.granted
+      JOIN pg_class c ON c.oid = l.relation
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE a.datname = current_database()
+        AND a.pid <> pg_backend_pid()
+      ORDER BY a.query_start ASC NULLS LAST
+      LIMIT ${limit}
+    `,
+    sql<Row[]>`
+      SELECT
+        n.nspname || '.' || c.relname AS relation,
+        a.pid,
+        a.application_name,
+        COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - a.query_start)), 0)::float AS duration_seconds,
+        LEFT(a.query, 400) AS query_preview
+      FROM pg_stat_activity a
+      JOIN pg_locks l
+        ON l.pid = a.pid
+       AND l.locktype = 'relation'
+       AND l.mode = 'AccessShareLock'
+       AND NOT l.granted
+      JOIN pg_class c ON c.oid = l.relation
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE a.datname = current_database()
+        AND a.pid <> pg_backend_pid()
+      ORDER BY a.query_start ASC NULLS LAST
+      LIMIT ${limit}
+    `,
+  ]);
+  const mapRow = (row: Row) => ({
+    relation: row.relation,
+    pid: row.pid,
+    applicationName: row.application_name,
+    durationSeconds: Number(row.duration_seconds),
+    queryPreview: row.query_preview,
+  });
+  return {
+    accessExclusiveWaiters: exclusiveRows.map(mapRow),
+    accessShareWaiters: shareRows.map(mapRow),
+  };
+}
+
 /** Gather the live snapshot. Every leg is isolated — a failing query zeroes
  *  its own check (and notes it), never the fire. */
 async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot> {
@@ -1140,6 +1287,8 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
     coordLogActiveOffenders: [],
     sessionTurnPartsCopyHolders: [],
     sessionTurnPartsLockWaiters: [],
+    accessExclusiveLockWaiters: [],
+    accessShareLockWaiters: [],
   };
   try {
     snap.openHandoffTs = (await listHandoffs({ status: 'open' })).map((h) => h.record.ts);
@@ -1205,6 +1354,14 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
     const partsLocks = await gatherSessionTurnPartsCopyLocks(sql);
     snap.sessionTurnPartsCopyHolders = partsLocks.copyHolders;
     snap.sessionTurnPartsLockWaiters = partsLocks.lockWaiters;
+  } catch {
+    /* check degraded */
+  }
+  try {
+    const { sql } = getOrgPg();
+    const relationLocks = await gatherGenericRelationLockWaiters(sql);
+    snap.accessExclusiveLockWaiters = relationLocks.accessExclusiveWaiters;
+    snap.accessShareLockWaiters = relationLocks.accessShareWaiters;
   } catch {
     /* check degraded */
   }

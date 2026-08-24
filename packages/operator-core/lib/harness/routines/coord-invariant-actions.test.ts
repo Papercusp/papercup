@@ -206,6 +206,8 @@ describe('evaluateInvariants', () => {
     coordLogActiveOffenders: [],
     sessionTurnPartsCopyHolders: [],
     sessionTurnPartsLockWaiters: [],
+    accessExclusiveLockWaiters: [],
+    accessShareLockWaiters: [],
   };
   const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
   const TTL_H = OPERATIONAL_ESCALATION_TTL_MS / 3_600_000;
@@ -402,6 +404,57 @@ describe('evaluateInvariants', () => {
     expect(evaluateInvariants(longCopy, DEFAULT_THRESHOLDS, NOW).map((v) => v.title)).toEqual([
       'coord invariant: session_turn_parts COPY lock convoy',
     ]);
+  });
+
+  it('EI-21374588273323330: detects same-relation waiting DDL plus queued readers, but not either side alone', () => {
+    const waitingDdlOnly = {
+      ...cleanSnap,
+      accessExclusiveLockWaiters: [{
+        relation: 'harness_shared.scout_routed_ideas',
+        pid: 100,
+        applicationName: 'psql',
+        durationSeconds: 115,
+        queryPreview: 'ALTER TABLE ...',
+      }],
+    };
+    expect(evaluateInvariants(waitingDdlOnly, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+
+    const queuedReaderOnly = {
+      ...cleanSnap,
+      accessShareLockWaiters: [{
+        relation: 'harness_shared.scout_routed_ideas',
+        pid: 101,
+        applicationName: 'operator',
+        durationSeconds: 2,
+        queryPreview: 'SELECT ...',
+      }],
+    };
+    expect(evaluateInvariants(queuedReaderOnly, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+
+    const convoy = {
+      ...cleanSnap,
+      accessExclusiveLockWaiters: [{
+        relation: 'harness_shared.scout_routed_ideas',
+        pid: 100,
+        applicationName: 'psql',
+        durationSeconds: 115,
+        queryPreview: 'ALTER TABLE ...',
+      }],
+      accessShareLockWaiters: [{
+        relation: 'harness_shared.scout_routed_ideas',
+        pid: 101,
+        applicationName: 'operator',
+        durationSeconds: 2,
+        queryPreview: 'SELECT ...',
+      }],
+    };
+    const violations = evaluateInvariants(convoy, DEFAULT_THRESHOLDS, NOW);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].title).toBe('coord invariant: waiting AccessExclusiveLock queues AccessShare readers');
+    expect(violations[0].severity).toBe('major');
+    expect(violations[0].detail).toContain('harness_shared.scout_routed_ideas');
+    expect(violations[0].detail).toContain('pid=100');
+    expect(violations[0].detail).toContain('pid=101');
   });
 
   it('EI-10177: does NOT fire on normal live-owner review backlog (depth under the runaway cap)', () => {

@@ -72,6 +72,43 @@ const LOCK_RETRY_MAX_ATTEMPTS = 5;
 const MAX_LOCK_TIMEOUT_SQL_SEC = 300; // ceiling — mirrors MAX_DRAIN_SEC's magnitude
 const CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS = 2;
 
+/** Stable identity used by the workspace pg_dump hook. Keep this literal in
+ * the migration guard so a backup transaction is recognizable even when the
+ * migration is running through a fresh psql process. */
+export const WORKSPACE_BACKUP_APPLICATION_NAME = 'pcbackup';
+
+/**
+ * SQL guard inserted immediately before a migration's `\\i`.
+ *
+ * pg_dump holds granted AccessShareLock rows for every relation it has already
+ * visited in its one snapshot transaction. If a migration starts an
+ * AccessExclusive wait behind one of those rows, PostgreSQL queues ordinary
+ * AccessShare readers behind the migration too. Fail before `\\i` while the
+ * backup is identifiable, using the same text/SQLSTATE as lock_timeout so the
+ * existing bounded retry loop waits for the backup without issuing any DDL.
+ */
+export function migrationBackupLockGuardSql(): string {
+  return (
+    `DO $papercusp_backup_lock_guard$\n` +
+    `BEGIN\n` +
+    `  IF EXISTS (\n` +
+    `    SELECT 1\n` +
+    `    FROM pg_locks AS l\n` +
+    `    JOIN pg_stat_activity AS a ON a.pid = l.pid\n` +
+    `    WHERE l.locktype = 'relation'\n` +
+    `      AND l.granted\n` +
+    `      AND l.mode = 'AccessShareLock'\n` +
+    `      AND a.application_name = '${WORKSPACE_BACKUP_APPLICATION_NAME}'\n` +
+    `      AND a.datname = current_database()\n` +
+    `      AND a.pid <> pg_backend_pid()\n` +
+    `  ) THEN\n` +
+    `    RAISE EXCEPTION 'canceling statement due to lock timeout (workspace pg_dump holds AccessShareLock)' USING ERRCODE = '55P03';\n` +
+    `  END IF;\n` +
+    `END\n` +
+    `$papercusp_backup_lock_guard$;\n`
+  );
+}
+
 // EI-19320461261471579: these predicates + the backoff now live in the
 // dependency-free `lib/pg-retryable-failure` module and are RE-EXPORTED here,
 // unchanged, so every existing importer and test keeps working. They moved
@@ -513,6 +550,7 @@ export default defineTool({
           const sha256 = createHash('sha256').update(sqlText).digest('hex');
           const filenameLiteral = path.basename(args.file).replace(/'/g, "''");
           const reservationGuard = migrationReservationGuardSql(path.basename(args.file));
+          const backupLockGuard = migrationBackupLockGuardSql();
           // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
           // description above) — falls back to the EI-9417 default when omitted,
           // producing the exact same script text as before this change.
@@ -528,6 +566,11 @@ export default defineTool({
             // WI-6381: caller-widened when riding out a known long-lived
             // non-operator holder instead (see migrationMaxAttempts above).
             `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n` +
+            // EI-21374588273323330: refuse to enter DDL while the workspace
+            // pg_dump transaction is visibly holding relation AccessShareLock.
+            // The guard raises the normal retryable lock-timeout shape before
+            // `\\i`, so no migration statement is issued behind the backup.
+            backupLockGuard +
             reservationGuard +
             `\\i ${args.file}\n` +
             `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +

@@ -96,6 +96,10 @@ const PG_DUMP_STATEMENT_TIMEOUT_MS = 10 * 60_000;
 const PG_DUMP_LOCK_WAIT_TIMEOUT_MS = 30_000;
 const GIB = 1024n * 1024n * 1024n;
 
+/** Stable application identity used by migration preflight and lock monitors
+ * to distinguish the workspace's pg_dump transaction from ordinary readers. */
+export const WORKSPACE_BACKUP_APPLICATION_NAME = 'pcbackup';
+
 /**
  * Multiple of the previous dump's size to require free. The new `.tmp` and the
  * previous dump coexist for the length of the run (the rename is the last
@@ -283,6 +287,10 @@ async function dumpPg(opts: {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PGPASSWORD: opts.password,
+    // pg_dump keeps AccessShareLock rows for the duration of its snapshot
+    // transaction. Give migration preflight + the hourly convoy monitor a
+    // stable identity so they can refuse/diagnose DDL lock inversion.
+    PGAPPNAME: WORKSPACE_BACKUP_APPLICATION_NAME,
     PGCONNECT_TIMEOUT: '5',
     // PGOPTIONS is parsed by libpq for the pg_dump session. Keep any caller
     // options, then append bounds that apply to this dump only.
