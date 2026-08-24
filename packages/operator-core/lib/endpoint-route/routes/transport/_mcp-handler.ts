@@ -2712,6 +2712,26 @@ const handler = createMcpHandler(
              */
             deadlineFired: boolean;
           } = { toolOutcome: null, deadlineFired: false };
+          // P2-5 must cover workspace/principal synthesis as well as the tool
+          // handler. Keep one deadline result and one deadline origin for both
+          // races so a slow pre-dispatch acquisition cannot start a handler
+          // after the caller has already received a timeout.
+          const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
+          const deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : null;
+          const timeoutResult = (): McpCallResult => {
+            raced.deadlineFired = true;
+            return {
+              isError: true,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: idempotencyKey
+                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing).`
+                    : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
+                },
+              ],
+            };
+          };
           const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
             // The tool execution as ONE promise, so the P2-5 deadline can return a
             // clean client error WITHOUT cancelling it: it completes server-side and
@@ -3089,7 +3109,6 @@ const handler = createMcpHandler(
             // (55s) must NOT cut off a tool that legitimately declares a longer
             // `timeoutSec` (e.g. chat:ask_choice / other human-interaction tools at
             // 600s) — effectiveMcpDeadlineMs honors the tool's own budget instead.
-            const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
             return raceDeadline<McpCallResult>(
               deadlineMs,
               () => {
@@ -3097,20 +3116,7 @@ const handler = createMcpHandler(
                 raced.toolOutcome = outcome;
                 return outcome;
               },
-              () => {
-                raced.deadlineFired = true;
-                return {
-                  isError: true,
-                  content: [
-                    {
-                      type: 'text' as const,
-                      text: idempotencyKey
-                        ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing).`
-                        : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
-                    },
-                  ],
-                };
-              },
+              timeoutResult,
             );
           };
           // Establish the request-scoped workspace ALS for the duration of the
@@ -3130,9 +3136,17 @@ const handler = createMcpHandler(
           // the pre-dispatch failure without duplicating rows after dispatch
           // has started.
           let dispatchStarted = false;
-          const dispatched = await (async (): Promise<McpCallResult> => {
+          const dispatchPreflight = async (): Promise<McpCallResult> => {
             try {
               return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, async (ctx) => {
+                // The outer race may have answered while acquisition or
+                // principal synthesis was still in flight. Do not enter the
+                // handler after that point; only a dispatch that had already
+                // started is allowed to continue server-side after timeout.
+                if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
+                  raced.deadlineFired = true;
+                  throw new Error(`MCP dispatch deadline expired before tool "${toolName}" started`);
+                }
                 dispatchStarted = true;
                 return runDispatch(ctx);
               });
@@ -3159,7 +3173,8 @@ const handler = createMcpHandler(
               }
               throw error;
             }
-          })();
+          };
+          const dispatched = await raceDeadline<McpCallResult>(deadlineMs, dispatchPreflight, timeoutResult);
           // EI-19301511582594101: persist the replay receipt HERE — after
           // dispatchWithSynthesizedTx has resolved, which is after the tool's
           // `withWorkspace` transaction has COMMITTED, and still before this result is

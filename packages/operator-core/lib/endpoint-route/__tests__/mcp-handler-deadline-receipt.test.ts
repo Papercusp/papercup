@@ -50,6 +50,7 @@ const h = vi.hoisted(() => {
     fakeTx,
     fakeSql,
     withWorkspaceCalls: [] as string[],
+    withWorkspaceDelayMs: 0,
     commitFailure: null as Error | null,
     txEvents: [] as string[],
     replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
@@ -105,6 +106,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     getOrgPg: () => ({ sql: h.fakeSql }),
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
+      if (h.withWorkspaceDelayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, h.withWorkspaceDelayMs));
+      }
       const out = await fn(h.fakeTx);
       if (h.commitFailure) throw h.commitFailure;
       h.txEvents.push('commit');
@@ -250,6 +254,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   slowCalls = 0;
   h.withWorkspaceCalls.length = 0;
+  h.withWorkspaceDelayMs = 0;
   h.commitFailure = null;
   h.txEvents.length = 0;
   h.replayStores.length = 0;
@@ -293,6 +298,30 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     // was already answered with the timeout envelope, and the persist for the
     // still-running tool has NOT happened yet — it happens in the background.
     expect(h.replayStores).toEqual([]);
+  });
+
+  it('times out during pre-dispatch workspace acquisition without entering the tool handler', async () => {
+    h.withWorkspaceDelayMs = SLOW_TOOL_MS;
+    const startedAt = Date.now();
+
+    const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-pre-dispatch-deadline',
+    });
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('request_timeout');
+    expect(textOf(res)).toContain(`${TEST_DEADLINE_MS}ms`);
+    expect(Date.now() - startedAt).toBeLessThan(SLOW_TOOL_MS);
+
+    // Let the delayed acquisition callback run. Without the pre-dispatch guard
+    // it would enter runDispatch here and increment the synthetic tool count
+    // after the caller had already received its timeout.
+    await sleep(SLOW_TOOL_MS + 100);
+    expect(slowCalls).toBe(0);
+    expect(h.replayStores).toEqual([]);
+    expect(h.invocations).toMatchObject([
+      { toolName: 'deadlinetest:slow', status: 'error' },
+    ]);
   });
 
   it('once the tool actually finishes, the persisted receipt is its REAL outcome — never the raced timeout envelope (EI-19301511582594101)', async () => {
