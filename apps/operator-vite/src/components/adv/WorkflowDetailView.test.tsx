@@ -200,6 +200,7 @@ describe('WorkflowDetailView — direct controls stay with the operator', () => 
     renderView({ binding: null });
     await waitFor(() => expect(screen.getByText(/Arm state unknown/)).toBeTruthy());
     expect(screen.getByRole('button', { name: 'Arm workflow' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Test with last event' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('disables both controls while one is in flight', async () => {
@@ -211,6 +212,13 @@ describe('WorkflowDetailView — direct controls stay with the operator', () => 
   it('keeps the agent/operator division visible in the footer', async () => {
     renderView();
     await waitFor(() => expect(screen.getByText(/Structural edits go through the agent/)).toBeTruthy());
+  });
+
+  it('renders the queued last-event trigger run while Activity catches up', async () => {
+    renderView({ lastTestRunId: '33333333-3333-4333-8333-333333333333' });
+    expect((await screen.findByRole('status')).textContent).toContain(
+      'Test run 33333333 queued from the last provider event',
+    );
   });
 });
 
