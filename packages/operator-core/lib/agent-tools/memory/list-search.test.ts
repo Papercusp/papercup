@@ -115,6 +115,12 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     expect(b.search).toHaveBeenCalledWith('q', {
       scope: ['user-1', 'harness:papercup'],
       limit: 3,
+      // EI-21348316803580175: the query embed is bounded. Asserted as any Number
+      // rather than the literal 4000 because the policy is env-overridable
+      // (PAPERCUSP_QUERY_EMBED_ACQUIRE_BUDGET_MS) — pinning the literal would
+      // make this contract test fail on a box that tunes it. Removing the option
+      // entirely still fails here, which is the regression this guards.
+      embedTimeoutMs: expect.any(Number),
       onLegStats: expect.any(Function),
     });
     expect(out.results).toHaveLength(3);
@@ -130,6 +136,7 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     expect(b.search).toHaveBeenCalledWith('q', {
       scope: ['harness:bench-run-1'],
       limit: 8,
+      embedTimeoutMs: expect.any(Number),
       onLegStats: expect.any(Function),
     });
     // harnessOnly WITHOUT harness_slug is ignored (nothing to isolate to) → still fans user + workspace.
@@ -138,6 +145,7 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     expect(b.search).toHaveBeenCalledWith('q', {
       scope: ['user-1', 'harness:papercup'],
       limit: 8,
+      embedTimeoutMs: expect.any(Number),
       onLegStats: expect.any(Function),
     });
   });

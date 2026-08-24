@@ -330,5 +330,16 @@ export function embedFailureReason(err: unknown): string | null {
   // an opaque handler_error that hid the already-journaled write's reason/journal_id from the
   // caller. Map it to a clean reason exactly like every other embed-failure mode above.
   if (/sidecar_required_unavailable/.test(msg)) return 'sidecar_unavailable';
+  // EI-21348316803580175: the query embed blew the caller's opt-in
+  // SearchOptions.embedTimeoutMs (EmbedBudgetExceededError, thrown by
+  // libs/generic/memory's Mem0Backend). The embedder is not broken — it is
+  // SATURATED, and we deliberately stopped waiting on it.
+  //
+  // This branch is load-bearing, not cleanup: the budget only pays off because
+  // the throw lands here and is classified, which is what routes the caller
+  // into the embed-free lexical fallback (WI-4214). Unclassified it would fall
+  // through to the raw `throw err` and surface as an opaque handler_error —
+  // turning a slow-but-successful search into a failed one.
+  if (/embed_budget_exceeded/.test(msg)) return 'embed_timeout';
   return null;
 }

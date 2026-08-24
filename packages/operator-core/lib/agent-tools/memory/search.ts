@@ -36,6 +36,7 @@ import {
   embedFailureReason,
 } from '../../memory/op-deadline';
 import { isOpenAiEmbedInCooldown } from '../../memory/configure';
+import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { isEphemeralBenchmarkHarnessSlug } from '../../harness/improvements/watchdog';
@@ -263,6 +264,17 @@ export default defineTool({
           scope,
           limit,
           ...temporal,
+          // EI-21348316803580175: bound the query embed. memory:search was the
+          // lone interactive holdout — semantic.ts, sessions:search, tools:find
+          // and ask-knowledge-tier all already opt into this same policy — and
+          // being unbounded it inherited the sidecar's 15s timeout, so a
+          // saturated embedder took this tool's p50 from ~750ms to ~6.4s and
+          // dragged every coord:orient (which rides this call) to 17-21s.
+          //
+          // On a budget miss the backend THROWS; the catch below classifies it
+          // and degrades to the embed-free lexical leg (WI-4214). A partial,
+          // fast recall beats a full one that blows the caller's deadline.
+          embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
           onLegStats: (stats) => {
             legStats = stats;
           },
