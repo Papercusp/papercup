@@ -6,8 +6,14 @@
  * is best-effort PG/git glue; the COALESCING — N drifted docs → exactly one message — is
  * the behavior that matters and is fully captured here).
  */
-import { describe, it, expect } from 'vitest';
-import { buildDocDriftDigest, DOC_DRIFT_DIGEST_MAX_NAMED } from './sweep-after-sync';
+import { describe, it, expect, vi } from 'vitest';
+import { drainDetached } from '../../detached-imports';
+import {
+  buildDocDriftDigest,
+  DOC_DRIFT_DIGEST_MAX_NAMED,
+  enqueueDocFreshnessSweepAfterSync,
+  type SweepAfterSyncInput,
+} from './sweep-after-sync';
 import type { DriftedDoc } from './doc-steward-dispatch';
 
 const doc = (docId: string, source: string): DriftedDoc => ({
@@ -61,5 +67,67 @@ describe('buildDocDriftDigest (EI-2826 — coalesce the per-doc doc-drift flood)
     const d = buildDocDriftDigest('papercusp', docs);
     expect(typeof d).toBe('string');
     expect(d).toContain('50 doc(s) drifted');
+  });
+});
+
+describe('enqueueDocFreshnessSweepAfterSync (EI-21343916898736862)', () => {
+  it('returns without awaiting a slow corpus sweep and runs only one copy at a time', async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const seen: SweepAfterSyncInput[] = [];
+    const run = vi.fn(async (input: SweepAfterSyncInput) => {
+      seen.push(input);
+      if (seen.length === 1) await firstBlocked;
+      return null;
+    });
+    const base = {
+      harnessSlug: 'queue-does-not-gate-git-sync',
+      workspaceId: 'ws-test',
+      repoRoot: '/repo',
+    };
+
+    expect(enqueueDocFreshnessSweepAfterSync({ ...base, prevSha: 'a', headSha: 'b' }, { run })).toBeUndefined();
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledTimes(1);
+
+    enqueueDocFreshnessSweepAfterSync({ ...base, prevSha: 'b', headSha: 'c' }, { run });
+    enqueueDocFreshnessSweepAfterSync({ ...base, prevSha: 'c', headSha: 'd' }, { run });
+    expect(run).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await drainDetached();
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(seen[1]).toMatchObject({ prevSha: 'b', headSha: 'd' });
+  });
+
+  it('falls back to a full recompute when queued ranges are discontinuous', async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const seen: SweepAfterSyncInput[] = [];
+    const run = vi.fn(async (input: SweepAfterSyncInput) => {
+      seen.push(input);
+      if (seen.length === 1) await firstBlocked;
+      return null;
+    });
+    const base = {
+      harnessSlug: 'queue-discontinuous-range',
+      workspaceId: 'ws-test',
+      repoRoot: '/repo',
+    };
+
+    enqueueDocFreshnessSweepAfterSync({ ...base, prevSha: 'a', headSha: 'b' }, { run });
+    await Promise.resolve();
+    enqueueDocFreshnessSweepAfterSync({ ...base, prevSha: 'x', headSha: 'y' }, { run });
+    enqueueDocFreshnessSweepAfterSync({ ...base, prevSha: 'y', headSha: 'z' }, { run });
+    releaseFirst();
+    await drainDetached();
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(seen[1]).toMatchObject({ headSha: 'z' });
+    expect(seen[1]?.prevSha).toBeUndefined();
   });
 });
