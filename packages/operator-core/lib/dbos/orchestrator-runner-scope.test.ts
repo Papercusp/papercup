@@ -168,7 +168,12 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
        (see the pin in beforeEach) rather than whichever the ambient default gives:
        a notation-only difference must never be readable as a lost memory cap. */
     expect(args).toContain(capBytes(6));
-    expect(args).toContain('--property=MemorySwapMax=0');
+    // WI-41206: an agent turn is a WORKER — nothing waits on its event loop — so it must be
+    // allowed to PAGE at the cap rather than be OOM-killed. This asserted the opposite until
+    // 2026-08-24. The CAP above is unchanged and still pinned; only the at-the-cap behaviour
+    // moved. 'deny' remains available per-callsite (see ScopeSwapPolicy) and is still used by
+    // the substrate sidecar, whose leak is what earned the swap-0 policy.
+    expect(args).not.toContain('--property=MemorySwapMax=0');
     // Named: the ledger key that makes the subtree addressable.
     expect(args.some((a) => a.startsWith('--unit='))).toBe(true);
     // The wrapped payload (command + its own args) is appended verbatim at the tail.
@@ -278,7 +283,9 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
     expect(cmd).toBe('systemd-run'); // still confined, just not ledgered
     expect(args).toContain(capG(6)); // the unnamed builder's shorthand
-    expect(args).toContain('--property=MemorySwapMax=0');
+    // WI-41206: same inversion as the named-scope case above — the unnamed WI-1499 builder
+    // must agree, or the swap policy would depend on whether the task-manager flag is on.
+    expect(args).not.toContain('--property=MemorySwapMax=0');
     expect(args.some((a) => a.startsWith('--unit='))).toBe(false); // the flag DOES gate naming
     expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
   });
