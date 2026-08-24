@@ -409,7 +409,7 @@ describe('predicate watches (real PG)', () => {
    * The suites above prove the predicate machinery is edge-correct for a hand-written
    * (tool, path, op, value). This one proves the CELL half: that a subscription whose
    * predicate came from a real `CellSpec` actually wakes its subscriber when the
-   * underlying store moves, and — the P-021 property — that a `of:'material'`
+   * underlying store moves, and — the P-021 property — that a `target:'material'`
    * subscription stays silent through churn on the cell's headline path.
    *
    * ── WHAT THIS COVERS, AND WHAT IT HONESTLY DOES NOT ─────────────────────────
@@ -419,7 +419,7 @@ describe('predicate watches (real PG)', () => {
    *
    *   1. state:subscribe resolves a cell NAME to the cell's declared (tool, path) and
    *      hands it to watch:create  →  asserted in `agent-tools/state/state-tools.test.ts`
-   *      ("takes the (tool, args, path) triple from the CELL", and the `of:'material'`
+   *      ("takes the (tool, args, path) triple from the CELL", and the `target`
    *      re-pointing).
    *   2. that predicate is registered and polled                    →  asserted HERE.
    *   3. crossing it wakes the subscriber with the new value        →  asserted HERE.
@@ -441,10 +441,13 @@ describe('predicate watches (real PG)', () => {
      *  it — exactly as `state:subscribe` does. `of` selects headline vs materiality. */
     async function seedCellWatch(
       spec: CellSpec,
-      opts: { of?: 'value' | 'material'; op?: PredicateOp; value?: unknown; once?: boolean },
+      // `target` mirrors state:subscribe's arg (P-005/D-014 §4 renamed `of` → `target`,
+      // `value` → `measurement`). This fixture hand-builds the row rather than calling
+      // the tool, so it takes only the two targets these cases exercise.
+      opts: { target?: 'measurement' | 'material'; op?: PredicateOp; value?: unknown; once?: boolean },
     ) {
       if (spec.changeSignal.kind !== 'poll') throw new Error('P-005 fixture needs a poll cell');
-      const path = opts.of === 'material' ? (spec.materiality as { path: string }).path : spec.changeSignal.path;
+      const path = opts.target === 'material' ? (spec.materiality as { path: string }).path : spec.changeSignal.path;
       const id = globalThis.crypto.randomUUID();
       const eventKey = `predicate:${id}`;
       const subscriber = `su-cell-${++seq}`;
@@ -486,7 +489,7 @@ describe('predicate watches (real PG)', () => {
 
     it('TRIPLE PROVENANCE: the watch polls the tool + path the CELL declares, not a copy', async () => {
       const spec = GATE_CANDIDATE_CELL;
-      const { row } = await seedCellWatch(spec, { of: 'value', op: 'exists' });
+      const { row } = await seedCellWatch(spec, { target: 'measurement', op: 'exists' });
       // If a registration edit moves the cell's resolver or path, this fails HERE rather
       // than the suite quietly polling a path the cell no longer declares.
       expect(row.tool).toBe((spec.changeSignal as { tool: string }).tool);
@@ -547,7 +550,7 @@ describe('predicate watches (real PG)', () => {
       const headlinePath = (spec.changeSignal as { path: string }).path;
       expect(materialPath, 'the fixture needs two DIFFERENT paths to say anything').not.toBe(headlinePath);
 
-      const { row } = await seedCellWatch(spec, { of: 'material', op: 'eq', value: true });
+      const { row } = await seedCellWatch(spec, { target: 'material', op: 'eq', value: true });
 
       // ── LEG 1: PROVE IT CAN FIRE. Without this the rest is unfalsifiable.
       STORE = { changeInCandidate: { judgingSha: 'aaaaaaa', judgingContainsPath: false } };
@@ -587,8 +590,8 @@ describe('predicate watches (real PG)', () => {
      */
     it('⚠ the SAME mutation wakes a headline subscriber and not a material one', async () => {
       const spec = GATE_CANDIDATE_CELL;
-      const headline = await seedCellWatch(spec, { of: 'value', op: 'eq', value: 'ccccccc' });
-      const material = await seedCellWatch(spec, { of: 'material', op: 'eq', value: true });
+      const headline = await seedCellWatch(spec, { target: 'measurement', op: 'eq', value: 'ccccccc' });
+      const material = await seedCellWatch(spec, { target: 'material', op: 'eq', value: true });
 
       STORE = { changeInCandidate: { judgingSha: 'aaaaaaa', judgingContainsPath: false } };
       await step(headline.row.id);
@@ -624,7 +627,7 @@ describe('predicate watches (real PG)', () => {
      */
     it('⚠ a STRING operand survives the jsonb round-trip — it must not come back null', async () => {
       const sha = '42123c7841cd4a2ad86e5efb2beda80ca6117488';
-      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'eq', value: sha });
+      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { target: 'measurement', op: 'eq', value: sha });
       expect(row.value, 'the operand was lost on write').toBe(sha);
       expect((await pw.getPredicateWatch(row.id))!.value, 'the operand was lost on read').toBe(sha);
     });
@@ -633,7 +636,7 @@ describe('predicate watches (real PG)', () => {
       // "123" must stay the STRING "123" — a `eq` against a numeric sha prefix or a
       // stringly-typed id must not start comparing as a number.
       for (const literal of ['123', 'true', 'null', '{}']) {
-        const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'eq', value: literal });
+        const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { target: 'measurement', op: 'eq', value: literal });
         expect(typeof (await pw.getPredicateWatch(row.id))!.value, `"${literal}" changed type`).toBe('string');
         expect((await pw.getPredicateWatch(row.id))!.value).toBe(literal);
       }
@@ -641,7 +644,7 @@ describe('predicate watches (real PG)', () => {
 
     it('⚠ and a string operand actually FIRES — the null operand could never match', async () => {
       const sha = 'deadbeefcafe';
-      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'eq', value: sha });
+      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { target: 'measurement', op: 'eq', value: sha });
 
       STORE = { changeInCandidate: { judgingSha: 'something-else' } };
       expect(await step(row.id)).toMatchObject({ matched: false, fired: false });
@@ -659,7 +662,7 @@ describe('predicate watches (real PG)', () => {
      */
     it('⚠ `ne` against a string operand does NOT fire while the value still equals it', async () => {
       const sha = 'deadbeefcafe';
-      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { of: 'value', op: 'ne', value: sha });
+      const { row } = await seedCellWatch(GATE_CANDIDATE_CELL, { target: 'measurement', op: 'ne', value: sha });
 
       STORE = { changeInCandidate: { judgingSha: sha } };
       expect(

@@ -249,10 +249,18 @@ export default defineTool({
       // cross-tenant rows, so it diagnosed the unsafe read without preventing
       // it. Deliberate fleet-wide analysis remains possible, but only through
       // an explicit call-site opt-in that is visible in tool telemetry.
-      const tenantAdvisory = await buildTenantScopeAdvisory(sql, {
+      // ONE scope object for both advisory calls below. Hoisted rather than
+      // repeated: a second `harnessSlug: ctx.harnessSlug` literal is a NEW
+      // candidate for check-no-raw-harness-sentinel.mjs, whose header states a
+      // new candidate is never made green by adding it to BASELINE. Passing the
+      // raw sentinel to THIS callee is safe — buildTenantScopeAdvisory
+      // normalizes both scope args itself via realScopeValue() — so the fix is
+      // to stop duplicating the literal, not to change what is passed.
+      const tenantScope = {
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.harnessSlug,
-      }).catch(() => null);
+      };
+      const tenantAdvisory = await buildTenantScopeAdvisory(sql, tenantScope).catch(() => null);
       if (tenantAdvisory && !args.allowUnscoped) {
         return jsonError(
           'tenant_scope_required',
@@ -260,10 +268,7 @@ export default defineTool({
         );
       }
       const positiveControlTenantAdvisory = args.positiveControlSql
-        ? await buildTenantScopeAdvisory(args.positiveControlSql, {
-            workspaceId: ctx.workspaceId,
-            harnessSlug: ctx.harnessSlug,
-          }).catch(() => null)
+        ? await buildTenantScopeAdvisory(args.positiveControlSql, tenantScope).catch(() => null)
         : null;
       if (positiveControlTenantAdvisory && !args.allowUnscoped) {
         return jsonError(

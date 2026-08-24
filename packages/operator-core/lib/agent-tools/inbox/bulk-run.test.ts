@@ -48,7 +48,7 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../coordination/inbox-reply', () => ({ deliverInboxOwnerReply: vi.fn() }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: h.notifySyncInvalidate }));
 
-import { bulkRunAct, bulkRunReport } from './bulk-run';
+import { bulkRunAct, bulkRunManifest, bulkRunReport } from './bulk-run';
 
 type ToolBody = Record<string, unknown>;
 type ExecuteInput = {
@@ -128,6 +128,28 @@ describe('inbox:bulk-run-report auto_resolved rail', () => {
         rationale: 'The message only needs acknowledgement.',
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
+  it('bypasses the UI list projection, which intentionally strips actions', async () => {
+    const result = body(
+      await bulkRunManifest.handler(
+        { runId: run.runId, includeReported: false },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(h.callPlansRead).toHaveBeenCalledWith('attention', {}, { uiProjection: false });
+    expect(result).toMatchObject({
+      ok: true,
+      items: [
+        expect.objectContaining({
+          itemId: item.itemId,
+          actions: [{ id: 'ack', label: 'Acknowledge', terminal: true }],
+        }),
+      ],
+    });
   });
 });
 

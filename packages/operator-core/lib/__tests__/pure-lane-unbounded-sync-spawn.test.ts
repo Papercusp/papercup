@@ -28,6 +28,13 @@
  * THE BOUND IS A `timeout:` OPTION on the call. That is the only thing that makes a sync spawn
  * interruptible; a `try/catch`, an `AbortSignal`, or a wrapper's own timer cannot help, because
  * none of them get to run while the loop is blocked.
+ *
+ * KNOWN LIMIT (documented, not defended — same posture as lane-split.ts's own matcher). The scan
+ * does NOT strip comments or string literals, so a commented-out or quoted call still counts as an
+ * offender. That is the deliberate direction to err in: a false positive costs one developer one
+ * confusing failure with a message naming the file and the fix, while a false negative costs the
+ * whole fleet a silent 45-minute wedge per affected run. If a legitimate mention ever trips it,
+ * bound the call or reword the mention — do NOT add the file to BASELINE.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';

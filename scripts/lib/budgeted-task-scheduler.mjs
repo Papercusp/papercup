@@ -104,12 +104,18 @@ export function resolveMemoryBudgetMb({
     return positiveInteger(affectedGlobalMemoryMb, 'AFFECTED_GLOBAL_MEMORY_MB');
   }
   const ceiling = positiveInteger(workerBudget, 'workerBudget') * perWorker;
-  if (memAvailableMb == null || memAvailableMb === '') return ceiling;
+  // WI-41206: the MemAvailable reading no longer reduces the envelope. An explicit
+  // AFFECTED_GLOBAL_MEMORY_MB override (handled above) is still honoured — that is an operator
+  // deliberately setting a budget, which is the opposite of the machine imposing one.
+  //
+  // reserveFraction is still VALIDATED even though it no longer narrows anything: it is a public
+  // argument, and silently ignoring a nonsensical value is exactly the failure mode that lets a
+  // caller believe a budget is in force when it is not.
   if (!(reserveFraction >= 0 && reserveFraction < 1)) {
     throw new Error(`reserveFraction must be in [0, 1); received ${String(reserveFraction)}`);
   }
-  const usable = Math.floor(positiveInteger(memAvailableMb, 'memAvailableMb') * (1 - reserveFraction));
-  return Math.max(perWorker, Math.min(ceiling, usable));
+  void memAvailableMb;
+  return ceiling;
 }
 
 /**
@@ -194,19 +200,26 @@ export function admissibleWorkersForMemory({
   reserveFraction = MEMORY_RESERVE_FRACTION,
 }) {
   const configuredLaneWorkers = positiveInteger(laneWorkers, 'laneWorkers');
-  if (memAvailableMb == null || memAvailableMb === '') return configuredLaneWorkers;
-  const perWorker = positiveInteger(workerMemoryMb, 'workerMemoryMb');
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: memory NO LONGER narrows the
+  // lane. This function used to return min(configured, floor(usable / perWorker)).
+  //
+  // The reasoning that survives: a reading is an OBSERVATION, not a configuration value, and
+  // this scheduler was already the best-behaved memory consumer in the tree — it PACED rather
+  // than refusing, precisely because "refusing admission would deadlock a run that is already
+  // under memory pressure". The owner's call is that the same argument extends one step: a
+  // host driven into paging should get SLOWER on its own, from actual contention, rather than
+  // from us pre-emptively narrowing the lane on a snapshot that is stale the moment it is read.
+  //
+  // The arguments are retained (call sites unchanged) and the measurement is still logged via
+  // `memAvailableMb=` in the stats line, so the concurrency decision stays auditable.
+  // reserveFraction stays VALIDATED for the same reason as in resolveMemoryBudgetMb: silently
+  // ignoring a nonsensical public argument lets a caller believe a limit is in force.
   if (!(reserveFraction >= 0 && reserveFraction < 1)) {
     throw new Error(`reserveFraction must be in [0, 1); received ${String(reserveFraction)}`);
   }
-  const measured = Number(memAvailableMb);
-  // A reading is an OBSERVATION, not a configuration value: a negative or non-finite one means
-  // the instrument is broken, and a broken instrument must not be read as "no memory" (that
-  // would throttle a healthy box to one worker). Fall back to the unchanged lane width.
-  if (!Number.isFinite(measured) || measured < 0) return configuredLaneWorkers;
-  const usable = Math.floor(measured * (1 - reserveFraction));
-  const affordable = Math.floor(usable / perWorker);
-  return Math.max(1, Math.min(configuredLaneWorkers, affordable));
+  void memAvailableMb;
+  void workerMemoryMb;
+  return configuredLaneWorkers;
 }
 
 const finiteEstimate = (value) =>

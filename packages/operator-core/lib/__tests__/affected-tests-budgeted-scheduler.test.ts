@@ -212,19 +212,22 @@ describe('runBudgetedTasks memory-aware admission (EI-20801764054303492 route (a
     return { widths, stats: result.stats };
   }
 
-  it('clamps admission DOWN when the reading drops mid-run, and never widens it', async () => {
-    // 4 workers x 1024MB needs >=5462MB at a 0.25 reserve; 3000MB affords 2, 2000MB affords 1.
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: admission is no longer narrowed
+  // by the reading. The MEASUREMENT is still taken and still reported (memoryReadings,
+  // lastMemAvailableMb) — losing the observability was never the goal — but it no longer moves
+  // the lane width, so admissionClamps is now always 0.
+  it('still MEASURES memory each admission, but no longer clamps the width', async () => {
+    // Previously: 3000MB afforded 2 workers and 2000MB afforded 1, against a 4-worker lane.
     const reader = readerFrom([3000, 2000]);
     const { widths, stats } = await widthsFor({ readMemAvailableMb: reader.read });
 
-    // Admission #0 is deliberately unmeasured — the startup reading that sized the budget is
-    // still fresh there — so it keeps the full width. Every LATER admission re-measures.
     expect(widths[0]).toBe(4);
-    expect(widths.slice(1)).toEqual([2, 1]);
+    expect(widths.slice(1)).toEqual([4, 4]);
+    // The reader is still consulted on every post-startup admission — the telemetry survives.
     expect(reader.callCount()).toBe(2);
     expect(stats.memoryReadings).toBe(2);
-    expect(stats.admissionClamps).toBe(2);
-    expect(stats.minAdmittedWorkers).toBe(1);
+    expect(stats.admissionClamps).toBe(0);
+    expect(stats.minAdmittedWorkers).toBe(4);
     expect(stats.lastMemAvailableMb).toBe(2000);
   });
 
@@ -272,12 +275,16 @@ describe('runBudgetedTasks memory-aware admission (EI-20801764054303492 route (a
     expect(stats.memoryReadings).toBe(0);
   });
 
-  it('holds the floor of one worker at a zero reading', async () => {
+  it('keeps the full lane even at a zero reading (WI-41206)', async () => {
+    // The old contract narrowed to a single worker here. The reasoning behind that floor —
+    // "refusing admission outright would deadlock a run already under memory pressure" — is
+    // exactly the argument extended: the run proceeds at full width and the host slows itself
+    // through real contention rather than through a pre-emptive narrowing.
     const { widths, stats } = await widthsFor({ readMemAvailableMb: () => 0 });
 
-    // Refusing admission outright would deadlock a run already under memory pressure.
-    expect(widths.slice(1).every((w) => w === 1)).toBe(true);
-    expect(stats.minAdmittedWorkers).toBe(1);
+    expect(widths.slice(1).every((w) => w === 4)).toBe(true);
+    expect(stats.minAdmittedWorkers).toBe(4);
+    expect(stats.admissionClamps).toBe(0);
   });
 });
 
@@ -339,25 +346,34 @@ describe('resolveMemoryBudgetMb', () => {
   // the old default fails here rather than silently un-arming the clamp again.
   const base = { workerBudget: 8, workerMemoryMb: 1024 };
 
-  it('binds on available memory, so a loaded host admits fewer workers than its ceiling allows', () => {
-    // 4096 MiB available, 25% reserved => 3072 usable => 3 tokens, BELOW the 8-worker ceiling.
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: these three asserted that the
+  // reading BOUND the budget. It no longer does — a host driven into paging should slow down
+  // from real contention, not from a snapshot narrowing the lane pre-emptively. The ceiling
+  // property (never widen past the worker budget) is unchanged and still pinned below.
+  it('does NOT bind on available memory — a loaded host keeps its full worker ceiling', () => {
+    // Previously: 4096 MiB available, 25% reserved => 3072 usable => 3 tokens.
     const budget = resolveMemoryBudgetMb({ ...base, memAvailableMb: 4096 });
-    expect(budget).toBe(3072);
+    expect(budget).toBe(8 * 1024);
     expect(resolveTaskBudget({ ...base, memoryBudgetMb: budget, maxConcurrentTasks: 8, reserveWorkers: 1 }))
-      .toMatchObject({ memoryWorkerBudget: 3, effectiveWorkerBudget: 3, primaryWorkers: 2 });
+      .toMatchObject({ memoryWorkerBudget: 8, effectiveWorkerBudget: 8 });
   });
 
   it('NEVER widens the budget past the worker ceiling, however much memory is free', () => {
-    // A 1 TiB host must not admit more than the 8-worker ceiling can pay for.
+    // Unchanged by WI-41206: the ceiling is a WORKER budget, not a memory one.
     expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: 1024 * 1024 })).toBe(8 * 1024);
   });
 
-  it('floors at one worker so a memory-starved host degrades to serial instead of throwing', () => {
-    // 100 MiB available would otherwise buy ZERO tokens, which resolveTaskBudget rejects outright.
-    expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: 100 })).toBe(1024);
+  it('a near-zero reading no longer degrades the host to serial', () => {
+    // Previously 100 MiB available floored the budget to a single 1024 MiB worker.
+    expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: 100 })).toBe(8 * 1024);
     expect(() =>
-      resolveTaskBudget({ ...base, memoryBudgetMb: 1024, maxConcurrentTasks: 8, reserveWorkers: 1 }),
+      resolveTaskBudget({ ...base, memoryBudgetMb: 8 * 1024, maxConcurrentTasks: 8, reserveWorkers: 1 }),
     ).not.toThrow();
+  });
+
+  it('returns the SAME budget for every reading, all else equal (WI-41206 regression guard)', () => {
+    const at = (memAvailableMb: number) => resolveMemoryBudgetMb({ ...base, memAvailableMb });
+    expect(at(100)).toBe(at(1024 * 1024));
   });
 
   it('lets an explicit AFFECTED_GLOBAL_MEMORY_MB win over the measured host', () => {

@@ -203,6 +203,11 @@ describe('postgres.ts model tracks the real dev:pg_query (D-015)', () => {
         'allowUnscoped',
         'describe',
         'maxRows',
+        // A SECOND SQL string run through the SAME connection and scope, to prove
+        // an absence claim's instrument can find a known-positive row. It selects
+        // no database or connection, so it does not make the excluded
+        // $ODDS_DB/$PGURL/scratch atoms claimable and the pattern stays narrowed.
+        'positiveControlSql',
         'sql',
         'timeoutMs',
       ],

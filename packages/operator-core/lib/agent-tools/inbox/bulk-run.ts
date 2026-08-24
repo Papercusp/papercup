@@ -123,7 +123,15 @@ async function liveActionsFor(
 ): Promise<{ id: string; label: string; terminal: boolean }[] | null> {
   try {
     const { callPlansRead } = await import('../plans/read-dispatch');
-    const r = (await callPlansRead('attention', {})) as { groups?: { items?: unknown[] }[] };
+    // The UI list projection deliberately DROPS `actions` to keep the ~1MB
+    // attention feed small; the detail pane fetches them separately. A resolver
+    // cannot do that: actions are its authority vocabulary. Reading the default
+    // projection made every real item look like `actions:[]`, so the agent skipped
+    // the entire run even though the middle pane showed Acknowledge/Resolve.
+    // Ask the shared reader for the canonical shape, not the list display shape.
+    const r = (await callPlansRead('attention', {}, { uiProjection: false })) as {
+      groups?: { items?: unknown[] }[];
+    };
     const groups = Array.isArray(r?.groups) ? r.groups : [];
     for (const g of groups) {
       for (const raw of g?.items ?? []) {

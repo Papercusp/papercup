@@ -23,7 +23,11 @@
  */
 
 import { readProcessIdentity } from '../process-identity';
-import { buildTaskScopeArgv, buildTaskServiceArgv } from '../systemd-scope';
+import {
+  buildTaskScopeArgvWithTransport,
+  buildTaskServiceArgvWithTransport,
+  type SecretEnvironmentTransport,
+} from '../systemd-scope';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -102,6 +106,8 @@ export interface SyncEnrolment {
    *  later identity update: a terminal close may safely win against `markSpawned`'s
    *  `state = 'pending'` guard once the row exists. */
   registrationReady: Promise<void> | null;
+  /** Release the memory-only payload environment, if wrap() created one. */
+  releaseEnvironmentTransport: () => void;
   /** Wrap a resolved binary+argv into the task's scope. Identity when unconfined.
    *  `cwd` (EI-21229453838112711) is REQUIRED for correctness on the SERVICE
    *  path — a service payload is started by the user manager and defaults to
@@ -113,7 +119,7 @@ export interface SyncEnrolment {
     argv: string[],
     env?: Readonly<Record<string, string | undefined>>,
     cwd?: string,
-  ) => { binary: string; argv: string[] };
+  ) => { binary: string; argv: string[]; release?: () => void };
 }
 
 /**
@@ -160,6 +166,12 @@ export function beginSyncEnrolment(
           ? 'probe-pending'
           : 'no-scope-support';
 
+  let environmentTransport: SecretEnvironmentTransport | null = null;
+  const releaseEnvironmentTransport = (): void => {
+    environmentTransport?.release();
+    environmentTransport = null;
+  };
+
   return {
     taskId,
     confined,
@@ -168,24 +180,33 @@ export function beginSyncEnrolment(
     scopeUnit,
     enrolled,
     registrationReady: null,
-    wrap: (binary, argv, env, cwd) =>
-      confined
-        ? {
-            binary: 'systemd-run',
-            argv: (unitKind === 'service' ? buildTaskServiceArgv : buildTaskScopeArgv)([binary, ...argv], {
-              unit: scopeUnit!,
-              slice: sliceForClass(spec.class),
-              env,
-              // Only the service builder reads this; the scope payload inherits
-              // the client's cwd. See TaskScopeProperties.workingDirectory.
-              workingDirectory: cwd,
-              memoryMaxBytes: spec.memoryMaxBytes,
-              cpuWeight: spec.cpuWeight,
-              tasksMax: spec.tasksMax,
-              runtimeMaxSec: spec.runtimeMaxSec,
-            }).slice(1),
-          }
-        : { binary, argv },
+    releaseEnvironmentTransport,
+    wrap: (binary, argv, env, cwd) => {
+      if (!confined) return { binary, argv };
+
+      // A wrapper is normally built once, but release a prior payload first so
+      // an accidental retry cannot leave an anonymous fd alive until its timer.
+      releaseEnvironmentTransport();
+      const built = (unitKind === 'service' ? buildTaskServiceArgvWithTransport : buildTaskScopeArgvWithTransport)(
+        [binary, ...argv],
+        {
+          unit: scopeUnit!,
+          slice: sliceForClass(spec.class),
+          env,
+          // Only the service builder reads this; the scope payload inherits
+          // the client's cwd. See TaskScopeProperties.workingDirectory.
+          workingDirectory: cwd,
+          memoryMaxBytes: spec.memoryMaxBytes,
+          cpuWeight: spec.cpuWeight,
+          tasksMax: spec.tasksMax,
+          runtimeMaxSec: spec.runtimeMaxSec,
+        },
+      );
+      environmentTransport = built.transport;
+      const wrapped = { binary: built.argv[0]!, argv: built.argv.slice(1) };
+      if (built.transport) wrapped.release = releaseEnvironmentTransport;
+      return wrapped;
+    },
   };
 }
 
@@ -273,6 +294,7 @@ export function finishSyncEnrolment(
     return;
   }
   const close = () => {
+    enrolment.releaseEnvironmentTransport();
     void closeTask(enrolment.taskId, outcome).catch(() => {});
   };
   // `completeSyncEnrolment` is deliberately fire-and-forget for synchronous spawn

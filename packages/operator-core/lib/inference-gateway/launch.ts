@@ -214,24 +214,22 @@ function makeWindowProjector(
       resetAt7d !== prev.resetAt7d;
     if (!significant) return;
     last.set(accountId, { util, resetAt, util7d, resetAt7d, at: t });
-    void trackDetached(import('../deployment/account-pool-store'))
-      .then(({ updateAccountPool }) =>
-        import('../deployment/account-pool').then(({ recordAccountWindow }) =>
-          updateAccountPool(
-            (p) =>
-              recordAccountWindow(
-                p,
-                accountId,
-                {
-                  utilization: util,
-                  windowResetAt: resetAt || undefined,
-                  utilization7d: util7d || undefined,
-                  windowResetAt7d: resetAt7d || undefined,
-                },
-                t,
-              ),
-            ws,
-          ),
+    // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
+    // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
+    // edge). Live traffic is the most frequent observer, so this is where an escalation
+    // usually becomes visible first — it must not be silent here.
+    void trackDetached(import('./burn-alert'))
+      .then(({ recordAccountWindowWithBurnAlert }) =>
+        recordAccountWindowWithBurnAlert(
+          accountId,
+          {
+            utilization: util,
+            windowResetAt: resetAt || undefined,
+            utilization7d: util7d || undefined,
+            windowResetAt7d: resetAt7d || undefined,
+          },
+          t,
+          ws,
         ),
       )
       // EI-19303809952284205: this write IS the Accounts tab's live data, and its failure was silent

@@ -1,0 +1,254 @@
+/**
+ * chat-engine — one agent-chat turn on the OWNED loop (P-008,
+ * own-tui-full-divorce-2026-08-24; D-008/D-009 native session protocol).
+ *
+ * This is the engine half of the `engine:'loop'` lane on
+ * `POST /api/harness/:slug/agent-chats/:chatId/messages`: it runs
+ * `runAgentLoop` over the chat's transcript and forwards every LoopEvent to
+ * the SSE sink under its OWN name — the LoopEvent vocabulary IS the native
+ * session protocol's wire vocabulary (loop.ts): `step_start`, `text_delta`,
+ * `reasoning_delta`, `tool_call` (carries `needsApproval`),
+ * `approval_resolved`, `tool_result`, `step_end`, `done`, `error`. Field
+ * names ride verbatim (camelCase); the legacy spawn lane's `delta`/`done`
+ * snake_case wire is untouched and unshared.
+ *
+ * Split of responsibilities (mirrors the legacy lane): the ROUTE owns the
+ * streaming lock, cost caps, prompt assembly and transcript persistence;
+ * this engine owns loop execution + wire mapping and returns the totals the
+ * route persists. That keeps the engine runnable in tests with a fake
+ * ModelPort and no PG.
+ *
+ * HITL: gated tool calls route through the PG approval store
+ * (approval-store.ts) so the decision POST can land on any cluster worker.
+ * The client learns the callId from the `tool_call` event and answers via
+ * `POST .../agent-chats/:chatId/approvals/:callId`.
+ */
+import type { TranscriptTurn } from '../agent-chats-data';
+import type { ModelMessage, ModelPort } from './model-port';
+import {
+  runAgentLoop,
+  stepCountIs,
+  type ApprovalPort,
+  type LoopStopReason,
+  type LoopTool,
+} from './loop';
+import { createAnthropicPort } from './anthropic-port';
+import {
+  awaitLoopApprovalDecision,
+  createLoopApproval,
+} from './approval-store';
+
+/** Interactive default — overridable per message (`body.model`) or by env. */
+export const DEFAULT_LOOP_CHAT_MODEL =
+  process.env.PAPERCUSP_LOOP_CHAT_MODEL || 'claude-sonnet-4-6';
+
+export const DEFAULT_LOOP_CHAT_MAX_STEPS = 24;
+
+/** Wire-copy guard: a tool_result payload larger than this rides as a
+ *  truncated preview (the FULL result still reaches the model — the wire
+ *  copy exists for pane rendering, not for correctness). */
+export const WIRE_RESULT_MAX_CHARS = 8_192;
+
+export interface LoopChatSink {
+  event(name: string, data: unknown): void;
+}
+
+export interface LoopChatTurnOpts {
+  chatId: string;
+  workspaceId: string;
+  /** Assembled system prompt (persona + context sections — NO history block,
+   *  NO trailing user turn: those travel as messages). */
+  system: string;
+  /** Full transcript INCLUDING the just-appended user turn. */
+  transcript: TranscriptTurn[];
+  sink: LoopChatSink;
+  model?: string;
+  maxSteps?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  /** Gateway admission-tier label. */
+  priority?: string;
+  /** Loop toolset (host-wired capability doors). Default: none. */
+  tools?: LoopTool[];
+  /** Injectable seams (tests). Defaults: gateway-native port; PG approvals. */
+  port?: ModelPort;
+  approvals?: ApprovalPort;
+}
+
+export interface LoopChatTurnResult {
+  stopReason: LoopStopReason | null;
+  finalText: string;
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number;
+  /** Set when the loop surfaced an error event (the turn should persist a
+   *  failure marker, exactly like the legacy lane's error path). */
+  errorMessage: string | null;
+  stepCount: number;
+}
+
+/** Map the PG transcript (text turns) onto the loop's ModelMessage shape.
+ *  Error-marker turns and empty bodies are skipped; tool detail inside old
+ *  turns is P-009's sessions store, not reconstructable from text. */
+export function transcriptToMessages(transcript: TranscriptTurn[]): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (const t of transcript) {
+    if ((t as { error?: boolean }).error) continue;
+    const text = (t.content ?? '').trim();
+    if (!text) continue;
+    if (t.role !== 'user' && t.role !== 'assistant') continue;
+    out.push({ role: t.role, content: [{ type: 'text', text }] });
+  }
+  return out;
+}
+
+/** Clamp a tool result for the WIRE copy only. */
+export function clampForWire(value: unknown): unknown {
+  let json: string;
+  try {
+    json = JSON.stringify(value) ?? 'null';
+  } catch {
+    json = String(value);
+  }
+  if (json.length <= WIRE_RESULT_MAX_CHARS) return value;
+  return {
+    truncated: true,
+    fullChars: json.length,
+    preview: json.slice(0, WIRE_RESULT_MAX_CHARS),
+  };
+}
+
+/** The default ApprovalPort: PG round-trip via approval-store (cluster-correct). */
+export function pgApprovalPort(args: {
+  chatId: string;
+  workspaceId: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}): ApprovalPort {
+  return {
+    async requestApproval(req) {
+      await createLoopApproval({
+        chatId: args.chatId,
+        callId: req.call.id,
+        workspaceId: args.workspaceId,
+        toolName: req.call.name,
+        toolInput: req.call.input,
+        stepIndex: req.stepIndex,
+      });
+      return awaitLoopApprovalDecision({
+        chatId: args.chatId,
+        callId: req.call.id,
+        workspaceId: args.workspaceId,
+        ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+        ...(args.signal !== undefined ? { signal: args.signal } : {}),
+      });
+    },
+  };
+}
+
+/**
+ * Run one loop-engine chat turn, forwarding events to the sink. Never
+ * throws for in-loop failures — those surface as the `error` wire event +
+ * `errorMessage` on the result (the route persists a failure turn, exactly
+ * like the legacy lane).
+ */
+export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatTurnResult> {
+  const port = opts.port ?? createAnthropicPort();
+  const approvals =
+    opts.approvals ??
+    pgApprovalPort({
+      chatId: opts.chatId,
+      workspaceId: opts.workspaceId,
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    });
+  const messages = transcriptToMessages(opts.transcript);
+
+  const result: LoopChatTurnResult = {
+    stopReason: null,
+    finalText: '',
+    tokensIn: 0,
+    tokensOut: 0,
+    costUsd: 0,
+    errorMessage: null,
+    stepCount: 0,
+  };
+
+  const loop = runAgentLoop({
+    port,
+    model: opts.model ?? DEFAULT_LOOP_CHAT_MODEL,
+    system: opts.system,
+    messages,
+    ...(opts.tools ? { tools: opts.tools } : {}),
+    stopWhen: [stepCountIs(opts.maxSteps ?? DEFAULT_LOOP_CHAT_MAX_STEPS)],
+    ...(approvals ? { approvals } : {}),
+    ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+  });
+
+  try {
+    for await (const ev of loop) {
+      switch (ev.type) {
+        case 'step_start':
+        case 'text_delta':
+        case 'reasoning_delta':
+        case 'approval_resolved':
+          opts.sink.event(ev.type, ev);
+          break;
+        case 'tool_call':
+          opts.sink.event('tool_call', {
+            ...ev,
+            call: { ...ev.call, input: clampForWire(ev.call.input) },
+          });
+          break;
+        case 'tool_result':
+          opts.sink.event('tool_result', {
+            ...ev,
+            ...(ev.result !== undefined ? { result: clampForWire(ev.result) } : {}),
+          });
+          break;
+        case 'step_end':
+          result.stepCount = ev.stepIndex + 1;
+          // The step's full LoopStepInfo (messages-shaped) stays server-side;
+          // the pane needs the boundary + per-step usage only.
+          opts.sink.event('step_end', {
+            type: 'step_end',
+            stepIndex: ev.stepIndex,
+            usage: ev.step.usage,
+            stopReason: ev.step.stopReason,
+            toolCallCount: ev.step.toolCalls.length,
+          });
+          break;
+        case 'done':
+          result.stopReason = ev.stopReason;
+          result.finalText = ev.finalText;
+          result.tokensIn = ev.usage.inputTokens;
+          result.tokensOut = ev.usage.outputTokens;
+          result.costUsd = ev.usage.costUsd ?? 0;
+          result.stepCount = ev.steps.length;
+          // Wire `done` = totals + finalText; the full messages snapshot is
+          // NOT streamed (P-009 persists it — the pane re-reads the chat).
+          opts.sink.event('done', {
+            type: 'done',
+            stopReason: ev.stopReason,
+            finalText: ev.finalText,
+            usage: ev.usage,
+            stepCount: ev.steps.length,
+          });
+          break;
+        case 'error':
+          result.errorMessage = ev.message;
+          opts.sink.event('error', { type: 'error', message: ev.message });
+          break;
+      }
+    }
+  } catch (e) {
+    // A generator-level throw (port/tool bug escaping the loop's own guards):
+    // degrade to the same error surface, never a broken stream with no event.
+    const message = e instanceof Error ? e.message : String(e);
+    result.errorMessage = result.errorMessage ?? message;
+    opts.sink.event('error', { type: 'error', message });
+  }
+
+  return result;
+}

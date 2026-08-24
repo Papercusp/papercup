@@ -142,7 +142,8 @@ export default defineTool({
   }),
   async handler(args) {
     const { loadAccountPool, updateAccountPool } = await import('../../deployment/account-pool-store');
-    const { recordAccountWindow, recordProbeFailure } = await import('../../deployment/account-pool');
+    const { recordProbeFailure } = await import('../../deployment/account-pool');
+    const { recordAccountWindowWithBurnAlert } = await import('../../inference-gateway/burn-alert');
     const ws = args.workspace ?? activeWorkspaceId();
     const apply = args.apply ?? true;
 
@@ -158,6 +159,7 @@ export default defineTool({
     // Record every USABLE reading — a probe reading is exactly what live traffic would have written, so
     // recording it is never a "force". A failed probe writes nothing (we must not invent a window).
     const applied: string[] = [];
+    const burnTransitions: import('../../deployment/account-pool').BurnTransition[] = [];
     if (apply) {
       const t = Date.now();
       for (const r of results) {
@@ -171,21 +173,21 @@ export default defineTool({
         }
         const w = r.windows;
         if (w.utilization === undefined && w.utilization7d === undefined) continue;
-        await updateAccountPool(
-          (p) =>
-            recordAccountWindow(
-              p,
-              r.accountId,
-              {
-                utilization: w.utilization,
-                windowResetAt: w.windowResetAt,
-                utilization7d: w.utilization7d,
-                windowResetAt7d: w.windowResetAt7d,
-              },
-              t,
-            ),
+        // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
+        // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
+        // edge), so a probe that makes a wall VISIBLE is never silent about it.
+        const { transition } = await recordAccountWindowWithBurnAlert(
+          r.accountId,
+          {
+            utilization: w.utilization,
+            windowResetAt: w.windowResetAt,
+            utilization7d: w.utilization7d,
+            windowResetAt7d: w.windowResetAt7d,
+          },
+          t,
           ws,
         );
+        if (transition) burnTransitions.push(transition);
         applied.push(r.accountId);
       }
       if (applied.length > 0) {
@@ -219,6 +221,9 @@ export default defineTool({
       confirmedWalled: results.filter((r) => r.ok && !r.unwalls && r.status === 429).map((r) => r.accountId),
       failed: results.filter((r) => !r.ok).map((r) => r.accountId),
       applied,
+      /** WI-41147 leg c: burn-verdict transitions this probe's writes surfaced (each was also
+       *  stated as a fact + severe-event broadcast — the never-silent wall). */
+      burnTransitions,
       dryRun: !apply,
       /** Did this call also converge the gateway's SEPARATE in-memory exclusion set? Reported rather than
        *  assumed — the projection write and the gateway readmit can succeed independently. */

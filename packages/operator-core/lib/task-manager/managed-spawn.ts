@@ -24,8 +24,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { readProcessIdentity } from '../process-identity';
 import {
-  buildExactEnvPayload,
-  buildTaskScopeArgv,
+  buildTaskScopeArgvWithTransport,
   SCOPE_LAUNCH_FAILURE_RE,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
 } from '../systemd-scope';
@@ -308,16 +307,19 @@ export async function managedSpawn(
   // payload gets the caller's exactly, via `env -i`. Unconfined spawns are
   // untouched — there is no client to protect, and node applies `env` itself.
   const payloadEnv = opts.spawnOptions?.env;
-  const launchArgv = scopeOk
-    ? buildTaskScopeArgv(payloadEnv ? buildExactEnvPayload([command, ...args], payloadEnv) : [command, ...args], {
+  const builtLaunch = scopeOk
+    ? buildTaskScopeArgvWithTransport([command, ...args], {
         unit: scopeUnit!,
         slice: sliceForClass(spec.class),
+        env: payloadEnv,
         memoryMaxBytes: spec.memoryMaxBytes,
         cpuWeight: spec.cpuWeight,
         tasksMax: spec.tasksMax,
         runtimeMaxSec: spec.runtimeMaxSec,
       })
-    : [command, ...args];
+    : null;
+  const launchArgv = builtLaunch?.argv ?? [command, ...args];
+  const environmentTransport = builtLaunch?.transport ?? null;
 
   // Everything else the caller asked for (stdio, cwd, detached) still applies to
   // the client, and a `--scope` payload inherits all three from it.
@@ -331,6 +333,7 @@ export async function managedSpawn(
   try {
     child = spawnFn(launchArgv[0]!, launchArgv.slice(1), launchSpawnOptions);
   } catch (e) {
+    environmentTransport?.release();
     // The row already exists; close it honestly rather than leaving a pending
     // row the reconciler will later strand with a vaguer reason. A failure to
     // close must not MASK the spawn error the caller actually needs to see.
@@ -346,6 +349,16 @@ export async function managedSpawn(
       }
     }
     throw e;
+  }
+
+  // The runner reads the anonymous fd during its own startup. Keep it alive for
+  // the asynchronous systemd admission handoff, then release it as soon as the
+  // client exits (the transport also has a bounded timer as a last resort for a
+  // long-lived scope or an abnormal client handoff).
+  if (environmentTransport) {
+    const releaseEnvironmentTransport = (): void => environmentTransport.release();
+    child.once('exit', releaseEnvironmentTransport);
+    child.once('error', releaseEnvironmentTransport);
   }
 
   const pid = child.pid ?? null;

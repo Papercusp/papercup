@@ -229,6 +229,16 @@ export interface AccountRateState {
    * successful observation.
    */
   lastProbeFailedAt?: number;
+  /**
+   * WI-41147 leg c — the burn verdict ACTION stamped by the most recent window observation
+   * (`recordAccountWindow` evaluates `accountBurnVerdict` at write time). Persisting it makes a
+   * verdict TRANSITION detectable at the observation WRITE seam (the never-silent stated wall)
+   * without the stale-gate flap an in-context pre/post compare suffers: a re-probe of a
+   * still-burning account whose reading aged past `DRAIN_UTIL_STALE_MS` would otherwise read
+   * none→shed on EVERY probe cycle and re-alarm each time. `undefined` = never evaluated
+   * (treated as 'none' by the transition diff — never an alarm by itself).
+   */
+  lastBurnAction?: BurnAction;
 }
 
 export interface AccountPool {
@@ -539,9 +549,45 @@ export function recordAccountWindow(
         // A real observation just landed — any earlier "we asked and got nothing" marker is stale.
         lastProbeFailedAt: undefined,
       };
+      // WI-41147 leg c: stamp the burn verdict this observation implies, so the WRITE seam can
+      // detect a verdict TRANSITION (the never-silent stated wall) by diffing before/after. The
+      // reading is fresh by construction (`utilizationAt = now`), so the stale gate never
+      // interferes at write time.
+      rate.lastBurnAction = accountBurnVerdict(rate, now).action;
       return { ...a, rate };
     }),
   };
+}
+
+/** One burn-verdict transition observed at the WRITE seam (WI-41147 leg c). */
+export interface BurnTransition {
+  accountId: string;
+  from: BurnAction;
+  to: BurnAction;
+  /** The verdict's stated WHY at the moment of transition (never silent). */
+  reason: string;
+}
+
+/**
+ * Diff two pool states' persisted `lastBurnAction` stamps for ONE account (WI-41147 leg c).
+ * Pure. Returns the transition, or null when nothing changed / the account is unknown in
+ * either state. An unstamped account reads as 'none' — a first-ever stamp of 'none' is
+ * therefore NOT a transition (never alarm on missing data), while a first-ever stamp of
+ * throttle/shed is.
+ */
+export function accountBurnTransition(
+  before: AccountPool,
+  after: AccountPool,
+  id: string,
+  now: number,
+): BurnTransition | null {
+  const b = before.accounts.find((a) => a.id === id);
+  const aft = after.accounts.find((a) => a.id === id);
+  if (!b || !aft) return null;
+  const from: BurnAction = b.rate.lastBurnAction ?? 'none';
+  const to: BurnAction = aft.rate.lastBurnAction ?? 'none';
+  if (from === to) return null;
+  return { accountId: id, from, to, reason: accountBurnVerdict(aft.rate, now).reason };
 }
 
 /**

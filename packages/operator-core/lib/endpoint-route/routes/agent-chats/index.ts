@@ -34,6 +34,34 @@ import {
   releaseAgentChatLock,
   type AgentChatLockHandle,
 } from '../../../agent-chat-lock';
+import { dispatchProjectedTool } from '@papercusp/agent-mcp';
+import {
+  capabilityToolset,
+  type DispatchResult,
+  type ToolDispatcher,
+} from '../../../agent-loop/capability-toolset';
+import { runLoopChatTurn } from '../../../agent-loop/chat-engine';
+import type { LoopTool } from '../../../agent-loop/loop';
+import {
+  listPendingLoopApprovals,
+  resolveLoopApproval,
+} from '../../../agent-loop/approval-store';
+
+/**
+ * P-008 (own-tui-full-divorce-2026-08-24): doors whose calls route through
+ * the HITL approval round-trip when the chat runs on the OWNED loop engine
+ * (`engine:'loop'`). Mutating/spawning doors are gated; read-side doors run
+ * free — the doors are already confinement-armed, this is interactive
+ * policy, not the security boundary.
+ */
+const LOOP_APPROVAL_GATED_DOORS = new Set([
+  'capability:bash',
+  'capability:edit',
+  'capability:write',
+  'capability:git',
+  'capability:terminal',
+  'capability:launch-agent',
+]);
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -229,10 +257,13 @@ const messagesRoute = defineTool({
   async handler(req, ctx) {
     const slug = ctx.params.slug;
     const chatId = ctx.params.chatId;
-    let body: { content?: string; mode?: string };
+    let body: { content?: string; mode?: string; engine?: string; model?: string };
     try { body = await req.json(); } catch { return Response.json({ error: 'invalid JSON body' }, { status: 400 }); }
     const userContent = (body.content ?? '').trim();
     if (!userContent) return Response.json({ error: 'content is required' }, { status: 400 });
+    // P-008: `engine:'loop'` selects the OWNED in-process loop (native session
+    // protocol lane); anything else keeps the legacy CLI-spawn engine.
+    const useLoopEngine = body.engine === 'loop';
 
     // Acquire the lock HERE (atomic, cross-worker) rather than only checking —
     // acquiring at the point of the check, not later right before spawn, also
@@ -254,7 +285,10 @@ const messagesRoute = defineTool({
       itemHarness: Awaited<ReturnType<typeof resolveItemHarness>>;
       baseTranscript: TranscriptTurn[];
       projectDir: string;
-      assembled: { text: string; runId: string };
+      /** `text` = full one-shot prompt (legacy CLI-spawn lane); `systemText`
+       *  = persona + context sections only — history and the user turn travel
+       *  as structured messages on the loop lane (P-008). */
+      assembled: { text: string; runId: string; systemText: string };
     };
     const preflight: Preflight = await (async (): Promise<Preflight> => {
     let chat: ChatRow;
@@ -343,7 +377,7 @@ const messagesRoute = defineTool({
     }
 
     // Assemble the role prompt + transcript history.
-    let assembled: { text: string; runId: string };
+    let assembled: { text: string; runId: string; systemText: string };
     try {
       // Workspace-owned prompt override (D-7), best-effort (miss → default).
       let chatOverride: string | undefined;
@@ -468,7 +502,8 @@ const messagesRoute = defineTool({
       // effectively an appendix the model could reach only after wading through
       // lock/plan boilerplate for a feature it may not even recognize yet.
       const promptText = `${r.text}${dossierSection}${lockNotice}${planContextSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
-      assembled = { text: promptText, runId: r.meta.runId };
+      const systemText = `${r.text}${dossierSection}${lockNotice}${planContextSection}${memorySection}`;
+      assembled = { text: promptText, runId: r.meta.runId, systemText };
     } catch (e) {
       return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });
     }
@@ -481,6 +516,133 @@ const messagesRoute = defineTool({
       return preflight;
     }
     const { chat, itemHarness, baseTranscript, projectDir, assembled } = preflight;
+
+    // ── P-008: OWNED-loop engine lane (native session protocol) ──────────
+    // Shares everything above (lock, cost caps, user-turn persist, prompt
+    // assembly) with the legacy lane, then runs `runAgentLoop` IN-PROCESS
+    // instead of spawning a CLI agent. Wire events are the LoopEvent
+    // vocabulary verbatim (chat-engine.ts). No spawn-tracking here: nothing
+    // is spawned — the invocation ledger for loop turns is P-009's sessions
+    // store.
+    if (useLoopEngine) {
+      const workspaceId = activeWorkspaceId();
+      const dispatchCtx = {
+        workspaceId,
+        harnessSlug: itemHarness.harness,
+        role: 'operator' as const,
+        runId: assembled.runId,
+        spawnId: `agent-loop-${chatId}`,
+        log: () => { /* */ },
+        progress: () => { /* */ },
+        emit: () => { /* */ },
+        signal: req.signal,
+        spawn: async () => { throw new Error('spawn not available inside the loop engine'); },
+        secret: async () => null,
+        projectDir: projectDir ?? '',
+        stateDir: '',
+      };
+      // The principal-bound execution chokepoint (capability-toolset's seam):
+      // every loop tool call rides the SAME dispatcher stack as tools:invoke —
+      // role gate, quota, telemetry all apply.
+      const dispatch: ToolDispatcher = async (name, args) => {
+        const t = lookupByMcpName(name);
+        if (!t) return { isError: true, content: [{ type: 'text', text: `unknown tool: ${name}` }] };
+        const r = await dispatchProjectedTool(t, name, args, dispatchCtx as never, {});
+        if (!r.ok || !r.result) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: r.error?.message ?? `dispatch of ${name} failed` }],
+          };
+        }
+        return r.result as DispatchResult;
+      };
+      let tools: LoopTool[] = [];
+      try {
+        tools = capabilityToolset({
+          dispatch,
+          needsApproval: (toolName) => LOOP_APPROVAL_GATED_DOORS.has(toolName),
+        });
+      } catch {
+        // An unprovisioned build (no capability doors registered) degrades to
+        // a tool-less conversation — same posture as the legacy lane's
+        // "silently runs with no attached MCP tools".
+        tools = [];
+      }
+
+      return sseResponse({
+        signal: req.signal,
+        setup: async (sink) => {
+          let result: Awaited<ReturnType<typeof runLoopChatTurn>>;
+          try {
+            result = await runLoopChatTurn({
+              chatId,
+              workspaceId,
+              system: assembled.systemText,
+              transcript: baseTranscript,
+              sink,
+              ...(body.model ? { model: body.model } : {}),
+              signal: req.signal,
+              tools,
+            });
+          } finally {
+            await releaseAgentChatLock(chatLock);
+          }
+
+          if (result.errorMessage) {
+            // Persist a failure-marker turn — same contract as the legacy
+            // lane: a reload / second viewer must not see a silent gap.
+            const failureTurn: TranscriptTurn = {
+              role: 'assistant',
+              content: result.errorMessage,
+              ts: new Date().toISOString(),
+              tokens_in: result.tokensIn,
+              tokens_out: result.tokensOut,
+              cost_cents: Math.round(result.costUsd * 100),
+              error: true,
+            };
+            try {
+              const db = dbForSlug(slug);
+              await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
+                .run(JSON.stringify([...baseTranscript, failureTurn]), Date.now(), chatId);
+            } catch { /* best-effort — the error event already went out */ }
+            sink.close();
+            return;
+          }
+
+          const assistantTurn: TranscriptTurn = {
+            role: 'assistant',
+            content: result.finalText,
+            ts: new Date().toISOString(),
+            tokens_in: result.tokensIn,
+            tokens_out: result.tokensOut,
+            cost_cents: Math.round(result.costUsd * 100),
+          };
+          try {
+            const db = dbForSlug(slug);
+            await db.prepare(
+              `UPDATE agent_chats
+                 SET transcript = ?::jsonb,
+                     total_input_tokens = total_input_tokens + ?,
+                     total_output_tokens = total_output_tokens + ?,
+                     total_cost_usd_cents = total_cost_usd_cents + ?,
+                     updated_at = ?
+               WHERE id = ?`,
+            ).run(
+              JSON.stringify([...baseTranscript, assistantTurn]),
+              result.tokensIn,
+              result.tokensOut,
+              assistantTurn.cost_cents ?? 0,
+              Date.now(),
+              chatId,
+            );
+          } catch (e) {
+            sink.event('error', { type: 'error', message: `failed to persist assistant turn: ${(e as Error).message}` });
+          }
+          sink.close();
+        },
+      });
+    }
+    // ── legacy CLI-spawn engine lane ─────────────────────────────────────
 
     const tool = lookupByMcpName('agent_chats:chat');
     if (!tool) {
@@ -679,4 +841,72 @@ const messagesRoute = defineTool({
   },
 });
 
-export default [listChatsRoute, createChatRoute, getChatRoute, archiveChatRoute, messagesRoute];
+/**
+ * P-008: pending HITL approvals for a loop-engine chat — a (re)connecting
+ * client re-hydrates its approval cards from this instead of relying on
+ * having seen the `tool_call` SSE event live.
+ */
+const listApprovalsRoute = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/agent-chats/:chatId/approvals',
+  auth: 'public',
+  async handler(_req, ctx) {
+    try {
+      const approvals = await listPendingLoopApprovals({
+        chatId: ctx.params.chatId,
+        workspaceId: activeWorkspaceId(),
+      });
+      return Response.json({ approvals });
+    } catch (e) {
+      return Response.json({ error: (e as Error).message }, { status: 500 });
+    }
+  },
+});
+
+/**
+ * P-008: resolve one pending approval (the client's answer to a gated
+ * `tool_call`). Cluster-correct by construction: the decision lands in PG
+ * (approval-store), which the loop-holding worker is polling — this POST
+ * may be served by ANY of the 16 workers.
+ */
+const resolveApprovalRoute = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/agent-chats/:chatId/approvals/:callId',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    let body: { approved?: boolean; reason?: string };
+    try { body = await req.json(); } catch { return Response.json({ error: 'invalid JSON body' }, { status: 400 }); }
+    if (typeof body.approved !== 'boolean') {
+      return Response.json({ error: '`approved` (boolean) is required' }, { status: 400 });
+    }
+    try {
+      const resolved = await resolveLoopApproval({
+        chatId: ctx.params.chatId,
+        callId: ctx.params.callId,
+        workspaceId: activeWorkspaceId(),
+        approved: body.approved,
+        ...(body.reason ? { reason: body.reason } : {}),
+        resolvedBy: 'agent-chats:approvals-route',
+      });
+      if (!resolved) {
+        return Response.json(
+          { error: 'no pending approval for this call (already resolved, timed out, or unknown)' },
+          { status: 404 },
+        );
+      }
+      return Response.json({ ok: true });
+    } catch (e) {
+      return Response.json({ error: (e as Error).message }, { status: 500 });
+    }
+  },
+});
+
+export default [
+  listChatsRoute,
+  createChatRoute,
+  getChatRoute,
+  archiveChatRoute,
+  messagesRoute,
+  listApprovalsRoute,
+  resolveApprovalRoute,
+];

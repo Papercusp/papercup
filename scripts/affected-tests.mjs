@@ -316,12 +316,17 @@ function readMemAvailableMb() {
     return null; // non-Linux, or /proc not mounted — fall back to the ceiling.
   }
 }
-// WI-39472: this default USED to be `SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB`, which
-// made resolveTaskBudget's `memoryWorkerBudget` identically equal to `workerBudget` — so its
-// Math.min could NEVER bind and the memory rail was inert. Nothing failed loudly; the gate simply
-// had no memory-awareness, which is why its concurrency is pinned at a hardcoded worst-case 2.
-// Measuring the host makes the clamp real, which is the precondition for ever raising that
-// ceiling. It can only ever LOWER the admitted budget, never widen it (see resolveMemoryBudgetMb).
+// WI-41206 / remove-memory-derived-work-refusals-2026-08-24: the host reading below is now pure
+// TELEMETRY. It is still taken, still logged, and still surfaced in the operator-visible marker,
+// but `resolveMemoryBudgetMb` no longer lets it narrow the admitted budget — concurrency here is
+// worker/CPU-derived only. A host driven into paging slows itself through real contention rather
+// than through a startup snapshot pre-emptively shrinking the lane.
+//
+// (Historical, WI-39472: this default USED to be `SCHEDULER_WORKER_BUDGET *
+// SCHEDULER_WORKER_MEMORY_MB`, making `memoryWorkerBudget` identically equal to `workerBudget` so
+// the Math.min could never bind. That inertness was then treated as a bug and the clamp was armed
+// — which is what WI-41206 has now deliberately reversed. Do not "re-arm" it a second time
+// without re-reading that plan; the inert behaviour is the INTENDED one.)
 // EI-20801764054303492: read the host ONCE and keep the value, so the budget and the
 // operator-visible marker report the SAME measurement. Two separate readFileSync calls would
 // drift between them on a busy box, which makes the log unreadable exactly when it matters.
