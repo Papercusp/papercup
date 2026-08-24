@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 820,
+  "count": 821,
   "tools": [
     {
       "name": "ablation:report",
@@ -28125,6 +28125,37 @@
         "when": "Discover trigger source ids before triggers:bind, or inspect which plans already have external-event bindings.",
         "notWhen": "For run/failure health and recent activity use triggers:status. To create a source use triggers:create.",
         "chaining": "triggers:list → triggers:bind { sourceId, harness, plan, eventPattern } → triggers:arm { bindingId, confirm:true }."
+      }
+    },
+    {
+      "name": "triggers:run-with-last-event",
+      "http": {
+        "path": "/api/agent-tools/triggers/run-with-last-event",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Queue a distinct audited test run for one plan binding using its latest settled provider event. This may perform the workflow's configured provider write (for example a Gmail draft or Slack thread reply).",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Testing an installed workflow against the last real event it received. Pass confirm:true after surfacing that the resulting plan may write back to the provider.",
+        "notWhen": "For a manual run with operator-supplied inputs use plans:run-now. This verb never re-ingests a provider event and is unavailable until the binding has settled event history.",
+        "chaining": "triggers:status → triggers:run-with-last-event { bindingId, confirm:true } → triggers:status or plans:runs."
       }
     },
     {
