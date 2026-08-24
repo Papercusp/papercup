@@ -92,6 +92,11 @@ For gates delivered in a coordination message, the waiter can avoid copying the 
 }
 ```
 
+`fromMsg` resolves only the message's `gateRefs` stamp. A `coord:send` `expectEffect`
+directive is a separate compliance check; read its derived verdict on
+`fleet:leader-brief` (`members[].directives`) instead of passing that message to
+`events:await { fromMsg }`.
+
 Sources: [emit.ts](packages/operator-core/lib/agent-tools/events/emit.ts), [await.ts](packages/operator-core/lib/agent-tools/events/await.ts)
 
 ## Example 3: read changing state at the moment of action

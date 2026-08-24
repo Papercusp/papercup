@@ -395,6 +395,24 @@ describe('events:await wrapper defaults', () => {
       expect(registerAwait).not.toHaveBeenCalled();
     });
 
+    it('distinguishes a coord:send expectEffect directive from a missing gateRef', async () => {
+      mockResolvedTyped(vi.mocked(getMessageById), {
+        ts: '2026-01-01T00:00:00.000Z',
+        msg_id: 'm-effect',
+        from: 'su-origin',
+        to: ['su-awaiter'],
+        kind: 'message',
+        summary: 'checkpoint directive',
+        expectEffect: { kind: 'checkpoint', itemId: 'WI-40086' },
+      });
+      const out = await call({ fromMsg: 'm-effect' });
+      expect(out).toMatchObject({ ok: false, error: 'no_gate_refs_on_msg' });
+      expect(out.advice).toContain('expectEffect directive');
+      expect(out.advice).toContain('fromMsg resolves gateRefs only');
+      expect(out.advice).toContain('fleet:leader-brief');
+      expect(registerAwait).not.toHaveBeenCalled();
+    });
+
     it('multiple gateRefs is ambiguous — the keys are listed for an explicit `event` await', async () => {
       vi.mocked(getMessageById).mockResolvedValue({
         msg_id: 'm-3',
