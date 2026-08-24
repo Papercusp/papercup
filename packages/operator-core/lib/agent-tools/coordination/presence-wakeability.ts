@@ -454,13 +454,16 @@ export async function fetchWakeability(
     out.set(id, {
       wakeable: wakeSet.has(id),
       liveTurn,
-      // EI-21356812816484561: raw age for the ACTIVITY-clock ceilings. Already
-      // selected by the widened query above, so this costs nothing.
-      lastActivityMs: lastAny != null && !Number.isNaN(lastAny) ? lastAny : null,
       // Keep the raw wakeability shape backward-compatible: absence means no
       // confirmed miss, while the oracle still projects an explicit false for
       // callers that need to distinguish "no miss" from a degraded read.
       ...(wakeAttemptMiss ? { wakeAttemptMiss: true } : {}),
+      // EI-21356812816484561: raw last-turn age for the ACTIVITY-clock
+      // ceilings, free from the widened query above. Spread-when-present for
+      // the same backward-compatibility reason as `wakeAttemptMiss` — an owner
+      // with no activity in the window emits NO key rather than a null, so a
+      // reader cannot mistake "nothing in the window" for a measured value.
+      ...(lastAny != null && !Number.isNaN(lastAny) ? { lastActivityMs: lastAny } : {}),
     });
   }
   return out;
