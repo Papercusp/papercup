@@ -173,6 +173,8 @@ describe('turn-origin envelope grammar — one definition across four languages'
       out = execFileSync('python3', ['-c', program], {
         input: JSON.stringify({ pattern: literal, cases: [...ACCEPT, ...REJECT] }),
         encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
       });
     } catch (err) {
       // Fail CLOSED. python3 is a hard dependency of the hook under test, so an
@@ -329,7 +331,7 @@ describe('turn-origin envelope grammar — one definition across four languages'
     const found = execFileSync(
       'git',
       ['grep', '--untracked', '-l', '--', 'a-f0-9\\]{8,64}'],
-      { cwd: ROOT, encoding: 'utf8' },
+      { cwd: ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
     )
       .split('\n')
       .map((l) => l.trim())

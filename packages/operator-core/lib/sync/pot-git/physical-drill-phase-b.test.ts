@@ -35,6 +35,8 @@ function runGit(repo: string, args: string[], input?: string): string {
     encoding: 'utf8',
     input,
     env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   });
   if (result.status !== 0) throw new Error(result.stderr);
   return result.stdout.trim();
@@ -44,7 +46,11 @@ function newRepo(label: string): string {
   const root = mkdtempSync(join(tmpdir(), `p505-phase-b-${label}-`));
   roots.push(root);
   const repo = join(root, PHASE_A_POT_HOME, `${PHASE_A_REPO_KEY}.git`);
-  const initialized = spawnSync('git', ['init', '--bare', repo], { encoding: 'utf8' });
+  const initialized = spawnSync('git', ['init', '--bare', repo], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
   if (initialized.status !== 0) throw new Error(initialized.stderr);
   return repo;
 }

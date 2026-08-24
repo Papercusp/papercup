@@ -42,6 +42,8 @@ function runGit(repo: string, args: string[], input?: string): string {
     encoding: 'utf8',
     input,
     env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   });
   if (result.status !== 0) throw new Error(result.stderr);
   return result.stdout.trim();
@@ -53,7 +55,11 @@ function repoPath(root: string): string {
 
 function createRepo(root: string, refs: Array<[string, string]>): string {
   const repo = repoPath(root);
-  const init = spawnSync('git', ['init', '--bare', repo], { encoding: 'utf8' });
+  const init = spawnSync('git', ['init', '--bare', repo], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
   if (init.status !== 0) throw new Error(init.stderr);
   for (const [name, body] of refs) {
     const oid = runGit(repo, ['hash-object', '-w', '--stdin'], body);

@@ -174,6 +174,8 @@ describe('CLI contract', () => {
   it('exits 2 (not 0, not 1) when the mirror clone is absent', () => {
     const r = spawnSync('node', [SCRIPT, '--mirror', join(tmp, 'no-such-mirror')], {
       encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
     });
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/mirror clone not found/);
@@ -181,7 +183,11 @@ describe('CLI contract', () => {
   });
 
   it('exits 2 on unknown args rather than silently checking', () => {
-    const r = spawnSync('node', [SCRIPT, '--bogus-flag'], { encoding: 'utf8' });
+    const r = spawnSync('node', [SCRIPT, '--bogus-flag'], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/unknown args/);
   });

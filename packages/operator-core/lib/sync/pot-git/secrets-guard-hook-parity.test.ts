@@ -62,6 +62,8 @@ function hookDenies(content: string): boolean {
     input: payload,
     encoding: 'utf8',
     env: { ...process.env, PAPERCUSP_SECRETS_GUARD_TREES: `${REPO_ROOT}/`, PAPERCUSP_SECRETS_GUARD_ALLOW: '' },
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   });
   if (!out.trim()) return false;
   try {
@@ -127,7 +129,11 @@ describe('write-time hook ⊇ publish-time guard (WI-6643)', () => {
   });
 
   it('exposes a machine-readable rule inventory for drift review', () => {
-    const out = execFileSync('node', [HOOK, '--dump-patterns'], { encoding: 'utf8' });
+    const out = execFileSync('node', [HOOK, '--dump-patterns'], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    });
     const dumped = JSON.parse(out) as {
       patterns: Array<{ name: string; source: string }>;
       minEntropy: number;
