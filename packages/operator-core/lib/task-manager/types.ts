@@ -145,6 +145,75 @@ export interface TaskMetrics {
   pidsCurrent?: number | null;
 }
 
+/**
+ * Terminal facts captured from systemd before a failed transient task unit is
+ * reset and garbage-collected.
+ *
+ * These live inside `task_ledger.detail.terminalProvenance` rather than a second
+ * process-history table. The ledger already owns the task's state, budget,
+ * metrics, scope unit, and cgroup path; this block adds only the systemd facts
+ * that disappear when `reset-failed` releases the unit. `scopeUnit` is required
+ * so a provenance block can never be detached from the kernel identity it
+ * describes.
+ */
+export interface TaskTerminalProvenance {
+  capturedAt: string;
+  scopeUnit: string;
+  cgroupPath: string | null;
+  invocationId: string | null;
+  loadState: string | null;
+  activeState: string | null;
+  serviceResult: string | null;
+  /** Raw wait(2) `si_code` exposed by systemd (`1` exited, `2` killed, `3` dumped). */
+  execMainCode: number | null;
+  /** Raw exit status or signal number paired with `execMainCode`. */
+  execMainStatus: number | null;
+  memoryMaxBytes: number | null;
+  peakMemoryBytes: number | null;
+  /** Says whether peak RSS came from systemd's terminal snapshot or the ledger's last cgroup sample. */
+  peakMemorySource: 'systemd' | 'cgroup-sample' | 'unknown';
+}
+
+function terminalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function terminalNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Parse the bounded terminal block stored in the ledger's open `detail` bag. */
+export function taskTerminalProvenanceFromDetail(
+  detail: Record<string, unknown> | null | undefined,
+): TaskTerminalProvenance | null {
+  const raw = detail?.terminalProvenance;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const scopeUnit = terminalString(value.scopeUnit);
+  const capturedAt = terminalString(value.capturedAt);
+  if (!scopeUnit || !capturedAt) return null;
+  const peakMemorySource =
+    value.peakMemorySource === 'systemd' ||
+    value.peakMemorySource === 'cgroup-sample' ||
+    value.peakMemorySource === 'unknown'
+      ? value.peakMemorySource
+      : 'unknown';
+  return {
+    capturedAt,
+    scopeUnit,
+    cgroupPath: terminalString(value.cgroupPath),
+    invocationId: terminalString(value.invocationId),
+    loadState: terminalString(value.loadState),
+    activeState: terminalString(value.activeState),
+    serviceResult: terminalString(value.serviceResult),
+    execMainCode: terminalNumber(value.execMainCode),
+    execMainStatus: terminalNumber(value.execMainStatus),
+    memoryMaxBytes: terminalNumber(value.memoryMaxBytes),
+    peakMemoryBytes: terminalNumber(value.peakMemoryBytes),
+    peakMemorySource,
+  };
+}
+
 /** One ledger row, as the store returns it. */
 export interface TaskRow extends TaskProvenance, TaskBudget, TaskMetrics {
   taskId: string;
@@ -169,6 +238,7 @@ export interface TaskRow extends TaskProvenance, TaskBudget, TaskMetrics {
   state: TaskState;
   exitCode?: number | null;
   exitReason?: string | null;
+  terminalProvenance?: TaskTerminalProvenance | null;
   startedAt: string;
   endedAt?: string | null;
   lastSeenAt: string;

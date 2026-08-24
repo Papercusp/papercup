@@ -319,6 +319,7 @@ export async function managedSpawn(
         cpuWeight: spec.cpuWeight,
         tasksMax: spec.tasksMax,
         runtimeMaxSec: spec.runtimeMaxSec,
+        collectFailedUnit: false,
       })
     : null;
   const launchArgv = builtLaunch?.argv ?? [command, ...args];

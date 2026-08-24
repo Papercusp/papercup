@@ -203,6 +203,7 @@ export function beginSyncEnrolment(
           cpuWeight: spec.cpuWeight,
           tasksMax: spec.tasksMax,
           runtimeMaxSec: spec.runtimeMaxSec,
+          collectFailedUnit: false,
         },
       );
       environmentTransport = built.transport;
