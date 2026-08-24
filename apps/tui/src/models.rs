@@ -700,23 +700,8 @@ pub struct CreateProjectResponse {
     pub error: Option<String>,
 }
 
-/// `POST /api/harness/binding/resolve` — a GitHub remote resolved to its
-/// canonical repo identity (the share flow's first step). `github_repo` is the
-/// bare repo NAME (it pairs with `github_owner`; publish calls it `github_name`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct BindingResolveResponse {
-    #[serde(default)]
-    pub github_repository_id: i64,
-    #[serde(default)]
-    pub github_owner: String,
-    #[serde(default)]
-    pub github_repo: String,
-    /// Repo visibility — Cupboard publish refuses private repos.
-    #[serde(default)]
-    pub private: bool,
-    #[serde(default)]
-    pub error: Option<String>,
-}
+// NOTE: `BindingResolveResponse` was removed with the retired per-harness
+// share flow (comb-retire-per-harness-sharing-2026-06-11; P-003 2026-08-24).
 
 // ─── Cupboard tab (D-011) ───
 
@@ -2164,6 +2149,16 @@ pub struct BeeMailPayload {
     pub inbox: BeeMailSide,
     #[serde(default)]
     pub outbox: BeeMailSide,
+}
+
+/// Inner JSON of the `coord:feed` envelope (`content[0].text`) — only the rows
+/// leg (each row is the raw coord envelope, the same wire shape as a mail
+/// entry). Backs the bee-dossier mail split since the `fleet:bee_mail`
+/// transport was retired (P-003 own-tui-full-divorce-2026-08-24).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CoordFeedPayload {
+    #[serde(default)]
+    pub rows: Vec<BeeMailEntry>,
 }
 
 /// The agent-context pane's fetched snapshot (dock 4-pane split, owner ask

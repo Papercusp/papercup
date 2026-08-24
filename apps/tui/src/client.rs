@@ -1023,11 +1023,11 @@ impl OperatorClient {
     }
 
     // ─── Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06) ───
-    // The bee pane (`pui bee-pane`) renders the swarm-selected bee's dossier:
-    // its ranked work-list (fleet:assignments) + coord inbox/outbox
-    // (fleet:bee_mail). The swarm pane publishes the cursor's bee via
-    // fleet:selected_bee; the bee pane polls it (DB is NOT the transport — the
-    // relay is an in-memory operator endpoint, see fleet/selected-bee.ts).
+    // The dossier renders the selected agent's ranked work-list
+    // (fleet:assignments) + coord inbox/outbox (coord:feed, split client-side).
+    // Selection is in-process (Fleet-tab roster cursor) — the old
+    // fleet:selected_bee relay + fleet:bee_mail were retired with the bee tier
+    // (P-003 own-tui-full-divorce-2026-08-24).
 
     /// The selected bee's ordered work-list via `fleet:assignments { agent }`
     /// (MCP envelope unwrapped). Returns the matching `AgentAssignment` (or None
@@ -1230,13 +1230,18 @@ impl OperatorClient {
             .await
     }
 
-    /// The selected bee's coord inbox + outbox via `fleet:bee_mail { owner_id }`
-    /// (MCP envelope unwrapped).
+    /// The selected agent's coord inbox + outbox via `coord:feed { owner }`
+    /// (MCP envelope unwrapped). The feed matches envelopes where the owner is
+    /// sender OR recipient (broadcasts included); the inbox/outbox split happens
+    /// here — outbox = sent BY the owner, inbox = everything else (addressed to
+    /// it, or broadcast at it). Replaces the RETIRED `fleet:bee_mail` transport
+    /// (the bee/nursery tier is gone — P-003 own-tui-full-divorce-2026-08-24;
+    /// verified live: the old path answers `unknown_tool`).
     pub async fn bee_mail(&self, owner_id: &str, limit: u32) -> Result<BeeMailPayload> {
         let env = self
             .post_json(
-                "/api/agent-tools/fleet/bee_mail",
-                serde_json::json!({ "owner_id": owner_id, "limit": limit }),
+                "/api/agent-tools/coord/feed",
+                serde_json::json!({ "owner": owner_id, "limit": limit }),
             )
             .await?;
         let text = env
@@ -1244,21 +1249,24 @@ impl OperatorClient {
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("text"))
             .and_then(|t| t.as_str())
-            .context("fleet:bee_mail: missing content[0].text")?;
-        serde_json::from_str::<BeeMailPayload>(text).context("parse bee_mail payload")
-    }
-
-    /// Publish the swarm-pane selection. `fleet:selected_bee { select }`. An
-    /// empty `owner_id` clears it. Best-effort — the result envelope is ignored.
-    pub async fn selected_bee_set(&self, owner_id: Option<&str>, name: Option<&str>) -> Result<()> {
-        self.post_json(
-            "/api/agent-tools/fleet/selected_bee",
-            serde_json::json!({
-                "select": { "owner_id": owner_id, "name": name }
-            }),
-        )
-        .await?;
-        Ok(())
+            .context("coord:feed: missing content[0].text")?;
+        let feed: CoordFeedPayload =
+            serde_json::from_str(text).context("parse coord feed payload")?;
+        let (outbox, inbox): (Vec<BeeMailEntry>, Vec<BeeMailEntry>) = feed
+            .rows
+            .into_iter()
+            .partition(|r| r.from.as_deref() == Some(owner_id));
+        Ok(BeeMailPayload {
+            owner_id: owner_id.to_string(),
+            inbox: BeeMailSide {
+                total: inbox.len(),
+                entries: inbox,
+            },
+            outbox: BeeMailSide {
+                total: outbox.len(),
+                entries: outbox,
+            },
+        })
     }
 
     /// The active brand pack's term→label map via `lexicon:active_pack`
@@ -1743,46 +1751,11 @@ impl OperatorClient {
         serde_json::from_value::<models::CreateProjectResponse>(v).context("decode create project")
     }
 
-    /// Resolve a GitHub remote to its canonical repo identity — the share
-    /// flow's first step (`POST /api/harness/binding/resolve`).
-    pub async fn resolve_binding(
-        &self,
-        github_remote: &str,
-    ) -> Result<models::BindingResolveResponse> {
-        let v = self
-            .post_json(
-                "/api/harness/binding/resolve",
-                serde_json::json!({ "github_remote": github_remote }),
-            )
-            .await?;
-        serde_json::from_value::<models::BindingResolveResponse>(v)
-            .context("decode binding resolve")
-    }
-
-    /// Finalize sharing a pot (`POST /api/harness/:slug/share/finalize`):
-    /// writes shared.json, boots the swarm, publishes the binding. `state`
-    /// carries `{topic, github_remote, github_repository_id, privacy}` — the
-    /// same shape the desktop ShareWizard submits.
-    pub async fn share_finalize(
-        &self,
-        slug: &str,
-        state: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        self.post_json(
-            &format!("/api/harness/{}/share/finalize", urlencode(slug)),
-            serde_json::json!({ "state": state }),
-        )
-        .await
-    }
-
-    /// Publish a harness listing to the Cupboard
-    /// (`POST /api/harness/cupboard/publish` — the gh-token-adding proxy).
-    pub async fn cupboard_publish_harness(
-        &self,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        self.post_json("/api/harness/cupboard/publish", body).await
-    }
+    // NOTE: the per-harness ShareWizard client calls (`binding/resolve`,
+    // `:slug/share/finalize`, `harness/cupboard/publish`) were REMOVED — their
+    // routes were retired server-side (comb-retire-per-harness-sharing-
+    // 2026-06-11; routes/index.ts names the retirement). See `share_pot` in
+    // main.rs for the fail-fast surface (P-003 own-tui-full-divorce-2026-08-24).
 
     // ─── Cupboard tab (D-011) ───
 
@@ -1831,16 +1804,10 @@ impl OperatorClient {
         .await
     }
 
-    /// Fork a snapshot listing into a new local harness
-    /// (`POST /api/snapshots/fork-from-cupboard` — downloads + SHA-verifies the
-    /// published tarball, then instantiates).
-    pub async fn snapshot_fork_from_cupboard(&self, listing_id: &str) -> Result<serde_json::Value> {
-        self.post_json(
-            "/api/snapshots/fork-from-cupboard",
-            serde_json::json!({ "listing_id": listing_id }),
-        )
-        .await
-    }
+    // NOTE: `snapshot_fork_from_cupboard` was REMOVED — the Cupboard's
+    // `snapshot` listing kind is retired (kinds are now harness | blueprint |
+    // plugin | pack, see routes/cupboard.ts) and `/api/snapshots/
+    // fork-from-cupboard` has no successor route (P-003, 2026-08-24).
 
     /// Join a shared harness from its `papercusp://harness?…` link
     /// (`POST /api/harness/join-link` — clones, registers, scaffolds).
