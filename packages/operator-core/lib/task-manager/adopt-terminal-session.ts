@@ -257,10 +257,29 @@ export async function adoptTerminalSession(
 
     // completeSyncEnrolment is fire-and-forget for spawn callers, but we are not
     // on a spawn path and we must not cache a write that failed — that would
-    // suppress the retry the next beat would otherwise perform. Awaiting only
-    // the REGISTRATION (not the later markSpawned) matches the promise's own
-    // documented scope.
+    // suppress the retry the next beat would otherwise perform.
     if (enrolment.registrationReady) await enrolment.registrationReady;
+
+    // Then CLOSE THE PENDING WINDOW deterministically.
+    //
+    // `registrationReady` covers the INSERT only; the identity/pid/cgroup update
+    // rides a separate fire-and-forget chain. A row observed between the two has
+    // no pid and no identity, so the reconciler cannot match it and strands it —
+    // measured on WI-41197's live verification, where exactly that happened
+    // (`0mt6m1lxf1wf75pejcl` → `stranded` inside one reconcile tick).
+    //
+    // Re-issuing the same update here is idempotent (it is an UPDATE with fixed
+    // values, and `markSpawned`'s own pending-state guard tolerates the double
+    // write), and it means the row is COMPLETE by the time this returns rather
+    // than "complete shortly, if the process lives long enough".
+    await (deps.markSpawned ?? markSpawned)(enrolment.taskId, {
+      pid,
+      processIdentity: identity,
+      scopeUnit: null,
+      cgroupPath: readProcessCgroupPath(pid, fs),
+      confined: false,
+      unconfinedReason: 'caller-veto',
+    });
 
     state.byOwner.set(ownerId, { pid, taskId: enrolment.taskId });
     return { adopted: true, taskId: enrolment.taskId, reason: 'adopted' };
