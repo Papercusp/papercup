@@ -20,15 +20,9 @@ import '../cell-registrations-wiring';
 // nothing to do with the assertions themselves. Typing the rest args as `unknown[]`
 // gives `.flat()` an `unknown[]`, which those guards narrow correctly. (WI-3616 drive-by:
 // these 5 were the entire operator-core typecheck overage, 228 vs baseline 224.)
-const { sqlMock } = vi.hoisted(() => ({
+const { sqlMock, controlMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
-}));
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getOrgPg: () => ({ sql: sqlMock }) }));
-vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'default' }));
-vi.mock('../../harness/operator-home-harness', async (orig) => ({ ...(await orig<Record<string, unknown>>()), operatorHomeHarnessSlug: () => 'home-harness' }));
-vi.mock('../../harness/routines/cron', async (orig) => ({ ...(await orig<Record<string, unknown>>()), computeNextFireAt: vi.fn(() => new Date('2030-01-01T00:00:00Z')) }));
-vi.mock('../../gateway-control/control-harness', () => ({
-  runControlMutation: vi.fn(async (spec: any, opts: any = {}) => {
+  controlMock: vi.fn(async (spec: any, opts: any = {}) => {
     const prev = await spec.capturePrev();
     if (opts.dryRun) return { dryRun: true, applied: false, prev, preview: spec.describe?.(prev) };
     const next = await spec.apply();
@@ -36,9 +30,38 @@ vi.mock('../../gateway-control/control-harness', () => ({
     return { dryRun: false, applied: true, prev, next, verify, auditId: 'aud-1' };
   }),
 }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'default' }));
+vi.mock('../../harness/operator-home-harness', async (orig) => ({ ...(await orig<Record<string, unknown>>()), operatorHomeHarnessSlug: () => 'home-harness' }));
+vi.mock('../../harness/routines/cron', async (orig) => ({ ...(await orig<Record<string, unknown>>()), computeNextFireAt: vi.fn(() => new Date('2030-01-01T00:00:00Z')) }));
+vi.mock('../../gateway-control/control-harness', () => ({ runControlMutation: controlMock }));
+vi.mock('../../release-checkpoint-config', () => ({
+  readQualificationAdmission: vi.fn(async () => ({ status: 'clear' as const })),
+}));
+vi.mock('../../release/checkpoint-serializer-authority', () => ({
+  readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none' as const, reason: 'routine-not-paused' as const })),
+}));
+vi.mock('../../release-checkpoint-launch', () => ({
+  checkActiveCheckpointRun: vi.fn(() => ({
+    active: false,
+    unit: 'papercusp-green-checkpoint',
+    systemd: { scope: 'user' as const, argv: [], load_state: 'loaded', known: true, invocation_id: null },
+  })),
+}));
+vi.mock('../../harness/routines/release-actions', () => ({
+  resolveIntegrationRoot: vi.fn(() => '/integration-root'),
+}));
 
 import { computeNextFireAt } from '../../harness/routines/cron';
+import { readQualificationAdmission } from '../../release-checkpoint-config';
+import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
+import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
+import { resolveIntegrationRoot } from '../../harness/routines/release-actions';
 const cronM = vi.mocked(computeNextFireAt);
+const admissionM = vi.mocked(readQualificationAdmission);
+const serializerM = vi.mocked(readCheckpointSerializerAuthority);
+const activeRunM = vi.mocked(checkActiveCheckpointRun);
+const rootM = vi.mocked(resolveIntegrationRoot);
 
 const listModule = await import('./list');
 const listTool = listModule.default;
@@ -56,6 +79,14 @@ const body = (o: unknown) => {
 beforeEach(() => {
   vi.clearAllMocks();
   cronM.mockReturnValue(new Date('2030-01-01T00:00:00Z'));
+  admissionM.mockResolvedValue({ status: 'clear' });
+  serializerM.mockResolvedValue({ status: 'none', reason: 'routine-not-paused' });
+  activeRunM.mockReturnValue({
+    active: false,
+    unit: 'papercusp-green-checkpoint',
+    systemd: { scope: 'user', argv: [], load_state: 'loaded', known: true, invocation_id: null },
+  });
+  rootM.mockReturnValue('/integration-root');
   sqlMock.mockResolvedValue([]);
 });
 
@@ -801,6 +832,59 @@ describe('routines:set', () => {
       ),
     );
     expect(b).toMatchObject({ dryRun: true, applied: false });
+  });
+
+  it('blocks a peer green-checkpoint resume while the serializer hold is active', async () => {
+    serializerM.mockResolvedValue({
+      status: 'held',
+      itemId: 'WI-40086',
+      ownerId: 'su-serializer',
+      pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: exact qualification',
+      holdReason: 'D-016 sole serializer hold: exact qualification',
+    });
+
+    await expect(
+      setTool.handler({ name: 'green-checkpoint', active: true } as never, { role: 'operator' } as never),
+    ).rejects.toThrow(/serializer hold.*WI-40086.*su-serializer/i);
+    expect(controlMock).not.toHaveBeenCalled();
+  });
+
+  it('allows the operator-home green-checkpoint resume when admission is clear, authority is free, and no run is active', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        trigger_config: { cron: '0 */10 * * * *' },
+        active: false,
+        next_fire_at: null,
+        metadata: { pause: { reason: 'manual pause', pausedBy: 'su-owner', pausedAtMs: 1 } },
+      },
+    ]);
+
+    const b = body(
+      await setTool.handler({ name: 'green-checkpoint', active: true } as never, { role: 'operator' } as never),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true, routine: 'home-harness/green-checkpoint' });
+    expect(rootM).toHaveBeenCalledOnce();
+    expect(admissionM).toHaveBeenCalledOnce();
+    expect(serializerM).toHaveBeenCalledWith({ installSlug: 'home-harness' });
+    expect(activeRunM).toHaveBeenCalledWith('/integration-root');
+  });
+
+  it('applies the same green-checkpoint resume guard to dryRun', async () => {
+    serializerM.mockResolvedValue({
+      status: 'held',
+      itemId: 'WI-40086',
+      ownerId: 'su-serializer',
+      pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: exact qualification',
+      holdReason: 'D-016 sole serializer hold: exact qualification',
+    });
+
+    await expect(
+      setTool.handler(
+        { name: 'green-checkpoint', active: true, dryRun: true } as never,
+        { role: 'operator' } as never,
+      ),
+    ).rejects.toThrow(/serializer hold/i);
+    expect(controlMock).not.toHaveBeenCalled();
   });
 
   // EI-18654017982759582: a pause with no recorded reason/owner is exactly how release-trigger

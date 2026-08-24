@@ -13,7 +13,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { computeNextFireAt } from '../../harness/routines/cron';
+import { resolveIntegrationRoot } from '../../harness/routines/release-actions';
 import { runControlMutation } from '../../gateway-control/control-harness';
+import { readQualificationAdmission } from '../../release-checkpoint-config';
+import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
+import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 
 /**
@@ -65,6 +69,64 @@ function deepMergePlain(
     out[k] = isPlainObject(cur) && isPlainObject(v) ? deepMergePlain(cur, v) : v;
   }
   return out;
+}
+
+/**
+ * A resume is a control-plane write, even when the caller asks for a dry-run. The
+ * scheduled green-checkpoint path has two durable fences that a peer must not clear:
+ * qualification admission and the exact serializer hold. Check the live run before
+ * allowing the routine mutation too, otherwise a peer can replace an in-flight run.
+ *
+ * Keep this deliberately narrow: only the operator-home green-checkpoint resume is
+ * serializer-owned. Other routines, installs, and active:false pauses retain the
+ * generic routines:set behavior.
+ */
+async function assertGreenCheckpointResumeAdmission(slug: string, name: string): Promise<void> {
+  if (name !== 'green-checkpoint' || slug !== operatorHomeHarnessSlug()) return;
+
+  let root: string;
+  try {
+    root = resolveIntegrationRoot();
+  } catch (error) {
+    throw new Error(
+      `green-checkpoint resume refused: integration root could not be resolved (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+
+  const admission = await readQualificationAdmission();
+  if (admission.status !== 'clear') {
+    throw new Error(
+      admission.status === 'held'
+        ? `green-checkpoint resume refused: qualification is held by ${admission.hold.governingRef}`
+        : `green-checkpoint resume refused: qualification admission is unknown (${admission.reason})`,
+    );
+  }
+
+  const serializer = await readCheckpointSerializerAuthority({ installSlug: slug });
+  if (serializer.status === 'held') {
+    throw new Error(
+      `green-checkpoint resume refused: serializer hold for ${serializer.itemId} is owned by ${serializer.ownerId}`,
+    );
+  }
+  if (serializer.status === 'unreadable') {
+    throw new Error(`green-checkpoint resume refused: serializer authority is unreadable (${serializer.error})`);
+  }
+
+  let activeRun: ReturnType<typeof checkActiveCheckpointRun>;
+  try {
+    activeRun = checkActiveCheckpointRun(root);
+  } catch (error) {
+    throw new Error(
+      `green-checkpoint resume refused: active-run probe failed (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  if (activeRun.probe_failed || activeRun.active !== false) {
+    throw new Error(
+      activeRun.probe_failed
+        ? `green-checkpoint resume refused: active-run probe is indeterminate${activeRun.probe_detail ? ` (${activeRun.probe_detail})` : ''}`
+        : 'green-checkpoint resume refused: a checkpoint run is already active',
+    );
+  }
 }
 
 export default defineTool({
@@ -154,6 +216,12 @@ export default defineTool({
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
     const slug = args.installSlug ?? operatorHomeHarnessSlug();
+
+    // Guard before runControlMutation itself so dryRun cannot be used to probe or
+    // bypass the same serializer-owned resume admission as a real write.
+    if (args.active === true) {
+      await assertGreenCheckpointResumeAdmission(slug, args.name);
+    }
 
     const readSnap = async (): Promise<RoutineSnap> => {
       const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; payload_template: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null; group_slug: string | null; metadata: Record<string, unknown> | null }>>`
