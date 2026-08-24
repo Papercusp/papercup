@@ -57,6 +57,7 @@ export {
   parseChecksConfig,
   validateChecksConfig,
   type ChecksBootSection,
+  type ChecksNativeDesktopSection,
   type ChecksComponentsSection,
   type ChecksCompositionSection,
   type ChecksConfinementSection,
