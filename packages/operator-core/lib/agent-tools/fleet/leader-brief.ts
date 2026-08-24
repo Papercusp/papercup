@@ -553,7 +553,8 @@ function isPoolCongested(p: PoolDegradedState | null | undefined): p is PoolDegr
  *  (it requires load>0). This is the branch closing the incident that motivated EI-9943 in the
  *  first place but that the original, narrower check could never catch: a drained-lane member
  *  cycling get_next-miss -> re-park -> wake with no claim, benchSuggestion staying 0 all
- *  night. */
+ *  night. A member with no loop is handled by the separate `dormant` alert: it is already
+ *  quiet and must be woken, not benched onto another wake source. */
 export function computeBenchSuggestion(
   a: Pick<DecoratedAgent, 'stalled' | 'parkedOn' | 'doing'> & {
     verdict?: MemberVerdict | null;
@@ -706,6 +707,12 @@ export function computeBenchSuggestion(
   // stalled-no-mcp branch above: a leader that DID take on work (load>0) and
   // looks wedged is still a genuine, reportable fault regardless of role.
   if (a.fleetRole === 'leader' && a.loopMode === 'monitor') return undefined;
+  // EI-21285199425229320: a loopless member with no claim is already quiet; adding a
+  // fleet:bench wake source increases future wake/token cost and does not suppress a live
+  // loop. `computeDormantAlert` owns this shape and tells the leader to coord:wake it now.
+  // Keep `undefined` distinct from `null`: older pure callers that did not provide loopMode
+  // have not read the loop oracle, so they retain the historical fail-open behavior.
+  if (a.loopMode === null) return undefined;
   // EI-13846: LANELESS-IDLE. `stalled` requires load>0 (a held claim not advancing), so
   // it is structurally blind to a member holding NO claim at all — and `deriveMemberVerdict`
   // returns the loop's `monitorState` (monitoring|waiting|parked-awaiting-capability) BEFORE
