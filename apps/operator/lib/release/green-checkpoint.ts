@@ -6944,9 +6944,14 @@ export async function runGreenCheckpoint(
           deps,
           repairQueue,
         );
+        const transportedCandidateOutlivesMovingProof =
+          outcomeProof.kind === "tip-moved" &&
+          opts.candidate !== undefined &&
+          opts.diagnostic === undefined;
         if (
           outcomeProof.kind === "proved" ||
-          outcomeProof.kind === "full-suite-required"
+          outcomeProof.kind === "full-suite-required" ||
+          transportedCandidateOutlivesMovingProof
         ) {
           const reconciledQueue = repairQueue;
           await deps.writeFrozenRepairQueue?.(null);
@@ -6962,14 +6967,16 @@ export async function runGreenCheckpoint(
           repairOutcomeReconciled = true;
           candidate = await revParse(
             cfg.integrationRoot,
-            outcomeProof.kind === "full-suite-required"
-              ? transportedCandidate
-              : outcomeProof.tip,
+            outcomeProof.kind === "proved"
+              ? outcomeProof.tip
+              : transportedCandidate,
           );
           deps.log(
             outcomeProof.kind === "proved"
               ? `${outcomeProof.summary}; cleared the obsolete exact-patch queue and continuing with a normal gate at that exact tip`
-              : `${outcomeProof.summary}; retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact tip`,
+              : outcomeProof.kind === "full-suite-required"
+                ? `${outcomeProof.summary}; retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact tip`
+                : `${outcomeProof.summary}; the run already transported canonical candidate ${transportedCandidate.slice(0, 8)}, so retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact transported candidate`,
           );
         } else {
           deps.log(
