@@ -97,6 +97,30 @@ const DATE_READ_PATTERN =
  * (`+%s`, `+%FT%TZ`, `+%H:%M:%SZ`, `+%Y-%m-%d %H:%M:%S UTC`, …) is a pure
  * rendering of that same instant — which is what makes this `equivalent`
  * rather than merely related.
+ *
+ * ⚠ THE SUBSTITUTION IS BOUNDED TO THE TURN THE PAYLOAD ARRIVED IN, and saying
+ * so is load-bearing (EI-21333774797481879). `host.now` is a SNAPSHOT stamped
+ * when that orient ran, and an agent's turns are separated by arbitrary
+ * wall-clock time — measured in one session, two adjacent-in-transcript reads
+ * were 1h44m apart, and an earlier pair in the same session ~4h40m. TRANSCRIPT
+ * ADJACENCY IS NOT TEMPORAL ADJACENCY.
+ *
+ * The value is correct when fresh; side-by-side against `db now()` it agreed to
+ * the second. The defect is purely CARRY, and it already produced a real error:
+ * an agent differenced a `host.now` it was carrying from an earlier turn against
+ * a live DB timestamp, concluded the two clocks were skewed ~4h40m, and shipped
+ * that as a durable caution to a peer before retracting it. Nothing threw — a
+ * carried clock yields a PLAUSIBLE wrong number, which is why the guidance has
+ * to draw the line the pattern matcher cannot: `cover()` sees one atom, never
+ * how long ago the payload landed.
+ *
+ * Why the fix is guidance and not a `host.now` state cell (the other option
+ * considered): the cell registry is a VERDICT registry, not a generic re-read
+ * handle. Every CellSpec requires an `assessment` naming a closed set of decision
+ * meanings — `null` is legal only for event-signalled cells, and a poll cell
+ * without one is rejected as `assessment-missing`. A scalar clock carries no
+ * verdict to assess, and its admission rule ("a read with 0 calls is never
+ * promoted") would refuse it anyway. `date -u` is already the cheap re-read.
  */
 export const clockRead: BashSubstitutionPair = {
   id: 'ambient.date-read',
@@ -104,10 +128,10 @@ export const clockRead: BashSubstitutionPair = {
   bashPattern: DATE_READ_PATTERN,
   toolName: 'coord:orient',
   advisoryText:
-    'The current time ALREADY ARRIVED — `host.now` on your last coord:orient is an ISO-8601 UTC instant, and every `date` format is a rendering of it. Read it there; do not call anything (calling orient to read a clock costs more than `date` did).',
+    'The current time ALREADY ARRIVED — `host.now` on your last coord:orient is an ISO-8601 UTC instant, and every `date` format is a rendering of it. Read it there; do not call anything (calling orient to read a clock costs more than `date` did). ⚠ It is a SNAPSHOT of when that orient ran, not a live clock: if orient was an EARLIER turn, or you are differencing it for an age/duration, run `date -u` — a carried value yields a plausible wrong number, not an error.',
   routing: {
     want: 'the current date/time',
-    use: '`host.now` — already in your coord:orient payload (ISO-8601 UTC). Call nothing',
+    use: '`host.now` — already in your coord:orient payload (ISO-8601 UTC). Call nothing. ⚠ SNAPSHOT of when orient ran — on a LATER turn, or to compute an age/duration, `date -u` is correct',
     insteadOf:
       '`date` / `date -u` / `date +%s`. ⚠ a `$(date …)` substitution INSIDE another command is string interpolation — keep using bash; so is `date -d @<epoch>` (a different instant)',
   },
@@ -126,9 +150,16 @@ export const clockRead: BashSubstitutionPair = {
     // expression cites its pair's toolName) while saying DO NOT CALL IT — the
     // field is already in context, and calling a compound orient to read a clock
     // would cost strictly more than the `date` it replaces.
+    //
+    // Coverage is deliberately NOT narrowed here (e.g. declining `+%s` as
+    // probable duration arithmetic): the verdict is `equivalent` against a
+    // measured corpus, and one atom carries no evidence of how stale the
+    // payload is. The staleness bound is guidance the reader applies, not a
+    // property this matcher can see — hence the caveat rides the expression.
     return {
       covered: true,
-      expression: 'coord:orient payload → host.now // ISO-8601 UTC, already in context; do not re-call',
+      expression:
+        'coord:orient payload → host.now // ISO-8601 UTC, already in context; do not re-call (snapshot of that orient — `date -u` if it was an earlier turn, or if differencing for an age)',
     };
   },
 };
