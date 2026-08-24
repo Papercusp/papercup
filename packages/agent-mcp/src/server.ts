@@ -25,7 +25,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { withWorkspace } from '@papercusp/db-org';
+import { explainOnConflictSkew, withWorkspace } from '@papercusp/db-org';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
 import { resolveBearer } from './auth';
 import { sanitizeToolSchema } from './tool-schema-sanitize';
@@ -267,11 +267,13 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
     });
     return { ok: true, response };
   } catch (err) {
+    const message =
+      explainOnConflictSkew(err) ?? (err instanceof Error ? err.message : String(err));
     return {
       ok: false,
       error: {
         code: 'handler_error',
-        message: err instanceof Error ? err.message : String(err),
+        message,
       },
     };
   }

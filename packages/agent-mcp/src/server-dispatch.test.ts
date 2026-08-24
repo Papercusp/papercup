@@ -233,6 +233,33 @@ describe('dispatch — control flow', () => {
     expect(res.error?.message).toBe('boom');
   });
 
+  it('handler SQLSTATE 42P10 → names the relation, conflict target, and deploy skew', async () => {
+    const original =
+      'there is no unique or exclusion constraint matching the ON CONFLICT specification';
+    const pgError = new Error(original);
+    Object.defineProperties(pgError, {
+      code: { value: '42P10', enumerable: false },
+      query: {
+        value:
+          'INSERT INTO harness_shared.agent_facts (owner_id, key, value) VALUES ($1, $2, $3) ' +
+          'ON CONFLICT (owner_id, key) DO UPDATE SET value = excluded.value',
+        enumerable: false,
+      },
+    });
+    vi.mocked(lookup).mockReturnValue(
+      makeTool({ handler: vi.fn(async () => { throw pgError; }) }) as never,
+    );
+
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe('handler_error');
+    expect(res.error?.message?.split('\n')[0]).toBe(original);
+    expect(res.error?.message).toContain('harness_shared.agent_facts');
+    expect(res.error?.message).toContain('(owner_id, key)');
+    expect(res.error?.message).toContain('DEPLOY SKEW');
+  });
+
   it('happy path → runs the handler with validated args + a ctx, returns the response', async () => {
     const res = await dispatch({ toolName: 'test:echo', args: { x: 1 }, bearer: 'b' });
     expect(res.ok).toBe(true);
