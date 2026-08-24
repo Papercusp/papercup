@@ -53,6 +53,45 @@ export const CompletionVerifiedHowSchema = z
     "HOW it was verified — a non-empty label. Prefer 'unit' | 'integration' | 'live-drove-ui' | 'manual' | 'already-passing' for queryable coarse modes; concise free-text labels are also accepted. Put detailed evidence in `testsRun` / `testResult`.",
   );
 
+/** The complete repair contract shown for malformed coverage input. */
+export const COMPLETION_COVERAGE_CONTRACT =
+  'Coverage contract at completion.verification.coverage: population, checked, notChecked, and notApplicable are the partition buckets; residue is a separate list, never a fifth bucket. Every population entry must appear verbatim in exactly one status bucket. All buckets are string arrays; residue must be non-empty, and residue:[\'none\'] declares zero residue.';
+
+function isCoverageRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === 'string' && entry.trim().length > 0)
+  );
+}
+
+/**
+ * WI-213058: Zod's nested field errors used to reveal this contract one rule at a time
+ * (and made `residue` look like a fifth partition bucket). Emit one actionable contract
+ * error for malformed shape input before the child array schemas produce generic errors.
+ * Semantic partition accounting still belongs to complete.ts because it needs the item
+ * and the submitted population.
+ */
+export function hasMalformedCoverageShape(value: unknown): boolean {
+  if (!isCoverageRecord(value) || !isStringArray(value.population)) return true;
+
+  for (const key of ['checked', 'notChecked', 'notApplicable'] as const) {
+    const bucket = value[key];
+    if (bucket !== undefined && (!Array.isArray(bucket) || !bucket.every((entry) => typeof entry === 'string' && entry.trim()))) {
+      return true;
+    }
+  }
+
+  const residue = value.residue;
+  // An empty array has the right shape; the child `.min(1)` schema owns the
+  // field-level residue path for that semantic error. Shape preflight should
+  // only collapse scalar/non-string bucket values into the repair contract.
+  return residue !== undefined && !isStringArray(residue);
+}
+
 /**
  * WI-37960: coverage evidence for a verification-shaped completion.
  *
@@ -63,7 +102,16 @@ export const CompletionVerifiedHowSchema = z
  * The completion gate performs the cross-field accounting check; this schema
  * keeps the durable shape typed and shared by both completion aliases.
  */
-export const CompletionCoverageSchema = z.object({
+export const CompletionCoverageSchema = z
+  .preprocess(
+    (raw, ctx) => {
+      if (raw !== undefined && hasMalformedCoverageShape(raw)) {
+        ctx.addIssue({ code: 'custom', message: COMPLETION_COVERAGE_CONTRACT });
+        return z.NEVER;
+      }
+      return raw;
+    },
+    z.object({
   population: z
     .array(z.string().min(1))
     .min(1)
@@ -84,10 +132,12 @@ export const CompletionCoverageSchema = z.object({
     .array(z.string().min(1))
     .min(1)
     .optional()
-    .describe("For a universal-verification close this is required and non-empty; use ['none'] for zero residue."),
-}).describe(
-  "Coverage is an exact partition: every population entry must appear verbatim in exactly one of checked, notChecked, or notApplicable; do not use descriptive replacements or extra bucket entries. For universal-verification closes, residue is required and non-empty, with residue:['none'] declaring zero residue. Omitted status buckets mean empty buckets.",
-);
+    .describe("A separate residue list, never a partition bucket; for universal closes it is required and non-empty. Use ['none'] for zero residue."),
+    }),
+  )
+  .describe(
+    `${COMPLETION_COVERAGE_CONTRACT} Omitted status buckets mean empty buckets.`,
+  );
 export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 
 /**
