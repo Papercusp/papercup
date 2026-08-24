@@ -14,6 +14,7 @@ import {
 } from './anthropic-port';
 import { runAgentLoop, type LoopTool } from './loop';
 import { textMessage, type ModelStreamEvent } from './model-port';
+import { providerWireToolName } from './model-tool-name-codec';
 
 async function parse(frames: unknown[]): Promise<ModelStreamEvent[]> {
   const out: ModelStreamEvent[] = [];
@@ -159,11 +160,13 @@ describe('parseAnthropicStream', () => {
 
 describe('createAnthropicPort + runAgentLoop end-to-end (fake wire)', () => {
   it('drives a tool round-trip through the real loop over the real port', async () => {
+    const canonicalToolName = 'capability:echo';
+    const wireToolName = providerWireToolName(canonicalToolName);
     const wires: unknown[][] = [
       // step 0: the model calls echo
       [
         { type: 'message_start', message: { usage: { input_tokens: 10 } } },
-        { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'w1', name: 'echo' } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'w1', name: wireToolName } },
         { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"v":"x"}' } },
         { type: 'content_block_stop', index: 0 },
         { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } },
@@ -188,7 +191,7 @@ describe('createAnthropicPort + runAgentLoop end-to-end (fake wire)', () => {
       },
     });
     const echo: LoopTool = {
-      name: 'echo',
+      name: canonicalToolName,
       inputSchema: { type: 'object' },
       execute: async (input) => ({ echoed: input }),
     };
@@ -209,6 +212,10 @@ describe('createAnthropicPort + runAgentLoop end-to-end (fake wire)', () => {
     };
     expect(done.stopReason).toBe('complete');
     expect(done.finalText).toBe('answer');
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool_call',
+      call: expect.objectContaining({ name: canonicalToolName }),
+    }));
     // P-009: the port stamps per-step costUsd (priced model) and the loop
     // sums it — 10in+3out then 20in+2out at $3/$15 per MTok.
     expect(done.usage).toEqual({
@@ -220,7 +227,9 @@ describe('createAnthropicPort + runAgentLoop end-to-end (fake wire)', () => {
     const m2 = sentParams[1].messages as Array<{ role: string; content: Array<{ type: string }> }>;
     expect(m2.at(-1)!.content[0].type).toBe('tool_result');
     // the request carried the tool defs
-    expect(sentParams[0].tools).toEqual([{ name: 'echo', input_schema: { type: 'object' } }]);
+    expect(wireToolName).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+    expect(wireToolName).not.toBe(canonicalToolName);
+    expect(sentParams[0].tools).toEqual([{ name: wireToolName, input_schema: { type: 'object' } }]);
   });
 });
 

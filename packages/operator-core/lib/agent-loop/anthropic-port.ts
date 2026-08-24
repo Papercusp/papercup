@@ -41,6 +41,10 @@ import type {
   ModelStreamEvent,
   ModelUsage,
 } from './model-port';
+import {
+  modelToolNameCodec,
+  type ModelToolNameCodec,
+} from './model-tool-name-codec';
 
 // ---------------------------------------------------------------------------
 // Request mapping (owned types → anthropic wire shapes)
@@ -50,7 +54,10 @@ type AnthropicContentBlock =
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
 
-function toAnthropicMessages(messages: ModelMessage[]): Array<{
+function toAnthropicMessages(
+  messages: ModelMessage[],
+  encodeToolName: (name: string) => string = (name) => name,
+): Array<{
   role: 'user' | 'assistant';
   content: AnthropicContentBlock[];
 }> {
@@ -61,7 +68,7 @@ function toAnthropicMessages(messages: ModelMessage[]): Array<{
         case 'text':
           return { type: 'text', text: p.text };
         case 'tool_call':
-          return { type: 'tool_use', id: p.id, name: p.name, input: p.input ?? {} };
+          return { type: 'tool_use', id: p.id, name: encodeToolName(p.name), input: p.input ?? {} };
         case 'tool_result':
           return {
             type: 'tool_result',
@@ -74,11 +81,14 @@ function toAnthropicMessages(messages: ModelMessage[]): Array<{
   }));
 }
 
-export function buildAnthropicParams(req: ModelRequest): Record<string, unknown> {
+export function buildAnthropicParams(
+  req: ModelRequest,
+  codec: ModelToolNameCodec = modelToolNameCodec(req.tools),
+): Record<string, unknown> {
   const params: Record<string, unknown> = {
     model: req.model,
     max_tokens: req.maxTokens ?? 8192,
-    messages: toAnthropicMessages(req.messages),
+    messages: toAnthropicMessages(req.messages, codec.encode),
     // ALWAYS framed (even empty): a Max-OAuth request without the Claude Code
     // identifier system block is shunted to the stricter 429 bucket.
     system: buildSystemParam(req.system ?? ''),
@@ -86,7 +96,7 @@ export function buildAnthropicParams(req: ModelRequest): Record<string, unknown>
   };
   if (req.tools?.length) {
     params.tools = req.tools.map((t) => ({
-      name: t.name,
+      name: codec.encode(t.name),
       ...(t.description !== undefined ? { description: t.description } : {}),
       input_schema: t.inputSchema,
     }));
@@ -151,6 +161,7 @@ function num(v: unknown): number | undefined {
  */
 export async function* parseAnthropicStream(
   raw: AsyncIterable<unknown> | Iterable<unknown>,
+  decodeToolName: (name: string) => string = (name) => name,
 ): AsyncGenerator<ModelStreamEvent, void, void> {
   const liveTools = new Map<number, { id: string; name: string; json: string }>();
   let stopReason: ModelStopReason = 'other';
@@ -185,7 +196,7 @@ export async function* parseAnthropicStream(
         ) {
           liveTools.set(ev.index, {
             id: typeof ev.content_block.id === 'string' ? ev.content_block.id : `tool_${ev.index}`,
-            name: ev.content_block.name,
+            name: decodeToolName(ev.content_block.name),
             json: '',
           });
         }
@@ -308,7 +319,8 @@ export function withCost(
 export function createAnthropicPort(opts: AnthropicPortOpts = {}): ModelPort {
   return {
     async *stream(req: ModelRequest): AsyncIterable<ModelStreamEvent> {
-      const params = buildAnthropicParams(req);
+      const codec = modelToolNameCodec(req.tools);
+      const params = buildAnthropicParams(req, codec);
       let raw: AsyncIterable<unknown>;
       try {
         raw = opts.rawStream
@@ -319,7 +331,7 @@ export function createAnthropicPort(opts: AnthropicPortOpts = {}): ModelPort {
         return;
       }
       try {
-        for await (const ev of parseAnthropicStream(raw)) {
+        for await (const ev of parseAnthropicStream(raw, codec.decode)) {
           yield ev.type === 'stop' ? withCost(req.model, ev) : ev;
         }
       } catch (e) {

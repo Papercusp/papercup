@@ -6,7 +6,6 @@
  * ModelPort boundary.
  */
 import { costFromTokens } from '@papercusp/model-pricing';
-import { createHash } from 'node:crypto';
 import type {
   JSONValue,
   LanguageModelV3,
@@ -26,6 +25,11 @@ import type {
   ModelUsage,
 } from './model-port';
 import type { AiSdkProviderId } from './model-selection';
+import {
+  modelToolNameCodec,
+  providerWireToolName,
+  type ModelToolNameCodec,
+} from './model-tool-name-codec';
 
 export interface AiSdkPortModel {
   model: LanguageModelV3;
@@ -41,8 +45,6 @@ export interface AiSdkPortOptions {
   resolveModel(req: ModelRequest): Promise<AiSdkPortModel> | AiSdkPortModel;
 }
 
-const AI_SDK_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
-
 /**
  * AI-provider function names share a conservative alphanumeric/underscore/
  * hyphen wire contract. Papercusp's canonical projected-tool names contain a
@@ -51,29 +53,11 @@ const AI_SDK_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
  * collision-resistant while the 64-char cap remains valid across providers.
  */
 export function aiSdkWireToolName(name: string): string {
-  if (AI_SDK_TOOL_NAME_PATTERN.test(name)) return name;
-  const readable = name
-    .replace(/[^a-zA-Z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 44) || 'tool';
-  const digest = createHash('sha256').update(name).digest('hex').slice(0, 12);
-  return `pc_${readable}_${digest}`;
+  return providerWireToolName(name);
 }
 
-interface ToolNameCodec {
-  encode(name: string): string;
-  decode(name: string): string;
-}
-
-function toolNameCodec(req: ModelRequest): ToolNameCodec {
-  const canonicalByWire = new Map<string, string>();
-  for (const tool of req.tools ?? []) {
-    canonicalByWire.set(aiSdkWireToolName(tool.name), tool.name);
-  }
-  return {
-    encode: aiSdkWireToolName,
-    decode: (name) => canonicalByWire.get(name) ?? name,
-  };
+function toolNameCodec(req: ModelRequest): ModelToolNameCodec {
+  return modelToolNameCodec(req.tools);
 }
 
 function jsonValue(value: unknown): JSONValue | null {
@@ -183,7 +167,7 @@ export function effortProviderOptions(
 export function buildAiSdkCallOptions(
   req: ModelRequest,
   resolved: AiSdkPortModel,
-  codec: ToolNameCodec = toolNameCodec(req),
+  codec: ModelToolNameCodec = toolNameCodec(req),
 ): LanguageModelV3CallOptions {
   return {
     prompt: toAiSdkPrompt(req.system, req.messages, codec.encode),
