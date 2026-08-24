@@ -245,10 +245,11 @@ describe('read — a declared code is TRANSPORTED with its meaning and safe acti
    * P-006 replaced the old ADDITIVITY test here. That test asserted an "unmigrated"
    * poll cell reads with no `assessment` key — a state the contract can no longer
    * reach, since `assessment` is required and only an EVENT cell may answer `null`
-   * (D-016). The surviving question is the one below: absence is now a statement
-   * about the cell's SIGNAL KIND, not about migration progress.
+   * (D-016). An event cell has no poll resolver, so a synchronous read is
+   * `not-measured`; the surviving question is that this refusal does not fabricate
+   * an assessment for a signal-only cell.
    */
-  it('an EVENT cell — the only kind that may answer `null` — carries no `assessment` key', async () => {
+  it('an EVENT cell — the only kind that may declare `null` — is not synchronously measured and carries no `assessment` key', async () => {
     registerCell(
       spec({
         cell: 'test.eventCell',
@@ -260,9 +261,11 @@ describe('read — a declared code is TRANSPORTED with its meaning and safe acti
 
     const r = await readCell('test.eventCell', READER, ENV);
 
-    expect(r.status).toBe('value');
-    if (r.status !== 'value') return;
-    expect(r.assessment).toBeUndefined();
+    expect(r.status).toBe('unknown');
+    if (r.status !== 'unknown') return;
+    expect(r.unknown.code).toBe('not-measured');
+    expect(r).not.toHaveProperty('assessment');
+    expect(dispatchReadOnlyTool).not.toHaveBeenCalled();
   });
 });
 
