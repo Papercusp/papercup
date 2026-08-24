@@ -64,6 +64,8 @@ const baseArgs = {
 beforeEach(() => {
   h.order.length = 0;
   vi.clearAllMocks();
+  h.existsSync.mockImplementation(() => false);
+  h.getAuthoredDocContent.mockResolvedValue(null);
 });
 
 describe('docs:author search refresh', () => {
@@ -110,5 +112,44 @@ describe('docs:author search refresh', () => {
     expect(payload.warnings?.some((warning) => warning.includes('page_not_found:agent-insights/current-refresh'))).toBe(
       true,
     );
+  });
+
+  it('preserves an over-limit legacy description when an overwrite omits description', async () => {
+    const legacyDescription = 'x'.repeat(1_945);
+    h.existsSync.mockReturnValue(true);
+    h.getAuthoredDocContent.mockResolvedValue(`---
+title: "Legacy insight"
+description: "${legacyDescription}"
+---
+
+# Legacy insight
+`);
+    const { description: _unusedDescription, ...overwriteWithoutDescription } = baseArgs;
+
+    const result = await callAuthor({
+      ...overwriteWithoutDescription,
+      slug: 'legacy-description-overwrite',
+      title: 'Updated legacy insight',
+      overwrite: true,
+    });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; warnings?: string[] };
+
+    expect(result.isError).not.toBe(true);
+    expect(payload.ok).toBe(true);
+    expect(payload.warnings?.some((warning) => warning.includes(String(legacyDescription.length)))).toBe(true);
+    const anchorArgs = h.anchorManualDoc.mock.calls[0]?.[0] as { content: string } | undefined;
+    expect(anchorArgs?.content).toContain(`description: "${legacyDescription}"`);
+  });
+
+  it('still requires description when creating a new doc', async () => {
+    const { description: _unusedDescription, ...createWithoutDescription } = baseArgs;
+    const result = await callAuthor({
+      ...createWithoutDescription,
+      slug: 'missing-description',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('description_required');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
   });
 });

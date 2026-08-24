@@ -338,8 +338,9 @@ const argsSchema = z.object({
     // lint:okf-conformance, the frontmatter writer, or the projection.
     .max(DESCRIPTION_HARD_MAX)
     .describe(
-      `One-line summary (frontmatter \`description\`) — this is the index hook docs:search / the outline shows. Keep it under ~${DESCRIPTION_RECOMMENDED_MAX} chars (longer is accepted up to ${DESCRIPTION_HARD_MAX}, with a warning).`,
-    ),
+      `One-line summary (frontmatter \`description\`) — this is the index hook docs:search / the outline shows. Keep it under ~${DESCRIPTION_RECOMMENDED_MAX} chars (longer is accepted up to ${DESCRIPTION_HARD_MAX}, with a warning). On overwrite, omit to preserve the existing description, including legacy values above the current limit. Required for new docs.`,
+    )
+    .optional(),
   body: z
     .string()
     .min(1)
@@ -418,9 +419,6 @@ export default defineTool({
     if (!harnessRes.ok) return err(harnessRes.error);
     const harnessSlug = harnessRes.harnessSlug;
 
-    const descWarning = descriptionLengthWarning(args.description);
-    if (descWarning) warnings.push(descWarning);
-
     const paths = await resolveHarnessDocPaths(harnessSlug);
     if (!paths)
       return err(
@@ -445,6 +443,20 @@ export default defineTool({
       ? await getAuthoredDocContent(harnessSlug, docId).catch(() => null)
       : null;
     const existingFrontmatter = parseExistingFrontmatter(existingContent);
+    const inheritedDescription = (() => {
+      const value = existingFrontmatter.description;
+      return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    })();
+    const description = args.description?.trim() || inheritedDescription;
+    if (!description) {
+      return err(
+        args.overwrite
+          ? 'description_required — this overwrite has no usable existing description; pass description explicitly.'
+          : 'description_required — new docs require description.',
+      );
+    }
+    const descWarning = descriptionLengthWarning(description);
+    if (descWarning) warnings.push(descWarning);
     const documents = args.documents === undefined ? normalizeList(existingFrontmatter.documents) : normalizeList(args.documents);
     if (!documents.length) {
       warnings.push('no `documents` provided — the doc is NOT drift-tracked; pass `documents` (files/symbols it covers) so the drift sweep can flag it when that code changes.');
@@ -465,7 +477,7 @@ export default defineTool({
       : undefined;
     const fm: FrontmatterInput = {
       title: args.title.trim(),
-      description: args.description.trim(),
+      description,
       discovered: discoveredForWrite(existingContent),
       status: args.status ?? inheritedString('status') ?? 'active',
       type: (args.type ?? inheritedString('type') ?? '').trim() || DEFAULT_DOC_TYPE,
