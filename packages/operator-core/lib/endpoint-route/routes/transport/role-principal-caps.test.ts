@@ -8,11 +8,14 @@
 import { describe, test, expect } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS,
+  CAPABILITY_REPLACEMENT_PRINCIPAL_ROLES,
   effectiveDispatchWorkspace,
   loadRoleCapabilities,
   synthesizeDispatchPrincipal,
   synthesizeTransportPrincipal,
 } from './role-principal-caps.js';
+import { FLEET_CAPABILITY_ROLES } from '@papercusp/orchestrator';
 
 /** A fake `tx` tagged-template that returns a fixed row set regardless of query. */
 function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
@@ -20,6 +23,26 @@ function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
 }
 
 describe('loadRoleCapabilities', () => {
+  describe('native-tool cutover replacement grants', () => {
+    test('principal grant roles stay in lockstep with orchestrator FLEET_CAPABILITY_ROLES', () => {
+      expect(new Set(CAPABILITY_REPLACEMENT_PRINCIPAL_ROLES)).toEqual(new Set(FLEET_CAPABILITY_ROLES));
+    });
+
+    test.each([...FLEET_CAPABILITY_ROLES])('%s gets every capability:* replacement grant', async (role) => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', role);
+      for (const capability of CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS) {
+        expect(caps.has(capability), `${role} missing ${capability}`).toBe(true);
+      }
+    });
+
+    test('non-cutover evidence-only roles do not inherit the replacement grant set', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+      expect(caps.has('capability:git')).toBe(false);
+      expect(caps.has('capability:bash')).toBe(false);
+      expect(caps.has('capability:fs-write')).toBe(false);
+    });
+  });
+
   test('voter (no system_principals row) gets the program-blueprint baseline incl. coord:write', async () => {
     const caps = await loadRoleCapabilities(fakeTx([]), 'papercusp-workspace', 'voter');
     expect(caps.has('coord:write')).toBe(true);
@@ -277,19 +300,21 @@ describe('loadRoleCapabilities', () => {
     });
   });
 
-  test('an ordinary pipeline role with no row gets ONLY the universal tool-discovery cap (least-privilege)', async () => {
+  test('a cutover pipeline role gets discovery + only the capability replacements beyond its provisioned row', async () => {
     // Pre-change this was the empty set. `agent_tools:list` is declared
     // ALL_ROLES + requirePrincipal:false and every pipeline-role persona instructs
     // calling `agent_tools:list { asRole }` as its runtime fallback playbook — so
     // every role-scoped caller gets the read-only `agent_tools:read` introspection
-    // cap. The least-privilege intent is preserved for everything else: a bare
-    // pipeline role still gets NO workflow caps (no coord/work_items/harness/…).
+    // cap. B-18 additionally strips native tools from worker and substitutes
+    // five capability:* tools, so its signed principal gets exactly those five
+    // grants. The least-privilege intent is preserved for everything else: a
+    // bare pipeline role still gets NO workflow caps (no coord/work_items/harness/…).
     const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'worker');
     expect(caps.has('agent_tools:read')).toBe(true);
     expect(caps.has('coord:write')).toBe(false);
     expect(caps.has('work_items:write')).toBe(false);
     expect(caps.has('harness:write')).toBe(false);
-    expect(caps.size).toBe(1);
+    expect(caps).toEqual(new Set(['agent_tools:read', ...CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS]));
   });
 
   test('operator: a provisioned row is unioned with the hive-decider baseline', async () => {
@@ -408,6 +433,7 @@ describe('synthesizeDispatchPrincipal — telemetry provenance', () => {
       trust: 'trusted',
     });
     expect(principal.capabilities.has('agent_tools:read')).toBe(true);
+    expect(principal.capabilities.has('capability:git')).toBe(true);
   });
 
   test('accepted unsigned legacy spawn URLs stay explicitly unverified loopback', async () => {

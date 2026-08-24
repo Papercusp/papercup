@@ -274,6 +274,39 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
 };
 
 /**
+ * Roles whose native Bash/Edit/Write/WebFetch surface the orchestrator can
+ * replace with capability:* tools. The role allowlist and capability envelope
+ * are separate gates; a signed principal also needs these exact grants or the
+ * cutover advertises replacements that every call then denies.
+ *
+ * Keep this role set in lockstep with orchestrator FLEET_CAPABILITY_ROLES. The
+ * cross-package regression in role-principal-caps.test.ts enforces the mirror
+ * without importing the orchestrator's large graph into this transport module.
+ */
+export const CAPABILITY_REPLACEMENT_PRINCIPAL_ROLES: ReadonlySet<string> = new Set([
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'mug',
+  'documenter',
+  'curator',
+  'cup',
+]);
+
+/** The capability-gate half of the native-tool replacement contract. */
+export const CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS: readonly string[] = [
+  'capability:bash',
+  'capability:fs-read',
+  'capability:fs-write',
+  'capability:git',
+  'capability:net',
+];
+
+/**
  * Least-privilege capabilities for a role-scoped (non-superuser) MCP caller.
  *
  * Background: principal-gated built-in tools (the default `defineTool`) hard-
@@ -287,10 +320,11 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
  * synthesize a principal — but only with the capabilities its **provisioned
  * system principal** carries. `operator`/`oracle` have rows in
  * harness_shared.system_principals (their OPERATOR_CAPS / ORACLE_CAPS); pipeline
- * roles (worker/scoper/validator/…) have no row, so they get an EMPTY set —
- * capability-gated built-ins stay denied for them and the dispatch role
- * allow-list + RLS remain the primary boundary. This is least-privilege: a role
- * gets exactly what it was provisioned, never a blanket grant.
+ * roles (worker/scoper/validator/…) often have no row. Roles participating in
+ * the orchestrator's native-tool cutover receive only the five matching
+ * capability:* replacement grants below; every other capability-gated built-in
+ * stays denied unless provisioned or declared by its blueprint. The independent
+ * role allowlist, capability envelope, and RLS remain binding.
  *
  * `tx` must already be workspace-scoped (the GUC that `withWorkspace` sets).
  */
@@ -312,6 +346,14 @@ export async function loadRoleCapabilities(
   // tools their blueprint role uses (e.g. coord:thread-post / improvements:capture →
   // coord:write).
   for (const c of BLUEPRINT_ROLE_CAPS[roleName] ?? []) caps.add(c);
+  // B-18 cutover parity: these roles can have Bash/Edit/Write/WebFetch removed
+  // from their native CLI surface. Give their signed MCP principal the exact
+  // replacement capability grants so the cutover never strands them. This is
+  // additive to provisioned/blueprint caps and still flows through the static
+  // capability envelope (e.g. a judge-specific deny would continue to win).
+  if (CAPABILITY_REPLACEMENT_PRINCIPAL_ROLES.has(roleName)) {
+    for (const c of CAPABILITY_REPLACEMENT_PRINCIPAL_CAPS) caps.add(c);
+  }
   // Universal tool-discovery. `agent_tools:list` is declared `agentRoles:[ALL_ROLES]`
   // + `requirePrincipal:false`, and EVERY pipeline-role persona
   // (worker/scoper/architect/validator/reviewer .tools.md) instructs calling
