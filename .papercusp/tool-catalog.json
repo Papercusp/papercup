@@ -6104,7 +6104,7 @@
           "POST"
         ]
       },
-      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`. Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
       "capabilities": [
         "coord:read"
       ],
@@ -9995,7 +9995,7 @@
           "POST"
         ]
       },
-      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status.",
+      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (alias `pattern`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status.",
       "capabilities": [
         "events:read"
       ],
@@ -20555,7 +20555,7 @@
           "POST"
         ]
       },
-      "description": "Search across SU plans by keyword. Scopes: slug, title, now, items, decisions, prose. Includes archived + legacy by default. A slug (or slug fragment) finds the plan it names — not only plans that mention it.",
+      "description": "Search across SU plans by keyword. Scopes: slug, title, now, items, decisions, prose. Includes archived + legacy by default. A slug (or slug fragment) finds the plan it names — not only plans that mention it. `slug` is a compatibility shorthand for a slug-only search; `query` remains the canonical search field and wins when both are supplied.",
       "capabilities": [
         "plans:read"
       ],
