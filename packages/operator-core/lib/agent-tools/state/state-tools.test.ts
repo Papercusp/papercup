@@ -92,6 +92,7 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
             evidence: ['serving.startedSinceCodeChange'],
           },
     nullable: false,
+    whyTotal: 'test fixture — the stub resolver returns a value or throws; no read can fail into a default.',
     callerRelativity: { kind: 'global' },
     provenance: { obtainedBy: 'git rev-list', liveExercised: true, evidence: 'run live 2026-07-27' },
     resolver: `fixture:${over.cell ?? 'test.cell'}`,

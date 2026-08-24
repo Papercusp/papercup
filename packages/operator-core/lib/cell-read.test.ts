@@ -58,6 +58,7 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
       evidence: ['serving.startedSinceCodeChange'],
     },
     nullable: false,
+    whyTotal: 'test fixture — the stub resolver returns a value or throws; no read can fail into a default.',
     callerRelativity: { kind: 'global' },
     provenance: { obtainedBy: 'git rev-list', liveExercised: true, evidence: 'run live 2026-07-27' },
     resolver: 'git-pipeline-position.ts',
@@ -120,7 +121,10 @@ describe('readCell — the happy path', () => {
     // P-016's goal cell is nullable:true, and "this agent has no goal" is a real
     // answer. If null collapsed to unknown, "no goal" would be indistinguishable from
     // "could not measure the goal" — opposite caller responses.
-    registerCell(spec({ nullable: true, unknownHoist: 'goalUnknown' }));
+    // whyTotal is cleared with the flip: the base fixture is non-nullable and attests
+    // WHY (EI-18773925664381842), and carrying that attestation onto a nullable cell
+    // asserts the verdict cannot be unknown — which is what this cell is denying.
+    registerCell(spec({ nullable: true, unknownHoist: 'goalUnknown', whyTotal: undefined }));
     dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: null } });
 
     const r = await readCell('test.cell', READER, ENV);
@@ -640,7 +644,7 @@ describe('P-006 — every built-in cell delivers its DECLARED assessment through
  */
 describe('D-039 — the unknown hoist rides the SAME dispatch to the reader', () => {
   const nullableSpec = (over: Partial<CellSpec> = {}) =>
-    spec({ nullable: true, unknownHoist: 'goalUnknown', ...over });
+    spec({ nullable: true, unknownHoist: 'goalUnknown', whyTotal: undefined, ...over });
 
   it('emits the hoist, keyed by the DECLARED name, with the resolver value intact', async () => {
     registerCell(nullableSpec());
@@ -937,6 +941,9 @@ describe('P-007 — TOTALITY FUZZ: readCell never throws, whatever the resolver 
       label: 'nullable cell WITH a hoist and a materiality path',
       over: {
         nullable: true,
+        // cleared with the flip — the base fixture attests WHY it is total, and that
+        // attestation contradicts `nullable: true` (EI-18773925664381842).
+        whyTotal: undefined,
         unknownHoist: 'positionsUnknown',
         materiality: {
           path: 'serving.startedSinceCodeChange',

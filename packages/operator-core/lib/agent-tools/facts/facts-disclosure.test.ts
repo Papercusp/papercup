@@ -39,6 +39,7 @@ beforeAll(() => {
     // read a code out of, so a non-null assessment would be refused.
     assessment: null,
     nullable: false,
+    whyTotal: 'test fixture — the stub resolver returns a value or throws; no read can fail into a default.',
     callerRelativity: { kind: 'parameter', param: 'path' },
     provenance: { obtainedBy: 'test', liveExercised: true, evidence: 'test' },
     resolver: 'test resolver',

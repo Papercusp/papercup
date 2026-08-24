@@ -1128,6 +1128,8 @@ export const TESTING_CENSUS_POPULATION_CELL: CellSpec = {
    * readers to discount an honest zero.
    */
   nullable: false,
+  whyTotal:
+    'the resolver runs two count(*) queries and returns their result or throws — there is no read that can fail into a default, so there is no path on which the headline is an unmeasured 0. A count is total by construction: 0 rows is a real measurement, not an absent one, and declaring it nullable would invent an unknown that cannot occur and teach readers to discount an honest zero.',
   callerRelativity: {
     kind: 'ambient',
     source:

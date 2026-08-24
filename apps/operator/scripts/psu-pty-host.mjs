@@ -2000,6 +2000,63 @@ export function stripAnsi(s) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
+/** WI-41386 — the SCROLLBACK GUARD on the child → terminal bridge.
+ *
+ *  `ESC[3J` (ED param 3, "erase saved lines") deletes the TERMINAL'S SCROLLBACK
+ *  outright — not the visible screen, the owner's history. No agent TUI has a
+ *  legitimate reason to issue it: a CLI that wants a clean canvas has `ESC[2J`
+ *  (visible screen) and the alternate screen buffer, neither of which touches
+ *  what has already scrolled away. So we drop it on the way to the real
+ *  terminal, for every backend.
+ *
+ *  MEASURED (2026-08-24): omp emits `ESC[3J` at byte offset 20 of its boot
+ *  stream — ~25,000 bytes BEFORE it switches to the alternate screen at offset
+ *  25,242 — so it erases the PRIMARY buffer's history on every single boot. In
+ *  a 40-row pane holding 60 marker lines, an omp boot destroyed 25 of them;
+ *  with this guard, 0. That is a different failure from the claude/codex cursor
+ *  overwrite (see respawnTerminalHandoffBytes) and no host-side cursor anchoring
+ *  can prevent it, because the CHILD is issuing the erase.
+ *
+ *  Deliberately narrow: `2J`/`1J`/`0J` are visible-screen erases every TUI needs
+ *  and are passed through untouched. Only param 3 (and its private `?3J` spelling)
+ *  is dropped.
+ *
+ *  Chunk-boundary safe: a pty delivers arbitrary byte runs, so an escape can be
+ *  split across two `onData` chunks. A tail that could still become one is held
+ *  back and prepended to the next chunk; the hold is bounded so a stream that
+ *  simply ends on a stray ESC cannot strand output.
+ *
+ *  Stateful per child — build a fresh one each time the bridge is (re)wired.
+ *  Pure factory — exported for tests.
+ */
+export const SCROLLBACK_ERASE_RE = /\x1b\[\??3J/g;
+/** Longest tail we will hold waiting for the rest of a possible `ESC[…3J`. */
+const SCROLLBACK_GUARD_MAX_CARRY = 8;
+export function makeScrollbackGuard() {
+  let carry = '';
+  return {
+    /** @param {string} chunk @returns {string} bytes safe to write to the terminal */
+    filter(chunk) {
+      let s = carry + String(chunk ?? '');
+      carry = '';
+      // Hold back only a tail that is still a PREFIX of an erase sequence —
+      // never arbitrary trailing bytes, which would reorder normal output.
+      const m = s.match(/\x1b(?:\[\??[0-9;]*)?$/);
+      if (m && m[0].length <= SCROLLBACK_GUARD_MAX_CARRY) {
+        carry = m[0];
+        s = s.slice(0, s.length - carry.length);
+      }
+      return s.replace(SCROLLBACK_ERASE_RE, '');
+    },
+    /** Flush whatever is held (child exit / teardown) so nothing is swallowed. */
+    flush() {
+      const held = carry;
+      carry = '';
+      return held.replace(SCROLLBACK_ERASE_RE, '');
+    },
+  };
+}
+
 /** A launch seed must not reach a TUI before its editor exists. Most backends
  * are ready for the existing quiet-window check after their first output byte,
  * but OMP emits terminal capability probes before it paints any UI, and Codex
@@ -4674,6 +4731,9 @@ export function hostThroughPty(o) {
   // listeners are per-process). onStdin/onResize below read the live `child`
   // closure, so they need no re-wiring.
   wireChildData = () => {
+    // WI-41386: one guard per child — it carries partial-escape state, so a
+    // respawn must not inherit the dead child's tail.
+    const scrollbackGuard = makeScrollbackGuard();
     child.onData((d) => {
       if (!childStartupReady) {
         if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
@@ -4682,7 +4742,9 @@ export function hostThroughPty(o) {
         childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
       }
       activity.touchOutput();
-      stdout.write(d);
+      // Everything else — readiness above, the output taps below — keeps seeing
+      // the RAW stream; only what reaches the owner's terminal is guarded.
+      stdout.write(scrollbackGuard.filter(typeof d === 'string' ? d : String(d)));
       // P-003: feed any live output taps (mcp-reconnect macro screen reads).
       if (outputTaps.size > 0) {
         const s = typeof d === 'string' ? d : String(d);

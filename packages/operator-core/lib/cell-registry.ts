@@ -376,6 +376,32 @@ export interface CellSpec {
    * still cannot miss. Modelled on `unitsUnknown[]` and `ownerHidden`.
    */
   unknownHoist?: string;
+  /**
+   * Axis 2, the OTHER branch — WHY THE VERDICT IS TOTAL. Required when `nullable`
+   * is false (EI-18773925664381842).
+   *
+   * Without this the gate was HONESTY-GATED and rewarded the weaker cell: declaring
+   * `nullable: true` cost you an `unknownHoist`, while `nullable: false` passed
+   * unconditionally, with no hoist and no evidence. So the author who ADMITTED their
+   * value can be unknown did strictly more work than the one who did not — the
+   * incentive gradient pointed at exactly the defect axis 2 exists to prevent, and a
+   * cell whose headline silently conflates "not reached" with "could not measure"
+   * could ship wearing the contract's badge.
+   *
+   * The trap is that `nullable: false` is often LITERALLY TRUE OF THE TYPE — an
+   * author need not be lying to declare it. `git.pipelinePosition`'s
+   * `positions.deployed` was a bare `boolean` while `refContains` still turned a
+   * failed git read into `false`. Type totality is therefore NOT the question this
+   * field asks. The question is whether the RESOLVER can fail into a default: say why
+   * the headline is genuinely two-valued — "the resolver returns a value or throws;
+   * there is no read that can fail into a default" — not merely why its TypeScript
+   * type has no `null`.
+   *
+   * This is not machine-verifiable and does not pretend to be. It is the same standard
+   * axis 4 already holds `provenance.evidence` to: it converts a costless default into
+   * a claim someone had to write down and a reviewer can challenge.
+   */
+  whyTotal?: string;
   /** Axis 3. */
   callerRelativity: CallerRelativity;
   /** Axis 4. */
@@ -532,6 +558,17 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
   }
   if (!spec.nullable && spec.unknownHoist) {
     reject(2, 'hoist-without-nullable', '`unknownHoist` declared but the verdict is not nullable — one of the two is wrong.');
+  }
+  // EI-18773925664381842 — the branch that used to cost NOTHING. `nullable: false`
+  // passed unconditionally, so the honest author (nullable + a hoist) did strictly
+  // more work than one who declared totality they had not checked. Attesting is the
+  // same standard axis 4 holds `provenance.evidence` to: not machine-checkable, but
+  // written down and therefore challengeable in review.
+  if (!spec.nullable && !spec.whyTotal?.trim()) {
+    reject(2, 'total-not-attested', 'a non-nullable verdict needs `whyTotal`: why the headline is genuinely two-valued. State why the RESOLVER cannot fail into a default (\"returns a value or throws\") — not that the TypeScript type lacks `null`, which was true of `positions.deployed` while a failed git read still became `false`.');
+  }
+  if (spec.nullable && spec.whyTotal) {
+    reject(2, 'total-attested-on-nullable', '`whyTotal` declared on a nullable verdict — it attests the verdict CANNOT be unknown, which contradicts `nullable: true`. One of the two is wrong.');
   }
 
   // ── Axis 3 — declared, never inferred; `global` is said, not omitted.

@@ -788,6 +788,12 @@ export function controlBytes(decoded: any): any;
 /** Strip ANSI escapes (CSI / OSC / simple ESC pairs) + normalize \r so a TUI
  *  byte stream reads as plain lines. Pure — exported for tests. */
 export function stripAnsi(s: any): string;
+export function makeScrollbackGuard(): {
+    /** @param {string} chunk @returns {string} bytes safe to write to the terminal */
+    filter(chunk: string): string;
+    /** Flush whatever is held (child exit / teardown) so nothing is swallowed. */
+    flush(): string;
+};
 /** A launch seed must not reach a TUI before its editor exists. Most backends
  * are ready for the existing quiet-window check after their first output byte,
  * but OMP emits terminal capability probes before it paints any UI, and Codex
@@ -1319,6 +1325,36 @@ export const SHUTDOWN_ACK_DELAY_MS: number;
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */
 export const ACTIVITY_PERSIST_MS: 15000;
+/** WI-41386 — the SCROLLBACK GUARD on the child → terminal bridge.
+ *
+ *  `ESC[3J` (ED param 3, "erase saved lines") deletes the TERMINAL'S SCROLLBACK
+ *  outright — not the visible screen, the owner's history. No agent TUI has a
+ *  legitimate reason to issue it: a CLI that wants a clean canvas has `ESC[2J`
+ *  (visible screen) and the alternate screen buffer, neither of which touches
+ *  what has already scrolled away. So we drop it on the way to the real
+ *  terminal, for every backend.
+ *
+ *  MEASURED (2026-08-24): omp emits `ESC[3J` at byte offset 20 of its boot
+ *  stream — ~25,000 bytes BEFORE it switches to the alternate screen at offset
+ *  25,242 — so it erases the PRIMARY buffer's history on every single boot. In
+ *  a 40-row pane holding 60 marker lines, an omp boot destroyed 25 of them;
+ *  with this guard, 0. That is a different failure from the claude/codex cursor
+ *  overwrite (see respawnTerminalHandoffBytes) and no host-side cursor anchoring
+ *  can prevent it, because the CHILD is issuing the erase.
+ *
+ *  Deliberately narrow: `2J`/`1J`/`0J` are visible-screen erases every TUI needs
+ *  and are passed through untouched. Only param 3 (and its private `?3J` spelling)
+ *  is dropped.
+ *
+ *  Chunk-boundary safe: a pty delivers arbitrary byte runs, so an escape can be
+ *  split across two `onData` chunks. A tail that could still become one is held
+ *  back and prepended to the next chunk; the hold is bounded so a stream that
+ *  simply ends on a stray ESC cannot strand output.
+ *
+ *  Stateful per child — build a fresh one each time the bridge is (re)wired.
+ *  Pure factory — exported for tests.
+ */
+export const SCROLLBACK_ERASE_RE: RegExp;
 /** Default TTL a delivery id is remembered as "already accepted" (EI-19311270129974785).
  *  Sized comfortably above the client's own retry envelope — `markDeliveryFailed`'s
  *  backoff caps at 10min and the pump gives up after a bounded attempt count — so a

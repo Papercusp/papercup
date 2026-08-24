@@ -78,6 +78,7 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
     // registry never refuses for a reason unrelated to what they assert.
     assessment: assessment(),
     nullable: false,
+    whyTotal: 'test fixture — the stub resolver returns a value or throws; no read can fail into a default.',
     callerRelativity: { kind: 'global' },
     provenance: { obtainedBy: 'git rev-list', liveExercised: true, evidence: 'run live 2026-07-27' },
     resolver: 'git-pipeline-position.ts',

@@ -17,6 +17,7 @@ import {
   contextClearCommandForAgent,
   coldResetModeForAgent,
   respawnTerminalHandoffBytes,
+  makeScrollbackGuard,
   clearSettleMs,
   resetWritesForAgent,
   submitVerifyQuietMs,
@@ -769,6 +770,72 @@ describe('respawnTerminalHandoffBytes (WI-41386 respawn terminal handoff)', () =
     const b = respawnTerminalHandoffBytes({ rows: 40 });
     expect(a).toBe(b);
     expect(a.length).toBeGreaterThan(0);
+  });
+});
+
+// WI-41386, the omp half. omp emits ESC[3J ("erase saved lines" = delete the
+// terminal's SCROLLBACK) at byte offset 20 of its boot stream — ~25k bytes
+// BEFORE it switches to the alternate screen at offset 25,242 — so it wipes the
+// owner's primary-buffer history on every boot. Measured: an omp boot destroyed
+// 25 of 60 marker lines in a 40-row pane; with this guard, 0. No host-side
+// cursor anchoring can help, because the CHILD issues the erase.
+describe('makeScrollbackGuard (WI-41386 child → terminal scrollback guard)', () => {
+  it('drops ESC[3J — the only erase that deletes history rather than the screen', () => {
+    const g = makeScrollbackGuard();
+    expect(g.filter('before\x1b[3Jafter')).toBe('beforeafter');
+    expect(g.filter('\x1b[?3J')).toBe('');
+  });
+
+  it('passes the visible-screen erases every TUI legitimately needs', () => {
+    const g = makeScrollbackGuard();
+    // 2J/1J/0J/bare J erase the DISPLAY, never the scrollback — untouched.
+    for (const seq of ['\x1b[2J', '\x1b[1J', '\x1b[0J', '\x1b[J']) {
+      expect(g.filter(`x${seq}y`)).toBe(`x${seq}y`);
+    }
+    // and unrelated CSI with a 3 in it must not be mistaken for an erase
+    expect(g.filter('\x1b[3m\x1b[30m\x1b[3A\x1b[13J')).toBe('\x1b[3m\x1b[30m\x1b[3A\x1b[13J');
+  });
+
+  it('survives an escape SPLIT across pty chunks — the boundary a naive filter misses', () => {
+    // A pty delivers arbitrary byte runs; ESC[3J can arrive in two pieces.
+    for (const cut of [1, 2, 3]) {
+      const g = makeScrollbackGuard();
+      const seq = '\x1b[3J';
+      const first = g.filter('head' + seq.slice(0, cut));
+      const second = g.filter(seq.slice(cut) + 'tail');
+      expect(first + second).toBe('headtail');
+    }
+  });
+
+  it('does not swallow ordinary bytes that merely follow an ESC', () => {
+    const g = makeScrollbackGuard();
+    const out = g.filter('a\x1b[2Jb') + g.filter('c');
+    expect(out).toBe('a\x1b[2Jbc');
+  });
+
+  it('bounds what it holds back, so a stream ending mid-escape cannot strand output', () => {
+    const g = makeScrollbackGuard();
+    // a long run of digits can never complete an ESC[<params>3J within the cap
+    const long = '\x1b[' + '1'.repeat(64);
+    expect(g.filter(`visible${long}`).startsWith('visible')).toBe(true);
+    // flush returns anything still held rather than losing it
+    const g2 = makeScrollbackGuard();
+    g2.filter('tail\x1b[');
+    expect(g2.flush()).toBe('\x1b[');
+  });
+
+  it('flush never re-emits a held erase sequence', () => {
+    const g = makeScrollbackGuard();
+    g.filter('x\x1b[3');
+    expect(g.filter('J')).toBe('');
+    expect(g.flush()).toBe('');
+  });
+
+  it('is per-child state: a fresh guard cannot inherit a dead child’s partial escape', () => {
+    const dying = makeScrollbackGuard();
+    dying.filter('orphan\x1b[3'); // killed mid-sequence, tail held
+    const fresh = makeScrollbackGuard();
+    expect(fresh.filter('J done')).toBe('J done');
   });
 });
 

@@ -314,7 +314,51 @@ describe('axis 2 — the unknown must be enumerated AND hoisted (D-039)', () => 
   });
 
   it('a non-nullable cell needs no hoist', () => {
-    expect(validateCellSpec({ ...sessionCell(), nullable: false, unknownHoist: undefined })).toEqual([]);
+    expect(
+      validateCellSpec({
+        ...sessionCell(),
+        nullable: false,
+        unknownHoist: undefined,
+        whyTotal: 'the resolver returns a value or throws; no read can fail into a default.',
+      }),
+    ).toEqual([]);
+  });
+
+  // EI-18773925664381842 — the gate used to be HONESTY-GATED. `nullable: true` cost
+  // you a hoist; `nullable: false` cost NOTHING, so the author who admitted their
+  // value could be unknown did strictly more work than one who declared totality
+  // they had never checked. These four tests pin the branch that used to be free.
+  it('refuses a non-nullable verdict that does not attest WHY it is total', () => {
+    const r = validateCellSpec({ ...sessionCell(), nullable: false, unknownHoist: undefined });
+    expect(r.map((x) => x.rule)).toContain('total-not-attested');
+    expect(r.every((x) => x.axis === 2)).toBe(true);
+  });
+
+  it('refuses a blank attestation as firmly as a missing one', () => {
+    expect(
+      validateCellSpec({
+        ...sessionCell(),
+        nullable: false,
+        unknownHoist: undefined,
+        whyTotal: '   ',
+      }).map((r) => r.rule),
+    ).toContain('total-not-attested');
+  });
+
+  it('refuses an attestation of totality on a cell that declares it can be unknown', () => {
+    expect(
+      validateCellSpec({ ...sessionCell(), whyTotal: 'cannot be unknown' }).map((r) => r.rule),
+    ).toContain('total-attested-on-nullable');
+  });
+
+  // The incentive gradient, asserted directly: before this rule the LEFT spec passed
+  // clean and the RIGHT one was rejected, so the cheapest declaration was also the
+  // least honest. Neither may now pass for free.
+  it('no longer rewards the weaker cell: bare `nullable: false` is not cheaper than an honest nullable', () => {
+    const bareTotal = validateCellSpec({ ...sessionCell(), nullable: false, unknownHoist: undefined });
+    const honestNullableMissingHoist = validateCellSpec({ ...sessionCell(), unknownHoist: undefined });
+    expect(bareTotal.length).toBeGreaterThan(0);
+    expect(honestNullableMissingHoist.length).toBeGreaterThan(0);
   });
 });
 
