@@ -944,6 +944,14 @@ export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
  *  outlive both of those without ever reaching the suite at all. */
 export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
 
+/** WI-21357012876642589: refresh the materialization phase marker while the two
+ * timeout-bounded setup legs are quiet. The max is two setup bounds because
+ * realCheckpointDeps.setupTree first publishes the dependency generation and
+ * then runs setup-release-checkout, each with SETUP_TREE_TIMEOUT_MS. */
+export const MATERIALIZATION_HEARTBEAT_INTERVAL_MS = 15_000;
+export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
+  SETUP_TREE_TIMEOUT_MS * 2;
+
 /** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
  *  (green-checkpoint.ts) itself, independent of the supervising parent
  *  (release-actions.ts's `runScript`, which SIGTERMs the whole process group at
@@ -1050,17 +1058,30 @@ export function formatSelfWatchdogDuration(ms: number): string {
   return seconds === 0 ? `${minutes}m` : `${minutes}m${seconds}s`;
 }
 
+/** EI-21358380162141141: process inspection is diagnostic-only and must never
+ * become an unbounded liveness dependency for the watchdog or exit path. */
+export const CHECKPOINT_PROCESS_PROBE_TIMEOUT_MS = 2_000;
+const CHECKPOINT_PROCESS_PROBE_KILL_SIGNAL = "SIGKILL" as const;
+
+function runCheckpointProcessProbe(args: string[], maxBuffer: number) {
+  return spawnSync("ps", args, {
+    encoding: "utf8",
+    maxBuffer,
+    timeout: CHECKPOINT_PROCESS_PROBE_TIMEOUT_MS,
+    killSignal: CHECKPOINT_PROCESS_PROBE_KILL_SIGNAL,
+  });
+}
+
 export function snapshotCheckpointProcessGroup(pid: number): string | null {
   try {
-    const r = spawnSync(
-      "ps",
+    const r = runCheckpointProcessProbe(
       [
         "-o",
         "pid=,ppid=,pgid=,stat=,etime=,pcpu=,pmem=,command=",
         "-g",
         String(pid),
       ],
-      { encoding: "utf8", maxBuffer: 64 * 1024 },
+      64 * 1024,
     );
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
     if (r.error || !out) return null;
@@ -1085,10 +1106,10 @@ export function snapshotCheckpointProcessGroup(pid: number): string | null {
  */
 export function resolveCheckpointProcessGroupId(pid: number): number | null {
   try {
-    const r = spawnSync("ps", ["-o", "pgid=", "-p", String(pid)], {
-      encoding: "utf8",
-      maxBuffer: 8 * 1024,
-    });
+    const r = runCheckpointProcessProbe(
+      ["-o", "pgid=", "-p", String(pid)],
+      8 * 1024,
+    );
     const raw = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
     const pgid = Number(raw.split(/\s+/)[0]);
     if (r.error || !Number.isSafeInteger(pgid) || pgid <= 0) return null;
@@ -1196,10 +1217,10 @@ export function checkpointSweepTargets(
  *  must never be mistaken for "nothing survived", which is the direction that hides a leak. */
 export function readCheckpointProcTable(): CheckpointProcRow[] | null {
   try {
-    const r = spawnSync("ps", ["-eo", "pid=,ppid=,pgid="], {
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-    });
+    const r = runCheckpointProcessProbe(
+      ["-eo", "pid=,ppid=,pgid="],
+      8 * 1024 * 1024,
+    );
     if (r.error) return null;
     const out = `${r.stdout ?? ""}`.trim();
     if (!out) return null;
@@ -1560,6 +1581,60 @@ export function writeCheckpointRunPhase(
   } catch {
     /* best-effort: the phase marker is an optimization for the launch side, never load-bearing here */
   }
+}
+
+/** WI-21357012876642589: keep a silent materialization visibly alive without
+ * allowing the heartbeat timer to outlive the setup operation indefinitely.
+ * Recursive setTimeout avoids overlapping marker writes when the event loop is
+ * delayed, and the deadline is checked again at every tick so the hard bound
+ * holds even when the interval does not divide the maximum duration. */
+export function startMaterializationHeartbeat(
+  lockDir: string,
+  options: {
+    intervalMs?: number;
+    maxDurationMs?: number;
+  } = {},
+): () => void {
+  const intervalMs = Math.max(
+    1,
+    options.intervalMs ?? MATERIALIZATION_HEARTBEAT_INTERVAL_MS,
+  );
+  const maxDurationMs = Math.max(
+    0,
+    options.maxDurationMs ?? MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS,
+  );
+  const deadlineMs = Date.now() + maxDurationMs;
+  let stopped = maxDurationMs === 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+
+  const schedule = () => {
+    if (stopped) return;
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      stop();
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (stopped) return;
+      if (Date.now() >= deadlineMs) {
+        stop();
+        return;
+      }
+      writeCheckpointRunPhase(lockDir, "materializing");
+      schedule();
+    }, Math.min(intervalMs, remainingMs));
+  };
+
+  schedule();
+  return stop;
 }
 
 /** WI-7069: a durable, on-disk record of the self-watchdog's ARM event — written beside the
@@ -7217,12 +7292,19 @@ export async function runGreenCheckpoint(
   // sweep that already holds a pc-heavy slot. realCheckpointDeps.setupTree wraps the copy in
   // pc-heavy's reciprocal --exclusive-all-slots mode, and this protocol-3 phase clamps new
   // callers to slot 0 while that wrapper drains the pre-existing holders.
-  writeCheckpointRunPhase(
-    checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
-    "materializing",
+  const phaseLockDir = checkpointRunLockDir(
+    cfg.checkpointLogDir,
+    cfg.integrationRoot,
   );
+  writeCheckpointRunPhase(phaseLockDir, "materializing");
   deps.reportProgress?.("phase:materializing");
-  const setupIdentity = await deps.setupTree(candidate);
+  const stopMaterializationHeartbeat = startMaterializationHeartbeat(phaseLockDir);
+  let setupIdentity: void | CheckpointSetupIdentity;
+  try {
+    setupIdentity = await deps.setupTree(candidate);
+  } finally {
+    stopMaterializationHeartbeat();
+  }
 
   // EI-18757156963245979: (re)enter the SUITE phase after materialization. This must be
   // written on EVERY invocation because a stale-red auto-refire RE-ENTERS this function
