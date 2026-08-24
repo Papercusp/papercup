@@ -294,6 +294,20 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
         : `✓ no required fields added to exported types (${files.length} file(s) examined vs ${base})`,
       ...files.map((f) => `    ${f}`),
     ];
+    // EI-21361656341155733 — POSITIVE CONTROL for the clean line. "0 additions
+    // found" and "the base I was given already contains them" are the same
+    // sentence here, and the second is not a pass. That is not hypothetical: on
+    // this tree git-sync splits one logical change across commits, so the base an
+    // agent derives from the advice above can already carry the field, and the
+    // reassuring ✓ arrives exactly when they are trying to discharge the hook's
+    // warning. Cheap line, converts a false clean into a prompt.
+    if (!nothingProved) {
+      lines.push(
+        `    (0 additions vs '${base}'. If you EXPECTED additions here, suspect the base:`,
+        '     a base that already contains your field yields this same ✓. Re-derive it with',
+        "     git log --format=%H -S'<your new field name>' -- <file> | tail -1  — the OLDEST match.)",
+      );
+    }
     if (!declared) {
       // The failure this exists to prevent (EI-19377892307939503): the set is INFERRED
       // from `git diff`, which on this shared tree is every agent's uncommitted edits.
@@ -325,7 +339,13 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
         '    committed your edit — on this tree that happens within minutes):',
         ...identicalFiles.map((f) => `      ${f}`),
         '    Re-run against the commit that actually carried your change:',
-        "      C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)",
+        // EI-21361656341155733: `| tail -1` picks the OLDEST matching commit, NOT
+        // `git log -1` (the newest). git-sync splits ONE logical change across
+        // several commits here, so the newest match's parent routinely ALREADY
+        // contains the field — and the run then prints "no required fields added",
+        // a clean line that proves nothing. Measured: newest match f172703bb7 said
+        // "no required fields added"; the true introducer 5a199c7a09 found both.
+        "      C=$(git log --format=%H -S'<a string your change introduced>' -- <file> | tail -1)",
         '      node scripts/check-required-field-strands.mjs --base "$C^" --files=<your,files>',
       );
     }
@@ -337,7 +357,7 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
     '  already committed your edit, not that you changed nothing.',
     '',
     '  Re-run against the commit that actually carried your change:',
-    "    C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)",
+    "    C=$(git log --format=%H -S'<a string your change introduced>' -- <file> | tail -1)",
     '    node scripts/check-required-field-strands.mjs --base "$C^"',
     '',
     '  (Use -G instead of -S when searching by a name you did not introduce.)',
