@@ -98,9 +98,24 @@ function isWorkspaceRoot(dir: string): boolean {
  *  before symlink resolution. Exported for unit tests of the selection order. */
 export function pickCapabilityBaseDir(ctx: { projectDir?: string }): string {
   if (ctx.projectDir) return ctx.projectDir;
-  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  const integrationRoot = resolveCapabilityIntegrationRoot();
   if (integrationRoot) return integrationRoot;
   return process.cwd();
+}
+
+/**
+ * The canonical integration checkout when the operator explicitly publishes one.
+ *
+ * This is intentionally narrower than `resolveCapabilityBaseDir({})`: callers
+ * recovering from a bad harness root must never substitute the operator's own cwd
+ * when the integration-root contract is absent. Exporting the narrow rung also
+ * keeps path-aware capability handlers from re-implementing the env parsing.
+ */
+export function resolveCapabilityIntegrationRoot(
+  env: Pick<NodeJS.ProcessEnv, 'PAPERCUSP_INTEGRATION_ROOT'> = process.env,
+): string | undefined {
+  const integrationRoot = env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  return integrationRoot ? realpathSoft(integrationRoot) : undefined;
 }
 
 /** `realpathSync` that never throws: an unresolvable path (missing dir) is returned
