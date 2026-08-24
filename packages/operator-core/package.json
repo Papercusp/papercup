@@ -61,6 +61,7 @@
     "gen:tool-catalog:check": "tsx ../../scripts/gen-tool-catalog.ts --check",
     "gen:fleet-lessons:check": "tsx ../../scripts/gen-fleet-lessons.ts --check",
     "lint:declarations-fresh": "tsx ../../scripts/gen-declarations.ts --check",
+    "worker-parity": "tsx lib/agent-loop/worker-parity-runner-cli.ts",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {
