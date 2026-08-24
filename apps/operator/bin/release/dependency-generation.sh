@@ -207,6 +207,12 @@ dependency_generation_is_valid() {
   local generation="$1" expected_identity="${2:-}"
   local marker="$generation/.papercusp-dependency-generation"
   local identity expected_snapshot actual_snapshot
+  # Test-only tracing proves that the publish-lock fast path does not silently
+  # reintroduce the full tree walk. It is deliberately fail-open and has no
+  # effect unless a test supplies the opt-in path.
+  if [ -n "${DEPENDENCY_GENERATION_VALIDATION_TRACE:-}" ]; then
+    printf '%s\n' "$generation" >> "$DEPENDENCY_GENERATION_VALIDATION_TRACE" || true
+  fi
   [ -d "$generation/tree" ] && [ -f "$marker" ] || return 1
   identity="$(dependency_generation_read_field "$marker" identity)"
   [ -n "$identity" ] || return 1
@@ -215,6 +221,32 @@ dependency_generation_is_valid() {
   [ -n "$expected_snapshot" ] || return 1
   actual_snapshot="$(dependency_generation_set_fingerprint "$generation/tree" 2>/dev/null || true)"
   [ -n "$actual_snapshot" ] && [ "$actual_snapshot" = "$expected_snapshot" ]
+}
+
+# Return a cheap identity for a published generation. The generation directory
+# is swapped into place atomically and its files are immutable after publish,
+# so the directory device/inode plus marker device/inode/mtime is enough to
+# prove that the exact incumbent we already validated has not been replaced.
+# This avoids a second full snapshot walk while the publish lock is held.
+dependency_generation_stat_token() {
+  local path="$1"
+  if stat -c '%d:%i:%Y:%s' "$path" 2>/dev/null; then
+    return 0
+  fi
+  stat -f '%d:%i:%m:%z' "$path"
+}
+
+dependency_generation_generation_token() {
+  local generation="$1" marker generation_token marker_token
+  [ -d "$generation" ] || return 1
+  generation_token="$(dependency_generation_stat_token "$generation")" || return 1
+  marker="$generation/.papercusp-dependency-generation"
+  if [ -e "$marker" ]; then
+    marker_token="$(dependency_generation_stat_token "$marker")" || return 1
+  else
+    marker_token='missing'
+  fi
+  printf '%s|%s\n' "$generation_token" "$marker_token"
 }
 
 dependency_generation_marker_matches() {
@@ -387,7 +419,11 @@ dependency_generation_materialize_tree() {
   if [ -e "$dest" ]; then
     mv "$dest" "$old"
     mv "$tmp" "$dest"
-    chmod -R u+w "$old" 2>/dev/null || true
+    # `cp -al` shares file inodes with the immutable generation, while
+    # directories remain distinct. Make only retired directories writable so
+    # rm -rf can remove their entries; recursively chmodding files would
+    # mutate the published generation before deleting the retired checkout.
+    find "$old" -type d -exec chmod u+rwx {} + 2>/dev/null || true
     rm -rf -- "$old"
   else
     mv "$tmp" "$dest"
@@ -408,6 +444,8 @@ dependency_generation_ensure() {
   local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
   local source_before source_after identity generation build tree nm rel snapshot marker
   local quarantine before_manifest after_manifest
+  local incumbent_token_before incumbent_token_after incumbent_token
+  local current_incumbent_token publish_replacement
   mkdir -p "$generation_root"
   dependency_generation_cleanup_abandoned "$generation_root"
 
@@ -427,6 +465,7 @@ dependency_generation_ensure() {
   }
   identity="v1-$source_before"
   generation="$generation_root/$identity"
+  incumbent_token_before="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
   if dependency_generation_is_valid "$generation" "$identity"; then
     dependency_generation_set_manifest "$integration_root" > "$after_manifest" || {
       dependency_generation_remove_build "$build"
@@ -449,6 +488,16 @@ dependency_generation_ensure() {
     DEPENDENCY_GENERATION_SOURCE_FINGERPRINT="$source_before"
     DEPENDENCY_GENERATION_REUSED='true'
     return 0
+  fi
+  # Keep the token only when the same directory was the object that failed the
+  # initial validation. If a concurrent publisher replaced it during that walk,
+  # force the serialized path below to perform its full validation instead.
+  incumbent_token_after="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+  if [ -n "$incumbent_token_before" ] \
+    && [ "$incumbent_token_before" = "$incumbent_token_after" ]; then
+    incumbent_token="$incumbent_token_after"
+  else
+    incumbent_token=''
   fi
 
   dependency_generation_log "building $identity from a stable live dependency snapshot"
@@ -497,12 +546,23 @@ dependency_generation_ensure() {
   # replacement and leave exact-id consumers pinned to the corrupt tree.
   # Re-validate the competing generation under the publish lock so that the
   # decision and any quarantine/replacement remain one serialized operation.
-  # The expensive branch is limited to a same-identity race or repair.
+  # An unchanged incumbent is already known-invalid from the pre-build check;
+  # compare its O(1) token and quarantine it directly. The expensive branch is
+  # retained for any replacement/removal race, where a valid concurrent winner
+  # must be recognized before publishing this build.
   rm -f -- "$build/.papercusp-generation-writer"
-  if dependency_generation_is_valid "$generation" "$identity"; then
+  current_incumbent_token="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+  publish_replacement='1'
+  if [ -n "$incumbent_token" ] && [ "$incumbent_token" = "$current_incumbent_token" ]; then
+    dependency_generation_log "unchanged invalid generation $identity; skipping repeat validation under publish lock"
+  elif dependency_generation_is_valid "$generation" "$identity"; then
     dependency_generation_remove_build "$build"
     DEPENDENCY_GENERATION_REUSED='true'
+    publish_replacement='0'
   else
+    :
+  fi
+  if [ "$publish_replacement" = '1' ]; then
     if [ -e "$generation" ]; then
       quarantine="$generation_root/.invalid-$identity-$(date +%s).$$"
       mv "$generation" "$quarantine"

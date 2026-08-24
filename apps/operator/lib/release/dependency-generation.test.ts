@@ -54,8 +54,11 @@ function makeIntegration(): string {
 function publish(
   integration: string,
   env: NodeJS.ProcessEnv = {},
+  generationRoot?: string,
 ): ShellResult {
-  const result = spawnSync('bash', [SCRIPT, '--integration', integration], {
+  const args = [SCRIPT, '--integration', integration];
+  if (generationRoot) args.push('--generation-root', generationRoot);
+  const result = spawnSync('bash', args, {
     encoding: 'utf8',
     env: { ...process.env, ...env },
   });
@@ -188,6 +191,7 @@ describe('immutable dependency generation', () => {
     const generation = publishedPath(first.stdout);
     const identity = publishedIdentity(first.stdout);
     const publishedFile = join(generation, 'tree/node_modules/pkg/index.js');
+    const validationTrace = join(integration, 'validation.trace');
 
     // Preserve the identity/snapshot marker while corrupting the tree. The next
     // publisher's initial full validation fails, it builds a valid replacement,
@@ -196,12 +200,18 @@ describe('immutable dependency generation', () => {
     chmodSync(publishedFile, 0o644);
     writeFileSync(publishedFile, 'corrupt\n');
 
-    const repaired = publish(integration);
+    const repaired = publish(integration, {
+      DEPENDENCY_GENERATION_VALIDATION_TRACE: validationTrace,
+    });
     expect(repaired.status, repaired.stderr).toBe(0);
     expect(repaired.stdout).toContain('reused=false');
     expect(publishedPath(repaired.stdout)).toBe(generation);
     expect(readFileSync(publishedFile, 'utf8')).toBe('root-v1\n');
     expect(repaired.stderr).toContain('quarantined invalid generation');
+    expect(repaired.stderr).toContain(
+      'skipping repeat validation under publish lock',
+    );
+    expect(readFileSync(validationTrace, 'utf8').trim().split('\n')).toHaveLength(1);
     expect(
       readdirSync(join(integration, '.papercusp/dependency-generations')).some(
         (entry) => entry.startsWith(`.invalid-${identity}-`),
@@ -213,6 +223,53 @@ describe('immutable dependency generation', () => {
       identity,
     );
     expect(selected.status, selected.stderr).toBe(0);
+  });
+
+  it('fully revalidates a changed incumbent and reuses a valid concurrent winner', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    const identity = publishedIdentity(first.stdout);
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+    const corruptedFile = join(generation, 'tree/node_modules/pkg/index.js');
+    const winnerRoot = mkdtempSync(join(tmpdir(), 'dependency-generation-winner-'));
+    roots.push(winnerRoot);
+    // Build the concurrent winner through the real publisher. Copying a
+    // published generation with cp -a is NOT a valid fixture: the snapshot
+    // fingerprint intentionally includes inode metadata, so the copied
+    // marker would (correctly) fail full validation before the race branch.
+    const concurrent = publish(integration, {}, winnerRoot);
+    expect(concurrent.status, concurrent.stderr).toBe(0);
+    expect(publishedIdentity(concurrent.stdout)).toBe(identity);
+    const winner = publishedPath(concurrent.stdout);
+    chmodSync(corruptedFile, 0o644);
+    writeFileSync(corruptedFile, 'corrupt\n');
+
+    const replacement = join(generationRoot, '.concurrent-winner');
+    const validationTrace = join(integration, 'validation.trace');
+    const raced = publish(integration, {
+      DG_GENERATION: generation,
+      DG_WINNER: winner,
+      DG_REPLACEMENT: replacement,
+      DEPENDENCY_GENERATION_VALIDATION_TRACE: validationTrace,
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
+        'rm -rf "$DG_REPLACEMENT"; mv "$DG_WINNER" "$DG_REPLACEMENT"; rm -rf "$DG_GENERATION"; mv "$DG_REPLACEMENT" "$DG_GENERATION"',
+    });
+
+    expect(raced.status, raced.stderr).toBe(0);
+    expect(raced.stdout).toContain('reused=true');
+    expect(publishedPath(raced.stdout)).toBe(generation);
+    expect(readFileSync(join(generation, 'tree/node_modules/pkg/index.js'), 'utf8')).toBe(
+      'root-v1\n',
+    );
+    expect(raced.stderr).not.toContain(
+      'skipping repeat validation under publish lock',
+    );
+    expect(readFileSync(validationTrace, 'utf8').trim().split('\n')).toHaveLength(2);
   });
 
   it('rejects a malformed explicit identity before it can escape the generation root', () => {
@@ -379,6 +436,47 @@ describe('immutable dependency generation', () => {
       statSync(join(source, 'pkg/index.js')).ino,
     );
     expect(readFileSync(join(copied, 'pkg/index.js'), 'utf8')).toBe('root-v1\n');
+  });
+
+  it('does not mutate immutable generation modes during repeated hardlink cleanup', () => {
+    const integration = makeIntegration();
+    const published = publish(integration);
+    expect(published.status, published.stderr).toBe(0);
+    const generation = publishedPath(published.stdout);
+    const source = join(generation, 'tree');
+    const sourceFile = join(source, 'node_modules/pkg/index.js');
+    const markerPath = join(generation, '.papercusp-dependency-generation');
+    const initialMode = statSync(sourceFile).mode & 0o777;
+    const initialMarker = readFileSync(markerPath, 'utf8');
+    // Keep the disposable checkout outside the integration root: a
+    // package-local node_modules there is a real source input for the next
+    // publisher and would change the generation identity unrelated to this
+    // cleanup regression.
+    const destinationRoot = mkdtempSync(
+      join(tmpdir(), 'dependency-generation-materialized-'),
+    );
+    roots.push(destinationRoot);
+    const destination = join(destinationRoot, 'tree');
+    const wrapper = [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_materialize_tree "$SOURCE" "$DEST"',
+    ].join('\n');
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      const materialized = spawnSync('bash', ['-c', wrapper], {
+        env: { ...process.env, SCRIPT, SOURCE: source, DEST: destination },
+        encoding: 'utf8',
+      });
+      expect(materialized.status, String(materialized.stderr ?? '')).toBe(0);
+    }
+
+    expect(statSync(sourceFile).mode & 0o777).toBe(initialMode);
+    expect(readFileSync(markerPath, 'utf8')).toBe(initialMarker);
+    const reused = publish(integration);
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(reused.stdout).toContain('reused=true');
+    expect(publishedPath(reused.stdout)).toBe(generation);
   });
 
   // The manifest walk fingerprints each node_modules tree independently and
