@@ -36,6 +36,7 @@ import type { ScorecardGradingAudit } from '../../harness/improvements/observati
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
 import { evaluateCriterionTestChecks, evaluateCriterionCoverageChecks } from '../../rubrics-criterion-checks';
+import { resolveHarnessPaths } from '../../resolve-harness-paths';
 
 /**
  * The `planTouched` reverse map: every implementing file the subject plan's work-items
@@ -176,6 +177,23 @@ export async function cleanupAcceptanceGraderTasks(
     })),
   );
   return { prefix, matched: matched.length, results };
+}
+
+/**
+ * Resolve the tree for deterministic acceptance checks. A grader may run from a
+ * different Hive than the subject it is grading; in that case repo-relative test
+ * paths belong to targetHive, not the grader's checkout. Same-Hive and legacy
+ * callers retain the handler's caller-root behavior.
+ */
+async function resolveDeterministicCheckRoot(
+  args: Pick<z.infer<typeof scorecardEmitArgs>, 'targetHive'>,
+  input: { ctxHarness?: string; workspaceId?: string; checkRoot?: string },
+): Promise<string | undefined> {
+  const callerRoot = input.checkRoot ?? resolveAgentWorkspaceRoot({});
+  if (!args.targetHive || args.targetHive === input.ctxHarness || !input.workspaceId) return callerRoot;
+
+  const targetPaths = await resolveHarnessPaths(args.targetHive, input.workspaceId);
+  return resolveAgentWorkspaceRoot({ projectDir: targetPaths.projectDir });
 }
 
 export async function emitScorecard(
@@ -530,10 +548,11 @@ export async function emitScorecard(
     const testCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'tests');
     if (testCheckedCriteria.length > 0) {
       const evaluateChecks = deps.evaluateChecks ?? evaluateCriterionTestChecks;
+      const checkRoot = await resolveDeterministicCheckRoot(args, input);
       const checkEvaluation = await evaluateChecks({
         criteria: rubric.criteria,
         ratings,
-        ...(input.checkRoot ? { root: input.checkRoot } : {}),
+        ...(checkRoot ? { root: checkRoot } : {}),
         // One shared budget for the batched run. scorecards:emit declares a longer
         // tool timeout below, so the transport gives this mutation enough time to
         // return a typed verdict (and still leaves a full minute for process-group

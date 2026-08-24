@@ -17,6 +17,7 @@ const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
+const resolveHarnessPaths = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -49,6 +50,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...real, getOrgPg: () => ({ sql: {} }) };
 });
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
+vi.mock('../../resolve-harness-paths', () => ({
+  resolveHarnessPaths: (...a: unknown[]) => resolveHarnessPaths(...a),
+}));
 
 import scorecardEmitTool, {
   emitScorecard,
@@ -120,6 +124,7 @@ beforeEach(() => {
   getRubricPlanRevision.mockReset().mockResolvedValue(3);
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
+  resolveHarnessPaths.mockReset();
 });
 
 describe('scorecards:emit deterministic criterion checks (P-011)', () => {
@@ -145,6 +150,32 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       runId: 'run-1',
     });
     expect((res as { checkRuns?: Record<string, unknown> }).checkRuns?.['det-outcome']).toBeDefined();
+  });
+
+  it('runs checks against targetHive paths for a cross-hive grader', async () => {
+    resolveHarnessPaths.mockResolvedValue({
+      projectDir: '/tmp/papercusp-target-tree',
+      stateDir: '/tmp/papercusp-target-tree/.papercusp',
+    });
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
+      ok: true,
+      checkRuns: { 'det-outcome': PASS_RUN },
+    });
+
+    const res = await emitScorecard(
+      emitArgs({ sourceHive: 'sb-devboard-hive', targetHive: 'papercusp' }) as never,
+      {
+        createdBy: 'su-grader',
+        ctxHarness: 'sb-devboard-hive',
+        workspaceId: 'ws-test',
+        checkRoot: '/tmp/sb-devboard-grader-tree',
+      },
+      { evaluateChecks },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(resolveHarnessPaths).toHaveBeenCalledWith('papercusp', 'ws-test');
+    expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
   });
 
   it('a check refusal refuses the EMIT — nothing is filed', async () => {
