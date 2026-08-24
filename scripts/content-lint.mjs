@@ -17,8 +17,9 @@
  * per-detector scripts use — so the behaviour is unit-tested without spawning a
  * process and this file cannot drift from what the tests cover.
  *
- * Run via `tsx` (package.json `content-lint`) so this .mjs can import the
- * TypeScript registry directly, same arrangement as check-sql-comment-backtick.mjs.
+ * Run via the package's boundary launcher (`scripts/content-lint-runner.mjs`).
+ * The launcher uses Node's tsx loader to import the TypeScript registry directly
+ * while mapping loader/startup failures to MISUSE instead of a false FLAGGED result.
  *
  *   npm run content-lint -- --file=packages/operator-core/lib/foo.ts
  *   npm run content-lint -- --file=/tmp/scratch.ts --detector=sql-comment-backtick

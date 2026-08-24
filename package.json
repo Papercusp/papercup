@@ -256,7 +256,7 @@
     "lint:no-module-scope-flag-subscribe": "node scripts/check-no-module-scope-flag-subscribe.mjs",
     "lint:no-sql-json": "node scripts/check-no-sql-json.mjs",
     "lint:no-sql-comment-backtick": "tsx scripts/check-sql-comment-backtick.mjs",
-    "content-lint": "tsx scripts/content-lint.mjs",
+    "content-lint": "node scripts/content-lint-runner.mjs",
     "lint:sql-guidance-justified": "node scripts/check-sql-guidance-justified.mjs",
     "lint:sql-guidance-justified:report": "node scripts/check-sql-guidance-justified.mjs --report",
     "lint:no-control-bytes": "node scripts/check-no-control-bytes.mjs",
