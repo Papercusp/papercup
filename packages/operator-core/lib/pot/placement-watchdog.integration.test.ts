@@ -164,7 +164,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
     mocks.resolveEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
+    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.spec_evidence_bindings, harness_shared.work_item_spec_revision_edges, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
     await seedMugSession();
   });
 
