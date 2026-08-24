@@ -878,13 +878,13 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
   // COPY-specific detector because it must catch any relation and any DDL
   // writer, including an older/deployed migration path.
   const waitingDdlByRelation = new Map<string, AccessExclusiveLockWaiter[]>();
-  for (const waiter of snap.accessExclusiveLockWaiters) {
+  for (const waiter of snap.accessExclusiveLockWaiters ?? []) {
     const rows = waitingDdlByRelation.get(waiter.relation) ?? [];
     rows.push(waiter);
     waitingDdlByRelation.set(waiter.relation, rows);
   }
   const queuedReadersByRelation = new Map<string, AccessShareLockWaiter[]>();
-  for (const reader of snap.accessShareLockWaiters) {
+  for (const reader of snap.accessShareLockWaiters ?? []) {
     if (!waitingDdlByRelation.has(reader.relation)) continue;
     const rows = queuedReadersByRelation.get(reader.relation) ?? [];
     rows.push(reader);

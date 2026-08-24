@@ -243,6 +243,8 @@ describe('evaluateInvariants', () => {
         durationSeconds: 600,
         queryPreview: 'INSERT INTO harness_shared.session_turn_parts ...',
       }],
+      accessExclusiveLockWaiters: [],
+      accessShareLockWaiters: [],
     };
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations.map((v) => v.title)).toEqual([
