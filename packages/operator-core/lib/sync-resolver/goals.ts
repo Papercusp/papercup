@@ -64,7 +64,14 @@ import {
   makeGoalPackageLookup,
   type GoalPackageUpdateInfo,
 } from '../goals/package-update';
-import type { LocalGoalPackage } from '../cupboard/goal-package-store';
+import { listLocalGoalPackages, type LocalGoalPackage } from '../cupboard/goal-package-store';
+// P-009 (work-on-everything-goal-2026-08-23): the packages-rail fold — pure,
+// unit-tested in goals/package-board.test.ts, assembled here.
+import {
+  foldGoalPackageBoard,
+  type GoalPackageBoardEntry,
+  type GoalPackageInstanceRow,
+} from '../goals/package-board';
 
 export interface GoalSummaryRow {
   id: string;
@@ -466,6 +473,10 @@ export async function resolveGoalsList(args: {
   truncatedByLimit: boolean;
   portfolioSpendUsd: number;
   portfolioPots: number;
+  /** P-009: the HUD packages rail — the layered package catalog × stamped
+   *  instance rows, folded from its OWN bounded query (never the capped list
+   *  above, whose cap would misread an off-list instance as "never started"). */
+  goalPackages: GoalPackageBoardEntry[];
 }> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
@@ -652,8 +663,22 @@ export async function resolveGoalsList(args: {
     workspaceId,
     goalIds: goals.map((g) => g.id),
   });
+  // P-009: the packages rail. A DEDICATED bounded query, deliberately not a
+  // correlation against `rows`: that list is capped by `limit`, and a package
+  // instance falling past the cap would read on the rail as "never started" —
+  // the same confident-wrong-answer class the `totalGoals` guard above names.
+  const pkgRows = (await sql`
+    SELECT id, status, metadata
+      FROM harness_shared.goals
+     WHERE workspace_id = ${workspaceId}
+       AND metadata->>'goalPackageRef' IS NOT NULL
+     ORDER BY id
+     LIMIT 200`) as unknown as GoalPackageInstanceRow[];
+  const goalPackages = foldGoalPackageBoard(listLocalGoalPackages(), pkgRows);
+
   return {
     goals,
+    goalPackages,
     portfolioSpendUsd: portfolio.costUsd,
     totalGoals,
     // Derived from the two numbers rather than from the caller's `limit`, so it
