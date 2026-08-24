@@ -50,7 +50,10 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   resolveClaimSpecWorkspace: (workspaceId: string | undefined) => workspaceId,
 }));
 vi.mock('../../fleet/assignments', () => ({
-  listFleetAssignments: vi.fn(async () => []),
+  listFleetAssignments: vi.fn(async () => [
+    { agentId: 'su-worker', fleetSlug: 'p2p-git' },
+    { agentId: 'su-no-session', fleetSlug: 'p2p-git' },
+  ]),
   groupByAgent: vi.fn((rows: unknown[]) => rows),
 }));
 // WI-5938: default to a DRAINED lane so every pre-existing stage-mode test keeps
@@ -255,6 +258,22 @@ describe('fleet:bench — stage mode', () => {
     expect(out.advice as string).toContain('BENCH MISS');
   });
 
+  it('refuses an unknown member before allocating or registering any bench state', async () => {
+    const out = await call({ member: 'su-unknown', wakeEvent: 'k', stagedAssignment: 'x' });
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'member_not_found',
+      member: 'su-unknown',
+      fleet: 'p2p-git',
+    });
+    expect(out.hint as string).toContain("No member matching 'su-unknown'");
+    expect(listFleetAssignments).toHaveBeenCalledWith({ workspaceId: 'ws-x', fleet: 'p2p-git', activeOnly: true });
+    expect(readFleetLaneHealth).not.toHaveBeenCalled();
+    expect(captureWakeHandleForOwner).not.toHaveBeenCalled();
+    expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
   it('missing member/wakeEvent (and not list mode) errors instead of silently no-oping', async () => {
     const out = await call({ stagedAssignment: 'x' });
     expect(out).toMatchObject({ ok: false, error: 'missing_args' });
@@ -351,7 +370,11 @@ describe('fleet:bench — list mode', () => {
     // Presence rows are harness-agnostic. The production repro passed
     // harness:'papercusp' and silently filtered the member before the parked
     // await could be projected.
-    vi.mocked(groupByAgent).mockReturnValueOnce([{ agentId: 'su-worker', fleetSlug: 'p2p-git' } as never]);
+    // The stage call now resolves membership before registering; keep both that
+    // roster read and the later list-mode read scoped to the same member.
+    vi.mocked(groupByAgent)
+      .mockReturnValueOnce([{ agentId: 'su-worker', fleetSlug: 'p2p-git' } as never])
+      .mockReturnValueOnce([{ agentId: 'su-worker', fleetSlug: 'p2p-git' } as never]);
     vi.mocked(listParkedAwaitsForSubscribers).mockResolvedValueOnce([
       {
         subscriberId: 'su-worker',

@@ -78,12 +78,12 @@ import {
 import { comparePlans, type PlanSort } from '@/app/admin/plans/plan-sorting';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
-import { useFlag } from '@/lib/flag-hooks';
-import { FLAGS } from '@papercusp/flags';
+import { useFlag } from "@/lib/flag-hooks";
+import { FLAGS } from "@papercusp/flags";
 import PlanPopupModal from './PlanPopupModal';
 import { PLAN_DASHBOARD_PARAM } from './PlanDashboardHost';
-import PlansCleanupStrip from './PlansCleanupStrip';
-import { usePlanCleanupRun } from './use-plan-cleanup-run';
+import PlansCleanupStrip from "./PlansCleanupStrip";
+import { usePlanCleanupRun } from "./use-plan-cleanup-run";
 import { encodeScopedRef } from '../chat/chat-ref-popup-params';
 import './plans-pane.css';
 import { advRosterArgs } from '@/lib/adv-roster-args';
@@ -344,7 +344,7 @@ export default function PlansPane() {
   const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
   // P-006: the selected clean-up RUN is URL-owned. A reload or copied link
   // resumes against the persisted phase instead of resetting to local idle.
-  const [cleanupRunId, setCleanupRunId] = useQueryState('opcln', parseAsString);
+  const [cleanupRunId, setCleanupRunId] = useQueryState("opcln", parseAsString);
   // P-005 (D-002): a row click opens the app-pane dashboard takeover — the
   // param PlanDashboardHost renders. `pplan` (the popup) remains for its other
   // writers; this pane no longer writes it from rows.
@@ -441,7 +441,10 @@ export default function PlansPane() {
   // no additive strip.
   const cleanupEnabled = useFlag(FLAGS.PLAN_CLEANUP);
   const cleanup = usePlanCleanupRun(cleanupRunId, { enabled: cleanupEnabled });
-  const cleanupPlanSlugs = useMemo(() => rows.map((row) => row.plan.slug), [rows]);
+  const cleanupPlanSlugs = useMemo(
+    () => rows.map((row) => row.plan.slug),
+    [rows],
+  );
   const cleanupFilterSnapshot = useMemo(
     () => ({
       query: debouncedQuery.trim() || null,

@@ -850,6 +850,7 @@ export function pendingLaunchesToRosterEntries(
       // No presence row yet, so the shared oracle has no verdict for this owner.
       // null is "unknown", NOT "not live" — no reader may treat it as dead.
       sessionState: null,
+      liveTurn: null,
       heartbeatFresh: null,
       stale: false,
       loopArmed: false,
@@ -985,6 +986,7 @@ export function startingLaunchesToRosterEntries(
       // No presence row yet, so the shared oracle has no verdict for this owner.
       // null is "unknown", NOT "not live" — no reader may treat it as dead.
       sessionState: null,
+      liveTurn: null,
       heartbeatFresh: null,
       stale: false,
       loopArmed: false,

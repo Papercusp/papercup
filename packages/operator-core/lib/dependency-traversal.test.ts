@@ -153,4 +153,95 @@ describe('readDependencyBottlenecks result shaping', () => {
       }],
     });
   });
+
+  it('returns the optional graph rows from the same query execution', async () => {
+    const common = {
+      work_item_refs: null,
+      last_progress_at: null,
+      open_blocked_count: null,
+      open_root_count: 1,
+      candidate_count: 1,
+      depth_limited: false,
+    };
+    const query = vi.fn(async (_text: string, _params: readonly unknown[]) => [
+      {
+        ...common,
+        row_kind: 'population' as const,
+        blocker_key: null,
+        blocker_kind: null,
+        blocker_ref: null,
+        blocker_status: null,
+        blocker_title: null,
+        graph_subject_key: null,
+        graph_dependency_key: null,
+        graph_relation: null,
+        graph_external_ref: null,
+      },
+      {
+        ...common,
+        row_kind: 'graph_node' as const,
+        blocker_key: 'plan_item:fleet-plan#P-001',
+        blocker_kind: 'plan_item' as const,
+        blocker_ref: 'P-001',
+        blocker_status: 'todo',
+        blocker_title: 'Blocked lane',
+        graph_subject_key: null,
+        graph_dependency_key: null,
+        graph_relation: null,
+        graph_external_ref: null,
+      },
+      {
+        ...common,
+        row_kind: 'graph_node' as const,
+        blocker_key: 'work_item:WI-41117',
+        blocker_kind: 'work_item' as const,
+        blocker_ref: 'WI-41117',
+        blocker_status: 'open',
+        blocker_title: 'Shared blocker',
+        graph_subject_key: null,
+        graph_dependency_key: null,
+        graph_relation: null,
+        graph_external_ref: null,
+      },
+      {
+        ...common,
+        row_kind: 'graph_edge' as const,
+        blocker_key: 'work-item-blocks:P-001<-WI-41117',
+        blocker_kind: null,
+        blocker_ref: null,
+        blocker_status: null,
+        blocker_title: null,
+        graph_subject_key: 'plan_item:fleet-plan#P-001',
+        graph_dependency_key: 'work_item:WI-41117',
+        graph_relation: 'work-item-blocks' as const,
+        graph_external_ref: null,
+      },
+    ]);
+
+    const result = await readDependencyBottlenecks(
+      {
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'papercusp',
+        planSlug: 'fleet-plan',
+        includeGraph: true,
+      },
+      { query: query as never },
+    );
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]?.[1][10]).toBe(true);
+    expect(result.graph).toEqual({
+      nodes: [
+        expect.objectContaining({ key: 'plan_item:fleet-plan#P-001', ref: 'P-001' }),
+        expect.objectContaining({ key: 'work_item:WI-41117', ref: 'WI-41117' }),
+      ],
+      edges: [
+        expect.objectContaining({
+          subjectKey: 'plan_item:fleet-plan#P-001',
+          dependencyKey: 'work_item:WI-41117',
+          relation: 'work-item-blocks',
+        }),
+      ],
+    });
+  });
 });

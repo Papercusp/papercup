@@ -722,6 +722,54 @@ export function gateCoveringFile(gates: {
     prefix: string;
 } | null;
 /**
+ * Build the verified commands that can judge an out-of-project file set.
+ *
+ * A workspace `typecheck` script is the owning workspace's whole-project gate, while a
+ * discovered sibling `lint:tsc*` gate is an exact-file gate. The distinction matters: appending
+ * `--files` to an arbitrary workspace script is not safe, but a sibling lint gate explicitly
+ * accepts that selector. Files with neither route stay in `unknown`; callers MUST NOT execute a
+ * partial route set and then claim the original request was covered.
+ *
+ * @param {{files: Iterable<string>, suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, siblingGates?: {npmScript: string, prefixes: string[]}[]}} opts
+ * @returns {{routes: {key: string, workspaceDir?: string, npmScript?: string, files: string[], scoped: boolean, command: string, args: string[]}[], unknown: string[]}}
+ */
+export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates }: {
+    files: Iterable<string>;
+    suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>;
+    siblingGates?: {
+        npmScript: string;
+        prefixes: string[];
+    }[];
+}): {
+    routes: {
+        key: string;
+        workspaceDir?: string;
+        npmScript?: string;
+        files: string[];
+        scoped: boolean;
+        command: string;
+        args: string[];
+    }[];
+    unknown: string[];
+};
+/**
+ * Execute an already-validated set of owning gates and return the first non-zero status.
+ *
+ * The environment marker prevents a malformed workspace script from recursively routing back
+ * into this gate forever. A routed child owns the actual verdict; this caller only aggregates its
+ * exit status. `execFile` is injectable for unit tests and never receives a shell command string.
+ *
+ * @param {{root: string, routes: {args: string[]}[], execFile?: Function}} opts
+ * @returns {number}
+ */
+export function runAutoTypecheckRoutes({ root, routes, execFile }: {
+    root: string;
+    routes: {
+        args: string[];
+    }[];
+    execFile?: Function;
+}): number;
+/**
  * The banner for `--files=` entries this run cannot judge.
  *
  * Written to be impossible to mistake for a pass: the failure this closes is that a scoped run
@@ -729,14 +777,15 @@ export function gateCoveringFile(gates: {
  * indistinguishable from a real green, which is the same silent-zero shape `build:typecheck`
  * already refuses (it will not report a clean run that checked zero files).
  *
- * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean, siblingGates?: {npmScript: string, prefixes: string[]}[], unresolvedGates?: {npmScript: string, reason: string}[], rosterReadable?: boolean}} opts
+ * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean, autoRoute?: boolean, siblingGates?: {npmScript: string, prefixes: string[]}[], unresolvedGates?: {npmScript: string, reason: string}[], rosterReadable?: boolean}} opts
  * @returns {string[]} console lines.
  */
-export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal, siblingGates, unresolvedGates, rosterReadable, }: {
+export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal, autoRoute, siblingGates, unresolvedGates, rosterReadable, }: {
     label: string;
     uncovered: string[];
     suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>;
     fatal: boolean;
+    autoRoute?: boolean;
     siblingGates?: {
         npmScript: string;
         prefixes: string[];
@@ -897,15 +946,16 @@ export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" 
  * files unchecked. A run with full coverage still reports exactly `status=clean`, so this is
  * additive for every caller that was already honest.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number }} input
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number, routed?: boolean }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, filesUnchecked, }: {
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, filesUnchecked, routed, }: {
     label: string;
     scope: string;
     code: number;
     nothingTypechecked?: boolean;
     filesUnchecked?: number;
+    routed?: boolean;
 }): string;
 export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
     root: any;

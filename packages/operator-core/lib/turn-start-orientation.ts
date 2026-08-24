@@ -93,6 +93,12 @@ export interface OrientationImprovementTriage {
   };
 }
 
+/** The exact-plan fleet frontier, reduced to the edge this fold can deliver. */
+export interface OrientationExecutableFrontier {
+  planSlug: string;
+  executableWidth: number;
+}
+
 /**
  * Reduce the existing triage lanes to the one row worth injecting at turn
  * start. `humanQueue` arrives in the one ranker's order; `selectUntriaged`
@@ -148,6 +154,8 @@ export interface OrientationState {
   loopFireWithheld: boolean;
   /** Ranked, still-untriaged improvement signal; null means none or unreadable. */
   improvementTriage: OrientationImprovementTriage | null;
+  /** Canonical P-011 executable width; null means inapplicable or unreadable. */
+  executableFrontier: OrientationExecutableFrontier | null;
 }
 
 /** Default budget. Small on purpose: this fires EVERY turn and compounds. */
@@ -183,7 +191,8 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     state.announcedGates.length === 0 &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
-    state.improvementTriage === null
+    state.improvementTriage === null &&
+    state.executableFrontier === null
   );
 }
 
@@ -249,7 +258,35 @@ export function isLoopFireWithheld(
  * Keep this small — it is stored per agent per turn, and its only job is to
  * answer "same as last time, in the same context?".
  */
-export function fingerprintOrientation(state: OrientationState, epoch: number): CursorState {
+function encodeExecutableFrontier(frontier: OrientationExecutableFrontier): string {
+  return JSON.stringify([frontier.planSlug, frontier.executableWidth]);
+}
+
+function decodeExecutableFrontier(value: unknown): OrientationExecutableFrontier | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    const [planSlug, executableWidth] = parsed;
+    if (
+      typeof planSlug !== 'string' ||
+      !planSlug ||
+      !Number.isSafeInteger(executableWidth) ||
+      (executableWidth as number) < 0
+    ) {
+      return null;
+    }
+    return { planSlug, executableWidth: executableWidth as number };
+  } catch {
+    return null;
+  }
+}
+
+export function fingerprintOrientation(
+  state: OrientationState,
+  epoch: number,
+  committed: CursorState | null = null,
+): CursorState {
   return {
     held: state.held
       .map(
@@ -272,6 +309,14 @@ export function fingerprintOrientation(state: OrientationState, epoch: number): 
         `${state.improvementTriage.lowerBound ? 1 : 0}:${state.improvementTriage.top.lane}:` +
         `${state.improvementTriage.top.id}:${state.improvementTriage.top.title}`
       : '',
+    // UNKNOWN preserves the last known frontier token. A transient read failure
+    // must not erase the cursor and make the same stable width look like a new
+    // edge on the next successful turn.
+    frontier: state.executableFrontier
+      ? encodeExecutableFrontier(state.executableFrontier)
+      : typeof committed?.frontier === 'string'
+        ? committed.frontier
+        : '',
     epoch,
   };
 }
@@ -289,7 +334,27 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.loop === b.loop &&
     a.loopWithheld === b.loopWithheld &&
     a.triage === b.triage &&
+    (a.frontier ?? '') === (b.frontier ?? '') &&
     a.epoch === b.epoch
+  );
+}
+
+function renderExecutableFrontierLine(
+  frontier: OrientationExecutableFrontier | null,
+  committed: CursorState | null,
+): string | null {
+  if (!frontier) return null;
+  const previous = decodeExecutableFrontier(committed?.frontier);
+  if (previous?.planSlug === frontier.planSlug && previous.executableWidth === frontier.executableWidth) {
+    return null;
+  }
+  if (!previous) return `- frontier: ${frontier.executableWidth} executable (${frontier.planSlug}).`;
+  if (previous.planSlug === frontier.planSlug) {
+    return `- frontier: ${previous.executableWidth} -> ${frontier.executableWidth} executable (${frontier.planSlug}).`;
+  }
+  return (
+    `- frontier: ${previous.planSlug}@${previous.executableWidth} -> ` +
+    `${frontier.planSlug}@${frontier.executableWidth} executable.`
   );
 }
 
@@ -329,7 +394,7 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
  * next because an agent that cannot be re-woken silently halts, which is the most
  * expensive failure on this list.
  */
-export function renderOrientationLines(state: OrientationState): string[] {
+export function renderOrientationLines(state: OrientationState, committed: CursorState | null = null): string[] {
   const lines: string[] = [];
   if (state.unansweredDirected > 0) {
     lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
@@ -349,6 +414,8 @@ export function renderOrientationLines(state: OrientationState): string[] {
   if (missing.length > 0) {
     lines.push(`- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`);
   }
+  const frontierLine = renderExecutableFrontierLine(state.executableFrontier, committed);
+  if (frontierLine) lines.push(frontierLine);
   if (state.improvementTriage) {
     const { pending, considered, lowerBound, top } = state.improvementTriage;
     const population = lowerBound
@@ -415,10 +482,10 @@ export function composeOrientationBlock(input: {
   const { state, committed, epoch } = input;
   const budget = input.budgetChars ?? ORIENTATION_BUDGET_CHARS;
   if (isEmptyOrientation(state)) return '';
-  if (orientationUnchanged(committed, fingerprintOrientation(state, epoch))) return '';
+  if (orientationUnchanged(committed, fingerprintOrientation(state, epoch, committed))) return '';
 
   const header = `## ${HEADING}`;
-  const lines = renderOrientationLines(state);
+  const lines = renderOrientationLines(state, committed);
   const out: string[] = [header];
   let used = header.length;
   for (const line of lines) {
@@ -447,6 +514,11 @@ export interface OrientationDeps {
   loopFireWithheld: (ownerId: string) => Promise<boolean>;
   /** Existing improvement triage/ranking path, reduced to one bounded row. */
   improvementTriage: (workspaceId: string) => Promise<OrientationImprovementTriage | null>;
+  /** P-011 exact-plan executable width, or null when paused/unknown/broad. */
+  executableFrontier: (
+    ownerId: string,
+    workspaceId: string,
+  ) => Promise<OrientationExecutableFrontier | null>;
   /**
    * The agent's CONTEXT GENERATION (P-023 / D-008) — NOT part of the rendered
    * state, only of the dedup key, which is why it is not on `OrientationState`.
@@ -470,13 +542,15 @@ export async function resolveOrientationState(
   deps: Partial<OrientationDeps> = {},
 ): Promise<OrientationState> {
   const d = { ...defaultOrientationDeps(), ...deps };
-  const [held, inbox, announcedGates, loopArmed, loopFireWithheld, improvementTriage] = await Promise.all([
+  const [held, inbox, announcedGates, loopArmed, loopFireWithheld, improvementTriage, executableFrontier] =
+    await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId).catch(() => [] as OrientationAnnouncedGate[]),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
+    d.executableFrontier(ownerId, workspaceId).catch(() => null),
   ]);
   return {
     held,
@@ -486,6 +560,7 @@ export async function resolveOrientationState(
     loopArmed,
     loopFireWithheld,
     improvementTriage,
+    executableFrontier,
   };
 }
 
@@ -608,6 +683,26 @@ export function defaultOrientationDeps(): OrientationDeps {
         lowerBound: items.length === IMPROVEMENT_TRIAGE_WINDOW_LIMIT,
       });
     },
+    // P-007 / D-005: reuse P-011's exact-plan + family-complete executable
+    // width. This is deliberately bounded well inside the hook's 2.5s wall;
+    // a slow graph/lane read is silence, not a delayed turn and not zero.
+    executableFrontier: async (ownerId, workspaceId) => {
+      const [frontier, timeout] = await Promise.all([
+        import('./fleet/executable-frontier'),
+        import('./bounded-timeout'),
+      ]);
+      const { value } = await timeout.withBoundedTimeout(
+        frontier.readFleetExecutableFrontier({ ownerId, workspaceId }),
+        {
+          fallback: null as OrientationExecutableFrontier | null,
+          timeoutMs: 900,
+          label: 'turn-start executable frontier',
+        },
+      );
+      return value
+        ? { planSlug: value.planSlug, executableWidth: value.executableWidth }
+        : null;
+    },
     // P-023 / D-008. The memory ledger's own epoch reader, reused rather than
     // re-derived: `currentSessionEpoch` is already best-effort by contract
     // (0 on a missing relation or a failed read, cached process-wide), and 0
@@ -676,7 +771,9 @@ export async function buildTurnStartOrientationBlock(input: {
       // re-read. A second read here could land after a boundary and commit a
       // generation the agent was never actually told about, which would
       // reproduce the exact stale suppression this change removes.
-      await stage(ownerId, ORIENTATION_CURSOR_SURFACE, fingerprintOrientation(state, epoch)).catch(() => {});
+      await stage(ownerId, ORIENTATION_CURSOR_SURFACE, fingerprintOrientation(state, epoch, ack?.committed ?? null)).catch(
+        () => {},
+      );
     }
     return block;
   } catch {

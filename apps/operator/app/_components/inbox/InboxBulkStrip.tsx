@@ -38,8 +38,8 @@ import {
   type BulkRunItem,
   type BulkSeedItem,
 } from './use-inbox-bulk-run';
-import { formatRunElapsed } from '../review-report/bulk-run-time';
-export { formatRunElapsed } from '../review-report/bulk-run-time';
+import { formatRunElapsed } from "../review-report/bulk-run-time";
+export { formatRunElapsed } from "../review-report/bulk-run-time";
 import './inbox-bulk.css';
 
 export interface InboxBulkStripProps {

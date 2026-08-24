@@ -168,6 +168,7 @@ describe('traverseDependencies — real PostgreSQL', () => {
       harnessSlug: H,
       planSlug: PLAN,
       limit: 10,
+      includeGraph: true,
     });
 
     expect(result.population).toMatchObject({
@@ -185,5 +186,22 @@ describe('traverseDependencies — real PostgreSQL', () => {
       openBlockedCount: 2,
     });
     expect(new Date(result.rows[0]!.lastProgressAt!).toISOString()).toBe('2026-08-20T01:02:03.000Z');
+    expect(result.graph?.nodes.map((node) => node.ref)).toEqual(
+      expect.arrayContaining(['P-001', 'P-046', 'WI-40474', 'WI-40086', 'WI-41117']),
+    );
+    expect(result.graph?.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          subjectKey: `plan_item:${PLAN}#P-046`,
+          dependencyKey: 'work_item:WI-40474',
+          relation: 'coverage',
+        }),
+        expect.objectContaining({
+          subjectKey: 'work_item:WI-40086',
+          dependencyKey: 'work_item:WI-41117',
+          relation: 'work-item-blocks',
+        }),
+      ]),
+    );
   });
 });

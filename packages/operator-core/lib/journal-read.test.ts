@@ -19,6 +19,7 @@ import {
   buildMacLogPredicate,
   buildHistoricalJournalctlArgs,
   buildJournalctlArgs,
+  buildJournalReadSlices,
   clampLimit,
   classifyJournalctlFailure,
   collapseConsecutive,
@@ -36,6 +37,7 @@ import {
   normalizeJournalWindow,
   parseMacLogJson,
   parseJournalJson,
+  mergeJournalRecords,
   readJournal,
   type JournalExec,
 } from './journal-read';
@@ -143,6 +145,30 @@ describe('buildJournalctlArgs', () => {
   it('passes level through as journalctl -p (this level AND more severe)', () => {
     const args = buildJournalctlArgs({ units: ['a.service'], level: 'err' });
     expect(args[args.indexOf('-p') + 1]).toBe('err');
+  });
+});
+
+describe('time-sliced journal reads', () => {
+  it('builds newest-first @epoch slices without local-time parsing', () => {
+    expect(buildJournalReadSlices(0, 3 * 60 * 60 * 1000, 60 * 60 * 1000)).toEqual([
+      { since: '@7200', until: '@10800' },
+      { since: '@3600', until: '@7200' },
+      { since: '@0', until: '@3600' },
+    ]);
+  });
+
+  it('merges slices chronologically and removes only boundary duplicates', () => {
+    const record = (ts: string, message: string) => ({
+      ts,
+      unit: 'a.service',
+      level: 'info' as const,
+      message,
+      clipped: false,
+    });
+    expect(mergeJournalRecords([
+      [record('2026-08-24T01:00:00.000Z', 'old'), record('2026-08-24T02:00:00.000Z', 'edge')],
+      [record('2026-08-24T02:00:00.000Z', 'edge'), record('2026-08-24T03:00:00.000Z', 'new')],
+    ]).map((entry) => entry.message)).toEqual(['old', 'edge', 'new']);
   });
 });
 
@@ -467,6 +493,37 @@ describe('readJournal', () => {
     const out = await readJournal({ units: ['a.service'], since: '40m' }, execReturning(''), noUnknownUnits);
     expect(out.window).toEqual({ since: '-40 minutes', until: null });
     expect(out.command).toContain('--since -40 minutes');
+  });
+
+  it('splits a wide grep window, merges slices, and applies the global newest-row cap', async () => {
+    const calls: string[][] = [];
+    const sinceMs = Date.now() - 3 * 60 * 60 * 1000;
+    const exec: JournalExec = async (args) => {
+      calls.push(args);
+      const index = calls.length;
+      return {
+        stdout: jsonLine({
+          MESSAGE: `slice-${index}`,
+          __REALTIME_TIMESTAMP: String(1785110000000000 + index * 1_000_000),
+        }),
+      };
+    };
+    const out = await readJournal(
+      { units: ['a.service'], grep: 'needle', since: '-3 hours', limit: 2 },
+      exec,
+      noUnknownUnits,
+      async () => sinceMs,
+    );
+
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.every((args) => args.includes('--until'))).toBe(true);
+    expect(calls.every((args) => args.some((arg) => arg.startsWith('@')))).toBe(true);
+    expect(out.truncated).toBe(true);
+    expect(out.matched).toBe(3); // limit + 1, the same bounded floor as one read
+    expect(out.entries.map((entry) => entry.message)).toEqual([
+      `slice-${calls.length - 1}`,
+      `slice-${calls.length}`,
+    ]);
   });
 });
 

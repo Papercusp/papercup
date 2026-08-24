@@ -352,14 +352,51 @@ export default defineTool({
       };
     }
 
+    const benchFleet = args.fleet ?? deriveFleetMembership().fleetSlug;
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
+
+    // EI-21277320983534020: resolve the target against the authoritative fleet roster
+    // before doing any staging work. An unknown ownerId must refuse loudly instead of
+    // allocating a bench row that can never wake anyone; a resolvable member with no
+    // tracked session still follows the existing registered:false bench-miss path.
+    if (!benchFleet) {
+      return {
+        data: {
+          ok: false,
+          error: 'no_fleet',
+          member: args.member,
+          hint: "No fleet resolvable — pass { fleet: '<slug>' } explicitly.",
+        },
+      };
+    }
+    const memberGroups = groupByAgent(
+      await listFleetAssignments({
+        workspaceId,
+        fleet: benchFleet,
+        activeOnly: true,
+      }),
+    );
+    if (!memberGroups.some((group) => group.agentId === args.member)) {
+      return {
+        data: {
+          ok: false,
+          error: 'member_not_found',
+          member: args.member,
+          fleet: benchFleet,
+          hint:
+            `No member matching '${args.member}' is present in fleet '${benchFleet}'. ` +
+            'Check fleet:assignments for the authoritative ownerId before staging a bench.',
+        },
+      };
+    }
+
     // WI-5938: park/pull is derived state — resolve it BEFORE staging anything, so a
     // refused bench never leaves a half-registered await behind.
-    const benchFleet = args.fleet ?? deriveFleetMembership().fleetSlug;
     const laneHealth = benchFleet
       ? await readFleetLaneHealth({
           fleet: benchFleet,
           harness: args.harness,
-          workspaceId: resolveConcreteWorkspaceId(args.workspace, actorWorkspace),
+          workspaceId,
           // Scope the floors to the MEMBER being benched: their own held claims must not
           // count against them as an exclusion, or a member holding work would read as a
           // gated lane rather than a live one.
@@ -397,7 +434,6 @@ export default defineTool({
     const eventKey = patternAwait ? expandPatternMacro(args.wakeEvent) : args.wakeEvent;
     if (patternAwait) assertUsablePattern(eventKey);
 
-    const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
     const claimableFilterScope =
       !patternAwait && eventKey === 'work-item:claimable'
         ? await resolveBenchPayloadFilter(args.member, workspaceId)

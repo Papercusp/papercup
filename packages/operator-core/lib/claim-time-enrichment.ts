@@ -131,6 +131,10 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
   const harness = wi?.harness ?? opts.harness ?? null;
   const workspaceId = opts.workspaceId ?? undefined;
   const workItemId = wi?.id ?? null;
+  // The behavior-contract resolver needs an id to read explicit edges. Keep the
+  // partial-subject contract for the other legs, but only expose an identified
+  // subject to this leg so an absent id cannot become a fabricated lookup key.
+  const behaviorContractWorkItem = wi?.id ? { ...wi, id: wi.id } : null;
 
   const [
     planDecisions,
@@ -255,16 +259,18 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       //
       // ⚠ ADVISORY (D-017): reported, never enforced here. P-013 owns any refusal.
       // Needs a live work-item — a bare plan-item claim has no item to resolve edges for.
-      wi
+      behaviorContractWorkItem
         ? import('./agent-tools/plans/behavior-contract-resolver')
             .then(async (m) => {
               const contract = await m.resolveWorkItemBehaviorContract({
-                id: wi.id,
+                id: behaviorContractWorkItem.id,
                 kind: null,
                 harness,
-                payload: wi.payload,
-                sourcePlanSlug: wi.sourcePlanSlug,
-                ...(wi.sourcePlanItemIds ? { sourcePlanItemIds: wi.sourcePlanItemIds } : {}),
+                payload: behaviorContractWorkItem.payload,
+                sourcePlanSlug: behaviorContractWorkItem.sourcePlanSlug,
+                ...(behaviorContractWorkItem.sourcePlanItemIds
+                  ? { sourcePlanItemIds: behaviorContractWorkItem.sourcePlanItemIds }
+                  : {}),
               });
               // An item on the hook for NOTHING is a real, common answer — saying so
               // would be noise on most claims, so only a non-empty contract decorates.

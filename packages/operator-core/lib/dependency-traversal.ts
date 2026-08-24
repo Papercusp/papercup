@@ -96,9 +96,24 @@ export interface DependencyBottleneckPopulation {
   maxDepth: number;
 }
 
+export interface DependencyBottleneckGraphNode {
+  key: string;
+  kind: DependencyTraversalNodeKind;
+  ref: string;
+  status: string | null;
+  title: string | null;
+}
+
+export interface DependencyBottleneckGraph {
+  nodes: DependencyBottleneckGraphNode[];
+  edges: DependencyTraversalEdge[];
+}
+
 export interface DependencyBottleneckResult {
   population: DependencyBottleneckPopulation;
   rows: DependencyBottleneckCandidate[];
+  /** Present only when the caller requested the human-review graph projection. */
+  graph?: DependencyBottleneckGraph;
 }
 
 interface DependencyTraversalRow {
@@ -125,7 +140,7 @@ type DependencyTraversalQuery = (
 ) => Promise<DependencyTraversalRow[]>;
 
 interface DependencyBottleneckRow {
-  row_kind: 'population' | 'bottleneck';
+  row_kind: 'population' | 'bottleneck' | 'graph_node' | 'graph_edge';
   blocker_key: string | null;
   blocker_kind: DependencyTraversalNodeKind | null;
   blocker_ref: string | null;
@@ -137,11 +152,15 @@ interface DependencyBottleneckRow {
   open_root_count: number | string;
   candidate_count: number | string;
   depth_limited: boolean;
+  graph_subject_key: string | null;
+  graph_dependency_key: string | null;
+  graph_relation: DependencyTraversalRelation | null;
+  graph_external_ref: string | null;
 }
 
 type DependencyBottleneckQuery = (
   text: string,
-  params: Array<string | number | string[]>,
+  params: Array<string | number | boolean | string[]>,
 ) => Promise<DependencyBottleneckRow[]>;
 
 const ISSUE_FAMILY_KINDS = ['bug', 'change', 'task'];
@@ -500,7 +519,9 @@ SELECT node.node_key,
  * empty measured result remains distinguishable from an unread/failed query.
  *
  * Parameters extend the traversal contract with $8 terminal statuses, $9 exact
- * plan slug and $10 row limit.
+ * plan slug, $10 row limit and $11 whether to return the graph rows used by the
+ * optional human renderer. The graph projection remains part of this ONE SQL
+ * execution; enabling it never starts a second traversal.
  */
 const DEPENDENCY_BOTTLENECK_SQL = String.raw`
 WITH RECURSIVE
@@ -628,6 +649,49 @@ population AS (
          (SELECT count(*)::int FROM plan_roots) AS open_root_count,
          COALESCE(bool_or(depth_limited), false) AS depth_limited
     FROM ranked
+),
+target_paths AS (
+  SELECT DISTINCT walk.path
+    FROM blocked_walk walk
+    JOIN plan_roots root ON root.node_key = walk.node_key
+   WHERE $11::boolean
+),
+graph_edge_pairs AS (
+  SELECT DISTINCT
+         path[step_index + 1] AS subject_key,
+         path[step_index] AS dependency_key
+    FROM target_paths
+   CROSS JOIN LATERAL generate_series(1, array_length(path, 1) - 1) AS steps(step_index)
+),
+graph_edges AS (
+  SELECT DISTINCT ON (edge.subject_key, edge.dependency_key, edge.relation)
+         edge.edge_key,
+         edge.subject_key,
+         edge.dependency_key,
+         edge.relation,
+         edge.external_ref
+    FROM graph_edge_pairs pair
+    JOIN all_edges edge
+      ON (
+           edge.relation <> 'coverage'
+       AND edge.subject_key = pair.subject_key
+       AND edge.dependency_key = pair.dependency_key
+         )
+      OR (
+           edge.relation = 'coverage'
+       AND (
+            (edge.subject_key = pair.subject_key AND edge.dependency_key = pair.dependency_key)
+         OR (edge.subject_key = pair.dependency_key AND edge.dependency_key = pair.subject_key)
+           )
+         )
+   ORDER BY edge.subject_key, edge.dependency_key, edge.relation, edge.edge_key
+),
+graph_node_keys AS (
+  SELECT node_key FROM plan_roots WHERE $11::boolean
+  UNION
+  SELECT subject_key FROM graph_edges
+  UNION
+  SELECT dependency_key FROM graph_edges
 )
 SELECT 'population'::text AS row_kind,
        NULL::text AS blocker_key,
@@ -640,7 +704,11 @@ SELECT 'population'::text AS row_kind,
        NULL::int AS open_blocked_count,
        population.open_root_count,
        population.candidate_count,
-       population.depth_limited
+       population.depth_limited,
+       NULL::text AS graph_subject_key,
+       NULL::text AS graph_dependency_key,
+       NULL::text AS graph_relation,
+       NULL::text AS graph_external_ref
   FROM population
 UNION ALL
 SELECT 'bottleneck'::text AS row_kind,
@@ -654,10 +722,53 @@ SELECT 'bottleneck'::text AS row_kind,
        ordered.open_blocked_count,
        population.open_root_count,
        population.candidate_count,
-       population.depth_limited
+       population.depth_limited,
+       NULL::text AS graph_subject_key,
+       NULL::text AS graph_dependency_key,
+       NULL::text AS graph_relation,
+       NULL::text AS graph_external_ref
   FROM ordered
  CROSS JOIN population
  WHERE ordered.rank <= $10
+UNION ALL
+SELECT 'graph_node'::text AS row_kind,
+       node.node_key AS blocker_key,
+       node.node_kind AS blocker_kind,
+       node.ref AS blocker_ref,
+       node.status AS blocker_status,
+       node.title AS blocker_title,
+       NULL::text[] AS work_item_refs,
+       NULL::text AS last_progress_at,
+       NULL::int AS open_blocked_count,
+       population.open_root_count,
+       population.candidate_count,
+       population.depth_limited,
+       NULL::text AS graph_subject_key,
+       NULL::text AS graph_dependency_key,
+       NULL::text AS graph_relation,
+       NULL::text AS graph_external_ref
+  FROM graph_node_keys keys
+  JOIN all_nodes node ON node.node_key = keys.node_key
+ CROSS JOIN population
+UNION ALL
+SELECT 'graph_edge'::text AS row_kind,
+       edge.edge_key AS blocker_key,
+       NULL::text AS blocker_kind,
+       NULL::text AS blocker_ref,
+       NULL::text AS blocker_status,
+       NULL::text AS blocker_title,
+       NULL::text[] AS work_item_refs,
+       NULL::text AS last_progress_at,
+       NULL::int AS open_blocked_count,
+       population.open_root_count,
+       population.candidate_count,
+       population.depth_limited,
+       edge.subject_key AS graph_subject_key,
+       edge.dependency_key AS graph_dependency_key,
+       edge.relation AS graph_relation,
+       edge.external_ref AS graph_external_ref
+  FROM graph_edges edge
+ CROSS JOIN population
  ORDER BY row_kind DESC, open_blocked_count DESC NULLS LAST, blocker_key NULLS LAST
 `;
 
@@ -746,6 +857,7 @@ export async function readDependencyBottlenecks(
     planSlug: string;
     maxDepth?: number;
     limit?: number;
+    includeGraph?: boolean;
     coordinationWorkspaceId?: string;
   },
   deps: { query?: DependencyBottleneckQuery } = {},
@@ -773,6 +885,7 @@ export async function readDependencyBottlenecks(
     [...ALL_TERMINAL_STATUSES].map((status) => status.toLowerCase()),
     planSlug,
     limit,
+    args.includeGraph === true,
   ]);
   const populationRow = rows.find((row) => row.row_kind === 'population');
   if (!populationRow) throw new Error('dependency bottleneck query returned no population row');
@@ -795,6 +908,45 @@ export async function readDependencyBottlenecks(
         openBlockedCount: Number(row.open_blocked_count),
       };
     });
+  const graph = args.includeGraph
+    ? {
+        nodes: rows
+          .filter((row) => row.row_kind === 'graph_node')
+          .map((row): DependencyBottleneckGraphNode => {
+            if (!row.blocker_key || !row.blocker_kind || !row.blocker_ref) {
+              throw new Error('dependency bottleneck query returned an incomplete graph node');
+            }
+            return {
+              key: row.blocker_key,
+              kind: row.blocker_kind,
+              ref: row.blocker_ref,
+              status: row.blocker_status,
+              title: row.blocker_title,
+            };
+          })
+          .sort((a, b) => a.key.localeCompare(b.key)),
+        edges: rows
+          .filter((row) => row.row_kind === 'graph_edge')
+          .map((row): DependencyTraversalEdge => {
+            if (
+              !row.blocker_key ||
+              !row.graph_subject_key ||
+              !row.graph_dependency_key ||
+              !row.graph_relation
+            ) {
+              throw new Error('dependency bottleneck query returned an incomplete graph edge');
+            }
+            return {
+              key: row.blocker_key,
+              subjectKey: row.graph_subject_key,
+              dependencyKey: row.graph_dependency_key,
+              relation: row.graph_relation,
+              externalRef: row.graph_external_ref,
+            };
+          })
+          .sort((a, b) => a.key.localeCompare(b.key)),
+      }
+    : undefined;
   return {
     population: {
       kind: 'exact-plan-open-roots',
@@ -810,5 +962,6 @@ export async function readDependencyBottlenecks(
       maxDepth,
     },
     rows: bottlenecks,
+    ...(graph ? { graph } : {}),
   };
 }

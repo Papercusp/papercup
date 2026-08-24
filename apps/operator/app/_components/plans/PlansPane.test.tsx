@@ -28,20 +28,42 @@ vi.mock("@tanstack/react-virtual", () => ({
   }),
 }));
 
-const { nuqs, setters, planListData, attentionItems, rosterData, workActivityData, cleanupFlag, setPlanArchived, confirmAnswer, toastSpies, planListRefresh } =
-  vi.hoisted(() => ({
-    nuqs: {} as Record<string, unknown>,
-    setters: {} as Record<string, ReturnType<typeof vi.fn>>,
-    planListData: { value: null as { plans: PlanListRow[] } | null },
-    attentionItems: { value: [] as Array<{ planSlug: string | null; tier: string; needsHuman?: boolean; kind?: string }> },
-    rosterData: { value: [{ active: [] as Array<{ currentPlanSlug?: string | null }> }] },
-    workActivityData: { value: [] as Array<{ slug: string; lastWorkAtMs: number }> },
-    cleanupFlag: { value: true },
-    setPlanArchived: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
-    confirmAnswer: { value: true },
-    toastSpies: { success: vi.fn(), error: vi.fn() },
-    planListRefresh: vi.fn(),
-  }));
+const {
+  nuqs,
+  setters,
+  planListData,
+  attentionItems,
+  rosterData,
+  workActivityData,
+  cleanupFlag,
+  setPlanArchived,
+  confirmAnswer,
+  toastSpies,
+  planListRefresh,
+} = vi.hoisted(() => ({
+  nuqs: {} as Record<string, unknown>,
+  setters: {} as Record<string, ReturnType<typeof vi.fn>>,
+  planListData: { value: null as { plans: PlanListRow[] } | null },
+  attentionItems: {
+    value: [] as Array<{
+      planSlug: string | null;
+      tier: string;
+      needsHuman?: boolean;
+      kind?: string;
+    }>,
+  },
+  rosterData: {
+    value: [{ active: [] as Array<{ currentPlanSlug?: string | null }> }],
+  },
+  workActivityData: {
+    value: [] as Array<{ slug: string; lastWorkAtMs: number }>,
+  },
+  cleanupFlag: { value: true },
+  setPlanArchived: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
+  confirmAnswer: { value: true },
+  toastSpies: { success: vi.fn(), error: vi.fn() },
+  planListRefresh: vi.fn(),
+}));
 function mkSetter(key: string) {
   if (!setters[key]) setters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });
   return setters[key];
@@ -102,7 +124,7 @@ vi.mock('@/app/harness/Select', () => ({
   ),
 }));
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-1' }));
-vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => cleanupFlag.value }));
+vi.mock("@/lib/flag-hooks", () => ({ useFlag: () => cleanupFlag.value }));
 // Keep bucketOf real (buildGlanceRows uses it) — only stub the data hook + the write.
 vi.mock('@/app/admin/plans/plans-api', async (orig) => ({
   ...(await orig<typeof import('@/app/admin/plans/plans-api')>()),
@@ -206,35 +228,37 @@ describe('PlansPane', () => {
     ).toBeNull();
   });
 
-  it('mounts the clean-up strip under the masthead with the exact shown-plan count and deep-links the new run', async () => {
+  it("mounts the clean-up strip under the masthead with the exact shown-plan count and deep-links the new run", async () => {
     planListData.value = {
       plans: [
-        plan({ slug: 'p-active', title: 'Active plan' }),
-        plan({ slug: 'p-ready', title: 'Ready plan', status: 'ready' }),
-        plan({ slug: 'p-shipped', title: 'Shipped plan', status: 'shipped' }),
+        plan({ slug: "p-active", title: "Active plan" }),
+        plan({ slug: "p-ready", title: "Ready plan", status: "ready" }),
+        plan({ slug: "p-shipped", title: "Shipped plan", status: "shipped" }),
       ],
     };
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ ok: true, runId: 'cleanup-run-1', launched: true }),
+      json: async () => ({ ok: true, runId: "cleanup-run-1", launched: true }),
     });
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<PlansPane />);
-    const start = screen.getByTestId('plans-cleanup-start');
-    expect(start.textContent).toContain('Clean up 2 shown plans');
+    const start = screen.getByTestId("plans-cleanup-start");
+    expect(start.textContent).toContain("Clean up 2 shown plans");
     fireEvent.click(start);
 
-    await waitFor(() => expect(setters.opcln).toHaveBeenCalledWith('cleanup-run-1'));
+    await waitFor(() =>
+      expect(setters.opcln).toHaveBeenCalledWith("cleanup-run-1"),
+    );
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
-    expect(body.planSlugs).toEqual(['p-active', 'p-ready']);
+    expect(body.planSlugs).toEqual(["p-active", "p-ready"]);
   });
 
-  it('removes the clean-up strip entirely when its default-on flag is overridden off', () => {
+  it("removes the clean-up strip entirely when its default-on flag is overridden off", () => {
     cleanupFlag.value = false;
-    planListData.value = { plans: [plan({ slug: 'p-active' })] };
+    planListData.value = { plans: [plan({ slug: "p-active" })] };
     render(<PlansPane />);
-    expect(screen.queryByTestId('plans-cleanup-idle')).toBeNull();
+    expect(screen.queryByTestId("plans-cleanup-idle")).toBeNull();
   });
 
   it("clears a populated plan search from the compact search shell (P-020)", () => {

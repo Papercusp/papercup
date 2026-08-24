@@ -534,6 +534,9 @@ describe('pendingLaunchesToRosterEntries (pui-reactive-session-panes D-006)', ()
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
     expect(e.ownerId).toBe('pending:adv:42');
     expect(e.liveness).toBe('pending');
+    expect(e.sessionState).toBeNull();
+    expect(e.liveTurn).toBeNull();
+    expect(e.heartbeatFresh).toBeNull();
     expect(e.host).toBe('box-1'); // local — the recording box
     expect(e.display).toBe('workbench');
     expect(e.launchArgv).toEqual(['psu', '--no-picker', '--agent=claude', '--plan=my-plan']);
@@ -563,6 +566,9 @@ describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot wind
     const [e] = startingLaunchesToRosterEntries([row], 'box-1');
     expect(e.ownerId).toBe('su-abc'); // NOT a synthetic id — dedupe depends on this
     expect(e.liveness).toBe('pending');
+    expect(e.sessionState).toBeNull();
+    expect(e.liveTurn).toBeNull();
+    expect(e.heartbeatFresh).toBeNull();
     expect(e.lastActiveAt).toBeNull(); // → needs-you via deriveColumn step 1c
     expect(e.advSessionId).toBe(91);
     expect(e.pid).toBe(4242);
