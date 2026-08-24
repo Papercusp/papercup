@@ -131,13 +131,52 @@ export interface AuditFinding {
   ref?: string;
 }
 
+export const PLAN_AUDIT_KINDS = ['completion', 'activation'] as const;
+export type PlanAuditKind = (typeof PLAN_AUDIT_KINDS)[number];
+
+export interface ActivationAuditSourceRange {
+  sourceKind: string;
+  sessionId: string;
+  fromTurn: number;
+  toTurn: number;
+}
+
+export interface ActivationAuditMapping {
+  /** Stable within this audit pass (for example M-003). */
+  id: string;
+  /** Canonical `session_turn:<kind>:<session>:<turn>` references. */
+  sourceRefs: string[];
+  /** Concise requirement/constraint/decision distilled from those turns. */
+  requirement: string;
+  /** P-NNN, D-NNN, or section:<heading> destinations in the plan. */
+  planTargets: string[];
+  disposition: 'covered' | 'repaired' | 'rejected' | 'open';
+}
+
+export interface ActivationAuditPayload {
+  sourceRanges: ActivationAuditSourceRange[];
+  mappings: ActivationAuditMapping[];
+  repairedOmissions: string[];
+  rejectedOrSuperseded: string[];
+  unresolvedBlockers: string[];
+}
+
+export interface AuditedPlanRevision {
+  id: number;
+  seq: number;
+  contentHash: string;
+}
+
 export interface PlanAudit {
   planSlug: string;
   harnessSlug: string;
   auditSeq: number;
   createdBy: string;
   createdAt: string;
+  auditKind: PlanAuditKind;
   auditedSha: string | null;
+  activation: ActivationAuditPayload | null;
+  auditedPlanRevision: AuditedPlanRevision | null;
   items: AuditItemEntry[];
   findings: AuditFinding[];
   summary: string | null;
@@ -503,7 +542,12 @@ interface PlanAuditRow {
   audit_seq: number;
   created_by: string;
   created_at: string;
+  audit_kind?: string;
   audited_sha: string | null;
+  activation?: ActivationAuditPayload | null;
+  audited_plan_revision_id?: number | string | null;
+  audited_plan_revision_seq?: number | null;
+  audited_plan_content_hash?: string | null;
   items: AuditItemEntry[] | null;
   findings: AuditFinding[] | null;
   summary: string | null;
@@ -516,7 +560,17 @@ function rowToAudit(row: PlanAuditRow): PlanAudit {
     auditSeq: row.audit_seq,
     createdBy: row.created_by,
     createdAt: typeof row.created_at === 'string' ? row.created_at : new Date(row.created_at).toISOString(),
+    auditKind: row.audit_kind === 'activation' ? 'activation' : 'completion',
     auditedSha: row.audited_sha,
+    activation: row.activation ?? null,
+    auditedPlanRevision:
+      row.audited_plan_revision_id != null && row.audited_plan_revision_seq != null && row.audited_plan_content_hash
+        ? {
+            id: Number(row.audited_plan_revision_id),
+            seq: Number(row.audited_plan_revision_seq),
+            contentHash: row.audited_plan_content_hash,
+          }
+        : null,
     items: Array.isArray(row.items) ? row.items : [],
     findings: Array.isArray(row.findings) ? row.findings : [],
     summary: row.summary,
@@ -559,16 +613,47 @@ export async function getLatestPlanAudit(
     const workspaceId = scope.workspaceId ?? activeWorkspaceId();
     const harnessSlug = scope.harnessSlug?.trim() || null;
     const rows = await sql<PlanAuditRow[]>`
-      SELECT plan_slug, harness_slug, audit_seq, created_by, created_at, audited_sha,
-             items, findings, summary
+      SELECT plan_slug, harness_slug, audit_seq, created_by, created_at, audit_kind, audited_sha,
+             activation, audited_plan_revision_id, audited_plan_revision_seq,
+             audited_plan_content_hash, items, findings, summary
         FROM harness_shared.plan_audits
        WHERE workspace_id = ${workspaceId}
          AND plan_slug = ${planSlug}
+         AND audit_kind = 'completion'
          AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
        ORDER BY audit_seq DESC
        LIMIT 1`;
     const row = rows.find(
       (r) => r.plan_slug === planSlug && (!harnessSlug || r.harness_slug === harnessSlug),
+    );
+    return row ? rowToAudit(row) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Latest completed pre-activation conversation audit for a plan. */
+export async function getLatestActivationAudit(
+  planSlug: string,
+  scope: PlanAuditReadScope = {},
+): Promise<PlanAudit | null> {
+  try {
+    const { sql } = getOrgPg();
+    const workspaceId = scope.workspaceId ?? activeWorkspaceId();
+    const harnessSlug = scope.harnessSlug?.trim() || null;
+    const rows = await sql<PlanAuditRow[]>`
+      SELECT plan_slug, harness_slug, audit_seq, created_by, created_at, audit_kind, audited_sha,
+             activation, audited_plan_revision_id, audited_plan_revision_seq,
+             audited_plan_content_hash, items, findings, summary
+        FROM harness_shared.plan_audits
+       WHERE workspace_id = ${workspaceId}
+         AND plan_slug = ${planSlug}
+         AND audit_kind = 'activation'
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
+       ORDER BY audit_seq DESC
+       LIMIT 1`;
+    const row = rows.find(
+      (candidate) => candidate.plan_slug === planSlug && (!harnessSlug || candidate.harness_slug === harnessSlug),
     );
     return row ? rowToAudit(row) : null;
   } catch {
@@ -614,6 +699,7 @@ export async function getEffectiveItemAudits(planSlug: string): Promise<Effectiv
         FROM harness_shared.plan_audits
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
+         AND audit_kind = 'completion'
        ORDER BY audit_seq DESC`;
     return foldEffectiveItemAudits(
       rows.map((row) => ({ auditSeq: row.audit_seq, items: Array.isArray(row.items) ? row.items : [] })),
@@ -705,7 +791,8 @@ export async function getPlanItemStatuses(planSlug: string): Promise<PlanItemSta
  *  and `done` is the finished case. */
 export const UNFINISHED_ITEM_STATUSES = ['todo', 'wip', 'blocked', 'needs-human'] as const;
 
-export interface RecordAuditInput {
+export interface RecordCompletionAuditInput {
+  auditKind?: 'completion';
   planSlug: string;
   harnessSlug: string;
   createdBy: string;
@@ -714,6 +801,18 @@ export interface RecordAuditInput {
   findings?: AuditFinding[];
   summary?: string | null;
 }
+
+export interface RecordActivationAuditInput {
+  auditKind: 'activation';
+  planSlug: string;
+  harnessSlug: string;
+  createdBy: string;
+  activation: ActivationAuditPayload;
+  auditedPlanRevision: AuditedPlanRevision;
+  summary?: string | null;
+}
+
+export type RecordAuditInput = RecordCompletionAuditInput | RecordActivationAuditInput;
 
 export interface AuditEntryValidationProblem {
   itemId: string;
@@ -818,7 +917,26 @@ export function validatePersistedAuditEntries(items: AuditItemEntry[]): AuditEnt
  * rather than a silently overwritten audit.
  */
 export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudit> {
-  const provenanceProblems = validatePersistedAuditEntries(input.items);
+  const auditKind: PlanAuditKind = input.auditKind ?? 'completion';
+  let items: AuditItemEntry[];
+  let activation: ActivationAuditPayload | null;
+  let auditedPlanRevision: AuditedPlanRevision | null;
+  let auditedSha: string | null;
+  let findings: AuditFinding[];
+  if (input.auditKind === 'activation') {
+    items = [];
+    activation = input.activation;
+    auditedPlanRevision = input.auditedPlanRevision;
+    auditedSha = null;
+    findings = [];
+  } else {
+    items = input.items;
+    activation = null;
+    auditedPlanRevision = null;
+    auditedSha = input.auditedSha ?? null;
+    findings = input.findings ?? [];
+  }
+  const provenanceProblems = validatePersistedAuditEntries(items);
   if (provenanceProblems.length > 0) {
     throw new Error(
       `plan audit provenance invalid: ${provenanceProblems.map((problem) => problem.detail).join('; ')}`,
@@ -827,19 +945,28 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
   const { sql } = getOrgPg();
   const rows = await sql<PlanAuditRow[]>`
     INSERT INTO harness_shared.plan_audits
-      (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audited_sha, items, findings, summary)
+      (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind, audited_sha,
+       activation, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash,
+       items, findings, summary)
     SELECT ${activeWorkspaceId()}, ${input.harnessSlug}, ${input.planSlug},
            COALESCE(MAX(a.audit_seq), 0) + 1,
-           ${input.createdBy}, ${input.auditedSha ?? null},
-           -- jsonb is bound as an explicit JSON.stringify + cast: sql.json() THROWS on the
-           -- getOrgPg client (EI-607) and a bare object does not bind.
-           ${JSON.stringify(input.items)}::jsonb,
-           ${JSON.stringify(input.findings ?? [])}::jsonb,
+           ${input.createdBy}, ${auditKind}, ${auditedSha},
+           ${activation ? JSON.stringify(activation) : null}::text::jsonb,
+           ${auditedPlanRevision?.id ?? null},
+           ${auditedPlanRevision?.seq ?? null},
+           ${auditedPlanRevision?.contentHash ?? null},
+           -- postgres-js serializes an already-stringified parameter once more when its
+           -- destination is typed jsonb. The intermediate text cast is load-bearing: a
+           -- direct ::jsonb cast stores a jsonb STRING scalar (EI-21304616288919497).
+           -- sql.json() is not portable to the getOrgPg client (EI-607).
+           ${JSON.stringify(items)}::text::jsonb,
+           ${JSON.stringify(findings)}::text::jsonb,
            ${input.summary ?? null}
       FROM harness_shared.plan_audits a
      WHERE a.workspace_id = ${activeWorkspaceId()}
        AND a.plan_slug = ${input.planSlug}
-    RETURNING plan_slug, harness_slug, audit_seq, created_by, created_at, audited_sha,
-              items, findings, summary`;
+    RETURNING plan_slug, harness_slug, audit_seq, created_by, created_at, audit_kind, audited_sha,
+              activation, audited_plan_revision_id, audited_plan_revision_seq,
+              audited_plan_content_hash, items, findings, summary`;
   return rowToAudit(rows[0]);
 }
