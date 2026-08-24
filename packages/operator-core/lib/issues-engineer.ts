@@ -2565,6 +2565,18 @@ export async function setIssueState(
          WHERE workspace_id = ${ws} AND issue_id = ${id} AND origin <> 'remote'
          ORDER BY updated_at DESC NULLS LAST`;
     }
+    if (state === 'needs-human') {
+      // A needs-human issue is deliberately nonterminal, but it is still removed from
+      // self-selection immediately. Clear the durable claim in the same view-triggered
+      // transaction as the state transition; otherwise the status floor excludes the row
+      // while fleet assignment still counts the stale taken_by claim against its holder.
+      return await tx<IssueRowDb[]>`
+        UPDATE harness_shared.engineer_issues
+           SET state = ${state}, assignee = NULL, assigned_at = NULL, last_progress_at = NULL,
+               origin = 'local', updated_at = now()
+         WHERE workspace_id = ${ws} AND issue_id = ${id}
+        RETURNING ${tx.unsafe(ISSUE_COLS)}`;
+    }
     return await tx<IssueRowDb[]>`
       UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
        WHERE workspace_id = ${ws} AND issue_id = ${id}

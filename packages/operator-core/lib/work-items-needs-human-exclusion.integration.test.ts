@@ -132,6 +132,50 @@ describe('diagnoseClaimNextMiss counts a legacy needsHuman OPEN row as ordinary 
 });
 
 describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)', () => {
+  it('releases an active claim when an issue enters needs-human so the next pull can proceed', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:prod-db',
+        summary: 'Provide the production DB credential.',
+        nextVerb: 'setup:save_key',
+      },
+      'tester',
+      '2026-08-23T18:00:00.000Z',
+    );
+    await seedIssue('EI-claimed-human', {
+      kind: 'change',
+      status: 'open',
+      takenBy: 'bee-1',
+      createdTs: 100,
+      payload: { humanCapability: 'credential', externalBlockers: blockers },
+    });
+    await seedIssue('WI-next-after-human', { createdTs: 200 });
+
+    const parked = await wi.setWorkItemStateWithAliasInfo('EI-claimed-human', 'needs-human', {
+      harness: H,
+      by: 'tester',
+    });
+
+    expect(parked.appliedState).toBe('needs-human');
+    const released = await db.sql<{ status: string; taken_by: string | null; taken_at: string | null; last_progress_at: string | null }[]>`
+      SELECT status, taken_by, taken_at, last_progress_at
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-claimed-human'`;
+    expect(released[0]).toMatchObject({
+      status: 'needs-human',
+      taken_by: null,
+      taken_at: null,
+      last_progress_at: null,
+    });
+
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-2' })).toMatchObject({
+      id: 'WI-next-after-human',
+    });
+  });
+
   it('refuses an unstructured needs-human request instead of creating a write-only park', async () => {
     await seedIssue('EI-echo-1', { kind: 'change', status: 'open', createdTs: 100, payload: {} });
 
