@@ -233,6 +233,15 @@ export function isTestFile(rel) {
  */
 export const DECLARED_FIELDS = [
   {
+    id: 'CellSpec.assessment',
+    name: 'assessment',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a cell registration declaring `assessment: { path, codes, evidence }`',
+    consumer:
+      'cell-read.ts resolving that path + its evidence into the result `assessment` (+ state:read hoisting an UNAVAILABLE one into `summary` and listing `assessmentCodes` in the directory)',
+    why: 'D-008. This field is the whole decision-ready half of a cell: the closed enum saying what the raw value MEANS and what is SAFE to do under it. Unconsumed, a caller is handed a bare number with its semantics silently dropped and falls back to inventing an interpretation — which is the precise failure the assessment replaced the falsifier to fix, since a falsifier could only ever say what NOT to conclude. Worse here than for most rows: the read contract can also report `status:"unavailable"`, so a DROPPED declaration is indistinguishable from a cell that honestly could not assess itself. It fails silently and in the confident direction.',
+  },
+  {
     id: 'CellSpec.unknownHoist',
     name: 'unknownHoist',
     declaredIn: 'packages/operator-core/lib/cell-registry.ts',
