@@ -251,6 +251,13 @@ describe('test-files router', () => {
       '../../../templates/papercusp-android-app/checks/composition-integrity.fixture.test.ts',
     );
   });
+
+  it('routes papercusp-app composition checks to template-kit instead of root discovery', () => {
+    const route = discoverVitestRoute('templates/papercusp-app/checks/composition-integrity.test.ts');
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/template-kit'));
+    expect(route.config).toBe('vitest.config.ts');
+    expect(route.requested).toBe('../../../templates/papercusp-app/checks/composition-integrity.test.ts');
+  });
 });
 
 // P-009 / WI-4534: the false-green refusal. A raw `vitest run <paths>` reports success while
