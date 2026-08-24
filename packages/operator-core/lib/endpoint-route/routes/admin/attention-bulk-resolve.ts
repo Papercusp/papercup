@@ -54,6 +54,7 @@ import {
   settleRunPhase,
   type BulkRunSeedItem,
 } from '../../../attention/bulk-run-store';
+import { notifyBulkRunChanged } from '../../../attention/bulk-run-sync';
 
 /** Cap one run so a mis-click on an unfiltered inbox cannot enqueue thousands. */
 const MAX_RUN_ITEMS = 200;
@@ -283,8 +284,7 @@ async function launchResolver(
  *  fallback still picks it up, so a notify failure must never fail the op. */
 async function invalidateBulkRun(): Promise<void> {
   try {
-    const { notifySyncInvalidate } = await import('../../../sync-sse');
-    await notifySyncInvalidate('plans.attentionBulkRun');
+    await notifyBulkRunChanged();
   } catch {
     /* the poll fallback still picks it up */
   }

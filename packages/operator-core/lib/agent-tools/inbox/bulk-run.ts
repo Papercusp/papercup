@@ -54,6 +54,10 @@ import {
 } from '../../attention/bulk-run-store';
 import { upsertTriage } from '../../attention/triage-store';
 import {
+  notifyBulkRunAndAttentionChanged,
+  notifyBulkRunChanged,
+} from '../../attention/bulk-run-sync';
+import {
   dispatchAttentionTerminalAction,
   type TerminalActionDependencies,
   type TerminalAttentionItem,
@@ -501,9 +505,7 @@ export const bulkRunAct = defineTool({
       }
 
       try {
-        const { notifySyncInvalidate } = await import('../../sync-sse');
-        await notifySyncInvalidate('plans.attentionBulkRun');
-        await notifySyncInvalidate('plans.attention');
+        await notifyBulkRunAndAttentionChanged();
       } catch {
         /* poll fallback */
       }
@@ -728,9 +730,7 @@ export const bulkRunReport = defineTool({
       }
 
       try {
-        const { notifySyncInvalidate } = await import('../../sync-sse');
-        await notifySyncInvalidate('plans.attentionBulkRun');
-        await notifySyncInvalidate('plans.attention');
+        await notifyBulkRunAndAttentionChanged();
       } catch {
         /* the poll fallback still picks it up */
       }
@@ -793,8 +793,7 @@ export const bulkRunSettle = defineTool({
       : await settleRunPhase({ runId, resolverOwner: identity.ownerId });
 
     try {
-      const { notifySyncInvalidate } = await import('../../sync-sse');
-      await notifySyncInvalidate('plans.attentionBulkRun');
+      await notifyBulkRunChanged();
     } catch {
       /* poll fallback */
     }
