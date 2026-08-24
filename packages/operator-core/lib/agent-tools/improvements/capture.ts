@@ -24,7 +24,11 @@ import {
 } from '../../harness/improvements/capture-core';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
-import { CONDITION_KEY_RULE, OBSERVATION_TITLE_RULE } from '../../harness/improvements/observation-title-guidance';
+import {
+  CONDITION_KEY_RULE,
+  OBSERVATION_EVIDENCE_RULE,
+  OBSERVATION_TITLE_RULE,
+} from '../../harness/improvements/observation-title-guidance';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
@@ -320,7 +324,9 @@ export default defineTool({
   description:
     'Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → agent-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. lane:"observation" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).',
   guidance: {
-    when: 'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them.',
+    when:
+      'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. ' +
+      OBSERVATION_EVIDENCE_RULE,
     notWhen:
       'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:"self" to claim and observation.refs for evidence attribution.',
     chaining:
@@ -616,7 +622,7 @@ export default defineTool({
           .strict()
           .optional()
           .describe(
-            'structured fields for a lane:observation record. The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.',
+            `structured fields for a lane:observation record. ${OBSERVATION_EVIDENCE_RULE} The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.`,
           ),
         // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
         // the ONE schema bump — the full shape is declared here so the tool contract never

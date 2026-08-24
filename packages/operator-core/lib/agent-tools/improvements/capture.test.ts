@@ -679,6 +679,31 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     // fail-loud: the rejection NAMES the unrecognized key (not a silent strip / no opaque pass)
     expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('bogusNewField');
   });
+
+  it('routes free-text evidence to body and rejects observation.evidence (EI-21310187819463956)', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: { observation?: { description?: string } };
+    };
+    expect(json.properties?.observation?.description).toMatch(/top-level body/i);
+    expect(json.properties?.observation?.description).toMatch(/observation\.evidence is not a valid field/i);
+    expect(json.properties?.observation?.description).toMatch(/observation\.ratings\[criterion\]\.evidence/i);
+
+    const misplaced = argsSchema.safeParse({
+      title: 'free-text observation evidence routing',
+      lane: 'observation',
+      observation: { kind: 'friction', evidence: 'narrative evidence' },
+    });
+    expect(misplaced.success).toBe(false);
+    expect(JSON.stringify(misplaced.success ? [] : misplaced.error!.issues)).toContain('evidence');
+
+    const correctlyPlaced = argsSchema.safeParse({
+      title: 'free-text observation evidence routing',
+      lane: 'observation',
+      body: 'narrative evidence',
+      observation: { kind: 'friction' },
+    });
+    expect(correctlyPlaced.success).toBe(true);
+  });
 });
 
 /**
