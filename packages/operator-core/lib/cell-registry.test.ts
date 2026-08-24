@@ -21,15 +21,24 @@ import {
  * derived from (D-036) — different domains, different stores, different authors.
  */
 
-/** `git-pipeline-position` — falsifier is a different SUBJECT (change vs mechanism). */
+/** `git-pipeline-position` — a POLL cell, so it must carry a real assessment. */
 const pipelineCell = (): CellSpec => ({
   cell: 'git.pipelinePosition',
   owner: 'su-28464',
   headline: 'positions.onStaging',
-  falsifier: {
-    field: 'stages[].health',
-    measurement: "the git-sync routine's own error ticks and last-tick age",
-    kills: 'not-past reads as "wait" when the leg is actually dead and waiting is futile',
+  assessment: {
+    path: 'assessments.position',
+    codes: {
+      advancing: {
+        meaning: 'the change is moving through the pipeline and the legs are ticking.',
+        safeAction: 'Wait. There is no lever to pull.',
+      },
+      'leg-dead': {
+        meaning: 'the leg is not past this stage AND the mechanism moving it has stopped.',
+        safeAction: 'Investigate the named stage. Waiting is futile — this is the reading a position boolean alone cannot distinguish from "not yet".',
+      },
+    },
+    evidence: ['stages[].health'],
   },
   nullable: true,
   unknownHoist: 'stagesUnknown',
@@ -47,16 +56,19 @@ const pipelineCell = (): CellSpec => ({
   ordered: { stages: ['committedLocal', 'onStaging', 'inMain', 'deployed'] },
 });
 
-/** `session.state` — falsifier is a DERIVATION LEVEL (raw leg vs verdict). */
+/**
+ * `session.state` — the file's generic KNOWN-GOOD spec, and an EVENT-signalled one.
+ *
+ * ⚠ `assessment: null` is REQUIRED here, not an omission (D-016). An event cell has no
+ * resolver payload to read a code out of, so a non-null assessment is rejected
+ * (`assessment-on-event-cell`) — and since P-006 the field cannot simply be left off.
+ * Null is how an event cell SAYS it has no semantics channel.
+ */
 const sessionCell = (): CellSpec => ({
   cell: 'session.state',
+  assessment: null,
   owner: 'presence-derivation-unification-2026-07-17',
   headline: 'heartbeatFresh',
-  falsifier: {
-    field: 'sessionState',
-    measurement: 'wakeability + recorded-session + pid probe + hardStale legs',
-    kills: 'a fresh heartbeat reads as "working" when the session is warm-dead',
-  },
   nullable: true,
   unknownHoist: 'subjectsWithoutSignal',
   callerRelativity: { kind: 'global' },
@@ -77,15 +89,24 @@ const sessionCell = (): CellSpec => ({
   shape: 'Map<ownerId, SessionState>',
 });
 
-/** `port.listener` — falsifier is EXISTENCE, and relativity is AMBIENT. */
+/** `port.listener` — a POLL cell whose relativity is AMBIENT. */
 const portCell = (): CellSpec => ({
   cell: 'port.listener',
   owner: 'papercusp',
   headline: 'pid',
-  falsifier: {
-    field: 'ownerVisible',
-    measurement: 'whether the kernel disclosed the socket owner to this uid',
-    kills: 'pid:null reads as "nothing bound" when the port IS bound by another user',
+  assessment: {
+    path: 'assessments.binding',
+    codes: {
+      unbound: {
+        meaning: 'no process is listening on this port, and the kernel disclosed enough to say so.',
+        safeAction: 'Bind it.',
+      },
+      'bound-owner-hidden': {
+        meaning: 'the port IS bound, but the kernel did not disclose the owner to this uid.',
+        safeAction: 'Do NOT read the absent pid as a free port. Re-probe with sufficient privilege before binding.',
+      },
+    },
+    evidence: ['ownerVisible'],
   },
   nullable: true,
   unknownHoist: 'ownerHidden',
@@ -236,27 +257,37 @@ describe('P-019 — visibility and federation are declared at registration', () 
   });
 });
 
-describe('axis 1 — the falsifier cannot be the headline wearing a hat', () => {
-  it('refuses a falsifier that IS the headline', () => {
-    const spec = { ...pipelineCell(), falsifier: { ...pipelineCell().falsifier, field: 'positions.onStaging' } };
-    expect(validateCellSpec(spec).map((r) => r.rule)).toContain('falsifier-is-headline');
+/**
+ * P-006/D-016 — `assessment` IS REQUIRED, AND NULL IS THE EVENT CELL'S ANSWER.
+ *
+ * These two tests are the pair. Either one alone reads as a working requirement while
+ * the other direction is broken, and the broken direction is silent: a requirement that
+ * also caught event cells would make them unregisterable (they cannot carry an
+ * assessment at all — `assessment-on-event-cell`), and a requirement that exempted
+ * anything non-poll would let a cell with a malformed `changeSignal` ship with no
+ * declared semantics.
+ */
+describe('P-006 — a value-bearing cell must declare what its value MEANS', () => {
+  it('REFUSES a poll cell whose assessment is null', () => {
+    const spec: CellSpec = { ...pipelineCell(), assessment: null };
+    const r = validateCellSpec(spec);
+    expect(r.map((x) => x.rule)).toContain('assessment-missing');
+    expect(r.find((x) => x.rule === 'assessment-missing')!.axis).toBe('assessment');
   });
 
-  // The whole point of axis 1: a cell that "declares health" by re-projecting its
-  // own position is a confident wrong answer wearing the contract's badge.
-  it('refuses a falsifier DERIVED from the headline rather than independently measured', () => {
+  it('ACCEPTS an event cell whose assessment is null — that is the legal answer, not an omission', () => {
+    expect(validateCellSpec(sessionCell())).toEqual([]);
+  });
+
+  // The requirement is keyed on NOT-event rather than on IS-poll, so a broken
+  // discriminator falls INTO the requirement instead of silently out of it.
+  it('REFUSES a null assessment when changeSignal is malformed, rather than exempting it', () => {
     const spec = {
       ...pipelineCell(),
-      falsifier: { ...pipelineCell().falsifier, measurement: 'computed from positions.onStaging' },
+      assessment: null,
+      changeSignal: undefined as unknown as CellSpec['changeSignal'],
     };
-    const r = validateCellSpec(spec);
-    expect(r.map((x) => x.rule)).toContain('falsifier-derived-from-headline');
-    expect(r[0].axis).toBe(1);
-  });
-
-  it('refuses an incomplete falsifier', () => {
-    const spec = { ...sessionCell(), falsifier: { field: 'sessionState', measurement: '  ', kills: '' } };
-    expect(validateCellSpec(spec).map((r) => r.rule)).toContain('falsifier-incomplete');
+    expect(validateCellSpec(spec).map((x) => x.rule)).toContain('assessment-missing');
   });
 });
 
@@ -369,7 +400,6 @@ describe('registration refuses rather than admits-and-flags', () => {
   it('throws, reports EVERY violation at once, and does not register', () => {
     const broken: CellSpec = {
       ...sessionCell(),
-      falsifier: { field: 'heartbeatFresh', measurement: 'heartbeatFresh', kills: 'x' },
       unknownHoist: undefined,
       provenance: { obtainedBy: 'fixtures', liveExercised: false, evidence: '' },
       resolver: '',
@@ -382,7 +412,7 @@ describe('registration refuses rather than admits-and-flags', () => {
     }
     expect(err).toBeInstanceOf(CellRegistrationError);
     const axes = new Set(err!.rejections.map((r) => r.axis));
-    expect([...axes].sort()).toEqual([1, 2, 4, 5]);
+    expect([...axes].sort()).toEqual([2, 4, 5]);
     expect(getCell('session.state', { ownerId: 'su-a' })).toBeUndefined();
   });
 });
@@ -530,8 +560,8 @@ describe('P-021 — materiality is optional, but a declared one must be able to 
  * Two properties carry this feature and both are asserted here rather than assumed:
  *
  *  (1) THE THING IT MUST NOT BECOME. D-014 rules that ownership stays its own cell with
- *      its own falsifier, and the plan's earlier P-005 draft assumed a cell could carry a
- *      falsifier per BLOCK. A pointer is the sanctioned alternative ONLY while it stays
+ *      its own independent check, and the plan's earlier P-005 draft assumed a cell could
+ *      carry such a check per BLOCK. A pointer is the sanctioned alternative ONLY while it stays
  *      incapable of asserting a measurement — which is a property of the TYPE, so the
  *      test that matters is the compile-time one recorded at the bottom of this block.
  *
@@ -611,14 +641,14 @@ describe('cell contract — pointers (P-006)', () => {
   });
 
   /**
-   * D-014's GUARD, and the only form it can take. "A pointer must not be a second
-   * falsifier" is not a value a validator can check — it is a claim about the SHAPE of
+   * D-014's GUARD, and the only form it can take. "A pointer must not carry a second
+   * measurement" is not a value a validator can check — it is a claim about the SHAPE of
    * `CellPointer`, which has no field/measurement/kills to carry a measurement in. This
    * asserts that shape stays closed: if someone widens it later, `@ts-expect-error`
    * stops erroring and this test fails at COMPILE time, which is the only moment the
    * property can actually be enforced.
    */
-  it('CANNOT express a falsifier — the type has nowhere to put one (D-014)', () => {
+  it('CANNOT express a measurement — the type has nowhere to put one (D-014)', () => {
     const spec: CellSpec = {
       ...pipelineCell(),
       pointers: [

@@ -39,17 +39,18 @@ import { registerCell, type CellSpec } from './cell-registry';
 import { AGENT_GOAL_CELL_ID } from './agent-goal-ref';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
- * cell-assessment-schema-and-falsifier-removal-2026-08-21 P-004 — EVERY CELL NOW
- * DECLARES AN `assessment` BESIDE ITS RETIRING `falsifier`.
+ * cell-assessment-schema-and-falsifier-removal-2026-08-21 P-004/P-006 — EVERY CELL
+ * DECLARES AN `assessment`, AND THE AXIS-1 FALSIFIER IT ONCE SAT BESIDE IS GONE.
  *
  * Each block below was translated BY HAND from the P-001 truth tables (D-009 for the
  * six pipeline/gate cells, D-010 for host/goal/testing), never derived from the
- * `kills` prose beside it — D-011 rule 2. A `kills` sentence is a NEGATIVE claim and
- * a `safeAction` is a POSITIVE one, so mapping one onto the other mechanically
- * manufactures guidance nobody authored. Where a retiring falsifier's INDEPENDENT
- * measurement still carries information it appears below as assessment EVIDENCE
- * (D-004) — which is a different job: it substantiates the positive reading rather
- * than refuting a wrong one.
+ * `kills` prose that used to sit beside it — D-011 rule 2. A `kills` sentence was a
+ * NEGATIVE claim and a `safeAction` is a POSITIVE one, so mapping one onto the other
+ * mechanically manufactures guidance nobody authored. That is also why P-006 could
+ * DELETE the old field rather than translate it: where its INDEPENDENT measurement
+ * still carried information, that measurement appears below as assessment EVIDENCE
+ * (D-004) — a different job, substantiating the positive reading rather than refuting
+ * a wrong one — and where it carried none, it left with the field.
  *
  * ── ⚠ WHY SOME OBVIOUS EVIDENCE PATHS ARE DELIBERATELY ABSENT ───────────────────
  *
@@ -86,9 +87,9 @@ const OPERATOR_PIPELINE_VISIBILITY = { kind: 'harness', ref: 'papercusp' } as co
  * GRAIN NOTE (open, filed for P-003): `gitPipelinePosition()` is ONE resolver, which
  * satisfies axis 5, but it returns several independently addressable values
  * (`positions`, `stages`, `serving`, `changeInCandidate`, `gitSync`,
- * `sweepExposure`) with DIFFERENT falsifiers and different caller-relativity. "One
- * resolver" therefore does not imply "one cell". This registers the composite under
- * its strongest axis-1 pairing; if the registry later grows a declared grain, this
+ * `sweepExposure`) with DIFFERENT independent checks and different caller-relativity.
+ * "One resolver" therefore does not imply "one cell". This registers the composite
+ * under its strongest such pairing; if the registry later grows a declared grain, this
  * spec should split rather than be stretched.
  */
 export const GIT_PIPELINE_POSITION_CELL: CellSpec = {
@@ -336,7 +337,7 @@ export const GATE_VERDICT_CELL: CellSpec = {
       'the green-checkpoint routine metadata (`gate_health`) via gitPipelineSnapshot, corrected by pinProvenGateCorrection',
     liveExercised: true,
     evidence:
-      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned gate.consecutiveReds=0 with fireStale=false — while verdictProvenance.mainFastForwarded=FALSE, deployedBehindGreenPin=19 and stages[main].health="stalled". THE FALSIFIER FIRED IN THE REAL SYSTEM: the headline read as a passing gate while an independent git-ancestry measurement showed main 19 commits behind the pin and not fast-forwarded. The tool\'s own summary said "gate reports 0 reds, but main has NOT fast-forwarded — do not read this as fully healthy". RE-EXERCISED 09:2xZ with the P-007 hoist in place, against the real gate_health blob: countersUnknown=null and verdictUnknown=[] — i.e. the live counter IS measured and the hoist correctly stays SILENT. That negative result is the one worth recording: a hoist that fired on the healthy path would be one agents learn to ignore.',
+      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned gate.consecutiveReds=0 with fireStale=false — while verdictProvenance.mainFastForwarded=FALSE, deployedBehindGreenPin=19 and stages[main].health="stalled". THE INDEPENDENT CHECK FIRED IN THE REAL SYSTEM: the headline read as a passing gate while an independent git-ancestry measurement showed main 19 commits behind the pin and not fast-forwarded. The tool\'s own summary said "gate reports 0 reds, but main has NOT fast-forwarded — do not read this as fully healthy". RE-EXERCISED 09:2xZ with the P-007 hoist in place, against the real gate_health blob: countersUnknown=null and verdictUnknown=[] — i.e. the live counter IS measured and the hoist correctly stays SILENT. That negative result is the one worth recording: a hoist that fired on the healthy path would be one agents learn to ignore.',
   },
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
@@ -365,15 +366,15 @@ export const GATE_VERDICT_CELL: CellSpec = {
    * a block without naming the cell that owns it, and a reader who noticed it had no id
    * to read next. Naming a field is not naming a door.
    *
-   * NOT a second falsifier (D-014). The mutual-falsifier pairing with cell 4 documented
-   * above is untouched; this adds no measurement and kills no misreading of its own.
+   * NOT a second independent check (D-014). The mutual pairing with cell 4 documented
+   * above is untouched; this adds no measurement and makes no claim of its own.
    */
   pointers: [
     {
       cell: 'gate.greenCheckpoint.ownership',
       when: 'the streak is nonzero (or `stalled`) — i.e. any time you are about to act on a red gate',
       answers:
-        'WHO owns this red and whether that ownership is REAL — the owning work-item, its claim state, and the holder\'s live session state, which is the falsifier that separates "someone is on it" from a lease held by an agent that died. Read it before you claim the incident yourself or conclude nobody has it.',
+        'WHO owns this red and whether that ownership is REAL — the owning work-item, its claim state, and the holder\'s live session state, which is the independent check that separates "someone is on it" from a lease held by an agent that died. Read it before you claim the incident yourself or conclude nobody has it.',
     },
   ],
 
@@ -574,8 +575,10 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
   headline: 'gate.ownership.claimState',
 
   /**
-   * D-009, first-match. This table is where the falsifier's long correction history
-   * above finally becomes BRANCHABLE: `held-live`, `held-needs-confirmation` and
+   * D-009, first-match. This table is where the holder-liveness correction history
+   * (D-018, EI-20209536730887204 — see `ownershipContradicted` in coord/gate-ownership.ts,
+   * which carries it in full) finally becomes BRANCHABLE: `held-live`,
+   * `held-needs-confirmation` and
    * `held-by-ended-session` are the three readings that the single word `held` on a
    * claim row collapses into one, and each carries a DIFFERENT action — coordinate,
    * confirm, reclaim. D-018's sign-flip (treating `recorded` as dead) and the
@@ -646,7 +649,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
       "findConditionObjects() over the work-item↔condition link for `green-stall:<harness>`, with the holder's liveness resolved separately through the shared presence oracle",
     liveExercised: true,
     evidence:
-      'P-006 (thread fold) re-exercised UNMOCKED 2026-08-03T02:55Z, and the run CAUGHT A REAL DEFECT that every unit test had passed over: the window reader was dispatching issue-family reads to work-items.ts\'s coord store, which is pinned to the `default` workspace while live issue threads sit in `papercusp-workspace`. It matched zero rows and returned a confident `total: 0` — WI-6857, which has TEN posts, read back as 0/0, indistinguishable from an item nobody had commented on. Fixed by dispatching issue-family to issues-engineer\'s dynamically-scoped store (guarded by work-items-thread-window-family-dispatch.test.ts). Post-fix live reads: WI-6857 -> shown 3 / total 10, oldest-first, bodies 3,933/4,928/2,317 chars all correctly flagged truncated at 400; EI-19379911903391487 -> topic pointer `topic:papercusp-improvement` with since=incident-start, proving the tags leg is scoped correctly too (its empty counterpart on WI-6857 is a genuine absence, verified by contrast); WI-7282 (bridge-minted) -> a MEASURED silence, shown 0 / total 0 / unknown null, which is the default state of a fresh incident since threads are created on first post; a nonexistent id -> `resolver-failed`, never silence. ALSO: readGateOwnership() run UNMOCKED against the live store 2026-08-03T02:22Z. (a) `green-stall:papercusp` resolved to a MEASURED `no-object` — the condition is genuinely resolved right now (alarm 2026-08-02T15:00:02Z, recovery 15:45:03Z), and the run confirms the empty is measured rather than a swallowed failure, since the same call path returned a real row for another key. (b) The shared condition query returned `single-primary:no-primary -> WI-7282, claimState claimable, duplicates []` — a live non-empty proving the join resolves real rows and the singleton holds. (c) THE FALSIFIER APPARATUS, exercised on real owners: resolveSessionStates returned `su-4a6e2255… -> live/heartbeatFresh:true` and a nonexistent owner -> `ended`/**heartbeatFresh:true**. That second pair IS the premise this falsifier rests on, observed live: heartbeat freshness reads TRUE for an owner the oracle calls ended, so a reader substituting heartbeatFresh for sessionState would report a dead holder as live. NOT yet covered live: a genuinely HELD lease contradicted by a dead holder — no agent has claimed this condition yet, so the held+ended path remains unit-only. THE RUN ALSO CAUGHT A REAL ERROR: it falsified the author\'s own recorded belief that the bridge was not yet running (it was — bg-host executes tsx straight from the staging tree, so no deploy is involved), which is precisely the confidently-wrong-resolver class this axis exists to catch.',
+      'P-006 (thread fold) re-exercised UNMOCKED 2026-08-03T02:55Z, and the run CAUGHT A REAL DEFECT that every unit test had passed over: the window reader was dispatching issue-family reads to work-items.ts\'s coord store, which is pinned to the `default` workspace while live issue threads sit in `papercusp-workspace`. It matched zero rows and returned a confident `total: 0` — WI-6857, which has TEN posts, read back as 0/0, indistinguishable from an item nobody had commented on. Fixed by dispatching issue-family to issues-engineer\'s dynamically-scoped store (guarded by work-items-thread-window-family-dispatch.test.ts). Post-fix live reads: WI-6857 -> shown 3 / total 10, oldest-first, bodies 3,933/4,928/2,317 chars all correctly flagged truncated at 400; EI-19379911903391487 -> topic pointer `topic:papercusp-improvement` with since=incident-start, proving the tags leg is scoped correctly too (its empty counterpart on WI-6857 is a genuine absence, verified by contrast); WI-7282 (bridge-minted) -> a MEASURED silence, shown 0 / total 0 / unknown null, which is the default state of a fresh incident since threads are created on first post; a nonexistent id -> `resolver-failed`, never silence. ALSO: readGateOwnership() run UNMOCKED against the live store 2026-08-03T02:22Z. (a) `green-stall:papercusp` resolved to a MEASURED `no-object` — the condition is genuinely resolved right now (alarm 2026-08-02T15:00:02Z, recovery 15:45:03Z), and the run confirms the empty is measured rather than a swallowed failure, since the same call path returned a real row for another key. (b) The shared condition query returned `single-primary:no-primary -> WI-7282, claimState claimable, duplicates []` — a live non-empty proving the join resolves real rows and the singleton holds. (c) THE FALSIFIER APPARATUS, exercised on real owners: resolveSessionStates returned `su-4a6e2255… -> live/heartbeatFresh:true` and a nonexistent owner -> `ended`/**heartbeatFresh:true**. That second pair IS the premise this independent check rests on, observed live: heartbeat freshness reads TRUE for an owner the oracle calls ended, so a reader substituting heartbeatFresh for sessionState would report a dead holder as live. NOT yet covered live: a genuinely HELD lease contradicted by a dead holder — no agent has claimed this condition yet, so the held+ended path remains unit-only. THE RUN ALSO CAUGHT A REAL ERROR: it falsified the author\'s own recorded belief that the bridge was not yet running (it was — bg-host executes tsx straight from the staging tree, so no deploy is involved), which is precisely the confidently-wrong-resolver class this axis exists to catch.',
   },
 
   resolver: 'readGateOwnership() @ packages/operator-core/lib/coord/gate-ownership.ts',
@@ -724,10 +727,10 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
 
   provenance: {
     obtainedBy:
-      "devDeployState()'s release-checkout HEAD (a single `git log -1`), plus a live systemd probe for the falsifier",
+      "devDeployState()'s release-checkout HEAD (a single `git log -1`), plus a live systemd probe for the independent start-time evidence",
     liveExercised: true,
     evidence:
-      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned deployedSha="dab4a3d8d7471313bd704f2aadbd0910025a470d" with serving.startedSinceCodeChange=true, pid=1607181, codeAsOfSource="deploy" — the falsifier agreed on this read, and deployOrigin="stale-behind-gate" showed the deployed sha trailing the green pin by 19 commits, which is the state this cell exists to make legible.',
+      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned deployedSha="dab4a3d8d7471313bd704f2aadbd0910025a470d" with serving.startedSinceCodeChange=true, pid=1607181, codeAsOfSource="deploy" — the independent start-time probe agreed on this read, and deployOrigin="stale-behind-gate" showed the deployed sha trailing the green pin by 19 commits, which is the state this cell exists to make legible.',
   },
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
@@ -818,7 +821,7 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
       'the greenPinAtStagingHead leg of devDeployState() — a `rev-list --count` between the green pin (main) and staging HEAD, measured in the integration tree',
     liveExercised: true,
     evidence:
-      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned mainFastForwarded=FALSE with lastGreenSha="7ad7d26cf991…", deployedBehindGreenPin=19 and stages[main].health="stalled" / detail "main is not fast-forwarded to the newest green pin", while the falsifier gate.fireStale=false and lastGreenAtMs=1785142161612 showed the gate WAS still firing — i.e. the live system was in exactly the state this cell must not misreport as a stall.',
+      'dev:pipeline_position run against the live repo 2026-07-27T08:55Z returned mainFastForwarded=FALSE with lastGreenSha="7ad7d26cf991…", deployedBehindGreenPin=19 and stages[main].health="stalled" / detail "main is not fast-forwarded to the newest green pin", while the independent check gate.fireStale=false and lastGreenAtMs=1785142161612 showed the gate WAS still firing — i.e. the live system was in exactly the state this cell must not misreport as a stall.',
   },
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
@@ -895,7 +898,7 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
 
   provenance: {
     obtainedBy:
-      'the newest perf-signals-v1 capture via readLatestPerfSignals(), evaluated by the same evaluateMemoryPressure() branch consumed by the infra-liveness perf verdict; free-memory falsifier via getHostSnapshot()',
+      'the newest perf-signals-v1 capture via readLatestPerfSignals(), evaluated by the same evaluateMemoryPressure() branch consumed by the infra-liveness perf verdict; free-memory evidence via getHostSnapshot()',
     liveExercised: true,
     evidence:
       'host:memory_pressure run against the live 2026-08-14 perf capture returned a timestamped memory verdict with both PSI units, the exact PERF_BUDGETS thresholds, and an independently-sampled host.memFreePct; cell-assessment-reality exercises the real handler so shape drift cannot hide behind fixtures.',
@@ -950,7 +953,8 @@ export const AGENT_GOAL_CELL: CellSpec = {
    * of these under `goal.` would make the evidence absent, downgrading the assessment to
    * `unavailable` in THE SINGLE MOST ORDINARY CASE THERE IS. That is P-011's bug
    * verbatim, one field over: the headline was hoisted flat to avoid it and the
-   * falsifier was not. `coord:goal` hoists all three flat precisely so this works.
+   * independent leg beside it was not. `coord:goal` hoists all three flat precisely so
+   * this works.
    */
   assessment: {
     path: 'assessment',
@@ -1063,9 +1067,9 @@ export const AGENT_GOAL_CELL: CellSpec = {
  * ══════════════════════════════════════════════════════════════════════════════ */
 
 /**
- * WHY THE POPULATION IS A CELL AT ALL, and not just a field of the one below: it
- * is the falsifier, and a falsifier a reader cannot independently re-read is a
- * promise rather than a check.
+ * WHY THE POPULATION IS A CELL AT ALL, and not just a field of the one below: it is
+ * the independent check on the ratio, and a check a reader cannot independently
+ * re-read is a promise rather than a check.
  */
 export const TESTING_CENSUS_POPULATION_CELL: CellSpec = {
   cell: 'testing.census.population',
@@ -1157,28 +1161,17 @@ export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
   headline: 'coverage.pct',
 
   /**
-   * Axis 1. The population count again — but here it is doing different work. The
-   * headline is produced by JOINING surfaces against coverage_evidence; the
-   * falsifier is the surface table alone, with no evidence join, so the two can
-   * disagree in both directions (a population with no evidence, evidence for
-   * retired surfaces).
-   *
-   * It kills TWO readings, and the second is the subtle one:
+   * ⚠ `census.surfaces` IS THE DENOMINATOR, AND IT IS CARRIED AS EVIDENCE BELOW FOR A
+   * MEASURED REASON. The headline ratio JOINS surfaces against coverage_evidence; the
+   * surface table ALONE, with no join, can disagree with it in both directions (a
+   * population with no evidence, evidence for retired surfaces). Two readings depend on
+   * seeing it, and the second is the subtle one:
    *   - the vacuous ratio: 0 of 0 rendered as 0% or 100%.
-   *   - the TRUNCATED population: a ratio computed over a world smaller than the
-   *     real one, which always flatters. Measured 2026-08-18: the mcp-tool
-   *     population censused as 49 against 675 tool files on disk (WI-39812), so
-   *     that kind's ratio was computed over 7% of its world and could not show the
-   *     other 93% as gaps.
+   *   - the TRUNCATED population: a ratio computed over a world smaller than the real
+   *     one, which always flatters. Measured 2026-08-18: the mcp-tool population
+   *     censused as 49 against 675 tool files on disk (WI-39812), so that kind's ratio
+   *     was computed over 7% of its world and could not show the other 93% as gaps.
    */
-  falsifier: {
-    field: 'census.surfaces',
-    measurement:
-      'the surface population from harness_shared.testing_surfaces alone, with no join against coverage_evidence — the denominator, measured independently of the evidence that forms the numerator',
-    kills:
-      '"0% / 100% covered" read as a measurement when the denominator is 0 or truncated. A ratio over an empty census is not-measured, and a ratio over a census that enumerated 49 of 675 surfaces is a real number about a fake world — flattering in the direction nobody checks.',
-  },
-
   /**
    * D-010, with the code RENAMED to `no-population` per D-012 — the truth table called
    * it `not-measured`, which is also a `CellUnknownCode`, and D-008 forbids a domain
