@@ -127,6 +127,37 @@ describe('attention bulk-run store (real PG)', () => {
     expect(await getRunItems(run.runId)).toHaveLength(3);
   });
 
+  it('rolls back the run and earlier item rows when manifest seeding fails', async () => {
+    const ws = `ws-create-run-rollback-${Date.now()}`;
+    const runId = `bulk-rollback-${Date.now()}`;
+
+    // JSON.stringify runs while the second item is being seeded, after the
+    // run row and first item have already been written. The transaction must
+    // remove both instead of leaving a partial pending run behind.
+    await expect(
+      createRun({
+        workspaceId: ws,
+        runId,
+        items: [
+          { itemId: 'first-item', ref: {} },
+          { itemId: 'second-item', ref: { unsupported: BigInt(1) } },
+        ],
+      }),
+    ).rejects.toThrow(/BigInt|serialize/i);
+
+    expect(await getRun(runId, ws)).toBeNull();
+    expect(await getRunItems(runId, ws)).toEqual([]);
+
+    // A retry is not blocked by a stranded single-flight row.
+    const retry = await createRun({
+      workspaceId: ws,
+      runId: `${runId}-retry`,
+      items: [{ itemId: 'retry-item', ref: {} }],
+    });
+    expect(retry.phase).toBe('pending');
+    expect(await getRunItems(retry.runId, ws)).toHaveLength(1);
+  });
+
   it('derives counters from item rows, so a re-reported item cannot double-count', async () => {
     const run = await createRun({ items: seed('c') });
 
