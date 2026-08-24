@@ -28,6 +28,7 @@ import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { persistDedupEdges } from './dedup-edges';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveGoalContext } from '../../modes/goal-context';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
@@ -971,7 +972,7 @@ export async function createOneWorkItem(
         const adoptedId = settled.winnerId ?? workItem.id;
         const winnerEdges = await persistDedupEdges({
           itemId: adoptedId,
-          harness: winner?.harness ?? harnessForItem ?? ctx.harnessSlug,
+          harness: resolveConcreteHarnessSlug(winner?.harness ?? harnessForItem, ctx) ?? undefined,
           workspaceId,
           candidates: similarOpen,
         }).catch(() => 0);
@@ -1105,7 +1106,7 @@ export async function createOneWorkItem(
     // and non-fatal — see dedup-edges.ts for why the lexical legs are excluded.
     const dedupEdges = await persistDedupEdges({
       itemId: workItem.id,
-      harness: workItem.harness ?? harnessForItem ?? ctx.harnessSlug,
+      harness: resolveConcreteHarnessSlug(workItem.harness ?? harnessForItem, ctx) ?? undefined,
       workspaceId,
       candidates: similarOpen,
     }).catch(() => 0);
