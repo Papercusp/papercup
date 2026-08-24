@@ -200,6 +200,23 @@ function iso(v: Date | string | null | undefined): string | null {
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
 }
 
+/** seed_refs normalizer — a jsonb string[] (parsed or still-serialized). */
+function asStringArray(v: unknown): string[] {
+  const arr = Array.isArray(v)
+    ? v
+    : typeof v === 'string'
+      ? (() => {
+          try {
+            const parsed = JSON.parse(v);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })()
+      : [];
+  return arr.filter((x): x is string => typeof x === 'string' && x !== '');
+}
+
 /** Postgres `jsonb` comes back parsed by the driver, but a legacy/text column
  *  or a hand-written row can still hand us a string — normalize both. */
 function asObject(v: unknown): Record<string, unknown> {
@@ -304,7 +321,8 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
 }
 
 const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
-                     filter_snapshot, total_items, auto_resolved, recommended, skipped, failed,
+                     run_kind, seed_refs, filter_snapshot,
+                     total_items, auto_resolved, recommended, skipped, failed,
                      error, created_at, updated_at, started_at, finished_at`;
 
 const ITEM_COLUMNS = `run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id,
@@ -457,9 +475,25 @@ export async function createRun(input: {
   harnessSlug?: string | null;
   workspaceId?: string;
   runId?: string;
+  /** Which machinery this run rides (migration 937). Defaults to the original
+   *  inbox behavior so every existing call site is unchanged. */
+  runKind?: BulkRunKind;
+  /** REQUIRED for 'plan-cleanup': the click-time membership snapshot (the plan
+   *  slugs the pane was rendering). Ignored for 'inbox-resolve', whose
+   *  membership is the `items` snapshot. */
+  seedRefs?: string[];
 }): Promise<BulkRunRow> {
+  const runKind = input.runKind ?? DEFAULT_RUN_KIND;
   const items = input.items ?? [];
-  if (items.length === 0) throw new Error('createRun: refusing to create a bulk run with zero items');
+  const seedRefs = [...new Set((input.seedRefs ?? []).filter((s) => typeof s === 'string' && s !== ''))];
+  // Same "a run over nothing is a caller bug" rule, per kind: an inbox run needs
+  // its item snapshot; a plan-cleanup run needs its plan-slug snapshot.
+  if (runKind === 'inbox-resolve' && items.length === 0) {
+    throw new Error('createRun: refusing to create a bulk run with zero items');
+  }
+  if (runKind === 'plan-cleanup' && seedRefs.length === 0) {
+    throw new Error('createRun: refusing to create a plan-cleanup run with zero seed plan slugs');
+  }
 
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
@@ -472,8 +506,8 @@ export async function createRun(input: {
   // the friendly half; migration 915's partial unique index is the rail that
   // makes it TRUE rather than likely (a check-then-insert races exactly as wide
   // as its own round trip, which is where a double-click lands).
-  const live = await getRunningRun(ws);
-  if (live) throw new BulkRunAlreadyActiveError(live.runId, live.phase);
+  const live = await getRunningRun(ws, runKind);
+  if (live) throw new BulkRunAlreadyActiveError(live.runId, live.phase, runKind);
 
   // De-dupe defensively: the client builds this list from a virtualized render,
   // and a duplicate id would violate the (workspace, run, item) key mid-insert
@@ -484,25 +518,33 @@ export async function createRun(input: {
     seen.add(i.itemId);
     return true;
   });
-  if (unique.length === 0) throw new Error('createRun: no valid item ids in the snapshot');
+  if (runKind === 'inbox-resolve' && unique.length === 0) {
+    throw new Error('createRun: no valid item ids in the snapshot');
+  }
+  // total_items: the run's unit count for the strip — items for inbox runs,
+  // seed plans for plan-cleanup (its findings accrue during the run and are
+  // counted on their own table, plan-cleanup/run-store.ts).
+  const totalItems = runKind === 'plan-cleanup' ? seedRefs.length : unique.length;
 
   let rows: RawRunRow[];
   try {
     rows = await sql<RawRunRow[]>`
       INSERT INTO harness_shared.attention_bulk_runs
-        (workspace_id, run_id, harness_slug, requested_by, phase, filter_snapshot, total_items)
+        (workspace_id, run_id, harness_slug, requested_by, phase, run_kind, seed_refs,
+         filter_snapshot, total_items)
       VALUES (${ws}, ${runId}, ${input.harnessSlug ?? null}, ${input.requestedBy ?? null},
-              'pending', ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb, ${unique.length})
+              'pending', ${runKind}, ${JSON.stringify(seedRefs)}::jsonb,
+              ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb, ${totalItems})
       RETURNING ${sql.unsafe(RUN_COLUMNS)}
     `;
   } catch (e) {
-    // The rail firing (migration 915) means a concurrent start won the race
+    // The rail firing (migration 916→937) means a concurrent start won the race
     // between our check above and this insert. Re-read and report it as the
     // SAME typed refusal, so the caller cannot tell the two paths apart and a
     // race never surfaces to the owner as a 500.
     if (isSingleFlightViolation(e)) {
-      const live = await getRunningRun(ws);
-      throw new BulkRunAlreadyActiveError(live?.runId ?? null, live?.phase ?? null);
+      const live = await getRunningRun(ws, runKind);
+      throw new BulkRunAlreadyActiveError(live?.runId ?? null, live?.phase ?? null, runKind);
     }
     throw e;
   }
@@ -551,13 +593,17 @@ export async function getRunItems(runId: string, workspaceId?: string): Promise<
  * strip renders idle when this is null or terminal, and running/review from its
  * phase otherwise — which is what makes a run survive a reload (Requirement 7).
  */
-export async function getLatestRun(workspaceId?: string): Promise<BulkRunRow | null> {
+export async function getLatestRun(
+  workspaceId?: string,
+  kind: BulkRunKind | null = DEFAULT_RUN_KIND,
+): Promise<BulkRunRow | null> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
   const rows = await sql<RawRunRow[]>`
     SELECT ${sql.unsafe(RUN_COLUMNS)}
       FROM harness_shared.attention_bulk_runs
      WHERE workspace_id = ${ws}
+       AND (${kind ?? null}::text IS NULL OR run_kind = ${kind ?? null})
      ORDER BY created_at DESC
      LIMIT 1
   `;
@@ -571,26 +617,34 @@ export async function getLatestRun(workspaceId?: string): Promise<BulkRunRow | n
  * "may a new run start" and "is this run still accepting the resolver's work",
  * and is keyed on the same set as migration 915's single-flight index.
  */
-export async function getRunningRun(workspaceId?: string): Promise<BulkRunRow | null> {
+export async function getRunningRun(
+  workspaceId?: string,
+  kind: BulkRunKind | null = DEFAULT_RUN_KIND,
+): Promise<BulkRunRow | null> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
   const rows = await sql<RawRunRow[]>`
     SELECT ${sql.unsafe(RUN_COLUMNS)}
       FROM harness_shared.attention_bulk_runs
      WHERE workspace_id = ${ws} AND phase IN ('pending', 'running')
+       AND (${kind ?? null}::text IS NULL OR run_kind = ${kind ?? null})
      ORDER BY created_at DESC
      LIMIT 1
   `;
   return rows[0] ? mapRun(rows[0]) : null;
 }
 
-export async function getActiveRun(workspaceId?: string): Promise<BulkRunRow | null> {
+export async function getActiveRun(
+  workspaceId?: string,
+  kind: BulkRunKind | null = DEFAULT_RUN_KIND,
+): Promise<BulkRunRow | null> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
   const rows = await sql<RawRunRow[]>`
     SELECT ${sql.unsafe(RUN_COLUMNS)}
       FROM harness_shared.attention_bulk_runs
      WHERE workspace_id = ${ws} AND phase IN ('pending', 'running', 'review')
+       AND (${kind ?? null}::text IS NULL OR run_kind = ${kind ?? null})
      ORDER BY created_at DESC
      LIMIT 1
   `;
@@ -820,11 +874,22 @@ export async function settleRunPhase(input: {
        FOR UPDATE
     `;
     if (!locked[0]) return null;
-    const states = await tx<{ outcome: BulkItemOutcome }[]>`
-      SELECT outcome
-        FROM harness_shared.attention_bulk_run_items
-       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
-    `;
+    // Kind-aware "is anything still waiting on the OWNER?": inbox runs derive
+    // from their item rows; plan-cleanup runs from their findings rows
+    // (migration 937 — same recommended/pending semantics, different table).
+    const runKind = locked[0].run_kind ?? DEFAULT_RUN_KIND;
+    const states =
+      runKind === 'plan-cleanup'
+        ? await tx<{ outcome: string }[]>`
+            SELECT outcome
+              FROM harness_shared.plan_cleanup_run_findings
+             WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+          `
+        : await tx<{ outcome: string }[]>`
+            SELECT outcome
+              FROM harness_shared.attention_bulk_run_items
+             WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+          `;
     const awaitingOwner = states.some((i) => i.outcome === 'recommended' || i.outcome === 'pending');
     const phase: BulkRunPhase = awaitingOwner ? 'review' : 'complete';
     const rows = await tx<RawRunRow[]>`
