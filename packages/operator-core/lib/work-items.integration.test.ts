@@ -9,7 +9,7 @@
  *  • WI-NNN ids are kind-INDEPENDENT (one global sequence across both kind-tables, D-008).
  *  • get/list MERGE across the two kind-tables; default list hides chunks (D-004).
  *  • set_state / claim / release dispatch to the right kind-table.
- *  • cross-kind blocking: a bug blocks a feature via one coord_links edge (D-003).
+ *  • cross-kind blocking: a bug blocks a feature via one canonical work_item_deps edge (D-003).
  *  • promote-to-pipeline mints an F-FIX feature from a bug (D-005).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -28,6 +28,7 @@ import { ensureCoordCapabilityTables, PgEntitySubscriptionStore, PgLinkStore } f
 // WI-38339: the canonical terminal union the notTerminal filter derives from — imported
 // so the drift guard below compares against the SOURCE, not a copy of it.
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import { createBlockingEdgeReader, type BlockingEdgeReader } from './work-item-blocking';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -97,6 +98,7 @@ const wi = await import('./work-items');
 
 let db: FreshPgDb;
 let links: PgLinkStore;
+let blockingLinks: BlockingEdgeReader;
 let subscriptions: PgEntitySubscriptionStore;
 
 beforeAll(async () => {
@@ -132,6 +134,7 @@ beforeAll(async () => {
   // are superseded — re-applying them now conflicts (CREATE VIEW work_items over the
   // base table; ALTER TABLE on a view).
   links = new PgLinkStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
+  blockingLinks = createBlockingEdgeReader(links);
   subscriptions = new PgEntitySubscriptionStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
 }, 90_000);
 
@@ -1278,8 +1281,8 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
     expect(await wi.linkWorkItem(f1.id, r2, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
     expect(await wi.linkWorkItem(f2.id, r1, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
 
-    const out1 = await links.listOut({ kind: 'feature', ref: `papercup#${f1.id}` });
-    const out2 = await links.listOut({ kind: 'feature', ref: `papercup#${f2.id}` });
+    const out1 = await blockingLinks.listOut({ kind: 'feature', ref: `papercup#${f1.id}` });
+    const out2 = await blockingLinks.listOut({ kind: 'feature', ref: `papercup#${f2.id}` });
     expect(out1.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'feature', ref: `papercup#${f2.id}` });
     expect(out2.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'feature', ref: `papercup#${f1.id}` });
   });
@@ -1293,7 +1296,7 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
     expect(bugRef).toEqual({ kind: 'issue', ref: bug.id });
 
     expect(await wi.linkWorkItem(feat.id, bugRef, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
-    const out = await links.listOut({ kind: 'feature', ref: `papercup#${feat.id}` });
+    const out = await blockingLinks.listOut({ kind: 'feature', ref: `papercup#${feat.id}` });
     expect(out.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'issue', ref: bug.id });
   });
 
@@ -1304,11 +1307,11 @@ describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempote
 
     expect(await wi.linkWorkItem(bug.id, dst, 'blocks', { by: 'agA' })).toEqual({ ok: true });
     expect(await wi.linkWorkItem(bug.id, dst, 'blocks', { by: 'agA' })).toEqual({ ok: true }); // re-link
-    const blocks = (await links.listOut({ kind: 'issue', ref: bug.id })).filter((l) => l.rel === 'blocks');
+    const blocks = (await blockingLinks.listOut({ kind: 'issue', ref: bug.id })).filter((l) => l.rel === 'blocks');
     expect(blocks).toHaveLength(1); // upserted, not duplicated
   });
 
-  it('mirrors issue blocks edges into work_item_deps so scheduler readiness sees them', async () => {
+  it('stores issue blocks edges canonically in work_item_deps so scheduler readiness sees them', async () => {
     const blocker = await wi.createWorkItem({ kind: 'bug', title: 'dependency blocker', harness: 'papercup', createdBy: 'agA' });
     const blocked = await wi.createWorkItem({ kind: 'bug', title: 'dependency target', harness: 'papercup', createdBy: 'agA' });
     const blockedRef = { kind: 'issue', ref: blocked.id } as const;
@@ -1914,7 +1917,7 @@ describe('unified work_items surface (real PG)', () => {
     expect((await db.sql`SELECT last_progress_at FROM harness_shared.harness_features_consolidated WHERE feature_id=${feat.id}`)[0].last_progress_at).toBeNull();
   });
 
-  it('cross-kind blocking: a bug blocks a feature via one coord_links edge (D-003)', async () => {
+  it('cross-kind blocking: a bug blocks a feature via one canonical dependency edge (D-003)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'blocker', harness: 'papercup', createdBy: 'agA' });
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'blocked feat', harness: 'papercup', createdBy: 'agA' });
     const dst = await wi.resolveWorkItemRef(feat.id, 'papercup');
@@ -1922,7 +1925,7 @@ describe('unified work_items surface (real PG)', () => {
     const res = await wi.linkWorkItem(bug.id, dst!, 'blocks', { by: 'agA' });
     expect('ok' in res && res.ok).toBe(true);
     // The edge exists with the right cross-kind endpoints.
-    const out = await links.listOut({ kind: 'issue', ref: bug.id });
+    const out = await blockingLinks.listOut({ kind: 'issue', ref: bug.id });
     expect(out.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'feature', ref: `papercup#${feat.id}` });
   });
 
