@@ -222,6 +222,13 @@ export async function emitScorecard(
             "the acceptance-rubric author must record acceptance:{ verdict:'accept'|'reject', reasoning } after reading the independent grading; independent graders omit acceptance",
         };
       }
+      if (callerIsImplementer && acceptance && args.supersedes) {
+        return {
+          ok: false as const,
+          error:
+            "the acceptance-rubric author's verdict is a separate newer scorecard and must not use supersedes; omit supersedes so the independent grading remains visible to the plan-acceptance gate",
+        };
+      }
       if (callerIsImplementer) {
         const prior = await listScorecards({ rubricRef: args.rubricRef, limit: 50 });
         let independent = undefined;
@@ -667,13 +674,13 @@ export default defineTool({
   name: 'scorecards:emit',
   profile: 'engineer',
   description:
-    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then re-emits with acceptance:{verdict,reasoning}. Stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.",
+    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.",
   guidance: {
     when: 'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     chaining:
-      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend.',
+      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
   },
   capability: 'coord:write',

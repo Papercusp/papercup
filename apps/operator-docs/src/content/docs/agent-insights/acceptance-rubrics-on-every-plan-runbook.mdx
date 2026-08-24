@@ -134,6 +134,8 @@ scorecards:emit {
 
 The author owns the passing threshold; there is no universal numeric cutoff. `reject` is a real terminal judgment for that scorecard and blocks shipping until the work or grading is addressed and a newer author verdict is recorded.
 
+The author verdict is a separate newer scorecard: **do not pass `supersedes`** on this call. The independent grading must remain visible to the plan-acceptance gate; a later author verdict supersedes an earlier author verdict by being newer, not by hiding the independent card.
+
 The four first-party plan-class rubrics include a citation spot-check criterion. The independent grader should sample the implementer's resolving audit citations rather than trusting the coverage summary alone.
 
 ## 5. Ship

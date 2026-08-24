@@ -347,6 +347,43 @@ describe('emitScorecard', () => {
     );
   });
 
+  it('rejects an acceptance-author verdict that supersedes the independent grading', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-independent',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        acceptance: { verdict: 'accept', reasoning: 'The independent evidence meets this plan.' },
+        supersedes: 'EI-independent',
+      },
+      { createdBy: 'su-implementer' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('must not use supersedes'),
+    });
+    expect(captureM).not.toHaveBeenCalled();
+    expect(getIssueM).not.toHaveBeenCalled();
+  });
+
   it('lets an audited successor record the author verdict and never treats that successor as an independent grader', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
     sameAuthorM.mockImplementation(
