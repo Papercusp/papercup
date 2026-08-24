@@ -451,7 +451,11 @@ describe("shapeWorkItemsGet — the summary rides the slack (EI-2074314848771406
     expect(
       out.results.every((r) => (r.workItem as Record<string, unknown> | undefined)?.summary === undefined),
     ).toBe(true);
-    expect(out._shapeNote?.summaryCharsPerRow).toBe(0);
+    // EI-21349427754992019: a ZERO budget is OMITTED from the note rather than
+    // emitted as 0 — these bytes sit on a payload graded against this very door.
+    // The drop itself is still named in `dropped` (asserted via every row's
+    // missing summary above and the arrayContaining checks in sibling tests).
+    expect(out._shapeNote?.summaryCharsPerRow).toBeFalsy();
     // CALIBRATION: the same 100 rows WITHOUT summaries must degrade identically.
     // If the summary budget were being paid for out of rows, these would differ —
     // which is what makes the assertion above non-vacuous.
