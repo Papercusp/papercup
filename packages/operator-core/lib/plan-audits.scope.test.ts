@@ -15,7 +15,7 @@ vi.mock("./workspace-registry", async (importOriginal) => ({
   activeWorkspaceId: M.activeWorkspaceId,
 }));
 
-import { getLatestPlanAudit } from "./plan-audits";
+import { getLatestActivationAudit, getLatestPlanAudit } from "./plan-audits";
 
 const row = {
   plan_slug: "scoped-plan",
@@ -65,6 +65,25 @@ describe("getLatestPlanAudit workspace scope", () => {
     expect(M.sql.mock.calls[0]?.[1]).toEqual("ambient-workspace");
     expect(M.sql.mock.calls[0]?.[3]).toBeNull();
     expect(M.sql.mock.calls[0]?.[4]).toBeNull();
+  });
+
+  it("reads activation audits independently from completion audits", async () => {
+    M.sql.mockResolvedValue([{
+      ...row,
+      audit_kind: "activation",
+      activation: { sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] },
+      audited_plan_revision_id: 17,
+      audited_plan_revision_seq: 4,
+      audited_plan_content_hash: "a".repeat(64),
+    }]);
+
+    const result = await getLatestActivationAudit("scoped-plan", { workspaceId: "papercusp-workspace" });
+
+    expect(result).toMatchObject({
+      auditKind: "activation",
+      auditedPlanRevision: { id: 17, seq: 4, contentHash: "a".repeat(64) },
+    });
+    expect(M.sql.mock.calls[0]?.[0]?.join(" ")).toContain("audit_kind = 'activation'");
   });
 
   // EI-21124863090048444: plans:get omitted latestAudit for a "SideStage"-shaped plan
