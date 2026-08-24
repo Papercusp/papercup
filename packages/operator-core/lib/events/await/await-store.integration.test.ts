@@ -92,6 +92,19 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(new Date(row.expiresTs!).getTime()).toBeGreaterThan(Date.now() + 3000_000);
   });
 
+  it('returns an uncapped live-await total alongside the bounded sample', async () => {
+    const subscriberId = 'su-wake-count-over-cap';
+    for (let i = 1; i <= 6; i += 1) {
+      await store.registerAwait({ subscriberId, eventKey: `counted:${i}` });
+    }
+
+    const result = await store.listWakeAwaitsForSubscriber(subscriberId);
+
+    expect(result.totalCount).toBe(6);
+    expect(result.sample).toHaveLength(5);
+    expect(result.sample.every((row) => row.eventKey.startsWith('counted:'))).toBe(true);
+  });
+
   it('fires one-shot: the first fire returns the await, the second returns nothing', async () => {
     await store.registerAwait({ subscriberId: 'su-2', eventKey: 'once:k' });
     const first = await store.fireAwaitsForKey({ eventKey: 'once:k' });
