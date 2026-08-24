@@ -416,6 +416,10 @@ export async function executeBulkRunAction<T>(input: {
   confidence?: 'low' | 'high' | null;
   consulted?: boolean;
   consultReply?: string | null;
+  /** When present, the irreversible action is accepted only from the resolver
+   * currently named on the run. Restart rotates that owner before spawning the
+   * replacement, so a late prior resolver cannot act on the new generation. */
+  resolverOwner?: string | null;
   workspaceId?: string;
   execute: () => Promise<T>;
   /**
@@ -438,6 +442,7 @@ export async function executeBulkRunAction<T>(input: {
   run: BulkRunRow | null;
   refused:
     | { reason: 'run_authority_revoked'; phase: BulkRunPhase }
+    | { reason: 'resolver_owner_mismatch'; phase: BulkRunPhase }
     | { reason: 'run_not_found'; phase: null }
     | { reason: 'item_not_in_run'; phase: BulkRunPhase }
     | null;
@@ -454,6 +459,14 @@ export async function executeBulkRunAction<T>(input: {
     `;
     const run = runRows[0] ? mapRun(runRows[0]) : null;
     if (!run) return { actionResult: null, item: null, run: null, refused: { reason: 'run_not_found' as const, phase: null } };
+    if (input.resolverOwner && run.resolverOwner !== input.resolverOwner) {
+      return {
+        actionResult: null,
+        item: null,
+        run,
+        refused: { reason: 'resolver_owner_mismatch' as const, phase: run.phase },
+      };
+    }
     if (!ACCEPTING_REPORTS.includes(run.phase)) {
       return {
         actionResult: null,
@@ -764,13 +777,16 @@ export async function failRunIfExecuting(input: {
   const rows = await sql<RawRunRow[]>`
     UPDATE harness_shared.attention_bulk_runs
        SET phase = 'failed',
-           resolver_owner = COALESCE(${input.resolverOwner ?? null}, resolver_owner),
+           resolver_owner = COALESCE(resolver_owner, ${input.resolverOwner ?? null}),
            error = ${input.error.slice(0, 4000)},
            finished_at = now(),
            updated_at = now()
      WHERE workspace_id = ${ws}
        AND run_id = ${input.runId}
        AND phase IN ('pending', 'running')
+       AND (${input.resolverOwner ?? null}::text IS NULL
+            OR resolver_owner IS NULL
+            OR resolver_owner = ${input.resolverOwner ?? null})
     RETURNING ${sql.unsafe(RUN_COLUMNS)}
   `;
   return rows[0] ? mapRun(rows[0]) : null;
@@ -851,10 +867,13 @@ export async function recordRunHeartbeat(input: {
   const rows = await sql<RawRunRow[]>`
     UPDATE harness_shared.attention_bulk_runs
        SET heartbeat_at = now(),
-           resolver_owner = COALESCE(${input.resolverOwner ?? null}, resolver_owner)
+           resolver_owner = COALESCE(resolver_owner, ${input.resolverOwner ?? null})
      WHERE workspace_id = ${ws}
        AND run_id = ${input.runId}
        AND phase IN ('pending', 'running')
+       AND (${input.resolverOwner ?? null}::text IS NULL
+            OR resolver_owner IS NULL
+            OR resolver_owner = ${input.resolverOwner ?? null})
     RETURNING ${sql.unsafe(RUN_COLUMNS)}
   `;
   return rows[0] ? mapRun(rows[0]) : null;
@@ -955,12 +974,16 @@ export async function restartRun(input: {
 export async function reportOutcomes(input: {
   runId: string;
   outcomes: BulkOutcomeReport[];
+  resolverOwner?: string | null;
   workspaceId?: string;
 }): Promise<{
   updated: string[];
   unknown: string[];
   run: BulkRunRow | null;
-  refused: { reason: 'run_not_accepting_reports'; phase: BulkRunPhase | null } | null;
+  refused:
+    | { reason: 'run_not_accepting_reports'; phase: BulkRunPhase | null }
+    | { reason: 'resolver_owner_mismatch'; phase: BulkRunPhase }
+    | null;
 }> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
@@ -986,6 +1009,14 @@ export async function reportOutcomes(input: {
        FOR UPDATE
     `;
     const before = runRows[0] ? mapRun(runRows[0]) : null;
+    if (before && input.resolverOwner && before.resolverOwner !== input.resolverOwner) {
+      return {
+        updated: [],
+        unknown: (input.outcomes ?? []).map((o) => o?.itemId).filter((id): id is string => !!id),
+        run: before,
+        refused: { reason: 'resolver_owner_mismatch' as const, phase: before.phase },
+      };
+    }
     if (before && !ACCEPTING_REPORTS.includes(before.phase)) {
       return {
         updated: [],
@@ -1098,6 +1129,10 @@ export async function settleRunPhase(input: {
        FOR UPDATE
     `;
     if (!locked[0]) return null;
+    const lockedRun = mapRun(locked[0]);
+    if (input.resolverOwner && lockedRun.resolverOwner !== input.resolverOwner) {
+      return null;
+    }
     // Kind-aware "is anything still waiting on the OWNER?": inbox runs derive
     // from their item rows; plan-cleanup runs from their findings rows
     // (migration 937 — same recommended/pending semantics, different table).
@@ -1119,7 +1154,7 @@ export async function settleRunPhase(input: {
     const rows = await tx<RawRunRow[]>`
       UPDATE harness_shared.attention_bulk_runs
          SET phase = ${phase},
-             resolver_owner = COALESCE(${input.resolverOwner ?? null}, resolver_owner),
+             resolver_owner = COALESCE(resolver_owner, ${input.resolverOwner ?? null}),
              error = NULL,
              finished_at = CASE WHEN ${phase === 'complete'} THEN now() ELSE finished_at END,
              updated_at = now()

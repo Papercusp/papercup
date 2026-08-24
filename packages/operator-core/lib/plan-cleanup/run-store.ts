@@ -123,6 +123,7 @@ export type CleanupFindingWriteRefusal =
   | { reason: 'run_not_found'; phase: null }
   | { reason: 'run_wrong_kind'; phase: BulkRunPhase }
   | { reason: 'run_authority_revoked'; phase: BulkRunPhase }
+  | { reason: 'resolver_owner_mismatch'; phase: BulkRunPhase }
   | { reason: 'finding_not_in_run'; phase: BulkRunPhase };
 
 function iso(v: Date | string | null | undefined): string | null {
@@ -221,9 +222,10 @@ async function lockLiveCleanupRun(
   tx: TransactionSql,
   runId: string,
   workspaceId: string,
+  resolverOwner?: string | null,
 ): Promise<{ phase: BulkRunPhase; refused: CleanupFindingWriteRefusal | null }> {
-  const rows = await tx<{ phase: BulkRunPhase; run_kind: string | null }[]>`
-    SELECT phase, run_kind
+  const rows = await tx<{ phase: BulkRunPhase; run_kind: string | null; resolver_owner: string | null }[]>`
+    SELECT phase, run_kind, resolver_owner
       FROM harness_shared.attention_bulk_runs
      WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
      FOR UPDATE
@@ -232,6 +234,8 @@ async function lockLiveCleanupRun(
   const { phase } = rows[0];
   if (rows[0].run_kind !== 'plan-cleanup')
     return { phase, refused: { reason: 'run_wrong_kind', phase } };
+  if (resolverOwner && rows[0].resolver_owner !== resolverOwner)
+    return { phase, refused: { reason: 'resolver_owner_mismatch', phase } };
   // Same rule as the item store's ACCEPTING_REPORTS: Stop/settle revokes the
   // resolver's authority, so a write after that must land nowhere.
   if (!RUNNING_PHASES.includes(phase))
@@ -252,6 +256,7 @@ async function lockLiveCleanupRun(
 export async function seedFindings(input: {
   runId: string;
   findings: readonly SeedableCleanupFinding[];
+  resolverOwner?: string | null;
   workspaceId?: string;
 }): Promise<{ findings: CleanupRunFindingRow[]; refused: CleanupFindingWriteRefusal | null }> {
   const { sql } = getOrgPg();
@@ -267,7 +272,7 @@ export async function seedFindings(input: {
   });
 
   return await sql.begin(async (tx) => {
-    const { refused } = await lockLiveCleanupRun(tx, input.runId, ws);
+    const { refused } = await lockLiveCleanupRun(tx, input.runId, ws, input.resolverOwner);
     if (refused) return { findings: [], refused };
 
     const rows: CleanupRunFindingRow[] = [];
@@ -315,6 +320,7 @@ export async function seedFindings(input: {
 export async function executeCleanupFindingAction<T>(input: {
   runId: string;
   findingId: string;
+  resolverOwner?: string | null;
   workspaceId?: string;
   execute: (finding: CleanupRunFindingRow) => Promise<T>;
 }): Promise<{
@@ -327,7 +333,7 @@ export async function executeCleanupFindingAction<T>(input: {
   const ws = input.workspaceId ?? activeWorkspaceId();
 
   return await sql.begin(async (tx) => {
-    const { phase, refused } = await lockLiveCleanupRun(tx, input.runId, ws);
+    const { phase, refused } = await lockLiveCleanupRun(tx, input.runId, ws, input.resolverOwner);
     if (refused) return { actionResult: null, finding: null, run: null, refused };
 
     const findingRows = await tx<RawFindingRow[]>`
@@ -382,6 +388,7 @@ export async function executeCleanupFindingAction<T>(input: {
 export async function reportFindingOutcomes(input: {
   runId: string;
   reports: readonly CleanupFindingOutcomeReport[];
+  resolverOwner?: string | null;
   workspaceId?: string;
 }): Promise<{
   updated: CleanupRunFindingRow[];
@@ -393,7 +400,7 @@ export async function reportFindingOutcomes(input: {
   const ws = input.workspaceId ?? activeWorkspaceId();
 
   return await sql.begin(async (tx) => {
-    const { refused } = await lockLiveCleanupRun(tx, input.runId, ws);
+    const { refused } = await lockLiveCleanupRun(tx, input.runId, ws, input.resolverOwner);
     if (refused) return { updated: [], missing: [], run: null, refused };
 
     const updated: CleanupRunFindingRow[] = [];
