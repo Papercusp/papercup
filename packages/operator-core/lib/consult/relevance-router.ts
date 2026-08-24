@@ -259,7 +259,11 @@ export interface ConsultRouteDeps {
   /** null = no embedder available this host right now (honest degrade). */
   embed: ConsultEmbedder | null;
   /** Presence oracle: ownerId → sessionState. Optional; default 'unknown'. */
-  getLiveness?: (ownerIds: string[]) => Promise<Record<string, string>>;
+  /** `null` for an owner the liveness oracle could not measure
+   *  (EI-18771777750306094 — the oracle reports an unknown IN BAND rather than
+   *  omitting the owner). Both readings land on the same `?? 'unknown'` at the
+   *  two use sites below, so this widening is type-level only. */
+  getLiveness?: (ownerIds: string[]) => Promise<Record<string, string | null>>;
   now?: () => Date;
 }
 
