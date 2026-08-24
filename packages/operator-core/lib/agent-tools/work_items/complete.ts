@@ -64,6 +64,8 @@ import {
 } from '../../work-items';
 import {
   CompletionRecordSchema,
+  COMPLETION_COVERAGE_CONTRACT,
+  hasMalformedCoverageShape,
   stripNulBytesDeep,
   type CompletionCoverage,
   type CompletionRecord,
@@ -275,6 +277,85 @@ function firstCompletionStringRejection(value: unknown): string | undefined {
   if (!Array.isArray(record.errors)) return undefined;
   for (const nested of record.errors) {
     const message = firstCompletionStringRejection(nested);
+    if (message) return message;
+  }
+  return undefined;
+}
+
+/**
+ * WI-213058: the public single/bulk envelope is a union, so a nested coverage
+ * issue otherwise gets collapsed into `invalid_union` at the root. Preflight
+ * malformed bucket shapes at the envelope boundary and keep the actionable
+ * field path. Empty residue is deliberately reported at `.residue` so the
+ * existing field-level min-length contract remains visible.
+ */
+function reportMalformedCompletionCoverage(
+  raw: unknown,
+  addIssue: (issue: { code: 'custom'; message: string; path: Array<string | number> }) => void,
+): void {
+  const inspect = (container: unknown, prefix: Array<string | number>): void => {
+    if (!container || typeof container !== 'object' || Array.isArray(container)) return;
+    const record = container as Record<string, unknown>;
+    const completion = record.completion;
+    if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return;
+    const completionRecord = completion as Record<string, unknown>;
+    const verification = completionRecord.verification;
+    const candidates: Array<{ value: unknown; path: Array<string | number> }> = [];
+    if (verification && typeof verification === 'object' && !Array.isArray(verification)) {
+      const verificationRecord = verification as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(verificationRecord, 'coverage')) {
+        candidates.push({
+          value: verificationRecord.coverage,
+          path: [...prefix, 'completion', 'verification', 'coverage'],
+        });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(completionRecord, 'coverage')) {
+      candidates.push({ value: completionRecord.coverage, path: [...prefix, 'completion', 'coverage'] });
+    }
+    for (const candidate of candidates) {
+      if (hasMalformedCoverageShape(candidate.value)) {
+        addIssue({ code: 'custom', message: COMPLETION_COVERAGE_CONTRACT, path: candidate.path });
+      } else if (
+        candidate.value &&
+        typeof candidate.value === 'object' &&
+        !Array.isArray(candidate.value) &&
+        Array.isArray((candidate.value as Record<string, unknown>).residue) &&
+        ((candidate.value as Record<string, unknown>).residue as unknown[]).length === 0
+      ) {
+        addIssue({
+          code: 'custom',
+          message: `${COMPLETION_COVERAGE_CONTRACT} The residue array must be non-empty; use residue:['none'] for zero residue.`,
+          path: [...candidate.path, 'residue'],
+        });
+      }
+    }
+  };
+
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+  const root = raw as Record<string, unknown>;
+  inspect(root, []);
+  if (Array.isArray(root.items)) {
+    root.items.forEach((item, index) => inspect(item, ['items', index]));
+  }
+}
+
+function firstCompletionCoverageContract(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    for (const nested of value) {
+      const message = firstCompletionCoverageContract(nested);
+      if (message) return message;
+    }
+    return undefined;
+  }
+  const record = value as { message?: unknown; errors?: unknown };
+  if (typeof record.message === 'string' && record.message.includes(COMPLETION_COVERAGE_CONTRACT)) {
+    return record.message;
+  }
+  if (!Array.isArray(record.errors)) return undefined;
+  for (const nested of record.errors) {
+    const message = firstCompletionCoverageContract(nested);
     if (message) return message;
   }
   return undefined;
@@ -1277,6 +1358,22 @@ export function hasEnumeratedVerificationCoverage(coverage: CompletionCoverage |
   return population.every((entry) => statusCounts.get(entry) === 1) && statusEntries.length === population.length;
 }
 
+/**
+ * WI-213058: identify the most common malformed semantic partition — population entries
+ * copied into `residue`. Residue is deliberately not a fourth status bucket, so naming the
+ * misplaced entries is more useful than repeating the generic partition failure.
+ */
+function misplacedResiduePopulationEntries(coverage: CompletionCoverage | undefined): string[] {
+  if (!coverage?.population?.length || !coverage.residue?.length) return [];
+  const statusEntries = new Set([
+    ...(coverage.checked ?? []),
+    ...(coverage.notChecked ?? []),
+    ...(coverage.notApplicable ?? []),
+  ]);
+  const residue = new Set(coverage.residue);
+  return coverage.population.filter((entry) => !statusEntries.has(entry) && residue.has(entry));
+}
+
 interface FinishPlanStamp {
   plan_slug: string;
   item_id: string;
@@ -1746,8 +1843,9 @@ async function completeOne(
       isVerificationWorkItem(existing) &&
       claimsUniversalVerification(it.completion) &&
       !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage));
+  const misplacedResidueEntries = misplacedResiduePopulationEntries(completionEvidenceForGate?.coverage);
   const verificationCoverageError = explicitEmptyResidue
-    ? `REJECTED — ${it.id} supplied completion.verification.coverage.residue as an empty array. An empty array is not evidence that residue was checked. List the actual residue, or pass residue:['none'] to make an explicit zero-residue claim.`
+    ? `REJECTED — ${it.id} supplied completion.verification.coverage.residue as an empty array. An empty array is not evidence that residue was checked. List the actual residue, or pass residue:['none'] to make an explicit zero-residue claim. ${COMPLETION_COVERAGE_CONTRACT}`
     : verificationCoverageGap
     ? // EI-20223460482316333 / EI-20224260070669261 / EI-20225113964896785 /
       // EI-20225202699515538 / EI-20222447336206097 — five agents filed the SAME
@@ -1756,7 +1854,9 @@ async function completeOne(
       // it still could not comply without reading this file. A refusal that cannot be
       // acted on is a wall, not a gate. The exact path + the two rules that actually
       // fail (total partition, non-empty residue) are now in the message itself.
-      `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Pass it at completion.verification.coverage = { population: string[], checked: string[], notChecked: string[], notApplicable: string[], residue: string[] }. TWO RULES, both enforced: (1) EVERY population entry must appear VERBATIM in exactly one of checked/notChecked/notApplicable — a partition, not a sample; (2) residue must be NON-EMPTY — pass residue:['none'] to state zero residue explicitly, since omitting it is never read as complete coverage. Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
+      misplacedResidueEntries.length > 0
+        ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but population entries ${misplacedResidueEntries.map((entry) => JSON.stringify(entry)).join(', ')} are in residue. Residue is not a partition bucket; move those entries to checked, notChecked, or notApplicable. ${COMPLETION_COVERAGE_CONTRACT}`
+        : `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. ${COMPLETION_COVERAGE_CONTRACT} Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
     : undefined;
   // EI-20962416980274656: this gate is deterministic from the submitted record,
   // so reject at the completion boundary BEFORE constructing/persisting/emitting a
@@ -2534,7 +2634,7 @@ export default defineTool({
   description:
     'Complete one or more work-items with structured evidence; renders and broadcasts it. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys) to converge item, plan item, claim, and checkpoint; without `state` it only records. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and `assumptions` (`\"none\"` or fact keys). Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a complete population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`["none"]` means zero). In `completion.verification`, use only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; put descriptive tests/typecheck/diff in top-level aliases instead. Keep `deferred`/`coordNotes` outside verification; cite live-UI artifacts; use `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys) — terminal closes cannot omit it. Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`["none"]` means zero); residue is separate. Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
@@ -2616,7 +2716,11 @@ export default defineTool({
   // even though the single-item runtime refine required it. The union exposes the
   // requirement structurally while retaining per-item assumptions for bulk calls.
   args: z.preprocess(
-    gatherFlatCompletion,
+    (raw, ctx) => {
+      const gathered = gatherFlatCompletion(raw);
+      reportMalformedCompletionCoverage(gathered, (issue) => ctx.addIssue(issue));
+      return gathered;
+    },
     z.union(
       [
         z
@@ -2694,6 +2798,7 @@ export default defineTool({
       {
         error: (issue) => ({
           message:
+            firstCompletionCoverageContract(issue) ??
             firstCompletionStringRejection(issue) ??
             firstUnrecognizedKeyMessage(issue) ??
             COMPLETE_CLOSE_SHAPE_MESSAGE,

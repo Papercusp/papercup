@@ -110,6 +110,8 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
     expect(complete.guidance?.when).toContain('Use `dropped`/`closed`/`deprecated` only for discard/wontfix');
     expect(complete.guidance?.when).toContain('exactly once in checked/notChecked/notApplicable');
     expect(complete.guidance?.when).toContain('residue is non-empty');
+    expect(complete.guidance?.when).toContain('residue is separate');
+    expect(complete.guidance?.when).toContain('terminal closes cannot omit');
   });
 });
 
@@ -1862,6 +1864,67 @@ describe('work_items:complete (keyed-array)', () => {
       }
       // rule 2 — the explicit zero-residue form, which omission never satisfies
       expect(message).toContain("residue:['none']");
+    });
+
+    it('reports the complete coverage contract for malformed nested bucket shapes in one rejection', () => {
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => {
+            success: boolean;
+            error?: { issues: Array<{ path: Array<string | number>; message: string }> };
+          };
+        }
+      ).safeParse({
+        id: 'WI-verify',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: {
+          summary: 'Every page was checked.',
+          verifiedHow: 'manual',
+          testResult: 'source review completed',
+          verification: {
+            coverage: {
+              population: 'all named items',
+              checked: 'all named items',
+              notChecked: 'none',
+              notApplicable: 'none',
+              residue: 'none',
+            },
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
+      const issues = result.error?.issues ?? [];
+      const message = issues.map((issue) => issue.message).join(' ');
+      expect(message).toContain('residue is a separate list, never a fifth bucket');
+      expect(message).toContain('exactly one status bucket');
+      expect(message).toContain("residue:['none']");
+      expect(message).not.toContain('expected array, received string');
+      expect(issues.some((issue) => issue.path.join('.') === 'completion.verification.coverage')).toBe(true);
+    });
+
+    it('names population entries misplaced in residue instead of reporting a misleading residue-size error', async () => {
+      getWorkItem.mockResolvedValue(verificationItem);
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: {
+          ...universalCompletion,
+          coverage: {
+            population: ['index pages', 'species pages'],
+            checked: ['index pages'],
+            residue: ['species pages', 'one untracked note'],
+          },
+        },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.verificationCoverageError).toContain('"species pages" are in residue');
+      expect(r.verificationCoverageError).toContain('Residue is not a partition bucket');
+      expect(r.verificationCoverageError).toContain('move those entries to checked, notChecked, or notApplicable');
+      expect(r.verificationCoverageError).toContain("residue:['none']");
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
     it('accepts a universal verification close when every population entry has a status and residue', async () => {
