@@ -461,7 +461,15 @@ const CONTROLS: Record<string, readonly Control[]> = {
       label: 'corroborated BUT competing claims exist — competing wins',
       expect: assessAgentGoal(GOALOF('corroborated', ['WI-2']), []),
     },
-    { label: 'a failed resolver leg refuses a code', expect: assessAgentGoal(GOALOF('corroborated'), [{}]) },
+    {
+      label: 'a failed resolver leg refuses a code',
+      // A REAL diagnostic shape, not a bare `{}` — the assessor branches on
+      // `diagnostics.length`, so a cast-away stub would pass while proving the wrong
+      // thing if that ever narrows to inspect the leg.
+      expect: assessAgentGoal(GOALOF('corroborated'), [
+        { leg: 'store', status: 'unavailable', detail: 'the goal store was unreachable on this read' },
+      ]),
+    },
   ],
   'testing.census.population': [
     {
@@ -1032,4 +1040,129 @@ describe('P-004: agent.goal declares assessment paths coord:goal ACTUALLY produc
       expect(pathExists(corroborated, 'goalCompeting').value).toEqual([]);
     },
   );
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * FALSIFIABILITY CONTROLS — PERMANENT, not a one-off probe.
+ *
+ * Every assertion above passed on this file's FIRST run, which is exactly when a guard
+ * deserves the least trust: a path walk that silently matched nothing, a predicate that
+ * cannot tell broken from healthy, and a correct guard all look identical from green.
+ *
+ * The repo's mutation-probe tiers put an IMPORTED subject in the "keep a deliberately
+ * wrong implementation permanently in the test file" tier rather than the in-tree
+ * mutation tier, and the reason bites here: an in-tree probe holds
+ * `cell-registrations.ts` mutated for as long as the suite runs, and git-sync sweeps
+ * the whole tree every few minutes — so the probe proving this guard works can commit a
+ * broken registration. (Attempted 2026-08-24: git-sync held the exclusive sweep lock at
+ * that moment. That is the race the tier exists to avoid, not bad luck.)
+ *
+ * Each control below breaks a COPY of a real spec and asserts the guard NAMES the
+ * break, paired with a CALIBRATION — the unmodified spec against the same payload —
+ * because a control that fails on both sides proves nothing about the subject and
+ * everything about a broken instrument.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+describe('P-004: the guards themselves are falsifiable', () => {
+  it('the path walk NAMES a broken assessment.path, and passes the same spec unbroken', async () => {
+    const spec = HOST_MEMORY_CELLS[0]!;
+    const payload = await liveHostMemoryPayload();
+
+    // CALIBRATION — if the REAL spec does not walk clean the instrument is broken and
+    // the control below proves nothing.
+    expect(missingAssessmentPaths(spec, payload), 'calibration: the REAL spec must walk clean').toEqual([]);
+
+    expect(missingAssessmentPaths(withBrokenPath(spec, 'assessment.path'), payload)).toEqual([
+      `${spec.assessment!.path}__NO_SUCH_FIELD`,
+    ]);
+  }, 20_000);
+
+  it('the path walk NAMES a broken evidence path — the case that downgrades a live read', async () => {
+    const spec = HOST_MEMORY_CELLS[0]!;
+    const payload = await liveHostMemoryPayload();
+    expect(missingAssessmentPaths(spec, payload), 'calibration: the REAL spec must walk clean').toEqual([]);
+
+    expect(missingAssessmentPaths(withBrokenPath(spec, 'evidence'), payload)).toEqual([
+      `${spec.assessment!.evidence[0]}__NO_SUCH_FIELD`,
+    ]);
+  }, 20_000);
+
+  /**
+   * ⚠ THE NULL-PARENT CONTROL — the specific bug P-011 shipped, now with a bigger blast
+   * radius. `pathExists` stops at a null segment, so evidence nested under a nullable
+   * parent is ABSENT in exactly the state it exists to explain, and an absent evidence
+   * path downgrades the WHOLE assessment. A walker that confused MISSING with NULL
+   * would call the nested declaration healthy.
+   */
+  it('reports evidence nested under a NULL parent as missing, not as present-and-null', () => {
+    const spec = GOAL_CELLS[0]!;
+    const payload = {
+      assessment: 'nothing-held',
+      goal: null,
+      goalRef: null,
+      goalUnknown: 'nothing-held',
+      goalAgreement: null,
+      goalCompeting: [],
+    };
+
+    // CALIBRATION — the shipped FLAT declaration walks clean even though the values are
+    // null, which is the whole reason it is flat.
+    expect(missingAssessmentPaths(spec, payload), 'calibration: the shipped flat evidence must walk clean').toEqual([]);
+
+    // The same facts declared under the nullable parent: absent, and the guard says so.
+    const nested: CellSpec = {
+      ...spec,
+      assessment: { ...spec.assessment!, evidence: ['goal.agreement', 'goal.competing'] },
+    };
+    expect(missingAssessmentPaths(nested, payload)).toEqual(['goal.agreement', 'goal.competing']);
+  });
+
+  /** The CONSTANCY detector, falsified against a stub that never moves. */
+  it('the constancy detector flags an assessor that never moves', () => {
+    const constant = ['stable', 'stable', 'stable', 'stable'];
+    const real = EXPECTED['host.memoryPressure']!.filter((c): c is string => typeof c === 'string');
+
+    expect(new Set(constant).size, 'a constant assessor must not look varied').toBe(1);
+    expect(new Set(real).size, 'calibration: the REAL assessor must produce several codes').toBeGreaterThan(1);
+  });
+
+  /**
+   * The SIGN detector, falsified. An inverted assessor emits the SAME SET of codes as a
+   * correct one — which is why a reachability check cannot catch it, and why every pair
+   * above asserts an exact code per side rather than merely that the two differ.
+   */
+  it('the sign detector flags an INVERTED assessor that a reachability check would pass', () => {
+    const correct = (behind: boolean, fireStale: boolean) =>
+      assessMainBehindStaging({ mainBehindStaging: behind, fireStale, verdictUnknownLegs: [] });
+    // The bug shape: the decisive comparison negated. Same codes, wrong inputs.
+    const inverted = (behind: boolean, fireStale: boolean) =>
+      behind ? (!fireStale ? 'gate-stalled' : 'normal-buffer') : 'caught-up';
+
+    const codesOf = (f: (b: boolean, s: boolean) => string | null) =>
+      new Set([f(true, true), f(true, false), f(false, false)].filter(Boolean));
+
+    // Pinned as an assertion rather than claimed in a comment: reachability alone
+    // genuinely cannot separate the inverted assessor from the correct one.
+    expect(codesOf(inverted)).toEqual(codesOf(correct));
+
+    // The pair check can, because it reads the code for ONE named input state.
+    expect(correct(true, true)).toBe('gate-stalled');
+    expect(inverted(true, true)).toBe('normal-buffer');
+  });
+
+  /**
+   * The READ-HEALTH collision detector, falsified. This is the check that would have
+   * caught `testing.coverage.floor` emitting `not-measured` before D-012 renamed it —
+   * worth keeping precisely because the collision stayed invisible for as long as no
+   * cell declared an assessment at all.
+   */
+  it('the collision detector flags a domain code that reuses the read-health vocabulary', () => {
+    const colliding = ['not-measured', 'meets-floor'];
+    const shipped = EXPECTED['testing.coverage.floor']!.filter((c): c is string => typeof c === 'string');
+
+    expect(colliding.filter((c) => (CELL_UNKNOWN_CODES as readonly string[]).includes(c))).toEqual(['not-measured']);
+    expect(
+      shipped.filter((c) => (CELL_UNKNOWN_CODES as readonly string[]).includes(c)),
+      'calibration: the SHIPPED codes must be collision-free',
+    ).toEqual([]);
+  });
 });
