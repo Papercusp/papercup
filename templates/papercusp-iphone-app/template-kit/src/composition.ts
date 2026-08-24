@@ -14,10 +14,13 @@
  *   composition rules the design doc states (§Composition):
  *     · exactly ONE ROOT scope:'app' template per composition (two whole-app
  *       scaffolds cannot both own an app). P-022: an app template MAY require
- *       another app template as its BASE (papercusp-agentic-desktop-app layers the
- *       judgment plane onto papercusp-desktop-app) — a required base app joins the
+ *       another app template as its BASE — a required base app joins the
  *       composition without owning it; only an app no other app in the
- *       selection requires is a root, and there must be exactly one;
+ *       selection requires is a root, and there must be exactly one. (No
+ *       REFERENCE pair uses this today: the one that did was retired when the
+ *       four app roots collapsed into papercusp-app, whose `agents` decision
+ *       point layers the judgment plane as an ASPECT instead. The rule stays —
+ *       it is what makes a base app expressible at all.);
  *     · component pins must be CONSISTENT — the same catalog component pinned
  *       at two different versions across the selection is a conflict, never
  *       silently resolved;
@@ -61,8 +64,8 @@ export interface TemplateComposition {
   scope: TemplateScope;
   /**
    * The ROOT app-scope template when present — the one app no other app in
-   * the selection requires (P-022: a required BASE app, e.g. papercusp-desktop-app
-   * under papercusp-agentic-desktop-app, is a member but never the owner).
+   * the selection requires (P-022: a required BASE app is a member but never
+   * the owner).
    */
   appTemplateId?: string;
   /** Deduped union of component refs (pins verified consistent across the set). */
