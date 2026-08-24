@@ -1808,7 +1808,7 @@ fi
 # and its target so the monitor never receives an unrelated inherited fd.
 _preempt_notify_fd=''
 if [ "$_preemptible" = 1 ]; then
-  if { exec {_preempt_notify_fd}>&2; } 2>/dev/null; then
+  if exec {_preempt_notify_fd}>&2; then
     _preempt_notify_target="$(readlink "/proc/self/fd/$_preempt_notify_fd" 2>/dev/null || true)"
     _preempt_stderr_target="$(readlink /proc/self/fd/2 2>/dev/null || true)"
     case "$_preempt_notify_fd" in
