@@ -164,6 +164,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // 869–3,499 estimated tokens on real items), and the consumer mounts it behind
   // `useSyncQuery({ enabled })` so nothing runs until a human opens the section.
   'workItems.priorAttempts': null, // a specific work-item id (P-017 slice D)
+  'workItems.behaviorContract': null, // a specific work-item id (P-011)
   'featuresConsolidated.detail': null, // a specific featureId
   'featureTimeline.byFeature': null, // a specific featureId
   'learning.analyzeCycle': null, // a specific cycleId (from learning.analyze)

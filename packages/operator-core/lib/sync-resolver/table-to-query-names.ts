@@ -461,6 +461,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // the sibling writes this panel exists to surface. Only ever mounted while a human
     // has the section open (useSyncQuery `enabled`), so the bust costs nothing otherwise.
     'workItems.priorAttempts',
+    // P-011: the resolved BehaviorContract reads the item's kind and plan provenance,
+    // so a re-stamp or a kind change moves which clauses resolve. Same on-demand
+    // mounting as priorAttempts.
+    'workItems.behaviorContract',
     // Goal surfaces count OPEN and needs-human items per goal, so a state flip
     // or a new goal-stamped item moves both the rail glance and the detail page.
     'goals.list',
@@ -559,6 +563,15 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // reaches this table through syncWorkItemDepEdges / the mirror path, so one
   // coarse entry covers them all.
   'harness_shared.work_item_deps': ['workItems.depEdges'],
+  // P-011 — the first-class spec-clause substrate behind workItems.behaviorContract.
+  // REVISING a clause is precisely the event an open contract panel must not miss: without
+  // these bridges the panel would keep asserting coverage at a superseded revision, which
+  // is the exact failure the plan exists to end. Full-bust — none of these is keyed by a
+  // surrogate PK the bridge could scope on, and the query is only ever mounted while a
+  // human has the section open (useSyncQuery `enabled`), so the bust costs nothing otherwise.
+  'harness_shared.plan_spec_clauses': ['workItems.behaviorContract'],
+  'harness_shared.plan_spec_clause_revisions': ['workItems.behaviorContract'],
+  'harness_shared.work_item_spec_revision_edges': ['workItems.behaviorContract'],
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',

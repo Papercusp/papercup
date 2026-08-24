@@ -146,6 +146,11 @@ import {
   workItemPriorAttemptsArgsSchema,
   type WorkItemPriorAttemptsArgs,
 } from './work-item-prior-attempts';
+import {
+  resolveWorkItemBehaviorContract,
+  workItemBehaviorContractArgsSchema,
+  type WorkItemBehaviorContractArgs,
+} from './work-item-behavior-contract';
 import { trackDetached } from '../detached-imports';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
@@ -2810,6 +2815,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: workItemPriorAttemptsArgsSchema,
     resolve: async (args) => resolveWorkItemPriorAttempts(args as WorkItemPriorAttemptsArgs),
     backingTables: ['harness_shared.work_items', 'harness_shared.harness_plans'],
+  } as QueryEntry<unknown>,
+
+  // workItems.behaviorContract — P-011: the resolved BehaviorContract as a READ.
+  // Runs the SAME resolveWorkItemBehaviorContract port the completion gate uses, so the
+  // panel cannot drift from what the gate enforces. Before this, a human could see THAT
+  // a completion was refused but never WHICH promises the item is on the hook for, at
+  // WHICH revision — and P-016 had just made that resolution cross-namespace.
+  //
+  // ⚠ ADVISORY (D-017): impact.report and staleEdges describe conditions nothing
+  // enforces yet; P-013 owns turning them into refusals. A renderer must not show them
+  // as failures.
+  //
+  // MOUNTED ONLY ON DEMAND, like priorAttempts: resolution reads edges and then clauses
+  // per namespace, so the consumer gates it with `useSyncQuery({ enabled })`.
+  //
+  // The clause + edge tables full-bust deliberately: REVISING a clause is precisely the
+  // event this panel must not miss (an open panel would otherwise keep asserting
+  // coverage at a superseded revision), and neither table is keyed by a surrogate PK the
+  // bridge could scope on.
+  'workItems.behaviorContract': {
+    argsSchema: workItemBehaviorContractArgsSchema,
+    resolve: async (args) => resolveWorkItemBehaviorContract(args as WorkItemBehaviorContractArgs),
+    backingTables: [
+      'harness_shared.work_items',
+      'harness_shared.plan_spec_clauses',
+      'harness_shared.plan_spec_clause_revisions',
+      'harness_shared.work_item_spec_revision_edges',
+    ],
   } as QueryEntry<unknown>,
 
   // workItems.depEdges — the EDGE half of the Work-tab dependency graph pane
