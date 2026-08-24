@@ -43,6 +43,10 @@ import { FLAGS } from '@papercusp/flags';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { gateApiRoute } from '../../../require-flag';
 import { buildAgentLaunchCommand } from '../../../agent-launch-core';
+import {
+  resolveBulkResolverLaunch,
+  type EffectiveBulkResolverLaunch,
+} from '../../../agent-config-constants';
 import type { SpawnConsoleResult } from '../../../console-spawn';
 import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import {
@@ -154,18 +158,58 @@ export function buildResolverLaunchCommand(input: {
   workspaceId: string;
   harness: string;
   ownerId: string;
+  /** Preflighted click-time settings (P-004). Omitted ⇒ the pre-configuration
+   *  defaults this route has always launched on, so an older client that posts
+   *  no settings is byte-identical to before. `agent` comes from the DERIVED
+   *  backend rather than a hardcoded 'claude' (D-002); `mode`, `headless` and
+   *  `role` stay fixed launch invariants and are deliberately not configurable. */
+  launch?: EffectiveBulkResolverLaunch | null;
 }): string {
+  const launch = input.launch ?? null;
   return buildAgentLaunchCommand({
     mode: 'fresh',
-    agent: 'claude',
-    account: 'default',
+    agent: launch?.backend ?? 'claude',
+    account: launch?.account ?? 'default',
+    model: launch?.model ?? null,
+    effort: launch?.effort ?? null,
     workspace: input.workspaceId,
     harness: input.harness,
     ownerId: input.ownerId,
     headless: true,
-    carry: 'warm',
+    carry: launch?.carry ?? 'warm',
     role: 'su',
   });
+}
+
+/**
+ * Preflight the posted settings into a 400, or into the exact snapshot the run
+ * records and launches with. Shared by both start routes so Inbox and Plans
+ * cannot drift into validating the same profile differently.
+ *
+ * A body with no `launch` key resolves to the defaults rather than refusing:
+ * a client that has not been updated must keep working.
+ */
+export function preflightResolverLaunch(
+  raw: unknown,
+): { ok: true; launch: EffectiveBulkResolverLaunch } | { ok: false; response: Response } {
+  const posted = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const resolved = resolveBulkResolverLaunch(posted as Parameters<typeof resolveBulkResolverLaunch>[0]);
+  if (!resolved.ok || !resolved.effective) {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          error: {
+            code: 'invalid_launch_settings',
+            message: resolved.message ?? 'resolver launch settings are not launchable',
+            field: resolved.field,
+          },
+        },
+        { status: 400 },
+      ),
+    };
+  }
+  return { ok: true, launch: resolved.effective };
 }
 
 export type ResolverSpawnOutcome =
@@ -200,6 +244,7 @@ async function launchResolver(
   runId: string,
   itemCount: number,
   harness: string | null,
+  launch: EffectiveBulkResolverLaunch | null = null,
 ): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
   try {
     const [{ buildConsoleEnvelope }, { spawnHeadless }, { activeWorkspaceId }, { resolveSpawnHostOperatorBaseUrl }] =
@@ -220,6 +265,7 @@ async function launchResolver(
       workspaceId,
       harness: effectiveHarness,
       ownerId: resolverOwner,
+      launch,
     });
 
     const envelope = await buildConsoleEnvelope({
@@ -437,15 +483,21 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   const harness = typeof body.harness === 'string' && body.harness.trim() ? body.harness.trim() : null;
   const filter = body.filter && typeof body.filter === 'object' ? (body.filter as Record<string, unknown>) : {};
 
+  // P-004 — PREFLIGHT BEFORE createRun. An unlaunchable setting must not leave a
+  // created-then-failed run in the owner's history when retyping one field fixes it.
+  const preflight = preflightResolverLaunch(body.launch);
+  if (!preflight.ok) return preflight.response;
+
   try {
     const run = await createRun({
       items,
       filterSnapshot: filter,
+      launchSnapshot: preflight.launch,
       requestedBy: 'owner',
       harnessSlug: harness,
     });
 
-    const launched = await launchResolver(run.runId, items.length, harness);
+    const launched = await launchResolver(run.runId, items.length, harness, preflight.launch);
     if (launched.ok) {
       await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: launched.sessionId ?? null });
     } else {
