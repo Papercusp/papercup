@@ -57,14 +57,20 @@ export function NavigationProgress() {
     }
 
     if (!shouldMaintainIdleProgress(isPending)) return;
+    let cleanupTimeout: number | null = null;
     const settle = () => {
       stop();
-      window.setTimeout(() => cleanupStaleBusyClass(isPending), 200);
+      if (cleanupTimeout !== null) window.clearTimeout(cleanupTimeout);
+      cleanupTimeout = window.setTimeout(() => {
+        cleanupTimeout = null;
+        cleanupStaleBusyClass(isPending);
+      }, 200);
     };
     settle();
     const interval = window.setInterval(settle, 1_000);
     return () => {
       window.clearInterval(interval);
+      if (cleanupTimeout !== null) window.clearTimeout(cleanupTimeout);
     };
   }, [isPending, start, stop, suppressProgress]);
 

@@ -83,6 +83,17 @@ describe('<NavigationProgress>', () => {
     bar.remove();
   });
 
+  it('cancels deferred stale-DOM cleanup when the driver unmounts', () => {
+    vi.useFakeTimers();
+    H.pending = false;
+    const { unmount } = render(<NavigationProgress />);
+
+    unmount();
+    vi.advanceTimersByTime(250);
+
+    expect(document.documentElement.classList.contains('bprogress-busy')).toBe(true);
+  });
+
   it('suppresses progress on an embedded origin: never starts, even while pending', () => {
     setOrigin('http://localhost:3070');
     H.pending = true;
