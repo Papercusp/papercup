@@ -197,6 +197,29 @@ function daysAgo(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+/** The pane now hydrates its persisted resolver profile before a start. Keep
+ * that GET distinct from the actual run POST so these tests assert the route
+ * they mean instead of accidentally treating the hydration response as one. */
+function resolverAwareFetch(runId: string) {
+  return vi.fn(async (input: RequestInfo | URL) =>
+    String(input) === '/api/agent-config'
+      ? {
+          ok: true,
+          json: async () => ({
+            config: {
+              resolverProfiles: {
+                'plan-cleanup': { model: null, effort: null, account: 'default', carry: 'warm' },
+              },
+            },
+          }),
+        }
+      : {
+          ok: true,
+          json: async () => ({ ok: true, runId, launched: true, resolverNeeded: true }),
+        },
+  );
+}
+
 describe('PlansPane', () => {
   it("renders the Inbox-style masthead/count and shows the filter row EXPANDED by default, with no toggle (WI-40982)", () => {
     planListData.value = {
@@ -236,21 +259,20 @@ describe('PlansPane', () => {
         plan({ slug: "p-shipped", title: "Shipped plan", status: "shipped" }),
       ],
     };
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, runId: "cleanup-run-1", launched: true }),
-    });
+    const fetchMock = resolverAwareFetch("cleanup-run-1");
     vi.stubGlobal("fetch", fetchMock);
 
     render(<PlansPane />);
-    const start = screen.getByTestId("plans-cleanup-start");
+    const start = screen.getByTestId("plans-cleanup-start") as HTMLButtonElement;
     expect(start.textContent).toContain("Clean up 2 shown plans");
+    await waitFor(() => expect(start.disabled).toBe(false));
     fireEvent.click(start);
 
     await waitFor(() =>
       expect(setters.opcln).toHaveBeenCalledWith("cleanup-run-1"),
     );
-    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    const startCall = fetchMock.mock.calls.find(([url]) => url === '/api/admin/plan-cleanup')!;
+    const body = JSON.parse((startCall[1] as RequestInit).body as string);
     expect(body.planSlugs).toEqual(["p-active", "p-ready"]);
   });
 
@@ -258,17 +280,15 @@ describe('PlansPane', () => {
     planListData.value = {
       plans: [plan({ slug: 'p-active', title: 'Active plan' })],
     };
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, runId: 'cleanup-row-1', launched: true }),
-    });
+    const fetchMock = resolverAwareFetch('cleanup-row-1');
     vi.stubGlobal('fetch', fetchMock);
 
     render(<PlansPane />);
     fireEvent.click(screen.getByTestId('plans-pane-cleanup-p-active'));
 
     await waitFor(() => expect(setters.opcln).toHaveBeenCalledWith('cleanup-row-1'));
-    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+    const startCall = fetchMock.mock.calls.find(([url]) => url === '/api/admin/plan-cleanup')!;
+    expect(JSON.parse((startCall[1] as RequestInit).body as string)).toEqual({
       op: 'start',
       planSlugs: ['p-active'],
       filter: {
@@ -279,6 +299,7 @@ describe('PlansPane', () => {
         harness: 'papercusp',
       },
       harness: 'papercusp',
+      launch: { model: null, effort: null, account: 'default', carry: 'warm' },
     });
   });
 
