@@ -1,3 +1,9 @@
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 /**
  * systemd-scope — the pure `systemd-run --user --scope` argv-builder shared by every
  * spawn seam that isolates a payload into its own memory-capped cgroup instead of
@@ -31,6 +37,91 @@ export const SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS = [
   '--collect',
   '--property=CollectMode=inactive-or-failed',
 ] as const;
+
+/** Static, dependency-free runner used after systemd has accepted a payload. */
+export const SYSTEMD_ENV_RUNNER_PATH = fileURLToPath(new URL('./systemd-scope-env-runner.mjs', import.meta.url));
+/** Credential id is deliberately boring: it is visible to systemd, never a secret. */
+export const SYSTEMD_ENV_CREDENTIAL_NAME = 'papercusp-env';
+
+export interface SecretEnvironmentTransport {
+  /** `/proc/<operator-pid>/fd/<fd>`; the backing file is unlinked immediately. */
+  sourcePath: string;
+  /** Close the operator-side reference after the consumer has started. */
+  release: () => void;
+}
+
+/** Encode the exact replacement environment as NUL-delimited NAME=value records. */
+export function encodeSecretEnvironment(env: NodeJS.ProcessEnv): Buffer {
+  const records: string[] = [];
+  for (const [name, value] of Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (value === undefined) continue;
+    if (name.length === 0 || name.includes('=') || name.includes('\0')) continue;
+    if (value.includes('\0')) throw new TypeError(`environment value for ${name} contains NUL`);
+    records.push(`${name}=${value}`);
+  }
+  return Buffer.from(records.length ? `${records.join('\0')}\0` : '', 'utf8');
+}
+
+/**
+ * Create an anonymous, unlinked environment payload. `/dev/shm` is the normal
+ * path (tmpfs); the unlinked tmpdir fallback keeps payload data out of argv and
+ * journald even on hosts without a usable shared-memory mount.
+ */
+export function createSecretEnvironmentTransport(env: NodeJS.ProcessEnv): SecretEnvironmentTransport {
+  const bytes = encodeSecretEnvironment(env);
+  const roots = process.platform === 'linux' && existsSync('/dev/shm') ? ['/dev/shm', tmpdir()] : [tmpdir()];
+  let fd: number | null = null;
+  let lastError: unknown = null;
+  for (const root of roots) {
+    const pathname = join(root, `papercusp-env-${process.pid}-${randomUUID()}`);
+    try {
+      fd = openSync(pathname, 'wx', 0o600);
+      unlinkSync(pathname);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (fd != null) {
+        try { closeSync(fd); } catch { /* best effort */ }
+        fd = null;
+      }
+      try { unlinkSync(pathname); } catch { /* best effort */ }
+    }
+  }
+  if (fd == null) {
+    throw lastError instanceof Error ? lastError : new Error('unable to create anonymous environment fd');
+  }
+  try {
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset);
+      if (written <= 0) throw new Error('anonymous environment fd write made no progress');
+      offset += written;
+    }
+  } catch (error) {
+    try { closeSync(fd); } catch { /* best effort */ }
+    throw error;
+  }
+  let released = false;
+  return {
+    sourcePath: `/proc/${process.pid}/fd/${fd}`,
+    release: () => {
+      if (released) return;
+      released = true;
+      try { closeSync(fd!); } catch { /* already closed */ }
+    },
+  };
+}
+
+function environmentRunnerPayload(base: readonly string[], source: string, mode: 'fd-path' | 'credential'): string[] {
+  return [
+    process.execPath,
+    SYSTEMD_ENV_RUNNER_PATH,
+    mode === 'fd-path' ? '--env-fd-path' : '--credential',
+    source,
+    '--',
+    ...base,
+  ];
+}
 
 /** Shared per-agent scope budget. Headless fleet members and orchestrated agent
  * turns are the same resource shape, so they must resolve the same override and
