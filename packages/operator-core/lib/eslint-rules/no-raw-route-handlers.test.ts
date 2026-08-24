@@ -12,8 +12,7 @@
  * `node_modules/.pnpm/eslint@…`, a directory that has never existed in this
  * npm-only repo (`only-allow npm`), so importing it threw ENOENT before
  * RuleTester ever ran. Both faults are fixed here: it lives in a covered
- * workspace, and it resolves eslint through the normal hoisted walk-up. See
- * `no-org-pool-sql-json.test.ts` in this directory for the full rationale.
+ * workspace, and it resolves eslint through the normal hoisted walk-up.
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

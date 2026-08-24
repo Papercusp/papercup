@@ -45,8 +45,8 @@ import ts from 'typescript';
  *
  * ⚠ NOT FOR EVERY GUARD. Some guards detect tokens that legitimately live INSIDE string or
  * template literals — `check-no-raw-install-slug-filter` matches `harness_slug = ${installSlug}`
- * inside SQL template literals BY DESIGN, and the SQL-in-string guards
- * (check-migration-forward-compat, check-no-sql-json) are the same shape. For those, stripping
+ * inside SQL template literals BY DESIGN, and `check-migration-forward-compat`
+ * has the same SQL-in-string shape. For those guards, stripping
  * strings would trade this false positive for a false NEGATIVE. Use this module when the token
  * you detect is CODE (a call or identifier); keep reading raw text when the token is legitimately
  * string-resident.
@@ -85,8 +85,12 @@ import ts from 'typescript';
  * @returns {string}
  */
 export function stripCommentsAndStrings(text, fileName) {
-  if (isSqlFile(fileName)) return blankRanges(text, collectSqlRanges(text, { strings: true }));
-  return blankRanges(text, collectRanges(text, fileName, { strings: true, regex: true }));
+  if (isSqlFile(fileName))
+    return blankRanges(text, collectSqlRanges(text, { strings: true }));
+  return blankRanges(
+    text,
+    collectRanges(text, fileName, { strings: true, regex: true }),
+  );
 }
 
 /**
@@ -139,8 +143,12 @@ export function stripCommentsAndStrings(text, fileName) {
  * @returns {string}
  */
 export function stripCommentsOnly(text, fileName) {
-  if (isSqlFile(fileName)) return blankRanges(text, collectSqlRanges(text, { strings: false }));
-  return blankRanges(text, collectRanges(text, fileName, { strings: false, regex: false }));
+  if (isSqlFile(fileName))
+    return blankRanges(text, collectSqlRanges(text, { strings: false }));
+  return blankRanges(
+    text,
+    collectRanges(text, fileName, { strings: false, regex: false }),
+  );
 }
 
 /** Does this path name a SQL file? Extension gate for the dispatch above. */
@@ -188,7 +196,10 @@ function isSqlFile(fileName) {
  *   It defaults to the reading `strings` implies, so the two long-standing masks are unchanged.
  * @returns {Array<[number, number]>} half-open [start, end) ranges
  */
-function collectSqlRanges(text, { strings = false, dollarBodies = strings ? 'literal' : 'code' } = {}) {
+function collectSqlRanges(
+  text,
+  { strings = false, dollarBodies = strings ? 'literal' : 'code' } = {},
+) {
   const ranges = [];
   const n = text.length;
   let i = 0;
@@ -212,8 +223,16 @@ function collectSqlRanges(text, { strings = false, dollarBodies = strings ? 'lit
       let depth = 1;
       i += 2;
       while (i < n && depth > 0) {
-        if (text[i] === '/' && text[i + 1] === '*') { depth += 1; i += 2; continue; }
-        if (text[i] === '*' && text[i + 1] === '/') { depth -= 1; i += 2; continue; }
+        if (text[i] === '/' && text[i + 1] === '*') {
+          depth += 1;
+          i += 2;
+          continue;
+        }
+        if (text[i] === '*' && text[i + 1] === '/') {
+          depth -= 1;
+          i += 2;
+          continue;
+        }
         i += 1;
       }
       ranges.push([start, i]);
@@ -243,10 +262,13 @@ function collectSqlRanges(text, { strings = false, dollarBodies = strings ? 'lit
           // ONLY because it sits in a body (e.g. 000-baseline.sql's "-- Echo-loop guard:").
           // Recursion also handles nesting ($$ inside $function$) for free, and a `--` inside a
           // STRING within the body still correctly stays live, which a blanket skip cannot express.
-          for (const [s, e] of collectSqlRanges(text.slice(bodyStart, bodyEnd), {
-            strings,
-            dollarBodies,
-          })) {
+          for (const [s, e] of collectSqlRanges(
+            text.slice(bodyStart, bodyEnd),
+            {
+              strings,
+              dollarBodies,
+            },
+          )) {
             ranges.push([bodyStart + s, bodyStart + e]);
           }
         }
@@ -259,14 +281,23 @@ function collectSqlRanges(text, { strings = false, dollarBodies = strings ? 'lit
     // backslash escapes; the leading E is ordinary code, so we only shift the opening quote.
     if (ch === "'" || ch === '"') {
       const quote = ch;
-      const backslashEscapes = quote === "'" && i > 0 && /[eE]/.test(text[i - 1])
-        && !/[A-Za-z0-9_]/.test(text[i - 2] ?? '');
+      const backslashEscapes =
+        quote === "'" &&
+        i > 0 &&
+        /[eE]/.test(text[i - 1]) &&
+        !/[A-Za-z0-9_]/.test(text[i - 2] ?? '');
       const bodyStart = i + 1;
       let j = bodyStart;
       while (j < n) {
-        if (backslashEscapes && text[j] === '\\') { j += 2; continue; }
+        if (backslashEscapes && text[j] === '\\') {
+          j += 2;
+          continue;
+        }
         if (text[j] === quote) {
-          if (text[j + 1] === quote) { j += 2; continue; } // doubled ⇒ escaped, keep going
+          if (text[j + 1] === quote) {
+            j += 2;
+            continue;
+          } // doubled ⇒ escaped, keep going
           break;
         }
         j += 1;
@@ -329,8 +360,14 @@ export function stripSqlComments(text) {
  * @param {{ dollarBodies?: 'literal'|'code' }} [opts]
  * @returns {string}
  */
-export function stripSqlCommentsAndStrings(text, { dollarBodies = 'literal' } = {}) {
-  return blankRanges(text, collectSqlRanges(text, { strings: true, dollarBodies }));
+export function stripSqlCommentsAndStrings(
+  text,
+  { dollarBodies = 'literal' } = {},
+) {
+  return blankRanges(
+    text,
+    collectSqlRanges(text, { strings: true, dollarBodies }),
+  );
 }
 
 /**
@@ -391,7 +428,9 @@ export function isLiveCodeAt(raw, masked, index) {
  * @returns {RegExpExecArray | null}
  */
 export function firstLiveMatch(raw, masked, re) {
-  const scanner = re.flags.includes('g') ? new RegExp(re.source, re.flags) : new RegExp(re.source, `${re.flags}g`);
+  const scanner = re.flags.includes('g')
+    ? new RegExp(re.source, re.flags)
+    : new RegExp(re.source, `${re.flags}g`);
   scanner.lastIndex = 0;
   for (let m = scanner.exec(raw); m; m = scanner.exec(raw)) {
     const end = m.index + m[0].length;
@@ -415,17 +454,40 @@ function parseSource(text, fileName) {
     ? null
     : fileName.endsWith('.tsx')
       ? ts.ScriptKind.TSX
-      : fileName.endsWith('.ts') || fileName.endsWith('.mts') || fileName.endsWith('.cts')
+      : fileName.endsWith('.ts') ||
+          fileName.endsWith('.mts') ||
+          fileName.endsWith('.cts')
         ? ts.ScriptKind.TS
         : fileName.endsWith('.jsx')
           ? ts.ScriptKind.JSX
           : ts.ScriptKind.JS;
   if (byExt !== null) {
-    return ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, byExt);
+    return ts.createSourceFile(
+      fileName,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      byExt,
+    );
   }
-  const asTs = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const asTsx = ts.createSourceFile('x.tsx', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  return (asTsx.parseDiagnostics || []).length < (asTs.parseDiagnostics || []).length ? asTsx : asTs;
+  const asTs = ts.createSourceFile(
+    'x.ts',
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const asTsx = ts.createSourceFile(
+    'x.tsx',
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  return (asTsx.parseDiagnostics || []).length <
+    (asTs.parseDiagnostics || []).length
+    ? asTsx
+    : asTs;
 }
 
 function collectRanges(text, fileName, { strings, regex }) {
@@ -456,9 +518,15 @@ function collectRanges(text, fileName, { strings, regex }) {
     const s = node.getStart(sf);
     const e = node.getEnd();
     if (strings) {
-      if (k === ts.SyntaxKind.StringLiteral || k === ts.SyntaxKind.NoSubstitutionTemplateLiteral) {
+      if (
+        k === ts.SyntaxKind.StringLiteral ||
+        k === ts.SyntaxKind.NoSubstitutionTemplateLiteral
+      ) {
         ranges.push([s + 1, Math.max(s + 1, e - 1)]);
-      } else if (k === ts.SyntaxKind.TemplateHead || k === ts.SyntaxKind.TemplateMiddle) {
+      } else if (
+        k === ts.SyntaxKind.TemplateHead ||
+        k === ts.SyntaxKind.TemplateMiddle
+      ) {
         // `\`head${` and `}middle${` — two closing characters, not one.
         ranges.push([s + 1, Math.max(s + 1, e - 2)]);
       } else if (k === ts.SyntaxKind.TemplateTail) {
@@ -492,7 +560,9 @@ function blankRanges(text, ranges) {
   /* c8 ignore next 4 -- a tripwire, not a branch under test: it can only fire on an offset
      desynchronisation, which would mean silently mis-blanked code. Loud is the point. */
   if (out.length !== text.length) {
-    throw new Error(`strip-comments-and-strings: offset desync (${text.length} -> ${out.length})`);
+    throw new Error(
+      `strip-comments-and-strings: offset desync (${text.length} -> ${out.length})`,
+    );
   }
   return out;
 }
@@ -529,7 +599,10 @@ export function probeStringLiteralBlindness(detector, tokenInProse) {
     } catch (err) {
       return { label, flagged: false, threw: String(err && err.message) };
     }
-    return { label, flagged: Array.isArray(out) ? out.length > 0 : Boolean(out) };
+    return {
+      label,
+      flagged: Array.isArray(out) ? out.length > 0 : Boolean(out),
+    };
   });
 
   const bad = results.filter((r) => r.flagged);
@@ -539,7 +612,9 @@ export function probeStringLiteralBlindness(detector, tokenInProse) {
     detail: bad.length
       ? `detector reported a PHANTOM offender for a token appearing only in: ${bad
           .map((b) => b.label)
-          .join(', ')} — it is text-matching without stripping string literals (see stripCommentsAndStrings)`
+          .join(
+            ', ',
+          )} — it is text-matching without stripping string literals (see stripCommentsAndStrings)`
       : 'no phantom for token-in-prose (string, template, comment)',
   };
 }
