@@ -26697,7 +26697,7 @@
           "POST"
         ]
       },
-      "description": "Wake me when a registered state CELL changes or crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path. `on` is OPTIONAL — omit it for \"wake me when this moves\" (op `changed`). A PRESET over watch:create, so it inherits its dedupe (an identical watch joins the existing poller), its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.",
+      "description": "Wake me when a registered state CELL changes or crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path. `on` is OPTIONAL — omit it for \"wake me when this moves\" (op `changed`), which on a cell declaring an assessment follows its semantic CODE, so you wake when the MEANING moves; `target` names the path explicitly. A PRESET over watch:create, so it inherits its dedupe (an identical watch joins the existing poller), its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.",
       "capabilities": [
         "coord:write"
       ],
