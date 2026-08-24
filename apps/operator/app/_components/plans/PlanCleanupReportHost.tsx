@@ -13,6 +13,7 @@ import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
 } from "./use-plan-cleanup-run";
+import "./plan-cleanup-report.css";
 
 const PlanCleanupReport = lazy(() => import("./PlanCleanupReport"));
 
@@ -27,7 +28,17 @@ export default function PlanCleanupReportHost() {
 
   return (
     <ReportTakeoverLayer testId="plan-cleanup-report-takeover">
-      <Suspense fallback={null}>
+      <Suspense
+        fallback={
+          <div
+            className="plan-cleanup-report__loading"
+            role="status"
+            aria-live="polite"
+          >
+            Loading clean-up report…
+          </div>
+        }
+      >
         <PlanCleanupReport
           key={cleanup.run.runId}
           run={cleanup.run}
