@@ -362,6 +362,110 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('keeps the holder diagnostic silent when fuser reports a pid that exits before /proc opens', async () => {
+    const env = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0', PC_HEAVY_TIMEOUT_SEC: '3', PC_HEAVY_HEARTBEAT_SEC: '1' };
+    const fakeBin = join(dir, 'fake-bin');
+    mkdirSync(fakeBin);
+    // This stands in for the real fuser→/proc exit race: by the time the
+    // diagnostic reads this reported pid, no such /proc entry exists.
+    writeFileSync(join(fakeBin, 'fuser'), '#!/usr/bin/env bash\nprintf \'987654321\\n\'\n', { mode: 0o755 });
+
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing heavy holder');
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
+        { env: baseEnv({ ...env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` }), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
+
+      expect(await barrierExit).toBe(75);
+      const err = barrierErr.text();
+      expect(err).toContain('pid 987654321 [(exited before its cmdline could be read)]');
+      expect(err).not.toContain('/proc/987654321/cmdline');
+      expect(err).not.toContain('No such file or directory');
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+    }
+  });
+
+  it('WI-41318: a preemptible ordinary holder yields its whole child group to an exclusive materializer', async () => {
+    const workloadPidFile = join(dir, 'preemptible-workload.pid');
+    const terminatedFile = join(dir, 'preemptible-workload.terminated');
+    const barrierRan = join(dir, 'exclusive-barrier-ran');
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '5',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+      PC_HEAVY_PREEMPTIBLE: '1',
+      PC_HEAVY_PREEMPT_GRACE_SEC: '0',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const workload = [
+      `echo "$$" > ${JSON.stringify(workloadPidFile)}`,
+      `trap 'echo terminated > ${JSON.stringify(terminatedFile)}; exit 143' TERM`,
+      'while :; do sleep 1; done',
+    ].join('; ');
+    const holder = spawn('bash', [PC_HEAVY, 'bash', '-c', workload], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    const holderExit = new Promise<number>((res) => holder.on('exit', (c) => res(c ?? -1)));
+    let barrier: ReturnType<typeof spawn> | undefined;
+    let workloadPid = 0;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the preemptible holder taking slot.0');
+      await waitFor('the preemptible workload process starting', () => existsSync(workloadPidFile));
+      workloadPid = Number(readFileSync(workloadPidFile, 'utf8').trim());
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `echo acquired > ${JSON.stringify(barrierRan)}`],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
+
+      expect(
+        await barrierExit,
+        `holder stderr:\n${holderErr.peek()}\nbarrier stderr:\n${barrierErr.peek()}`,
+      ).toBe(0);
+      expect(await holderExit).toBe(75);
+      expect(existsSync(barrierRan)).toBe(true);
+      expect(existsSync(terminatedFile)).toBe(true);
+      expect(holderErr.text()).toContain('PREEMPTING ordinary holder for exclusive materialization');
+      expect(holderErr.text()).toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
+      expect(barrierErr.text()).toContain('exclusive materialization barrier acquired');
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+      if (workloadPid > 1) {
+        try { process.kill(-workloadPid, 'SIGKILL'); } catch { /* already reaped */ }
+      }
+    }
+  }, 15_000);
+
+  it('a preemptible holder with no materializer preserves the child exit status', () => {
+    const r = runSync(['bash', '-c', 'exit 23'], {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_PREEMPTIBLE: '1',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    });
+    expect(r.status).toBe(23);
+    expect(r.stderr).not.toContain('PREEMPTING');
+  });
+
   it('does not squat free slots while an exclusive drain waits on a live holder', async () => {
     const env = {
       PC_HEAVY_SLOTS: '2',
@@ -2110,6 +2214,57 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
 
       expect(await focusedExited).toBe(0);
       expect(focusedOut.text()).toContain('scoped-tsc-ok');
+    } finally {
+      killGroup(holder);
+      try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }
+    }
+  });
+
+  it('EI-21336446790757521: npm run lint:tsc -- --files uses the independent bounded lane', async () => {
+    plantLock(liveOwner());
+    const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv(gateEnv),
+      cwd: dir,
+      detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    const focused = spawn(
+      'bash',
+      [
+        PC_HEAVY,
+        'bash',
+        '-c',
+        'sleep 1; echo npm-scoped-tsc-ok',
+        'npm',
+        'run',
+        'lint:tsc',
+        '--',
+        '--files=packages/operator-core/lib/x.ts',
+      ],
+      {
+        env: baseEnv({ ...gateEnv, PC_HEAVY_FOCUSED_SLOTS: '1' }),
+        cwd: dir,
+      },
+    );
+    const focusedOut = createTextCollector(focused.stdout);
+    const focusedErr = createTextCollector(focused.stderr);
+    const focusedExited = new Promise<number>((res) => focused.on('exit', (c) => res(c ?? -1)));
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the ordinary holder taking the slot');
+      await untilStderr(
+        focused,
+        focusedErr,
+        (t) => t.includes('slot acquired'),
+        'npm run lint:tsc taking its independent lane',
+      );
+
+      expect(heldSlotCount(dir, 1)).toBe(1);
+      expect(heldSlotCount(join(dir, 'focused'), 1)).toBe(1);
+      expect(focusedErr.peek()).toContain('release gate is JUDGING');
+
+      expect(await focusedExited).toBe(0);
+      expect(focusedOut.text()).toContain('npm-scoped-tsc-ok');
     } finally {
       killGroup(holder);
       try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }

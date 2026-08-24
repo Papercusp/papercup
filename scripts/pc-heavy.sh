@@ -761,6 +761,7 @@ for _arg in "$@"; do
   case "$_arg" in
     scripts/test-files.mjs|*/scripts/test-files.mjs) _is_focused_test=1 ;;
     scripts/lint-tsc*.mjs|*/scripts/lint-tsc*.mjs) _is_scoped_tsc=1 ;;
+    lint:tsc|lint:tsc:*) _is_scoped_tsc=1 ;;
     --files=*|--files-from=*) _has_explicit_scope=1 ;;
   esac
 done
@@ -792,10 +793,12 @@ fi
 _timeout="${PC_HEAVY_TIMEOUT_SEC:-900}"
 if [ -z "${PC_HEAVY_TIMEOUT_SEC:-}" ]; then
   for _arg in "$@"; do
-    if [ "$_arg" = "scripts/test-files.mjs" ]; then
+    case "$_arg" in
+      scripts/test-files.mjs|lint:tsc|lint:tsc:*)
       _timeout="${PC_HEAVY_SCOPED_TIMEOUT_SEC:-30}"
       break
-    fi
+      ;;
+    esac
   done
 fi
 
@@ -831,11 +834,35 @@ _exclusive_describe_holders() {
   _pids="$(fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
   [ -n "$_pids" ] || return 0
   for _pid in $_pids; do
-    _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | cut -c1-100 || true)"
+    # Keep the path open inside a command whose stderr is redirected. A holder
+    # can exit after fuser reports it but before the shell opens /proc; putting
+    # the redirection on tr lets Bash print that ENOENT before 2>/dev/null can
+    # take effect, leaking a red-looking diagnostic from this best-effort path.
+    _cmd="$(cat "/proc/$_pid/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-100 || true)"
     [ -n "$_cmd" ] || _cmd='(exited before its cmdline could be read)'
     _out="$_out pid $_pid [$_cmd];"
   done
   printf '%s' "$_out"
+}
+
+# True only while an exclusive materializer OWNS the writer flock. Merely
+# seeing the path is not enough: the file deliberately outlives its holder.
+# Ordinary preemptible jobs poll this while running so an exclusive drain can
+# reclaim the slot domain instead of waiting behind a multi-hour holder until
+# its fixed 900-second budget expires (WI-41318 / D-013).
+_exclusive_writer_is_held() {
+  local _probe_fd=''
+  [ -e "$_exclusive_writer_path" ] || return 1
+  command -v flock >/dev/null 2>&1 || return 1
+  if ! { exec {_probe_fd}>"$_exclusive_writer_path"; } 2>/dev/null; then
+    return 1
+  fi
+  if flock -n "$_probe_fd"; then
+    eval "exec ${_probe_fd}>&-" 2>/dev/null || true
+    return 1
+  fi
+  eval "exec ${_probe_fd}>&-" 2>/dev/null || true
+  return 0
 }
 
 # Report who still owns each slot this barrier could not drain. Bounded so a
@@ -1609,6 +1636,129 @@ if [ "$_do_cache_write" = 1 ]; then
   rm -f "$_c_out_tmp" "$_c_err_tmp" 2>/dev/null   # no-op after a successful mv
   rm -rf "$_c_lockdir" 2>/dev/null
   trap - EXIT
+  exit "$_rc"
+fi
+
+# WI-41318 / stable-candidate-related-gate D-013 — an ordinary holder used to
+# own its slot for an UNBOUNDED command lifetime, while an exclusive
+# materializer had only 900 seconds to drain every slot. The timer-driven live
+# federation gate can legitimately run for up to four hours, so once it held
+# slot.0 every checkpoint deterministically exited 75 before suite start.
+#
+# Long scheduled jobs opt into cooperative preemption. They run in their own
+# process group; when an exclusive writer appears, the wrapper grants a short
+# cleanup window, TERM-inates the whole group, escalates only if cleanup wedges,
+# and exits 75 so the caller records infrastructure deferral rather than a code
+# verdict. Ordinary interactive work is byte-for-byte unchanged unless it opts
+# in. `setsid` is required rather than pretending a single-PID kill covers a
+# child tree; an explicit preemptible caller on a host without it fails closed.
+_preemptible=0
+case "${PC_HEAVY_PREEMPTIBLE:-0}" in
+  1|on|ON|true|TRUE|yes|YES) _preemptible=1 ;;
+esac
+if [ "$_preemptible" = 1 ]; then
+  if ! command -v setsid >/dev/null 2>&1; then
+    echo "[pc-heavy] REFUSED preemptible heavy run: setsid is unavailable, so the child tree cannot be yielded safely" >&2
+    exit 75
+  fi
+
+  _preempt_grace="${PC_HEAVY_PREEMPT_GRACE_SEC:-30}"
+  _preempt_term_grace="${PC_HEAVY_PREEMPT_TERM_GRACE_SEC:-30}"
+  _preempt_poll="${PC_HEAVY_PREEMPT_POLL_SEC:-1}"
+  case "$_preempt_grace" in ''|*[!0-9]*) _preempt_grace=30 ;; esac
+  case "$_preempt_term_grace" in ''|*[!0-9]*) _preempt_term_grace=30 ;; esac
+  case "$_preempt_poll" in ''|*[!0-9.]*) _preempt_poll=1 ;; esac
+
+  _preempt_pid_file="$_dir/preemptible.$$.pid"
+  rm -f "$_preempt_pid_file" 2>/dev/null || true
+  # `setsid COMMAND &` is not enough: when the launcher is already a process-
+  # group leader, util-linux forks and `$!` names the short-lived launcher,
+  # not the new session. The wrapper would then stop monitoring while the real
+  # child kept the slot forever — exactly the bug this path exists to remove.
+  # `--fork --wait` keeps a direct waitable supervisor, while the tiny shim
+  # publishes the actual new-session/group leader before execing the runner.
+  setsid --fork --wait bash -c '
+    _pid_file="$1"
+    shift
+    printf "%s\n" "$$" > "$_pid_file"
+    exec "$@"
+  ' _ "$_preempt_pid_file" "${_runner[@]}" "$@" &
+  _preempt_wait_pid=$!
+  _preempt_start_deadline=$(( $(date +%s) + 5 ))
+  while [ ! -s "$_preempt_pid_file" ]; do
+    if ! kill -0 "$_preempt_wait_pid" 2>/dev/null; then
+      wait "$_preempt_wait_pid"
+      exit $?
+    fi
+    if [ "$(date +%s)" -ge "$_preempt_start_deadline" ]; then
+      echo "[pc-heavy] REFUSED preemptible heavy run: child process-group identity was not published" >&2
+      kill -TERM "$_preempt_wait_pid" 2>/dev/null || true
+      wait "$_preempt_wait_pid" 2>/dev/null || true
+      rm -f "$_preempt_pid_file" 2>/dev/null || true
+      exit 75
+    fi
+    sleep 0.05
+  done
+  _preempt_child_pid=$(head -1 "$_preempt_pid_file" 2>/dev/null || true)
+  case "$_preempt_child_pid" in
+    ''|*[!0-9]*)
+      echo "[pc-heavy] REFUSED preemptible heavy run: invalid child process-group identity" >&2
+      kill -TERM "$_preempt_wait_pid" 2>/dev/null || true
+      wait "$_preempt_wait_pid" 2>/dev/null || true
+      rm -f "$_preempt_pid_file" 2>/dev/null || true
+      exit 75
+      ;;
+  esac
+  _preempt_seen_at=''
+
+  _preempt_group_alive() {
+    kill -0 -- "-${_preempt_child_pid}" 2>/dev/null
+  }
+  _preempt_forward_signal() {
+    local _sig="$1" _code="$2"
+    kill "-${_sig}" -- "-${_preempt_child_pid}" 2>/dev/null || true
+    wait "$_preempt_wait_pid" 2>/dev/null || true
+    rm -f "$_preempt_pid_file" 2>/dev/null || true
+    exit "$_code"
+  }
+  trap '_preempt_forward_signal TERM 143' TERM
+  trap '_preempt_forward_signal INT 130' INT
+  trap '_preempt_forward_signal HUP 129' HUP
+
+  while _preempt_group_alive; do
+    if _exclusive_writer_is_held; then
+      _preempt_now=$(date +%s)
+      if [ -z "$_preempt_seen_at" ]; then
+        _preempt_seen_at="$_preempt_now"
+        echo "[pc-heavy] exclusive materializer is waiting — preemptible holder has ${_preempt_grace}s to finish" >&2
+      fi
+      if [ $(( _preempt_now - _preempt_seen_at )) -ge "$_preempt_grace" ]; then
+        echo "[pc-heavy] PREEMPTING ordinary holder for exclusive materialization after ${_preempt_grace}s grace (pid=$_preempt_child_pid)" >&2
+        kill -TERM -- "-${_preempt_child_pid}" 2>/dev/null || true
+        _preempt_term_deadline=$(( _preempt_now + _preempt_term_grace ))
+        while _preempt_group_alive && [ "$(date +%s)" -lt "$_preempt_term_deadline" ]; do
+          sleep "$_preempt_poll"
+        done
+        if _preempt_group_alive; then
+          echo "[pc-heavy] preemptible holder exceeded ${_preempt_term_grace}s TERM cleanup grace — escalating its process group to SIGKILL" >&2
+          kill -KILL -- "-${_preempt_child_pid}" 2>/dev/null || true
+        fi
+        wait "$_preempt_wait_pid" 2>/dev/null || true
+        rm -f "$_preempt_pid_file" 2>/dev/null || true
+        trap - TERM INT HUP
+        echo "PC_HEAVY_RESULT status=preempted reason=exclusive-materializer" >&2
+        exit 75
+      fi
+    else
+      _preempt_seen_at=''
+    fi
+    sleep "$_preempt_poll"
+  done
+
+  wait "$_preempt_wait_pid"
+  _rc=$?
+  rm -f "$_preempt_pid_file" 2>/dev/null || true
+  trap - TERM INT HUP
   exit "$_rc"
 fi
 

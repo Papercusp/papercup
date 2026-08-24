@@ -379,6 +379,9 @@ describe('live-federation gate §1 admission (WI-6151)', () => {
       expect(gate).toContain('memory_phase_guard "post-repack/pre-smokes"');
       expect(gate).toContain('scripts/pc-heavy.sh');
       expect(service).toContain('scripts/pc-heavy.sh -- /usr/bin/env bash bin/live-federation-gate.sh');
+      expect(service).toContain('Environment=PC_HEAVY_COALESCE=0');
+      expect(service).toContain('Environment=PC_HEAVY_PREEMPTIBLE=1');
+      expect(gate).toContain('PC_HEAVY_COALESCE=0 PC_HEAVY_PREEMPTIBLE=1');
       expect(service).toContain('MemoryAccounting=yes');
       expect(service).toContain('MemoryHigh=24G');
       expect(service).toContain('MemoryMax=32G');

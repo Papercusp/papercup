@@ -23,6 +23,13 @@ WorkingDirectory=%h/papercupai-workspace/papercusp/papercusp-desktop
 # (D-015). This restores real coverage. If the leg reds, that is a genuine finding — triage
 # it; do NOT re-set this to 1 to quiet it without recording why on the plan.
 Environment=SKIP_FROMREPO=0
+# This is a deliberately long scheduled job (up to 4h). It must yield its
+# ordinary heavy slot when an exclusive dependency materializer arrives, or a
+# 900s checkpoint drain can never outwait this 14400s holder (WI-41318/D-013).
+# Coalescing is disabled here as well as in the script's direct-invocation
+# wrapper: systemd invokes pc-heavy BEFORE the script can self-enrol.
+Environment=PC_HEAVY_COALESCE=0
+Environment=PC_HEAVY_PREEMPTIBLE=1
 # Join the same heavy-slot domain as agent verification. The script also
 # self-enrols direct invocations; PC_HEAVY_BYPASS makes this wrapper one-shot.
 ExecStart=%h/papercupai-workspace/papercusp/scripts/pc-heavy.sh -- /usr/bin/env bash bin/live-federation-gate.sh
