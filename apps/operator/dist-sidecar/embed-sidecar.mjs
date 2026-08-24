@@ -8411,7 +8411,30 @@ function createEmbedSidecarServer(opts = {}) {
           reranker: workerStates.reranker()
         },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
-        concurrency
+        concurrency,
+        // EI-21341585960652821. The FIFO's REAL backlog. Until this existed,
+        // /healthz could not express "up but not keeping up", and on 2026-08-24
+        // that cost the fleet hours: the sidecar sat 100% slot-saturated with
+        // every novel query embed queueing ~11.4s median (max 67.8s) against
+        // caller budgets of 1200ms/4000ms, so semantic retrieval was dead
+        // fleet-wide \u2014 while this endpoint answered 200 in 0.6ms with every
+        // model `warm`. FIVE separate work-items were filed for that one cause
+        // (EI-21304382115507204, EI-21340448199748146, EI-21339827924944774,
+        // EI-21313833053692891, EI-21156482716733836), each correctly reporting
+        // its own leg degraded, none able to see the shared queue.
+        //
+        // Why the pre-existing signal could not catch it: `workers.embedder.
+        // pendingCount` READS like queue depth but is `_pending.size` \u2014 units
+        // already handed to the worker \u2014 so it is structurally capped at
+        // `concurrency` and is an OCCUPANCY gauge. The one field that looked
+        // like a backlog signal CANNOT EXCEED `concurrency`, so it can never
+        // indicate a backlog: pinned at 2, it is indistinguishable from "two in
+        // flight, all well". That also defeats probing, since a discriminator
+        // correlating latency against it is correlating against a constant.
+        //
+        // `depth` is the queue no one could see; `saturated` is the predicate a
+        // health check should actually alert on (up AND keeping up).
+        queue: { depth: waiting.length, active, saturated: active >= concurrency }
       });
     },
     [EMBED_SIDECAR_CAP_EMBED]: withRequestCancellation(handleEmbed),

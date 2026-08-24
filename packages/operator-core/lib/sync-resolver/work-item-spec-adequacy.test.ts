@@ -46,6 +46,15 @@ const contractSpy = vi.fn<(...a: unknown[]) => Promise<WorkItemBehaviorContract>
 const stampSpy = vi.fn();
 vi.mock('../agent-tools/plans/behavior-contract-resolver', () => ({
   resolveWorkItemBehaviorContract: (...a: unknown[]) => contractSpy(...a),
+  enforcedClausesOf: (contract: WorkItemBehaviorContract) => {
+    const enforcing = contract.groups.filter((group) => group.eligibility.enforcing);
+    return {
+      planSlugs: enforcing.map((group) => group.planSlug),
+      clauses: enforcing
+        .flatMap((group) => group.clauses)
+        .filter((clause) => clause.lifecycleStatus === 'accepted' || clause.lifecycleStatus === 'active'),
+    };
+  },
   planStampOf: (...a: unknown[]) => stampSpy(...a),
   ENFORCEABLE_LIFECYCLE_STATUSES: ['accepted', 'active'] as const,
 }));
