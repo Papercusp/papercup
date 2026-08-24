@@ -39,7 +39,7 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
     revision: 1,
     planItemId: 'P-001',
     behavior: 'the gate refuses a stale proof',
-    behaviorClass: 'functional',
+    behaviorClass: 'failure',
     requiredEvidence: [],
     requiredTestLayers: [],
     mutationRequired: false,
