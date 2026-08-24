@@ -853,6 +853,18 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // observes the orient result or its structured fallback instead of an
   // ambiguous client-side -32001 timeout.
   ['coord:orient', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21310243062797569: fleet:assignments fans out across presence,
+  // claims, and liveness reads. During a BYOC live recheck that placement
+  // read can outlive the ordinary 30s client deadline even though the
+  // operator is still working and will return a valid response. Keep the
+  // ptool client outside the long-read budget so it reports the tool's
+  // structured result instead of an ambiguous MCP -32001 timeout.
+  ['fleet:assignments', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21276159817895096: `db:migrate` declares a 1020s server-side timeout,
+  // but the client must stay above the MCP transport cap to observe its
+  // structured verdict instead of cutting the request off at 30s. The
+  // foreground budget is the smallest existing client deadline that does so.
+  ['db:migrate', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['locks:heartbeat_resource', PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS],
 ]);
 

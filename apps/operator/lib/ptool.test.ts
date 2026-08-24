@@ -598,6 +598,32 @@ describe('ptool timeoutForTool — locks:heartbeat_resource outlives serialized 
   });
 });
 
+describe('ptool timeoutForTool — fleet:assignments outlives BYOC live-recheck fan-out (EI-21310243062797569)', () => {
+  it('gives the placement read a long-read client deadline, not the flat 30s ceiling', () => {
+    expect(timeoutForTool('fleet:assignments', {})).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('fleet:assignments', {})).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('fleet:assignments', {})).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+  });
+
+  it('keeps the same long-read budget through the deferred tools:invoke transport', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'fleet:assignments' }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — db:migrate outlives the MCP request deadline (EI-21276159817895096)', () => {
+  it('gives the migration call a client deadline beyond the transport cap, not the flat 30s ceiling', () => {
+    expect(timeoutForTool('db:migrate', {})).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('db:migrate', {})).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('db:migrate', {})).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+  });
+
+  it('keeps the same migration budget through the deferred tools:invoke transport', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'db:migrate' }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool serviceOf / groupTools', () => {
   it('splits the service off the colon', () => {
     expect(serviceOf('work_items:list')).toBe('work_items');
