@@ -134,6 +134,80 @@ export interface ClaimTimeEnrichment {
    */
   planItemLanded?: unknown;
   planItemLandedWarning?: string;
+  /**
+   * P-013 — what this claim's context actually contained, and what it did not.
+   *
+   * REQUIRED, unlike every other field here. The others are optional because a leg
+   * legitimately produces nothing; this one is produced on every call by construction,
+   * and making it optional would recreate exactly the ambiguity it exists to remove —
+   * an absent delivery record is indistinguishable from a claim that delivered nothing.
+   */
+  enrichmentDelivery: ClaimTimeEnrichmentDelivery;
+}
+
+/**
+ * Why a leg produced nothing — the distinction the bare `null` could not carry.
+ *
+ * · `delivered`       — the leg ran and returned context.
+ * · `empty`           — the leg ran against real inputs and legitimately found nothing.
+ * · `skipped-no-input`— the surface had no work-item / payload / id for this leg to use.
+ * · `failed`          — the leg THREW. Context the claimant should have had is missing.
+ */
+export type ClaimTimeLegOutcome = 'delivered' | 'empty' | 'skipped-no-input' | 'failed';
+
+export interface ClaimTimeOmittedLeg {
+  leg: ClaimTimeEnrichmentLeg;
+  reason: Exclude<ClaimTimeLegOutcome, 'delivered'>;
+}
+
+/**
+ * P-013 instrumentation — what this claim's context ACTUALLY contained.
+ *
+ * ⚠ THE DEFECT THIS CLOSES, not merely the measure it adds. Every leg below ends
+ * `.catch(() => null)`, and that null is returned for THREE different situations: the
+ * surface had no inputs for the leg, the leg ran and found nothing, or the leg BROKE.
+ * The first two are correct and expected. The third means a claimant was handed less
+ * context than the system believes it hands out — and it is invisible, to the claimant
+ * and to everyone else, because a broken leg looks exactly like a quiet one. Nothing
+ * anywhere records what a claim actually delivered.
+ *
+ * The catch itself is right (one broken guard must not take down a claim). What was
+ * wrong is that it discarded WHY. So this records the reason instead of removing the
+ * catch: same resilience, no silent hole.
+ *
+ * Deliberately derived at render time and NOT written to a new ledger table. The
+ * measurement is of one call's own output and is complete in that call; persisting it
+ * would be a second durable surface holding a copy of something the payload already
+ * states, which is the drift class this plan exists to remove.
+ */
+export interface ClaimTimeEnrichmentDelivery {
+  /** Legs that produced context, in registry order. */
+  delivered: ClaimTimeEnrichmentLeg[];
+  /**
+   * Legs that did not, each with its reason. A `skipped-no-input` entry is ordinary on
+   * a bare plan-item claim; a `failed` entry never is.
+   */
+  omitted: ClaimTimeOmittedLeg[];
+  /**
+   * Legs that THREW. Always a subset of `omitted`, hoisted because it is the only
+   * outcome that indicates something is broken — a reader scanning one field should
+   * not have to filter `omitted` to notice.
+   */
+  failed: ClaimTimeEnrichmentLeg[];
+  /**
+   * Approximate serialized size of the enrichment payload in characters — the CONTEXT
+   * SIZE half of the measure. Approximate on purpose: it is the JSON length of what
+   * this port returns, not what any particular surface finally renders, and quoting it
+   * as an exact token cost would be a precision the number does not have.
+   */
+  approxChars: number;
+  /**
+   * How to recover what is missing — the DRILL-DOWN half. Present only for `failed`
+   * legs, because those are the only omissions that are both unexpected and
+   * actionable: a `skipped-no-input` leg has nothing to recover, and an `empty` one
+   * already answered.
+   */
+  recover?: string;
 }
 
 export interface ClaimTimeEnrichmentOpts {
@@ -164,6 +238,38 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
   // subject to this leg so an absent id cannot become a fabricated lookup key.
   const behaviorContractWorkItem = wi?.id ? { ...wi, id: wi.id } : null;
 
+  /**
+   * Run one leg, recording WHY it produced nothing.
+   *
+   * ⚠ The catch behaviour is UNCHANGED — a throwing leg still yields null and still
+   * cannot take down the claim. The only difference is that the reason survives, so a
+   * broken leg stops being indistinguishable from a quiet one. Keep it that way: an
+   * unhandled throw here would turn a degraded claim into a failed one.
+   *
+   * `hasInput` is evaluated by the CALLER (each leg knows its own preconditions), so
+   * the previous `cond ? … : Promise.resolve(null)` guards become the `hasInput`
+   * argument rather than a second, differently-shaped path.
+   */
+  const outcomes = new Map<ClaimTimeEnrichmentLeg, ClaimTimeLegOutcome>();
+  const runLeg = async <T>(
+    leg: ClaimTimeEnrichmentLeg,
+    hasInput: boolean,
+    run: () => Promise<T | null>,
+  ): Promise<T | null> => {
+    if (!hasInput) {
+      outcomes.set(leg, 'skipped-no-input');
+      return null;
+    }
+    try {
+      const value = await run();
+      outcomes.set(leg, value ? 'delivered' : 'empty');
+      return value;
+    } catch {
+      outcomes.set(leg, 'failed');
+      return null;
+    }
+  };
+
   const [
     planDecisions,
     priorAttemptBrief,
@@ -177,26 +283,25 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
   ] = await Promise.all([
       // What OTHERS ruled that governs this item. Available from either a
       // work-item payload stamp or an explicit plan pointer.
-      import('./plan-decisions-claim-port')
-        .then(async (m) => {
-          // Takes both keys; the port prefers an explicit `planSlug` and falls
-          // back to deriving one from the work-item payload stamp, so passing
-          // whichever the surface has (or both) is correct.
-          const brief = await m.getClaimTimePlanDecisions({
-            ...(opts.planSlug ? { planSlug: opts.planSlug } : {}),
-            ...(wi ? { workItem: { payload: wi.payload } } : {}),
-            harness,
-            workspaceId,
-          });
-          return brief ? { planDecisions: brief.decisions, planDecisionsNote: m.renderPlanDecisionsNote(brief) } : null;
-        })
-        .catch(() => null),
+      runLeg('planDecisions', Boolean(opts.planSlug || wi), async () => {
+        const m = await import('./plan-decisions-claim-port');
+        // Takes both keys; the port prefers an explicit `planSlug` and falls
+        // back to deriving one from the work-item payload stamp, so passing
+        // whichever the surface has (or both) is correct.
+        const brief = await m.getClaimTimePlanDecisions({
+          ...(opts.planSlug ? { planSlug: opts.planSlug } : {}),
+          ...(wi ? { workItem: { payload: wi.payload } } : {}),
+          harness,
+          workspaceId,
+        });
+        return brief ? { planDecisions: brief.decisions, planDecisionsNote: m.renderPlanDecisionsNote(brief) } : null;
+      }),
 
       // What was already TRIED on this lane. The only leg that works from a bare
       // plan pointer with no work-item, which is why `plan_items:claim` had it.
-      import('./prior-attempt-context')
-        .then((m) =>
-          m.getClaimTimePriorAttemptBrief({
+      runLeg('priorAttemptBrief', Boolean(opts.planSlug || opts.planItemId || wi || workItemId), async () => {
+        const m = await import('./prior-attempt-context');
+        const brief = await m.getClaimTimePriorAttemptBrief({
             ...(opts.planSlug ? { planSlug: opts.planSlug } : {}),
             ...(opts.planItemId ? { planItemId: opts.planItemId } : {}),
             // Passed explicitly (not omitted-when-absent like its siblings): the
@@ -217,67 +322,48 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
                   },
                 }
               : {}),
-            harness,
-          }),
-        )
-        .then((brief) => (brief ? { priorAttemptBrief: brief } : null))
-        .catch(() => null),
+          harness,
+        });
+        return brief ? { priorAttemptBrief: brief } : null;
+      }),
 
       // What THIS item's own text assumes. An unverified absence premise ("X does
       // not exist yet") is the measured way a claimant rebuilds something that is
       // already there, so this fires on the item's own body, not on history.
-      wi
-        ? import('./premises-claim-port')
-            .then((m) =>
-              m.getClaimTimePremises({
-                workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
-                harness,
-                workspaceId,
-              }),
-            )
-            .then((brief) => (brief ? { premises: brief } : null))
-            .catch(() => null)
-        : Promise.resolve(null),
+      runLeg('premises', Boolean(wi), async () => {
+        const m = await import('./premises-claim-port');
+        const brief = await m.getClaimTimePremises({
+          workItem: { id: wi?.id, payload: wi?.payload, title: wi?.title, summary: wi?.summary },
+          harness,
+          workspaceId,
+        });
+        return brief ? { premises: brief } : null;
+      }),
 
       // Whether a finding this item rests on has since been RETRACTED in its own
       // thread. Needs a live (non-settled) work-item row.
-      wi
-        ? import('./agent-tools/work_items/retraction-advisory')
-            .then((m) => m.getClaimTimeRetractionAdvisory(wi, harness))
-            .then((advisory) => (advisory ? { retractionWarning: advisory.retractionWarning } : null))
-            .catch(() => null)
-        : Promise.resolve(null),
+      runLeg('retraction', Boolean(wi), async () => {
+        const m = await import('./agent-tools/work_items/retraction-advisory');
+        const advisory = wi ? await m.getClaimTimeRetractionAdvisory(wi, harness) : null;
+        return advisory ? { retractionWarning: advisory.retractionWarning } : null;
+      }),
 
       // Whether the item's stated author is still the right one to revalidate it.
-      workItemId
-        ? import('./work-item-prior-work')
-            .then(async (m) => {
-              const hint = await m.getClaimTimeAuthorshipRevalidationHint({
-                harness,
-                workItemId,
-                workspaceId,
-              });
-              const warning = m.authorshipRevalidationWarning(hint);
-              return hint && warning
-                ? { authorshipRevalidation: hint, authorshipRevalidationWarning: warning }
-                : null;
-            })
-            .catch(() => null)
-        : Promise.resolve(null),
+      runLeg('authorship', Boolean(workItemId), async () => {
+        const m = await import('./work-item-prior-work');
+        const hint = await m.getClaimTimeAuthorshipRevalidationHint({ harness, workItemId, workspaceId });
+        const warning = m.authorshipRevalidationWarning(hint);
+        return hint && warning ? { authorshipRevalidation: hint, authorshipRevalidationWarning: warning } : null;
+      }),
 
       // WI-39498: the plan says this is already DONE while the row is still open,
       // so the work may already be finished. The zombie guard.
-      workItemId
-        ? import('./work-item-plan-contradiction')
-            .then(async (m) => {
-              const hint = await m.getClaimTimePlanItemContradiction({ workItemId, payload: wi?.payload });
-              const warning = m.planItemContradictionWarning(hint, workItemId);
-              return hint && warning
-                ? { planItemContradiction: hint, planItemContradictionWarning: warning }
-                : null;
-            })
-            .catch(() => null)
-        : Promise.resolve(null),
+      runLeg('planContradiction', Boolean(workItemId), async () => {
+        const m = await import('./work-item-plan-contradiction');
+        const hint = await m.getClaimTimePlanItemContradiction({ workItemId, payload: wi?.payload });
+        const warning = m.planItemContradictionWarning(hint, workItemId);
+        return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
+      }),
 
       // P-011: WHICH promises this item is on the hook for, at WHICH revision.
       //
@@ -289,31 +375,27 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       //
       // ⚠ ADVISORY (D-017): reported, never enforced here. P-013 owns any refusal.
       // Needs a live work-item — a bare plan-item claim has no item to resolve edges for.
-      behaviorContractWorkItem
-        ? import('./behavior-contract-claim-port')
-            .then((m) => m.getClaimTimeBehaviorContract(behaviorContractWorkItem, harness))
-            .catch(() => null)
-        : Promise.resolve(null),
+      runLeg('behaviorContract', Boolean(behaviorContractWorkItem), async () => {
+        const m = await import('./behavior-contract-claim-port');
+        return behaviorContractWorkItem
+          ? await m.getClaimTimeBehaviorContract(behaviorContractWorkItem, harness)
+          : null;
+      }),
 
       // EI-21267393427094356: which stored payload paths are dead at HEAD, and where
       // each moved to. Hints freeze at filing time while modules relocate (hive/* →
       // pot/* being the measured instance); without this resolution the claimant's
       // literal affected-path check fails into a repository-wide fallback search.
       // Needs a work-item payload — a bare plan-item claim carries none.
-      wi?.payload
-        ? import('./stale-path-hints-claim-port')
-            .then(async (m) => {
-              const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
-              // `stalePathHintsNote` returns string | null; ClaimTimeEnrichment's
-              // optional field is `string | undefined`, and a null would be spread
-              // onto the result as a present-but-null key. Coerce so an absent note
-              // is genuinely absent.
-              return hints
-                ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) ?? undefined }
-                : null;
-            })
-            .catch(() => null)
-        : Promise.resolve(null),
+      runLeg('pathHints', Boolean(wi?.payload), async () => {
+        const m = await import('./stale-path-hints-claim-port');
+        const hints = await m.getClaimTimeStalePathHints({ payload: wi?.payload });
+        // `stalePathHintsNote` returns string | null; ClaimTimeEnrichment's
+        // optional field is `string | undefined`, and a null would be spread
+        // onto the result as a present-but-null key. Coerce so an absent note
+        // is genuinely absent.
+        return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) ?? undefined } : null;
+      }),
 
       // EI-18713141708830049: the MIRROR of the planContradiction leg above — the plan
       // item is still open while a SIBLING work-item on it has already settled, so the
