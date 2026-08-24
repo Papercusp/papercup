@@ -42,6 +42,13 @@ describe('events:catalog — live_awaiters', () => {
     ]);
   });
 
+  it('accepts pattern as a compatibility alias for q', async () => {
+    expect(catalog.args.safeParse({ pattern: 'deploy' }).success).toBe(true);
+    const canonical = await call({ q: 'deploy', announced: false, installed: false, liveAwaiters: false });
+    const alias = await call({ pattern: 'deploy', announced: false, installed: false, liveAwaiters: false });
+    expect(alias.families).toEqual(canonical.families);
+  });
+
   it('attaches live_awaiters per row by default, keyed via familyKeyPrefix', async () => {
     countMock.mockImplementation(async (prefixes: string[]) => {
       const m = new Map(prefixes.map((p) => [p, 0]));
