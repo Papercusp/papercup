@@ -49,7 +49,9 @@ const M = vi.hoisted(() => ({
 // read. Keep the integration suite deterministic so the regression below can change
 // the stored checkpoint between two calls while the work-item row remains a cache hit.
 const CHECKPOINT = vi.hoisted(() => ({
-  getWorkItemCheckpointWithMeta: vi.fn(async () => ({ checkpoint: null, updatedAtMs: null })),
+  getWorkItemCheckpointWithMeta: vi.fn<
+    typeof import("../../work-item-checkpoint").getWorkItemCheckpointWithMeta
+  >(async () => ({ checkpoint: null, updatedAtMs: null })),
   getWorkItemCheckpointFreshness: vi.fn(async () => undefined),
 }));
 
