@@ -77,6 +77,17 @@ export interface OrientationAnnouncedGate {
   note?: string | null;
 }
 
+/** The one actionable captured-improvement row worth injecting this turn. */
+export interface OrientationImprovementTriage {
+  /** Untriaged rows in the same bounded window that produced `top`. */
+  pending: number;
+  top: {
+    id: string;
+    title: string;
+    lane: 'human' | 'auto';
+  };
+}
+
 /**
  * Everything the fold can say, resolved once per turn.
  *
@@ -97,6 +108,8 @@ export interface OrientationState {
   announcedGates: OrientationAnnouncedGate[];
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
+  /** Ranked, still-untriaged improvement signal; null means none or unreadable. */
+  improvementTriage: OrientationImprovementTriage | null;
 }
 
 /** Default budget. Small on purpose: this fires EVERY turn and compounds. */
@@ -129,7 +142,8 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     state.unansweredDirected === 0 &&
     state.inboxRecent.length === 0 &&
     state.announcedGates.length === 0 &&
-    !state.loopArmed
+    !state.loopArmed &&
+    state.improvementTriage === null
   );
 }
 
@@ -189,6 +203,10 @@ export function fingerprintOrientation(state: OrientationState, epoch: number): 
       .sort()
       .join('|'),
     loop: state.loopArmed ? 1 : 0,
+    triage: state.improvementTriage
+      ? `${state.improvementTriage.pending}:${state.improvementTriage.top.lane}:` +
+        `${state.improvementTriage.top.id}:${state.improvementTriage.top.title}`
+      : '',
     epoch,
   };
 }
@@ -204,6 +222,7 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.inbox === b.inbox &&
     a.gates === b.gates &&
     a.loop === b.loop &&
+    a.triage === b.triage &&
     a.epoch === b.epoch
   );
 }
@@ -263,6 +282,12 @@ export function renderOrientationLines(state: OrientationState): string[] {
   const missing = state.held.filter((h) => !h.checkpoint?.trim()).map((h) => h.id);
   if (missing.length > 0) {
     lines.push(`- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`);
+  }
+  if (state.improvementTriage) {
+    const { pending, top } = state.improvementTriage;
+    lines.push(
+      `- improvement triage: ${pending} untriaged; top ${top.id} [${top.lane}] — ${compactHeadline(top.title)}`,
+    );
   }
   if (state.held.length > 0) {
     const shown = state.held.slice(0, HELD_DISPLAY_CAP);
@@ -344,6 +369,8 @@ export interface OrientationDeps {
   }>;
   announcedGates: (ownerId: string) => Promise<OrientationAnnouncedGate[]>;
   loopArmed: (ownerId: string) => Promise<boolean>;
+  /** Existing improvement triage/ranking path, reduced to one bounded row. */
+  improvementTriage: (workspaceId: string) => Promise<OrientationImprovementTriage | null>;
   /**
    * The agent's CONTEXT GENERATION (P-023 / D-008) — NOT part of the rendered
    * state, only of the dedup key, which is why it is not on `OrientationState`.
@@ -367,11 +394,12 @@ export async function resolveOrientationState(
   deps: Partial<OrientationDeps> = {},
 ): Promise<OrientationState> {
   const d = { ...defaultOrientationDeps(), ...deps };
-  const [held, inbox, announcedGates, loopArmed] = await Promise.all([
+  const [held, inbox, announcedGates, loopArmed, improvementTriage] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId).catch(() => [] as OrientationAnnouncedGate[]),
     d.loopArmed(ownerId).catch(() => false),
+    d.improvementTriage(workspaceId).catch(() => null),
   ]);
   return {
     held,
@@ -379,6 +407,7 @@ export async function resolveOrientationState(
     inboxRecent: inbox.newest,
     announcedGates,
     loopArmed,
+    improvementTriage,
   };
 }
 
@@ -463,6 +492,50 @@ export function defaultOrientationDeps(): OrientationDeps {
     loopArmed: async (ownerId) => {
       const { activeLoopOwners } = await import('./adv-roster');
       return (await activeLoopOwners()).has(ownerId);
+    },
+    // P-013: filing already works; consumption did not. Reuse the exact bounded
+    // triage window, policy split, and ONE human-queue ranker rather than adding
+    // a second queue or reviving the paused scheduled routine. Duplicate
+    // clustering is deliberately skipped: this per-turn consumer needs only the
+    // ranked top row, and the fold's 2.5s wall makes unused O(n²) work a defect.
+    improvementTriage: async (workspaceId) => {
+      const [read, digestModule, grant, ranker, triageCore] = await Promise.all([
+        import('./harness/improvements/read-items'),
+        import('./harness/improvements/digest'),
+        import('./harness/improvements/full-autonomy-grant'),
+        import('./queue-ranker/human-queue'),
+        import('./harness/improvements/triage-core'),
+      ]);
+      const [items, ownerFullAutonomy] = await Promise.all([
+        read.readImprovementItems({ state: 'open', limit: 100 }),
+        grant.readOwnerFullAutonomyGrant(workspaceId),
+      ]);
+      const digest = await ranker.applyHumanQueueRanking(
+        digestModule.buildDigest(items, {
+          nowMs: Date.now(),
+          ownerFullAutonomy,
+          nearDuplicates: false,
+        }),
+        { candidates: items },
+      );
+
+      // Preserve the one ranker's order for the human lane while reusing the
+      // scheduled triage pass's lifecycle predicate for both lanes.
+      const untriagedHumanIds = new Set(
+        triageCore.selectUntriaged(digest.humanQueue, digest.humanQueue.length).map((item) => item.id),
+      );
+      const human = digest.humanQueue.filter((item) => untriagedHumanIds.has(item.id));
+      const auto = triageCore.selectUntriaged(digest.autoEligible, digest.autoEligible.length);
+      const top = human[0] ?? auto[0];
+      if (!top) return null;
+      return {
+        pending: human.length + auto.length,
+        top: {
+          id: top.id,
+          title: top.title,
+          lane: human[0] ? ('human' as const) : ('auto' as const),
+        },
+      };
     },
     // P-023 / D-008. The memory ledger's own epoch reader, reused rather than
     // re-derived: `currentSessionEpoch` is already best-effort by contract

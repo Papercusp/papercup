@@ -23,6 +23,7 @@ const base: OrientationState = {
   inboxRecent: [],
   announcedGates: [],
   loopArmed: false,
+  improvementTriage: null,
 };
 const withWork: OrientationState = {
   held: [
@@ -38,6 +39,7 @@ const withWork: OrientationState = {
   inboxRecent: [{ msgId: 'm-1', from: 'su-peer', summary: 'Need your decision on the shared seam.' }],
   announcedGates: [{ event: 'fleet:atlas:phase-open', note: 'Phase 2 may begin.' }],
   loopArmed: true,
+  improvementTriage: null,
 };
 
 /** The context generation most of these cases hold fixed; P-023's own block varies it. */
@@ -70,6 +72,10 @@ describe('turn-start-orientation — when it speaks', () => {
       { ...withWork, held: [{ id: 'WI-2', status: 'wip' }] },
       { ...withWork, announcedGates: [{ event: 'fleet:atlas:another-gate' }] },
       { ...withWork, inboxRecent: [{ msgId: 'm-2', from: 'su-peer', summary: 'New ask' }] },
+      {
+        ...withWork,
+        improvementTriage: { pending: 3, top: { id: 'EI-3', title: 'Consume me', lane: 'human' } },
+      },
     ] as OrientationState[]) {
       expect(composeOrientationBlock({ state: changed, committed, epoch: EPOCH })).not.toBe('');
     }
@@ -235,6 +241,22 @@ describe('turn-start-orientation — what it says', () => {
     expect(out).toContain('inbox su-peer: Need your decision');
   });
 
+  it('injects the ranked top untriaged improvement with its bounded-window count and lane', () => {
+    const out = composeOrientationBlock({
+      state: {
+        ...base,
+        improvementTriage: {
+          pending: 6,
+          top: { id: 'EI-6', title: 'Repeated coord send truncation', lane: 'human' },
+        },
+      },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out).toContain('improvement triage: 6 untriaged');
+    expect(out).toContain('top EI-6 [human] — Repeated coord send truncation');
+  });
+
   it('keeps no-wake and checkpoint warnings ahead of lower-priority fold content', () => {
     const lines = renderOrientationLines({
       ...withWork,
@@ -259,6 +281,10 @@ describe('turn-start-orientation — what it says', () => {
       }),
       announcedGates: async () => [{ event: 'fleet:f:ready' }],
       loopArmed: async () => true,
+      improvementTriage: async () => ({
+        pending: 2,
+        top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
+      }),
     });
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
@@ -266,7 +292,25 @@ describe('turn-start-orientation — what it says', () => {
       inboxRecent: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
       announcedGates: [{ event: 'fleet:f:ready' }],
       loopArmed: true,
+      improvementTriage: {
+        pending: 2,
+        top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
+      },
     });
+  });
+
+  it('degrades a failed improvement read to silence instead of a false zero', async () => {
+    const state = await resolveOrientationState('su-1', 'ws-1', {
+      held: async () => [],
+      inbox: async () => ({ count: 0, newest: [] }),
+      announcedGates: async () => [],
+      loopArmed: async () => false,
+      improvementTriage: async () => {
+        throw new Error('ranker unavailable');
+      },
+    });
+    expect(state.improvementTriage).toBeNull();
+    expect(composeOrientationBlock({ state, committed: null, epoch: EPOCH })).toBe('');
   });
 });
 
