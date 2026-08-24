@@ -744,8 +744,9 @@ export default defineTool({
     // EI-1754 (same defect as testing:run): `inferWorkspaceRoot()` walks up from
     // `process.cwd()`, and the :3070 operator runs FROM the release checkout — so
     // this tool typechecked the RELEASE tree, not the tree the agent just edited,
-    // and reported it clean. Use the same projectDir → PAPERCUSP_INTEGRATION_ROOT
-    // → cwd resolver every capability tool uses.
+    // and reported it clean. Start from the same projectDir-aware workspace root
+    // every capability tool uses, then recover from a phantom root only when the
+    // explicitly published integration checkout resolves THIS project operand.
     const requestedRoot = resolveAgentWorkspaceRoot(ctx);
     const root = selectTypecheckRoot(args.project, requestedRoot).root;
     const started = Date.now();
