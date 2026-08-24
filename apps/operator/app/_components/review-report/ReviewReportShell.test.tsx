@@ -82,6 +82,8 @@ const rowCheck = (id: string) => screen.getByTestId(`review-row-check-${id}`) as
 describe('rendering', () => {
   it('renders title, subtitle, groups, rows, evidence and confidence flags', () => {
     renderShell();
+    const report = screen.getByTestId('review-report');
+    const responsiveRow = screen.getByTestId('review-row-f1');
     expect(screen.getByText('Plan clean-up report')).toBeTruthy();
     expect(screen.getByTestId('review-report-icon')).toBeTruthy();
     expect(screen.getByText('run #7')).toBeTruthy();
@@ -91,6 +93,11 @@ describe('rendering', () => {
     expect(screen.getByText('P-001')).toBeTruthy();
     expect(screen.getByTestId('review-row-transition-f1').textContent).toContain('wip→done');
     expect(applyBtn().className).toContain('pc-btn');
+    expect(report.querySelector('.review-report__actions')).toBeTruthy();
+    expect(responsiveRow.querySelector('.review-report__row-identity')).toBeTruthy();
+    expect(responsiveRow.querySelector('.review-report__row-change')).toBeTruthy();
+    expect(responsiveRow.querySelector('.review-report__row-evidence')).toBeTruthy();
+    expect(responsiveRow.querySelector('.review-report__row-conf')).toBeTruthy();
     expect(screen.getByTestId('review-row-conf-f1').textContent).toBe('provable');
     expect(screen.getByTestId('review-row-conf-f2').textContent).toBe('recommended');
   });
