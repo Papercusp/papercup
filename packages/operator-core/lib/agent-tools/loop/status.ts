@@ -91,10 +91,10 @@ export default defineTool({
     // must read as 'unknown', never collapse into 'none' (that would fabricate a measurement).
     let pendingAwaits: LivePushChannels = { status: 'unknown' };
     try {
-      const awaits = await listWakeAwaitsForSubscriber(ownerId);
+      const { totalCount, sample } = await listWakeAwaitsForSubscriber(ownerId);
       pendingAwaits =
-        awaits.length > 0
-          ? { status: 'found', count: awaits.length, sample: awaits.slice(0, 5).map((a) => a.eventKey) }
+        totalCount > 0
+          ? { status: 'found', count: totalCount, sample: sample.slice(0, 5).map((a) => a.eventKey) }
           : { status: 'none' };
     } catch {
       /* best-effort — a lookup failure must read as 'unknown', never 'none' */
