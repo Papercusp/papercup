@@ -43,7 +43,6 @@ import {
   linkWorkItem,
   unlinkWorkItem,
   getWorkItem,
-  type WorkItem,
 } from '../../work-items';
 const updM = vi.mocked(updateWorkItem);
 const mergeM = vi.mocked(mergeWorkItemPayload);
@@ -58,39 +57,7 @@ const body = async (args: Record<string, unknown>) =>
 
 const STAMP = { plan_slug: 'plan-a', item_id: 'P-004', harness_slug: 'papercusp' };
 
-const workItemFixture = (over: Partial<WorkItem> = {}): WorkItem => ({
-  id: 'WI-1',
-  kind: 'bug',
-  family: 'issue',
-  harness: 'papercup',
-  title: 'test item',
-  summary: '',
-  state: 'open',
-  assignee: null,
-  takenAt: null,
-  lastProgressAt: null,
-  assignedBy: null,
-  createdBy: null,
-  severity: null,
-  goalId: null,
-  parent: null,
-  payload: null,
-  origin: null,
-  auditVerdict: null,
-  verifiedAuthorGithubUserId: null,
-  rank: null,
-  rankWriter: null,
-  rankUpdatedAt: null,
-  priority: null,
-  terminalOwner: null,
-  terminalCompletionRef: null,
-  terminalCompletionEvidence: null,
-  completionAuthority: null,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
-  closedAt: null,
-  ...over,
-});
+import { workItemFixture } from '../../testing/work-item-fixture';
 
 /** The clear must be an UNSET, never a null-merge. Both halves are load-bearing:
  * the missing key rules out `{ plan_item: null }`, and the unset list is what makes

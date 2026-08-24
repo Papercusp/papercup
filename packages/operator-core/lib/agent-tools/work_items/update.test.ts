@@ -19,7 +19,8 @@ vi.mock('../../work-items', () => ({
   explainIssueClaimFloors: vi.fn(),
 }));
 
-import { updateWorkItem, mergeWorkItemPayload, linkWorkItem, explainIssueClaimFloors, type WorkItem } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload, linkWorkItem, explainIssueClaimFloors } from '../../work-items';
+import { workItemFixture } from '../../testing/work-item-fixture';
 const updM = vi.mocked(updateWorkItem);
 const mergeM = vi.mocked(mergeWorkItemPayload);
 const linkM = vi.mocked(linkWorkItem);
@@ -29,40 +30,6 @@ const tool = (await import('./update')).default;
 type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
   ((await tool.handler(args as never, {} as never)) as Out).data;
-
-const workItemFixture = (over: Partial<WorkItem> = {}): WorkItem => ({
-  id: 'WI-1',
-  kind: 'bug',
-  family: 'issue',
-  harness: 'papercup',
-  title: 'test item',
-  summary: '',
-  state: 'open',
-  assignee: null,
-  takenAt: null,
-  lastProgressAt: null,
-  assignedBy: null,
-  createdBy: null,
-  severity: null,
-  goalId: null,
-  parent: null,
-  payload: null,
-  origin: null,
-  auditVerdict: null,
-  verifiedAuthorGithubUserId: null,
-  rank: null,
-  rankWriter: null,
-  rankUpdatedAt: null,
-  priority: null,
-  terminalOwner: null,
-  terminalCompletionRef: null,
-  terminalCompletionEvidence: null,
-  completionAuthority: null,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
-  closedAt: null,
-  ...over,
-});
 
 beforeEach(() => vi.clearAllMocks());
 

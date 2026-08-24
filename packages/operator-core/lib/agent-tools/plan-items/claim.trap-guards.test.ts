@@ -76,6 +76,8 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 
 import { claimPlanItem } from '../../plan-items/liveness';
 import { convertPlanItem } from '../../plan-items/convert';
+import type { PlanItemClaim } from '../../plan-items/claims';
+import { workItemFixture } from '../../testing/work-item-fixture';
 import { mockImplementationTyped } from '../../testing/typed-mock';
 const claimM = vi.mocked(claimPlanItem);
 const convertM = vi.mocked(convertPlanItem);
@@ -86,7 +88,7 @@ const one = async (args: Record<string, unknown>) =>
   (((await tool.handler(args as never, {} as never)) as Out).data).results[0];
 
 /** The full row convert mints — payload/title/summary/state are what the four guards key on. */
-const CONVERTED_WI = {
+const CONVERTED_WI = workItemFixture({
   id: 'WI-1',
   kind: 'change',
   harness: 'papercup',
@@ -94,7 +96,27 @@ const CONVERTED_WI = {
   title: 'Add the thing',
   summary: 'There is no existing thing, so build one.',
   payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001', harness_slug: 'papercup' } },
-};
+});
+
+/** A complete PlanItemClaim. Spelled out in full deliberately: the typed mocks below are
+ *  only load-bearing if the fixture actually satisfies the real interface. */
+const claimFixture = (itemId: string): PlanItemClaim => ({
+  workspaceId: 'ws-test',
+  harnessSlug: 'papercup',
+  planSlug: 'a-plan',
+  itemId,
+  claimId: 'claim-1',
+  owner: 'sess-A',
+  ownerLabel: null,
+  ownerName: null,
+  intent: 'trap-guard fixture',
+  livenessMode: 'availability',
+  ttlSec: 900,
+  acquiredTs: '2026-08-24T00:00:00.000Z',
+  expiresTs: '2026-08-24T00:15:00.000Z',
+  lastActivityTs: '2026-08-24T00:00:00.000Z',
+  expired: false,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -104,16 +126,17 @@ beforeEach(() => {
   // to either must fail HERE at compile time — not at some peer's green-checkpoint.
   mockImplementationTyped(claimM, async (opts) => ({
     status: 'claimed',
-    claim: { itemId: opts.itemId, owner: 'sess-A' },
+    claim: claimFixture(opts.itemId),
     mode: 'availability',
     viaAssignment: false,
   }));
   mockImplementationTyped(convertM, async (opts) => ({
     status: 'converted',
-    claim: { itemId: opts.itemId, owner: 'sess-A' },
+    claim: claimFixture(opts.itemId),
     mode: 'availability',
     viaAssignment: false,
     workItem: CONVERTED_WI,
+    planItem: { plan: 'a-plan', item: opts.itemId, status: 'wip', text: 'Add the thing' },
   }));
   getClaimTimePremises.mockResolvedValue(null);
   getClaimTimeRetractionAdvisory.mockResolvedValue(null);

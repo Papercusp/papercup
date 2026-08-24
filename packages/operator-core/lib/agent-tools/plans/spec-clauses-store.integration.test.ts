@@ -43,6 +43,7 @@ const MIGRATION_852 = path.resolve(
   here,
   '../../../../../libs/papercusp/libs/db/sql/852-plan-spec-clause-integrity.sql',
 );
+const MIGRATION_929 = path.resolve(here, '../../../../../libs/papercusp/libs/db/sql/929-spec-clause-falsifier.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-integration',
@@ -114,6 +115,9 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_852);
   // Idempotency is part of the migration contract, not just a comment.
   await applyMigrationForTest(db.sql, MIGRATION_852);
+  await applyMigrationForTest(db.sql, MIGRATION_929);
+  // 929 drops-then-adds its own CHECK precisely so it is re-runnable; prove that.
+  await applyMigrationForTest(db.sql, MIGRATION_929);
 }, 90_000);
 
 afterAll(async () => {
@@ -331,5 +335,209 @@ describe('first-class plan spec clauses', () => {
        ) ORDER BY conname`;
     expect(constraints).toHaveLength(5);
     expect(constraints.every((c) => c.convalidated)).toBe(true);
+  });
+});
+
+/**
+ * D-016 (migration 929): every contract clause declares what would FALSIFY it.
+ *
+ * The load-bearing design choices under test, each stated as the property that
+ * would break if the choice were reverted:
+ *  - the falsifier is COVERED by content_hash, so revising one appends a new
+ *    immutable revision instead of mutating a standing promise in place;
+ *  - an UNDECLARED falsifier is absent from the canonical form, not `null`, so
+ *    adding the field did not re-hash every clause written before D-016;
+ *  - a MALFORMED declaration is refused structurally rather than silently
+ *    dropped — a caller must never believe they declared what the row does not say.
+ */
+describe('D-016 clause falsifier', () => {
+  const withFalsifier = (over: Partial<SpecClauseWrite> = {}) =>
+    clause({
+      specId: 'SPEC-003-F',
+      sourceValId: null,
+      falsifier: {
+        observation: 'Event 42 appears a second time in the post-reconnect replay trace.',
+        probeMethod: 'Reconnect after acking 42 and diff the delivered ids against the acked set.',
+      },
+      ...over,
+    });
+
+  it('round-trips a declared falsifier through the store and the plans:get-specs read', async () => {
+    expect(await store.setSpecClause(withFalsifier())).toMatchObject({ status: 'created', revision: 1 });
+
+    const [row] = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-F'],
+    });
+    expect(row.falsifier).toEqual({
+      observation: 'Event 42 appears a second time in the post-reconnect replay trace.',
+      probeMethod: 'Reconnect after acking 42 and diff the delivered ids against the acked set.',
+    });
+
+    // The read tool surfaces it too — a field only the store can see is not a contract.
+    const get = (await getSpecsTool.handler(
+      { harness: HARNESS, slug: 'reconnect-plan', specIds: ['SPEC-003-F'] } as never,
+      CTX,
+    )) as { data: { specs: SpecClauseRevision[] } };
+    expect(get.data.specs[0]?.falsifier?.observation).toContain('appears a second time');
+  });
+
+  it('accepts a falsifier through plans:set-specs — the write tool, not just the store', async () => {
+    const set = (await setSpecsTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        spec: {
+          specId: 'SPEC-003-TOOL',
+          expectedRevision: 0,
+          planItemId: 'P-003',
+          behavior: 'A lapsed lease is reclaimable by a second holder.',
+          behaviorClass: 'concurrency',
+          lifecycleStatus: 'active',
+          falsifier: { observation: 'A second acquire on a lapsed lease returns conflict.' },
+        },
+      } as never,
+      CTX,
+    )) as { data: { results: Array<Record<string, unknown>> } };
+    expect(set.data.results[0]).toMatchObject({ ok: true, status: 'created', revision: 1 });
+
+    const [row] = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-TOOL'],
+    });
+    // probeMethod omitted, not stored as an empty string: undeclared must read as undeclared.
+    expect(row.falsifier).toEqual({ observation: 'A second acquire on a lapsed lease returns conflict.' });
+  });
+
+  it('appends a NEW revision when only the falsifier changes, and reports unchanged when it does not', async () => {
+    expect(await store.setSpecClause(withFalsifier())).toMatchObject({ status: 'created', revision: 1 });
+
+    const first = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-F'],
+    });
+
+    // Byte-identical re-write: still one revision.
+    expect(await store.setSpecClause(withFalsifier({ expectedRevision: 1 }))).toMatchObject({
+      status: 'unchanged',
+      revision: 1,
+    });
+
+    // Only the falsifier moves — this MUST append, or a standing promise could be
+    // rewritten under an unchanged content_hash.
+    const revised = await store.setSpecClause(
+      withFalsifier({
+        expectedRevision: 1,
+        falsifier: { observation: 'Event 42 is redelivered with a lower sequence number than the ack.' },
+      }),
+    );
+    expect(revised).toMatchObject({ status: 'revised', revision: 2 });
+    expect((revised as { contentHash: string }).contentHash).not.toBe(first[0].contentHash);
+
+    const history = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-F'],
+      includeHistory: true,
+    });
+    expect(history.map((r) => r.revision)).toEqual([1, 2]);
+    expect(history[0].falsifier?.observation).toContain('appears a second time');
+    expect(history[1].falsifier?.observation).toContain('lower sequence number');
+  });
+
+  it('leaves a clause that declares no falsifier hash-identical to its pre-D-016 form', async () => {
+    // Absent and explicit-null are the SAME canonical form. If they ever diverge — or
+    // if either starts differing from the pre-D-016 hash — every clause in the corpus
+    // silently re-hashes and its first no-op re-write appends a spurious revision.
+    const bare = clause({ specId: 'SPEC-003-BARE', sourceValId: null });
+    expect(store.specClauseContentHash({ ...bare, falsifier: null })).toBe(store.specClauseContentHash(bare));
+    expect(store.specClauseContentHash({ ...bare, falsifier: undefined })).toBe(store.specClauseContentHash(bare));
+    expect(store.specClauseContentHash({ ...bare, falsifier: { observation: 'x happens' } })).not.toBe(
+      store.specClauseContentHash(bare),
+    );
+
+    expect(await store.setSpecClause(bare)).toMatchObject({ status: 'created', revision: 1 });
+    const [row] = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-BARE'],
+    });
+    expect(row.falsifier).toBeNull();
+    // The back-compat property that actually bites: an existing writer that has never
+    // heard of `falsifier` re-writes its clause and gets `unchanged`, not a new revision.
+    expect(await store.setSpecClause({ ...bare, expectedRevision: 1 })).toMatchObject({
+      status: 'unchanged',
+      revision: 1,
+    });
+  });
+
+  it('refuses a malformed declaration structurally instead of silently dropping it', async () => {
+    expect(
+      await store.setSpecClause(withFalsifier({ falsifier: { observation: '   ' } })),
+    ).toMatchObject({ status: 'falsifier_invalid', reason: 'observation_blank' });
+
+    expect(
+      await store.setSpecClause(withFalsifier({ falsifier: { observation: 'real', probeMethod: '  ' } })),
+    ).toMatchObject({ status: 'falsifier_invalid', reason: 'probe_method_blank' });
+
+    expect(
+      await store.setSpecClause(withFalsifier({ falsifier: 'not an object' as never })),
+    ).toMatchObject({ status: 'falsifier_invalid', reason: 'not_an_object' });
+
+    // A refusal must not have written anything.
+    expect(
+      await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', specIds: ['SPEC-003-F'] }),
+    ).toHaveLength(0);
+  });
+
+  it('enforces the falsifier shape in Postgres, not only in the store', async () => {
+    // The store refuses these before they reach SQL, so the DB rail can only be proven by
+    // writing PAST the store. Without this the CHECK could be silently dropped and every
+    // app-level test above would still pass.
+    //
+    // It has to be an INSERT, not an UPDATE: 851 installs an immutability trigger that
+    // rejects any UPDATE before a column CHECK is ever evaluated — so an UPDATE probe
+    // proves the immutability rail, not this one. Each attempt clones the committed
+    // revision and moves only `revision`, `content_hash` and `falsifier`, so a rejection
+    // can only be attributable to the falsifier.
+    await store.setSpecClause(withFalsifier());
+    let nextRevision = 100;
+    const bad = (falsifier: string) => {
+      const revision = ++nextRevision;
+      return db.sql.unsafe(`
+        INSERT INTO harness_shared.plan_spec_clause_revisions (
+          workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id,
+          behavior, behavior_class, required_evidence, required_test_layers,
+          mutation_required, lifecycle_status, exemption, falsifier, content_hash,
+          created_by, accepted_by, accepted_at, acceptance_ref
+        )
+        SELECT workspace_id, harness_slug, plan_slug, spec_id, ${revision}, plan_item_id,
+               behavior, behavior_class, required_evidence, required_test_layers,
+               mutation_required, lifecycle_status, exemption, ${falsifier},
+               lpad('${revision}', 64, '0'),
+               created_by, accepted_by, accepted_at, acceptance_ref
+          FROM harness_shared.plan_spec_clause_revisions
+         WHERE workspace_id = '${WORKSPACE}' AND harness_slug = '${HARNESS}'
+           AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-F' AND revision = 1`);
+    };
+
+    await expect(bad(`'{"observation": "   "}'::jsonb`)).rejects.toThrow(/falsifier_shape/);
+    await expect(bad(`'{"probeMethod": "how"}'::jsonb`)).rejects.toThrow(/falsifier_shape/);
+    await expect(bad(`'{"observation": 42}'::jsonb`)).rejects.toThrow(/falsifier_shape/);
+    await expect(bad(`'"a bare string"'::jsonb`)).rejects.toThrow(/falsifier_shape/);
+    await expect(bad(`'{"observation": "ok", "probeMethod": ""}'::jsonb`)).rejects.toThrow(/falsifier_shape/);
+    // JSON `null` is NOT SQL NULL, and must not sneak through as "undeclared": it is a
+    // declared value of the wrong type, which is exactly the decorative case 929 blocks.
+    await expect(bad(`'null'::jsonb`)).rejects.toThrow(/falsifier_shape/);
+
+    // POSITIVE CONTROL. Without this the test is unfalsifiable: a probe rejected for some
+    // unrelated reason (a typo'd column, a violated sibling CHECK) would read as the
+    // falsifier guard working. A well-formed clone must be ACCEPTED by the same statement.
+    await expect(bad(`'{"observation": "well formed"}'::jsonb`)).resolves.toBeDefined();
+    // And SQL NULL stays legal: undeclared is a gradeable gap, not a constraint violation.
+    await expect(bad('NULL')).resolves.toBeDefined();
   });
 });
