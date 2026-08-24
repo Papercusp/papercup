@@ -3164,6 +3164,16 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(text).toContain('not inside');
     });
 
+    it('documents that treeStamp is server-stamped and requires a full SHA when persisted (EI-21310406381433990)', () => {
+      const json = z.toJSONSchema(complete.args as never);
+      const text = JSON.stringify(json);
+
+      expect(text).toContain('Server-stamped verification metadata');
+      expect(text).toContain('callers must omit `treeStamp`');
+      expect(text).toContain('full lowercase 40- or 64-character commit SHA');
+      expect(text).toContain('short hashes are invalid');
+    });
+
     it('documents preserving assumptions when recovering a terminal close after timeout (EI-20234204782129196)', () => {
       const guidance = ((complete as { guidance?: { seeAlso?: string[] } }).guidance?.seeAlso ?? []).join('\n');
       expect(guidance).toContain('work_items:complete times out');

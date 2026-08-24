@@ -140,6 +140,10 @@ export const CompletionCoverageSchema = z
   );
 export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 
+/** Caller-facing contract for the server-generated verification tree stamp. */
+export const COMPLETION_TREE_STAMP_CONTRACT =
+  'Server-stamped verification metadata: `work_items:complete` records `treeStamp` from the observed checkout when available; callers must omit `treeStamp`. When present in persisted evidence, `headSha` is a full lowercase 40- or 64-character commit SHA; short hashes are invalid.';
+
 /**
  * EI-18682004530991057 (proposal 3) — what tree a completion's verification was
  * observed against. See the `treeStamp` field on
@@ -153,18 +157,27 @@ export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
  * confident-but-wrong reading this whole evidence surface exists to prevent. The
  * honest half ships; the guessed half does not.
  */
-export const CompletionTreeStampSchema = z.object({
-  /**
-   * Canonical local checkout root that owns `headSha`. Optional only so pre-fix
-   * persisted SHA-only records remain readable; new server stamps always include it.
-   */
-  repositoryRoot: z.string().min(1).optional(),
-  /**
-   * Full HEAD commit sha of the integration checkout at close time, read directly
-   * from the git refs (never via a `git` subprocess — see completionTreeStamp()).
-   */
-  headSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/),
-});
+export const CompletionTreeStampSchema = z
+  .object({
+    /**
+     * Canonical local checkout root that owns `headSha`. Optional only so pre-fix
+     * persisted SHA-only records remain readable; new server stamps always include it.
+     */
+    repositoryRoot: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Server-recorded checkout root for the observed `headSha`; callers must omit this field.'),
+    /**
+     * Full HEAD commit sha of the integration checkout at close time, read directly
+     * from the git refs (never via a `git` subprocess — see completionTreeStamp()).
+     */
+    headSha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/)
+      .describe('Server-recorded full lowercase 40- or 64-character commit SHA; short hashes are invalid.'),
+  })
+  .describe(COMPLETION_TREE_STAMP_CONTRACT);
 export type CompletionTreeStamp = z.infer<typeof CompletionTreeStampSchema>;
 
 export const CompletionVerificationEvidenceSchema = z.object({
@@ -223,7 +236,7 @@ export const CompletionVerificationEvidenceSchema = z.object({
    * Absent whenever it could not be observed (no repo root, unreadable/ambiguous git
    * refs). Absence means "not observed", never "clean" or "unknown-but-fine".
    */
-  treeStamp: CompletionTreeStampSchema.optional(),
+  treeStamp: CompletionTreeStampSchema.optional().describe(COMPLETION_TREE_STAMP_CONTRACT),
 });
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 
