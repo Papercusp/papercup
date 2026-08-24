@@ -1829,7 +1829,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.error).toContain('append_checks_overflow');
           expect(r.error).toContain(`${CARRY_NOTE_MAX_CHECKS}-row cap`);
           expect(r.error).toMatch(/RETIRE stale rows|without `checks`/i);
-          expect(r.recovery.append).toMatchObject({ args: { append: true, checks: [] } });
+          expect(r.recovery.append).toMatchObject({
+            args: { append: true, checkpoint: 'my fresh finding', checks: [] },
+          });
           expect(writes).toBe(0);
           expect(await lastStored()).toBe(prior);
         });
@@ -1903,19 +1905,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             },
           );
 
+          const freshBody = `progress refresh ${'x'.repeat(4000)}`;
           const r = (await one({
             id: 'WI-7',
             // No `append` and no explicit `rowsMode` — the DEFAULT merge path. Long enough
             // that `newLength < priorLen * 0.5` is false, so the shrink guard passes and
             // cannot mask the missing overflow guard.
-            checkpoint: `progress refresh ${'x'.repeat(4000)}`,
+            checkpoint: freshBody,
             checks: [{ claim: 'MINE-A holds' }, { claim: 'MINE-B holds' }],
-          })) as { ok: boolean; error: string; errorCode: string; checksDropped?: string[] };
+          })) as {
+            ok: boolean;
+            error: string;
+            errorCode: string;
+            checksDropped?: string[];
+            recovery: { append: unknown };
+          };
 
           // The additive-rows write is refused before the transform can evict rows.
           expect(r.ok).toBe(false);
           expect(r.errorCode).toBe('append_checks_overflow');
           expect(r.error).toContain(`${CARRY_NOTE_MAX_CHECKS}-row cap`);
+          expect(r.recovery.append).toMatchObject({
+            args: { rowsMode: 'merge', checkpoint: freshBody, checks: [] },
+          });
           expect(writes).toBe(0);
           expect(await lastStored()).toBe(prior);
         });
