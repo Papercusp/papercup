@@ -1,0 +1,303 @@
+/**
+ * package-goal-e2e.integration.test — P-016 of work-on-everything-goal-2026-08-23
+ * (WI-41138): the FRONT HALF of the closeout E2E against a real Postgres — the
+ * "fresh workspace" chain the plan's acceptance rubric leg A describes:
+ *
+ *   fresh workspace (empty goals table, the bundled floor on DISK only)
+ *     → the REAL bundled package resolves (no install row needed — D-002's floor)
+ *     → startGoalFromPackage with typed inputs (P-021 gate, P-025 property binding)
+ *     → MINTS the instance through the REAL deps (insertGoalRow, ensure/validate
+ *       property datatypes against a real datatype_registry)
+ *     → activates through the REAL startGoalById (the D-006 primitive)
+ *     → attaches the holder via the REAL setMode (agent_modes + audit row)
+ *     → briefs the holder from the REAL package body (STANDING polarity, worklist
+ *       duty, the D-011 GRADE-stacking duty).
+ *
+ * THE BRIDGE TO THE BACK HALF (kill → respawn → stable, pause-not-swept):
+ * goal-holder-respawn.integration.test.ts (P-010, WI-41132) already proves those
+ * END-TO-END over a row it seeds by hand as `RESPAWN_SETTINGS = { holder:
+ * { requireLive: true, onLoss: 'respawn' } }`, standing, budget-windowed. This
+ * file asserts the row the REAL start door mints from the REAL bundled package
+ * has EXACTLY that proven shape — so the two integration suites compose into the
+ * full P-016 chain without either faking the other's half.
+ *
+ * Injected seams — each one is the OTHER test's subject, never an untested gap:
+ *  - `launch`: returns a pre-pinned ownerId without opening a process — the
+ *    launch door's own contract, pinned by goal-holder-launch-action.test.ts
+ *    (and the same stub goal-holder-respawn.integration.test.ts uses);
+ *  - `resolveHolders`: 'unheld' for a goal that has never started — the real
+ *    fold over zero rows, pinned by holder.test.ts ("unheld: no goal-mode row");
+ *  - `readReadiness`: actionable (the package declares no blockers; the real
+ *    edges read is pinned by goal-deps tests and start-goal-by-id.test.ts);
+ *  - `drainEnabled: false`: drain-fleet auto-mint rows are pinned by
+ *    start-from-package.test.ts ("mints the drain fleet when the flag is on").
+ *
+ * ⚠ Fixture DDL is hand-rolled to the LIVE schema read on 2026-08-24 (dev:pg_query
+ * describe harness_shared.goals / datatype_registry) — the drift trap is
+ * EI-21270668928342264; goals carries every live column except `_search`.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import postgres from 'postgres';
+import { randomBytes } from 'node:crypto';
+import { getTestPg } from '@papercusp/test-config/pg';
+
+import {
+  startGoalFromPackage,
+  DEFAULT_DEPS,
+  type StartGoalFromPackageDeps,
+} from './start-from-package';
+import { startGoalById } from './start-goal-by-id';
+import { resolveLocalGoalPackage } from '../cupboard/goal-package-store';
+import { STANDING_GOAL_KILL_POLARITY } from './kill-criterion';
+import { GOAL_MODE } from '../modes/goal-session';
+import { setMode } from '../modes/store';
+
+const WS = 'ws-woe-p016';
+const HARNESS = 'papercusp-p016';
+const REF = 'work-on-everything';
+const HOLDER = 'su-p016-holder';
+
+let rootSql: postgres.Sql;
+
+beforeAll(async () => {
+  const adminUri = await getTestPg();
+  const dbName = `pkggoal_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // goals: every live column except _search (tsvector, untouched by this chain).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.goals (
+      id text PRIMARY KEY,
+      install_slug text NOT NULL,
+      title text NOT NULL,
+      body text,
+      parent_id text,
+      budget_cents bigint,
+      status text NOT NULL DEFAULT 'active',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      metadata jsonb,
+      workspace_id text NOT NULL,
+      kill_criterion text,
+      tripwires jsonb,
+      launch_settings jsonb,
+      standing boolean NOT NULL DEFAULT false,
+      budget_window_sec integer,
+      property_schema jsonb NOT NULL DEFAULT '{}'::jsonb,
+      properties jsonb NOT NULL DEFAULT '{}'::jsonb,
+      input_schema jsonb,
+      inputs jsonb,
+      output_schema jsonb,
+      outputs jsonb,
+      CONSTRAINT goals_budget_window_sec_positive
+        CHECK (budget_window_sec IS NULL OR budget_window_sec > 0)
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.agent_modes (
+      workspace_id text NOT NULL DEFAULT 'default',
+      owner_id text NOT NULL,
+      axis_key text NOT NULL,
+      mode text NOT NULL,
+      reason text NOT NULL DEFAULT '',
+      set_by text NOT NULL,
+      owner_directed boolean NOT NULL DEFAULT false,
+      set_at timestamptz NOT NULL DEFAULT now(),
+      subject text,
+      PRIMARY KEY (workspace_id, owner_id, axis_key)
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.agent_mode_changes (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      owner_id text NOT NULL,
+      axis_key text NOT NULL,
+      old_mode text,
+      new_mode text,
+      reason text NOT NULL DEFAULT '',
+      set_by text NOT NULL,
+      owner_directed boolean NOT NULL DEFAULT false,
+      changed_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  // datatype_registry: live columns minus embedding/title_tsv (nullable, unread here).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.datatype_registry (
+      id text NOT NULL,
+      workspace_id text NOT NULL,
+      title text NOT NULL,
+      description text NOT NULL,
+      tier text NOT NULL DEFAULT 'generic-kind',
+      work_item_kind text,
+      payload_schema jsonb,
+      authoritative_writer text NOT NULL DEFAULT 'papercusp',
+      self_improvement jsonb,
+      status text NOT NULL DEFAULT 'active',
+      published boolean NOT NULL DEFAULT false,
+      tags text[] NOT NULL DEFAULT '{}',
+      created_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      review_status text NOT NULL DEFAULT 'none',
+      pot_slug text,
+      display jsonb,
+      PRIMARY KEY (workspace_id, id)
+    )`);
+}, 120_000);
+
+afterAll(async () => {
+  await rootSql?.end({ timeout: 5 });
+});
+
+beforeEach(async () => {
+  await rootSql`DELETE FROM harness_shared.agent_mode_changes`;
+  await rootSql`DELETE FROM harness_shared.agent_modes`;
+  await rootSql`DELETE FROM harness_shared.goals`;
+});
+
+/** The REAL deps, with only the documented seams overridden. */
+function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }): StartGoalFromPackageDeps {
+  return {
+    ...DEFAULT_DEPS,
+    startById: async (input) =>
+      await startGoalById(input, {
+        launch: async (launchInput) => {
+          capture.launched.push(launchInput.goalId);
+          capture.kickoffPrompt = launchInput.kickoffPrompt ?? null;
+          return { ownerId: HOLDER, warnings: [] };
+        },
+        resolveHolders: async (_sql, { workspaceId, goalId }) => ({
+          goalId,
+          workspaceId,
+          holders: [],
+          live: [],
+          liveness: 'unheld',
+        }),
+        readReadiness: async () => ({
+          actionable: true,
+          premiseInvalidated: false,
+          blockers: [],
+        }),
+        // REAL attach: the same setMode the production default wraps.
+        attach: async ({ sql, workspaceId, goalId, ownerId, setBy }) => {
+          const res = await setMode({
+            workspaceId,
+            ownerId,
+            modeId: GOAL_MODE,
+            enabled: true,
+            reason: `p016 e2e: started package goal ${goalId}`,
+            setBy,
+            subject: goalId,
+            sql: sql as postgres.Sql,
+          });
+          return { ok: res.ok, error: res.ok ? null : 'mode store refused' };
+        },
+      }),
+    drainEnabled: async () => false,
+  };
+}
+
+describe('P-016 front half: the bundled floor in a fresh workspace', () => {
+  it('resolves work-on-everything from DISK with the standing semantics intact', () => {
+    const pkg = resolveLocalGoalPackage(REF);
+    expect(pkg).not.toBeNull();
+    expect(pkg!.content.standing).toBe(true);
+    expect(pkg!.content.budgetWindowSec).toBe(604_800);
+    expect(pkg!.content.propertySchema).toMatchObject({
+      worklist: { datatype: 'plan-ref-list' },
+    });
+  });
+});
+
+describe('P-016 front half: typed start → mint → attach → brief (real seams)', () => {
+  it('one call yields an active GOAL-mode holder row briefed with the standing clause', async () => {
+    const capture = { kickoffPrompt: null as string | null, launched: [] as string[] };
+    const res = await startGoalFromPackage(
+      rootSql,
+      { workspaceId: WS, ref: REF, harness: HARNESS, inputs: null },
+      e2eDeps(capture),
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.adopted).toBe(false); // fresh workspace: MINT, no stub to adopt
+    expect(res.ownerId).toBe(HOLDER);
+    expect(capture.launched).toEqual([res.goalId]);
+
+    // The minted row, read back from real PG.
+    const [row] = await rootSql<
+      Array<{
+        status: string;
+        standing: boolean;
+        budget_window_sec: number | null;
+        launch_settings: Record<string, unknown> | null;
+        property_schema: Record<string, unknown>;
+        metadata: Record<string, unknown> | null;
+        install_slug: string;
+      }>
+    >`SELECT status, standing, budget_window_sec, launch_settings, property_schema,
+             metadata, install_slug
+        FROM harness_shared.goals WHERE id = ${res.goalId} AND workspace_id = ${WS}`;
+    expect(row.status).toBe('active');
+    expect(row.standing).toBe(true);
+    expect(row.install_slug).toBe(HARNESS);
+    expect(row.budget_window_sec).toBe(604_800);
+    // THE BRIDGE: exactly the shape goal-holder-respawn.integration.test.ts
+    // (P-010) seeds as RESPAWN_SETTINGS and proves kill→respawn-recoverable.
+    expect(row.launch_settings).toMatchObject({
+      holder: { requireLive: true, onLoss: 'respawn' },
+    });
+    expect(row.property_schema).toMatchObject({ worklist: { datatype: 'plan-ref-list' } });
+    expect(row.metadata).toMatchObject({ goalPackageRef: REF, agentOwnerId: HOLDER });
+
+    // REAL setMode wrote the holder row (P-010's readers consume this exact shape).
+    const modes = await rootSql<
+      Array<{ owner_id: string; mode: string; subject: string | null }>
+    >`SELECT owner_id, mode, subject FROM harness_shared.agent_modes
+       WHERE workspace_id = ${WS} AND mode = ${GOAL_MODE} AND subject = ${res.goalId}`;
+    expect(modes).toHaveLength(1);
+    expect(modes[0].owner_id).toBe(HOLDER);
+
+    // The kickoff brief came from the REAL package body via the REAL builder.
+    const brief = capture.kickoffPrompt ?? '';
+    expect(brief).toContain('Work on everything');
+    expect(brief).toContain(STANDING_GOAL_KILL_POLARITY); // D-003/P-008 standing clause
+    expect(brief).toContain('worklist'); // P-025 worklist duty travels in the body
+    expect(brief).toContain('Stack the GRADE overlay'); // D-011 GRADE-stacking duty
+  });
+
+  it('the P-025 datatype was ensured in the registry as a REAL row', async () => {
+    const capture = { kickoffPrompt: null as string | null, launched: [] as string[] };
+    const res = await startGoalFromPackage(
+      rootSql,
+      { workspaceId: WS, ref: REF, harness: HARNESS },
+      e2eDeps(capture),
+    );
+    expect(res.ok).toBe(true);
+    const rows = await rootSql<
+      Array<{ id: string }>
+    >`SELECT id FROM harness_shared.datatype_registry
+       WHERE workspace_id = ${WS} AND id = 'plan-ref-list'`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it('minting with no harness refuses and leaves the fresh workspace EMPTY', async () => {
+    const capture = { kickoffPrompt: null as string | null, launched: [] as string[] };
+    const res = await startGoalFromPackage(
+      rootSql,
+      { workspaceId: WS, ref: REF },
+      e2eDeps(capture),
+    );
+    expect(res.ok).toBe(false);
+    expect(capture.launched).toHaveLength(0);
+    const [{ count }] = await rootSql<
+      Array<{ count: string }>
+    >`SELECT count(*)::text AS count FROM harness_shared.goals WHERE workspace_id = ${WS}`;
+    expect(Number(count)).toBe(0);
+  });
+});

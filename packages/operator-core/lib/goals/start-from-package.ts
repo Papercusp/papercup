@@ -271,7 +271,13 @@ export interface StartGoalFromPackageDeps {
 const asObj = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 
-const DEFAULT_DEPS: StartGoalFromPackageDeps = {
+/**
+ * Exported as a TEST SEAM (same spirit as `startGoalById`'s `deferSpawn`): the
+ * package-goal E2E (P-016, package-goal-e2e.integration.test.ts) spreads these
+ * REAL deps and overrides only the process-spawn boundary — copying the SQL
+ * closures into the test would be a second content path that drifts.
+ */
+export const DEFAULT_DEPS: StartGoalFromPackageDeps = {
   resolvePackage: (ref) => resolveLocalGoalPackage(ref),
   readInstances: async (sql, { workspaceId, ref }) => {
     return (await sql`
