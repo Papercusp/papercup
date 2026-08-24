@@ -37,6 +37,7 @@ import {
 import {
   detectAuthorityClaim,
   hasSelfReportedConfidence,
+  isRelayVerified,
   readEvidence,
   readRelayProvenance,
   renderEvidenceTag,
@@ -383,7 +384,14 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // a relay tier).
     const relay = readRelayProvenance(e as unknown as Record<string, unknown>);
     const relaySuffix = relay ? renderRelayQuoteSuffix(relay) : '';
-    const claim = relay ? null : detectAuthorityClaim(raw);
+    // EI-21333824056510800: suppress the claim flag only on a VERIFIED tier.
+    // This was `relay ? null : …`, which let the mere PRESENCE of a stamp answer
+    // the claim — but an `unverified` stamp is a check that RAN AND FAILED, so
+    // that read let a self-asserted authority claim ride into the headline
+    // position with only a trailing `↪ UNVERIFIED relay` to contradict it. The
+    // precedence rule is `isRelayVerified`, shared with resolveClaimProvenance
+    // so the renderer and the claim-provenance resolver cannot disagree.
+    const claim = isRelayVerified(relay) ? null : detectAuthorityClaim(raw);
     const claimFlag =
       claim === 'owner' || (claim === 'queen' && stamp?.authority !== 'hive-queen')
         ? `${UNVERIFIED_CLAIM_TAG} `
