@@ -164,6 +164,82 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
   });
 });
 
+// ── WI-41394: phantom-root fallback (the WI-41365 class, this validator's rung) ──
+// A second scratch tree stands in for the canonical repo, so selection semantics are
+// tested without depending on the real REPO_ROOT's contents; the phantom root is a
+// path mkdtemp never created — the exact shape a stale hive registry entry produces.
+const canonical = mkdtempSync(join(tmpdir(), 'rubric-checks-canonical-'));
+mkdirSync(join(canonical, 'packages', 'x'), { recursive: true });
+writeFileSync(join(canonical, 'packages', 'x', 'real.test.ts'), 'export {};\n');
+const phantom = join(tmpdir(), 'rubric-checks-phantom-does-not-exist');
+afterAll(() => rmSync(canonical, { recursive: true, force: true }));
+
+describe('selectCriterionCheckRoot (WI-41394 phantom-root fallback)', () => {
+  const crit = [{ key: 'k', check: testsCheck(['packages/x/real.test.ts']) }];
+
+  it('falls back to the canonical repo when the requested root cannot resolve the paths and the canonical repo resolves them ALL', () => {
+    const s = selectCriterionCheckRoot(crit, phantom, canonical);
+    expect(s.source).toBe('canonical-repo');
+    expect(s.root).toBe(canonical);
+    expect(s.validation.ok).toBe(true);
+    expect(s.validation.root).toBe(canonical);
+    expect(s.validation.normalizedByKey.k).toEqual(['packages/x/real.test.ts']);
+  });
+
+  it('keeps the requested root authoritative when it resolves every path — even though the canonical repo also would', () => {
+    const s = selectCriterionCheckRoot(crit, root, canonical);
+    expect(s.source).toBe('requested');
+    expect(s.root).toBe(root);
+    expect(s.validation.ok).toBe(true);
+  });
+
+  it('keeps the requested root and ITS failures when neither tree resolves the paths', () => {
+    const ghost = [{ key: 'k', check: testsCheck(['packages/x/ghost.test.ts']) }];
+    const s = selectCriterionCheckRoot(ghost, phantom, canonical);
+    expect(s.source).toBe('requested');
+    expect(s.validation.ok).toBe(false);
+    expect(s.validation.root).toBe(phantom);
+  });
+
+  it('does not fall back for a root-independent fault: an absolute path is refused under BOTH trees', () => {
+    const abs = [{ key: 'k', check: testsCheck([join(canonical, 'packages/x/real.test.ts')]) }];
+    const s = selectCriterionCheckRoot(abs, phantom, canonical);
+    expect(s.source).toBe('requested');
+    expect(s.validation.failures[0]?.reason).toContain('machine-specific');
+  });
+
+  it('assertCriterionCheckPathsResolve inherits the rung against the real REPO_ROOT: a phantom root no longer refuses a repo-resolving path', () => {
+    expect(() =>
+      assertCriterionCheckPathsResolve(
+        [{ key: 'k', check: testsCheck(['packages/operator-core/lib/rubrics-criterion-checks.test.ts']) }],
+        { root: phantom },
+      ),
+    ).not.toThrow();
+    // CONTROL: the same phantom root still refuses a path that resolves nowhere —
+    // the rung rescues resolvable checks, never bad ones.
+    expect(() =>
+      assertCriterionCheckPathsResolve([{ key: 'k', check: testsCheck(['nope-nowhere.test.ts']) }], { root: phantom }),
+    ).toThrowError(/invalid_args:/);
+  });
+
+  it('grading time inherits the rung: a phantom requested root validates AND RUNS against the canonical repo', async () => {
+    const calls: { files: string[]; root: string }[] = [];
+    const runner: CriterionCheckRunner = async ({ files, root: r }) => {
+      calls.push({ files, root: r });
+      return passRun(files) as never;
+    };
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'det', check: testsCheck(['packages/operator-core/lib/rubrics-criterion-checks.test.ts']) }],
+      ratings: { det: { rating: 'healthy' } },
+      root: phantom,
+      runner,
+    });
+    expect(res.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.root).toBe(REPO_ROOT);
+  });
+});
+
 // ── grading-time evaluation (live-run semantics, injectable runner) ───────────
 // These stubs stand in for the REAL runner, so they carry the same `byFile` per-file
 // grain a real report does (WI-39848) — the batched evaluator attributes verdicts from
