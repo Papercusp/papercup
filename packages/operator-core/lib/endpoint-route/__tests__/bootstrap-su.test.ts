@@ -362,15 +362,22 @@ const dbState = vi.hoisted(() => ({
   advRows: [] as Array<{ id: string; display: string | null; has_session: boolean }>,
   beatRows: [] as Array<{ pid: number | null; host: string | null }>,
 }));
-const dbSqlMock = vi.fn((strings: TemplateStringsArray): Promise<unknown[]> => {
-  const q = strings.join('?');
+// Shared answerer so BOTH surfaces of the fake client agree: the tagged-template
+// calls the guard issues AND any `sql.unsafe(...)` issued elsewhere on this path
+// (federation-scope <- remote-seat-inventory <- bootstrap-su) resolve through the
+// same matcher; everything unknown stays an empty set, never a fabricated row.
+const answerOrgQuery = (q: string): Promise<unknown[]> => {
   if (q.includes('FROM harness_shared.coord_presence')) return Promise.resolve(dbState.beatRows);
   if (q.includes('FROM harness_shared.adv_sessions')) return Promise.resolve(dbState.advRows);
   return Promise.resolve([]);
-});
+};
+const dbSqlMock = vi.fn((strings: TemplateStringsArray): Promise<unknown[]> =>
+  answerOrgQuery(strings.join('?')),
+) as unknown as FakeOrgSql & { unsafe: (query: string) => Promise<unknown[]> };
+dbSqlMock.unsafe = (query: string) => answerOrgQuery(query);
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
-  getOrgPg: () => ({ sql: dbSqlMock as unknown as FakeOrgSql }),
+  getOrgPg: () => ({ sql: dbSqlMock }),
 }));
 
 const CTX: RouteContext = {
