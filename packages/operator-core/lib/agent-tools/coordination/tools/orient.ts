@@ -317,92 +317,10 @@ export interface OrientClaimableTruncated {
   more: string;
 }
 
-/** EI-18763132241176410: the population `me` was QUERIED over, so a consumer can tell an
- *  unmeasured zero from a measured-empty one. */
-export interface OrientAssignmentsScope {
-  /** Which population the roster read asked about. */
-  scope: 'self' | 'fleet' | 'harness';
-  /** That scope's subject: the ownerId, fleet slug, or harness slug (null when unfiltered). */
-  ref: string | null;
-  /** Does this reading cover peers at all? FALSE for a self-scoped read — the single
-   *  field that makes `agents:1 / claims:0` readable as NOT MEASURED rather than empty. */
-  coversPeers: boolean;
-  /** What a zero in `me.summary` does and does not mean at this scope. */
-  note: string;
-  /** The exact call that widens the reading. Present whenever a wider one exists. */
-  widerRead?: { tool: string; args: Record<string, unknown> };
-}
-
-/** EI-18763132241176410: DERIVE the scope label from the very args object used for the
- *  `fleet:assignments` read, so the disclosure cannot drift from the query it describes
- *  (a hand-maintained second copy of that truth is the failure mode the derived-truth
- *  ladder exists to prevent). Pure + exported so the recurrence guard asserts against the
- *  real code rather than a mirrored fixture, matching this file's `assembleOrientOutput`
- *  convention. */
-export function deriveAssignmentsScope(assignmentsArgs: {
-  fleet?: string | null;
-  agent?: string | null;
-  harness?: string | null;
-}): OrientAssignmentsScope {
-  const harness = assignmentsArgs.harness ?? null;
-  const widerRead = {
-    tool: 'fleet:assignments',
-    args: { ...(harness ? { harness } : {}), include_stale: true },
-  };
-  if (assignmentsArgs.fleet) {
-    return {
-      scope: 'fleet',
-      ref: assignmentsArgs.fleet,
-      coversPeers: true,
-      note:
-        `Roster QUERIED over fleet '${assignmentsArgs.fleet}'. A zero here is a MEASURED zero for ` +
-        `that fleet — but it says nothing about agents outside it.`,
-      widerRead,
-    };
-  }
-  if (assignmentsArgs.agent) {
-    return {
-      scope: 'self',
-      ref: assignmentsArgs.agent,
-      coversPeers: false,
-      note:
-        `NARROW READING — the roster was queried for YOU ALONE (agent='${assignmentsArgs.agent}'), ` +
-        `because you are in no fleet. Any zero in me.summary is therefore NOT MEASURED for anyone ` +
-        `else: it cannot distinguish "no peers are working" from "no peers were asked about". ` +
-        `Peers, their claims, and any stalled/orphaned/reclaimable work are INVISIBLE at this ` +
-        `scope — run widerRead before concluding the fleet is idle or reclaiming anything.`,
-      widerRead,
-    };
-  }
-  return {
-    scope: 'harness',
-    ref: harness,
-    coversPeers: true,
-    note: harness
-      ? `Roster QUERIED across harness '${harness}' with no agent filter — a zero here is a MEASURED zero.`
-      : 'Roster QUERIED with no agent, fleet, or harness filter — the widest reading available.',
-    ...(harness ? { widerRead } : {}),
-  };
-}
-
 export interface OrientResult {
   ok: boolean;
   /** fleet:assignments scoped to me (assignments, lane, load, orphans). */
   me: unknown;
-  /** EI-18763132241176410: WHICH POPULATION `me` above was queried over. A fleetless
-   *  caller's roster read is scoped `{ agent: ownerId }` — self-only — so it returns
-   *  `agents:1, claims:0` while the harness genuinely holds dozens of agents and live
-   *  claims (measured 2026-08-24: orient `agents:1/claims:0` vs `fleet:assignments`
-   *  `agents:39/claims:51/stalled:3`). Nothing in `me` distinguished that NOT-MEASURED
-   *  zero from a MEASURED-empty one: `me.summary.population` reports which resolved rows
-   *  were kept, never which population was asked about, so a self-scoped read renders as
-   *  a self-consistent `candidates:1, counted:1`. A Mug is deliberately fleetless and
-   *  steers fleet-wide placement off this very reading, so it would conclude the fleet
-   *  was idle and end the wake without ever seeing the stalled claims. Always present,
-   *  and CORE (never optional-leg evicted) for the same reason `leaderBrief` is: a
-   *  disclosure that the result door drops under budget pressure is missing exactly when
-   *  payloads are tight, which reproduces the silent-narrow-read it exists to kill. */
-  assignmentsScope: OrientAssignmentsScope;
   /** The claimable backlog. EI-19452326548245557: the issue-family lane (bug/change/
    *  task) is SOURCED from `work_items:claimable` — the same all-floors oracle
    *  `scheduler:get_next` runs — and the feature-family lane from `work_items:list`
@@ -1067,19 +985,15 @@ export async function composeOrient(
   // empty-roster shape (never throws) so downstream folds — already
   // try/catch-guarded (fingerprintFleet, slimAssignmentsForDelta) — see an
   // empty-but-well-shaped roster instead of hanging past the deadline.
-  // EI-18763132241176410: build the args ONCE and derive the scope disclosure from that
-  // same object, so the label can never describe a scope other than the one queried.
-  const assignmentsArgs = {
-    ...(recoveredFleetMembership
-      ? { fleet: recoveredFleetMembership.fleetSlug }
-      : ownerId
-        ? { agent: ownerId }
-        : {}),
-    ...(args.harness ? { harness: args.harness } : {}),
-  };
-  const assignmentsScope = deriveAssignmentsScope(assignmentsArgs);
   const meResult = await withBoundedTimeout(
-    call('fleet:assignments', assignmentsArgs),
+    call('fleet:assignments', {
+      ...(recoveredFleetMembership
+        ? { fleet: recoveredFleetMembership.fleetSlug }
+        : ownerId
+          ? { agent: ownerId }
+          : {}),
+      ...(args.harness ? { harness: args.harness } : {}),
+    }),
     {
       fallback: { ok: false, degraded: true, agents: [] } as unknown,
       timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
@@ -1375,9 +1289,6 @@ export async function composeOrient(
   const result: OrientResult = {
     ok: true,
     me,
-    // EI-18763132241176410: unconditional — an absent scope label is itself the
-    // ambiguity this field exists to remove, so it is never spread-conditional.
-    assignmentsScope,
     claimable,
     ...(claimableHarnessScope ? { claimableHarnessScope } : {}),
     ...(claimableTruncated ? { claimableTruncated } : {}),
