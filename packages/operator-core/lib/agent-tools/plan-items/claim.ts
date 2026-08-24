@@ -31,7 +31,11 @@ import { holderContextReader, resolveHolderAdvisory } from '../coordination/hold
 import { planItemRef } from '../../agent-goal-ref';
 import type { CellReader } from '../../cell-registry';
 import type { LivenessMode } from '../../plan-items/claims';
-import { buildClaimTimeEnrichment, type ClaimTimeEnrichmentSubject } from '../../claim-time-enrichment';
+import {
+  buildClaimTimeEnrichment,
+  type ClaimTimeEnrichment,
+  type ClaimTimeEnrichmentSubject,
+} from '../../claim-time-enrichment';
 
 /**
  * P-027 / D-055 A5 — attach the blocking holder's goal to a plan-item claim
@@ -112,7 +116,7 @@ async function claimTimeContext(
   workItem: ClaimTimeEnrichmentSubject | null,
   harness: string | undefined,
   workspaceId: string,
-): Promise<Record<string, unknown>> {
+): Promise<ClaimTimeEnrichment> {
   return buildClaimTimeEnrichment({
     planSlug,
     planItemId,

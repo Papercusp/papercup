@@ -146,7 +146,13 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
           m.getClaimTimePriorAttemptBrief({
             ...(opts.planSlug ? { planSlug: opts.planSlug } : {}),
             ...(opts.planItemId ? { planItemId: opts.planItemId } : {}),
-            ...(workItemId ? { workItemId } : {}),
+            // Passed explicitly (not omitted-when-absent like its siblings): the
+            // port resolves `opts.workItemId ?? opts.workItem?.id ?? <synthetic>`,
+            // so an explicit null still falls through to the work-item's own id
+            // when there is one — while on the bare plan-item path it STATES that
+            // no work-item exists, rather than leaving that to be inferred from a
+            // missing key.
+            workItemId,
             ...(wi
               ? {
                   workItem: {

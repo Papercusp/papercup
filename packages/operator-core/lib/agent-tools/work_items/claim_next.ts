@@ -457,6 +457,35 @@ export default defineTool({
       }
     };
 
+    /**
+     * WI-41182 / WI-39498 — the plan-says-done contradiction: the linked plan item
+     * is already terminal (often annotated "← <this id> completed") while the row
+     * just claimed is still open, so the work may already be finished.
+     *
+     * This was the ONE guard of the six that never reached this surface. It landed
+     * at scheduler:get_next and work_items:claim when WI-39498 was fixed; claim_next
+     * — a self-select path, i.e. exactly the shape that serves a zombie to whoever
+     * asks next — was missed, and nothing caught it because there was no definition
+     * of the set to check against. There is now: `CLAIM_TIME_ENRICHMENT_LEGS`, which
+     * the parity guard enumerates.
+     *
+     * Same fail-soft posture as every sibling helper above: a swallowed read omits
+     * the hint rather than asserting the item is clean.
+     */
+    const planContradictionFor = async (
+      wi: { id?: string; payload?: unknown } | null,
+    ): Promise<{ planItemContradiction: unknown; planItemContradictionWarning: string } | null> => {
+      if (!wi?.id) return null;
+      try {
+        const m = await import('../../work-item-plan-contradiction');
+        const hint = await m.getClaimTimePlanItemContradiction({ workItemId: wi.id, payload: wi.payload });
+        const warning = m.planItemContradictionWarning(hint, wi.id);
+        return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
+      } catch {
+        return null;
+      }
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
@@ -472,15 +501,21 @@ export default defineTool({
       // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
-      const [planDecisionsResult, priorAttemptBrief, premisesResult, retractionAdvisory, authorshipRevalidationResult] = await Promise.all(
-        [
-          planDecisionsFor(wiOf(claimed)),
-          priorAttemptsFor(wiOf(claimed)),
-          premisesFor(wiOf(claimed)),
-          getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness),
-          authorshipRevalidationFor(wiOf(claimed)),
-        ],
-      );
+      const [
+        planDecisionsResult,
+        priorAttemptBrief,
+        premisesResult,
+        retractionAdvisory,
+        authorshipRevalidationResult,
+        planContradictionResult,
+      ] = await Promise.all([
+        planDecisionsFor(wiOf(claimed)),
+        priorAttemptsFor(wiOf(claimed)),
+        premisesFor(wiOf(claimed)),
+        getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness),
+        authorshipRevalidationFor(wiOf(claimed)),
+        planContradictionFor(wiOf(claimed)),
+      ]);
       return {
         content: [
           {
@@ -495,6 +530,7 @@ export default defineTool({
               ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
               ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
               ...(authorshipRevalidationResult ?? {}),
+              ...(planContradictionResult ?? {}),
             }),
           },
         ],
@@ -526,14 +562,21 @@ export default defineTool({
     // return branch.
     const claimedWithDecisions = await Promise.all(
       claimed.map(async (c) => {
-        const [planDecisionsResult, priorAttemptBrief, premisesResult, retractionAdvisory, authorshipRevalidationResult] =
-          await Promise.all([
-            planDecisionsFor(wiOf(c)),
-            priorAttemptsFor(wiOf(c)),
-            premisesFor(wiOf(c)),
-            getClaimTimeRetractionAdvisory(wiOf(c), args.harness),
-            authorshipRevalidationFor(wiOf(c)),
-          ]);
+        const [
+          planDecisionsResult,
+          priorAttemptBrief,
+          premisesResult,
+          retractionAdvisory,
+          authorshipRevalidationResult,
+          planContradictionResult,
+        ] = await Promise.all([
+          planDecisionsFor(wiOf(c)),
+          priorAttemptsFor(wiOf(c)),
+          premisesFor(wiOf(c)),
+          getClaimTimeRetractionAdvisory(wiOf(c), args.harness),
+          authorshipRevalidationFor(wiOf(c)),
+          planContradictionFor(wiOf(c)),
+        ]);
         return {
           ...c,
           ...(planDecisionsResult
@@ -543,6 +586,7 @@ export default defineTool({
           ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(authorshipRevalidationResult ?? {}),
+          ...(planContradictionResult ?? {}),
         };
       }),
     );
