@@ -2031,7 +2031,11 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
   it("setupTree shells setup-release-checkout.sh with the integration/checkpoint/ref flags", async () => {
     const { exec, calls } = makeExec([
-      { code: 0, stdout: "copied checkpoint dependencies" },
+      {
+        code: 0,
+        stdout:
+          "copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=v1-deadbeef",
+      },
     ]);
     const setup = await realCheckpointDeps(cfg, exec).setupTree("cand123");
     expect(calls[0].cmd).toBe("bash");
@@ -2058,15 +2062,30 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         "force",
         "--node-modules-copy",
         "copy",
+        "--node-modules-generation",
+        "required",
       ]),
     );
     expect(calls[0].opts?.onOutput).toBeTypeOf("function");
     expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
     expect(calls[0].opts?.killProcessGroupOnTimeout).toBe(true);
     expect(setup).toEqual({
-      identity: "setup-release-checkout:cand123",
-      output: "copied checkpoint dependencies",
+      identity: "setup-release-checkout:cand123:deps=v1-deadbeef",
+      output:
+        "copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=v1-deadbeef",
     });
+  });
+
+  it("P-006: setupTree fails closed when setup omits the pinned generation identity", async () => {
+    const { exec } = makeExec([
+      { code: 0, stdout: "setup finished without a generation marker" },
+    ]);
+
+    await expect(
+      realCheckpointDeps(cfg, exec).setupTree("cand-without-generation"),
+    ).rejects.toThrow(
+      "completed without a pinned dependency-generation identity",
+    );
   });
 
   it("push rides the PAPERCUSP_MAIN_PUSH_OK guard (the one writer allowed past the main pre-push hook)", async () => {

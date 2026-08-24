@@ -775,7 +775,9 @@ copy_up_generation_dependency_path() {
   local path="$1"
   [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ] || return 0
   [ -d "$path" ] || return 0
-  local tmp="${path}.copy-up.$$" old="${path}.copy-up-old.$$"
+  local tmp old
+  tmp="${path}.copy-up.$$"
+  old="${path}.copy-up-old.$$"
   rm -rf "$tmp" "$old"
   dependency_generation_copy_independent "$path" "$tmp"
   chmod -R u+w "$tmp"

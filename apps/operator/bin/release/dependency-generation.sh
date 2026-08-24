@@ -140,7 +140,8 @@ dependency_generation_write_owner() {
 }
 
 dependency_generation_acquire_publish_lock() {
-  local generation_root="$1" lock="$generation_root/.publish-lock" attempts=0
+  local generation_root="$1" lock attempts=0
+  lock="$generation_root/.publish-lock"
   while ! mkdir "$lock" 2>/dev/null; do
     dependency_generation_cleanup_abandoned "$generation_root"
     attempts=$((attempts + 1))
@@ -179,8 +180,10 @@ dependency_generation_copy_independent() {
 # checkpoint may prune/add directory entries without changing the generation.
 # Cross-filesystem and explicitly forced paths fall back to an independent copy.
 dependency_generation_materialize_tree() {
-  local src="$1" dest="$2" tmp="${dest}.generation-tmp.$$" old="${dest}.generation-old.$$"
+  local src="$1" dest="$2" tmp old
   local source_device dest_device mode='copy'
+  tmp="${dest}.generation-tmp.$$"
+  old="${dest}.generation-old.$$"
   rm -rf -- "$tmp" "$old"
   mkdir -p "$(dirname "$dest")"
   source_device="$(dependency_generation_device "$src")" || return 1
@@ -261,6 +264,10 @@ dependency_generation_ensure() {
     dependency_generation_log 'FATAL: live node_modules changed during generation build; refusing a torn snapshot'
     return 75
   fi
+  # Freeze file contents before recording the snapshot identity because mode is
+  # part of the metadata fingerprint. Recording first would make every freshly
+  # published generation invalidate itself on its next read.
+  find "$tree" -type f -exec chmod a-w {} +
   snapshot="$(dependency_generation_set_fingerprint "$tree")" || {
     dependency_generation_remove_build "$build"
     return 1
@@ -269,9 +276,6 @@ dependency_generation_ensure() {
   printf 'schema=1\nidentity=%s\nsource=%s\nsnapshot=%s\ncreated=%s\n' \
     "$identity" "$source_after" "$snapshot" "$(date +%s)" > "$marker"
   rm -f -- "$build/.papercusp-generation-writer"
-  # The files are the immutable substrate. Keep directories writable so a
-  # hardlink materialization receives independent, pruneable directories.
-  find "$tree" -type f -exec chmod a-w {} +
 
   dependency_generation_acquire_publish_lock "$generation_root" || {
     dependency_generation_remove_build "$build"

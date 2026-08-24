@@ -45,6 +45,10 @@ import { spawnSync } from 'node:child_process';
 
 // apps/operator/lib/release → apps/operator/bin/release/setup-release-checkout.sh
 const SCRIPT_PATH = join(__dirname, '../../bin/release/setup-release-checkout.sh');
+const DEPENDENCY_GENERATION_SCRIPT = join(
+  __dirname,
+  '../../bin/release/dependency-generation.sh',
+);
 const REPO_ROOT = resolve(__dirname, '../../../..');
 
 /**
@@ -239,6 +243,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     const wrapper = [
       'set -euo pipefail',
       'log() { :; }',
+      'source "$GENERATION_SCRIPT"',
       'source <(sed -n "/^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
@@ -246,6 +251,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
       env: {
         ...process.env,
         SETUP_SCRIPT: SCRIPT_PATH,
+        GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT,
         SRC: src,
         DEST: dest,
         NODE_MODULES_COPY_MODE: copyMode,
@@ -650,7 +656,10 @@ describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules 
    */
   function enumerate(root: string, normalize: boolean): string[] {
     const lines = ['set -uo pipefail', `INTEGRATION_ROOT=${JSON.stringify(root)}`];
-    lines.push(`source <(sed -n '/^enumerate_node_modules()/,/^}/p' "$SETUP_SCRIPT")`);
+    lines.push(
+      'source "$GENERATION_SCRIPT"',
+      `source <(sed -n '/^enumerate_node_modules()/,/^}/p' "$SETUP_SCRIPT")`,
+    );
     if (normalize) {
       lines.push(
         'RELEASE_ROOT="$INTEGRATION_ROOT"', // the shipped block normalizes both; unused here
@@ -659,7 +668,11 @@ describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules 
     }
     lines.push('enumerate_node_modules');
     const r = spawnSync('bash', ['-c', lines.join('\n')], {
-      env: { ...process.env, SETUP_SCRIPT: SCRIPT_PATH },
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT,
+      },
       encoding: 'utf8',
     });
     if (r.status !== 0) throw new Error(`enumeration failed (${r.status}): ${r.stderr || r.stdout}`);
