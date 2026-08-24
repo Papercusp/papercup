@@ -3874,14 +3874,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.attention_bulk_run_items',
     ],
     resolve: async (args) => {
-      const { getRun, getLatestRun, getRunItems } = await import('../attention/bulk-run-store');
+      const { classifyRunLiveness, getRun, getLatestRun, getRunItems } = await import('../attention/bulk-run-store');
       const runId = typeof (args as { runId?: unknown })?.runId === 'string'
         ? String((args as { runId: string }).runId)
         : null;
       try {
         const run = runId ? await getRun(runId) : await getLatestRun();
         if (!run) return [{ run: null, items: [] }];
-        return [{ run, items: await getRunItems(run.runId) }];
+        return [{ run: { ...run, liveness: classifyRunLiveness(run) }, items: await getRunItems(run.runId) }];
       } catch {
         // Degrade to idle rather than failing the pane: the inbox itself must
         // stay usable when the bulk-run substrate is unavailable, and every
@@ -3900,7 +3900,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.plan_cleanup_run_findings',
     ],
     resolve: async (args) => {
-      const [{ getRun, getLatestRun }, { getRunFindings }] = await Promise.all([
+      const [{ classifyRunLiveness, getRun, getLatestRun }, { getRunFindings }] = await Promise.all([
         import('../attention/bulk-run-store'),
         import('../plan-cleanup/run-store'),
       ]);
@@ -3912,7 +3912,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           ? await getRun(runId)
           : await getLatestRun(undefined, 'plan-cleanup');
         if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [] }];
-        return [{ run, findings: await getRunFindings(run.runId, run.workspaceId) }];
+        return [{
+          run: { ...run, liveness: classifyRunLiveness(run) },
+          findings: await getRunFindings(run.runId, run.workspaceId),
+        }];
       } catch {
         // Cleanup is additive: a substrate read failure must not break the
         // Plans pane or mis-render a partially known run.
