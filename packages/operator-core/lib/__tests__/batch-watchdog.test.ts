@@ -292,6 +292,59 @@ describe('createProgressAwareWatchdog', () => {
     scheduler.advance(200 * MINUTE);
     expect(kills).toEqual([]);
   });
+
+  // WI-41180 regression guard. An idle-deadlocked task and a healthy-but-slow one
+  // both report `state=running` with an identical, rising `elapsedSec`, so the
+  // progress heartbeat could not tell them apart and agents waited on runs that
+  // were already dead (measured twice on 2026-08-24, ~40min lost). `msSinceProgress`
+  // is what separates them. These assert the DISCRIMINATION, not just the getter —
+  // a getter that always returned 0 would pass a naive "it exists" test.
+  describe('msSinceProgress — telling a wedged task from a slow one', () => {
+    it('separates a WEDGED task from a SLOW one at the SAME elapsed time', () => {
+      const slowSched = fakeScheduler();
+      const { watchdog: slow } = build(slowSched);
+      for (let minute = 0; minute < 30; minute += 1) {
+        slowSched.advance(MINUTE);
+        slow.noteProgress(); // slow, but genuinely emitting
+      }
+
+      const wedgedSched = fakeScheduler();
+      const { watchdog: wedged } = build(wedgedSched);
+      wedgedSched.advance(30 * MINUTE); // idle-deadlocked: never emits
+
+      // The property the old heartbeat lacked: identical elapsed, opposite health.
+      expect(slow.msSinceProgress).toBeLessThan(2 * MINUTE);
+      expect(wedged.msSinceProgress).toBe(30 * MINUTE);
+      expect(wedged.msSinceProgress).toBeGreaterThan(slow.msSinceProgress);
+    });
+
+    it('resets to zero on progress and grows monotonically while silent', () => {
+      const scheduler = fakeScheduler();
+      const { watchdog } = build(scheduler);
+      scheduler.advance(3 * MINUTE);
+      expect(watchdog.msSinceProgress).toBe(3 * MINUTE);
+      watchdog.noteProgress();
+      expect(watchdog.msSinceProgress).toBe(0);
+      scheduler.advance(2 * MINUTE);
+      expect(watchdog.msSinceProgress).toBe(2 * MINUTE);
+    });
+
+    it('reads the SAME lastProgressAt the kill policy uses: it crosses the stall window exactly when the kill fires', () => {
+      const scheduler = fakeScheduler();
+      const { watchdog, kills } = build(scheduler);
+      for (let minute = 0; minute < 45; minute += 1) {
+        scheduler.advance(MINUTE);
+        watchdog.noteProgress();
+      }
+      expect(kills).toEqual([]);
+      expect(watchdog.msSinceProgress).toBeLessThan(5 * MINUTE); // inside the stall window
+      scheduler.advance(20 * MINUTE);
+      expect(kills).toEqual(['progress-stalled']);
+      // Had this been a second, independently-tracked clock it could disagree with
+      // the policy — which would make the heartbeat lie about why a task was killed.
+      expect(watchdog.msSinceProgress).toBeGreaterThan(5 * MINUTE);
+    });
+  });
 });
 
 const OPTS = { killSignal: 'SIGKILL', timeoutMs: 1_200_000 };

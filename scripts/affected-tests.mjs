@@ -3593,6 +3593,14 @@ function runCapturedTask(
       rawErrSync(
         `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
+          // WI-41180: `elapsedSec` rises identically whether the task is working or
+          // idle-deadlocked, and `capturedBytes` only reveals a wedge by DIFFING two
+          // beats — which a reader has to think to do, and an agent watching one beat
+          // cannot do at all. `stalledForSec` states it outright, from the very
+          // `lastProgressAt` the kill policy already consults. Read it, not elapsedSec,
+          // to tell "slow" from "dead": a large value on `state=running` means the
+          // child has emitted NOTHING for that long.
+          `stalledForSec=${Math.floor(watchdog.msSinceProgress / 1000)} ` +
           `timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
           `durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
           `exitStatus=${outcome.exitStatus} signal=${outcome.signal} ` +

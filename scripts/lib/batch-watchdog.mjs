@@ -232,6 +232,25 @@ export function createProgressAwareWatchdog({
     get extensions() {
       return extensions;
     },
+    /**
+     * How long child output has been FLAT, in ms — the same `lastProgressAt`
+     * the kill policy already consults, exposed so a LOG READER can see it too.
+     *
+     * WI-41180 / EI-21223031134313862: an idle-deadlocked task keeps emitting
+     * `AFFECTED_TASK_PROGRESS state=running` with a rising `elapsedSec` while
+     * consuming zero CPU, so a wedged run is byte-indistinguishable from a slow
+     * one until the watchdog kills it (2700s here). Agents therefore WAIT on
+     * runs that are already dead — measured twice on 2026-08-24, ~40min lost.
+     *
+     * This is READ-ONLY and deliberately changes no timing: the watchdog's
+     * MONOTONE property (no input makes it kill EARLIER, so it cannot introduce
+     * a new red) is exactly what protects live-but-slow work from being SIGKILLed
+     * under fleet load, and it must not be traded away for faster detection.
+     * Surfacing the signal costs nothing and needs no such trade.
+     */
+    get msSinceProgress() {
+      return now() - lastProgressAt;
+    },
   };
 }
 
