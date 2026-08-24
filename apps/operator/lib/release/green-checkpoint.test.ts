@@ -2092,6 +2092,58 @@ describe("runGreenCheckpoint", () => {
     expect(evidence[0]).not.toContain("secretpw");
   });
 
+  it.each([
+    { green: true, reason: "up-to-date" as const, failingTests: undefined },
+    {
+      green: false,
+      reason: "not-green" as const,
+      failingTests: ["lib/broken.test.ts"],
+    },
+  ])(
+    "EI-213458: a $reason pinned diagnostic retains the suite result but performs no live-gate side effect",
+    async ({ green, reason, failingTests }) => {
+      const ready = await commit("a", "1", "ready");
+      await git(repo, ["branch", "ready", ready]);
+      const candidate = await commit("a", "2", "candidate");
+      const { deps, calls } = stubDeps(green, failingTests);
+      const markers: Array<
+        Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0]
+      > = [];
+      const readFrozenRepairQueue = vi.fn(async () => null);
+      const recordPendingVerdict = vi.fn(async () => true);
+      const flakeLookup = vi.fn(async () => ({}));
+      deps.recordInFlightCandidate = async (info) => {
+        markers.push(info);
+      };
+      deps.readFrozenRepairQueue = readFrozenRepairQueue;
+      deps.recordPendingVerdict = recordPendingVerdict;
+      deps.flakeLookup = flakeLookup;
+
+      const result = await runGreenCheckpoint(cfg(), deps, {
+        candidate,
+        candidateSource: "pinned",
+      });
+
+      expect(result).toMatchObject({
+        advanced: false,
+        candidate,
+        from: ready,
+        green,
+        reason,
+        candidateSource: "pinned",
+        diagnostic: "candidate-pinned",
+      });
+      expect(result.summary).toContain("Candidate-pinned diagnostic");
+      expect(markers).toHaveLength(1);
+      expect(markers[0]).toMatchObject({ candidate, candidateSource: "pinned" });
+      expect(await revParse(repo, "ready")).toBe(ready);
+      expect(readFrozenRepairQueue).not.toHaveBeenCalled();
+      expect(recordPendingVerdict).not.toHaveBeenCalled();
+      expect(flakeLookup).not.toHaveBeenCalled();
+      expect(calls).toEqual([`setup:${candidate.slice(0, 7)}`, "runGreen"]);
+    },
+  );
+
   it("advances ready when the candidate is green", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
