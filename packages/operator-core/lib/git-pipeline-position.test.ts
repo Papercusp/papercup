@@ -161,6 +161,11 @@ function fakeGit(opts: {
    */
   blobAtRef?: Record<string, string>;
   /**
+   * EI-21285379200225840: refs whose trees resolve but do not contain the path.
+   * This is distinct from an omitted ref, which models a failed `ls-tree` read.
+   */
+  absentRefs?: string[];
+  /**
    * EI-19325915429897280: `pathCommit`'s PARENT (`${pathCommit}~1`) — the file's
    * content immediately BEFORE the change under discussion, which is the marker
    * baseline `markerBaseline`/`markerBaselineCount` are computed from. Supplying
@@ -207,6 +212,7 @@ function fakeGit(opts: {
       }
       if (args[1] === 'origin/staging' && opts.failSubmoduleStagingPin) return null;
       if (args[1] === 'origin/staging' && _repo === root) return '';
+      if (opts.absentRefs?.includes(args[1])) return '';
       // WI-6646: a ref with a known blob genuinely HAS the path.
       if (opts.blobAtRef && args[1] in opts.blobAtRef) return `100644 blob deadbeef\t${args[3]}`;
       // EI-19325915429897280: the marker-baseline commit HAS the path too, when
@@ -237,6 +243,7 @@ function fakeGit(opts: {
       // correctly refuses it as unresolvable — the fixture would otherwise test the
       // resolver-failed path while claiming to test marker containment.
       if (opts.blobAtRef && want in opts.blobAtRef) return 'a'.repeat(40);
+      if (opts.absentRefs?.includes(want)) return 'b'.repeat(40);
       // EI-19325915429897280: the marker-baseline commit (`${pathCommit}~1`) resolves
       // to something sha-shaped ONLY when the fixture supplies its content — an
       // omitted `parentBlobAtTarget` falls through to `return want`, and `want` here
@@ -601,6 +608,33 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.notes.join('\n')).toMatch(/CORRECTED to true by the marker/);
       expect(res.notes.join('\n')).toMatch(/strict net-decrease/);
       expect(res.summary).toMatch(/main ✓/);
+    });
+
+    it('EI-21285379200225840: a marker present only in staging never corrects path-absent main/deployed legs', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        // The file has never landed in either target tree, so both ref-scoped
+        // newest-path reads are measured absences rather than failed reads.
+        newestInRef: { 'origin/main': '', deployedsha0: '' },
+        absentRefs: ['origin/main', 'deployedsha0'],
+        // The caller's marker is genuinely new in the target commit, but no target
+        // tree contains that path at all. This is the production false-positive shape.
+        parentBlobAtTarget: 'nothing relevant here\n',
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positions.deployed).toBe(false);
+      expect(res.positionsMarker?.inMain).toMatchObject({ present: false, count: 0, pathPresent: false });
+      expect(res.positionsMarker?.deployed).toMatchObject({ present: false, count: 0, pathPresent: false });
+      expect(res.positionsNewerCommit).not.toEqual(expect.arrayContaining(['inMain', 'deployed']));
+      expect(res.notes.join('\n')).toMatch(/inMain: confirmed NOT present/);
+      expect(res.notes.join('\n')).toMatch(/deployed: confirmed NOT present/);
+      expect(res.notes.join('\n')).not.toMatch(/CORRECTED to true by the marker/);
     });
 
     it('a MARKER absent from the ref confirms a GENUINE miss and does not cry newer-commit', async () => {
