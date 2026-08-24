@@ -11,7 +11,13 @@ import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync, readdirSync,
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveCapabilityBaseDir, realpathSoft, resolveAgentWorkspaceRoot } from './base-dir';
+import {
+  pickCapabilityBaseDir,
+  resolveAgentWorkspaceRoot,
+  resolveCapabilityBaseDir,
+  resolveCapabilityIntegrationRoot,
+  realpathSoft,
+} from './base-dir';
 import { writeFileSync } from 'node:fs';
 
 describe('EI-1754 — resolveCapabilityBaseDir', () => {
@@ -40,6 +46,22 @@ describe('EI-1754 — resolveCapabilityBaseDir', () => {
   it('empty / whitespace env is treated as unset → process.cwd()', () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = '   ';
     expect(resolveCapabilityBaseDir({})).toBe(process.cwd());
+  });
+
+  it('keeps the exported picker raw while the explicit integration-root helper canonicalizes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-integration-picker-'));
+    const real = join(root, 'papercusp');
+    const link = join(root, 'papercup');
+    mkdirSync(real);
+    symlinkSync(real, link);
+    process.env.PAPERCUSP_INTEGRATION_ROOT = link;
+
+    try {
+      expect(pickCapabilityBaseDir({})).toBe(link);
+      expect(resolveCapabilityIntegrationRoot()).toBe(realpathSync(real));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
