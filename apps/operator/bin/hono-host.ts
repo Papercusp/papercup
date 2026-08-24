@@ -351,6 +351,36 @@ function startRequestServers(): void {
   // for the retry wrapper.
   const server: ReturnType<typeof createAdaptorServer> = createAdaptorServer({ fetch: handler });
   const httpServer = server as unknown as import('node:http').Server;
+
+  // WI-41422: dev:restart targets this ONE verified Linux desktop-dev Hono
+  // child with SIGUSR2. Drain first, then take the existing no-native-teardown
+  // hard-exit path: live, process.exit(75) entered Node's addon teardown and
+  // aborted with exit 134. The desktop wrapper now restarts after ANY
+  // child-only exit (only a signal to the wrapper itself stops it), so the
+  // child's exit status is not the supervision contract. Keep this
+  // desktop-only: SIGUSR2 has no restart meaning on release/staging hosts.
+  if (process.platform === 'linux' && process.env.DBOS__VMID === `desktop-dev-${port}`) {
+    let desktopDevRestartRequested = false;
+    process.on('SIGUSR2', () => {
+      if (desktopDevRestartRequested) return;
+      desktopDevRestartRequested = true;
+      markShuttingDown();
+      console.log(`[hono-host] SIGUSR2 — draining then hard-exiting desktop-dev listener (pid=${process.pid})`);
+      gracefulHostRecycle({
+        server: server as { close?: (cb?: () => void) => void },
+        closeAdditionalResources: stopInvalidationListener,
+        recycleExitCode: 75,
+        // The request-only desktop child owns no background substrate lifecycle;
+        // avoid turning a control-plane restart into native teardown work.
+        skipSubstrateTeardown: true,
+        // Avoid process.exit's native-addon teardown (live exit 134). Exit 75
+        // remains only the fallback if the self-SIGKILL unexpectedly throws.
+        hardExitOnRecycle: true,
+        reason: 'a dev:restart desktop-dev SIGUSR2 recycle',
+      });
+    });
+  }
+
   // onFatal reproduces the pre-existing behavior exactly: the process-level
   // `uncaughtException` handler above used to be what logged-and-exited on an
   // unrecoverable listen() error (Node re-raising an unhandled 'error' event as
