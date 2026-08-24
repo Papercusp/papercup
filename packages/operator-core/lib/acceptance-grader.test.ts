@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { acceptanceGraderLabelPrefix, launchAcceptanceGrader, resolveAcceptanceGrader } from './acceptance-grader';
+import {
+  acceptanceGraderLabelPrefix,
+  buildAssignedAcceptanceGraderBrief,
+  launchAcceptanceGrader,
+  resolveAcceptanceGrader,
+} from './acceptance-grader';
 
 const plan = {
   row: {
@@ -204,5 +209,24 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(result.state).toBe('assigned');
     expect(result.notified).toEqual({ woke: 0 });
     expect(launch).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildAssignedAcceptanceGraderBrief (cross-hive reachability)', () => {
+  it('pins both the plan read and deterministic scorecard checks to the subject harness', () => {
+    const brief = buildAssignedAcceptanceGraderBrief('ship-the-thing', 'papercusp', 'acceptance-ship-the-thing');
+
+    expect(brief).toContain("plans:get { slug:\"ship-the-thing\", harness:\"papercusp\" }");
+    expect(brief).toContain(
+      "scorecards:emit { rubricRef:\"acceptance-ship-the-thing\", targetHive:\"papercusp\", ratings:",
+    );
+    expect(brief).toContain('subject tree rather than the grader\'s checkout');
+  });
+
+  it('keeps the legacy operator-plan form when no concrete harness exists', () => {
+    const brief = buildAssignedAcceptanceGraderBrief('operator-plan', null, 'operator-rubric');
+
+    expect(brief).toContain('plans:get { slug:"operator-plan" }');
+    expect(brief).not.toContain('targetHive:');
   });
 });

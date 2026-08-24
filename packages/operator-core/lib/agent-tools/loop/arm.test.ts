@@ -282,7 +282,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
   it('EI-21358731971685285: infers an auto-detected cold goal item\'s harness before workspace-home fallback', async () => {
     const id = 'EI-21358731971685285';
     homePotM.mockResolvedValue('sb-devboard-hive');
-    potHomeM.mockImplementation((value) => value);
+    potHomeM.mockImplementation((value) => value ?? null);
     detectM.mockReturnValue(id as never);
     getWiM.mockImplementation(async (_id, harness) =>
       (harness === 'sb-devboard-hive'

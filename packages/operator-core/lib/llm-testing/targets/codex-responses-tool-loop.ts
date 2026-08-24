@@ -19,6 +19,11 @@ export interface CodexResponsesTurn {
   outputTokens: number;
 }
 
+interface CompletedResponse {
+  output?: unknown;
+  usage?: { input_tokens?: unknown; output_tokens?: unknown };
+}
+
 export function isCodexResponsesModel(model: string | undefined): boolean {
   return /^(?:chatgpt:|gpt-|openai-codex\/)/i.test(model?.trim() ?? '');
 }
@@ -99,16 +104,13 @@ function parseArguments(value: unknown): unknown {
 
 export function parseCodexResponsesSse(raw: string): CodexResponsesTurn {
   const events = parseSseEvents(raw);
-  let completed: {
-    output?: unknown;
-    usage?: { input_tokens?: unknown; output_tokens?: unknown };
-  } | null = null;
+  let completed: CompletedResponse | null = null;
   const doneItems: ResponsesInputItem[] = [];
   for (const event of events) {
     if (!event || typeof event !== 'object') continue;
     const e = event as { type?: unknown; response?: unknown; item?: unknown };
     if (e.type === 'response.completed' && e.response && typeof e.response === 'object') {
-      completed = e.response as typeof completed;
+      completed = e.response as CompletedResponse;
     }
     if (e.type === 'response.output_item.done' && e.item && typeof e.item === 'object') {
       doneItems.push(e.item as ResponsesInputItem);

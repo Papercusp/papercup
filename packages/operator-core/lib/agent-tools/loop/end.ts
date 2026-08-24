@@ -31,6 +31,44 @@ import {
 } from '../../goals/wind-down-disposition';
 import { evaluateGoalWindDownOutputs } from '../../goals/goal-io-validation';
 import { getLoopCarryNote } from '../../carry-note';
+import { listActiveAwaits, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
+
+/** Bound the receipt's surviving-awaits enumeration (the count stays exact). */
+const SURVIVING_AWAITS_LISTED_CAP = 10;
+
+/**
+ * EI-21349668185386229: the receipt used to say "no further wakes will fire",
+ * which is false for the OTHER wake sources the same owner may hold — event
+ * awaits (events:await, work-item interest watches, timed awaits) are a
+ * SEPARATE lifecycle and survive loop:end, and a queued loop fire can still
+ * land (delivery-time supersession banner, EI-18825117783927950 in
+ * wake-executor.ts). Observed live: an owner ended the loop, was told nothing
+ * would fire, and was woken minutes later by a surviving await it then had to
+ * hunt down via events:status. So the receipt scopes its claim to LOOP wakes
+ * and enumerates the surviving awaits itself. The always-armed
+ * `coord:inbox-wake:` self-wake is liveness plumbing every live agent holds —
+ * excluded, not a deliberate bench.
+ */
+export function survivingAwaitsNote(
+  surviving: { await_id: number; event_key: string }[] | null,
+): string {
+  if (surviving === null) {
+    // The read failed — still never restate the disproven blanket claim.
+    return 'Loop ended — no further LOOP wakes will fire. Independent event awaits (if any) are a separate lifecycle and survive this stop — events:status to inspect, events:cancel { await_ids } to stop one deliberately.';
+  }
+  if (surviving.length === 0) {
+    return 'Loop ended — no further loop wakes will fire, and no independent event awaits remain active for this owner.';
+  }
+  const listed = surviving
+    .slice(0, SURVIVING_AWAITS_LISTED_CAP)
+    .map((a) => `#${a.await_id} ${a.event_key}`)
+    .join(', ');
+  const more = surviving.length > SURVIVING_AWAITS_LISTED_CAP ? `, +${surviving.length - SURVIVING_AWAITS_LISTED_CAP} more` : '';
+  return (
+    `Loop ended — no further LOOP wakes will fire, but ${surviving.length} independent event await(s) remain active and CAN still wake this session: ${listed}${more}. ` +
+    'They are a separate lifecycle (loop:end never cancels them). Inspect via events:status; cancel deliberately with events:cancel { await_ids } — leave interest watches you did not create.'
+  );
+}
 
 export default defineTool({
   name: 'loop:end',
@@ -245,6 +283,20 @@ export default defineTool({
           source: 'loop:end',
         })
       : null;
+    // EI-21349668185386229: enumerate the wake sources that SURVIVE this stop
+    // (see survivingAwaitsNote's header). Fail-soft — a read error must never
+    // block the stop; the note then degrades to the scoped-claim wording.
+    let survivingAwaits: { await_id: number; event_key: string; expires_ts: string | null }[] | null = null;
+    if (ended) {
+      try {
+        const rows = await listActiveAwaits(ownerId);
+        survivingAwaits = rows
+          .filter((r) => !r.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX))
+          .map((r) => ({ await_id: r.id, event_key: r.eventKey, expires_ts: r.expiresTs }));
+      } catch {
+        survivingAwaits = null;
+      }
+    }
     return {
       content: [
         {
@@ -262,8 +314,9 @@ export default defineTool({
                   ...(dispositionWarning ? { warning: dispositionWarning } : {}),
                 }
               : {}),
+            ...(ended && survivingAwaits !== null ? { survivingAwaits } : {}),
             note: ended
-              ? 'Loop ended — no further wakes will fire.'
+              ? survivingAwaitsNote(survivingAwaits)
               : 'No active loop found for this owner (already ended or never armed).',
           }),
         },

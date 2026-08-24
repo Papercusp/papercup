@@ -173,6 +173,7 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
       honoPort: PORT,
       workspaceId: WS,
       agentCmd: FAKE ? `node ${FAKE_AGENT}` : REAL_AGENT_CMD,
+      agentModels: FAKE ? {} : undefined,
     });
     logFd = openSync(opLogPath, 'w');
     log(`booting gym-operator on :${PORT} (mode=${FAKE ? 'fake' : 'real'}, log → ${opLogPath}) …`);

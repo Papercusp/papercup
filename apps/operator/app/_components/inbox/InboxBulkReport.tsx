@@ -10,6 +10,7 @@
  * detail-tier attention read mounts only when that drill-in is opened.
  */
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { Sparkles } from 'lucide-react';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 import { useHydratedAttentionItem } from '@/app/admin/plans/plans-api';
 import { isNavigateAction } from '@/app/admin/plans/attention-card';
@@ -117,6 +118,8 @@ export function buildInboxBulkReviewGroups(
     const row: ReviewReportRow = {
       id: runItem.itemId,
       title: item?.title ?? runItem.title ?? runItem.itemId,
+      sourceLabel: kindLabel(kind),
+      referenceLabel: action,
       evidence: evidenceLines(runItem),
       confidence: runItem.outcome === 'auto_resolved' ? 'provable' : 'recommended',
       status,
@@ -340,6 +343,7 @@ export default function InboxBulkReport({
     <ReviewReportShell
       key={run.runId}
       title="Inbox bulk-resolve report"
+      icon={<Sparkles size={19} />}
       subtitle={
         <span className="inbox-bulk-report__subtitle">
           <span>

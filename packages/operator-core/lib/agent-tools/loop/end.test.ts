@@ -38,6 +38,13 @@ vi.mock('../orders/open-directives-guard', () => ({
   checkOpenDirectivesGuard: vi.fn(async () => null),
 }));
 vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }));
+// EI-21349668185386229: the surviving-awaits read. Mocked (the real one queries
+// PG); the KEY PREFIX stays the real constant's value so the filter under test
+// is the production filter.
+vi.mock('../../events/await/store', () => ({
+  listActiveAwaits: vi.fn(async () => []),
+  INBOX_WAKE_KEY_PREFIX: 'coord:inbox-wake:',
+}));
 // Keep the module graph light: these are transitive imports of the REAL
 // wind-down-disposition module loaded via importOriginal below.
 vi.mock('../../modes/store', () => ({ getModeSubject: vi.fn() }));
@@ -65,6 +72,7 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
 
 import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNote } from '../../carry-note';
+import { listActiveAwaits } from '../../events/await/store';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -73,7 +81,7 @@ import {
   windDownDispositionGateEnabled,
   evaluateGoalAcceptanceGate,
 } from '../../goals/wind-down-disposition';
-import endTool from './end';
+import endTool, { survivingAwaitsNote } from './end';
 
 const deactivateLoopMock = deactivateLoop as unknown as ReturnType<typeof vi.fn>;
 const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
@@ -83,6 +91,7 @@ const applyGoalDispositionMock = applyGoalDisposition as unknown as ReturnType<t
 const deliverReportMock = deliverGoalWindDownReport as unknown as ReturnType<typeof vi.fn>;
 const gateEnabledMock = windDownDispositionGateEnabled as unknown as ReturnType<typeof vi.fn>;
 const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<typeof vi.fn>;
+const listActiveAwaitsMock = listActiveAwaits as unknown as ReturnType<typeof vi.fn>;
 
 const ACTIVE_GOAL = {
   goalId: 'ship-paid-app-3f9a1c',
@@ -122,6 +131,8 @@ beforeEach(() => {
   gateEnabledMock.mockResolvedValue(true);
   acceptanceGateMock.mockReset();
   acceptanceGateMock.mockResolvedValue({ satisfied: true });
+  listActiveAwaitsMock.mockReset();
+  listActiveAwaitsMock.mockResolvedValue([]);
 });
 
 describe('the P-002 disposition gate (acceptance)', () => {
@@ -266,5 +277,72 @@ describe('argument schema', () => {
       expect(schema.safeParse({ disposition: d }).success).toBe(true);
     expect(schema.safeParse({ disposition: 'paused' }).success).toBe(false);
     expect(schema.safeParse({ disposition: 'handoff', handoffTo: 'su-next' }).success).toBe(true);
+  });
+});
+
+describe('the surviving-awaits receipt (EI-21349668185386229)', () => {
+  // The disproven claim this fix retires. The new wordings ("no further LOOP
+  // wakes") deliberately do not contain this substring, so the assertion
+  // cannot pass by accident.
+  const BLANKET_CLAIM = 'no further wakes will fire';
+
+  it('with no surviving awaits: says so explicitly and never restates the blanket claim', async () => {
+    const got = await run({});
+    expect(got.ended).toBe(true);
+    expect(got.survivingAwaits).toEqual([]);
+    expect(String(got.note)).toMatch(/no independent event awaits remain/);
+    expect(String(got.note)).not.toContain(BLANKET_CLAIM);
+  });
+
+  it('enumerates surviving awaits, filters the always-armed inbox-wake plumbing, and scopes the claim to LOOP wakes', async () => {
+    listActiveAwaitsMock.mockResolvedValue([
+      { id: 88515, eventKey: 'green-checkpoint:inconclusive', expiresTs: null },
+      { id: 87786, eventKey: 'claim:released:EI-123', expiresTs: '2026-08-25T00:00:00Z' },
+      // Liveness plumbing every live agent holds — must NOT render as a bench.
+      { id: 90000, eventKey: 'coord:inbox-wake:su-caller-own-id', expiresTs: null },
+    ]);
+    const got = await run({});
+    expect(got.ended).toBe(true);
+    expect(got.survivingAwaits).toEqual([
+      { await_id: 88515, event_key: 'green-checkpoint:inconclusive', expires_ts: null },
+      { await_id: 87786, event_key: 'claim:released:EI-123', expires_ts: '2026-08-25T00:00:00Z' },
+    ]);
+    const note = String(got.note);
+    expect(note).toMatch(/no further LOOP wakes will fire/);
+    expect(note).toMatch(/2 independent event await\(s\) remain active/);
+    expect(note).toContain('#88515 green-checkpoint:inconclusive');
+    expect(note).toMatch(/events:cancel \{ await_ids \}/);
+    expect(note).not.toContain(BLANKET_CLAIM);
+  });
+
+  it('FAIL-SOFT: a read failure never blocks the stop — the note degrades to the scoped claim, survivingAwaits is omitted', async () => {
+    listActiveAwaitsMock.mockRejectedValue(new Error('pg down'));
+    const got = await run({});
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(true);
+    expect(got.survivingAwaits).toBeUndefined();
+    expect(String(got.note)).toMatch(/no further LOOP wakes will fire/);
+    expect(String(got.note)).toMatch(/events:status to inspect/);
+    expect(String(got.note)).not.toContain(BLANKET_CLAIM);
+  });
+
+  it('a no-op end (no active loop) does not read awaits at all', async () => {
+    deactivateLoopMock.mockResolvedValue(false);
+    const got = await run({});
+    expect(got.ended).toBe(false);
+    expect(got.survivingAwaits).toBeUndefined();
+    expect(listActiveAwaitsMock).not.toHaveBeenCalled();
+  });
+
+  it('survivingAwaitsNote caps the enumeration at 10 while the count stays exact', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      await_id: 1000 + i,
+      event_key: `key-${i}`,
+    }));
+    const note = survivingAwaitsNote(rows);
+    expect(note).toMatch(/12 independent event await\(s\)/);
+    expect(note).toContain('#1009 key-9');
+    expect(note).not.toContain('#1010 key-10');
+    expect(note).toContain('+2 more');
   });
 });

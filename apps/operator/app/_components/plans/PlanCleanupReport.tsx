@@ -7,6 +7,7 @@
  * succeeds does the run's `accept` bookkeeping advance.
  */
 import { useCallback, useMemo, useState } from "react";
+import { BrushCleaning } from "lucide-react";
 import {
   setItemStatus,
   setPlanArchived,
@@ -124,8 +125,12 @@ function reportRow(
   const reason = localErrors.get(finding.findingId) ?? manualReason(finding);
   return {
     id: finding.findingId,
-    title: `${finding.planSlug}${finding.itemId ? `#${finding.itemId}` : ""} · ${finding.target}`,
-    detail: reason ?? `${finding.from} → ${finding.to}`,
+    title: finding.target,
+    sourceLabel: finding.planSlug,
+    referenceLabel:
+      finding.itemId ?? (finding.kind === "stale-now" ? "## Now" : "plan"),
+    transition: { from: finding.from, to: finding.to },
+    detail: reason ?? undefined,
     evidence: evidenceLines(finding),
     confidence: finding.confidence,
     status,
@@ -314,7 +319,8 @@ export default function PlanCleanupReport({
   return (
     <ReviewReportShell
       key={run.runId}
-      title="Plan clean-up report"
+      title="Clean-up report"
+      icon={<BrushCleaning size={19} />}
       subtitle={
         <span className="plan-cleanup-report__subtitle">
           <span>

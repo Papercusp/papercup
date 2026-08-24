@@ -880,10 +880,13 @@ describe('judgePeerFederationSilence — a cursor outlives admission (WI-39489)'
  * distinction does not fail loudly, it collapses to whichever branch was written
  * first. It collapsed to the scope-local one.
  *
- * Measured on this host 2026-08-24: `admittedLogCount` was min=1 max=1 across 101
- * booted scopes (own log only — ZERO remote admitted anywhere) while 45 scopes
+ * Measured on this host 2026-08-24: all 80 booted scopes in the workspace admitted
+ * exactly ONE log — their own (ZERO remote admitted anywhere) — while 45 of them
  * held durable remote cursors. So one host-wide condition was up to 45 per-scope
- * majors, none of which any scope-local action could clear. Which of the 45
+ * majors, none of which any scope-local action could clear. (The status row also
+ * carried 21 `logStats` entries for OTHER workspaces; both readings keep the
+ * `workspaceId` predicate, so 80 — not 101 — is the workspace's scope count.)
+ * Which of the 45
  * actually alarmed was decided by the unrelated `scope-dormant` guard — whether
  * we happened to have written locally inside the SLO window — so the alarming set
  * was arbitrary with respect to the fault (this scope fired 5 times and went
@@ -898,14 +901,14 @@ describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935
   it('REPRODUCTION: when the host admits nothing ANYWHERE, the verdict names the HOST, not this scope', () => {
     const v = judgePeerFederationSilence(hostA(), {
       ...scopeAdmitsNothing,
-      // The measured live shape: 101 scopes, every admitted set = own log only.
-      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+      // The measured live shape: 80 scopes, every admitted set = own log only.
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 80 },
     });
 
     expect(v.admittedRemoteLogs).toBe(0);
     expect(v.hostAdmitsAnyRemoteLog).toBe(false);
     expect(v.hostWideAdmissionBreach).toContain('HOST ADMITS NO REMOTE LOGS');
-    expect(v.hostWideAdmissionBreach).toContain('101 booted scope(s)');
+    expect(v.hostWideAdmissionBreach).toContain('80 booted scope(s)');
     expect(v.hostWideAdmissionBreach).toContain('Do NOT chase it per scope');
 
     // The POINT of the fix: the per-scope alarm must NOT also fire. Emitting both
@@ -929,7 +932,7 @@ describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935
     // above.
     const v = judgePeerFederationSilence(hostA(), {
       ...scopeAdmitsNothing,
-      hostAdmission: { remoteLogsAdmitted: 7, scopesMeasured: 101 },
+      hostAdmission: { remoteLogsAdmitted: 7, scopesMeasured: 80 },
     });
 
     expect(v.hostAdmitsAnyRemoteLog).toBe(true);
@@ -966,8 +969,8 @@ describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935
       !hostAdmission?.remoteLogsAdmitted;
 
     for (const measured of [
-      { remoteLogsAdmitted: 0, scopesMeasured: 101 },
-      { remoteLogsAdmitted: 7, scopesMeasured: 101 },
+      { remoteLogsAdmitted: 0, scopesMeasured: 80 },
+      { remoteLogsAdmitted: 7, scopesMeasured: 80 },
     ]) {
       const v = judgePeerFederationSilence(hostA(), { ...scopeAdmitsNothing, hostAdmission: measured });
       expect(v.hostWideAdmissionBreach != null).toBe(wrongHostJudge(measured));
@@ -989,7 +992,7 @@ describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935
       nowMs: NOW,
       ownLogKeyHex: OWN,
       admittedLogKeysHex: [OWN, ...PEERS],
-      hostAdmission: { remoteLogsAdmitted: 3, scopesMeasured: 101 },
+      hostAdmission: { remoteLogsAdmitted: 3, scopesMeasured: 80 },
     });
     expect(v.hostWideAdmissionBreach).toBeNull();
     expect(v.breaches[0]).toContain('LOCAL FOLD SUSPECT');
@@ -1002,7 +1005,7 @@ describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935
     const fresh = [log(OWN, 0), ...PEERS.map((k) => log(k, 0))];
     const v = judgePeerFederationSilence(fresh, {
       ...scopeAdmitsNothing,
-      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 80 },
     });
     expect(v.hostAdmitsAnyRemoteLog).toBe(false);
     expect(v.hostWideAdmissionBreach).toBeNull();
@@ -1012,7 +1015,7 @@ describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935
   it('reports the host reading on the unmeasured branches too, so it is never a silent gap', () => {
     const ownOnly = judgePeerFederationSilence([log(OWN, 0)], {
       ...scopeAdmitsNothing,
-      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 80 },
     });
     expect(ownOnly.unmeasuredReason).toBe('own-log-only');
     expect(ownOnly.hostAdmitsAnyRemoteLog).toBe(false);
@@ -1023,7 +1026,7 @@ describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935
     const dormant = judgePeerFederationSilence(hostA(), {
       ...scopeAdmitsNothing,
       localActivityAgeMs: SLO + 1,
-      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 80 },
     });
     expect(dormant.unmeasuredReason).toBe('scope-dormant');
     expect(dormant.hostAdmitsAnyRemoteLog).toBe(false);

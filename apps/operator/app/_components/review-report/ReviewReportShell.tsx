@@ -27,16 +27,29 @@
  * live (selection self-intersects with what is still pending).
  */
 import { useMemo, useState, type ReactNode } from 'react';
+import { Check, ChevronDown, ShieldCheck } from 'lucide-react';
+import { Button } from '../../harness/Button';
 import { Checkbox } from '../../harness/Checkbox';
 import './review-report.css';
 
 export type ReviewRowConfidence = 'provable' | 'recommended';
 export type ReviewRowStatus = 'pending' | 'applied' | 'dismissed';
 
+export interface ReviewReportTransition {
+  from: string;
+  to: string;
+}
+
 export interface ReviewReportRow {
   /** Stable row id (e.g. the scanner's findingId) — the unit Apply targets. */
   id: string;
   title: string;
+  /** Compact Option-B identity cells. Plans use plan slug + P-NNN/plan;
+   *  Inbox uses source kind + recommended action. */
+  sourceLabel?: string;
+  referenceLabel?: string;
+  /** Structured before → after state change. Omitted for action-oriented rows. */
+  transition?: ReviewReportTransition;
   /** Evidence lines rendered in the evidence column (already human-readable). */
   evidence: string[];
   confidence: ReviewRowConfidence;
@@ -60,6 +73,8 @@ export interface ReviewReportGroup {
 
 export interface ReviewReportShellProps {
   title: string;
+  /** Flow-specific symbol inside the shared Option-B title tile. */
+  icon?: ReactNode;
   subtitle?: ReactNode;
   groups: ReviewReportGroup[];
   /** Initial selection: 'pending' (default — every selectable row), 'none', or
@@ -101,6 +116,7 @@ const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
 
 export default function ReviewReportShell({
   title,
+  icon,
   subtitle,
   groups,
   defaultSelected = 'pending',
@@ -162,29 +178,38 @@ export default function ReviewReportShell({
   return (
     <section className="review-report" data-testid="review-report">
       <header className="review-report__head">
-        <div className="review-report__head-text">
-          <h2 className="review-report__title">{title}</h2>
-          {subtitle != null && <div className="review-report__subtitle">{subtitle}</div>}
+        <div className="review-report__identity">
+          {icon != null ? (
+            <span className="review-report__icon" data-testid="review-report-icon" aria-hidden="true">
+              {icon}
+            </span>
+          ) : null}
+          <div className="review-report__head-text">
+            <h2 className="review-report__title">{title}</h2>
+            {subtitle != null && <div className="review-report__subtitle">{subtitle}</div>}
+          </div>
         </div>
         <div className="review-report__actions">
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="lg"
             className="review-report__apply"
             data-testid="review-report-apply"
             disabled={busy || liveSelected.size === 0}
             onClick={() => onApply([...liveSelected].sort())}
           >
+            <Check size={14} aria-hidden="true" />
             {applyLabel} ({liveSelected.size})
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            size="lg"
             className="review-report__dismiss"
             data-testid="review-report-dismiss"
             disabled={busy}
             onClick={onDismiss}
           >
             {dismissLabel}
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -212,18 +237,23 @@ export default function ReviewReportShell({
                 aria-expanded={!isCollapsed}
                 onClick={() => toggleCollapsed(group.id)}
               >
-                <span className={`review-report__chevron${isCollapsed ? ' review-report__chevron--closed' : ''}`} aria-hidden>
-                  ▾
-                </span>
                 <span className="review-report__group-title">{group.title}</span>
-                <span className="review-report__group-count">
-                  {selCount}/{groupPending.length} selected · {group.rows.length} finding{group.rows.length === 1 ? '' : 's'}
+                <span className="review-report__group-count" data-testid={`review-group-count-${group.id}`}>
+                  {group.rows.length}
                 </span>
+                {group.description != null ? (
+                  <span className="review-report__group-desc">{group.description}</span>
+                ) : null}
+                <span className="review-report__group-selection">
+                  {selCount}/{groupPending.length} selected
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={`review-report__chevron${isCollapsed ? ' review-report__chevron--closed' : ''}`}
+                  aria-hidden="true"
+                />
               </button>
             </header>
-            {group.description != null && !isCollapsed && (
-              <p className="review-report__group-desc">{group.description}</p>
-            )}
             {!isCollapsed && (
               <ul className="review-report__rows">
                 {group.rows.map((row) => {
@@ -255,11 +285,27 @@ export default function ReviewReportShell({
                           </span>
                         )}
                       </span>
-                      <span className="review-report__row-main">
-                        <span className="review-report__row-title">{row.title}</span>
-                        {row.detail != null && <span className="review-report__row-detail">{row.detail}</span>}
+                      <span className="review-report__row-identity">
+                        {row.sourceLabel != null ? (
+                          <span className="review-report__source-chip">{row.sourceLabel}</span>
+                        ) : null}
+                        {row.referenceLabel != null ? (
+                          <span className="review-report__reference">{row.referenceLabel}</span>
+                        ) : null}
+                      </span>
+                      <span className="review-report__row-change">
+                        {row.transition != null ? (
+                          <span className="review-report__transition" data-testid={`review-row-transition-${row.id}`}>
+                            <span className="review-report__state review-report__state--from">{row.transition.from}</span>
+                            <span className="review-report__transition-arrow" aria-hidden="true">→</span>
+                            <span className="review-report__state review-report__state--to">{row.transition.to}</span>
+                          </span>
+                        ) : (
+                          <span className="review-report__row-title">{row.title}</span>
+                        )}
                       </span>
                       <span className="review-report__row-evidence">
+                        {row.transition != null ? <span className="review-report__row-title">{row.title}</span> : null}
                         {row.evidence.map((line, i) => (
                           <span key={i} className="review-report__evidence-item">
                             {line}
@@ -272,6 +318,9 @@ export default function ReviewReportShell({
                       >
                         {CONFIDENCE_LABEL[row.confidence]}
                       </span>
+                      {row.detail != null ? (
+                        <span className="review-report__row-detail">{row.detail}</span>
+                      ) : null}
                     </li>
                   );
                 })}
@@ -280,7 +329,12 @@ export default function ReviewReportShell({
           </section>
         );
       })}
-      {footer != null ? <footer className="review-report__footer">{footer}</footer> : null}
+      {footer != null ? (
+        <footer className="review-report__footer">
+          <ShieldCheck size={15} aria-hidden="true" />
+          <span>{footer}</span>
+        </footer>
+      ) : null}
     </section>
   );
 }

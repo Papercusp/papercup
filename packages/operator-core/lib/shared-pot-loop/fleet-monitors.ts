@@ -883,7 +883,7 @@ async function readAndJudgePeerSilence(
   // against a host reading from a different snapshot is precisely the
   // cross-population conflation this monitor keeps being bitten by. One read, one
   // snapshot, both readings. `perLog` is one row per admitted log per scope
-  // (~101 rows on this host), so the widened read stays trivial.
+  // (80 rows for this workspace on this host), so the widened read stays trivial.
   const allAdmittedRows = await sql<
     Array<{ key_hex: string; is_own: boolean | null; harness_slug: string }>
   >`

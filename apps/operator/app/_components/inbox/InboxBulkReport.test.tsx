@@ -140,6 +140,8 @@ describe("buildInboxBulkReviewGroups", () => {
       status: "pending",
       selectable: true,
       confidence: "recommended",
+      sourceLabel: "Message",
+      referenceLabel: "Acknowledge",
     });
     expect(ack?.rows.find((row) => row.id === "b")).toMatchObject({
       status: "applied",

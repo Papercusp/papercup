@@ -145,6 +145,11 @@ describe("buildPlanCleanupReviewGroups", () => {
       "blocker",
       "archive",
     ]);
+    expect(rows.find((row) => row.id === "flip")).toMatchObject({
+      sourceLabel: "p-one",
+      referenceLabel: "P-001",
+      transition: { from: "todo", to: "done" },
+    });
     expect(rows.find((row) => row.id === "now")?.selectable).toBe(false);
     expect(rows.find((row) => row.id === "claim")?.selectable).toBe(false);
   });

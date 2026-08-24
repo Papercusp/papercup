@@ -17,7 +17,20 @@
  * Pure: returns the spawn spec; the caller spawns with `{ ...process.env, ...env }`
  * so these explicit gym overrides win (dotenv.config() does not override set vars).
  */
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
+
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import { isPinnedCommit } from './clone';
+
+/**
+ * Canonical model map for every built-in role the dedicated Gym operator can
+ * spawn. Deriving this from the runtime role registry makes newly added roles
+ * inherit the learning policy automatically instead of falling through to a
+ * heterogeneous committed floor or the agent command's implicit default.
+ */
+export const CANONICAL_GYM_AGENT_MODELS: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(AGENT_ROLES.map((role) => [role, LEARNING_MODEL_SPEC])),
+);
 
 export interface GymOperatorBootConfig {
   /** Absolute path to the pinned papercup checkout (worktree/clone @ harnessCommit). */
@@ -38,7 +51,11 @@ export interface GymOperatorBootConfig {
   bindHost?: string;
   /** Optional pin of the agent CLI command (AGENT_CMD). */
   agentCmd?: string;
-  /** Optional pin of per-role models (AGENT_MODELS json). */
+  /**
+   * Optional explicit per-role map. Real Gym runs omit this and receive
+   * CANONICAL_GYM_AGENT_MODELS; zero-LLM fixtures pass `{}` so their injected
+   * fake command is not backend-swapped by a Codex-shaped model spec.
+   */
   agentModels?: Record<string, string>;
   /** Optional explicit override of the gym-operator's own per-turn invoke wall-clock timeout
    *  (PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS); default `gymWorkerInvokeTimeoutMs()` (below). */
@@ -193,13 +210,12 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
   };
 
   if (cfg.agentCmd) env.AGENT_CMD = cfg.agentCmd;
-  // ALWAYS pin per-role models (default `{}` = no overrides → every role runs AGENT_CMD's
-  // model). This SEALS the gym from the launcher's inherited AGENT_MODELS — e.g. the dev
-  // box's `.env.local` carries `{"worker":"opus"}` for the live fleet, which would otherwise
-  // leak in and silently run the gym worker on opus (inflated cost, and a different model
-  // per machine → non-reproducible, violating D-016). Callers pin a stronger worker
-  // explicitly via cfg.agentModels when they want production-fidelity.
-  env.AGENT_MODELS = JSON.stringify(cfg.agentModels ?? {});
+  // ALWAYS pin per-role models. Real Gym runs default EVERY built-in spawnable
+  // role to the canonical learning model, sealing them both from the launcher's
+  // inherited AGENT_MODELS and from heterogeneous committed role floors. A newly
+  // registered role is covered automatically through AGENT_ROLES. Zero-LLM
+  // fixtures explicitly pass `{}` so their injected Node command remains fake.
+  env.AGENT_MODELS = JSON.stringify(cfg.agentModels ?? CANONICAL_GYM_AGENT_MODELS);
 
   return {
     command: 'npx',

@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   buildGymOperatorBootSpec,
   scrubLauncherClaudeSessionEnv,
@@ -112,20 +113,24 @@ describe('buildGymOperatorBootSpec', () => {
     expect(env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS).toBe('123000');
   });
 
-  it('sets AGENT_CMD only when provided; ALWAYS pins AGENT_MODELS to seal the inherited env', () => {
+  it('sets AGENT_CMD only when provided and pins every built-in role to canonical Sol xhigh', () => {
     // AGENT_CMD: caller-provided (gym callers always pass it).
     expect(buildGymOperatorBootSpec(base).env.AGENT_CMD).toBeUndefined();
-    // AGENT_MODELS: always pinned — default '{}' so the launcher's inherited AGENT_MODELS
-    // (e.g. .env.local's {worker:opus}) can't leak in and run the gym worker on a different
-    // model than declared (reproducibility, D-016 + bounded cost).
-    expect(JSON.parse(buildGymOperatorBootSpec(base).env.AGENT_MODELS)).toEqual({});
+    // AGENT_MODELS: always pinned so neither inherited overrides nor heterogeneous
+    // committed role floors can move a Gym-spawned role off the learning policy.
+    const defaults = JSON.parse(buildGymOperatorBootSpec(base).env.AGENT_MODELS) as Record<string, string>;
+    expect(Object.keys(defaults).sort()).toEqual([...AGENT_ROLES].sort());
+    expect(new Set(Object.values(defaults))).toEqual(new Set(['gpt-5.6-sol:xhigh']));
+
+    // Zero-LLM fixtures can explicitly suppress model resolution so a Codex-shaped
+    // spec does not backend-swap their injected Node command.
     const pinned = buildGymOperatorBootSpec({
       ...base,
-      agentCmd: 'claude -p',
-      agentModels: { worker: 'claude-sonnet-4-6' },
+      agentCmd: 'node fake-agent.js',
+      agentModels: {},
     });
-    expect(pinned.env.AGENT_CMD).toBe('claude -p');
-    expect(JSON.parse(pinned.env.AGENT_MODELS)).toEqual({ worker: 'claude-sonnet-4-6' });
+    expect(pinned.env.AGENT_CMD).toBe('node fake-agent.js');
+    expect(JSON.parse(pinned.env.AGENT_MODELS)).toEqual({});
   });
 });
 

@@ -63,7 +63,10 @@ describe('SuTarget Codex Responses tool loop', () => {
       dispatchOverride: { override: dispatch } as never,
     });
 
-    const result = await session.send({ messages: [{ role: 'user', content: 'Read x.' }] });
+    const result = await session.send({
+      trigger: 'user_message',
+      messages: [{ role: 'user', content: 'Read x.' }],
+    });
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(bodies[0]).toMatchObject({

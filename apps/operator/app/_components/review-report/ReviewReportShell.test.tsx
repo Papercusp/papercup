@@ -21,7 +21,10 @@ function groupsFixture(): ReviewReportGroup[] {
       rows: [
         {
           id: 'f1',
-          title: 'my-plan#P-001 → done',
+          title: 'Index the finished work',
+          sourceLabel: 'my-plan',
+          referenceLabel: 'P-001',
+          transition: { from: 'wip', to: 'done' },
           evidence: ['WI-100 done; completion recorded'],
           confidence: 'provable',
         },
@@ -61,6 +64,7 @@ function renderShell(over: Partial<Parameters<typeof ReviewReportShell>[0]> = {}
   render(
     <ReviewReportShell
       title="Plan clean-up report"
+      icon={<span>✦</span>}
       subtitle="run #7"
       groups={groupsFixture()}
       onApply={onApply}
@@ -79,9 +83,14 @@ describe('rendering', () => {
   it('renders title, subtitle, groups, rows, evidence and confidence flags', () => {
     renderShell();
     expect(screen.getByText('Plan clean-up report')).toBeTruthy();
+    expect(screen.getByTestId('review-report-icon')).toBeTruthy();
     expect(screen.getByText('run #7')).toBeTruthy();
     expect(screen.getByText('Flip to done')).toBeTruthy();
     expect(screen.getByText('WI-100 done; completion recorded')).toBeTruthy();
+    expect(screen.getByText('my-plan')).toBeTruthy();
+    expect(screen.getByText('P-001')).toBeTruthy();
+    expect(screen.getByTestId('review-row-transition-f1').textContent).toContain('wip→done');
+    expect(applyBtn().className).toContain('pc-btn');
     expect(screen.getByTestId('review-row-conf-f1').textContent).toBe('provable');
     expect(screen.getByTestId('review-row-conf-f2').textContent).toBe('recommended');
   });

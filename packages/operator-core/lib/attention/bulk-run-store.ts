@@ -31,6 +31,11 @@ import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
+import type {
+  BulkResolverCarryMode,
+  LaunchAgentBackend,
+  ModelEffort,
+} from '../agent-config-constants';
 
 /** Lifecycle of a run. `review` means the agent is done and the owner has
  *  recommendations waiting; `complete` means nothing is left to act on. */

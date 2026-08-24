@@ -220,6 +220,28 @@ async function prodDiscoverGrader(
 
 /** Prod wake for an assigned grader (subscribe + ping + wake). Injected as
  * `deps.notifyAssigned` in tests. */
+export function buildAssignedAcceptanceGraderBrief(
+  planSlug: string,
+  harnessSlug: string | null,
+  rubricId: string,
+): string {
+  const planRead = harnessSlug
+    ? `plans:get { slug:${JSON.stringify(planSlug)}, harness:${JSON.stringify(harnessSlug)} }`
+    : `plans:get { slug:${JSON.stringify(planSlug)} }`;
+  const targetHive = harnessSlug ? `, targetHive:${JSON.stringify(harnessSlug)}` : '';
+  return (
+    `The relevance router selected you to grade plan '${planSlug}' — your transcript history matched the ` +
+    `plan + rubric above the precision floor and you are outside its implementer/consult-participant ` +
+    `exclusion set (D-009 independence). Because your session may be in a different hive, keep the plan ` +
+    `harness explicit: read the plan (${planRead}) + the acceptance rubric '${rubricId}' + the completion ` +
+    `evidence, then emit ONE complete scorecard: ` +
+    `scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
+    `with concrete evidence per rating. The targetHive makes deterministic checks run against the subject ` +
+    `tree rather than the grader's checkout. The verdict is YOURS — consult if you need to, but the grade ` +
+    `is not delegable.`
+  );
+}
+
 async function prodNotifyAssignedGrader(
   planSlug: string,
   harnessSlug: string | null,
@@ -236,13 +258,7 @@ async function prodNotifyAssignedGrader(
     addressees: [graderOwnerId],
     objectRef: { kind: 'plan', ref: planSlug },
     summary: `You are the ASSIGNED acceptance grader for plan ${planSlug} (rubric ${rubricId})`,
-    body:
-      `The relevance router selected you to grade plan '${planSlug}' — your transcript history matched the ` +
-      `plan + rubric above the precision floor and you are outside its implementer/consult-participant ` +
-      `exclusion set (D-009 independence). Grade it: read the plan (plans:get { slug:'${planSlug}' }) + the ` +
-      `acceptance rubric '${rubricId}' + the completion evidence, then emit ONE complete scorecard: ` +
-      `scorecards:emit { rubricRef:'${rubricId}', ratings:{ <every criterion key> } } with concrete ` +
-      `evidence per rating. The verdict is YOURS — consult if you need to, but the grade is not delegable.`,
+    body: buildAssignedAcceptanceGraderBrief(planSlug, harnessSlug, rubricId),
     planSlug,
     ...(harnessSlug ? { harnessSlug } : {}),
     wake: true,

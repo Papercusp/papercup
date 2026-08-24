@@ -97,6 +97,7 @@ async function main(): Promise<void> {
       honoPort: PORT,
       workspaceId: WS,
       agentCmd: `node ${FAKE_AGENT}`,
+      agentModels: {},
     });
     logFd = openSync(opLogPath, 'w');
     log(`booting gym-operator on :${PORT} (log → ${opLogPath}) …`);

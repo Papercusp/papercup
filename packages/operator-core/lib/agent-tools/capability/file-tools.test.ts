@@ -71,7 +71,10 @@ describe('capability:read', () => {
   it('rejects raw text mode mixed with exact byte pages', async () => {
     const f = join(DIR, 'r-raw-mixed.txt');
     writeFileSync(f, 'alpha\n');
-    const r = (await readTool.handler!({ file_path: f, raw: true, byte_offset: 0, byte_limit: 32 }, ctx)) as {
+    const r = (await readTool.handler!(
+      { file_path: f, raw: true, byte_offset: 0, byte_limit: 32 } as never,
+      ctx,
+    )) as {
       content: Array<{ text: string }>;
       isError?: boolean;
     };
@@ -316,12 +319,15 @@ describe('capability:read', () => {
 
     const f = join(DIR, 'evidence-mixed-window.json');
     writeFileSync(f, '{}');
-    const mixed = (await readTool.handler!({
-      file_path: f,
-      evidence_class: 'event',
-      byte_offset: 0,
-      byte_limit: 32,
-    }, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+    const mixed = (await readTool.handler!(
+      {
+        file_path: f,
+        evidence_class: 'event',
+        byte_offset: 0,
+        byte_limit: 32,
+      } as never,
+      ctx,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
     expect(mixed.isError).toBe(true);
     expect(parse(mixed).reason).toBe('mixed_window_modes');
   });
@@ -338,19 +344,22 @@ describe('capability:read', () => {
   it('rejects incomplete or mixed byte windows', async () => {
     const f = join(DIR, 'r-byte-invalid.txt');
     writeFileSync(f, 'hello');
-    const incomplete = (await readTool.handler!({ file_path: f, byte_offset: 0 }, ctx)) as {
+    const incomplete = (await readTool.handler!({ file_path: f, byte_offset: 0 } as never, ctx)) as {
       content: Array<{ text: string }>;
       isError?: boolean;
     };
     expect(incomplete.isError).toBe(true);
     expect(parse(incomplete).reason).toBe('invalid_byte_window');
 
-    const mixed = (await readTool.handler!({
-      file_path: f,
-      byte_offset: 0,
-      byte_limit: 4,
-      offset: 1,
-    }, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+    const mixed = (await readTool.handler!(
+      {
+        file_path: f,
+        byte_offset: 0,
+        byte_limit: 4,
+        offset: 1,
+      } as never,
+      ctx,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
     expect(mixed.isError).toBe(true);
     expect(parse(mixed).reason).toBe('mixed_window_modes');
   });

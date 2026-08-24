@@ -399,6 +399,7 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
       workspaceId: WS,
       autoloopScope: SLUG,
       agentCmd: FAKE ? `node ${FAKE_WAKE_AGENT}` : REAL_AGENT_CMD,
+      agentModels: FAKE ? {} : undefined,
     });
     logFd = openSync(opLogPath, 'w');
     log(`booting gym-operator on :${PORT} (mode=${FAKE ? 'fake' : 'real'}, autoloop=${SLUG}, log → ${opLogPath}) …`);
