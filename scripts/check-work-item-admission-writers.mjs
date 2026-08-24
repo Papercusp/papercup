@@ -42,8 +42,8 @@
  */
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
-import { readFileSync, realpathSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { readFileSync } from 'node:fs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -273,11 +273,4 @@ function main() {
   process.exitCode = 1;
 }
 
-const invokedDirectly = (() => {
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(process.argv[1] ?? '')).href;
-  } catch {
-    return false;
-  }
-})();
-if (invokedDirectly) main();
+if (isCliEntry(import.meta.url)) main();

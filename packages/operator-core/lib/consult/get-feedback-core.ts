@@ -221,7 +221,7 @@ export interface GetFeedbackResult {
     attempted: boolean;
     /** Durable wake deliveries queued; this does not prove a turn started. */
     queued: number;
-    /** Legacy queue-count alias; use `pickupConfirmed` for turn execution. */
+    /** Execution-confirmed turn pickups; remains 0 until the reach seam proves pickup. */
     woke: number;
     /** Whether a later execution-confirming handshake proved turn pickup. */
     pickupConfirmed: boolean;
@@ -842,11 +842,13 @@ export async function getFeedbackCore(
             `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
             `consult:decline { reason } if it's not your area; consult:close { outcome } when settled. Untyped conversations:post is refused.`,
     });
-    queued = r.queued ?? r.woke ?? 0;
-    // `woke` is retained as the legacy queue-count alias. It must never be
-    // read as proof that the recipient's turn actually started.
-    woke = r.woke ?? queued;
     pickupConfirmed = r.pickupConfirmed ?? false;
+    queued = r.queued ?? r.woke ?? 0;
+    // Reach bindings before the queued/pickup split exposed only `woke`, but
+    // that value was always the durable queue count. Keep accepting it as the
+    // delivery fallback while making this result's `woke` field execution-
+    // truthful: a queued wake is not a started turn.
+    woke = pickupConfirmed ? queued : 0;
 
     // 7b) WI-39852 wake-failed leg: a LIVE-read chosen responder whose wake
     //     reached NOBODY is a false-parked zombie — treat as dead and revive

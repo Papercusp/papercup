@@ -211,7 +211,7 @@ describe('getFeedbackCore — routed', () => {
     expect(r.responder?.ownerId).toBe('agent-a');
     expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-b', score: 0.6, liveness: 'live', via: 'floor' }]);
     expect(r.park_key).toBeNull(); // proceed contract
-    expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 1, pickupConfirmed: false });
+    expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
     expect(r.hint).toContain('turn pickup is not confirmed');
 
     // Conversation: kind consult, addressed to the chosen responder, body carries the sections.
@@ -359,7 +359,7 @@ describe('getFeedbackCore — wake budget REMOVED (consult-min-max-and-rubric-ve
     const r = asOk(await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps));
     expect(r.verdict).toBe('routed');
     expect(r.state).toBe('awaiting_responder');
-    expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 1, pickupConfirmed: false }); // no budget surfaces at all
+    expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false }); // no budget surfaces at all
     expect(r.hint).not.toContain('budget');
     expect(reached).toHaveLength(1);
     const row = await stateRow(r.conversation_id);
