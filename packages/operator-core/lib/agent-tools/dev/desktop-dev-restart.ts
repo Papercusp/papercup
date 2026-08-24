@@ -40,7 +40,9 @@ const REQUIRED_ENV: Readonly<Record<string, string>> = {
 
 const MAX_PARENT_DEPTH = 24;
 const RESPAWN_POLL_MS = 500;
-const RESPAWN_MAX_POLLS = 60;
+// 8s bounded Hono drain + 3s wrapper backoff + a measured ~22s cold tsx boot
+// under gate load still fits below the ~55s MCP transport ceiling (WI-41422).
+const RESPAWN_MAX_POLLS = 90;
 
 export interface DesktopDevProcessMeta {
   pid: number;
