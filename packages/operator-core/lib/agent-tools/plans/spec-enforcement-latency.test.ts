@@ -234,6 +234,46 @@ describe('computeSpecEnforcementLatency — units, distribution and boundedness'
   });
 });
 
+describe('computeSpecEnforcementLatency — falsifiability controls', () => {
+  /**
+   * Nearest-rank percentile, reimplemented here as a CONTROL.
+   *
+   * The repo's mutation-probe guidance for a subject you `import` is to keep a deliberately-
+   * wrong implementation permanently in the test file rather than mutating the shared tree.
+   * These two cases are that control: they show the exact numbers the suite asserts above are
+   * DISCRIMINATING — that a plausible wrong implementation produces a different value and would
+   * therefore be caught. Without them, an assertion like `p50Ms === 20 * MIN` could be passing
+   * because the guard works or because the sample happens to land there either way.
+   */
+  function nearestRank(samples: readonly number[], fraction: number): number | null {
+    if (samples.length === 0) return null;
+    const sorted = [...samples].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1))] ?? null;
+  }
+
+  it('CONTROL: clamping a negative to 0 would move the asserted p50 — so that assertion can fail', () => {
+    // The real subject DROPS the negative, leaving one sample.
+    expect(nearestRank([20 * MIN], 0.5)).toBe(20 * MIN);
+    // A clamping implementation would keep it as a 0-length observation, halving the p50 to 0.
+    expect(nearestRank([0, 20 * MIN], 0.5)).toBe(0);
+    // The two differ ⇒ the negative-duration test above is falsifiable, not incidentally true.
+    expect(nearestRank([20 * MIN], 0.5)).not.toBe(nearestRank([0, 20 * MIN], 0.5));
+  });
+
+  it('CONTROL: folding unattributed into not-enforced would move a count the suite pins', async () => {
+    const ledger = await computeSpecEnforcementLatency(
+      deps({
+        items: [item({ workItemId: 'WI-1', sourcePlanSlug: null, takenAtMs: T0, closedAtMs: T0 + MIN })],
+        plans: [plan({ planSlug: 'unrelated' })],
+      }),
+    );
+    // The wrong implementation would report not-enforced=1/unattributed=0; the right one the
+    // reverse. Pinning BOTH sides means neither can drift without a failure.
+    expect(ledger.rollup.byEnforcement.unattributed.items).toBe(1);
+    expect(ledger.rollup.byEnforcement['not-enforced'].items).toBe(0);
+  });
+});
+
 describe('computeSpecEnforcementLatency — the undeliverable measure is declared, not approximated', () => {
   it('states claim-to-first-checkpoint as not derivable rather than aliasing last-progress to it', async () => {
     const ledger = await computeSpecEnforcementLatency(deps({ items: [] }));

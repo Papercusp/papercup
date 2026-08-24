@@ -53,6 +53,9 @@ import {
   type PlanAdoptionRow,
   type ReconciliationLane,
 } from './spec-enforcement-eligibility';
+// The SAME plan population the reconciliation ledger censuses. Reused rather than re-queried so
+// the two surfaces cannot disagree about which plans are enforcing.
+import { defaultListPlanAdoption } from './spec-reconciliation';
 
 /** Which record established an item's first-claim instant. Never merged into one number. */
 export type ClaimInstantSource =
@@ -174,15 +177,15 @@ export interface SpecEnforcementLatencyLedger {
 }
 
 export interface SpecEnforcementLatencyDeps {
-  listWorkItemLifecycle: (input: {
+  listWorkItemLifecycle?: (input: {
     harnessSlug?: string;
     limit: number;
   }) => Promise<WorkItemLifecycleRow[]>;
-  listFirstClaims: (input: {
+  listFirstClaims?: (input: {
     harnessSlug?: string;
     workItemIds: string[];
   }) => Promise<FirstClaimRow[]>;
-  listPlanAdoption: (input: { harnessSlug?: string; limit: number }) => Promise<PlanAdoptionRow[]>;
+  listPlanAdoption?: (input: { harnessSlug?: string; limit: number }) => Promise<PlanAdoptionRow[]>;
 }
 
 export const LATENCY_ITEM_LIMIT = 20_000;
@@ -236,8 +239,11 @@ export async function computeSpecEnforcementLatency(
   opts: { harnessSlug?: string; itemLimit?: number } = {},
 ): Promise<SpecEnforcementLatencyLedger> {
   const itemLimit = opts.itemLimit ?? LATENCY_ITEM_LIMIT;
+  const listWorkItemLifecycle = deps.listWorkItemLifecycle ?? defaultListWorkItemLifecycle;
+  const listFirstClaims = deps.listFirstClaims ?? defaultListFirstClaims;
+  const listPlanAdoption = deps.listPlanAdoption ?? defaultListPlanAdoption;
 
-  const items = await deps.listWorkItemLifecycle({ harnessSlug: opts.harnessSlug, limit: itemLimit });
+  const items = await listWorkItemLifecycle({ harnessSlug: opts.harnessSlug, limit: itemLimit });
   const truncatedByItemLimit = items.length >= itemLimit;
 
   // Exclusion 1: turn-end notes are not claimed work. Counted, never silently dropped.
@@ -245,11 +251,11 @@ export async function computeSpecEnforcementLatency(
   const claimable = items.filter((r) => r.lane !== 'observation');
 
   const [firstClaims, planRows] = await Promise.all([
-    deps.listFirstClaims({
+    listFirstClaims({
       harnessSlug: opts.harnessSlug,
       workItemIds: claimable.map((r) => r.workItemId),
     }),
-    deps.listPlanAdoption({ harnessSlug: opts.harnessSlug, limit: LATENCY_PLAN_LIMIT }),
+    listPlanAdoption({ harnessSlug: opts.harnessSlug, limit: LATENCY_PLAN_LIMIT }),
   ]);
 
   const firstClaimByItem = new Map(firstClaims.map((c) => [c.workItemId, c.firstWonAtMs]));
