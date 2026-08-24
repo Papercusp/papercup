@@ -53,27 +53,79 @@ dependency_generation_enumerate_node_modules() {
 # aggregate is sampled before and after publication, so a concurrent install or
 # test mutation cannot authorize a mixed generation.
 dependency_generation_tree_fingerprint() {
-  local root="$1"
+  local root="$1" local_path stat_record link_target
   [ -d "$root" ] || return 1
   (
     cd "$root" || exit 1
-    LC_ALL=C find . -xdev -mindepth 1 \
-      ! -path './.papercusp-isolated-snapshot' \
-      ! -path './.papercusp-dependency-generation' \
-      -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \
-      | dependency_generation_sha256
+    if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
+      && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
+      LC_ALL=C find . -xdev -mindepth 1 \
+        ! -path './.papercusp-isolated-snapshot' \
+        ! -path './.papercusp-dependency-generation' \
+        -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \
+        | dependency_generation_sha256
+    else
+      # BSD/macOS find has no -printf. Keep the same identity classes with a
+      # portable stat record per path. It is slower, but correctness-preserving.
+      LC_ALL=C find . -xdev -mindepth 1 \
+        ! -path './.papercusp-isolated-snapshot' \
+        ! -path './.papercusp-dependency-generation' -print0 \
+        | while IFS= read -r -d '' path; do
+            local_path="${path#./}"
+            if stat_record="$(stat -c '%F|%a|%U|%G|%s|%Y|%i' "$path" 2>/dev/null)"; then
+              :
+            else
+              stat_record="$(stat -f '%HT|%Lp|%Su|%Sg|%z|%m|%i' "$path")" || exit 1
+            fi
+            link_target=''
+            [ -L "$path" ] && link_target="$(readlink "$path")"
+            printf '%s\0%s\0%s\0' "$local_path" "$stat_record" "$link_target"
+          done \
+        | dependency_generation_sha256
+    fi
   )
 }
 
-dependency_generation_set_fingerprint() {
+dependency_generation_set_manifest() {
   local root="$1" nm rel fingerprint
   (
     while IFS= read -r nm; do
       rel="${nm#"$root"/}"
       fingerprint="$(dependency_generation_tree_fingerprint "$nm")" || exit 1
-      printf '%s\0%s\0' "$rel" "$fingerprint"
+      printf '%s\t%s\n' "$rel" "$fingerprint"
     done < <(dependency_generation_enumerate_node_modules "$root")
-  ) | dependency_generation_sha256
+  ) | LC_ALL=C sort
+}
+
+dependency_generation_manifest_fingerprint() {
+  local manifest="$1"
+  dependency_generation_sha256 < "$manifest"
+}
+
+dependency_generation_set_fingerprint() {
+  local root="$1"
+  dependency_generation_set_manifest "$root" | dependency_generation_sha256
+}
+
+dependency_generation_log_manifest_delta() {
+  local before="$1" after="$2"
+  awk -F '\t' '
+    NR == FNR { old[$1] = $2; next }
+    {
+      seen[$1] = 1
+      if (!($1 in old)) {
+        if (shown++ < 20) print "[dependency-generation] changed input: " $1 " (added)" > "/dev/stderr"
+      } else if (old[$1] != $2) {
+        if (shown++ < 20) print "[dependency-generation] changed input: " $1 " (metadata fingerprint changed)" > "/dev/stderr"
+      }
+    }
+    END {
+      for (path in old) {
+        if (!(path in seen) && shown++ < 20)
+          print "[dependency-generation] changed input: " path " (removed)" > "/dev/stderr"
+      }
+    }
+  ' "$before" "$after"
 }
 
 dependency_generation_read_field() {
@@ -95,6 +147,14 @@ dependency_generation_is_valid() {
   [ -n "$actual_snapshot" ] && [ "$actual_snapshot" = "$expected_snapshot" ]
 }
 
+dependency_generation_marker_matches() {
+  local generation="$1" expected_identity="$2"
+  local marker="$generation/.papercusp-dependency-generation"
+  [ -d "$generation/tree" ] && [ -f "$marker" ] || return 1
+  [ "$(dependency_generation_read_field "$marker" identity)" = "$expected_identity" ] \
+    && [ -n "$(dependency_generation_read_field "$marker" snapshot)" ]
+}
+
 dependency_generation_writer_is_live() {
   local marker="$1" expected_host="$2" owner_host owner_pid
   [ -f "$marker" ] || return 1
@@ -107,6 +167,16 @@ dependency_generation_writer_is_live() {
   kill -0 "$owner_pid" 2>/dev/null
 }
 
+dependency_generation_path_is_old() {
+  local path="$1" min_age="${2:-300}" mtime now
+  mtime="$(stat -c '%Y' "$path" 2>/dev/null || stat -f '%m' "$path" 2>/dev/null || true)"
+  case "$mtime" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  now="$(date +%s)"
+  [ $((now - mtime)) -ge "$min_age" ]
+}
+
 # A killed publisher may leave a large writable build tree or the tiny publish
 # lock behind. Reclaim only same-host state whose recorded PID is no longer
 # alive; foreign-host state remains fail-closed. Quarantine a stale lock so its
@@ -117,7 +187,8 @@ dependency_generation_cleanup_abandoned() {
   for build in "$generation_root"/.build-*; do
     [ -d "$build" ] || continue
     marker="$build/.papercusp-generation-writer"
-    if ! dependency_generation_writer_is_live "$marker" "$host"; then
+    if { [ -f "$marker" ] && ! dependency_generation_writer_is_live "$marker" "$host"; } \
+      || { [ ! -f "$marker" ] && dependency_generation_path_is_old "$build"; }; then
       dependency_generation_log "removing abandoned build $(basename "$build")"
       chmod -R u+w "$build" 2>/dev/null || true
       rm -rf -- "$build"
@@ -125,7 +196,9 @@ dependency_generation_cleanup_abandoned() {
   done
 
   lock="$generation_root/.publish-lock"
-  if [ -d "$lock" ] && ! dependency_generation_writer_is_live "$lock/writer" "$host"; then
+  if [ -d "$lock" ] \
+    && { { [ -f "$lock/writer" ] && ! dependency_generation_writer_is_live "$lock/writer" "$host"; } \
+      || { [ ! -f "$lock/writer" ] && dependency_generation_path_is_old "$lock"; }; }; then
     quarantine="$generation_root/.stale-publish-lock.$(date +%s).$$"
     if mv "$lock" "$quarantine" 2>/dev/null; then
       dependency_generation_log "quarantined abandoned publish lock as $(basename "$quarantine")"
@@ -221,19 +294,42 @@ dependency_generation_ensure() {
   local integration_root="$1"
   local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
   local source_before source_after identity generation build tree nm rel snapshot marker
-  local quarantine
+  local quarantine before_manifest after_manifest
   mkdir -p "$generation_root"
   dependency_generation_cleanup_abandoned "$generation_root"
 
-  source_before="$(dependency_generation_set_fingerprint "$integration_root")" || return 1
+  build="$generation_root/.build-pending-$(dependency_generation_host)-$$-$(date +%s)"
+  tree="$build/tree"
+  before_manifest="$build/.source-before"
+  after_manifest="$build/.source-after"
+  mkdir -p "$tree"
+  dependency_generation_write_owner "$build/.papercusp-generation-writer"
+  dependency_generation_set_manifest "$integration_root" > "$before_manifest" || {
+    dependency_generation_remove_build "$build"
+    return 1
+  }
+  source_before="$(dependency_generation_manifest_fingerprint "$before_manifest")" || {
+    dependency_generation_remove_build "$build"
+    return 1
+  }
   identity="v1-$source_before"
   generation="$generation_root/$identity"
   if dependency_generation_is_valid "$generation" "$identity"; then
-    source_after="$(dependency_generation_set_fingerprint "$integration_root")" || return 1
+    dependency_generation_set_manifest "$integration_root" > "$after_manifest" || {
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+    source_after="$(dependency_generation_manifest_fingerprint "$after_manifest")" || {
+      dependency_generation_remove_build "$build"
+      return 1
+    }
     if [ "$source_after" != "$source_before" ]; then
+      dependency_generation_log_manifest_delta "$before_manifest" "$after_manifest"
+      dependency_generation_remove_build "$build"
       dependency_generation_log 'FATAL: live node_modules changed while pinning an existing generation'
       return 75
     fi
+    dependency_generation_remove_build "$build"
     DEPENDENCY_GENERATION_ID="$identity"
     DEPENDENCY_GENERATION_PATH="$generation"
     DEPENDENCY_GENERATION_TREE="$generation/tree"
@@ -242,10 +338,6 @@ dependency_generation_ensure() {
     return 0
   fi
 
-  build="$generation_root/.build-$identity-$(dependency_generation_host)-$$-$(date +%s)"
-  tree="$build/tree"
-  mkdir -p "$tree"
-  dependency_generation_write_owner "$build/.papercusp-generation-writer"
   dependency_generation_log "building $identity from a stable live dependency snapshot"
   while IFS= read -r nm; do
     rel="${nm#"$integration_root"/}"
@@ -258,10 +350,12 @@ dependency_generation_ensure() {
   if [ -n "${DEPENDENCY_GENERATION_AFTER_COPY_HOOK:-}" ]; then
     bash -c "$DEPENDENCY_GENERATION_AFTER_COPY_HOOK"
   fi
-  source_after="$(dependency_generation_set_fingerprint "$integration_root" 2>/dev/null || true)"
+  dependency_generation_set_manifest "$integration_root" > "$after_manifest" 2>/dev/null || true
+  source_after="$(dependency_generation_manifest_fingerprint "$after_manifest" 2>/dev/null || true)"
   if [ -z "$source_after" ] || [ "$source_after" != "$source_before" ]; then
-    dependency_generation_remove_build "$build"
+    dependency_generation_log_manifest_delta "$before_manifest" "$after_manifest"
     dependency_generation_log 'FATAL: live node_modules changed during generation build; refusing a torn snapshot'
+    dependency_generation_remove_build "$build"
     return 75
   fi
   # Freeze file contents before recording the snapshot identity because mode is
@@ -275,13 +369,18 @@ dependency_generation_ensure() {
   marker="$build/.papercusp-dependency-generation"
   printf 'schema=1\nidentity=%s\nsource=%s\nsnapshot=%s\ncreated=%s\n' \
     "$identity" "$source_after" "$snapshot" "$(date +%s)" > "$marker"
-  rm -f -- "$build/.papercusp-generation-writer"
 
   dependency_generation_acquire_publish_lock "$generation_root" || {
     dependency_generation_remove_build "$build"
     return $?
   }
-  if dependency_generation_is_valid "$generation" "$identity"; then
+  # Keep the build-owner marker until the short publish lock is held; otherwise
+  # a concurrent cleanup can mistake this complete-but-not-yet-published tree
+  # for an abandoned build. A generation that appeared since our full validation
+  # was atomically published by a competing builder, so the marker check here is
+  # intentionally O(1) and keeps the publish lock short.
+  rm -f -- "$build/.papercusp-generation-writer"
+  if dependency_generation_marker_matches "$generation" "$identity"; then
     dependency_generation_remove_build "$build"
     DEPENDENCY_GENERATION_REUSED='true'
   else
