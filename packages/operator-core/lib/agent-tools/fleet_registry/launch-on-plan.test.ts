@@ -39,6 +39,8 @@ import launchOnPlan, {
   describeFleetFillOutcome,
   VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
   persistedFleetLaunchProfileConflicts,
+  fleetRouteSwitchConflict,
+  requiresExplicitUnprofiledVisibility,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -86,6 +88,74 @@ describe('persisted fleet launch profile recovery guard (D-004)', () => {
     expect(persistedFleetLaunchProfileConflicts({ members: [{ model: 'gpt-5.6-sol:high' }] }, saved)).toEqual([
       { field: 'members', saved: 'fleet-wide persisted profile', requested: '1 member override(s)' },
     ]);
+  });
+});
+
+describe('launch-spec route + visibility enforcement (EI-21304203620302419)', () => {
+  it('refuses the recovered wrong-fleet shape unless the route switch is explicit', () => {
+    expect(
+      fleetRouteSwitchConflict({
+        currentFleet: 'byoc-alpha-max-2026-08-23',
+        currentRole: 'leader',
+        targetFleet: 'loop-observability-2026-08-24',
+      }),
+    ).toEqual({
+      currentFleet: 'byoc-alpha-max-2026-08-23',
+      currentRole: 'leader',
+      targetFleet: 'loop-observability-2026-08-24',
+    });
+  });
+
+  it('allows same-fleet top-ups, explicit switches, and a separately spawned leader', () => {
+    expect(
+      fleetRouteSwitchConflict({ currentFleet: 'byoc', currentRole: 'leader', targetFleet: 'byoc' }),
+    ).toBeNull();
+    expect(
+      fleetRouteSwitchConflict({
+        currentFleet: 'byoc',
+        currentRole: 'leader',
+        targetFleet: 'other',
+        confirmRouteSwitch: true,
+      }),
+    ).toBeNull();
+    expect(
+      fleetRouteSwitchConflict({ currentFleet: 'byoc', currentRole: 'leader', targetFleet: 'other', leader: 'spawn' }),
+    ).toBeNull();
+  });
+
+  it('requires an explicit visibility choice for an unprofiled local launch', () => {
+    expect(
+      requiresExplicitUnprofiledVisibility({
+        savedSpecFound: false,
+        placement: 'local',
+        count: 5,
+      }),
+    ).toBe(true);
+    expect(
+      requiresExplicitUnprofiledVisibility({ savedSpecFound: false, placement: 'local', headless: true, count: 5 }),
+    ).toBe(false);
+    expect(
+      requiresExplicitUnprofiledVisibility({ savedSpecFound: false, placement: 'local', headless: false, count: 5 }),
+    ).toBe(false);
+  });
+
+  it('preserves saved specs, remote host placement, and explicit mixed member placement', () => {
+    expect(requiresExplicitUnprofiledVisibility({ savedSpecFound: true, count: 5 })).toBe(false);
+    expect(requiresExplicitUnprofiledVisibility({ savedSpecFound: false, placement: 'remote', count: 5 })).toBe(false);
+    expect(
+      requiresExplicitUnprofiledVisibility({
+        savedSpecFound: false,
+        count: 2,
+        members: [{ headless: true }, { headless: false }],
+      }),
+    ).toBe(false);
+    expect(
+      requiresExplicitUnprofiledVisibility({
+        savedSpecFound: false,
+        count: 2,
+        members: [{ headless: true }],
+      }),
+    ).toBe(true);
   });
 });
 
