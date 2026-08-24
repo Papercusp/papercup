@@ -195,12 +195,21 @@ export interface ClaimTimeEnrichmentDelivery {
    */
   failed: ClaimTimeEnrichmentLeg[];
   /**
-   * Approximate serialized size of the enrichment payload in characters — the CONTEXT
-   * SIZE half of the measure. Approximate on purpose: it is the JSON length of what
-   * this port returns, not what any particular surface finally renders, and quoting it
-   * as an exact token cost would be a precision the number does not have.
+   * Serialized size of the enrichment context in characters — the CONTEXT SIZE half of
+   * the measure.
+   *
+   * Named to match `BoundedPriorAttemptBrief.serializedChars` (P-017), which measures
+   * the same quantity one level down, for the prior-attempt leg's own payload. The two
+   * nest rather than compete: that one asks "how big is this brief, and what did it
+   * leave out", this one asks "how big is the whole claim context, and which legs are
+   * in it at all". Using a different name for the same measurement would make them look
+   * like rival numbers.
+   *
+   * ⚠ It is the length of what this PORT returns, not of what any particular surface
+   * finally renders — a surface may drop or reshape legs downstream. Read it as the
+   * cost of the context assembled here, never as a token count.
    */
-  approxChars: number;
+  serializedChars: number;
   /**
    * How to recover what is missing — the DRILL-DOWN half. Present only for `failed`
    * legs, because those are the only omissions that are both unexpected and
@@ -408,26 +417,23 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       // a machine-link-only leg is silent for four items in five. The hint STAMPS which
       // tier matched so a prose-derived guess can never read as a recorded link.
       // Needs an identified work-item — a bare plan-item claim has no row to compare.
-      workItemId
-        ? import('./work-item-plan-item-landed')
-            .then(async (m) => {
-              const hint = await m.getClaimTimePlanItemLanded({
-                workItemId,
-                payload: wi?.payload,
-                planSlug: opts.planSlug,
-                planItemId: opts.planItemId,
-                sourcePlanSlug: wi?.sourcePlanSlug,
-                sourcePlanItemIds: wi?.sourcePlanItemIds,
-                workspaceId,
-              });
-              const warning = m.planItemLandedWarning(hint, workItemId);
-              return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
-            })
-            .catch(() => null)
-        : Promise.resolve(null),
+      runLeg('planItemLanded', Boolean(workItemId), async () => {
+        const m = await import('./work-item-plan-item-landed');
+        const hint = await m.getClaimTimePlanItemLanded({
+          workItemId,
+          payload: wi?.payload,
+          planSlug: opts.planSlug,
+          planItemId: opts.planItemId,
+          sourcePlanSlug: wi?.sourcePlanSlug,
+          sourcePlanItemIds: wi?.sourcePlanItemIds,
+          workspaceId,
+        });
+        const warning = m.planItemLandedWarning(hint, workItemId);
+        return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
+      }),
     ]);
 
-  return {
+  const context = {
     ...(planDecisions ?? {}),
     ...(priorAttemptBrief ?? {}),
     ...(premises ?? {}),
@@ -437,5 +443,63 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     ...(behaviorContract ?? {}),
     ...(pathHintsEntry ?? {}),
     ...(planItemLandedEntry ?? {}),
+  };
+
+  return { ...context, enrichmentDelivery: summarizeDelivery(outcomes, context) };
+}
+
+/**
+ * Fold the per-leg outcomes into the delivery record.
+ *
+ * Iterates {@link CLAIM_TIME_ENRICHMENT_LEGS} rather than the outcome map's own keys,
+ * so a leg that was REGISTERED but never attached (the exact failure the parity guard
+ * exists to catch) reports as `skipped-no-input` instead of silently disappearing from
+ * the census. A delivery record that only lists legs that ran cannot report a missing
+ * leg — which is the one thing it is for.
+ */
+function summarizeDelivery(
+  outcomes: Map<ClaimTimeEnrichmentLeg, ClaimTimeLegOutcome>,
+  context: Record<string, unknown>,
+): ClaimTimeEnrichmentDelivery {
+  const delivered: ClaimTimeEnrichmentLeg[] = [];
+  const omitted: ClaimTimeOmittedLeg[] = [];
+  const failed: ClaimTimeEnrichmentLeg[] = [];
+
+  for (const leg of CLAIM_TIME_ENRICHMENT_LEGS) {
+    const outcome = outcomes.get(leg) ?? 'skipped-no-input';
+    if (outcome === 'delivered') {
+      delivered.push(leg);
+      continue;
+    }
+    omitted.push({ leg, reason: outcome });
+    if (outcome === 'failed') failed.push(leg);
+  }
+
+  // Size of the CONTEXT, deliberately measured before the delivery record is attached:
+  // including the record in its own measurement would report a size no consumer of the
+  // context actually pays, and would change whenever this record's shape changed.
+  let serializedChars = 0;
+  try {
+    serializedChars = JSON.stringify(context)?.length ?? 0;
+  } catch {
+    // A leg returned something non-serializable. The context is still valid to return;
+    // only the SIZE is unmeasurable, and 0 would read as "empty" rather than "unknown".
+    serializedChars = -1;
+  }
+
+  return {
+    delivered,
+    omitted,
+    failed,
+    serializedChars,
+    ...(failed.length > 0
+      ? {
+          recover:
+            `${failed.length} claim-context leg(s) FAILED and their context is missing from this claim: ` +
+            `${failed.join(', ')}. This is a broken read, not an empty one — the claim was not degraded on ` +
+            `purpose. Re-run the claim to retry, and treat any conclusion that depended on the missing leg ` +
+            `(prior attempts, governing decisions, behavior contract) as UNVERIFIED rather than absent.`,
+        }
+      : {}),
   };
 }
