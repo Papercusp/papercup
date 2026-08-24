@@ -27,6 +27,8 @@ vi.mock('./in-workspace-txn', () => ({
 }));
 vi.mock('./su-lock-store', () => ({
   tryRelease: vi.fn(),
+  releaseGranular: vi.fn(),
+  releaseAllGranularForOwner: vi.fn(),
   releaseAllResourcesForOwner: vi.fn(),
   // EI-20405390083792304 root fix: the cross-domain resolve reads the queue.
   readQueue: vi.fn(),
@@ -49,10 +51,17 @@ vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }
 
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
-import { releaseAllResourcesForOwner, readQueue } from './su-lock-store';
+import {
+  releaseAllGranularForOwner,
+  releaseAllResourcesForOwner,
+  releaseGranular,
+  readQueue,
+} from './su-lock-store';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 
 const routeM = vi.mocked(routeFileLockOp);
+const releaseGranularM = vi.mocked(releaseGranular);
+const releaseAllGranularM = vi.mocked(releaseAllGranularForOwner);
 const releaseResourcesM = vi.mocked(releaseAllResourcesForOwner);
 const readQueueM = vi.mocked(readQueue);
 const recordEventM = vi.mocked(recordLockEvent);
@@ -68,6 +77,8 @@ beforeEach(() => {
   routeM.mockImplementation(async (_domain, op) => ({
     value: { released: [`released:${(op.remote?.payload as { lockId?: string } | undefined)?.lockId ?? 'all'}`] },
   }) as never);
+  releaseGranularM.mockResolvedValue({ released: 0 });
+  releaseAllGranularM.mockResolvedValue({ released: 0 });
   releaseResourcesM.mockResolvedValue({ released: 0, exclusiveResources: [], waiters: {} } as never);
   mockResolvedTyped(readQueueM, { active_locks: [], waiting: [] });
 });
@@ -155,12 +166,43 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
       ? { value: { released: ['dom/f.ts'], heldBefore: 1 }, via: 'local-authority' }
       : { value: { released: [`${domain}/f.ts`], heldBefore: 1 }, via: 'local-authority' });
     heldIn(activeLock('a', HIVE), activeLock('b', OTHER), activeLock('c', HIVE));
+    releaseAllGranularM.mockImplementation(async (_tx, domain) => ({
+      released: domain === 'dom' ? 6 : 0,
+    }));
 
     const b = body(await call({ all_mine: true }));
     expect(b.released).toEqual(['dom/f.ts', `${HIVE}/f.ts`, `${OTHER}/f.ts`]);
+    expect(b.granular_released).toBe(6);
+    expect(b.held_before).toBe(9);
     // Each domain is visited once even when the primary domain released rows.
     // This pins the session-death case that originally stranded a second domain.
     expect(routeM.mock.calls.map((c) => c[0])).toEqual(['dom', HIVE, OTHER]);
+    expect(releaseAllGranularM.mock.calls.map((c) => c[1])).toEqual(['dom', HIVE, OTHER]);
+  });
+
+  it('releases a granular UUID through the generic release surface', async () => {
+    routeByDomain(() => ({ value: { released: [], heldBefore: 0 }, via: 'local-authority' }));
+    releaseGranularM.mockResolvedValue({ released: 6 });
+
+    const b = body(await call({ lock_id: LOCK }));
+
+    expect(releaseGranularM).toHaveBeenCalledWith({}, 'dom', 'me', LOCK);
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      lock_id: LOCK,
+      released: [],
+      granular_released: 6,
+      held_before: 6,
+    });
+  });
+
+  it('does not turn a path-filtered classic release into an all-or-nothing granular release', async () => {
+    routeByDomain(() => ({ value: { released: [], heldBefore: 0 }, via: 'local-authority' }));
+    releaseGranularM.mockResolvedValue({ released: 6 });
+
+    await call({ lock_id: LOCK, paths: ['only-this.ts'] });
+
+    expect(releaseGranularM).not.toHaveBeenCalled();
   });
 
   it('reports an honest empty release when the owner holds nothing anywhere', async () => {

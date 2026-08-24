@@ -13,7 +13,7 @@ import { readFileLockIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { tryRelease } from './su-lock-store';
+import { releaseGranular, tryRelease } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
@@ -45,11 +45,11 @@ const lockIdSchema = z.string().uuid({
 export default defineTool({
   name: 'locks:release',
   description:
-    'Release one or many held lock sets. Single: pass lock_id (with optional paths filter), paths to select your active locks across every coordination domain, or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. Fires the grant cascade for waiting agents.',
+    'Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active classic locks across every coordination domain, or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. Fires the classic file-lock grant cascade for waiting agents.',
   guidance: {
     when: 'Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id.',
     notWhen: 'Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.',
-    chaining: 'locks:acquire → edit → locks:release { lock_id } or { lock_ids:[…] }. If the lock id was lost, locks:queue → select your active row\'s lock_id → locks:release { lock_id }. Or: session-end → locks:release { all_mine: true }.',
+    chaining: 'locks:acquire or locks:acquire_granular → work → locks:release { lock_id } or { lock_ids:[…] }. If a classic file-lock id was lost, locks:queue → select your active row\'s lock_id → locks:release { lock_id }. Or: session-end → locks:release { all_mine: true }.',
     seeAlso: [
       'locks:release_granular (for a subtree/directory lock)',
       'locks:release_resource (for a named-resource lock)',
@@ -152,6 +152,7 @@ export default defineTool({
                 ? { cross_domain_released: result.crossDomainReleased }
                 : {}),
               held_before: result.heldBefore,
+              granular_released: result.granularReleased,
               resources_released: result.resourcesReleased,
               owner: ownerId,
               owner_label: ownerLabel,
@@ -173,7 +174,11 @@ export default defineTool({
      * rendered as "you held nothing", which is exactly the false reassurance this
      * change exists to remove; the honest answer there is "unknown".
      */
-    type ReleaseOutcome = { released: string[]; heldBefore: number | null };
+    type ReleaseOutcome = {
+      released: string[];
+      heldBefore: number | null;
+      granularReleased?: number;
+    };
 
     /**
      * EI-20405390083792304 (ROOT FIX). The domains this owner ACTUALLY holds
@@ -307,15 +312,14 @@ export default defineTool({
       const primary = await releaseInDomain(coordinationDomain, lockId, allMine, paths);
       if (primary.released.length > 0) return primary;
 
-      let others: string[];
+      let others: string[] = [];
       try {
         others = await domainsHoldingLocks({ ownerId, lockId, exclude: coordinationDomain });
       } catch {
         // The resolve is a best-effort widening of a release that already
-        // returned. Never fail the caller's release because the lookup faulted.
-        return primary;
+        // returned. Never fail the caller's release because the lookup faulted;
+        // the same-domain granular fallback below can still make progress.
       }
-      if (others.length === 0) return primary;
 
       const released = [...primary.released];
       let heldBefore = primary.heldBefore;
@@ -330,7 +334,28 @@ export default defineTool({
         if (heldBefore !== null && extra.heldBefore !== null) heldBefore += extra.heldBefore;
         else if (extra.heldBefore === null) heldBefore = null;
       }
-      return { released, heldBefore };
+
+      // EI-21334189824335572: lock UUIDs are globally shaped but stored in two
+      // path-lock tables. Once the classic plane has proved it released no
+      // rows, try the owner-checked granular plane in the caller's domain. A
+      // path filter deliberately disables this fallback because granular
+      // lock-sets are all-or-nothing and cannot honor a partial path release.
+      let granularReleased = 0;
+      if (released.length === 0 && lockId && (paths?.length ?? 0) === 0) {
+        const granular = await acquireWithContentionRetry(() =>
+          inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+            releaseGranular(tx, coordinationDomain, ownerId, lockId),
+          ),
+        );
+        granularReleased = granular.released;
+        if (heldBefore !== null) heldBefore += granularReleased;
+      }
+
+      return {
+        released,
+        heldBefore,
+        ...(granularReleased > 0 ? { granularReleased } : {}),
+      };
     }
 
     if (lockIds.length === 0 && hasPathSelector) {
@@ -384,6 +409,9 @@ export default defineTool({
             ok: true as const,
             lock_id: lockId,
             released: result.released,
+            ...(result.granularReleased
+              ? { granular_released: result.granularReleased }
+              : {}),
             ...(crossed.length > 0 ? { cross_domain_released: crossed } : {}),
             // EI-20405390083792304: per-lock, so one dud id in a bulk release is
             // visible instead of averaging into the batch looking successful.

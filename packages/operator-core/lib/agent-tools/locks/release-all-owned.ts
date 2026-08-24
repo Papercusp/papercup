@@ -11,7 +11,11 @@
 import type { AgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
+import {
+  tryRelease,
+  releaseAllResourcesForOwner,
+  releaseAllGranularForOwner,
+} from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
@@ -31,6 +35,7 @@ export interface ReleaseAllOwnedLocksResult {
   released: string[];
   heldBefore: number | null;
   crossDomainReleased: Array<{ coordination_domain: string; released: string[] }>;
+  granularReleased: number;
   resourcesReleased: number;
 }
 
@@ -56,6 +61,7 @@ export async function releaseAllOwnedLocks(params: {
   const released: string[] = [];
   const crossDomainReleased: Array<{ coordination_domain: string; released: string[] }> = [];
   let heldBefore: number | null = 0;
+  let granularReleased = 0;
 
   for (const domain of fileDomains) {
     const localRelease = (): Promise<ReleaseOutcome> =>
@@ -120,6 +126,18 @@ export async function releaseAllOwnedLocks(params: {
     }
   }
 
+  // Granular intention locks share the file-lock coordination domain but live
+  // in their own table. Sweep them on the same all-owned seam so both an
+  // explicit all_mine release and session-end cleanup actually release every
+  // path lock family owned by the session.
+  for (const domain of fileDomains) {
+    const result = await inWorkspaceTxn(domain, ownerId, (tx) =>
+      releaseAllGranularForOwner(tx, domain, ownerId),
+    );
+    granularReleased += result.released;
+  }
+  if (heldBefore !== null) heldBefore += granularReleased;
+
   // Named-resource locks use a bounded set of domains by construction. Include
   // the primary domain as well so a packaged/overridden environment cannot
   // strand an ordinary tree-scoped resource when its candidate set differs.
@@ -141,5 +159,11 @@ export async function releaseAllOwnedLocks(params: {
     }
   }
 
-  return { released, heldBefore, crossDomainReleased, resourcesReleased };
+  return {
+    released,
+    heldBefore,
+    crossDomainReleased,
+    granularReleased,
+    resourcesReleased,
+  };
 }
