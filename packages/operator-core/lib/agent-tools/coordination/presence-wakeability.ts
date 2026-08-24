@@ -142,6 +142,49 @@ export const LIVE_TURN_WINDOW_MS = PRESENCE_STALE_MS;
 export const WAKE_MISS_EVIDENCE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * WARM-IDLE band (EI-21356812816484561): heartbeat fresh, but no turn for this
+ * long. Mirrors `WARM_IDLE_ACTIVITY_STALE_MS` in release-force-guard.ts, which
+ * has run this exact predicate in production since EI-18712366018708650.
+ *
+ * Reported, NEVER fatal. Crossing it does not change `sessionState`: an owner
+ * can be legitimately parked for hours waiting on a peer, and a wake would land
+ * fine. It is surfaced so routers can DE-PRIORITISE rather than mis-declare —
+ * measured 2026-08-24: 107 of 180 heartbeat-fresh rows sat in this band, every
+ * one of them offered to dispatch as an equal-footing `parked` candidate.
+ */
+export const WARM_IDLE_ACTIVITY_MS = 3 * PRESENCE_STALE_MS;
+
+/**
+ * The ACTIVITY-clock dead ceiling (EI-21356812816484561) — the counterpart to
+ * `PRESENCE_DEAD_MS`, which only ever watched the HEARTBEAT clock and so could
+ * see a process that DIED but never one that is alive with a wedged agent loop.
+ *
+ * Deliberately 12× the warm-idle band rather than equal to it, because the two
+ * mistakes cost different amounts. `PRESENCE_DEAD_MS` can be aggressive (30m)
+ * since a cold heartbeat means the process is GONE, so a wrong call costs one
+ * spawn. Here the process is ALIVE: a wrong `ended` spawns a DUPLICATE agent
+ * beside a working one, and it is self-fulfilling — a parked owner's activity
+ * is only old because nobody woke it, and `ended` makes peers stop trying.
+ *
+ * 6h is past any legitimate park this system produces (loop intervals clamp to
+ * 1h; `events:await` timeouts are minutes). It is also the SECOND line of
+ * defence, not the first: `wakeAttemptMiss` already catches the precise
+ * "we woke it and it did not answer" case at any age, so this timer only has
+ * to catch the tail nobody has tried to wake — where declaring `ended` changes
+ * nothing about who was waking it, and only stops fresh routing offering it.
+ * Measured 2026-08-24: 32 of 180 rows, vs 107 at the warm-idle band.
+ */
+export const ACTIVITY_DEAD_MS = 6 * 60 * 60 * 1000;
+
+/** PURE: is the last turn older than the ACTIVITY dead ceiling? Conservative on
+ *  missing data — a null last-activity returns FALSE, because "no activity row
+ *  inside the evidence window" is also what a brand-new session looks like. */
+export function isActivityDead(lastActivityAtMs: number | null | undefined, nowMs: number): boolean {
+  if (lastActivityAtMs == null || !Number.isFinite(lastActivityAtMs)) return false;
+  return nowMs - lastActivityAtMs > ACTIVITY_DEAD_MS;
+}
+
+/**
  * The DEAD ceiling (fleet-liveness-zombie-await-2026-07-07). A heartbeat cold
  * beyond this is authoritative-dead REGARDLESS of a lingering wake-await.
  *
@@ -235,6 +278,13 @@ export function deriveSessionState(input: {
    * check" as `true`.
    */
   wakeAttemptMiss?: boolean;
+  /**
+   * The last turn is older than ACTIVITY_DEAD_MS while the process still
+   * heartbeats (EI-21356812816484561) — a wedged agent loop nobody has tried to
+   * wake. Same conservative contract as `hardStale`: only ever pass an
+   * affirmative measurement, never "we did not look".
+   */
+  activityDead?: boolean;
   /** The owner still has a plan/work-item claim that cleanup must reconcile. */
   claimsHeld?: boolean;
 }): SessionState {
@@ -271,6 +321,11 @@ export function deriveSessionState(input: {
   // the shared oracle behind consult routing, coord:dispatch, fleet:assignments
   // and coord:roster was calling the same owner the best available target.
   if (input.wakeAttemptMiss) return input.claimsHeld ? 'suspect' : 'ended';
+  // EI-21356812816484561: the ACTIVITY-clock counterpart to `hardStale`, for the
+  // owner nobody has tried to wake (so there is no miss to observe) but whose
+  // agent loop has produced nothing for ACTIVITY_DEAD_MS while the process kept
+  // heartbeating. Also placed after `liveTurn`, for the same reason.
+  if (input.activityDead) return input.claimsHeld ? 'suspect' : 'ended';
   if (!input.wakeable) return 'ended';
   if (input.stale) return 'draining';
   return 'parked';
@@ -399,6 +454,9 @@ export async function fetchWakeability(
     out.set(id, {
       wakeable: wakeSet.has(id),
       liveTurn,
+      // EI-21356812816484561: raw age for the ACTIVITY-clock ceilings. Already
+      // selected by the widened query above, so this costs nothing.
+      lastActivityMs: lastAny != null && !Number.isNaN(lastAny) ? lastAny : null,
       // Keep the raw wakeability shape backward-compatible: absence means no
       // confirmed miss, while the oracle still projects an explicit false for
       // callers that need to distinguish "no miss" from a degraded read.

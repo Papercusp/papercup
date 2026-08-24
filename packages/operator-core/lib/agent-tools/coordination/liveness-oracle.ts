@@ -57,6 +57,8 @@ import {
   fetchWakeability,
   deriveSessionState,
   isHardStale,
+  isActivityDead,
+  WARM_IDLE_ACTIVITY_MS,
   LIVE_TURN_WINDOW_MS,
   needsLivenessConfirmation,
   type SessionState,
@@ -111,12 +113,24 @@ export interface LivenessVerdict {
   wakeable: boolean;
   liveTurn: boolean;
   /**
-   * A recent terminal, turn-burning wake delivery was not followed by agent
-   * activity. This is a narrow pickup-miss signal for force-reclaim callers;
-   * it never changes `sessionState` by itself and never treats queued work as
-   * a pickup.
+   * A terminal, turn-burning wake delivery was not followed by agent activity.
+   * Never treats queued work as a pickup.
+   *
+   * ⚠ This DOES now drive `sessionState` (EI-21356139961831796) — it forces
+   * `ended`/`suspect`. It previously did not, which is precisely how a
+   * warm-dead owner (alive process, fresh heartbeat, no turn in 21h) kept
+   * scoring `parked` and being handed fresh work while `release-force-guard`
+   * — the one caller that DID read this field — considered it not live.
    */
   wakeAttemptMiss?: boolean;
+  /**
+   * Heartbeat fresh, but no turn for WARM_IDLE_ACTIVITY_MS
+   * (EI-21356812816484561). REPORTED, never fatal: it does NOT move
+   * `sessionState`, because an owner can legitimately be parked this long and
+   * still wake fine. Read it to DE-PRIORITISE a dispatch candidate, never to
+   * declare one dead — the ceiling that does declare is ACTIVITY_DEAD_MS.
+   */
+  warmIdle?: boolean;
   /** WI-4400: draining/suspect verdicts need a fresh required wake before a
    *  coordinator assumes the owner is dead or alive. */
   confirmLiveness: boolean | null;
@@ -258,6 +272,10 @@ export function deriveVerdict(
       // INTO the state machine — so a session we woke that never took a turn
       // kept scoring `parked`.
       wakeAttemptMiss: w.wakeAttemptMiss === true,
+      // EI-21356812816484561: the ACTIVITY-clock dead ceiling. `hardStale`
+      // above only ever watched the heartbeat, so a live-but-wedged agent loop
+      // was invisible to it.
+      activityDead: isActivityDead(w.lastActivityMs ?? null, nowMs),
       claimsHeld: !!subject.claimsHeld,
     });
     // P-005: the psu-host authority leg — a `parked` verdict for a known
@@ -286,6 +304,16 @@ export function deriveVerdict(
     wakeable: w.wakeable,
     liveTurn: w.liveTurn,
     wakeAttemptMiss: w.wakeAttemptMiss === true,
+    // EI-21356812816484561: heartbeat fresh but no turn for WARM_IDLE_ACTIVITY_MS.
+    // REPORTED, never fatal — it does not move `sessionState`, because a
+    // legitimately parked owner can sit here for hours and still wake fine. It
+    // exists so a router can de-prioritise instead of treating every `parked`
+    // row as an equal-footing candidate (measured: 107 of 180 heartbeat-fresh
+    // rows were in this band, all offered to dispatch identically).
+    warmIdle:
+      w.lastActivityMs != null && Number.isFinite(w.lastActivityMs)
+        ? nowMs - w.lastActivityMs >= WARM_IDLE_ACTIVITY_MS
+        : false,
     confirmLiveness: needsLivenessConfirmation(sessionState),
     heartbeatFresh: !stale,
     // Spread-when-present, never a `?? false` default: an absent self-wake leg
