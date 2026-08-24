@@ -888,7 +888,10 @@ describe('work_items:complete (keyed-array)', () => {
         summary: 'shipped',
         tests: 'pnpm vitest complete.test.ts --run',
         testResult: '1/1 green',
-        filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+        // Keep the authority pass-through fixture independent of the shared tree's
+        // intentionally dirty implementation files: committed-content identity must
+        // match HEAD for this test to exercise a committed result.
+        filesChanged: ['packages/operator-core/package.json'],
         verifiedHow: 'unit',
         addedTests: true,
       },
