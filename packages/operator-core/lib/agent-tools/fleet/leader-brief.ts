@@ -3086,7 +3086,11 @@ export async function buildLeaderBrief(
     // means a member is structurally UNABLE to claim work it was pointed at, and
     // the only remedy is a spec write YOU make (scheduler:set_claim_spec); no
     // amount of member discipline clears it. See `admissionBlocked` for the rows.
-    admission_blocked: admissionBlocked.length,
+    // P-005: this is a monotonic historical counter, not a live fleet gauge. Keep
+    // it structurally separate so before/after readers cannot treat it as a snapshot.
+    cumulative: {
+      admission_blocked: admissionBlocked.length,
+    },
     // P-006: the critical subset whose refused item is an unresolved dependency
     // of work the member already holds. Rows carry the exact dependency + three routes.
     admission_dependency_escapes: admissionDependencyEscapes.length,

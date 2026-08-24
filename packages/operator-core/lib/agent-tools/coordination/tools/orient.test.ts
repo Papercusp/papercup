@@ -1601,7 +1601,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
             fleet: homeFleet,
             summary: (homeBrief as { summary: Record<string, unknown> | null }).summary,
           },
-          { fleet: 'android', summary: { members: 4, stalled: 1, admission_blocked: 2 } },
+          { fleet: 'android', summary: { members: 4, stalled: 1, cumulative: { admission_blocked: 2 } } },
         ]);
 
         const r = await composeOrient(
@@ -1626,7 +1626,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         expect(fleetSummariesFold).toHaveBeenCalledWith('p2p-git', expect.objectContaining({ summary: LEADER_BRIEF_RESULT.summary }));
         expect(r.fleetSummaries).toEqual([
           { fleet: 'p2p-git', summary: LEADER_BRIEF_RESULT.summary },
-          { fleet: 'android', summary: { members: 4, stalled: 1, admission_blocked: 2 } },
+          { fleet: 'android', summary: { members: 4, stalled: 1, cumulative: { admission_blocked: 2 } } },
         ]);
       });
 

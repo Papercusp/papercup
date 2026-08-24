@@ -600,7 +600,7 @@ describe('EI-203907 fleetSummaries shaping', () => {
       summary: {
         members: i + 1,
         stalled: i % 3,
-        admission_blocked: i % 4,
+        cumulative: { admission_blocked: i % 4 },
         reason: 'r'.repeat(500),
       },
       members: Array.from({ length: 20 }, () => ({ id: 'member', blob: 'x'.repeat(500) })),
@@ -620,7 +620,7 @@ describe('EI-203907 fleetSummaries shaping', () => {
     });
     expect(out.fleetSummaries[0]).toMatchObject({
       fleet: 'fleet-0',
-      summary: { members: 1, stalled: 0, admission_blocked: 0 },
+      summary: { members: 1, stalled: 0, cumulative: { admission_blocked: 0 } },
     });
     expect(out.fleetSummaries[0].summary.reason.length).toBeLessThanOrEqual(240);
     expect(out.fleetSummaries[1]).toMatchObject({ unavailable: true });
