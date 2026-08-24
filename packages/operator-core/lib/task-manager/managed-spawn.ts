@@ -478,16 +478,17 @@ function wireExit(
     if (closed) return;
     closed = true;
     void (async () => {
-      const terminal =
-        confined && scopeUnit
+      const abnormal = state !== 'exited' || code !== 0 || Boolean(reason);
+      const candidate =
+        abnormal && confined && scopeUnit
           ? ((await inspectTaskUnitTerminals([scopeUnit])).get(scopeUnit) ?? null)
           : null;
-      await closeTask(taskId, {
-        state,
-        exitCode: code,
-        exitReason: reason,
-        terminalProvenance: terminal,
-      });
+      const terminal =
+        candidate && (candidate.serviceResult || candidate.invocationId || candidate.loadState === 'loaded')
+          ? candidate
+          : null;
+      const outcome = { state, exitCode: code, exitReason: reason };
+      await closeTask(taskId, terminal ? { ...outcome, terminalProvenance: terminal } : outcome);
       if (terminal) await resetFailedTaskUnit(terminal);
     })().catch(() => {
       // A persistence failure leaves a retained failed unit available for the
