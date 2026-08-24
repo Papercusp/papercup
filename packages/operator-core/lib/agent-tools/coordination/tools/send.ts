@@ -1956,7 +1956,15 @@ export default defineTool({
       // confirmation needs no rationale). Kept to ONE required authored field on ONE
       // section: requiring all four would manufacture filler, which is how a structured
       // field ends up carrying less information than the prose it replaced.
-      const directed = Array.isArray(m.to) && m.to.length > 0 && !m.to.includes('*') && !m.to.includes('human');
+      // Audience selectors fan out to a group during delivery, so they have the
+      // same "why you specifically" semantics as a broadcast, not a directed
+      // one-to-one message. Keep this validator aligned with the canonical
+      // recipient classifier used by the send path; checking only literal '*'
+      // and 'human' misclassified @fleet:/@topic:/@plan:/@object:/@file: here.
+      const directed =
+        Array.isArray(m.to) &&
+        m.to.length > 0 &&
+        m.to.every((id): id is string => typeof id === 'string' && !isSelectorOrWildcard(id));
       if (!directed || (expects !== 'action' && expects !== 'answer')) return;
       const isArrayBody = Array.isArray(m.body);
       const sections = isArrayBody ? (m.body as Array<Record<string, unknown>>) : [];

@@ -59,6 +59,74 @@ describe('preExistingChangedPathsInCompletion', () => {
     expect(result?.paths.map((entry) => entry.path)).toEqual(item.payload.paths);
   });
 
+  /**
+   * WI-41246: the all-claim branch returns payload.paths WHOLESALE, so an AUDIT claim must not
+   * trigger it. The tool's own schema asks for an enumerated verification.coverage census, and
+   * describing that census in English ("all N sites verified") used to flag every payload path
+   * with "verify each named path was actually remediated" — a warn-only guard firing on correct,
+   * well-evidenced completions, which trains agents to ignore it.
+   */
+  describe('audit claims vs change claims (WI-41246)', () => {
+    // Verbatim from a real completion (EI-21301868186403490) that tripped the false advisory.
+    const MEASURED_AUDIT_PROSE =
+      'All 17 uncast sites pass STRING arrays — verified by DECLARED TYPE, not by variable name';
+
+    it('stays silent for the real audit prose that produced the false advisory', () => {
+      expect(
+        preExistingChangedPathsInCompletion(
+          item,
+          { summary: MEASURED_AUDIT_PROSE },
+          { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+        ),
+      ).toBeUndefined();
+    });
+
+    it.each([
+      'Enumerated all 53 sql.array call sites and verified each one against its declared type.',
+      'Every path in the census was covered by the sweep.',
+      'Each of the named files was verified as already correct; no edits were needed.',
+    ])('stays silent for an audit-only all-claim: %s', (summary) => {
+      expect(
+        preExistingChangedPathsInCompletion(
+          item,
+          { summary },
+          { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+        ),
+      ).toBeUndefined();
+    });
+
+    /** Guards the opposite failure: narrowing the verb set must not blind the detector. */
+    it.each([
+      'All 12 files were updated to use the new helper.',
+      'Every site was remediated.',
+      'All named files corrected.',
+      'All files verified fixed.',
+    ])('still claims every payload path for a change claim: %s', (summary) => {
+      const result = preExistingChangedPathsInCompletion(
+        item,
+        { summary },
+        { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+      );
+
+      expect(result?.paths.map((entry) => entry.path)).toEqual(item.payload.paths);
+    });
+
+    /**
+     * The narrowing is surgical: only the WHOLESALE branch lost audit verbs. A path the
+     * completion names explicitly is still caught by the per-path fallback, so an audit that
+     * does name a stale path still reports THAT path — and only that one.
+     */
+    it('still reports a stale path the audit prose names explicitly', () => {
+      const result = preExistingChangedPathsInCompletion(
+        item,
+        { summary: 'Audited packages/old.ts and confirmed every target file is correct' },
+        { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+      );
+
+      expect(result?.paths).toEqual([{ path: 'packages/old.ts', lastCommitAt: BEFORE }]);
+    });
+  });
+
   it('stays silent when the path was committed after the item', () => {
     expect(
       preExistingChangedPathsInCompletion(

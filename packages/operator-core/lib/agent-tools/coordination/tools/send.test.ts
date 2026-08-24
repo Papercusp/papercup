@@ -1744,6 +1744,21 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     ).toBe(true);
   });
 
+  it('EXEMPTS audience selectors from forYouBecause — selectors fan out like broadcasts', () => {
+    for (const to of [
+      '@fleet:backend',
+      '@topic:coordination',
+      '@plan:drain',
+      '@object:work-item:EI-1',
+      '@file:packages/operator-core/lib/agent-tools/coordination/tools/send.ts',
+    ]) {
+      expect(
+        tool.args.safeParse({ to: [to], summary: 'hi', expects: 'action', body: [{ text: 'x' }] }).success,
+        to,
+      ).toBe(true);
+    }
+  });
+
   it('enforces the same rules on the items[] axis, not just the shorthand', () => {
     expect(
       tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'action' }] }).success,

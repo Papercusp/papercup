@@ -34,7 +34,14 @@ afterEach(() => {
   vi.doUnmock('../../../harness-markdown-index');
 });
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
+function parsePayload(result: {
+  data?: Record<string, unknown>;
+  content?: Array<{ text: string }>;
+}): Record<string, unknown> {
+  if (result.data) return result.data;
+  if (!result.content?.[0]?.text) {
+    throw new Error('Tool handler returned neither data nor content');
+  }
   return JSON.parse(result.content[0].text);
 }
 

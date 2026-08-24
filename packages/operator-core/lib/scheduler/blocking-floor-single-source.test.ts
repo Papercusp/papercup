@@ -77,6 +77,24 @@ const BLOCKING_PREDICATE_ALLOWLIST: ReadonlyMap<string, string> = new Map([
       'blocker leg is parameterised (bk.workspace_id = opts.workspaceId), so the migration-719 ' +
       'hardcode defect this file also guards against does not apply.',
   ],
+  [
+    'deferral-interest/store.ts',
+    'The deferral-interest edge read — samples canonical blocks edges for pricing-model training ' +
+      'and never decides claimability. It cannot call the shared exclusion helpers because it ' +
+      'needs timestamped edge rows rather than a claim-query predicate.',
+  ],
+  [
+    'issue-blocks-merge.ts',
+    'The plan/feature issue-block overlay read — reports open issue blocks to plan readers and ' +
+      'never decides work-item claimability. Its join is intentionally an edge enumeration, ' +
+      'not a self-select exclusion floor.',
+  ],
+  [
+    'pot/placement-watchdog.ts',
+    'The retired-pot placement watchdog read — counts downstream feature edges for placement ' +
+      'reconciliation and wake decisions, not scheduler self-selection. It needs edge rows and ' +
+      'therefore cannot use the shared exclusion fragment.',
+  ],
 ]);
 
 /** Files whose `lane`/DDL text mentions the table but which are fixtures, not live readers. */
