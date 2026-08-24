@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   REPEATED_APPROACH_NOT_DERIVABLE,
+  checkpointScopeRoundTripsToItemId,
   computeSpecEnforcementRepeatedApproach,
+  itemIdFromCheckpointScope,
   type SpecEnforcementRepeatedApproachDeps,
 } from './spec-enforcement-repeated-approach';
 import type { FirstClaimRow, WorkItemLifecycleRow } from './spec-enforcement-latency';
@@ -263,6 +265,34 @@ describe('the enforcement partition', () => {
     expect(ledger.rollup.repeatedFailures).toBeGreaterThan(0);
     expect(summed).toBe(ledger.rollup.repeatedFailures);
     expect(lanes.reduce((a, l) => a + l.detectableItems, 0)).toBe(ledger.rollup.detectableItems);
+  });
+});
+
+describe('the carry-note scope parser — pinned to the canonical BUILDER', () => {
+  it('round-trips every scope the canonicalizer can produce', () => {
+    // The parser and the builder must agree. If the scope FORMAT changes, this fails loudly
+    // instead of the parser quietly returning null for every row and reporting that nothing is
+    // briefable — a comfortable, wrong answer.
+    expect(checkpointScopeRoundTripsToItemId('papercusp', 'WI-40092')).toBe(true);
+    expect(checkpointScopeRoundTripsToItemId(null, 'WI-40092')).toBe(true);
+    expect(checkpointScopeRoundTripsToItemId('*', 'EI-21348662211752936')).toBe(true);
+    expect(checkpointScopeRoundTripsToItemId('sidestage', 'WI-1')).toBe(true);
+  });
+
+  it('recovers the id regardless of which harness the WRITING session resolved', () => {
+    // Measured: notes for papercusp items exist under `papercusp`, under the `*` wildcard, AND
+    // under other slugs. Keying on the harness would miss the tail and inflate the paired
+    // failure, so the harness component is deliberately ignored.
+    expect(itemIdFromCheckpointScope('workitem:papercusp:WI-1')).toBe('WI-1');
+    expect(itemIdFromCheckpointScope('workitem:*:WI-1')).toBe('WI-1');
+    expect(itemIdFromCheckpointScope('workitem:sidestage:WI-1')).toBe('WI-1');
+  });
+
+  it('rejects a scope that is not a work-item note, rather than inventing an id', () => {
+    expect(itemIdFromCheckpointScope('loop:papercusp:su-7157b')).toBeNull();
+    expect(itemIdFromCheckpointScope('workitem:papercusp')).toBeNull();
+    expect(itemIdFromCheckpointScope('workitem:papercusp:')).toBeNull();
+    expect(itemIdFromCheckpointScope('')).toBeNull();
   });
 });
 
