@@ -79,6 +79,40 @@ function compactMonitoringBlindAdvisory(value: unknown): unknown {
   return out;
 }
 
+/** P-002 / D-004: compact the claimable aggregate as one atomic unit. The
+ * verbose family evidence is full-tier diagnostic material; the bounded
+ * monitor tiers retain the value, its exact population contract, and any
+ * unknown reason together. */
+function compactClaimableNow(value: unknown): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+
+  const out: Dict = {};
+  if ('value' in source) out.value = source.value;
+
+  const population = asDict(source.population);
+  if (population) {
+    const compactPopulation = pick(
+      population,
+      ['kind', 'fleet', 'harness', 'basis', 'matchedByFilter', 'note'],
+      180,
+    ) ?? {};
+    if ('spec' in population) {
+      const spec = asDict(population.spec);
+      compactPopulation.spec = spec
+        ? pick(spec, ['ref', 'revision', 'matchedBy', 'assigneeScoped'], 140) ?? {}
+        : population.spec;
+    }
+    out.population = compactPopulation;
+  } else if ('population' in source) {
+    out.population = source.population;
+  }
+
+  const unknown = pick(source.unknown, ['code', 'detail'], 220);
+  if (unknown) out.unknown = unknown;
+  return out;
+}
+
 function compactSummary(value: unknown, ultra = false): unknown {
   const source = asDict(value);
   if (!source) return value;
@@ -95,6 +129,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'high_context',
     'critical_context',
     'parked',
+    'intent_attention',
     'coord_deaf',
     'bench_suggested',
     'idle_with_claimable',
@@ -102,7 +137,6 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'dormant',
     'spinning',
     'throttled',
-    'claimable_now',
     'darkFleetAlert',
     'fleetHeadcountVsExecutableFrontierAlert',
     'unowned_criticals',
@@ -127,12 +161,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
   const population = pick(source.population, ['population', 'basis', 'candidates', 'counted', 'withheld', 'withheldReason', 'reveal'], 150);
   if (population) out.population = population;
 
-  const claimableSpec = pick(source.claimable_now_spec, ['claimable', 'matchedByFilter', 'spec', 'note'], 150);
-  if (claimableSpec) {
-    const spec = asDict(claimableSpec.spec);
-    if (spec) claimableSpec.spec = pick(spec, ['ref', 'harness', 'revision'], 120) ?? {};
-    out.claimable_now_spec = claimableSpec;
-  }
+  if ('claimable_now' in source) out.claimable_now = compactClaimableNow(source.claimable_now);
 
   const pool = pick(source.pool_capacity, ['poolExhausted', 'degraded', 'factor', 'queueDepth', 'usableAccounts', 'availableAccounts'], 120);
   if (pool) out.pool_capacity = pool;
@@ -157,6 +186,9 @@ function compactMember(value: unknown): unknown {
     'monitorState',
     'nextFireAt',
     'lastToolCallAgeMs',
+    'intentAgeSec',
+    'intentStale',
+    'intentDivergent',
     'queuedCount',
     'load',
     'stalled',
@@ -180,6 +212,9 @@ function compactMember(value: unknown): unknown {
   if (source.benchSuggestion && typeof source.benchSuggestion === 'object') {
     out.benchSuggestion = pick(source.benchSuggestion, ['kind', 'item', 'itemTitle', 'reason'], 160) ?? source.benchSuggestion;
   }
+  if (source.intentAttention && typeof source.intentAttention === 'object') {
+    out.intentAttention = pick(source.intentAttention, ['kind', 'action', 'reason'], 180) ?? source.intentAttention;
+  }
   if (source.throttled && typeof source.throttled === 'object') {
     out.throttled = pick(source.throttled, ['reason', 'until', 'resumesInMs'], 120) ?? source.throttled;
   }
@@ -193,6 +228,12 @@ function compactMember(value: unknown): unknown {
  */
 function compactBenchSuggestion(value: unknown): unknown {
   return pick(value, ['agentId', 'kind'], 120) ?? {};
+}
+
+/** P-012: complete exceptional identity/action row. Keep it as small as the
+ * bench-target index while retaining the resolving action, not just the signal. */
+function compactIntentAttention(value: unknown): unknown {
+  return pick(value, ['agentId', 'kind', 'action'], 120) ?? {};
 }
 
 function compactVerdict(value: unknown): unknown {
@@ -338,16 +379,23 @@ function buildProjection(
   campaignRecentRows: number,
 ): Dict {
   const out: Dict = { ok: data.ok === true };
+  const tightDecisionCore = caps.memberVerdicts === 0 && caps.members === 0;
+  const decisionStringCap = tightDecisionCore ? 100 : 220;
   for (const key of ['self', 'notLeader', 'leadershipClaimed']) {
     if (key in data) out[key] = pick(data[key], ['ownerId', 'ownerLabel', 'registeredLeader', 'leaderState', 'reason', 'note', 'claimWith', 'previousLeader', 'notified'], 180) ?? data[key];
   }
-  if ('blockedAt' in data) out.blockedAt = compactBlockedAt(data.blockedAt);
+  if ('blockedAt' in data) {
+    out.blockedAt = compactBlockedAt(data.blockedAt, decisionStringCap, !tightDecisionCore);
+  }
   if ('monitoringBlindAdvisory' in data) {
     out.monitoringBlindAdvisory = compactMonitoringBlindAdvisory(data.monitoringBlindAdvisory);
   }
   if ('summary' in data) out.summary = compactSummary(data.summary);
   if (Array.isArray(data.benchSuggestions)) {
     out.benchSuggestions = data.benchSuggestions.map(compactBenchSuggestion);
+  }
+  if (Array.isArray(data.intentAttention)) {
+    out.intentAttention = data.intentAttention.map(compactIntentAttention);
   }
   if ('deltaSummary' in data) out.deltaSummary = clip(data.deltaSummary, 220) ?? data.deltaSummary;
   if ('delta' in data) out.delta = data.delta;
@@ -369,7 +417,7 @@ function buildProjection(
   if (Array.isArray(data.customInvariants)) {
     addCappedArray(out, data, 'customInvariants', caps.invariants, compactInvariant);
   }
-  addAlertFields(out, data);
+  addAlertFields(out, data, decisionStringCap);
 
   for (const key of ['specRevision', 'specUpdatedBy', 'specUpdatedAt', 'harnessWidePool', 'specMatched', 'fleetPausedReason']) {
     if (key in data) out[key] = typeof data[key] === 'string' ? clip(data[key], 180) : data[key];
@@ -420,6 +468,15 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       caps: { memberVerdicts: 1, members: 1, advisories: 0, invariants: 0, reservationMembers: 0 },
       campaignRecentRows: 0,
     },
+    {
+      // D-004 adds a load-bearing nested population contract to claimable_now.
+      // If that contract is the difference between the last one-row attempt and
+      // the ceiling, keep the complete compact exceptional indexes + campaign
+      // aggregates and truthfully report zero verbose rows before falling all
+      // the way to the emergency projection (which drops campaign entirely).
+      caps: { memberVerdicts: 0, members: 0, advisories: 0, invariants: 0, reservationMembers: 0 },
+      campaignRecentRows: 0,
+    },
   ];
   for (const attempt of attempts) {
     const out = buildProjection(source, tier, attempt.caps, attempt.campaignRecentRows);
@@ -452,6 +509,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   }
   if (Array.isArray(source.benchSuggestions)) {
     emergency.benchSuggestions = source.benchSuggestions.map(compactBenchSuggestion);
+  }
+  if (Array.isArray(source.intentAttention)) {
+    emergency.intentAttention = source.intentAttention.map(compactIntentAttention);
   }
   // Emergency is a byte-pressure tier, not permission to turn bounded arrays
   // into unexplained omissions. Keep one actionable member/verdict and retain
