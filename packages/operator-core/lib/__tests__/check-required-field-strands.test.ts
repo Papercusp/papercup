@@ -13,7 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } fr
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, submoduleFor } from '../../../../scripts/check-required-field-strands.mjs';
+import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
 
 const ROOT = resolve(__dirname, '../../../..');
 
@@ -266,6 +266,35 @@ describe('submoduleFor — ask the repository that actually tracks the file', ()
   it('matches the submodule root path itself, not only paths beneath it', () => {
     expect(submoduleFor('libs/papercusp', prefixes)).toBe('libs/papercusp');
   });
+});
+
+describe('submoduleRevisionAt — follow the superproject gitlink before querying a submodule', () => {
+  const submodulePrefix = 'libs/generic/memory';
+  const submoduleFile = `${submodulePrefix}/src/backend.ts`;
+
+  it('resolves a superproject base to the submodule commit recorded at that base', () => {
+    const base = execFileSync('git', ['rev-parse', 'HEAD^'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    const expected = execFileSync(
+      'git',
+      ['rev-parse', '--verify', '--end-of-options', `${base}:${submodulePrefix}`],
+      { cwd: ROOT, encoding: 'utf8' },
+    ).trim();
+
+    expect(submoduleRevisionAt(base, submodulePrefix)).toBe(expected);
+  });
+
+  it('examines a declared submodule file instead of treating the superproject SHA as its base', () => {
+    const base = execFileSync('git', ['rev-parse', 'HEAD^'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    const result = spawnSync(
+      'node',
+      ['scripts/check-required-field-strands.mjs', '--base', base, `--files=${submoduleFile}`, '--json'],
+      { cwd: ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+    );
+    const report = JSON.parse(result.stdout);
+
+    expect(result.stderr).not.toMatch(/fatal: (?:bad revision|path .* exists on disk)/);
+    expect(report.examined).toContain(submoduleFile);
+  }, 120_000);
 });
 
 /**
