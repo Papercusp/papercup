@@ -21,7 +21,7 @@ import { releaseAllOwnedLocks } from './agent-tools/locks/release-all-owned';
 import { closeAdoptedTerminalSessions } from './task-manager/adopt-terminal-session';
 import { killTask } from './task-manager/control';
 import { listTasks } from './task-manager/store';
-import { isAutoReapExempt } from './task-manager/types';
+import { isAutoReapExempt, type TaskRow } from './task-manager/types';
 
 export const SESSION_END_LEASE_RELEASE_DELAY_MS = 15_000;
 /**
@@ -84,6 +84,32 @@ export interface SessionEndLeaseReleaseResult {
    *  different facts, and only one of them means the exemption is working. */
   exemptTaskIds?: string[];
   failedEffects?: Array<'locks' | 'work-items' | 'tasks'>;
+}
+
+/**
+ * Split the session's live agent-session rows into the ones this reaper may
+ * signal and the ones it must not.
+ *
+ * Pulled out as a pure function on purpose. The exemption is an OWNER RULING
+ * (plan terminal-psu-session-enrolment-2026-08-24 D-001, avi 2026-08-24:
+ * "Visible only — never auto-reap"), and a ruling that lives as an inline
+ * `.filter()` inside an async cleanup pass can only be tested through the whole
+ * hook, which makes it easy to delete and hard to notice. Here it is one named,
+ * directly-testable decision — and the test file keeps a deliberately-wrong
+ * partition beside it as a permanent control, so the guard is provably
+ * falsifiable without ever mutating this shared tree.
+ *
+ * `exempt` is RETURNED rather than dropped because "we skipped one" and "there
+ * were none" are different facts, and only the first proves the rule ran.
+ */
+export function partitionReapableTasks(rows: readonly TaskRow[]): {
+  reapable: TaskRow[];
+  exempt: TaskRow[];
+} {
+  const reapable: TaskRow[] = [];
+  const exempt: TaskRow[] = [];
+  for (const row of rows) (isAutoReapExempt(row) ? exempt : reapable).push(row);
+  return { reapable, exempt };
 }
 
 async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndLeaseRow | null> {

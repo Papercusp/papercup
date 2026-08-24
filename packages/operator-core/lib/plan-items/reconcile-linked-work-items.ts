@@ -50,9 +50,12 @@ import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
 import { getFeatureBlockers, syncFeatureBlockEdges } from '../dbos/feature-blockers-edges';
 import {
   activeExternalBlockers,
+  externalBlockerCapabilityPolicy,
+  inferExternalBlockerCapability,
   readExternalBlockers,
   updateExternalBlockerHistory,
   type ExternalBlockerCapability,
+  type ExternalBlockerRecord,
 } from '../external-blockers';
 import { RECONCILER_SYSTEM_ACTOR } from '../completion-audit';
 
@@ -566,12 +569,36 @@ function hasNeedsHumanResidue(wi: Pick<WorkItem, 'state' | 'payload'>): boolean 
     wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
       ? (wi.payload as Record<string, unknown>)
       : {};
+  // EI-21274031426739947: a blocker naming a capability NO amount of plan truth or
+  // agent authority can supply (credential / physical-device / external-service-action
+  // / product-decision — every capability whose policy is `autoClearable: false`) is
+  // not owner-park RESIDUE, it is an unsatisfied PREREQUISITE. Plan status cannot
+  // testify about it: whether the owner has spoken into a microphone is simply not a
+  // fact a plan item knows. Clearing one fabricates readiness, and the row goes
+  // straight back into the claim pool for an agent that structurally cannot do it
+  // (measured: WI-1439's owner-at-mic acceptance was cleared at 19:31Z with no accept/
+  // reject evidence and re-claimed at 19:37Z, then repeatedly, burning a fresh agent's
+  // context each time). Only `approval-auto-clearable` is genuine repairable residue —
+  // exactly the split external-blockers.ts already draws, reused here rather than
+  // re-listed, so a new capability cannot silently land on the clearable side.
+  if (activeExternalBlockers(wi.payload).some(requiresOwnerCapability)) return false;
   return (
     wi.state.trim().toLowerCase() === 'needs-human' ||
     payload.needsOwnerAction === true ||
     payload.needsHuman === true ||
     activeExternalBlockers(wi.payload).some((blocker) => blocker.kind === 'human')
   );
+}
+
+/**
+ * Does this blocker name a capability the lane sync can never satisfy on its own?
+ * Reads the SAME policy table `work_items:set_blocker` uses; an untyped legacy row
+ * falls back to `inferExternalBlockerCapability` so it is classified, never assumed
+ * clearable. Exported for the unit test.
+ */
+export function requiresOwnerCapability(blocker: ExternalBlockerRecord): boolean {
+  const capability = blocker.capability ?? inferExternalBlockerCapability(blocker.kind);
+  return !externalBlockerCapabilityPolicy(capability).autoClearable;
 }
 
 /**
@@ -715,11 +742,21 @@ async function applyLaneGateToWorkItem(
       return 'gated';
     }
     if (decision.op === 'repair-needs-human') {
-      // Clear ONLY active human blockers. Runtime/gate/event blockers remain
-      // intact, so plan truth repairs the false owner park without fabricating
-      // readiness for independently blocked work.
+      // Clear ONLY active human blockers, and among those only the ones whose
+      // capability is auto-clearable. Runtime/gate/event blockers remain intact, so
+      // plan truth repairs the false owner park without fabricating readiness for
+      // independently blocked work.
+      //
+      // EI-21274031426739947: the capability filter is the second half of that same
+      // rule and is defence in depth — `hasNeedsHumanResidue` should already have
+      // refused to route a genuinely owner-gated item here, so if this loop is ever
+      // reached with a credential / physical-device / external-service-action /
+      // product-decision blocker present, the prerequisite still survives instead of
+      // being erased on the way past.
       let blockers = readExternalBlockers(wi.payload);
-      for (const blocker of blockers.filter((row) => row.status === 'active' && row.kind === 'human')) {
+      for (const blocker of blockers.filter(
+        (row) => row.status === 'active' && row.kind === 'human' && !requiresOwnerCapability(row),
+      )) {
         blockers = updateExternalBlockerHistory(
           { externalBlockers: blockers },
           { kind: 'human', ref: blocker.ref, clear: true },

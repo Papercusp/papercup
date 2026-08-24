@@ -16,6 +16,7 @@
  * scale-out reaction) lives in `account-pool-store.ts`, so this core stays
  * exhaustively unit-testable with no fixtures.
  */
+import { evaluateAccountBurn, type BurnAction, type BurnVerdict } from '../inference-gateway/burn-governor';
 
 /**
  * Per-account upstream egress binding — per-account IP routing (D-003). Each registered Claude Max
@@ -664,6 +665,13 @@ export interface SpawnSelectOpts {
   /** Injectable RNG for the drain SPREAD (default `Math.random`). Tests pass a fixed rng (e.g. `() => 0`
    *  → deterministic best) so spawn selection stays assertable. */
   rng?: () => number;
+  /**
+   * WI-41147 burn-rate governor toggle (default ON). The pure selector cannot read the
+   * feature flag (async IO), so the impure caller (`selectSpawnAccount` in the store) reads
+   * `FLAGS.ACCOUNT_BURN_GOVERNOR` and passes it down. `false` restores pre-governor selection
+   * byte-for-byte.
+   */
+  burnGovernor?: boolean;
 }
 
 /** Beyond this age the unified-budget projection is treated as unknown (the gateway hasn't egressed
@@ -682,6 +690,39 @@ export const DRAIN_FULL_UTIL = 0.97;
  *  onto the pinned account even when peers have MORE budget; at 1.3 affinity is a tiebreaker, not an
  *  override, so the account with the most budget still draws the most load. Env-tunable; 1 = pure spread. */
 export const SOFT_PIN_AFFINITY_WEIGHT = Number(process.env.PAPERCUSP_SPAWN_SOFT_PIN_AFFINITY_WEIGHT) || 1.3;
+
+/**
+ * The burn-governor verdict for one account's rate state, STALE-GATED (WI-41147): a reading
+ * older than `DRAIN_UTIL_STALE_MS` (or never observed) stands the governor down — stale
+ * readings are the existing wall machinery's jurisdiction (`drainUtil7d` discounts them with
+ * reset-pending nuance), and a projection fitted over stale points would be exactly the kind
+ * of confident-but-wrong verdict the governor exists to prevent. ONE authority for both the
+ * selection wiring below and the `accounts:status` surface, so they can never disagree.
+ */
+export function accountBurnVerdict(rate: AccountRateState, now: number): BurnVerdict {
+  const at = rate.utilizationAt;
+  if (at === undefined || now - at > DRAIN_UTIL_STALE_MS) {
+    return {
+      burnRatePerHr: null,
+      headroomFraction: rate.utilization7d !== undefined && Number.isFinite(rate.utilization7d)
+        ? Math.max(0, 1 - rate.utilization7d)
+        : null,
+      projectedExhaustionAt: null,
+      exhaustsBeforeReset: false,
+      action: 'none',
+      reason:
+        at === undefined
+          ? 'usage window never observed — burn governor stands down'
+          : 'usage reading stale — burn governor stands down (the wall machinery owns stale readings)',
+    };
+  }
+  return evaluateAccountBurn(rate, now);
+}
+
+/** Shorthand: the stale-gated burn action for selection wiring. */
+export function accountBurnAction(a: Pick<ClaudeAccount, 'rate'>, now: number): BurnAction {
+  return accountBurnVerdict(a.rate, now).action;
+}
 
 /** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never
  *  observed / stale / window-expired (treat as most-available so a cold pool degrades gracefully). */
@@ -941,7 +982,26 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
   // accounts:status showed aviynw7/aviynw8/aviynw8-direct/avistorewolf.com as
   // sustainedlyLimited:true with available:true; fresh cup:spawn placements kept landing there and
   // crash-looped (sessionState:ended within ~20-30s, zero progress).
-  const hardPinUnsafe = (a: ClaudeAccount, t: number): boolean => accountFull(a, t) || isSustainedlyLimited(a, t);
+  // WI-41147: the burn governor's SHED verdict (window projected to exhaust before it resets,
+  // imminently, on a FRESH reading — see accountBurnVerdict's stale gate) also makes an account
+  // hard-pin-unsafe: pinning a fresh spawn onto an account about to hit its 7d wall is exactly
+  // the 2026-08-23 incident pattern (the pinned CLI dies mid-session at the wall; the gateway
+  // honors a pin with no failover). The gateway's UNPINNED failover path may still use the
+  // account for individual calls — shed only refuses the hard pin. Cached per selection call:
+  // the verdict is pure over the row, and one spawn selection consults it up to 3×/account.
+  const burnOn = opts.burnGovernor !== false;
+  const burnActionCache = new Map<string, BurnAction>();
+  const burnActionOf = (a: ClaudeAccount, t: number): BurnAction => {
+    if (!burnOn) return 'none';
+    let v = burnActionCache.get(a.id);
+    if (v === undefined) {
+      v = accountBurnAction(a, t);
+      burnActionCache.set(a.id, v);
+    }
+    return v;
+  };
+  const hardPinUnsafe = (a: ClaudeAccount, t: number): boolean =>
+    accountFull(a, t) || isSustainedlyLimited(a, t) || burnActionOf(a, t) === 'shed';
   // 1. Sticky to the prior account while it is still usable (cache affinity dominates cost).
   if (opts.priorAccountId) {
     const prior = getAccount(pool, opts.priorAccountId);
@@ -966,7 +1026,18 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
   //    so autonomous roles can die before emitting their required artifacts. When
   //    no account is safely pinnable, return no header and let the gateway's
   //    unpinned active/failover path handle the request.
-  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, affinityId, eligible: (a, t) => !hardPinUnsafe(a, t) });
+  //    WI-41147 THROTTLE (burn governor): "prefer other accounts" — a first pass EXCLUDES
+  //    throttled accounts (projected to exhaust before their window resets, but not imminently);
+  //    only when NO un-throttled candidate survives does a second pass admit them. Graceful by
+  //    construction: the governor can deprioritize but never shrink the servable set below what
+  //    the wall machinery alone would allow.
+  const drained =
+    selectAccountByDrain(pool, now, {
+      spread: true,
+      rng: opts.rng,
+      affinityId,
+      eligible: (a, t) => !hardPinUnsafe(a, t) && burnActionOf(a, t) !== 'throttle',
+    }) ?? selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, affinityId, eligible: (a, t) => !hardPinUnsafe(a, t) });
   if (!drained) return {};
   return {
     accountId: drained.id,

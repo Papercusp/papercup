@@ -417,7 +417,14 @@ const updateFeature = defineTool({
           // Force the unified success terminal `done` (was the legacy `passed`) so the settled
           // events fire even if the consolidated read hasn't projected the write yet — `done` is
           // in SETTLED_STATES.feature (frontier-readiness.TERMINAL_STATUSES).
-          await m.emitWorkItemSettledEvents({ ...wi, state: 'done' }, { priorAssignee });
+          // `priorFeatureAssignee` exists for exactly this call: the post-write
+          // `getWorkItem` above is truthfully unclaimed, so the settled-event
+          // fanout needs the PRE-write holder to resolve its fleet and fire
+          // `fleet:item-completed`. `existing` is the pre-update row.
+          await m.emitWorkItemSettledEvents(
+            { ...wi, state: 'done' },
+            { priorAssignee: priorFeatureAssignee(existing) },
+          );
         })
         .catch(() => {});
     }

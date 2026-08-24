@@ -34,6 +34,17 @@ const row = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatusRow
   // default; stall-waker-loop.ts does not branch on it, so this is semantically neutral here.
   // Override via `over` if a test needs to exercise stale/never-observed readings.
   readingStatus: 'fresh',
+  // WI-41147: the burn governor verdict is required on AccountStatusRow. A neutral 'none'
+  // (no history in these fixtures) keeps every existing assertion untouched; override via
+  // `over` to exercise throttle/shed rows.
+  burn: {
+    burnRatePerHr: null,
+    headroomFraction: null,
+    projectedExhaustionAt: null,
+    exhaustsBeforeReset: false,
+    action: 'none',
+    reason: 'test fixture — no burn history',
+  },
   ...over,
 });
 

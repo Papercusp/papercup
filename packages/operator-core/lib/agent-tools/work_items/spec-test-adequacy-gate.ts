@@ -6,6 +6,7 @@ import {
   type EvidenceCurrentInput,
 } from '../plans/spec-evidence-store';
 import { listSpecClauses, type SpecClauseRevision } from '../plans/spec-clauses-store';
+import { planStampOf, type WorkItemForContract } from '../plans/behavior-contract-resolver';
 import {
   evaluateSpecTestAdequacy,
   requiredProofFloor,
@@ -24,50 +25,12 @@ export type SpecAdequacyCompletionGateResult =
   | { ok: true; applicable: true; checked: string[] }
   | { ok: false; applicable: true; retryable: true; reason: string; checked: string[] };
 
-interface WorkItemForSpecGate {
-  id: string;
-  harness?: string | null;
-  payload?: unknown;
-  sourcePlanSlug?: string | null;
-  sourcePlanItemIds?: string[] | null;
-}
-
-interface PlanStamp {
-  planSlug: string;
-  harnessSlug: string;
-  planItemIds: string[];
-}
-
-function planStampOf(workItem: WorkItemForSpecGate): PlanStamp | null {
-  const payload = workItem.payload;
-  const raw = payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? (payload as { plan_item?: unknown }).plan_item
-    : null;
-  const stamp = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
-  const stampedPlanSlug = typeof stamp?.plan_slug === 'string' && stamp.plan_slug.trim()
-    ? stamp.plan_slug.trim()
-    : null;
-  const planSlug = stampedPlanSlug ?? workItem.sourcePlanSlug?.trim();
-  if (!planSlug) return null;
-  const harnessSlug =
-    typeof stamp?.harness_slug === 'string' && stamp.harness_slug.trim()
-      ? stamp.harness_slug.trim()
-      : workItem.harness?.trim();
-  if (!harnessSlug) return null;
-  const stampedItemId = typeof stamp?.item_id === 'string' && /^P-\d{3,}$/.test(stamp.item_id)
-    ? stamp.item_id
-    : null;
-  return {
-    planSlug,
-    harnessSlug,
-    planItemIds: [
-      ...new Set([
-        ...(stampedItemId ? [stampedItemId] : []),
-        ...(workItem.sourcePlanItemIds ?? []).filter((id) => /^P-\d{3,}$/.test(id)),
-      ]),
-    ],
-  };
-}
+/**
+ * P-016: `planStampOf` moved to the universal contract resolver, which is the more
+ * general home — under D-013 provenance is one INPUT to resolution rather than its
+ * precondition. Imported rather than re-declared so the two cannot drift.
+ */
+type WorkItemForSpecGate = WorkItemForContract;
 
 function acceptedRating(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;

@@ -79,6 +79,7 @@ import {
   leaderDispatchedAdmission,
   selfFiledFalloutAdmission,
   diagnoseFleetScopeCooldownMiss,
+  diagnoseFleetScopeFeatureFamilyMatch,
   diagnoseFleetScopeIssueFloorMiss,
   diagnoseFleetScopeRetiredPlans,
   fleetLeaderUnavailableRefusal,
@@ -138,6 +139,52 @@ describe('fleetLeaderUnavailableRefusal (EI-21079515303301272)', () => {
     });
     expect(refusal.message).toMatch(/no live registered leader/);
     expect(refusal.advice).toMatch(/Do not treat this as an empty queue/);
+  });
+});
+
+describe('WI-41163: caller-neutral feature-family population count', () => {
+  const populationScope = {
+    ownerId: 'su-reading-leader',
+    fleetSlug: 'fleet-x',
+    fleetRole: 'member' as const,
+    workspaceId: 'papercusp-workspace',
+    record: {
+      source: 'fleet' as const,
+      spec: {
+        specVersion: '1.0' as const,
+        specId: 'fleet-x-rev1',
+        revision: 1,
+        states: ['open'],
+        view: { filter: { field: 'plan', op: '=' as const, value: 'plan-x' } },
+        rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age' as const, dir: 'asc' as const }] },
+      },
+      revision: 1,
+      updatedBy: 'su-leader',
+      updatedAt: 'now',
+    },
+  } satisfies FleetScopeContext;
+
+  beforeEach(() => {
+    for (const mock of Object.values(admissionMocks)) mock.mockReset();
+  });
+
+  it('explicit null omits the reading leader from the feature-family cooldown floor', async () => {
+    admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_WITHOUT_CALLER');
+    admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+    admissionMocks.sql.mockResolvedValue([{ cnt: 3 }]);
+
+    const count = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: populationScope,
+      harness: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      cooldownAssignee: null,
+    });
+
+    expect(count).toBe(3);
+    expect(admissionMocks.claimFloorsWhereSql).toHaveBeenCalledWith(
+      admissionMocks.sql,
+      expect.objectContaining({ cooldownAssignee: undefined }),
+    );
   });
 });
 

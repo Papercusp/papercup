@@ -571,7 +571,19 @@ describe('checkGreenStall checkpoint-run routing (EI-20378004056924553)', () => 
       '/logs/oddsmith',
     );
     expect(readCheckpointRunPhaseCheapMock).toHaveBeenCalledWith('/hives/oddsmith', '/logs/oddsmith');
-    expect(calls.some((call) => String(call[0]).includes('UPDATE harness_shared.routines'))).toBe(false);
+    // NARROWED, not weakened (EI-21297913810967409). The property this protects is that a
+    // SUPPRESSED pass writes no watchdog STATE — it must not flip `gate_health.watchdogAlerted`.
+    // Every pass now also reports its own liveness to `metadata.watchdog_health` from a
+    // `finally`, so that a watchdog which CANNOT RUN stops being indistinguishable from one that
+    // ran and found nothing. That write is a different subject: it is keyed by pass name, it
+    // matches zero rows in the healthy steady state, and it deliberately does not touch
+    // `updated_at` (which is the release-trigger freeze signal). It carries a `watchdog-health`
+    // marker comment precisely so this assertion can exclude one known statement rather than
+    // relax to a whole category.
+    const routineWrites = calls.map((call) => String(call[0])).filter((t) => t.includes('UPDATE harness_shared.routines'));
+    expect(routineWrites.filter((t) => !t.includes('watchdog-health'))).toEqual([]);
+    // ...and state the original intent positively, so this cannot pass by accident later.
+    expect(routineWrites.some((t) => t.includes('gate_health'))).toBe(false);
   });
 
   it('fails open when the routed lock is not live even if a stale phase says delivering', async () => {

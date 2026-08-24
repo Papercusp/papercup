@@ -1,0 +1,192 @@
+/**
+ * P-016 / D-013 — the universal BehaviorContract resolver.
+ *
+ * The property under test is the one D-013 exists to fix: applicability is owned by
+ * BEHAVIOR, not by plan provenance. Before this resolver, the only path from a work
+ * item to its clauses ran through the source-plan stamp and read edges scoped to that
+ * one plan_slug — so a standalone bug resolved nothing at all, and an edge pointing
+ * into another plan's namespace was invisible. Both are pinned below.
+ *
+ * Every case injects its readers, so these are assertions about the RESOLUTION RULES
+ * rather than about Postgres; the store's own SQL is covered by its integration suite.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import type { SpecClauseRevision } from './spec-clauses-store';
+import type { WorkItemSpecRevisionEdge } from './spec-evidence-store';
+import { planStampOf, resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
+
+const clause = (over: Partial<SpecClauseRevision> = {}): SpecClauseRevision => ({
+  planSlug: 'plan-a',
+  specId: 'SPEC-1',
+  sourceValId: null,
+  currentRevision: 1,
+  revision: 1,
+  planItemId: 'P-001',
+  behavior: 'Acknowledged event 42 is not replayed after reconnect.',
+  behaviorClass: 'concurrency',
+  requiredEvidence: [],
+  requiredTestLayers: [],
+  mutationRequired: false,
+  lifecycleStatus: 'active',
+  supersedes: null,
+  exemption: null,
+  falsifier: null,
+  contentHash: 'a'.repeat(64),
+  createdBy: 'su-test',
+  createdAt: '2026-08-20T00:00:00.000Z',
+  acceptedBy: 'su-test',
+  acceptedAt: '2026-08-20T00:00:00.000Z',
+  acceptanceRef: null,
+  ...over,
+});
+
+const edge = (over: Partial<WorkItemSpecRevisionEdge> = {}): WorkItemSpecRevisionEdge => ({
+  workItemId: 'EI-1',
+  planSlug: 'plan-a',
+  specId: 'SPEC-1',
+  specRevision: 1,
+  specFingerprint: 'fp-1',
+  ...over,
+});
+
+/** Readers that answer from fixed tables, and record how they were called. */
+function readers(opts: { edges?: WorkItemSpecRevisionEdge[]; clauses?: SpecClauseRevision[] } = {}) {
+  const listEdges = vi.fn(async () => opts.edges ?? []);
+  const listClauses = vi.fn(async (q: { planSlug: string; specIds?: string[]; planItemIds?: string[] }) =>
+    (opts.clauses ?? []).filter(
+      (c) =>
+        c.planSlug === q.planSlug &&
+        (!q.specIds || q.specIds.includes(c.specId)) &&
+        (!q.planItemIds || q.planItemIds.includes(c.planItemId)),
+    ),
+  );
+  return { listEdges, listClauses } as never;
+}
+
+describe('resolveWorkItemBehaviorContract — D-013 applicability', () => {
+  it('reads edges UNSCOPED by plan, so a standalone item resolves clauses it never had provenance for', async () => {
+    const deps = readers({
+      edges: [edge({ planSlug: 'someone-elses-plan' })],
+      clauses: [clause({ planSlug: 'someone-elses-plan' })],
+    });
+    // No payload stamp, no sourcePlanSlug: standalone. This returned NOTHING before D-013.
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, deps);
+
+    expect(out.enforceable.map((c) => c.specId)).toEqual(['SPEC-1']);
+    expect(out.impact).toMatchObject({ required: true, resolved: true, reason: 'resolved', report: null });
+    // The load-bearing call detail: no planSlug was passed to the edge reader.
+    const [edgeQuery] = (deps as unknown as { listEdges: { mock: { calls: [Record<string, unknown>][] } } }).listEdges
+      .mock.calls[0];
+    expect(edgeQuery).not.toHaveProperty('planSlug');
+  });
+
+  it('groups edges by plan namespace and marks how each namespace was reached', async () => {
+    const deps = readers({
+      edges: [edge({ planSlug: 'plan-a' }), edge({ planSlug: 'plan-b', specId: 'SPEC-2' })],
+      clauses: [clause({ planSlug: 'plan-a' }), clause({ planSlug: 'plan-b', specId: 'SPEC-2' })],
+    });
+    const out = await resolveWorkItemBehaviorContract(
+      { id: 'EI-1', kind: 'change', harness: 'papercup', sourcePlanSlug: 'plan-a', sourcePlanItemIds: ['P-001'] },
+      deps,
+    );
+
+    expect(out.groups.map((g) => [g.planSlug, g.via])).toEqual([
+      ['plan-a', 'edge+plan-stamp'],
+      ['plan-b', 'edge'],
+    ]);
+    expect(out.enforceable.map((c) => c.specId).sort()).toEqual(['SPEC-1', 'SPEC-2']);
+  });
+
+  it('merges plan-item-owned clauses ONLY into the stamped namespace', async () => {
+    // SPEC-9 is owned by plan-b's item P-001 but is not named by any edge. Pulling it in
+    // would mean one edge drags an unrelated plan's entire contract onto the work item.
+    const deps = readers({
+      edges: [edge({ planSlug: 'plan-b', specId: 'SPEC-2' })],
+      clauses: [
+        clause({ planSlug: 'plan-b', specId: 'SPEC-2' }),
+        clause({ planSlug: 'plan-b', specId: 'SPEC-9', planItemId: 'P-001' }),
+      ],
+    });
+    const out = await resolveWorkItemBehaviorContract(
+      { id: 'EI-1', kind: 'bug', harness: 'papercup', sourcePlanItemIds: ['P-001'] },
+      deps,
+    );
+    expect(out.enforceable.map((c) => c.specId)).toEqual(['SPEC-2']);
+  });
+
+  it('keeps the back-compat leg: a stamped plan with no edges still contributes its item clauses', async () => {
+    const deps = readers({ edges: [], clauses: [clause({ planSlug: 'plan-a', planItemId: 'P-007' })] });
+    const out = await resolveWorkItemBehaviorContract(
+      { id: 'EI-1', kind: 'bug', harness: 'papercup', sourcePlanSlug: 'plan-a', sourcePlanItemIds: ['P-007'] },
+      deps,
+    );
+    expect(out.groups.map((g) => g.via)).toEqual(['plan-stamp']);
+    expect(out.enforceable.map((c) => c.specId)).toEqual(['SPEC-1']);
+  });
+
+  it('reports an edge pinned to a superseded revision instead of silently dropping it', async () => {
+    const deps = readers({
+      edges: [edge({ specRevision: 1 })],
+      clauses: [clause({ revision: 3, currentRevision: 3 })],
+    });
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, deps);
+    expect(out.groups[0].staleEdges).toEqual([{ specId: 'SPEC-1', edgeRevision: 1, currentRevision: 3 }]);
+  });
+
+  it('counts only accepted/active clauses as enforceable', async () => {
+    const deps = readers({
+      edges: [edge({ specId: 'SPEC-D' })],
+      clauses: [clause({ specId: 'SPEC-D', lifecycleStatus: 'draft' })],
+    });
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, deps);
+    expect(out.groups[0].clauses).toHaveLength(1);
+    expect(out.enforceable).toHaveLength(0);
+    expect(out.impact).toMatchObject({ required: true, resolved: false, reason: 'unresolved' });
+  });
+});
+
+describe('resolveWorkItemBehaviorContract — impact reporting', () => {
+  it('REPORTS an unresolved behavior-changing item, and never refuses', async () => {
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, readers());
+    expect(out.impact).toMatchObject({ required: true, resolved: false, reason: 'unresolved' });
+    expect(out.impact.report).toContain('EI-1');
+    // The advisory boundary D-013 draws between P-016 and P-013 must survive refactors:
+    // if this ever reads as a refusal, enforcement has leaked a plan item early.
+    expect(out.impact.report).toContain('Reported, not enforced');
+  });
+
+  it.each([['task'], ['feature'], [undefined]])('does not require impact resolution for kind=%s', async (kind) => {
+    const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind, harness: 'papercup' }, readers());
+    expect(out.impact).toMatchObject({ required: false, report: null, reason: 'non-behavior-changing' });
+  });
+
+  it('never makes an observation-lane item enforceable, even when it is a bug with clauses', async () => {
+    // D-012: observations and unpromoted ideas are candidate inputs until promotion.
+    const deps = readers({ edges: [edge()], clauses: [clause()] });
+    const out = await resolveWorkItemBehaviorContract(
+      { id: 'EI-1', kind: 'bug', lane: 'observation', harness: 'papercup' },
+      deps,
+    );
+    expect(out.impact).toMatchObject({ required: false, report: null, reason: 'observation-lane' });
+    // It still RESOLVES its clauses — non-enforceable is not the same as invisible.
+    expect(out.enforceable).toHaveLength(1);
+  });
+});
+
+describe('planStampOf', () => {
+  it('prefers the payload stamp and unions its item id with sourcePlanItemIds', () => {
+    expect(
+      planStampOf({
+        id: 'EI-1',
+        harness: 'fallback',
+        payload: { plan_item: { plan_slug: 'stamped', item_id: 'P-002', harness_slug: 'stamped-harness' } },
+        sourcePlanSlug: 'ignored',
+        sourcePlanItemIds: ['P-003', 'not-an-item'],
+      }),
+    ).toEqual({ planSlug: 'stamped', harnessSlug: 'stamped-harness', planItemIds: ['P-002', 'P-003'] });
+  });
+
+  it('is null for a standalone item — which is now a resolvable state, not a dead end', () => {
+    expect(planStampOf({ id: 'EI-1', harness: 'papercup' })).toBeNull();
+  });
+});

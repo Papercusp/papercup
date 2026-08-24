@@ -2851,6 +2851,23 @@ export const FLAGS = {
   // permanently excludes. OFF is the kill-switch: every omp launch strips the
   // builtin again, byte-identical to the pre-P-021 hard-coded behaviour.
   OMP_NATIVE_LSP_BUILTIN: "papercusp-omp-native-lsp-builtin",
+  // WI-41147: the account burn-rate governor — projects each account's unified-7d
+  // utilization trajectory (d(utilization7d)/dt over retained probe history, the
+  // provider's own meter) and, when a window is on course to exhaust BEFORE it
+  // resets, deprioritizes (throttle) or refuses to hard-pin (shed) that account in
+  // spawn selection, with the verdict + reason surfaced on accounts:status. Exists
+  // because 2026-08-23's 2.3× burn spike at FLAT headcount walled 8/12 accounts at
+  // utilization7d=1.00 with zero warning — every prior control governed member
+  // COUNT, none governed spend trajectory.
+  //
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS). Safe to default ON
+  // because the governor is protective and conservative by CONSTRUCTION: it never
+  // acts on missing/stale data (verdict 'none' with the gap named), only reorders
+  // or refuses hard pins near exhaustion (the gateway's unpinned failover path is
+  // untouched), and can never shrink the servable set below what the wall
+  // machinery alone allows (throttle is a two-pass preference; shed only blocks
+  // the pin). OFF is the kill-switch: selection is byte-identical to pre-governor.
+  ACCOUNT_BURN_GOVERNOR: "papercusp-account-burn-governor",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

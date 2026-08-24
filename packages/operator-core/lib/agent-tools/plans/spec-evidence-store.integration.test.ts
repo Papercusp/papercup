@@ -41,6 +41,12 @@ const migration = (name: string) => path.resolve(here, `../../../../../libs/pape
 const MIGRATION_851 = migration('851-first-class-plan-spec-clauses.sql');
 const MIGRATION_852 = migration('852-plan-spec-clause-integrity.sql');
 const MIGRATION_855 = migration('855-work-item-spec-evidence-bindings.sql');
+// 929/930 add plan_spec_clause_revisions.falsifier and its shape CHECK. Required here
+// even though this suite is about EVIDENCE: it seeds clauses through setSpecClause, which
+// writes the column. A sibling fixture silently falling one column behind a harness_shared
+// table is a known recurring break (EI-21270668928342264) — this suite hit it.
+const MIGRATION_929 = migration('929-spec-clause-falsifier.sql');
+const MIGRATION_930 = migration('930-spec-clause-falsifier-null-safe.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
@@ -144,6 +150,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_852);
   await applyMigrationForTest(db.sql, MIGRATION_855);
   await applyMigrationForTest(db.sql, MIGRATION_855);
+  await applyMigrationForTest(db.sql, MIGRATION_929);
+  await applyMigrationForTest(db.sql, MIGRATION_930);
 }, 90_000);
 
 afterAll(async () => {
@@ -392,5 +400,79 @@ describe('exact spec evidence bindings', () => {
         staleReasons: ['coverageEvidence-stale', 'testRun-stale'],
       },
     });
+  });
+});
+
+/**
+ * D-013: plan_slug is the clause's GROUPING namespace, not a scope boundary on
+ * applicability — a work item may link to clauses in any namespace regardless of its
+ * own provenance. `listWorkItemSpecRevisionEdges` therefore grew an OPTIONAL planSlug.
+ *
+ * The resolver's own unit tests inject readers, so they cannot see this SQL branch at
+ * all; without the cases below the unscoped read is exercised by nothing against real
+ * Postgres. Both directions are asserted together on purpose: "returns rows from both
+ * namespaces" is only meaningful next to "the scoped read still returns exactly one".
+ */
+describe('cross-namespace spec revision edges (D-013)', () => {
+  /** Insert one edge, taking spec_fingerprint from the revision it points at. */
+  const seedEdge = (workItemId: string, planSlug: string, specId: string) => db.sql`
+    INSERT INTO harness_shared.work_item_spec_revision_edges
+      (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint, created_by)
+    SELECT workspace_id, harness_slug, ${workItemId}, plan_slug, spec_id, revision, content_hash, 'su-test'
+      FROM harness_shared.plan_spec_clause_revisions
+     WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+       AND plan_slug = ${planSlug} AND spec_id = ${specId} AND revision = 1`;
+
+  beforeEach(async () => {
+    await db.sql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'other-plan')`;
+    await db.sql`
+      INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'other-plan', 'P-009')`;
+  });
+
+  it('reads edges across every plan namespace when planSlug is omitted, and only one when it is not', async () => {
+    await specs.setSpecClause(clause());
+    await specs.setSpecClause(
+      clause({
+        planSlug: 'other-plan',
+        specId: 'SPEC-009-01',
+        sourceValId: null,
+        planItemId: 'P-009',
+        behavior: 'A lapsed lease is reclaimable exactly once.',
+      }),
+    );
+    // One work item, two namespaces — the shape a standalone bug takes on once it links
+    // impact outside whatever plan happened to mint it.
+    // spec_fingerprint is FK-tied to the revision's content_hash (855 puts it in a unique
+    // key so the edge's fingerprint is DATABASE-verified), so it must be sourced, not invented.
+    await seedEdge('WI-101', 'reconnect-plan', 'SPEC-003-01');
+    await seedEdge('WI-101', 'other-plan', 'SPEC-009-01');
+
+    const all = await evidenceStore.listWorkItemSpecRevisionEdges({ harnessSlug: HARNESS, workItemId: 'WI-101' });
+    expect(all.map((e) => [e.planSlug, e.specId])).toEqual([
+      ['other-plan', 'SPEC-009-01'],
+      ['reconnect-plan', 'SPEC-003-01'],
+    ]);
+
+    // POSITIVE CONTROL for the scoped branch: the old behaviour must be unchanged, or the
+    // widening silently became "planSlug is ignored" — which no unscoped assertion can catch.
+    const scoped = await evidenceStore.listWorkItemSpecRevisionEdges({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+    });
+    expect(scoped.map((e) => e.specId)).toEqual(['SPEC-003-01']);
+  });
+
+  it('still scopes by work item — an unscoped plan read is not an unscoped item read', async () => {
+    await specs.setSpecClause(clause());
+    await seedEdge('WI-102', 'reconnect-plan', 'SPEC-003-01');
+
+    expect(await evidenceStore.listWorkItemSpecRevisionEdges({ harnessSlug: HARNESS, workItemId: 'WI-101' })).toEqual([]);
+    expect(
+      await evidenceStore.listWorkItemSpecRevisionEdges({ harnessSlug: HARNESS, workItemId: 'WI-102' }),
+    ).toHaveLength(1);
   });
 });

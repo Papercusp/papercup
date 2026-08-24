@@ -37,6 +37,20 @@
  * already mistrusts. This is a separate top-level metadata key, surfaced by the same
  * `routines:list` health projection.
  *
+ * ── WHY NEITHER STATEMENT TOUCHES `updated_at` ───────────────────────────────────────────────
+ * On this table `updated_at` is not bookkeeping, it is a SIGNAL.
+ * `evaluateReleaseTriggerFreeze` derives the age of a pause from `now - updated_at` and alarms
+ * only once that age crosses a threshold. Both release-trigger passes write to THAT row, so a
+ * `SET updated_at = now()` here would reset the age of the very freeze they exist to detect:
+ * every failing pass would refresh the clock, and the silent fleet-wide deploy freeze — which
+ * has recurred twice (2026-06-18, 2026-07-12) with no auto-recovery either time and "will NEVER
+ * self-clear" — would simply never alarm. A diagnostic that suppresses the alarm it rides
+ * beside is worse than no diagnostic at all. The marker carries its own `lastErrorAt`, so
+ * nothing here needs the column; its absence is deliberate and is pinned by a test.
+ *
+ * (This was caught by an existing assertion in green-stall-watchdog.test.ts that the salvage
+ * path writes nothing — a guard that looked like it was merely being pedantic about SQL.)
+ *
  * ── BEST-EFFORT, and the one rung it cannot reach ────────────────────────────────────────────
  * Both writes swallow their own errors: a diagnostic must never break, or slow, the watchdog it
  * describes. That leaves one honest gap — if THIS write is what is broken, the failure is
@@ -136,6 +150,8 @@ async function recordWatchdogPassFailure(
 ): Promise<number> {
   const slug = scope.installSlug ?? null;
   const res = await sql`
+    /* watchdog-health (EI-21297913810967409) — a liveness marker, NOT watchdog state. Tests that
+       assert a pass writes no routine STATE key off this marker; keep it in both statements. */
     UPDATE harness_shared.routines
        SET metadata = jsonb_set(
              COALESCE(metadata, '{}'::jsonb),
@@ -154,8 +170,7 @@ async function recordWatchdogPassFailure(
                     )
                   ),
              true
-           ),
-           updated_at = now()
+           )
      WHERE name = ${scope.routineName}
        AND (${slug}::text IS NULL OR install_slug = ${slug}::text)`;
   return res.count ?? 0;
@@ -172,6 +187,7 @@ async function recordWatchdogPassFailure(
 async function clearWatchdogPassFailure(sql: Sql, pass: WatchdogPassName, scope: WatchdogPassScope): Promise<number> {
   const slug = scope.installSlug ?? null;
   const res = await sql`
+    /* watchdog-health (EI-21297913810967409) — a liveness marker, NOT watchdog state. */
     UPDATE harness_shared.routines
        SET metadata = CASE
              WHEN (metadata #- ARRAY[${WATCHDOG_HEALTH_METADATA_KEY}, ${pass}]::text[])
@@ -179,8 +195,7 @@ async function clearWatchdogPassFailure(sql: Sql, pass: WatchdogPassName, scope:
                THEN (metadata #- ARRAY[${WATCHDOG_HEALTH_METADATA_KEY}, ${pass}]::text[])
                       - ${WATCHDOG_HEALTH_METADATA_KEY}
              ELSE  metadata #- ARRAY[${WATCHDOG_HEALTH_METADATA_KEY}, ${pass}]::text[]
-           END,
-           updated_at = now()
+           END
      WHERE name = ${scope.routineName}
        AND (${slug}::text IS NULL OR install_slug = ${slug}::text)
        AND jsonb_exists(metadata->${WATCHDOG_HEALTH_METADATA_KEY}, ${pass})`;

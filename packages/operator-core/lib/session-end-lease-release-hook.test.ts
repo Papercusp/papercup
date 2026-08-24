@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  partitionReapableTasks,
   runSessionEndLeaseRelease,
   scheduleSessionEndLeaseRelease,
   type SessionEndLeaseReleaseDeps,
@@ -233,6 +234,54 @@ describe('runSessionEndLeaseRelease', () => {
       reapedTaskIds: [],
       failedTaskIds: [],
     });
+  });
+});
+
+/**
+ * Falsifiability of the auto-reap exemption, proved the way CLAUDE.md prescribes
+ * for "a MODULE / logic you import": a deliberately-wrong implementation kept
+ * PERMANENTLY beside the real one as a control, plus a calibration the real
+ * subject must pass. Never by mutating this shared tree — git-sync commits the
+ * whole working tree on a schedule, so a probe that holds a file mutated for the
+ * length of a suite run can have its mutant committed even when nothing goes
+ * wrong and no handler fails.
+ *
+ * Without the control, `partitionReapableTasks` could quietly degrade to "put
+ * everything in reapable" and every assertion here that only checks `reapable`
+ * would still pass.
+ */
+describe('partitionReapableTasks — the owner ruling, and proof the guard can fail', () => {
+  const terminalRow = {
+    taskId: 'task-terminal',
+    detail: { launchSurface: 'terminal', autoReapExempt: true },
+  } as unknown as TaskRow;
+  const headlessRow = { taskId: 'task-headless', detail: { headless: true } } as unknown as TaskRow;
+  const noDetailRow = { taskId: 'task-legacy' } as unknown as TaskRow;
+
+  /** The bug this guard exists to prevent: exemption ignored, everything reaped. */
+  const WRONG_partition = (rows: readonly TaskRow[]) => ({ reapable: [...rows], exempt: [] as TaskRow[] });
+
+  it('CALIBRATION: the real partition holds an auto-reap-exempt row back', () => {
+    const { reapable, exempt } = partitionReapableTasks([headlessRow, terminalRow, noDetailRow]);
+    expect(reapable.map((r) => r.taskId)).toEqual(['task-headless', 'task-legacy']);
+    expect(exempt.map((r) => r.taskId)).toEqual(['task-terminal']);
+  });
+
+  it('CONTROL: the same assertion FAILS against a partition that ignores the exemption', () => {
+    const { reapable, exempt } = WRONG_partition([headlessRow, terminalRow, noDetailRow]);
+    // Stated as the inverse so this control is itself a passing test: if the
+    // real implementation ever degraded to WRONG_partition, the calibration
+    // above would go red — which is exactly the falsifiability claim.
+    expect(reapable.map((r) => r.taskId)).toContain('task-terminal');
+    expect(exempt).toEqual([]);
+  });
+
+  it('a row with no detail at all is reapable — absence of the marker is never exemption', () => {
+    // Fails OPEN deliberately: every pre-existing headless row predates this
+    // feature and carries no marker. Reading "no marker" as "exempt" would
+    // silently disable the reaper for the whole fleet.
+    expect(partitionReapableTasks([noDetailRow]).exempt).toEqual([]);
+    expect(partitionReapableTasks([{ taskId: 'x', detail: {} } as unknown as TaskRow]).exempt).toEqual([]);
   });
 });
 

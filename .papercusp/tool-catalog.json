@@ -9159,7 +9159,7 @@
           "POST"
         ]
       },
-      "description": "Run a read-only SELECT / WITH…SELECT or EXPLAIN over a SELECT/WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Pass `positiveControlSql` when an empty result will support an absence claim. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution.",
+      "description": "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim.",
       "capabilities": [
         "intel:read"
       ],
@@ -9176,9 +9176,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A genuinely ad-hoc / analytic read or planner diagnostic of PG-canonical state — a one-off group-by/join/slice or EXPLAIN over a SELECT/WITH query you won't run again. NOT the default way to read canonical state: most hot reads already have a stable-shape tool (work_items:claimable, work_items:list, plans:list/plans:items, search:*, gitnexus:query).",
-        "notWhen": "A read a documented tool above already covers (hand-written claimability/plan queries are the classic footgun, and a predicate missing workspace_id/harness_slug can match another tenant), or to CHANGE state — writes and EXPLAIN of writes are rejected here. Also: schema_migrations→db:migrations; test_runs→testing:runs (status='failed' matches NOTHING); engineer_issues→issues:list.",
-        "chaining": "Check a table's shape first with `describe: \"schema.table\"` (or a glob) instead of `psql -c \"\\d …\"`. Use `EXPLAIN (FORMAT TEXT) SELECT …` for a bounded planner diagnostic; its explained statement must be SELECT/WITH…SELECT. When zero rows will be treated as evidence of absence, pass `positiveControlSql`: a known-positive SELECT expected to return at least one row through the same table/scope/instrument. Do not use `count(*)` as the control because an aggregate returns one row even when its population is empty. Alias duplicate output columns (the row cap wraps ordinary queries in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly."
+        "when": "A one-off analytic read or planner diagnostic not covered by a stable-shape tool.",
+        "notWhen": "A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.",
+        "chaining": "Use `describe` before guessing schema. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`."
       }
     },
     {

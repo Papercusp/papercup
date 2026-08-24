@@ -186,6 +186,17 @@ const acctRow = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatu
   rate: { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 },
   liveBuckets: [],
   readingStatus: 'fresh',
+  // WI-41147: the burn governor verdict is required on AccountStatusRow. A neutral 'none'
+  // (no history in these fixtures) keeps every existing assertion untouched; override via
+  // `over` to exercise throttle/shed rows.
+  burn: {
+    burnRatePerHr: null,
+    headroomFraction: null,
+    projectedExhaustionAt: null,
+    exhaustsBeforeReset: false,
+    action: 'none',
+    reason: 'test fixture — no burn history',
+  },
   ...over,
 });
 

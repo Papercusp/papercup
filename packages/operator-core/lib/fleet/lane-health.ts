@@ -82,6 +82,7 @@ export function claimSpecFamilyReachability(spec: ClaimSpec): ClaimSpecFamilyRea
 /** Read every structurally reachable family for a supplied, already-validated spec. */
 export async function readClaimSpecLaneHealth(args: {
   spec: ClaimSpec; record: ClaimSpecRecord; fleet: string; harness: string;
+  /** Omit for a caller-neutral population read; pass an owner id for a per-member claim verdict. */
   workspaceId?: string | null; assignee?: string; rigAvailable?: boolean; matchedBy?: string;
 }): Promise<FleetLaneHealth | null> {
   try {
@@ -102,15 +103,18 @@ export async function readClaimSpecLaneHealth(args: {
 
     let featureFamily: FleetLaneHealth['featureFamily'] = null;
     if (familyReachability.feature) {
-      const featureClaimable = args.assignee && ws
+      const featureClaimable = ws
         ? await import('../scheduler/fleet-scope-admission').then(({ diagnoseFleetScopeFeatureFamilyMatch }) =>
             diagnoseFleetScopeFeatureFamilyMatch({
               scope: {
-                ownerId: args.assignee!, fleetSlug: args.fleet, fleetRole: 'member',
+                // Population reads deliberately carry no claimant. The diagnostic's
+                // explicit null override below keeps caller-relative floors out of the
+                // fleet-wide total.
+                ownerId: args.assignee ?? '', fleetSlug: args.fleet, fleetRole: 'member',
                 record: args.record, workspaceId: ws,
               },
               harness: args.harness, workspaceId: ws, states: args.spec.states,
-              rigAvailable: args.rigAvailable,
+              rigAvailable: args.rigAvailable, cooldownAssignee: args.assignee ?? null,
             }),
           )
         : null;

@@ -120,7 +120,10 @@ export default defineTool({
       if (
         goal &&
         goal.agreement !== 'divergent' &&
-        goal.competing.length === 0 &&
+        // `competing` is `readonly string[] | null` and documented "Absent ⇒ []"
+        // (holder-context.ts D-093/D-092), so a missing leg means NO competing
+        // claims — not an unknown one. Optional-chain rather than assert.
+        (goal.competing?.length ?? 0) === 0 &&
         (/^(?:WI|EI|F)-\d+$/i.test(candidate) || /#P-\d+$/i.test(candidate))
       ) {
         goalRef = candidate;

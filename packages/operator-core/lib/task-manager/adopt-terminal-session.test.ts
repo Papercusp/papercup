@@ -165,6 +165,54 @@ describe('adoptTerminalSession', () => {
     expect(d.begin).not.toHaveBeenCalled();
   });
 
+  it('REPAIRS a half-written row instead of caching it forever (found by live verification)', async () => {
+    // `registerTask` commits, then the fire-and-forget `markSpawned` does not —
+    // an operator restart inside that window leaves a `pending` row with no pid
+    // and no cgroup. The reconciler can never match such a row, so it ages into
+    // a strand; and because the row IS found by the existing-row query, every
+    // later beat would return `existing-row`, cache it, and never repair it.
+    // Observed for real on WI-41197: the row sat `pending` with `pid=null` while
+    // its session stayed `foreign` despite being enrolled.
+    const halfWritten = {
+      taskId: 'task-half',
+      pid: null,
+      processIdentity: null,
+      detail: { launchSurface: TERMINAL_LAUNCH_SURFACE, supervisorPid: 4242 },
+    } as unknown as TaskRow;
+    const markSpawned = vi.fn(async () => ({}));
+    const d = deps({
+      listTasks: vi.fn(async () => [halfWritten]) as AdoptTerminalSessionDeps['listTasks'],
+      markSpawned: markSpawned as unknown as AdoptTerminalSessionDeps['markSpawned'],
+    });
+
+    const res = await adoptTerminalSession({ ownerId: 'su-1', pid: 4242 }, d);
+
+    expect(res).toMatchObject({ reason: 'existing-row', taskId: 'task-half' });
+    expect(markSpawned).toHaveBeenCalledWith(
+      'task-half',
+      expect.objectContaining({ pid: 4242, confined: false, processIdentity: 'linux:boot-1:99999' }),
+    );
+    // Repaired, not duplicated: a second row would be the worse failure.
+    expect(d.begin).not.toHaveBeenCalled();
+  });
+
+  it('leaves an already-complete existing row alone', async () => {
+    const complete = {
+      taskId: 'task-ok',
+      pid: 4242,
+      processIdentity: 'linux:boot-1:99999',
+      detail: { launchSurface: TERMINAL_LAUNCH_SURFACE, supervisorPid: 4242 },
+    } as unknown as TaskRow;
+    const markSpawned = vi.fn(async () => ({}));
+    const d = deps({
+      listTasks: vi.fn(async () => [complete]) as AdoptTerminalSessionDeps['listTasks'],
+      markSpawned: markSpawned as unknown as AdoptTerminalSessionDeps['markSpawned'],
+    });
+
+    await adoptTerminalSession({ ownerId: 'su-1', pid: 4242 }, d);
+    expect(markSpawned).not.toHaveBeenCalled();
+  });
+
   it('no-ops without enrolling: flag off, no pid, and a pid that is not alive', async () => {
     const offDeps = deps({ enabled: () => false });
     expect(await adoptTerminalSession({ ownerId: 'su-1', pid: 4242 }, offDeps)).toMatchObject({

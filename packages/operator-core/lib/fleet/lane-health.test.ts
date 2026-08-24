@@ -71,6 +71,13 @@ const read = () =>
     assignee: 'su-member',
   });
 
+const readPopulation = () =>
+  readFleetLaneHealth({
+    fleet: 'fleet-x',
+    harness: 'papercusp',
+    workspaceId: 'ws-x',
+  });
+
 describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211885)', () => {
   it('uses only the feature oracle for an explicitly feature-only exact-plan lane', async () => {
     mocks.resolveFleetClaimSpec.mockResolvedValueOnce(resolved({
@@ -156,5 +163,28 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
       excluded: null,
       basis: 'issue+feature-family',
     });
+  });
+
+  it('omits caller-relative floors for a fleet population read', async () => {
+    mocks.aggregateIssueClaimExclusions.mockResolvedValue({
+      claimable: 2,
+      matchedByFilter: 2,
+      excluded: {},
+    });
+
+    const health = await readPopulation();
+
+    expect(mocks.aggregateIssueClaimExclusions).toHaveBeenCalledWith(
+      planFilter,
+      expect.objectContaining({ assignee: undefined }),
+    );
+    expect(mocks.diagnoseFleetScopeFeatureFamilyMatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cooldownAssignee: null,
+        scope: expect.objectContaining({ ownerId: '' }),
+      }),
+    );
+    expect(health?.effective.claimable).toBe(6);
+    expect(health?.spec.assigneeScoped).toBeNull();
   });
 });

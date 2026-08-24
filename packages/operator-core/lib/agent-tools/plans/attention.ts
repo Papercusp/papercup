@@ -368,7 +368,7 @@ export default defineTool({
                     from: typeof e.from === "string" ? e.from : null,
                     goalRef:
                       typeof (e as { goalRef?: unknown }).goalRef === "string"
-                        ? (e as { goalRef: string }).goalRef
+                        ? ((e as { goalRef?: unknown }).goalRef as string)
                         : null,
                   }),
                   occurredAt: toIsoOrNull(tsOf((e as { ts?: unknown }).ts)),

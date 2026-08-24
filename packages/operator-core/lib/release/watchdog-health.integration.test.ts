@@ -14,7 +14,7 @@
  * Run: npx vitest run --config vitest.integration.config.ts \
  *        lib/release/watchdog-health.integration.test.ts
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
@@ -132,6 +132,27 @@ describe('recordWatchdogPassOutcome (real PG)', () => {
     expect(after[0].u).toBe(before[0].u);
   });
 
+  it('NEVER touches updated_at — it is the release-trigger freeze SIGNAL, not bookkeeping', async () => {
+    // `evaluateReleaseTriggerFreeze` computes the age of a pause as `now - routines.updated_at`
+    // and alarms only once that age crosses a threshold. Both release-trigger passes write to
+    // THAT row, so `SET updated_at = now()` here would reset the age of the very freeze they
+    // exist to detect — every failing pass refreshing the clock, and the silent fleet-wide
+    // deploy freeze (recurred 2026-06-18 and 2026-07-12, no auto-recovery either time) never
+    // alarming at all. This pins the omission so it cannot be "tidied" back in.
+    await seedRoutine({ id: 'rt-touch', installSlug: 'papercusp', name: 'release-trigger' });
+    const before = await sql<{ u: string }[]>`SELECT updated_at::text AS u FROM harness_shared.routines WHERE id = 'rt-touch'`;
+    const scope = { routineName: 'release-trigger', installSlug: 'papercusp' } as const;
+
+    await recordWatchdogPassOutcome(sql, 'release-trigger-freeze', scope, new Error('boom'));
+    await recordWatchdogPassOutcome(sql, 'release-trigger-freeze', scope, undefined); // and the clear
+
+    // The marker round-tripped, so the writes definitely ran...
+    expect(await readPass('rt-touch', 'release-trigger-freeze')).toBeUndefined();
+    // ...and neither of them moved the freeze clock.
+    const after = await sql<{ u: string }[]>`SELECT updated_at::text AS u FROM harness_shared.routines WHERE id = 'rt-touch'`;
+    expect(after[0].u).toBe(before[0].u);
+  });
+
   it('clearing one pass PRESERVES a sibling pass still failing', async () => {
     // The five passes are independent by design; one recovering must not blind the reader to
     // another that is still broken.
@@ -205,15 +226,27 @@ describe('recordWatchdogPassOutcome (real PG)', () => {
     expect(health?.lastError.length).toBeLessThan(500);
   });
 
-  it('NEVER THROWS, even when the write itself fails — it runs inside the watchdog\'s finally', async () => {
+  it('NEVER THROWS when the write itself fails — but still leaves a console witness', async () => {
     // A throw here would replace the pass's return value, so a broken diagnostic would break the
-    // watchdog it is diagnosing. Simulate with a closed/rejecting handle.
+    // watchdog it is diagnosing. Simulate with a handle that rejects.
     const broken = (() => {
       throw new Error('connection terminated');
     }) as unknown as Sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(
-      recordWatchdogPassOutcome(broken, 'green-stall', { routineName: 'green-checkpoint' }, new Error('x')),
-    ).resolves.toBe(0);
+    try {
+      await expect(
+        recordWatchdogPassOutcome(broken, 'green-stall', { routineName: 'green-checkpoint' }, new Error('x')),
+      ).resolves.toBe(0);
+
+      // The honest gap this module documents: if the RECORDER is what is broken, the database
+      // cannot witness it, so the console line is the only rung left. Asserted rather than
+      // assumed — swallowing this one silently would reproduce the bug being fixed, one layer up.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('[watchdog-health]');
+      expect(String(warn.mock.calls[0][0])).toContain('green-stall');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

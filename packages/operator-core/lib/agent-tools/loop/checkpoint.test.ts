@@ -68,7 +68,12 @@ const setLoopCarryNoteWithPrior = vi.fn(
     // literal here drifts silently the moment carry-note grows an option, and
     // reds the fleet gate from a file nobody edited.
     opts?: Parameters<typeof import('../../carry-note').setLoopCarryNoteWithPrior>[2],
-  ) => {
+    // The SAME rule as the args above, applied to the RETURN — which had been
+    // left as an inferred literal (`{ stored, priorLength }`). That literal
+    // drifted the moment SetCarryNoteResult grew `blockedReason` / `conflict`,
+    // and red the fleet gate from a file nobody edited: exactly the failure the
+    // comment above was written to prevent. Derive it from the real signature.
+  ): Promise<Awaited<ReturnType<typeof import('../../carry-note').setLoopCarryNoteWithPrior>>> => {
     const prior =
       storePriorOverride !== undefined ? storePriorOverride : (((await getLoopCarryNote()) as string | null) ?? null);
     const merged = opts?.transform

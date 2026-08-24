@@ -1282,6 +1282,11 @@ export async function diagnoseFleetScopeFeatureFamilyMatch(args: {
   workspaceId?: string | null;
   states?: string[];
   rigAvailable?: boolean;
+  /**
+   * Override the claimant used by caller-relative floors. Omit to preserve the
+   * historical per-member behavior; explicit null requests a population count.
+   */
+  cooldownAssignee?: string | null;
 }): Promise<number | null> {
   try {
     const ws = resolveClaimSpecWorkspace(args.workspaceId);
@@ -1290,11 +1295,14 @@ export async function diagnoseFleetScopeFeatureFamilyMatch(args: {
     const { sql } = getOrgPg();
     const { claimFloorsWhereSql } = await import('../work-items');
     const { compileFilter } = await import('./get-next');
+    const cooldownAssignee = args.cooldownAssignee === null
+      ? undefined
+      : args.cooldownAssignee ?? args.scope.ownerId;
     const floors = claimFloorsWhereSql(sql, {
       harness: args.harness,
       workspaceId: ws,
       states: args.states ?? spec.states,
-      cooldownAssignee: args.scope.ownerId,
+      cooldownAssignee,
       rigAvailable: args.rigAvailable,
     });
     const filter = compileFilter(sql, spec.view.filter);

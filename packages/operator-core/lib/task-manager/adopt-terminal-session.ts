@@ -69,10 +69,10 @@
 
 import { pinModuleState } from '@papercusp/module-singleton';
 import { readProcessIdentity } from '../process-identity';
-import { nodeCgroupFs, readProcessCmdline, type CgroupFs } from './cgroup-read';
+import { nodeCgroupFs, readProcessCgroupPath, readProcessCmdline, type CgroupFs } from './cgroup-read';
 import { taskManagerEnabledSync } from './enabled';
 import { beginSyncEnrolment, completeSyncEnrolment } from './enroll-sync';
-import { closeTask, listTasks } from './store';
+import { closeTask, listTasks, markSpawned } from './store';
 import type { TaskRow, TaskSpec } from './types';
 
 /** Stamped on every row this module writes. The reaper exemption and the
@@ -118,6 +118,7 @@ export interface AdoptTerminalSessionDeps {
   complete?: typeof completeSyncEnrolment;
   enabled?: typeof taskManagerEnabledSync;
   readIdentity?: typeof readProcessIdentity;
+  markSpawned?: typeof markSpawned;
 }
 
 /**
@@ -198,6 +199,26 @@ export async function adoptTerminalSession(
       (row) => isAdoptedTerminalSessionRow(row) && (row.detail as Record<string, unknown>)?.supervisorPid === pid,
     );
     if (existing) {
+      // A row can be HALF-WRITTEN: `registerTask` commits, then the
+      // fire-and-forget `markSpawned` does not (an operator restart or a crash
+      // inside that window). The result is a `pending` row with no pid and no
+      // cgroup — which the reconciler can never match, so it ages into a strand.
+      //
+      // Repairing it here is not optional, because this branch is a TRAP without
+      // it: the broken row IS found by the query above, so every later beat
+      // would return `existing-row`, cache it, and never fix it. Observed for
+      // real during live verification (WI-41197), where the row sat `pending`
+      // with `pid=null` and the session stayed `foreign` despite being enrolled.
+      if (existing.pid == null || !existing.processIdentity) {
+        await (deps.markSpawned ?? markSpawned)(existing.taskId, {
+          pid,
+          processIdentity: identity,
+          scopeUnit: null,
+          cgroupPath: readProcessCgroupPath(pid, fs),
+          confined: false,
+          unconfinedReason: 'caller-veto',
+        });
+      }
       state.byOwner.set(ownerId, { pid, taskId: existing.taskId });
       return { adopted: false, taskId: existing.taskId, reason: 'existing-row' };
     }

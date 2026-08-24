@@ -27,6 +27,9 @@ import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readOpusBudgetPolicy } from '../opus-budget-policy';
 import { readScalePolicy } from '../scale-policy';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import type { BurnVerdict } from '../inference-gateway/burn-governor';
 import {
   type AccountEgress,
   type AccountPool,
@@ -35,6 +38,7 @@ import {
   type ScalePolicy,
   type SpawnSelection,
   AccountPoolError,
+  accountBurnVerdict,
   accountFull,
   accountProvider,
   accountsForProvider,
@@ -278,6 +282,9 @@ export async function selectSpawnAccount(
   if (!pool) return undefined;
   const providerPool = { accounts: accountsForProvider(pool, provider) };
   const now = Date.now();
+  // WI-41147: the burn governor is flag-gated (default ON — protective, acts only near
+  // exhaustion). Fail-soft to ON: a flag-read error must not change selection semantics.
+  const burnGovernor = await getFlag(FLAGS.ACCOUNT_BURN_GOVERNOR, 'system').catch(() => true);
   // P-004: apply the owner's session-now override BEFORE selection (fail-soft, no-op when
   // unset). A `forced` allow-list restricts the candidates; `exclude` skips some. An
   // over-restrictive override (no candidate survives) → undefined = the frame-default
@@ -297,6 +304,7 @@ export async function selectSpawnAccount(
       harness,
       priorAccountId,
       rng,
+      burnGovernor,
     });
     return resolveSelection(ws, sel, now);
   }
@@ -311,7 +319,7 @@ export async function selectSpawnAccount(
     }
     return undefined;
   }
-  const sel = selectAccountForSpawn(providerPool, now, { harness, priorAccountId, rng });
+  const sel = selectAccountForSpawn(providerPool, now, { harness, priorAccountId, rng, burnGovernor });
   return resolveSelection(ws, sel, now);
 }
 
@@ -785,6 +793,14 @@ export interface AccountStatusRow {
    * as UNKNOWN, not as a measured verdict, until a fresh probe succeeds.
    */
   lastProbeFailedAt?: number;
+  /**
+   * WI-41147: the burn-rate governor's verdict for this account — the PROJECTION the bare
+   * `available`/`usageWalled` booleans cannot express (they are threshold checks on the current
+   * reading; this is the trajectory: burn rate, projected exhaustion, and whether it lands before
+   * the window resets). Stale-gated (a stale/never-observed reading yields action 'none' with the
+   * gap named) and always carries a `reason` — never a silent throttle.
+   */
+  burn: BurnVerdict;
 }
 
 export interface AccountStatusDeps {
@@ -855,6 +871,7 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
       readingStatus,
       readingAgeMs,
       lastProbeFailedAt: a.rate.lastProbeFailedAt,
+      burn: accountBurnVerdict(a.rate, now),
     };
   });
 }

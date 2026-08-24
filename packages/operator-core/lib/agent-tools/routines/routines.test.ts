@@ -236,6 +236,53 @@ describe('routines:list', () => {
   });
 
   /**
+   * EI-21297913810967409 — the same defect as the test above, one subsystem over, and the READER
+   * half of that fix.
+   *
+   * The five release watchdogs (green-stall, the stranded-pause scan, main-behind-staging, and
+   * both release-trigger guards) each swallow their own failure as a `console.warn (non-fatal)`,
+   * so a guard that CANNOT RUN and a guard that ran and found nothing are indistinguishable —
+   * both are silence. One of them had been dead for as long as it had existed, querying a column
+   * that does not exist (EI-21291109975568717), with no witness but a console line.
+   *
+   * Each pass now records onto the routine row it watches. That write is proven against real
+   * Postgres in release/watchdog-health.integration.test.ts; what THIS test pins is the other
+   * end — that the recorded marker actually reaches a reader. Drop the key from the allowlist
+   * and the watchdogs go back to writing evidence nobody ever sees, which is the whole bug.
+   */
+  it('surfaces metadata.watchdog_health so a broken release watchdog stops reading as healthy (EI-21297913810967409)', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'green-checkpoint',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '15 * * * *' },
+        target_role: 'system:green-checkpoint',
+        // As with the test above: every one of these reads HEALTHY while the watchdog that
+        // would notice otherwise cannot run at all.
+        active: true,
+        next_fire_at: new Date('2026-08-24T03:15:00Z'),
+        last_fired_at: new Date('2026-08-24T02:15:00Z'),
+        metadata: {
+          watchdog_health: {
+            'paused-green-checkpoint': {
+              lastError: 'column cp.revoked_at does not exist',
+              lastErrorAt: '2026-08-24T02:15:04.000Z',
+              consecutiveFailures: 12,
+            },
+          },
+        },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toMatchObject({
+      watchdog_health: {
+        'paused-green-checkpoint': { consecutiveFailures: 12 },
+      },
+    });
+  });
+
+  /**
    * The calibration control for the test above. A `toMatchObject` assertion on a projected
    * field passes for the WRONG reason if the projection ever starts echoing metadata wholesale
    * — so prove the allowlist is still an allowlist by sending a key that must NOT come through.
