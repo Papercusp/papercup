@@ -44,7 +44,7 @@ function catalogRowMatches(row: CatalogRow, query: string): boolean {
 export default defineTool({
   name: 'events:catalog',
   description:
-    'List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status.',
+    'List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (alias `pattern`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status.',
   capability: 'events:read',
   guidance: {
     when: 'Before you POLL for something (a deploy landing, the gate going green, a peer\'s work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you\'re unsure whether an event even exists for X, OR you (an emitter/leader) want to see WHO is actually listening on a key before you trust an events:emit alone (live_awaiters).',
@@ -65,6 +65,11 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Case-insensitive substring over family, key, await example, description, emitter, provenance, and sugar.'),
+    pattern: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Compatibility alias for `q`; prefer the canonical `q` key. If both are supplied, `q` wins.'),
     limit: z
       .number()
       .int()
@@ -116,7 +121,10 @@ export default defineTool({
     // EVENT_CATALOG alone would silently leave every installed family without one).
     const merged = mergeInstalledEventCatalog(installedUnits);
     const collisions: EventFamilyCollision[] = merged.collisions;
-    const query = args.q?.trim().toLowerCase();
+    // EI-21374977511049906: events:watch calls its free-text selector `pattern`,
+    // and callers naturally carried that spelling here. Keep `q` canonical while
+    // accepting the explicit alias; an explicitly supplied `q` wins.
+    const query = (args.q ?? args.pattern)?.trim().toLowerCase();
 
     let rows = renderCatalog(installedUnits);
     if (args.family) rows = rows.filter((r) => r.family === args.family);

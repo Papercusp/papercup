@@ -72,8 +72,18 @@ const SOURCE_KEY = 'plans';
 const SCOPES = ['slug', 'title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
 
-const argsSchema = z.object({
-  query: z.string().min(1).describe('Search query (case-insensitive, whitespace-tokenized).'),
+const argsSchema = z
+  .object({
+  query: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Search query (case-insensitive, whitespace-tokenized). Required unless `slug` is supplied.'),
+  slug: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Compatibility shorthand for a slug-only search. Equivalent to `{ query: slug, scope: ["slug"] }`; `query` wins when both are supplied.'),
   scope: z
     .array(z.enum(SCOPES as unknown as [Scope, ...Scope[]]))
     .optional()
@@ -92,7 +102,16 @@ const argsSchema = z.object({
         'Read `legs` on the response for whether it actually ran: legs.degraded=true means the ranking is ' +
         'NOT the one this promises.',
     ),
-});
+  })
+  .superRefine((args, ctx) => {
+    if (!args.query && !args.slug) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['query'],
+        message: 'pass `query` (or the slug-only alias `slug`).',
+      });
+    }
+  });
 
 interface Hit {
   plan: string;
@@ -170,7 +189,7 @@ function snippet(text: string, queryTokens: string[], maxLen = 160): string {
 export default defineTool({
   name: 'plans:search',
   description:
-    'Search across SU plans by keyword. Scopes: slug, title, now, items, decisions, prose. Includes archived + legacy by default. A slug (or slug fragment) finds the plan it names — not only plans that mention it.',
+    'Search across SU plans by keyword. Scopes: slug, title, now, items, decisions, prose. Includes archived + legacy by default. A slug (or slug fragment) finds the plan it names — not only plans that mention it. `slug` is a compatibility shorthand for a slug-only search; `query` remains the canonical search field and wins when both are supplied.',
   guidance: {
     when: 'You\'re looking for prior work, decisions, or items by topic and don\'t have a slug — or you have a slug fragment and want the plan it names.',
     notWhen:
@@ -187,11 +206,15 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void; signal?: AbortSignal };
-    const scopes: Scope[] = (args.scope as Scope[] | undefined) ?? [...SCOPES];
+    const query = args.query ?? args.slug;
+    if (!query) throw new Error('plans:search requires `query` or `slug`');
+    const scopes: Scope[] =
+      (args.scope as Scope[] | undefined) ??
+      (args.slug && !args.query ? ['slug'] : [...SCOPES]);
     const limit = args.limit ?? 20;
     const includeArchived = args.includeArchived !== false;
     const includeLegacy = args.includeLegacy !== false;
-    const queryTokens = tokenize(args.query);
+    const queryTokens = tokenize(query);
     if (queryTokens.length === 0) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ hits: [] }) }],
@@ -199,7 +222,7 @@ export default defineTool({
     }
 
     // Check if query looks like an exact plan slug (e.g., P-001, feature-name, etc.)
-    const queryIsSlugLike = VALID_PLAN_SLUG.test(args.query) && args.query.trim().length < 50;
+    const queryIsSlugLike = VALID_PLAN_SLUG.test(query) && query.trim().length < 50;
     const isExplicitAllScope = isAllHarnessSentinel(args.harness);
 
     const sctx = harnessScopedCtx(args.harness, ctx);
@@ -406,7 +429,7 @@ export default defineTool({
 
     const { results, legs, applied } = await runHybridSearch([source], {
       sql: lazyOrgSql,
-      query: args.query,
+      query,
       // Both legs resolve their own workspace/harness scope from `opts` (the
       // plan store is scoped by `resolvePlanScope`, not by the engine's keys).
       workspaceId: '',
@@ -434,7 +457,7 @@ export default defineTool({
     });
 
     ctxAny.metadata?.({
-      query: args.query,
+      query,
       scopes,
       count: merged.length - semanticHitCount,
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
