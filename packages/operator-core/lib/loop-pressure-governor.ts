@@ -23,20 +23,42 @@
  * back automatically — so a false `critical` (a one-off long GC) costs at most a
  * temporary, self-correcting dip. Inactive while no finite cap is installed (AIMD
  * off). Always-on infra like the lag monitor + the P5-1 load-shedding it pairs with.
+ *
+ * WI-41147 leg b — the POOL-BURN lever. A second, slower feedback input on the SAME
+ * AIMD seam: when the account pool's AGGREGATE burn verdict says every route is
+ * burning (`throttle`) or walled (`shed`) — see `aggregatePoolBurn` — selection can
+ * no longer spread the load away, so the only remaining lever is fewer concurrent
+ * agents. Debounced per episode exactly like the pressure lever (an escalation
+ * penalizes once; recovery to `none` records one clean step), flag-gated by
+ * ACCOUNT_BURN_GOVERNOR in the default reader, and NEVER acts on missing data (a
+ * failed pool read keeps the last verdict rather than faking a recovery).
  */
 import { loopPressure, type LoopPressure } from './event-loop-lag-monitor';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import type { BurnAction } from './inference-gateway/burn-governor';
 import {
   recordGlobalConcurrencyPenalty,
   recordGlobalConcurrencyClean,
 } from '@papercusp/papercusp-shared/agent';
 
+/** One pool-burn observation for the lever: the aggregate action + its stated WHY. */
+export interface PoolBurnRead {
+  action: BurnAction;
+  reason: string;
+}
+
 export interface LoopPressureGovernorOpts {
   /** Evaluation cadence (ms). Default 15_000 — fast enough to react within seconds
    *  of sustained saturation, slow enough to be free. */
   intervalMs?: number;
+  /** Pool-burn evaluation cadence (ms). Default 60_000 — burn state only moves on
+   *  probe/traffic cadence (minutes), and each evaluation reads the persisted pool. */
+  burnIntervalMs?: number;
   /** Pressure source. Defaults to the live {@link loopPressure}; injected in tests. */
   readPressure?: () => LoopPressure;
+  /** Pool-aggregate burn source (WI-41147 leg b). Defaults to the flag-gated live
+   *  account-pool aggregate ({@link defaultReadPoolBurn}); injected in tests. */
+  readPoolBurn?: () => Promise<PoolBurnRead>;
   /** AIMD multiplicative-decrease. Defaults to the global governor seam; injected in tests. */
   onPenalty?: () => void;
   /** AIMD clean-step. Defaults to the global governor seam; injected in tests. */
@@ -46,10 +68,38 @@ export interface LoopPressureGovernorOpts {
 }
 
 export interface LoopPressureGovernorHandle {
-  /** Stop the timer (unref'd already, so it never holds the process open). */
+  /** Stop the timers (unref'd already, so they never hold the process open). */
   stop(): void;
-  /** Run one evaluation step now — drives the timer; exported for tests. */
+  /** Run one PRESSURE evaluation step now — drives the pressure timer; exported for tests. */
   tick(): void;
+  /** Run one POOL-BURN evaluation now (in-flight-guarded — a pending read is never
+   *  doubled) — drives the burn timer; exported for tests. */
+  tickBurn(): Promise<void>;
+}
+
+/**
+ * Default pool-burn read: the flag-gated aggregate over the live account pool. Lazily imports
+ * the pool/flags surfaces so this always-on watchdog module stays light for callers that never
+ * use the default (tests inject; boot pays the import once). A flag-read failure fails soft to
+ * ON (matching the selection wiring in account-pool-store); any other failure PROPAGATES so the
+ * caller keeps its last verdict instead of mistaking a broken read for a recovery.
+ */
+async function defaultReadPoolBurn(): Promise<PoolBurnRead> {
+  const [{ FLAGS }, { getFlag }] = await Promise.all([
+    import('@papercusp/flags'),
+    import('@papercusp/flags/server'),
+  ]);
+  const on = await getFlag(FLAGS.ACCOUNT_BURN_GOVERNOR, 'system').catch(() => true);
+  if (!on) return { action: 'none', reason: 'ACCOUNT_BURN_GOVERNOR is off — burn lever stands down' };
+  const [{ loadAccountPool }, { accountBurnAction }, { aggregatePoolBurn }] = await Promise.all([
+    import('./deployment/account-pool-store'),
+    import('./deployment/account-pool'),
+    import('./inference-gateway/burn-governor'),
+  ]);
+  const pool = await loadAccountPool();
+  const now = Date.now();
+  const agg = aggregatePoolBurn(pool.accounts.map((a) => accountBurnAction(a, now)));
+  return { action: agg.action, reason: agg.reason };
 }
 
 // One per process. A second start() returns the existing handle (idempotent boot).
