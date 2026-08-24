@@ -313,7 +313,7 @@ async function main(): Promise<void> {
   const orphans = await findOrphanTests();
   for (const o of orphans) {
     offenders.push(`[ORPHAN] ${o}\n        → matches no registry glob → invisible in the /adv Tests tab. ` +
-      `Widen a domain in apps/operator/lib/testing-domains-registry.ts, then ` +
+      `Widen a domain in packages/operator-core/lib/testing-domains-registry.ts, then ` +
       `regenerate: npx tsx scripts/gen-testing-domains-contract.ts`);
   }
 
