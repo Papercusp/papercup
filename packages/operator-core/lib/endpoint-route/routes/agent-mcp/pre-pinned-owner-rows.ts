@@ -9,6 +9,24 @@ export type PrePinnedOwnerRow = {
   id: string;
   display: string | null;
   has_session: boolean;
+  /**
+   * Process evidence for a non-precursor row. This is deliberately a
+   * three-way value: only a positive dead-process observation authorises
+   * reconciliation. Missing/unknown evidence must keep the row blocking a
+   * pre-pinned owner, because a lost response is not proof that the claimant
+   * lost its race.
+   */
+  liveness?: PrePinnedOwnerLiveness;
+};
+
+export type PrePinnedOwnerLiveness = 'live' | 'dead' | 'unknown';
+
+export type PrePinnedOwnerClassification<T extends PrePinnedOwnerRow> = {
+  precursors: T[];
+  /** Non-precursor rows with positive dead-process evidence. */
+  reclaimableConflicts: T[];
+  /** Non-precursor rows that must continue to block the owner id. */
+  conflicts: T[];
 };
 
 /**
@@ -19,7 +37,9 @@ export type PrePinnedOwnerRow = {
  * now booting (WI-6376: `display='terminal'`, no `session_id` yet, so the board can
  * render the session during its boot window). bootstrap-su ADOPTS it instead of
  * inserting a second row. A conflict is anything else — which is the split-identity
- * case the freshness guard exists to refuse (WI-5002/EI-13277).
+ * case the freshness guard exists to refuse (WI-5002/EI-13277). A conflict may be
+ * placed in `reclaimableConflicts` only when the caller supplies POSITIVE dead-process
+ * evidence; live and unknown rows stay in `conflicts`.
  *
  * ⚠ Why this is ONE pass and not two filters. The original shape was:
  *
@@ -38,18 +58,20 @@ export type PrePinnedOwnerRow = {
  *
  * Classifying by VALUE in a single pass cannot express that bug. Note the branches
  * are exhaustive on purpose: every row lands in exactly one bucket, so a row can
- * never be silently dropped from both.
+ * never be silently dropped from all three.
  */
 export function classifyPrePinnedOwnerRows<T extends PrePinnedOwnerRow>(
   live: Iterable<T>,
-): { precursors: T[]; conflicts: T[] } {
+): PrePinnedOwnerClassification<T> {
   const precursors: T[] = [];
+  const reclaimableConflicts: T[] = [];
   const conflicts: T[] = [];
   for (const row of live) {
     if (row.display === DISPLAY_TERMINAL_LAUNCH && !row.has_session) precursors.push(row);
+    else if (row.liveness === 'dead') reclaimableConflicts.push(row);
     else conflicts.push(row);
   }
-  return { precursors, conflicts };
+  return { precursors, reclaimableConflicts, conflicts };
 }
 
 /**

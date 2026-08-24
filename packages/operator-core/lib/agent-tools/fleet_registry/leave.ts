@@ -3,9 +3,11 @@
  * P-004 / D-002).
  *
  * Clears the caller's coord_presence fleet_slug/fleet_role to NULL. If the caller WAS the
- * fleet's recorded leader, the fleet is left leaderless too (setFleetLeader(null)) — so a
- * leader leaving doesn't strand a phantom leader_owner_id pointing at a gone agent. The
- * registry row itself persists (D-003).
+ * fleet's recorded leader, the fleet is left leaderless too (setFleetLeader(null)) while
+ * the fleet is active — so a normal leader departure doesn't strand a phantom
+ * leader_owner_id pointing at a gone agent. During winding-down, the pointer is retained
+ * as a durable final-report recipient; audience-host also has a history fallback for rows
+ * cleared by older/runtime-raced leaves. The registry row itself persists (D-003).
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
@@ -59,7 +61,7 @@ export default defineTool({
       // membership remains authoritative even if the event store is unavailable.
       await retireFleetLeaderWatches(ownerId, currentFleet).catch(() => 0);
       const fleet = await getFleet(workspaceId, currentFleet);
-      if (fleet && fleet.leaderOwnerId === ownerId) {
+      if (fleet && fleet.leaderOwnerId === ownerId && fleet.controlState !== 'winding-down') {
         await setFleetLeader(workspaceId, currentFleet, null);
         clearedLeadershipOf = currentFleet;
       }

@@ -29,7 +29,7 @@ export default defineTool({
   name: 'processes:kill',
   profile: 'engineer',
   description:
-    'Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to tracked agent kinds (`run.sh | omp | claude`); host services have guarded controls.',
+    'Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to tracked agent kinds (`run.sh | omp | claude`); host services such as `hono-host.ts` have guarded controls.',
   guidance: {
     when: 'End a named task. Prefer `taskId` from `processes:list`: it kills the whole subtree. Use `pid` only for a tracked AGENT process (`run.sh | omp | claude`).',
     notWhen:
@@ -37,7 +37,7 @@ export default defineTool({
     chaining:
       '`processes:list` -> `taskId` or `live.unaccountedGroups[].scopeUnit` -> here. In taskId mode, `includeSubtree:true` also signals logically nested tasks with their own scopes.',
     returns:
-      '{ ok, results:[...], counts } — keyed, not positional; one failure never fails the rest. taskId `ok:true` means the scope was re-probed empty, or SIGKILL was delivered and termination is pending; leave LIVE rows alone and do not retry. A non-empty survivor after non-escalated SIGTERM returns `ok:false, error:"incomplete"`. scopeUnit is accepted only for a validated `pc-*.scope` from `processes:list`; systemd must resolve it under `papercusp.slice` and verify it empty afterward (or report SIGKILL pending). Other taskId failures: `identity_mismatch` refuses a recycled identity; `not_live` means ended/residue; `unsupported`/`command_failed`. Pid failures: `pid_not_found` means absent; `unsupported_kind` means alive but outside tracked kinds (never read as gone); `protected_kind` is tracked but off-limits.',
+      '{ ok, results:[...], counts } — keyed, not positional; one failure never fails the rest. taskId `ok:true` means the scope was re-probed empty, or SIGKILL was delivered and termination is still pending; leave LIVE rows alone; no retry. A non-empty survivor after non-escalated SIGTERM returns `ok:false, error:"incomplete"`. scopeUnit is accepted only for a validated `pc-*.scope` from `processes:list`; systemd must resolve it under `papercusp.slice` and verify it empty afterward (or report SIGKILL pending). Other taskId failures: `identity_mismatch` refuses a recycled identity; `not_live` means ended/residue; `unsupported`/`command_failed`. Pid failures: `pid_not_found` means absent; `unsupported_kind` means alive but outside tracked kinds (never read as gone — EI-18698120633403217); `protected_kind` is tracked but off-limits.',
   },
   capability: 'processes:kill',
   args: z

@@ -152,3 +152,27 @@ export async function latestFleetMembership(
   `;
   return rows[0] ? { fleetSlug: rows[0].fleet_slug, fleetRole: rows[0].fleet_role } : null;
 }
+
+/**
+ * The most recently recorded leader for a fleet, including a leader who has
+ * since left. This is deliberately a HISTORY read, not a current-membership
+ * read: callers must gate it to an explicit lifecycle state (currently fleet
+ * wind-down) before using the result as a recovery recipient.
+ */
+export async function latestFleetLeader(
+  workspaceId: string,
+  fleetSlug: string,
+  sql?: Sql,
+): Promise<string | null> {
+  const s = pg(sql);
+  const rows = await s<{ owner_id: string }[]>`
+    SELECT owner_id
+      FROM harness_shared.fleet_membership_events
+     WHERE workspace_id = ${workspaceId}
+       AND fleet_slug = ${fleetSlug}
+       AND fleet_role = 'leader'
+     ORDER BY id DESC
+     LIMIT 1
+  `;
+  return rows[0]?.owner_id ?? null;
+}

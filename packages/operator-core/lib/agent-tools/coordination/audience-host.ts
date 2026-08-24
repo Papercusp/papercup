@@ -18,6 +18,7 @@ import { coordWorkspaceId } from './log';
 import { ensureBootstrap, getTxPool, readQueue, normalizePaths } from '../locks/su-lock-store';
 import { liveFleetMemberIds, liveFleetMemberIdsDiagnosed } from '../../fleet/fleet-roster';
 import { getFleet, fleetSlugFromName } from '../../agent-fleets-store';
+import { latestFleetLeader } from '../../fleet-membership-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import {
@@ -189,9 +190,11 @@ export const hostAudienceResolvers: AudienceResolvers = {
     // (it lands in their durable inbox for when they return). Null leader → no one.
     const slug = fleetSlugFromName(fleetSlug);
     const ws = coordWorkspaceId();
+    let localFleet: Awaited<ReturnType<typeof getFleet>> = null;
     let localRegistryLeader: string | null = null;
     try {
-      localRegistryLeader = (await getFleet(ws, slug))?.leaderOwnerId ?? null;
+      localFleet = await getFleet(ws, slug);
+      localRegistryLeader = localFleet?.leaderOwnerId ?? null;
     } catch {
       /* registry unavailable */
     }
@@ -206,10 +209,27 @@ export const hostAudienceResolvers: AudienceResolvers = {
         staleMs: PRESENCE_STALE_MS,
       });
       const lead = resolveFederatedFleetLeader({ localRegistryLeader: null, federatedMembers });
-      return lead ? [lead] : [];
+      if (lead) return [lead];
     } catch {
-      return [];
+      // Continue to the durable wind-down fallback below. A federated roster
+      // failure must not erase the local lifecycle history.
     }
+
+    // fleet:leave intentionally clears the current registry pointer for an
+    // active fleet, but a leader leaving DURING wind-down still needs to be a
+    // durable recipient for the final stand-down report. The append-only
+    // membership ledger retains the last recorded leader after presence and
+    // the registry pointer have been cleared. Never use this history fallback
+    // for an active leaderless fleet: that would resurrect stale authority.
+    if (localFleet?.controlState === 'winding-down') {
+      try {
+        const lastLeader = await latestFleetLeader(ws, slug);
+        return lastLeader ? [lastLeader] : [];
+      } catch {
+        /* history unavailable — unresolved audience is safer than a failed send */
+      }
+    }
+    return [];
   },
 };
 

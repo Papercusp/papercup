@@ -24,6 +24,10 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
   getFleet: vi.fn(async () => null),
 }));
+vi.mock('../../fleet-membership-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet-membership-store')>()),
+  latestFleetLeader: vi.fn(async () => null),
+}));
 vi.mock('./fleet-delivery', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./fleet-delivery')>()),
   getFleetDeliveryOverrides: vi.fn(async () => new Map()),
@@ -54,6 +58,7 @@ import { listPresence } from './presence';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { getFleet } from '../../agent-fleets-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
+import { latestFleetLeader } from '../../fleet-membership-store';
 import { listFederatedFleetMembers } from '../../sync/hyperbee/session-presence-store';
 import { readQueue } from '../locks/su-lock-store';
 
@@ -274,6 +279,24 @@ describe('hostAudienceResolvers — federated (cross-machine) fleet view (P-301)
     vi.mocked(listFederatedFleetMembers).mockResolvedValue([] as never);
     expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['local-a', 'local-b']);
     expect(await hostAudienceResolvers.listFleetLeader('git-plan')).toEqual([]);
+  });
+
+  it('uses the durable last leader only when a local fleet is winding down', async () => {
+    vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: null, controlState: 'winding-down' } as never);
+    vi.mocked(listFederatedFleetMembers).mockResolvedValue([] as never);
+    vi.mocked(latestFleetLeader).mockResolvedValue('former-lead');
+
+    expect(await hostAudienceResolvers.listFleetLeader('git-plan')).toEqual(['former-lead']);
+    expect(vi.mocked(latestFleetLeader)).toHaveBeenCalledWith(expect.any(String), 'git-plan');
+  });
+
+  it('does not resurrect a historical leader for an active leaderless fleet', async () => {
+    vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: null, controlState: 'active' } as never);
+    vi.mocked(listFederatedFleetMembers).mockResolvedValue([] as never);
+    vi.mocked(latestFleetLeader).mockResolvedValue('stale-former-lead');
+
+    expect(await hostAudienceResolvers.listFleetLeader('git-plan')).toEqual([]);
+    expect(vi.mocked(latestFleetLeader)).not.toHaveBeenCalled();
   });
 });
 

@@ -50,6 +50,31 @@ describe('classifyPrePinnedOwnerRows', () => {
     expect(conflicts.map((r) => r.id)).toEqual(['900', '901']);
   });
 
+  it('puts a registered row with positive dead-process evidence in the reclaimable bucket', () => {
+    const { reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows([
+      { ...registered('900'), liveness: 'dead' },
+    ]);
+    expect(reclaimableConflicts.map((r) => r.id)).toEqual(['900']);
+    expect(conflicts).toEqual([]);
+  });
+
+  it('keeps a live registered row blocking the pre-pinned owner', () => {
+    const { reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows([
+      { ...registered('900'), liveness: 'live' },
+    ]);
+    expect(reclaimableConflicts).toEqual([]);
+    expect(conflicts.map((r) => r.id)).toEqual(['900']);
+  });
+
+  it('keeps unknown or missing liveness blocking — absence is not proof of death', () => {
+    const { reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows([
+      registered('900'),
+      { ...registered('901'), liveness: 'unknown' },
+    ]);
+    expect(reclaimableConflicts).toEqual([]);
+    expect(conflicts.map((r) => r.id)).toEqual(['900', '901']);
+  });
+
   it('separates a precursor from a real conflict in the same result', () => {
     const { precursors, conflicts } = classifyPrePinnedOwnerRows([precursor('14746'), registered('900')]);
     expect(precursors.map((r) => r.id)).toEqual(['14746']);
@@ -57,9 +82,14 @@ describe('classifyPrePinnedOwnerRows', () => {
   });
 
   it('puts every row in exactly one bucket, so none is silently dropped', () => {
-    const rows = [precursor('1'), registered('2'), console_('3')];
-    const { precursors, conflicts } = classifyPrePinnedOwnerRows(rows);
-    expect([...precursors, ...conflicts]).toHaveLength(rows.length);
+    const rows = [
+      precursor('1'),
+      registered('2'),
+      console_('3'),
+      { ...registered('4'), liveness: 'dead' as const },
+    ];
+    const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(rows);
+    expect([...precursors, ...reclaimableConflicts, ...conflicts]).toHaveLength(rows.length);
   });
 
   // THE REGRESSION GUARD. WI-37858: a 409 named a row that satisfied the precursor
