@@ -38,6 +38,8 @@ export interface WorkflowDetailViewProps {
   planChainable?: boolean | null;
   /** Human relative time of the last run, e.g. "last fired 09:30"; null when never fired. */
   lastFiredLabel?: string | null;
+  /** The test execution just queued from this surface, before the refreshed activity feed catches up. */
+  lastTestRunId?: string | null;
   busy: 'arm' | 'test' | null;
   onBack: () => void;
   onToggleArm: () => void;
@@ -52,6 +54,7 @@ export default function WorkflowDetailView({
   bindingLoaded,
   planChainable = null,
   lastFiredLabel = null,
+  lastTestRunId = null,
   busy,
   onBack,
   onToggleArm,
@@ -113,6 +116,7 @@ export default function WorkflowDetailView({
           binding={binding}
           armed={armed}
           selectedNode={selectedNode}
+          lastTestRunId={lastTestRunId}
           busy={busy}
           onToggleArm={onToggleArm}
           onTest={onTest}
