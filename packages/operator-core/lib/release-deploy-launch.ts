@@ -222,11 +222,32 @@ export type DeployStateKind =
   | 'green-deployable' // green code is ahead + deployable but not yet live (the trigger case)
   | 'release-trigger-paused' // a deliberate release safety hold blocks ordinary deploys
   | 'release-trigger-unavailable' // release-trigger is absent/inactive without usable pause provenance
+  | 'gate-running' // a measured checkpoint run is producing a fresh verdict now
+  | 'gate-paused' // the checkpoint routine is deliberately paused; the pause is the current blocker
   | 'gate-red' // the gate is RED — the green pin can't advance until the reds are fixed
   | 'gate-verdict-stale' // WI-4489: the blob says red, but the verdict is superseded/unverified — colour UNKNOWN, not red
   | 'gate-wedged' // the green-checkpoint isn't firing or produced no verdict — surface to an operator
   | 'staging-buffered' // staging has commits awaiting the next (green) checkpoint — normal, just wait
   | 'unknown';
+
+export interface CheckpointExecutionStatus {
+  /** Current execution truth. A running/paused/blocked state has no implied code verdict. */
+  state: 'running' | 'paused' | 'blocked' | 'idle' | 'unknown';
+  /** Which existing authority produced the state above. */
+  authority: 'manual-unit' | 'shared-run-lock' | 'routine-control' | 'live-probe' | 'unmeasured';
+  /** The run's own published phase, only while a measured run is live. */
+  phase: string | null;
+  /** Exact current blocker when the gate is paused/blocked/unreadable. */
+  blocker: string | null;
+  /** True only while a measured live run is still producing its verdict. */
+  verdictPending: boolean;
+  /** Probe health is separate from run liveness: a failed systemd probe can still be
+   * corroborated by the independent shared run-lock. */
+  probe: {
+    status: 'ok' | 'failed' | 'unmeasured';
+    detail: string | null;
+  };
+}
 
 export interface DeployStatus {
   gate: {
@@ -294,6 +315,10 @@ export interface DeployStatus {
    *  snapshot was not probed (or the probe was unavailable); an object with `active:false` is
    *  preserved when the probe explicitly reports idle. */
   checkpointRunInFlight: GitPipelineSnapshot['activeRun'];
+  /** P-009: one truthful execution/control projection. This distinguishes a measured
+   * idle probe from an externally-held run, names the current phase/blocker, and never
+   * upgrades "running" or "re-armed" into a green/red verdict. */
+  checkpoint: CheckpointExecutionStatus;
   /** The SAME control row that gates the scheduled release-trigger. Ordinary manual triggers
    *  must not route around it; force remains the explicit override. */
   releaseTrigger: {
@@ -362,6 +387,85 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // the real outcome, so it must not be classified as a wedge yet.
   const latestCheckpointIsNonVerdict =
     lastCheckpointEvent !== undefined && !isRecordableVerdict(lastCheckpointEvent.status);
+  const checkpointRoutine = snap.routines.greenCheckpoint;
+  const checkpointProbe = checkpointRunInFlight == null
+    ? { status: 'unmeasured' as const, detail: null }
+    : checkpointRunInFlight.probeFailed
+      ? { status: 'failed' as const, detail: checkpointRunInFlight.probeDetail ?? null }
+      : { status: 'ok' as const, detail: null };
+  const measuredRunActive =
+    checkpointRunInFlight?.active === true &&
+    (checkpointRunInFlight.probeFailed !== true || checkpointRunInFlight.heldExternally === true);
+  const terminalFailure =
+    checkpointRunInFlight?.active === false &&
+    checkpointRunInFlight.terminalMarker === false &&
+    checkpointRunInFlight.terminalEvidence?.abnormal === true
+      ? checkpointRunInFlight.terminalEvidence
+      : null;
+  const checkpoint: CheckpointExecutionStatus = measuredRunActive
+    ? {
+        state: 'running',
+        authority: checkpointRunInFlight?.heldExternally ? 'shared-run-lock' : 'manual-unit',
+        phase: checkpointRunInFlight?.currentPhase ?? null,
+        blocker: null,
+        verdictPending: true,
+        probe: checkpointProbe,
+      }
+    : checkpointRoutine?.active === false && checkpointRoutine.pause
+      ? {
+          state: 'paused',
+          authority: 'routine-control',
+          phase: null,
+          blocker: checkpointRoutine.pause.reason ?? 'green-checkpoint is paused without a recorded reason',
+          verdictPending: false,
+          probe: checkpointProbe,
+        }
+      : checkpointRunInFlight?.probeFailed
+        ? {
+            state: 'unknown',
+            authority: 'unmeasured',
+            phase: null,
+            blocker: checkpointRunInFlight.probeDetail ?? 'green-checkpoint liveness probe failed',
+            verdictPending: false,
+            probe: checkpointProbe,
+          }
+        : terminalFailure
+          ? {
+              state: 'blocked',
+              authority: 'live-probe',
+              phase: null,
+              blocker:
+                `checkpoint terminated ${terminalFailure.serviceResult}/` +
+                `${terminalFailure.exitCode}:${terminalFailure.exitStatus} without a verdict`,
+              verdictPending: false,
+              probe: checkpointProbe,
+            }
+          : latestCheckpointIsNonVerdict
+            ? {
+                state: 'blocked',
+                authority: 'live-probe',
+                phase: null,
+                blocker: `latest checkpoint ended '${lastCheckpointEvent!.status}' without a gate verdict`,
+                verdictPending: false,
+                probe: checkpointProbe,
+              }
+            : checkpointRunInFlight?.active === false
+              ? {
+                  state: 'idle',
+                  authority: 'live-probe',
+                  phase: null,
+                  blocker: null,
+                  verdictPending: false,
+                  probe: checkpointProbe,
+                }
+              : {
+                  state: 'unknown',
+                  authority: 'unmeasured',
+                  phase: null,
+                  blocker: null,
+                  verdictPending: false,
+                  probe: checkpointProbe,
+                };
   // EI-18646778682511611: a partial advance ('advanced-prefix', P-016/D-010) resets
   // `consecutiveReds` to 0 by design (trackGateStall treats it as "main is advancing,
   // not stalled") — but it is EXPLICITLY the case where the CANDIDATE/tip is still red
@@ -387,6 +491,13 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // name is how a reader ends up asserting on the wrong one.)
   const lastVerdictRecordedNotGreen = g.recordedVerdict === 'not-green';
   const gateGreen = g.consecutiveReds === 0 && !fireStale && !lastVerdictWasPartialRed && !lastVerdictRecordedNotGreen;
+  // P-009: gate_health is a cache. Once its verdict is stale, a fresh run is in flight,
+  // the routine is deliberately paused, or the latest tick produced no verdict, its file
+  // list is historical context rather than a current blame list. Suppress it at the shared
+  // status writer so every downstream surface gets the same truthful empty list.
+  const suppressHistoricalFailingTests =
+    g.verdictStale || checkpoint.state === 'running' || checkpoint.state === 'paused' || checkpoint.state === 'blocked';
+  const failingTests = suppressHistoricalFailingTests ? [] : (g.failingTests ?? []);
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
   const releaseTriggerRow = snap.routines.releaseTrigger;
@@ -455,6 +566,28 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     recommendation =
       `${deployedBehindGreenPin} green commit(s) are deployable but not yet live on :3070. ` +
       `The auto-serve ships these each cycle; to expedite now run release:deploy { op: 'trigger', confirm: true } — it can only ship the green pin (safe even while the gate is currently red).`;
+  } else if (checkpoint.state === 'running') {
+    state = 'gate-running';
+    recommendation =
+      `A green-checkpoint run is producing a fresh verdict now` +
+      `${checkpoint.phase ? ` (phase: ${checkpoint.phase})` : ''} under ${checkpoint.authority}. ` +
+      `No verdict exists for this run yet; cached failing-test names are suppressed until it finishes. ` +
+      `Do NOT launch a duplicate checkpoint — re-read after the current run reaches a terminal verdict.`;
+  } else if (checkpoint.state === 'paused') {
+    state = 'gate-paused';
+    recommendation =
+      `The green-checkpoint routine is deliberately PAUSED. Current blocker: ${checkpoint.blocker}. ` +
+      `No code verdict is being produced while paused. The paused-gate watchdog may atomically re-arm only a structured serializer hold whose owner is confirmed non-live; otherwise review the hold before resuming it.`;
+  } else if (checkpoint.state === 'unknown' && checkpoint.probe.status === 'failed') {
+    state = 'gate-wedged';
+    recommendation =
+      `The green-checkpoint liveness probe FAILED: ${checkpoint.blocker}. ` +
+      `This is unknown execution state, not an idle reading and not a gate verdict; repair/retry the probe before launching or waiting on a run.`;
+  } else if (checkpoint.state === 'blocked') {
+    state = 'gate-wedged';
+    recommendation =
+      `${checkpoint.blocker}. No code verdict was produced, so cached failing-test names are suppressed. ` +
+      `Fix the named execution blocker, then run one fresh guarded checkpoint.`;
   } else if (latestCheckpointIsNonVerdict && !checkpointRunActive) {
     state = 'gate-wedged';
     recommendation =
@@ -466,7 +599,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     recommendation =
       `The green gate is RED (${g.consecutiveReds} consecutive red${g.consecutiveReds === 1 ? '' : 's'})` +
       `${g.lastFixerStatus ? `, release-fixer: ${g.lastFixerStatus}` : ''}. ` +
-      (g.failingTests.length === 0
+      (failingTests.length === 0
         ? `This verdict names no failing tests — do NOT go hunting for tests. Inspect the checkpoint run log${lastVerdict?.logPath ? ` at ${lastVerdict.logPath}` : ''} or ask the verdict owner for the non-test failure before taking action.`
         : `Your change can't reach the green pin until the reds are fixed. ` +
           `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`);
@@ -512,7 +645,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       lastFixerStatus: g.lastFixerStatus,
       lastFixerCandidate: g.lastFixerCandidate,
       flakyWorkspaces: g.flakyWorkspaces,
-      failingTests: g.failingTests ?? [],
+      failingTests,
       lastVerdict,
     },
     deploy: {
@@ -528,6 +661,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     deployInFlight: inFlight,
     deployTerminal: inFlight?.terminal ?? null,
     checkpointRunInFlight,
+    checkpoint,
     releaseTrigger: {
       active: releaseTriggerRow?.active ?? null,
       pause: releaseTriggerRow?.pause ?? null,
