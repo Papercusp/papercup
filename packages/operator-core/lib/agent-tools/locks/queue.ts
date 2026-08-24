@@ -13,11 +13,11 @@ import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/h
 export default defineTool({
   name: 'locks:queue',
   description:
-    'Read the active locks and pending waiters for a workspace. Active lock rows include lock_id, the handle needed by locks:release. This is a workspace-global diagnostic: omit harness. Optionally filter by paths (overlap) or owner. Pass include_completed=true to also return terminal waiters from the last 24h (diagnostics). Accepted arguments are paths, owner, and include_completed.',
+    'Read the active locks and pending waiters for a workspace. Active lock rows include lock_id, the handle needed by locks:release. This is a workspace-global diagnostic: omit harness. Optionally filter by paths (overlap): omit paths for an unfiltered scan, while an explicit paths:[] matches nothing. Filter by owner as needed. Pass include_completed=true to also return terminal waiters from the last 24h (diagnostics). Accepted arguments are paths, owner, and include_completed.',
   guidance: {
     when: 'Diagnostics — "what are the other agents doing?" or "why am I blocked?". Cheap, MVCC read.',
     notWhen: 'Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.',
-    chaining: 'Workspace-global diagnostic — omit harness; pass only paths?, owner?, or include_completed?. To release a held row, use its returned lock_id with locks:release; paths is not a standalone release selector.',
+    chaining: 'Workspace-global diagnostic — omit harness; omit paths for all rows or pass exact paths (paths:[] is intentionally empty), plus owner?/include_completed?. To release a held row, use its returned lock_id with locks:release; paths is not a standalone release selector.',
     seeAlso: [
       'locks:list (named-resource holders, not file-lock contention)',
       'coord:roster { view:"live" } (what the other agents are doing overall)',

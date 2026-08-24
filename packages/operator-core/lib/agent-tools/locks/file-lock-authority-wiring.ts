@@ -130,7 +130,9 @@ export function adaptSuLockStore(): FileLockCoordinator {
 
     async queue(p) {
       const sql = getTxPool();
-      return readQueue(sql, { coordinationDomain: p.coordinationDomain, paths: p.paths ?? [] });
+      // Preserve the distinction between an omitted filter (all paths) and an
+      // explicit empty filter (no paths). readQueue fails closed for the latter.
+      return readQueue(sql, { coordinationDomain: p.coordinationDomain, paths: p.paths });
     },
   };
 }

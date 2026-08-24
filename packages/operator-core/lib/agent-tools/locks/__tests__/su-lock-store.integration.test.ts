@@ -927,6 +927,30 @@ describe('readQueue', () => {
     expect(q.waiting[1].ticket_id).toBe(w2.ticket_id);
     expect(q.waiting[1].ahead_count).toBe(1);
   });
+
+  it('treats an explicit empty paths array as an empty filter, not an unfiltered scan', async () => {
+    const ws = nextWs();
+    const holder = await inWorkspaceTxn(ws, 'empty-filter-holder', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'empty-filter-holder',
+        ownerLabel: 'H',
+        paths: ['empty-filter.ts'],
+        intent: 'hold for empty-filter regression',
+        ttlSec: 60,
+      }),
+    );
+    if (!holder.ok) throw new Error('holder acquire should succeed');
+
+    // Omitted paths intentionally remains the workspace-wide diagnostic read.
+    const unfiltered = await readQueue(getTxPool(), { coordinationDomain: ws });
+    expect(unfiltered.active_locks.some((row) => row.lock_id === holder.lock_id)).toBe(true);
+
+    // An explicitly empty caller list must never broaden into that same scan.
+    const empty = await readQueue(getTxPool(), { coordinationDomain: ws, paths: [] });
+    expect(empty.active_locks).toEqual([]);
+    expect(empty.waiting).toEqual([]);
+  });
 });
 
 describe('head-waiter blocks new acquires (anti-starvation)', () => {
