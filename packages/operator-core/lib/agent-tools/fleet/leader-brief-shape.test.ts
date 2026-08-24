@@ -26,6 +26,7 @@ function largeBrief() {
       dead: 2,
       dead_member_ids: ['su-51', 'su-52'],
       stalled: 3,
+      cumulative: { admission_blocked: 4 },
       claimable_now: {
         value: 1432,
         population: {
@@ -95,6 +96,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.summary).toMatchObject({
       fleet: 'large-fleet',
       members: 53,
+      cumulative: { admission_blocked: 4 },
       claimable_now: {
         value: 1432,
         population: {
@@ -308,11 +310,16 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
   });
 
-  it('bounds every high-fanout row family with truthful counts and follow-up pointers', () => {
+  it('keeps the complete member identity index while bounding verbose row families', () => {
     const out = shapeLeaderBrief(largeBrief(), 'trimmed') as Record<string, unknown>;
 
-    expect((out.memberVerdicts as unknown[]).length).toBeLessThan(53);
-    expect(out.memberVerdictsTruncated).toMatchObject({ total: 53, more: expect.stringContaining('payloadTier') });
+    expect((out.memberVerdicts as Array<{ agentId: string }>).map(({ agentId }) => agentId)).toEqual(
+      Array.from({ length: 53 }, (_, index) => `su-${String(index).padStart(2, '0')}`),
+    );
+    expect(out.memberVerdictsTruncated).toBeUndefined();
+    expect(out.leaderBriefProjection).toMatchObject({
+      memberVerdicts: { shown: 53, total: 53, complete: true },
+    });
     expect((out.members as unknown[]).length).toBeLessThan(53);
     expect(out.membersTruncated).toMatchObject({ total: 53 });
     expect(out.unownedCriticalsTruncated).toMatchObject({ total: 53 });
@@ -401,7 +408,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
 
   it('preserves the monitoring-blind advisory in the emergency byte-pressure projection', () => {
     const input = largeBrief();
-    (input.summary as Record<string, unknown>).admission_blocked = 6;
+    (input.summary as Record<string, unknown>).cumulative = { admission_blocked: 6 };
     (input.summary as Record<string, unknown>).darkFleetAlert = true;
     (input as Record<string, unknown>).darkFleetAlertReason =
       '53 registered members have taken zero turns in 30 minutes';
@@ -496,7 +503,8 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       line: expect.stringContaining('monitoring blind'),
       arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },
     });
-    expect(out.summary).toMatchObject({ admission_blocked: 6 });
+    expect(out.summary).toMatchObject({ cumulative: { admission_blocked: 6 } });
+    expect(out.summary).not.toHaveProperty('admission_blocked');
     expect(out.admissionBlocked).toEqual([
       expect.objectContaining({
         itemId: 'WI-5891',

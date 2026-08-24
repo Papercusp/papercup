@@ -50,6 +50,10 @@ function compactFalsifier(value: unknown, maxString = 220): unknown {
   return pick(value, ['tool', 'check', 'measurement', 'kills'], maxString) ?? value;
 }
 
+function compactEmergencyFalsifier(value: unknown): unknown {
+  return pick(value, ['tool'], 120) ?? {};
+}
+
 function compactBlockedAt(value: unknown, maxString = 220, includeSubordinate = true): unknown {
   const source = asDict(value);
   if (!source) return value;
@@ -213,11 +217,16 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'unowned_criticals',
     'unowned_criticals_federated',
     'abandoned_unclaimed',
-    'admission_blocked',
     'fleet_paused',
     'declaredPlanSpecDivergenceAlert',
   ];
   const out = pick(source, metricKeys, 120) ?? {};
+
+  // P-005: cumulative counters are historical, not live gauges. Keep the
+  // namespace explicit in every monitor tier and project only the bounded
+  // counters currently defined by the leader-brief contract.
+  const cumulative = pick(source.cumulative, ['admission_blocked'], 120);
+  if (cumulative) out.cumulative = cumulative;
 
   // EI-21238131879315614: the verbose member rows are live-first and bounded, so
   // `dead` can otherwise be positive while every shown member looks live. Keep a
@@ -309,6 +318,15 @@ function compactIntentAttention(value: unknown): unknown {
 
 function compactVerdict(value: unknown): unknown {
   return pick(value, ['agentId', 'verdict', 'idleCause'], 120) ?? value;
+}
+
+/**
+ * Emergency byte pressure may not be allowed to hide who is in the complete
+ * member index. Keep the identity field in every row, while allowing verdict
+ * detail to be omitted only in that explicitly marked emergency projection.
+ */
+function compactMemberIdentity(value: unknown): unknown {
+  return pick(value, ['agentId'], 120) ?? {};
 }
 
 function compactAdvisory(value: unknown): unknown {
@@ -423,11 +441,48 @@ export function compactCampaign(value: unknown, recentCap = 2): unknown {
   return out;
 }
 
+/** Keep the campaign's boundary and per-axis availability/writer contract when
+ * the emergency projection has no room for units and recent evidence rows. */
+function compactEmergencyCampaign(value: unknown): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const out: Dict = {};
+  if ('boundary' in source) out.boundary = pick(source.boundary, ['at', 'source'], 120) ?? source.boundary;
+  if ('everMembers' in source) out.everMembers = pick(source.everMembers, ['available', 'count'], 120) ?? source.everMembers;
+  const axes = asDict(source.axes);
+  if (axes) {
+    out.axes = Object.fromEntries(
+      Object.entries(axes).map(([name, axis]) => [
+        name,
+        pick(axis, ['available', 'writer'], 120) ?? axis,
+      ]),
+    );
+  }
+  return out;
+}
+
 function addCappedArray(out: Dict, source: Dict, key: string, cap: number, project: (value: unknown) => unknown): void {
   const rows = source[key];
   if (!Array.isArray(rows)) return;
   out[key] = rows.slice(0, cap).map(project);
   if (rows.length > cap) out[`${key}Truncated`] = { total: rows.length, shown: cap, more: 'fleet:leader-brief { payloadTier:"full" } or a narrow follow-up' };
+}
+
+/**
+ * The compact member-verdict index is the identity recovery surface, not a
+ * verbose sample. Keep every row's identity even when the surrounding monitor
+ * projection has to shed detail for the result-door budget. The source is
+ * already reduced to agentId/verdict/idleCause by leader-brief.ts, so retaining
+ * the complete index is materially cheaper than retaining verbose member rows.
+ */
+function addCompleteMemberVerdictIndex(
+  out: Dict,
+  source: Dict,
+  project: (value: unknown) => unknown = compactVerdict,
+): void {
+  const rows = source.memberVerdicts;
+  if (!Array.isArray(rows)) return;
+  out.memberVerdicts = rows.map(project);
 }
 
 function addAlertFields(out: Dict, source: Dict, maxString = 220): void {
@@ -480,7 +535,7 @@ function buildProjection(
   if ('idleCauses' in data) out.idleCauses = data.idleCauses;
   if ('reservation' in data) out.reservation = compactReservation(data.reservation, caps.reservationMembers);
 
-  addCappedArray(out, data, 'memberVerdicts', caps.memberVerdicts, compactVerdict);
+  addCompleteMemberVerdictIndex(out, data);
   addCappedArray(out, data, 'members', caps.members, compactMember);
   for (const key of ['unownedCriticals', 'unownedCriticalsFederated', 'abandonedUnclaimed', 'orphanedInFlight']) {
     addCappedArray(out, data, key, caps.advisories, compactAdvisory);
@@ -509,7 +564,9 @@ function buildProjection(
 
   out.leaderBriefProjection = {
     tier,
-    memberVerdicts: Array.isArray(data.memberVerdicts) ? { shown: Math.min(caps.memberVerdicts, data.memberVerdicts.length), total: data.memberVerdicts.length } : undefined,
+    memberVerdicts: Array.isArray(data.memberVerdicts)
+      ? { shown: data.memberVerdicts.length, total: data.memberVerdicts.length, complete: true }
+      : undefined,
     members: Array.isArray(data.members) ? { shown: Math.min(caps.members, data.members.length), total: data.members.length } : undefined,
     note: 'Default monitor projection keeps the decision core; use payloadTier:"full" or narrow follow-up reads for detail.',
   };
@@ -562,7 +619,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   // A pathological invariant/reason string must not defeat the safety rail.
   const emergency: Dict = {
     ok: source.ok === true,
-    ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt, 140, false) } : {}),
+    ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt, 20, false) } : {}),
     ...(source.monitoringBlindAdvisory !== undefined
       ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }
       : {}),
@@ -584,7 +641,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       emergency[reasonKey] = clip(source[reasonKey], 140) ?? source[reasonKey];
     }
     if (source[falsifierKey] !== undefined) {
-      emergency[falsifierKey] = compactFalsifier(source[falsifierKey], 140);
+      emergency[falsifierKey] = compactEmergencyFalsifier(source[falsifierKey]);
     }
   }
   if (Array.isArray(source.benchSuggestions)) {
@@ -594,17 +651,29 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     emergency.intentAttention = source.intentAttention.map(compactIntentAttention);
   }
   // Emergency is a byte-pressure tier, not permission to turn bounded arrays
-  // into unexplained omissions. Keep one actionable member/verdict and retain
-  // truthful zero-shown pointers for every dropped family.
+  // into unexplained omissions. Keep the complete member identity index and
+  // retain truthful zero-shown pointers for every dropped family. Verdict detail
+  // is the one field allowed to yield to identity when the emergency budget is
+  // tight; the projection marker below makes that loss explicit.
   //
   // EI-18680302159738037: an admission block outranks the ordinary member sample.
-  // The live 27-member reproduction reached this tier with admission_blocked=6
-  // but admissionBlocked shown=0, recreating the exact failure this field fixes:
+  // The live 27-member reproduction reached this tier with
+  // summary.cumulative.admission_blocked=6 but admissionBlocked shown=0,
+  // recreating the exact failure this field fixes:
   // a leader knew *something* was blocked but could not see item/member/spec.
   // Spend the existing verbose-member slot on one compact block instead, and
-  // carry its resolving action. memberVerdicts still preserves a member identity.
+  // carry its resolving action. The identity index remains complete.
   const hasAdmissionBlocks = Array.isArray(source.admissionBlocked) && source.admissionBlocked.length > 0;
-  addCappedArray(emergency, source, 'memberVerdicts', 1, compactVerdict);
+  addCompleteMemberVerdictIndex(emergency, source, compactMemberIdentity);
+  const emergencyProjection = emergency.leaderBriefProjection as Dict;
+  if (Array.isArray(source.memberVerdicts)) {
+    emergencyProjection.memberVerdicts = {
+      shown: source.memberVerdicts.length,
+      total: source.memberVerdicts.length,
+      complete: true,
+      identityOnly: true,
+    };
+  }
   addCappedArray(emergency, source, 'members', hasAdmissionBlocks ? 0 : 1, compactMember);
   for (const key of ['unownedCriticals', 'unownedCriticalsFederated', 'abandonedUnclaimed', 'orphanedInFlight']) {
     addCappedArray(emergency, source, key, 0, compactAdvisory);
@@ -628,7 +697,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     };
   }
   if (source.campaign !== undefined) {
-    const campaign = compactCampaign(source.campaign, 0);
+    const campaign = compactEmergencyCampaign(source.campaign);
     if (JSON.stringify({ ...emergency, campaign }).length <= LEADER_BRIEF_SHAPER_BUDGET_CHARS) {
       emergency.campaign = campaign;
     }
