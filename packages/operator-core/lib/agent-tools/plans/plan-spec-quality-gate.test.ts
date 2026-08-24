@@ -20,6 +20,7 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
     lifecycleStatus: 'active',
     supersedes: null,
     exemption: null,
+    falsifier: null,
     contentHash: 'sha256:spec-one',
     createdBy: 'author',
     createdAt: '2026-08-20T00:00:00.000Z',

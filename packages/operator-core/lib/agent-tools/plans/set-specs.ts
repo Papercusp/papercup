@@ -28,6 +28,14 @@ const specWriteSchema = z
       .nullable()
       .optional(),
     exemption: z.record(z.string(), z.unknown()).nullable().optional(),
+    falsifier: z
+      .object({
+        observation: z.string().trim().min(1).max(4000),
+        probeMethod: z.string().trim().min(1).max(4000).nullable().optional(),
+      })
+      .nullable()
+      .optional()
+      .describe('What you would SEE if this clause were violated, and how to produce it.'),
     acceptanceRef: z.string().trim().min(1).max(1000).nullable().optional(),
   })
   .superRefine((spec, ctx) => {

@@ -449,7 +449,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
            r.revision, r.plan_item_id, r.behavior, r.behavior_class,
            r.required_evidence, r.required_test_layers, r.mutation_required,
            r.lifecycle_status, r.supersedes_spec_id, r.supersedes_revision,
-           r.exemption, r.content_hash, r.created_by, r.created_at,
+           r.exemption, r.falsifier, r.content_hash, r.created_by, r.created_at,
            r.accepted_by, r.accepted_at, r.acceptance_ref
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r
@@ -491,6 +491,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
           ? { specId: r.supersedes_spec_id, revision: Number(r.supersedes_revision) }
           : null,
       exemption: r.exemption,
+      falsifier: r.falsifier ?? null,
       contentHash: r.content_hash,
       createdBy: r.created_by,
       createdAt: pgTimestampToIso(r.created_at),
