@@ -133,12 +133,15 @@ describe('recordWatchdogPassOutcome (real PG)', () => {
   });
 
   it('NEVER touches updated_at — it is the release-trigger freeze SIGNAL, not bookkeeping', async () => {
-    // `evaluateReleaseTriggerFreeze` computes the age of a pause as `now - routines.updated_at`
-    // and alarms only once that age crosses a threshold. Both release-trigger passes write to
-    // THAT row, so `SET updated_at = now()` here would reset the age of the very freeze they
+    // HISTORICAL RATIONALE, still worth pinning. `evaluateReleaseTriggerFreeze` USED TO compute
+    // the age of a pause as `now - routines.updated_at`. Both release-trigger passes write to
+    // THAT row, so `SET updated_at = now()` here would have reset the age of the very freeze they
     // exist to detect — every failing pass refreshing the clock, and the silent fleet-wide
     // deploy freeze (recurred 2026-06-18 and 2026-07-12, no auto-recovery either time) never
-    // alarming at all. This pins the omission so it cannot be "tidied" back in.
+    // alarming at all. Migration 933 moved that signal to `active_changed_at` (trigger-stamped
+    // only on a real flip), so this write can no longer reach the alarm — see
+    // routines-active-changed-at.integration.test.ts. The omission is pinned anyway: `updated_at`
+    // is a shared column with no single owner, and a diagnostic should not claim one.
     await seedRoutine({ id: 'rt-touch', installSlug: 'papercusp', name: 'release-trigger' });
     const before = await sql<{ u: string }[]>`SELECT updated_at::text AS u FROM harness_shared.routines WHERE id = 'rt-touch'`;
     const scope = { routineName: 'release-trigger', installSlug: 'papercusp' } as const;

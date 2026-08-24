@@ -38,18 +38,23 @@
  * `routines:list` health projection.
  *
  * ── WHY NEITHER STATEMENT TOUCHES `updated_at` ───────────────────────────────────────────────
- * On this table `updated_at` is not bookkeeping, it is a SIGNAL.
- * `evaluateReleaseTriggerFreeze` derives the age of a pause from `now - updated_at` and alarms
- * only once that age crosses a threshold. Both release-trigger passes write to THAT row, so a
- * `SET updated_at = now()` here would reset the age of the very freeze they exist to detect:
- * every failing pass would refresh the clock, and the silent fleet-wide deploy freeze — which
- * has recurred twice (2026-06-18, 2026-07-12) with no auto-recovery either time and "will NEVER
- * self-clear" — would simply never alarm. A diagnostic that suppresses the alarm it rides
- * beside is worse than no diagnostic at all. The marker carries its own `lastErrorAt`, so
- * nothing here needs the column; its absence is deliberate and is pinned by a test.
+ * When this file was written, `updated_at` was not bookkeeping on this table — it was a SIGNAL:
+ * `evaluateReleaseTriggerFreeze` derived the age of a pause from `now - updated_at`. Both
+ * release-trigger passes write to THAT row, so a `SET updated_at = now()` here would have reset
+ * the age of the very freeze they exist to detect — every failing pass refreshing the clock, and
+ * the silent fleet-wide deploy freeze (recurred 2026-06-18 and 2026-07-12, no auto-recovery
+ * either time, "will NEVER self-clear") simply never alarming.
  *
- * (This was caught by an existing assertion in green-stall-watchdog.test.ts that the salvage
- * path writes nothing — a guard that looked like it was merely being pedantic about SQL.)
+ * That near-miss is what prompted EI-21299569563939689, and migration 933 has since removed the
+ * hazard at its root: the pause age now comes from `active_changed_at`, stamped by a database
+ * trigger ONLY when `active` actually flips, so no metadata write here or anywhere else can move
+ * it. The omission below is therefore no longer load-bearing for that alarm — it is kept because
+ * `updated_at` remains a shared column with no single owner, and a diagnostic has no business
+ * claiming one. The marker carries its own `lastErrorAt`; nothing here needs the column.
+ *
+ * (The original near-miss was caught by an existing assertion in green-stall-watchdog.test.ts
+ * that the salvage path writes nothing — a guard that looked like it was merely being pedantic
+ * about SQL. Worth remembering the next time one of those looks like a nuisance.)
  *
  * ── BEST-EFFORT, and the one rung it cannot reach ────────────────────────────────────────────
  * Both writes swallow their own errors: a diagnostic must never break, or slow, the watchdog it
