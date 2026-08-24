@@ -636,7 +636,10 @@ describe('release:checkpoint-run', () => {
         quiet_cut_sec: 240,
         started_at: '2026-07-02T10:44:43Z',
         elapsed_sec: 8700, // OLD run (≫ REPLACE_STALE_MIN_AGE_SEC) — the EI-9672 wedged case
+        progress_at: '2026-07-02T11:00:00Z',
+        current_phase: 'suite',
         eta_sec: 2100,
+        eta_basis: 'full-suite',
       },
     }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
@@ -659,7 +662,10 @@ describe('release:checkpoint-run', () => {
       quiet_cut_sec: 240,
       started_at: '2026-07-02T10:44:43Z',
       elapsed_sec: 8700,
+      progress_at: '2026-07-02T11:00:00Z',
+      current_phase: 'suite',
       eta_sec: 2100,
+      eta_basis: 'full-suite',
     });
     expect(String(b.note)).toMatch(/replaceStale:true/);
   });
@@ -684,7 +690,10 @@ describe('release:checkpoint-run', () => {
         quiet_cut_sec: 240,
         started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
         elapsed_sec: 300, // 5 min — a healthy in-progress run on a busy tree
+        progress_at: new Date(Date.now() - 5_000).toISOString(),
+        current_phase: 'suite',
         eta_sec: 10500,
+        eta_basis: 'full-suite',
         replace_refused_young: true,
       },
     }));
@@ -696,9 +705,20 @@ describe('release:checkpoint-run', () => {
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({ replaceStale: true }, MAKE_CTX())) as never);
 
-    expect(b).toMatchObject({ ok: false, already_running: true, candidate_stale: true, replace_refused_young: true, elapsed_sec: 300 });
+    expect(b).toMatchObject({
+      ok: false,
+      already_running: true,
+      candidate_stale: true,
+      replace_refused_young: true,
+      elapsed_sec: 300,
+      current_phase: 'suite',
+      eta_basis: 'full-suite',
+    });
+    expect(Date.parse(String(b.progress_at))).toBeGreaterThan(Date.now() - 60_000);
     expect(String(b.note)).not.toMatch(/Pass replaceStale:true/);
     expect(String(b.note)).toMatch(/Do NOT replace/i);
+    expect(String(b.note)).toMatch(/current_phase \+ progress_at/);
+    expect(String(b.note)).toMatch(/not a measured time-to-verdict/);
   });
 
   // EI-18757736867106199 — the ADVICE must not recommend what the ENFORCEMENT refuses.

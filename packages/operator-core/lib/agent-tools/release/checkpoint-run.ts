@@ -1276,6 +1276,12 @@ export default defineTool({
               quiet_cut_sec: a.quiet_cut_sec ?? null,
               started_at: a.started_at ?? null,
               elapsed_sec: a.elapsed_sec ?? null,
+              // EI-18795744092764390: age alone cannot distinguish a healthy long-running
+              // suite from a wedged one. Surface the writer's newest durable heartbeat and
+              // phase alongside elapsed time so callers can make the wait-vs-replace decision
+              // from observed progress rather than the systemd backstop countdown.
+              progress_at: a.progress_at ?? null,
+              current_phase: a.current_phase ?? null,
               eta_sec: a.eta_sec ?? null,
               eta_basis: a.eta_basis ?? null,
               replace_refused_young: a.replace_refused_young ?? false,
@@ -1383,7 +1389,7 @@ export default defineTool({
                       // can, and it is decisive.
                       'A checkpoint run for this root is already in flight and has published the `delivering` phase: its SUITE IS DONE and it is in the verdict path (stale-red re-triage → auto-refire → prefix salvage). It is seconds-to-minutes from a verdict, and may VOID a stale red and re-fire itself onto a newer tip — this is the gate self-healing, not a wedge. It is NOT replaceable at any age: replaceStale:true will be refused (replace_refused_delivering), and killing it out-of-band DISCARDS the salvage (that is exactly how four consecutive runs died on 2026-07-27 with nothing actually broken). Wait for it: checkpoint:await, then release:trace to confirm your commit is included.'
                     : replaceDecision.reason === 'young'
-                      ? `A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Wait for its verdict (see eta_sec); replaceStale only unlocks once the run is ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old AND not delivering.`
+                      ? `A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Judge liveness from current_phase + progress_at; eta_sec is only the remaining systemd backstop when eta_basis is full-suite, not a measured time-to-verdict. replaceStale only unlocks once the run is ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old AND not delivering.`
                       : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },
