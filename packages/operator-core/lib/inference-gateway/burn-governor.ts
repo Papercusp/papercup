@@ -288,6 +288,62 @@ export function evaluateAccountBurn(
   );
 }
 
+/** Pool-level rollup of per-account burn actions (WI-41147 leg b — the concurrency lever's input). */
+export interface PoolBurnAggregate {
+  action: BurnAction;
+  /** Accounts aggregated (the input length). */
+  total: number;
+  /** Per-action tally over the input. */
+  counts: Record<BurnAction, number>;
+  /** Always populated — the WHY behind the pool verdict (never silent shedding). */
+  reason: string;
+}
+
+/**
+ * Aggregate per-account burn actions into ONE pool verdict for the fleet-concurrency lever
+ * (loop-pressure-governor). Selection (leg a) can only SPREAD load between accounts; when every
+ * account is burning, spreading cannot reduce total spend — only cutting concurrency can. So the
+ * pool verdict escalates only when routing has nowhere left to go:
+ *   - `shed`     — EVERY account is shed: nowhere to route at all; cut concurrency now.
+ *   - `throttle` — every account is throttle-or-shed (≥1 throttle): every route is burning;
+ *                  spreading cannot relieve the pool — slow the fleet.
+ *   - `none`     — any account still has headroom OR no usable verdict (per-account `none`
+ *                  covers both healthy and no-data, and the stale gate maps stale readings to
+ *                  `none`) — selection can route around the burn; the concurrency lever stands
+ *                  down. Empty pool ⇒ `none` (never act on missing data).
+ * Pure; deliberately conservative — a single unknown/healthy account stands the lever down.
+ */
+export function aggregatePoolBurn(actions: readonly BurnAction[]): PoolBurnAggregate {
+  const counts: Record<BurnAction, number> = { none: 0, throttle: 0, shed: 0 };
+  for (const a of actions) counts[a] += 1;
+  const total = actions.length;
+  if (total === 0) {
+    return { action: 'none', total, counts, reason: 'no accounts in pool — governor stands down (never act on missing data)' };
+  }
+  if (counts.shed === total) {
+    return {
+      action: 'shed',
+      total,
+      counts,
+      reason: `all ${total} account(s) shed — nowhere to route; cut fleet concurrency`,
+    };
+  }
+  if (counts.none === 0) {
+    return {
+      action: 'throttle',
+      total,
+      counts,
+      reason: `every account is burning (${counts.throttle} throttle, ${counts.shed} shed of ${total}) — spreading cannot relieve the pool; slow the fleet`,
+    };
+  }
+  return {
+    action: 'none',
+    total,
+    counts,
+    reason: `${counts.none} of ${total} account(s) have headroom or no verdict — selection can route around the burn`,
+  };
+}
+
 function fmtRate(rate: number): string {
   return `${rate >= 0 ? '+' : ''}${(rate * 100).toFixed(1)}pp`;
 }
