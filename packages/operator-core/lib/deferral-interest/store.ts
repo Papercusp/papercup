@@ -1,7 +1,7 @@
 /**
  * store.ts — deferral-interest PG glue (self-learning-frontier P-042 / FB-14).
  *
- *   - readDeferralEdges: timestamped coord_links edges touching a set of
+ *   - readDeferralEdges: timestamped canonical dependency + polymorphic coord edges touching a set of
  *     issues, in TWO batched queries (no N+1 — the performance-docs rule and
  *     issueLinkCounts' precedent). issueLinkCounts reads present-time DEGREE;
  *     the backfill needs each edge's created_at to window it against the
@@ -27,8 +27,8 @@ function toMs(ts: string | Date): number {
 }
 
 /**
- * Every coord_links edge touching the given issues, with creation time:
- * outbound `blocks` (what this issue gates) + inbound non-tag references
+ * Every relevant edge touching the given issues, with creation time:
+ * outbound `blocks` (canonical work-item blocks plus polymorphic non-work blocks) + inbound non-tag references
  * (work pointing at it) — the same edge semantics issueLinkCounts counts.
  */
 export async function readDeferralEdges(sql: Sql, issueIds: readonly string[]): Promise<TimedEdge[]> {
@@ -36,12 +36,20 @@ export async function readDeferralEdges(sql: Sql, issueIds: readonly string[]): 
   const ids = issueIds as string[];
   const [outRows, inRows] = await Promise.all([
     sql<{ issue_id: string; rel: string; created_at: string | Date }[]>`
+      SELECT blocker_ref AS issue_id, dep_type AS rel, created_at
+        FROM harness_shared.work_item_deps
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+         AND blocker_kind = ${ISSUE_KIND}
+         AND blocker_ref = ANY(${ids})
+         AND dep_type = 'blocks'
+      UNION ALL
       SELECT src_ref AS issue_id, rel, created_at
         FROM harness_shared.coord_links
        WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
          AND src_kind = ${ISSUE_KIND}
          AND src_ref = ANY(${ids})
-         AND rel = 'blocks'`,
+         AND rel = 'blocks'
+         AND dst_kind NOT IN ('issue', 'feature')`,
     sql<{ issue_id: string; rel: string; created_at: string | Date }[]>`
       SELECT dst_ref AS issue_id, rel, created_at
         FROM harness_shared.coord_links

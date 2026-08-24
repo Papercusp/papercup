@@ -164,7 +164,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
     mocks.resolveEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
+    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
     await seedMugSession();
   });
 
@@ -824,7 +824,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     await seedUnit({ id: 'F-300', status: 'failing' }); // the stuck blocker
     await seedUnit({ id: 'F-301', status: 'todo' }); // the gated downstream
     await sql`
-      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      INSERT INTO harness_shared.work_item_deps (workspace_id, blocker_kind, blocker_ref, blocked_kind, blocked_ref, dep_type)
       VALUES ('default', 'feature', ${POT + '#F-300'}, 'feature', ${POT + '#F-301'}, 'blocks')`;
 
     const out = await reconcileOnePot(sql, WS, POT, CFG, NOW);
@@ -840,7 +840,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     await seedUnit({ id: 'F-310', status: 'failing' });
     await seedUnit({ id: 'F-311', status: 'passed' }); // already terminal
     await sql`
-      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      INSERT INTO harness_shared.work_item_deps (workspace_id, blocker_kind, blocker_ref, blocked_kind, blocked_ref, dep_type)
       VALUES ('default', 'feature', ${POT + '#F-310'}, 'feature', ${POT + '#F-311'}, 'blocks')`;
 
     await reconcileOnePot(sql, WS, POT, CFG, NOW);
@@ -855,7 +855,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     await seedUnit({ id: 'F-500', status: 'passed', takenBy: 'cup-1' });
     await seedUnit({ id: 'F-501', status: 'todo' });
     await sql`
-      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      INSERT INTO harness_shared.work_item_deps (workspace_id, blocker_kind, blocker_ref, blocked_kind, blocked_ref, dep_type)
       VALUES ('default', 'feature', ${POT + '#F-500'}, 'feature', ${POT + '#F-501'}, 'blocks')`;
 
     const out = await reconcileOnePot(sql, WS, POT, CFG, NOW);
@@ -873,7 +873,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     await seedUnit({ id: 'F-510', status: 'passed', takenBy: 'cup-1' });
     await seedUnit({ id: 'F-511', status: 'passed' }); // downstream already terminal
     await sql`
-      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      INSERT INTO harness_shared.work_item_deps (workspace_id, blocker_kind, blocker_ref, blocked_kind, blocked_ref, dep_type)
       VALUES ('default', 'feature', ${POT + '#F-510'}, 'feature', ${POT + '#F-511'}, 'blocks')`;
 
     const out = await reconcileOnePot(sql, WS, POT, CFG, NOW);
@@ -888,7 +888,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     await seedUnit({ id: 'F-520', status: 'passed', takenBy: 'cup-1' });
     await seedUnit({ id: 'F-521', status: 'todo' });
     await sql`
-      INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      INSERT INTO harness_shared.work_item_deps (workspace_id, blocker_kind, blocker_ref, blocked_kind, blocked_ref, dep_type)
       VALUES ('default', 'feature', ${POT + '#F-520'}, 'feature', ${POT + '#F-521'}, 'blocks')`;
 
     await reconcileOnePot(sql, WS, POT, CFG, NOW); // first sweep records completed + wakes

@@ -1,7 +1,7 @@
 /**
  * deferral-interest.integration.test.ts — the PG half of FB-14 against a real
  * MIGRATED Postgres: migration 252 applies (table + append-only grants), the
- * backfill reads real engineer_issues + coord_links rows end-to-end through
+ * backfill reads real engineer_issues + canonical work_item_deps rows end-to-end through
  * the live refit deps, model versions append, and the latest-model read feeds
  * the ranker feature. The pure backfill/fit logic is outcomes.test.ts /
  * model.test.ts; the action gates are deferral-interest-action.test.ts.
@@ -78,7 +78,7 @@ describe('FB-14 end-to-end on a real migrated PG', () => {
       topics: [IMPROVEMENT_TOPIC],
       createdBy: 'su-test',
     });
-    await linkIssue(deferred.id, { kind: 'workitem', ref: 'WI-901' }, 'blocks', 'su-test');
+    await linkIssue(deferred.id, { kind: 'issue', ref: bug.id }, 'blocks', 'su-test');
 
     // Backdate capture + edge so the deferral window has real exposure
     // (created_at is not trigger-managed; the edge timestamp must land inside
@@ -87,8 +87,8 @@ describe('FB-14 end-to-end on a real migrated PG', () => {
       UPDATE harness_shared.engineer_issues SET created_at = now() - interval '21 days'
        WHERE issue_id IN (${deferred.id}, ${bug.id})`;
     await db.adminSql`
-      UPDATE harness_shared.coord_links SET created_at = now() - interval '10 days'
-       WHERE src_ref = ${deferred.id} AND rel = 'blocks'`;
+      UPDATE harness_shared.work_item_deps SET created_at = now() - interval '10 days'
+       WHERE blocker_ref = ${deferred.id} AND dep_type = 'blocks'`;
 
     // The store's windowed edge read sees the backdated blocks edge.
     const edges = await readDeferralEdges(db.adminSql, [deferred.id, bug.id]);

@@ -1899,8 +1899,7 @@ async function fireReconcileWake(
 
 /** P-032 — count the NON-TERMINAL downstream features that `blockerId` (in `harness`)
  *  gates via a `blocks` edge: the lanes a completion may have just un-gated. Mirrors
- *  reconcileStrandedWork's edge query (the single `coord_links rel='blocks'` source of
- *  truth, D-007), with the blocker as edge SOURCE and live downstream as the target. */
+ *  the canonical work_item_deps graph, with the blocker side joined to live downstream. */
 async function countNonTerminalDownstream(
   sql: Sql,
   workspaceId: string,
@@ -1909,16 +1908,16 @@ async function countNonTerminalDownstream(
 ): Promise<number> {
   const rows = await sql<{ downstream: number }[]>`
     SELECT count(*)::int AS downstream
-      FROM harness_shared.coord_links l
+      FROM harness_shared.work_item_deps l
       JOIN harness_shared.harness_features_consolidated d
         ON d.workspace_id = ${workspaceId}
-       AND d.harness_slug = split_part(l.dst_ref, '#', 1)
-       AND d.feature_id   = split_part(l.dst_ref, '#', 2)
+       AND d.harness_slug = split_part(l.blocked_ref, '#', 1)
+       AND d.feature_id   = split_part(l.blocked_ref, '#', 2)
      WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND l.rel = 'blocks'
-       AND l.src_kind = 'feature'
-       AND l.dst_kind = 'feature'
-       AND l.src_ref = ${`${harness}#${blockerId}`}
+       AND l.dep_type = 'blocks'
+       AND l.blocker_kind = 'feature'
+       AND l.blocked_kind = 'feature'
+       AND l.blocker_ref = ${`${harness}#${blockerId}`}
        AND d.status <> ALL(${[...TERMINAL_UNIT_STATES]})`;
   return rows[0]?.downstream ?? 0;
 }
