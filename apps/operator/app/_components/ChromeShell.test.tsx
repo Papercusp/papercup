@@ -20,12 +20,14 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 
 /* ── Hook mocks (controllable per-test) ────────────────────────────── */
 let pathname = '/';
+let search = '';
 let testingFlag = false;
 let operatorChatSidebarFlag = false;
 let fancyEffectsEnabled = false;
 let reducedMotion = false;
 vi.mock('@/lib/router-compat/navigation', () => ({
   usePathname: () => pathname,
+  useSearchParams: () => new URLSearchParams(search),
 }));
 vi.mock('@/lib/flag-hooks', () => ({
   // The sidebar has its OWN flag (operator-chat-sidebar-revival-2026-07-13);
@@ -87,6 +89,7 @@ import ChromeShell from './ChromeShell';
 
 beforeEach(() => {
   pathname = '/';
+  search = '';
   testingFlag = false;
   operatorChatSidebarFlag = false;
   fancyEffectsEnabled = false;
@@ -168,6 +171,15 @@ describe('ChromeShell', () => {
     // On /adv the CTA is aria-current="page" and NOT a link.
     expect(screen.queryByRole('link', { name: 'Ops' })).toBeNull();
     expect(screen.getByLabelText(/Ops \(current page\)/i)).toBeTruthy();
+  });
+
+  it('keeps OPS navigable on /adv while a plan-dashboard takeover is open', () => {
+    pathname = '/adv';
+    search = 'pdash=papercusp%3A%3Amy-plan';
+    render(<ChromeShell />);
+
+    expect(screen.getByRole('link', { name: 'Ops' }).getAttribute('href')).toBe('/adv');
+    expect(screen.queryByLabelText(/Ops \(current page\)/i)).toBeNull();
   });
 
   it('hides the testing-only surfaces when the TESTING flag is off', () => {

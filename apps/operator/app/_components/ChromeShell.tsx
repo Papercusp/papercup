@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
-import { usePathname } from '@/lib/router-compat/navigation';
+import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
 import { animate, stagger } from 'motion';
 import { useReducedMotion } from 'motion/react';
 import { reconcileVisualEffectsMode, useFancyEffectsEnabled } from '@/lib/visual-effects';
@@ -25,6 +25,7 @@ import { RecentActionsCenter } from './RecentActionsCenter';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
 import { PuiLauncherButton } from './PuiLauncherButton';
+import { PLAN_DASHBOARD_PARAM } from './plans/PlanDashboardHost';
 // ConsoleLauncherButton is intentionally NOT imported: the global "+" terminal
 // launcher was removed from the navbar on 2026-07-26 (owner ask — see the note
 // in pc-header-center). The component itself is kept for restoration.
@@ -139,15 +140,19 @@ function AnimatedHeaderQuote({ animateQuote }: { animateQuote: boolean }) {
 export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChatFace[] } = {}) {
   const headerRef = useRef<HTMLElement | null>(null);
   const pathname = usePathname() ?? '';
+  const searchParams = useSearchParams();
   const reducedMotion = useReducedMotion() ?? false;
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const chromeless = CHROMELESS_PATH_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
-  // When the user is already on /adv, the Ops CTA is a no-op (rendered as a
-  // non-link span with `is-current` styling).
+  // When the user is already on the ordinary /adv surface, the Ops CTA is a
+  // no-op. A plan dashboard is a query-param takeover that deliberately keeps
+  // /adv mounted underneath, so Ops must remain a link there: navigating to
+  // bare /adv closes the takeover instead of stranding the user behind it.
   const onAdv = isChromeShellNavActive(pathname, '/adv');
+  const opsIsCurrent = onAdv && !searchParams.has(PLAN_DASHBOARD_PARAM);
   const onRes = isChromeShellNavActive(pathname, '/res');
   const testingFlag = useFlag(FLAGS.TESTING);
   const resFlag = useFlag(FLAGS.RES_ALLOCATION);
@@ -235,7 +240,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
           <AnimatedHeaderQuote animateQuote={fancyEffectsEnabled} />
         </div>
         <div className="pc-header-center">
-          {onAdv ? (
+          {opsIsCurrent ? (
             <span
               className="pc-header-cta pc-header-cta--mission is-current"
               aria-label="Ops (current page)"
