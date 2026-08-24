@@ -69,6 +69,7 @@ import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
 import type { AwaitRow, DeliveryWork } from './types';
 import {
+  payloadIsTimeout,
   recordTimeoutFires,
   summarizeTimeoutFires,
   wakeSummaryHeadline,
@@ -1161,8 +1162,11 @@ async function handleSettledResumeTurnExit(
   if (outcome.ok) return;
 
   // Reopening loop deliveries would double-fire them: their registered handler
-  // feeds the autoloop circuit and re-arms with retry-after semantics.
-  const retryable = group.filter((d) => !d.source?.startsWith('loop:'));
+  // feeds the autoloop circuit and re-arms with retry-after semantics. Timeout
+  // deliveries are terminal fallback wakes: the await was already consumed by
+  // the sweeper, so retrying after a detached turn death would inject the same
+  // terminal delivery again (EI-21370407494826605).
+  const retryable = group.filter((d) => !d.source?.startsWith('loop:') && !payloadIsTimeout(d.payload));
   if (retryable.length === 0) return;
 
   const error = `resume-turn-death:${outcome.error.class}`;
