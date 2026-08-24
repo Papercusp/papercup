@@ -193,9 +193,16 @@ function remainingFromSnapshot(routing: unknown, excludeOwnerId: string): Array<
 
 function gateCommon(
   row: ConsultStateRow | null,
+  manualReply?: { authorId: string; kind: ConsultReplyKind },
 ): ConsultVerbError | { row: ConsultStateRow } {
   if (!row) return { error: 'not_a_consult' };
-  if (!POSTABLE_STATES.has(row.state)) {
+  const isManualNoQualifiedReply =
+    row.state === 'no_qualified_responder' &&
+    row.responder_id !== null &&
+    row.responder_id !== row.requester_id &&
+    manualReply?.authorId === row.responder_id &&
+    manualReply.kind === 'new_fact';
+  if (!POSTABLE_STATES.has(row.state) && !isManualNoQualifiedReply) {
     return {
       error: 'consult_not_open',
       state: row.state,
@@ -208,6 +215,19 @@ function gateCommon(
     };
   }
   return { row };
+}
+
+/**
+ * A cascade responder remains a participant after their perspective advances
+ * the menu to the next selectee. Keep close symmetry with reply: the current
+ * responder, the requester, and every responder in the consumed selection
+ * prefix may settle the consult.
+ */
+function isConsultParticipant(row: ConsultStateRow, authorId: string): boolean {
+  if (authorId === row.requester_id || authorId === row.responder_id) return true;
+  return selectionFromRouting(row.routing)
+    .slice(0, row.cascade_cursor + 1)
+    .some((selection) => selection.ownerId === authorId);
 }
 
 // ── consult:reply ────────────────────────────────────────────────────────────
@@ -257,7 +277,10 @@ export async function consultReplyCore(
   const sql = deps.getSql();
   const now = (deps.now ? deps.now() : new Date()).toISOString();
 
-  const gated = gateCommon(await readState(sql, req.workspaceId, req.conversationId));
+  const gated = gateCommon(await readState(sql, req.workspaceId, req.conversationId), {
+    authorId: req.authorId,
+    kind: req.kind,
+  });
   if ('error' in gated) return gated;
   const row = gated.row;
 
@@ -265,11 +288,7 @@ export async function consultReplyCore(
   // far (the selection menu's [0..cascade_cursor] prefix). Earlier cascade
   // selectees REMAIN participants after the chain advances past them — the
   // one consult thread is the accumulator they keep deliberating in.
-  const wokenPrefix = selectionFromRouting(row.routing)
-    .slice(0, row.cascade_cursor + 1)
-    .map((s) => s.ownerId);
-  const isWokenResponder = req.authorId === row.responder_id || wokenPrefix.includes(req.authorId);
-  if (req.authorId !== row.requester_id && !isWokenResponder) {
+  if (!isConsultParticipant(row, req.authorId)) {
     return { error: 'not_a_participant' };
   }
   const role: 'requester' | 'responder' = req.authorId === row.requester_id ? 'requester' : 'responder';
@@ -334,7 +353,10 @@ export async function consultReplyCore(
        ${req.kind}, ${req.evidence ? sql.json(req.evidence as never) : null})
   `;
 
-  const nextState = role === 'responder' && row.state === 'awaiting_responder' ? 'active' : row.state;
+  const nextState =
+    role === 'responder' && (row.state === 'awaiting_responder' || row.state === 'no_qualified_responder')
+      ? 'active'
+      : row.state;
   const exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
   await sql`
     UPDATE harness_shared.consult_state
@@ -650,7 +672,7 @@ export async function consultCloseCore(
   }
   const row = rawRow;
 
-  if (req.authorId !== row.responder_id && req.authorId !== row.requester_id) {
+  if (!isConsultParticipant(row, req.authorId)) {
     return { error: 'not_a_participant' };
   }
 

@@ -32,6 +32,8 @@ function coverage(over: Partial<DivergenceCoverage> = {}): DivergenceCoverage {
     terminalFilterApplied: false,
     terminalGoalCallsExcluded: 0,
     bucketsCollapsedByTerminal: 0,
+    launchOutcomeCalls: 0,
+    launchFailuresReconciled: 0,
   };
   // Annotate the defaults, THEN merge — spreading a Partial<T> directly into an
   // object literal that must satisfy T re-widens every overridable field to

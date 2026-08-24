@@ -348,6 +348,28 @@ describe('consultReplyCore — kind rules + transitions', () => {
     ).toMatchObject({ error: 'consult_not_open', state: 'closed_answered' });
   });
 
+  it('allows only the explicitly assigned manual responder to post a new_fact fallback on no_qualified_responder', async () => {
+    const id = await seedConsult({ state: 'no_qualified_responder', responderId: RESPONDER });
+    const { deps, posts } = makeDeps();
+
+    const reply = await consultReplyCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'manual fallback finding' },
+      deps,
+    );
+    if ('error' in reply) throw new Error(reply.error);
+    expect(reply.role).toBe('responder');
+    expect(reply.state).toBe('active');
+    expect(posts).toEqual([{ conversation_id: id, body: 'manual fallback finding', via_consult_verb: true }]);
+
+    const noAssignment = await seedConsult({ state: 'no_qualified_responder', responderId: null });
+    expect(
+      await consultReplyCore(
+        { workspaceId: WS, authorId: RESPONDER, conversationId: noAssignment, kind: 'new_fact', body: 'unassigned' },
+        deps,
+      ),
+    ).toMatchObject({ error: 'consult_not_open', state: 'no_qualified_responder' });
+  });
+
   it('the exchange cap refuses a reply with the close-instead nudge; close still works AT the cap', async () => {
     const id = await seedConsult({ state: 'active', exchangesUsed: 4, maxExchanges: 4 });
     const { deps, posts } = makeDeps();
@@ -758,6 +780,26 @@ describe('cascade advance (D-005/P-013)', () => {
     expect(reachCalls[0].body).toContain('reviewer 2/3');
     expect(reachCalls[0].body).toContain('QUESTION: q');
     expect(reachCalls[0].body).toContain(`- ${RESPONDER} (answer): the answer`);
+  });
+
+  it('a previously woken responder remains a participant and may close after advancing the cascade', async () => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps } = makeDeps();
+
+    const reply = await consultReplyCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'answer', body: 'the answer', evidence: EVIDENCE },
+      deps,
+    );
+    if ('error' in reply) throw new Error(reply.error);
+    expect((await stateRow(id)).responder_id).toBe('resp-2');
+
+    const close = await consultCloseCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'answered', answer: 'settled' },
+      deps,
+    );
+    if ('error' in close) throw new Error(close.error);
+    expect(close.state).toBe('closed_answered');
+    expect((await stateRow(id)).state).toBe('closed_answered');
   });
 
   it('hard-blocked: the FIRST reply fires the park key while the chain continues behind it (D-007)', async () => {

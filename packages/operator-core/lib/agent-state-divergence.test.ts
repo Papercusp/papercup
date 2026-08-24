@@ -254,6 +254,28 @@ describe('the sampling leg — live without any stamp', () => {
     );
   }
 
+  it('reconciles timeout and refusal envelopes when the launch transaction opened members', () => {
+    const launchOutcome = {
+      fleet: 'fleet-a',
+      transactionId: 'tx-1',
+      state: 'partial',
+      openedMemberIds: ['member-1'],
+      verifiedMemberIds: [],
+      failedOwnerIds: ['member-2'],
+    };
+    const out = detectIntentActionDivergence([
+      call({ id: 1, toolName: 'fleet:launch-on-plan', status: 'timeout', launchOutcome }),
+      call({ id: 2, toolName: 'fleet:launch-on-plan', status: 'refused', launchOutcome }),
+      call({ id: 3, toolName: 'fleet:launch-on-plan', status: 'refused' }),
+      call({ id: 4, toolName: 'fleet:launch-on-plan', status: 'refused' }),
+    ]);
+
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.failuresSeen).toBe(4);
+    expect(out.coverage.launchOutcomeCalls).toBe(2);
+    expect(out.coverage.launchFailuresReconciled).toBe(2);
+  });
+
   it('flags an unconverged run at exactly the threshold', () => {
     const out = detectIntentActionDivergence(flail(RETRY_THRASH_THRESHOLD));
     expect(out.divergences).toHaveLength(1);

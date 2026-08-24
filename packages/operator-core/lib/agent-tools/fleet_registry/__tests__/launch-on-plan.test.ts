@@ -2019,6 +2019,22 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
+  it('stamps the durable transaction identity into dispatch metadata', async () => {
+    const metadata = vi.fn();
+    const res = await invokeLaunchHandler(
+      { name: 'Metadata Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      { metadata } as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(metadata).toHaveBeenCalledWith({
+      launchOutcome: {
+        fleet: 'metadata-fleet',
+        transactionId: payload.launchTransaction.transactionId,
+      },
+    });
+  });
+
   it('keeps opening the pre-pinned cohort when the canary remains unconfirmed', async () => {
     // EI-20437060078324174: an UNCONFIRMED first probe now earns ONE bounded
     // re-probe before the gate decision (a slow boot verifies there instead of
