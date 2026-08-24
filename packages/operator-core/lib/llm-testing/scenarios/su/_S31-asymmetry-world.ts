@@ -374,8 +374,9 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
  * ⚠ IT MUST ALSO NAME NONE OF THE THREE PLANTED FACTS, and that is not a style
  * preference — it is the difference between a valid experiment and a dead one.
  *
- * The description is NOT judge-only. `replay.ts:311` passes it to the SIM-USER
- * too (`sim-user.ts:61` → `buildSystemPrompt`), under an explicit instruction:
+ * The description is NOT judge-only. The RUNNER passes it to the SIM-USER too
+ * (`runner.ts` → `new SimUser({ scenarioDescription })` → `buildSystemPrompt`),
+ * under an explicit instruction:
  * "Be specific about concrete things named in the scenario (harness slugs, file
  * paths, feature ids) — a real user would name them, not gesture."
  *
@@ -393,6 +394,18 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
  * prompt; this is the same hazard one hop further out, via the description.
  * Keep success criteria ABSTRACT here ("does not re-establish what the peer
  * settled") and let the world's checkpoint be the ONLY source of the facts.
+ *
+ * ⚠ THAT DISCIPLINE IS NOW OPTIONAL — `Scenario.simUserContext` (added for
+ * EI-18767396817867279) closes the channel structurally instead of by hand:
+ * set it to `false` on every arm and the sim-user gets NO scenario context at
+ * all, or to an abstract string and it sees that instead, while the judge
+ * still receives this full `SHARED_DESCRIPTION`.
+ *
+ * These arms deliberately do NOT set it yet: they were re-authored with an
+ * abstract description after the first run collapsed, and changing what the
+ * sim-user receives now would break comparability with runs already recorded
+ * against `version: 1`. Retrofit it together with a `version` bump, as a
+ * deliberate act by this experiment's owner — not as a drive-by.
  */
 export const SHARED_DESCRIPTION =
   'The su engineer has just been woken. A peer (su-peer1) finished the preceding item of the ' +
