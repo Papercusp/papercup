@@ -106,9 +106,11 @@ export function fleetControlCueText(
         'This is a TYPED, BINDING control cue [system-derived:fleet-control] ' +
         '(registry control_state=winding-down). ' +
         'Finish only the atomic step in hand, then: work_items:checkpoint + release your claims ' +
-        `(or complete with evidence), release your file locks, loop:end any armed loop, and ${ackInstruction} ` +
-        'to send your one-line disposition to the leader. This lifecycle ack is recorded without ' +
-        're-invoking the wound-down leader. Do NOT pull new work from this fleet\'s lanes ' +
+        `(or complete with evidence), release your file locks, loop:end any armed loop, and ${ackInstruction}. ` +
+        'That ack is a LIFECYCLE RECEIPT: it takes only msg_id and carries no free text, so do not ' +
+        'attach a summary/note to it. Report your one-line disposition (or a blocker) as a SEPARATE ' +
+        "coord:send { expects:'none', summary:'…' } — a plain inject, so like the lifecycle ack it " +
+        'reaches the leader without re-invoking them. Do NOT pull new work from this fleet\'s lanes ' +
         'until a fleet:resume cue (control_state=active) lands.',
     };
   }
