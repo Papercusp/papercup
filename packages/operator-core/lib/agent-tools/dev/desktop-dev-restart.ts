@@ -26,9 +26,15 @@ export const DESKTOP_DEV_WRAPPER = 'dev-operator-ifneeded.sh';
 
 const REQUIRED_ENV: Readonly<Record<string, string>> = {
   PAPERCUSP_HONO_PORT: String(DESKTOP_DEV_PORT),
-  PAPERCUSP_DEV_API_TARGET: String(DESKTOP_DEV_PORT),
+  // These are HOST-process markers authored by dev-operator-ifneeded.sh's
+  // DEFAULT_DEV_CMD. PAPERCUSP_DEV_API_TARGET deliberately is not one: it tells
+  // a desktop/webview which operator to call and is never exported into the Hono
+  // child. Requiring it made the guarded restart reject the canonical launcher
+  // it was written to protect (WI-41422).
+  PAPERCUSP_PTY_WS_PORT: String(DESKTOP_DEV_PORT + 4),
   PAPERCUSP_BACKGROUND_WORKERS: '0',
   PAPERCUSP_CLUSTER: '0',
+  PAPERCUSP_CLUSTER_WORKERS: '0',
   DBOS__VMID: `desktop-dev-${DESKTOP_DEV_PORT}`,
 };
 

@@ -41,9 +41,10 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   };
   const environ = [
     'PAPERCUSP_HONO_PORT=3270',
-    'PAPERCUSP_DEV_API_TARGET=3270',
+    'PAPERCUSP_PTY_WS_PORT=3274',
     'PAPERCUSP_BACKGROUND_WORKERS=0',
     'PAPERCUSP_CLUSTER=0',
+    'PAPERCUSP_CLUSTER_WORKERS=0',
     'DBOS__VMID=desktop-dev-3270',
   ].join('\0');
   return {
@@ -62,11 +63,12 @@ describe('desktop-dev restart identity guard', () => {
     expect(parseProcessEnvironment('A=1\0EMPTY=\0NO_EQUALS\0')).toEqual({ A: '1', EMPTY: '' });
   });
 
-  it('accepts only the owner-visible hono-host with desktop markers under the wrapper', async () => {
+  it('accepts the canonical wrapper env without the SPA-only PAPERCUSP_DEV_API_TARGET marker', async () => {
     const deps = makeDeps();
     const result = await resolveDesktopDevListener(deps);
     expect(result).toMatchObject({ ok: true, pid: 101 });
     expect(result.listener?.parentChain.some((entry) => entry.cmdline.includes(DESKTOP_DEV_WRAPPER))).toBe(true);
+    expect(result.listener?.env.PAPERCUSP_DEV_API_TARGET).toBeUndefined();
   });
 
   it('refuses a bound listener whose owner is hidden', async () => {
