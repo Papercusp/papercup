@@ -95,6 +95,41 @@ function stripComments(source: string): string {
 }
 
 /**
+ * Concatenate only the contents of sql`...` tagged templates.
+ *
+ * Scanning whole-file text is not good enough: a one-letter TS identifier collides with a
+ * SQL alias and yields a confident false positive. Measured — an early version of this
+ * guard reported `r.alarmed (no such column on harness_shared.routines)`, which was really
+ * `checkGreenStall(...).then((r) => { r.alarmed })`, a promise result, not SQL. A guard
+ * that cries wolf gets deleted, so precision here is load-bearing.
+ *
+ * Walks `${...}` interpolations by brace depth so an embedded expression cannot end the
+ * literal early.
+ */
+function sqlRegions(source: string): string {
+  const out: string[] = [];
+  const opener = /\bsql\s*(?:<[^>]*>)?\s*`/g;
+  for (const m of source.matchAll(opener)) {
+    let i = m.index! + m[0].length;
+    let braceDepth = 0;
+    const start = i;
+    while (i < source.length) {
+      const c = source[i];
+      if (c === "\\") { i += 2; continue; }
+      if (braceDepth === 0 && c === "`") break;
+      if (c === "$" && source[i + 1] === "{") { braceDepth++; i += 2; continue; }
+      if (braceDepth > 0) {
+        if (c === "{") braceDepth++;
+        else if (c === "}") braceDepth--;
+      }
+      i++;
+    }
+    out.push(source.slice(start, i));
+  }
+  return out.join("\n");
+}
+
+/**
  * Tokens that can follow a table name without being an alias. Without this the parser
  * binds `SET`/`WHERE`/`VALUES` to every table they follow, and the resulting ambiguity
  * noise hides genuine findings.
@@ -121,7 +156,9 @@ interface AliasFinding {
  * is AMBIGUOUS and deliberately skipped rather than guessed at.
  */
 function auditFile(path: string, tables: Map<string, Set<string>>) {
-  const src = stripComments(readFileSync(path, "utf8"));
+  // SQL literals only — see sqlRegions(): whole-file text produces false positives from
+  // ordinary TS identifiers that happen to look like table aliases.
+  const src = sqlRegions(stripComments(readFileSync(path, "utf8")));
   const file = basename(path);
 
   const boundTables = new Map<string, Set<string>>();
