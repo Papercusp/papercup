@@ -57,7 +57,13 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
       'recipes:get',
       'recipes:run',
     ]));
-    expect(pack.missing).toEqual([]);
+    expect(pack.registryMissing).toEqual([]);
+    expect(pack).not.toHaveProperty('missing');
+    expect(pack.dispatch).toEqual({
+      immediate: 'tools:invoke',
+      direct: 'client-surface-dependent',
+      refresh: 'tools/list_changed',
+    });
     expect(pack.provenance).toEqual({
       source: 'coord:orient',
       schemaSource: 'projected-tool-registry',
@@ -112,7 +118,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
 
   it('reports unavailable canonical tools loudly instead of advertising phantom schemas', () => {
     const pack = buildTaskToolSchemaPack({ intent: 'grade rubric scorecard', modes: [] }, catalog.slice(0, 4));
-    expect(pack.missing).toContain('rubrics:list');
+    expect(pack.registryMissing).toContain('rubrics:list');
     expect(pack.toolNames).not.toContain('rubrics:list');
   });
 

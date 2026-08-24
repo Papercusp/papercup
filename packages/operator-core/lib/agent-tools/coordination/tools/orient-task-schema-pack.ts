@@ -15,7 +15,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { schemaToText } from '../../../cupboard/tools-discovery';
 
-export const TASK_SCHEMA_PACK_SCHEMA = 'orient-task-tool-schema-pack-v1' as const;
+export const TASK_SCHEMA_PACK_SCHEMA = 'orient-task-tool-schema-pack-v2' as const;
 export const TASK_SCHEMA_PACK_BUDGET_CHARS = 3_500;
 export const TASK_SCHEMA_PACK_MAX_TOOLS = 36;
 const ARG_SCHEMA_CAP = 180;
@@ -39,11 +39,23 @@ export interface TaskToolSchemaPack {
   schemaVersion: typeof TASK_SCHEMA_PACK_SCHEMA;
   generation: string;
   watermark: string;
-  /** Every tool activated for the task. Kept separate from schema detail so a
-   * bounded orient projection can always preserve the exact activation set. */
+  /**
+   * Every server-side tool activated for the task. This is the projected
+   * registry's activation set, not proof that the caller has materialized a
+   * direct client wrapper yet.
+   */
   toolNames: string[];
   tools: Array<{ name: string; args: string | null }>;
-  missing: string[];
+  /** Requested names absent from the server's projected registry. This says
+   * nothing about client-side direct-wrapper availability. */
+  registryMissing: string[];
+  /** The server cannot observe whether this client has refreshed its tool
+   * list, so every listed name has an immediate universal dispatch path. */
+  dispatch: {
+    immediate: 'tools:invoke';
+    direct: 'client-surface-dependent';
+    refresh: 'tools/list_changed';
+  };
   basis: {
     modes: string[];
     harness: string | null;
@@ -259,7 +271,7 @@ export function buildTaskToolSchemaPack(
   const registryRevision = projectedToolRegistryRevision(
     catalog as Parameters<typeof projectedToolRegistryRevision>[0],
   );
-  const missing = requested.filter(([name]) => !byName.has(name)).map(([name]) => name);
+  const registryMissing = requested.filter(([name]) => !byName.has(name)).map(([name]) => name);
   const allTools = requested
     .flatMap(([name]) => {
       const tool = byName.get(name);
@@ -292,7 +304,13 @@ export function buildTaskToolSchemaPack(
     signals: [...new Set(signals)].sort(),
   };
   const watermark = createHash('sha256')
-    .update(JSON.stringify({ schemaVersion: TASK_SCHEMA_PACK_SCHEMA, registryRevision, basis, tools: allTools }))
+    .update(JSON.stringify({
+      schemaVersion: TASK_SCHEMA_PACK_SCHEMA,
+      registryRevision,
+      basis,
+      registryMissing,
+      tools: allTools,
+    }))
     .digest('hex')
     .slice(0, 24);
   const serializedChars = JSON.stringify({ toolNames, tools }).length;
@@ -303,7 +321,12 @@ export function buildTaskToolSchemaPack(
     watermark,
     toolNames,
     tools,
-    missing,
+    registryMissing,
+    dispatch: {
+      immediate: 'tools:invoke',
+      direct: 'client-surface-dependent',
+      refresh: 'tools/list_changed',
+    },
     basis,
     budget: {
       maxChars: TASK_SCHEMA_PACK_BUDGET_CHARS,
