@@ -54,6 +54,7 @@ import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
 import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
 import PlanDashboardHost from '@/app/_components/plans/PlanDashboardHost';
 import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
+import InboxBulkReportHost from '@/app/_components/inbox/InboxBulkReportHost';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
@@ -317,6 +318,11 @@ function RootComponent() {
                             remains a strip deep link while the resolver runs,
                             then becomes the grouped report takeover at review. */}
                         <PlanCleanupReportHost />
+                        {/* cleanup-report-flows-2026-08-24 P-008: `?opcbr=`
+                            remains the Inbox strip's run deep link while the
+                            resolver works, then becomes the grouped app-pane
+                            takeover when the run reaches review. */}
+                        <InboxBulkReportHost />
                       </main>
                     </PostHogProvider>
                   </OperatorConversationProvider>
