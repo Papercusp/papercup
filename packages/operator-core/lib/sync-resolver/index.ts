@@ -151,6 +151,16 @@ import {
   workItemBehaviorContractArgsSchema,
   type WorkItemBehaviorContractArgs,
 } from './work-item-behavior-contract';
+import {
+  resolvePlanSpecCoverage,
+  planSpecCoverageArgsSchema,
+  type PlanSpecCoverageArgs,
+} from './plan-spec-coverage';
+import {
+  resolvePlanAcceptanceGateVerdict,
+  planAcceptanceGateArgsSchema,
+  type PlanAcceptanceGateArgs,
+} from './plan-acceptance-gate-verdict';
 import { trackDetached } from '../detached-imports';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
@@ -2842,6 +2852,65 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.plan_spec_clauses',
       'harness_shared.plan_spec_clause_revisions',
       'harness_shared.work_item_spec_revision_edges',
+    ],
+  } as QueryEntry<unknown>,
+
+  // plans.specCoverage — P-011: P-008's plan-ship spec-coverage census as a READ.
+  // Runs the SAME evaluatePlanSpecCoverageGate the ship path calls, so the panel cannot
+  // drift from what the gate enforces. Before this the verdict was reachable only by
+  // ATTEMPTING A SHIP: a human saw THAT plans:set-status refused, never WHICH clauses
+  // are uncovered, at WHICH revision, nor that a report existed while the plan was green.
+  //
+  // ⚠ ADVISORY EXCEPT ONE CODE (D-018): `spec_proof_stale` is the ONLY refusal.
+  // `reports` (unproven clauses, ungraded adequacy, undeclared falsifiers) never refuse —
+  // P-013 owns widening the enforced set — and `spec_coverage_unavailable` is a
+  // deliberate fail-open degradation. A renderer must not show any of those as failures.
+  //
+  // MOUNTED ONLY ON DEMAND: the census reads clauses, then evidence, then scorecards, so
+  // the consumer gates it with `useSyncQuery({ enabled })`.
+  //
+  // The clause + evidence tables full-bust deliberately: REVISING a clause, or recording
+  // evidence at the current revision, are precisely the events that flip this verdict, and
+  // an open panel that missed them would keep asserting coverage at a superseded revision.
+  // work_items rides because scorecards are stored as work-item rows, so it is the only
+  // table a NEW adequacy grading touches; the adequacy leg is advisory-only, but a panel
+  // that silently under-reports a gap it claims to census is the defect this plan exists
+  // to end, and the query is lazy so the cost is bounded to viewers holding it open.
+  'plans.specCoverage': {
+    argsSchema: planSpecCoverageArgsSchema,
+    resolve: async (args) => resolvePlanSpecCoverage(args as PlanSpecCoverageArgs),
+    backingTables: [
+      'harness_shared.plan_spec_clauses',
+      'harness_shared.plan_spec_clause_revisions',
+      'harness_shared.spec_evidence_bindings',
+      'harness_shared.work_items',
+    ],
+  } as QueryEntry<unknown>,
+
+  // plans.acceptanceGate — P-011: the plan acceptance gate's verdict as a READ.
+  // The companion to plans.specCoverage, and deliberately SEPARATE: the gate
+  // SHORT-CIRCUITS on its first refusal, so its own specCoverage field is absent on any
+  // refusal that precedes the census. Rendering coverage from this verdict alone would
+  // show a plan with a real coverage problem as having none, because an earlier check
+  // refused first. This query answers "what is blocking the ship RIGHT NOW"; the census
+  // answers "what is the coverage picture regardless".
+  //
+  // ⚠ Its codes ARE real refusals (unlike the census's advisory reports), so a blocker
+  // renders as one. The honesty rule runs the other way: `skipped` (the gate did not
+  // apply), `forcedPast` (an explicit waiver) and `vettedUnderWaiver` (a rubric nobody
+  // critiqued) must never be flattened into a clean green — each is a satisfied verdict
+  // that a reader is entitled to see the caveat on.
+  //
+  // MOUNTED ONLY ON DEMAND: five check families across several tables. Read-only.
+  'plans.acceptanceGate': {
+    argsSchema: planAcceptanceGateArgsSchema,
+    resolve: async (args) => resolvePlanAcceptanceGateVerdict(args as PlanAcceptanceGateArgs),
+    backingTables: [
+      'harness_shared.harness_plans',
+      'harness_shared.work_items',
+      'harness_shared.plan_spec_clauses',
+      'harness_shared.plan_spec_clause_revisions',
+      'harness_shared.spec_evidence_bindings',
     ],
   } as QueryEntry<unknown>,
 
