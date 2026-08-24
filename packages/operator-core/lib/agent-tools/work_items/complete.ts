@@ -1080,6 +1080,8 @@ const COMPLETION_NEGATIVE_GUARD_RE =
   /(?:\b(?:no|not|without|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?t)\b[\s\S]{0,45}\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b|\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b[\s\S]{0,45}\b(?:not|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?)\b)/i;
 const EXPLICIT_GUARD_WAIVER_RE =
   /\b(?:waiv(?:e|ed|er)|not\s+applicable)\b[\s\S]{0,160}\b(?:because|since|as|reason|already|existing|covered|present|exists|implemented|by|:|—|-)\b/i;
+const HISTORICAL_NON_PRESCRIPTIVE_RE =
+  /\b(?:quot(?:e|ed|ation)|historical|prior|previous|former|earlier|anecdote|motivating\s+incident)\b[\s\S]{0,240}\b(?:does\s+not|doesn['’]?t|did\s+not|didn['’]?t|not)\s+(?:explicitly\s+)?prescrib(?:e|es|ed|ing)\b/i;
 
 function prescribedItemText(item: { title?: unknown; summary?: unknown; payload?: unknown }): string {
   const payload =
@@ -1112,6 +1114,13 @@ export function prescribedRecurrenceGuardCoverageGap(
     .map((line) => line.trim())
     .filter((line) => {
       if (!line || line.length > 500) return false;
+      // A summary can quote a prior incident that contains imperative-looking
+      // wording (for example, "a prior agent had 'added a recurrence-guard'")
+      // while explicitly explaining that the anecdote is not an obligation for
+      // this item. Treat that sentence as historical context, not a live
+      // prescription; otherwise the detector turns its own explanatory prose
+      // into the warning it is meant to avoid.
+      if (HISTORICAL_NON_PRESCRIPTIVE_RE.test(line)) return false;
       const guardPrescription =
         PRESCRIBED_GUARD_RE.test(line) &&
         /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|required|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|assert(?:ing|ion)?|falsifier)\b/i.test(
