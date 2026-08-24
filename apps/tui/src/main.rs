@@ -424,7 +424,8 @@ async fn run<B: Backend>(
     // Bee dossier (pui-dock-consolidation-2026-06-07): the dossier renders
     // INSIDE the Fleet tab now, driven in-process by the roster cursor (see the
     // Action::PublishBeeSelection arm) — the old relay-polling pane loop is
-    // gone. The relay POST itself stays for external consumers.
+    // gone, and the relay itself (`fleet:selected_bee`) was retired server-side
+    // with the bee tier (P-003 own-tui-full-divorce-2026-08-24).
 
     // Voice mode (voice-mode-tui-port-2026-06-05 P2): the run loop owns the
     // audio handles — the long-lived playback `Player` and the in-flight mic
@@ -594,18 +595,18 @@ async fn run<B: Backend>(
                 // In-process selection drive (pui-dock-consolidation-2026-06-07):
                 // the dossier renders inside the Fleet tab now — apply the
                 // selection to app state and fetch the bee's dossier directly.
-                // The relay POST stays for external consumers.
+                // (The old `fleet:selected_bee` relay POST is gone — the
+                // endpoint was retired with the bee tier, P-003 2026-08-24.)
                 let changed = app.bee.owner_id != owner_id;
                 app.update(Event::BeeSelection {
                     owner_id: owner_id.clone(),
-                    name: name.clone(),
+                    name,
                 });
                 if changed {
-                    if let Some(o) = owner_id.clone() {
+                    if let Some(o) = owner_id {
                         tokio::spawn(bee_dossier_fetch(o, tx.clone()));
                     }
                 }
-                tokio::spawn(publish_bee_selection(owner_id, name, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchFleetAssignments => {
@@ -2372,11 +2373,9 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
             format!("installed blueprint '{name}' — start a pot from it with :create"),
             false,
         ),
-        "snapshot" => (
-            client.snapshot_fork_from_cupboard(&listing.id).await,
-            format!("forked snapshot '{name}' into a new pot"),
-            true,
-        ),
+        // ("snapshot" listings are RETIRED — the Cupboard's kinds are now
+        // harness | blueprint | plugin | pack, and /api/snapshots/
+        // fork-from-cupboard has no successor. P-003 2026-08-24.)
         "harness" => {
             let Some(link) = listing.join_link() else {
                 let _ = tx.send(Event::Error(format!(
