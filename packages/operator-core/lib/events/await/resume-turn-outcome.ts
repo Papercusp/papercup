@@ -59,7 +59,8 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
  * `Session "<id>" not found`; retrying the same native id can never recover it.
  * Keep this narrow so ordinary agent errors remain retryable crashes.
  */
-const STALE_RESUME_TARGET_RE = /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b/i;
+const STALE_RESUME_TARGET_RE =
+  /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b|\bcodex_rollout::list:\s+state db returned stale rollout path for thread\b/i;
 
 export function isStaleResumeTargetMessage(message: string): boolean {
   return STALE_RESUME_TARGET_RE.test(message);

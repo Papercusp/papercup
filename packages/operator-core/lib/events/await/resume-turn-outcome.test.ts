@@ -81,6 +81,24 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
     }
   });
 
+  it('classifies Codex stale rollout-path stderr as permanent, not a retryable crash', () => {
+    const out = classifyResumeTurnExit(
+      raw({
+        outputProtocol: 'codex-jsonl',
+        exitCode: 1,
+        stderrTail:
+          '2026-08-23T22:13:42.820382Z ERROR codex_rollout::list: state db returned stale rollout path for thread 01a02a0c-d02d-7023-a4f9-8303089f8092: /home/marsh-office/.papercusp/su-codex-homes/session-16773/\n',
+      }),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.class).toBe('permanent');
+      expect(out.error.retryable).toBe(false);
+      expect(out.error.surfaceToUser).toBe(true);
+      expect(out.error.provider).toBe('openai');
+    }
+  });
+
   it('classifies a prompt-overflow death as context_overflow, not agent_crash', () => {
     const out = classifyResumeTurnExit(raw({ exitCode: 1, stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }));
     expect(out.ok).toBe(false);
