@@ -85,15 +85,20 @@ import { listTrackedFiles } from "./lib/tracked-files.mjs";
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
 import {
+  classifyAffectedBlastRadius,
   durationEstimate,
+  formatAffectedTaskShardMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
   mergeDurationHistory,
+  planAffectedTaskShards,
   readDurationHistory,
+  readTaskCgroupMemoryMaxMb,
   resolveGlobalWorkerBudget,
   resolveMemoryBudgetMb,
   resolveTaskBudget,
   resolveWorkerMemoryMb,
+  runBudgetedTaskShards,
   runBudgetedTasks,
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
@@ -331,11 +336,13 @@ function readMemAvailableMb() {
 // operator-visible marker report the SAME measurement. Two separate readFileSync calls would
 // drift between them on a busy box, which makes the log unreadable exactly when it matters.
 const MEM_AVAILABLE_MB = readMemAvailableMb();
+const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb();
 const SCHEDULER_CONFIG = resolveTaskBudget({
   workerBudget: SCHEDULER_WORKER_BUDGET,
   memoryBudgetMb: resolveMemoryBudgetMb({
     affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
     memAvailableMb: MEM_AVAILABLE_MB,
+    taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB,
     workerBudget: SCHEDULER_WORKER_BUDGET,
     workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
   }),
@@ -3065,8 +3072,24 @@ outSync(
   formatTaskBudgetMarker({
     ...SCHEDULER_CONFIG,
     memAvailableMb: MEM_AVAILABLE_MB,
+    taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB,
   }),
 );
+const taskKey = (task) => `${task.ws.name} :: ${task.script}`;
+const TASK_BLAST_RADIUS = classifyAffectedBlastRadius({
+  changedPaths: invariantGuardChangedPaths(),
+  runAll,
+  derivationDegraded,
+});
+const TASK_SHARD_MAX =
+  process.env.AFFECTED_MAX_TASKS_PER_SHARD ??
+  Math.max(8, SCHEDULER_CONFIG.maxConcurrentTasks * 4);
+const TASK_SHARD_PLAN = planAffectedTaskShards(tasks, {
+  blastRadius: TASK_BLAST_RADIUS,
+  maxTasksPerShard: TASK_SHARD_MAX,
+  taskKey,
+});
+outSync(formatAffectedTaskShardMarker(TASK_SHARD_PLAN, TASK_CGROUP_MEMORY_MAX_MB));
 // EI-15802: printed EARLY (before any suite runs) and again in the final
 // summary — a truncated background-task tail is more likely to still show
 // this line than a full multi-suite run's early output, so it survives even
@@ -3397,7 +3420,6 @@ const taskLegs = [];
 const recordLeg = (task, ms) => {
   taskLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
 };
-const taskKey = (task) => `${task.ws.name} :: ${task.script}`;
 const taskContexts = tasks.map((t) => ({
   t,
   isQuarantined: quarantined.has(t.ws.name),
@@ -3416,6 +3438,11 @@ const taskContexts = tasks.map((t) => ({
   ],
   cacheProvenance: dependencyProvenanceForTask(t),
 }));
+const TASK_CONTEXT_SHARD_PLAN = planAffectedTaskShards(taskContexts, {
+  blastRadius: TASK_BLAST_RADIUS,
+  maxTasksPerShard: TASK_SHARD_MAX,
+  taskKey: (context) => taskKey(context.t),
+});
 const durationHistory = readDurationHistory(TASK_DURATION_HISTORY_PATH);
 const MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
 
@@ -3734,7 +3761,7 @@ function emitCapturedTaskOutput(t, r, allocation, label = "initial") {
   logLine(r.stderr ?? "");
 }
 
-const initialPool = await runBudgetedTasks(taskContexts, {
+const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   ...SCHEDULER_CONFIG,
   // EI-20801764054303492 route (a): the startup budget is sized ONCE, from a reading taken before
   // any child exists. A long run's real memory picture drifts underneath it, so admission

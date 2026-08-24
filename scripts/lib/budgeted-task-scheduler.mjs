@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export const DURATION_HISTORY_VERSION = 1;
 
@@ -10,6 +10,98 @@ const positiveInteger = (value, name) => {
   }
   return parsed;
 };
+
+const nonNegativeInteger = (value, name) => {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer; received ${String(value)}`);
+  }
+  return parsed;
+};
+
+/** Read the hard memory.max of THIS task's cgroup. `max`/unreadable means unbounded. */
+export function readTaskCgroupMemoryMaxMb({
+  readFile = readFileSync,
+  procCgroupPath = '/proc/self/cgroup',
+  cgroupRoot = '/sys/fs/cgroup',
+} = {}) {
+  try {
+    const unified = String(readFile(procCgroupPath, 'utf8'))
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('0::'));
+    if (!unified) return null;
+    const relative = unified.slice(3).trim().replace(/^\/+/, '');
+    const raw = String(readFile(join(cgroupRoot, relative, 'memory.max'), 'utf8')).trim();
+    if (!raw || raw === 'max') return null;
+    const bytes = BigInt(raw);
+    if (bytes < 0n) return null;
+    return Number(bytes / (1024n * 1024n));
+  } catch {
+    return null;
+  }
+}
+
+const ROOT_NEAR_TREE_WIDE = [
+  /^package(?:-lock)?\.json$/,
+  /^tsconfig(?:\.[^.]+)*\.json$/,
+  /^(?:vitest|vite|eslint|prettier|turbo|nx)(?:\.[^.]+)*\.(?:[cm]?[jt]s|json)$/,
+];
+
+/** Classify path blast radius before any child process is launched. */
+export function classifyAffectedBlastRadius({
+  changedPaths = [],
+  runAll = false,
+  derivationDegraded = false,
+} = {}) {
+  if (runAll) return { kind: 'near-tree-wide', reason: 'all-requested', triggerPaths: [] };
+  if (derivationDegraded) {
+    return { kind: 'near-tree-wide', reason: 'derivation-degraded', triggerPaths: [] };
+  }
+  const triggerPaths = [...new Set(changedPaths)]
+    .filter((path) => ROOT_NEAR_TREE_WIDE.some((pattern) => pattern.test(path)))
+    .sort();
+  return triggerPaths.length
+    ? { kind: 'near-tree-wide', reason: 'root-manifest-or-config', triggerPaths }
+    : { kind: 'scoped', reason: 'path-closure', triggerPaths: [] };
+}
+
+/** Deterministically partition a finalized task set; duplicates fail before launch. */
+export function planAffectedTaskShards(tasks, {
+  blastRadius = { kind: 'scoped', reason: 'path-closure', triggerPaths: [] },
+  maxTasksPerShard = 8,
+  taskKey = (_task, index) => String(index),
+} = {}) {
+  if (!Array.isArray(tasks)) throw new Error('tasks must be an array');
+  const identities = tasks.map((task, index) => String(taskKey(task, index)));
+  const seen = new Set();
+  for (const identity of identities) {
+    if (seen.has(identity)) throw new Error(`duplicate affected task before sharding: ${identity}`);
+    seen.add(identity);
+  }
+  const bounded = positiveInteger(maxTasksPerShard, 'maxTasksPerShard');
+  const shardSize = blastRadius.kind === 'near-tree-wide'
+    ? bounded
+    : Math.max(tasks.length, 1);
+  const shards = [];
+  for (let offset = 0; offset < tasks.length; offset += shardSize) {
+    shards.push({
+      index: shards.length,
+      tasks: tasks.slice(offset, offset + shardSize),
+      taskKeys: identities.slice(offset, offset + shardSize),
+    });
+  }
+  return { blastRadius, maxTasksPerShard: shardSize, taskCount: tasks.length, shards };
+}
+
+export function formatAffectedTaskShardMarker(plan, taskCgroupMemoryMaxMb = null) {
+  const cgroup = taskCgroupMemoryMaxMb == null
+    ? ''
+    : ` taskCgroupMemoryMaxMb=${taskCgroupMemoryMaxMb}`;
+  return (
+    `AFFECTED_TASK_SHARDS class=${plan.blastRadius.kind} reason=${plan.blastRadius.reason} ` +
+    `tasks=${plan.taskCount} shards=${plan.shards.length} maxTasksPerShard=${plan.maxTasksPerShard}${cgroup}`
+  );
+}
 
 /**
  * Collapse every inherited/test-runner worker spelling into one global ceiling.
@@ -95,15 +187,17 @@ export const MEMORY_RESERVE_FRACTION = 0.25;
 export function resolveMemoryBudgetMb({
   affectedGlobalMemoryMb,
   memAvailableMb,
+  taskCgroupMemoryMaxMb,
   workerBudget,
   workerMemoryMb,
   reserveFraction = MEMORY_RESERVE_FRACTION,
+  cgroupReserveFraction = MEMORY_RESERVE_FRACTION,
 }) {
   const perWorker = positiveInteger(workerMemoryMb, 'workerMemoryMb');
-  if (affectedGlobalMemoryMb != null && affectedGlobalMemoryMb !== '') {
-    return positiveInteger(affectedGlobalMemoryMb, 'AFFECTED_GLOBAL_MEMORY_MB');
-  }
   const ceiling = positiveInteger(workerBudget, 'workerBudget') * perWorker;
+  const configured = affectedGlobalMemoryMb != null && affectedGlobalMemoryMb !== ''
+    ? positiveInteger(affectedGlobalMemoryMb, 'AFFECTED_GLOBAL_MEMORY_MB')
+    : ceiling;
   // WI-41206: the MemAvailable reading no longer reduces the envelope. An explicit
   // AFFECTED_GLOBAL_MEMORY_MB override (handled above) is still honoured — that is an operator
   // deliberately setting a budget, which is the opposite of the machine imposing one.
@@ -114,8 +208,22 @@ export function resolveMemoryBudgetMb({
   if (!(reserveFraction >= 0 && reserveFraction < 1)) {
     throw new Error(`reserveFraction must be in [0, 1); received ${String(reserveFraction)}`);
   }
+  if (!(cgroupReserveFraction >= 0 && cgroupReserveFraction < 1)) {
+    throw new Error(
+      `cgroupReserveFraction must be in [0, 1); received ${String(cgroupReserveFraction)}`,
+    );
+  }
   void memAvailableMb;
-  return ceiling;
+  if (taskCgroupMemoryMaxMb == null || taskCgroupMemoryMaxMb === '') return configured;
+  const cgroupMax = nonNegativeInteger(taskCgroupMemoryMaxMb, 'taskCgroupMemoryMaxMb');
+  const cgroupBudget = Math.floor(cgroupMax * (1 - cgroupReserveFraction));
+  if (cgroupBudget < perWorker) {
+    throw new Error(
+      `task cgroup memory.max=${cgroupMax}MB leaves ${cgroupBudget}MB after reserve, ` +
+        `below one workerMemoryMb=${perWorker}MB token; refusing before launch`,
+    );
+  }
+  return Math.min(configured, cgroupBudget);
 }
 
 /**
@@ -398,6 +506,39 @@ export async function runBudgetedTasks(tasks, options) {
   };
 }
 
+/** Run deterministic shards sequentially while preserving declaration-order results. */
+export async function runBudgetedTaskShards(plan, options) {
+  if (!plan?.shards?.length) {
+    throw new Error('runBudgetedTaskShards requires at least one planned shard');
+  }
+  const results = [];
+  let aggregate = null;
+  const shardStats = [];
+  for (const shard of plan.shards) {
+    const run = await runBudgetedTasks(shard.tasks, options);
+    shardStats.push({ index: shard.index, taskCount: shard.tasks.length, ...run.stats });
+    for (const entry of run.results) results.push({ ...entry, index: results.length });
+    if (!aggregate) {
+      aggregate = { ...run.stats };
+      continue;
+    }
+    aggregate.observedMaxWorkers = Math.max(aggregate.observedMaxWorkers, run.stats.observedMaxWorkers);
+    aggregate.observedMaxMemoryMb = Math.max(aggregate.observedMaxMemoryMb, run.stats.observedMaxMemoryMb);
+    aggregate.observedMaxTasks = Math.max(aggregate.observedMaxTasks, run.stats.observedMaxTasks);
+    aggregate.admissionClamps += run.stats.admissionClamps;
+    aggregate.memoryReadings = aggregate.memoryReadings == null || run.stats.memoryReadings == null
+      ? null
+      : aggregate.memoryReadings + run.stats.memoryReadings;
+    aggregate.minAdmittedWorkers = aggregate.minAdmittedWorkers == null
+      ? run.stats.minAdmittedWorkers
+      : run.stats.minAdmittedWorkers == null
+        ? aggregate.minAdmittedWorkers
+        : Math.min(aggregate.minAdmittedWorkers, run.stats.minAdmittedWorkers);
+    aggregate.lastMemAvailableMb = run.stats.lastMemAvailableMb;
+  }
+  return { results, stats: aggregate, shardStats, shardPlan: plan };
+}
+
 export function emptyDurationHistory() {
   return { version: DURATION_HISTORY_VERSION, tasks: {} };
 }
@@ -513,12 +654,16 @@ export function formatTaskBudgetMarker(stats, prefix = 'AFFECTED_TESTS_SCHEDULER
     stats.boundBy ?? (stats.memoryWorkerBudget < stats.workerBudget ? 'memory' : 'ceiling');
   const measured =
     stats.memAvailableMb == null ? '' : ` memAvailableMb=${stats.memAvailableMb}`;
+  const cgroup =
+    stats.taskCgroupMemoryMaxMb == null
+      ? ''
+      : ` taskCgroupMemoryMaxMb=${stats.taskCgroupMemoryMaxMb}`;
   return (
     `${prefix} mode=${stats.mode} workerBudget=${stats.workerBudget} ` +
     `memoryBudgetMb=${stats.memoryBudgetMb} workerMemoryMb=${stats.workerMemoryMb} ` +
     `effectiveWorkers=${stats.effectiveWorkerBudget} maxTasks=${stats.maxConcurrentTasks} ` +
     `reserveWorkers=${stats.reserveWorkers} memoryWorkers=${stats.memoryWorkerBudget} ` +
-    `boundBy=${boundBy}${measured}`
+    `boundBy=${boundBy}${measured}${cgroup}`
   );
 }
 
