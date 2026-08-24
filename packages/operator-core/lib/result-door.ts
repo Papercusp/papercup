@@ -360,6 +360,31 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
   return { workspaceId, toolName, runId };
 }
 
+/**
+ * Keep a per-item JSON payload parseable when the MCP result also carries
+ * advisory text items (for example a tool's `guidance.seeAlso` entry).
+ *
+ * `classifyProjectionBody` deliberately finds JSON in one item even when the
+ * joined content does not parse. The spill must make the same distinction:
+ * putting the advisory item after that JSON turns an otherwise valid body into
+ * `JSON + prose`, so `jq` cannot consume the bytes. Preserve the advisory text
+ * as one JSON-encoded comment before the payload and leave the payload as the
+ * final byte stream. The encoded array is lossless (including newlines) while
+ * the comment cannot contaminate the JSON body after its advertised offset.
+ */
+function buildSpillAdvisoryPrefix(
+  textItems: ReadonlyArray<{ text: string }>,
+  jsonItemIndex: number,
+): string {
+  if (jsonItemIndex < 0 || textItems.length <= 1) return '';
+  const advisoryTexts = textItems.filter((_, index) => index !== jsonItemIndex).map((item) => item.text);
+  if (advisoryTexts.length === 0) return '';
+  return (
+    `# result-door advisory text item(s) moved before the JSON payload so the payload remains parseable\n` +
+    `# advisory-text-items-json: ${JSON.stringify(advisoryTexts)}\n`
+  );
+}
+
 const EVIDENCE_KEY_CLASS: Readonly<Record<string, OutputEvidenceClass>> = {
   workitem: 'work-item', workitems: 'work-item', issue: 'work-item', issues: 'work-item',
   event: 'event', events: 'event', eventstatus: 'event', eventstatuses: 'event',
@@ -651,6 +676,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
 
     const textItems = items.filter(isTextItem);
     const fullText = textItems.map((it) => it.text).join('\n\n');
+    // A structured JSON payload is often followed by a separate advisory
+    // content item. Classify once before writing the spill so the machine-
+    // readable payload can be kept as the final byte stream, with those
+    // advisories preserved in the prefix rather than appended after JSON.
+    const bodyShape = classifyProjectionBody(textItems);
+    const jsonItemIndex = bodyShape.json?.itemIndex ?? -1;
+    const spillBodyText = jsonItemIndex >= 0 ? textItems[jsonItemIndex].text : fullText;
+    const spillAdvisoryPrefix = buildSpillAdvisoryPrefix(textItems, jsonItemIndex);
     // WI-36047 (borrow item 9, opencode/OMP research): THE SPILL GETS ITS OWN
     // FAIL-SOFT BOUNDARY, SEPARATE FROM THE CAP.
     //
@@ -744,14 +777,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // returns null (never throws) whenever an index would not help, keeping the
     // door's fail-soft contract: a missing index is an annoyance, a failed WRITE
     // loses the payload.
-    const spillIndex = buildSpillIndex(fullText);
-    const spillPrefix = header + (spillIndex ? `${spillIndex}\n` : '');
+    const spillIndex = buildSpillIndex(spillBodyText);
+    const spillPrefix = header + spillAdvisoryPrefix + (spillIndex ? `${spillIndex}\n` : '');
     if (fsPath != null) {
       try {
         const parts = scratchParts(opts);
         spillManifest = writeScratchReference({
           filePath: fsPath,
-          payload: spillPrefix + fullText,
+          payload: spillPrefix + spillBodyText,
           workspaceId: parts.workspaceId,
           ownerId: opts.ownerId,
           audience: opts.ownerId ? 'owner' : 'workspace',
@@ -811,7 +844,6 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // its native object/array shape plus `_projection`. The durable spill is
     // written first, so both forms carry the same schema-valid capability:read
     // cursor and no client ever has to parse a chopped prefix plus a prose footer.
-    const bodyShape = classifyProjectionBody(textItems);
     const parsedJsonBody = bodyShape.json != null;
     // A valid JSON body can still be only the tool's emitted SAMPLE: custom
     // shapers such as plans:get mark clipped record fields with

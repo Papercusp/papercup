@@ -257,6 +257,41 @@ describe('applyResultDoor', () => {
     expect(readSpill('ws-1', 'tools:invoke', RUN_ID)).toContain('See also: work_items:claimable');
   });
 
+  it('keeps a JSON payload parseable when advisory text follows it in the MCP result', () => {
+    const original = JSON.stringify({
+      rows: Array.from({ length: 300 }, (_, i) => ({ id: `WI-${i}`, detail: 'x'.repeat(120) })),
+    });
+    const advisory = 'See also: work_items:claimable (the claim floors as a tool)';
+    const doored = applyResultDoor(
+      {
+        content: [
+          { type: 'text' as const, text: original },
+          { type: 'text' as const, text: advisory },
+        ],
+      },
+      { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      _projection: { cursor: { bodyOffsetInPayload?: number } };
+    };
+    const offset = body._projection.cursor.bodyOffsetInPayload;
+    expect(offset).toEqual(expect.any(Number));
+
+    const spill = readSpill('ws-1', 'tools:invoke', RUN_ID);
+    const spillBytes = Buffer.from(spill, 'utf8');
+    const parsed = JSON.parse(spillBytes.subarray(offset!).toString('utf8')) as {
+      rows: Array<{ id: string }>;
+    };
+    expect(parsed.rows).toHaveLength(300);
+    expect(spill.endsWith(original)).toBe(true);
+
+    const advisoryLine = spill
+      .split('\n')
+      .find((line) => line.startsWith('# advisory-text-items-json: '));
+    expect(advisoryLine).toBeDefined();
+    expect(JSON.parse(advisoryLine!.slice('# advisory-text-items-json: '.length))).toEqual([advisory]);
+  });
+
   it('every truncation footer teaches `projection` — the knob that would have avoided the spill (P-020)', () => {
     // The projection stage is a DISPATCH-level reserved arg, so it is in no
     // tool's inputSchema and an agent can only learn it exists from a moment
