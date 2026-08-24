@@ -27,7 +27,9 @@ import {
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   detectBufferingLastStage,
+  detectSelfOutputRedirect,
   formatBufferingPipelineAdvice,
+  formatSelfRedirectAdvice,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   runForeground,
@@ -295,6 +297,15 @@ export default defineTool({
       // empty bash_output polls that look identical to "never started".
       const bufferingStage = detectBufferingLastStage(args.command);
       const bufferingNote = bufferingStage ? formatBufferingPipelineAdvice(bufferingStage, 'launch') : '';
+      // EI-21301075566136325: same say-it-NOW rationale as the buffering note — a
+      // command that redirects its own stdout keeps the capability log empty for
+      // its whole run, and a string of empty bash_output polls looks identical to
+      // "never started". Name the redirect target at launch so the reader judges
+      // progress by THAT file, not by the capability tail.
+      const selfRedirectAtLaunch = detectSelfOutputRedirect(args.command);
+      const selfRedirectLaunchNote = selfRedirectAtLaunch
+        ? ` ${formatSelfRedirectAdvice(selfRedirectAtLaunch, null)}`
+        : '';
       // EI-20063051138162607: the sibling typecheck tools spawn tsc themselves and
       // so can pin its heap (tscHeapEnv); this one runs a command the CALLER wrote,
       // and rewriting NODE_OPTIONS underneath it would be the more surprising
@@ -328,6 +339,7 @@ export default defineTool({
                 `All descendants in this task's confined service share that deadline; use a dedicated service launcher ` +
                 `when a descendant needs a separate lifetime.` +
                 bufferingNote +
+                selfRedirectLaunchNote +
                 heapNote,
             }),
           },
