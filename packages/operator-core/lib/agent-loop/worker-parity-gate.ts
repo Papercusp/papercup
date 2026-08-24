@@ -214,7 +214,10 @@ export async function readWorkerParityRuns(
     SELECT q.run_id, q.harness_slug,
            q.meta->>'promptHash' AS prompt_hash,
            nullif(q.meta->>'featureId', '') AS feature_id,
-           nullif(q.meta->>'model', '') AS requested_model,
+           coalesce(
+             nullif(q.meta->>'requestedModel', ''),
+             nullif(q.meta->>'model', '')
+           ) AS requested_model,
            q.engine,
            coalesce(q.exit_code, -1)::int AS exit_code,
            q.ended_at,

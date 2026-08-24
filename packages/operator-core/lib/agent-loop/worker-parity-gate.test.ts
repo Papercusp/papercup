@@ -161,6 +161,9 @@ describe('readWorkerParityRuns', () => {
     expect(sql).toContain(
       "rtrim(jsonl_body, chr(10) || chr(13) || chr(9) || ' ')",
     );
+    expect(sql).toContain(
+      "nullif(q.meta->>'requestedModel', '')",
+    );
     expect(sql).not.toContain('reverse(rtrim(jsonl_body))');
   });
 });
