@@ -1,11 +1,11 @@
 {
   "schemaVersion": "unshipped-plans-audit-manifest-v2",
-  "generatedAt": "2026-08-24T19:58:05.767Z",
+  "generatedAt": "2026-08-24T20:03:23.240Z",
   "workspace": "papercusp-workspace",
   "scope": {
-    "snapshotStartedAt": "2026-08-24T19:58:02.705Z",
-    "snapshotFinishedAt": "2026-08-24T19:58:05.767Z",
-    "liveOwnershipMeasuredAt": "2026-08-24T19:58:02.754Z",
+    "snapshotStartedAt": "2026-08-24T20:03:19.064Z",
+    "snapshotFinishedAt": "2026-08-24T20:03:23.240Z",
+    "liveOwnershipMeasuredAt": "2026-08-24T20:03:19.228Z",
     "nonterminalListedAtSnapshot": 603,
     "materialized": 601,
     "catalogFailures": 2,
@@ -112,11 +112,11 @@
       }
     },
     "text-only-human-blocker": {
-      "count": 10,
+      "count": 9,
       "byStatus": {
         "ready": 2,
-        "active": 5,
-        "draft": 3
+        "draft": 3,
+        "active": 4
       }
     },
     "typed-blocker": {
@@ -144,9 +144,9 @@
       }
     },
     "unblocked-partial-no-owner": {
-      "count": 44,
+      "count": 45,
       "byStatus": {
-        "active": 23,
+        "active": 24,
         "draft": 6,
         "ready": 15
       }
@@ -164,8 +164,8 @@
     "protected": 13,
     "closeoutOrReconcile": 224,
     "supersedeOrRetire": 238,
-    "blockerClaims": 82,
-    "unblockedPartial": 44,
+    "blockerClaims": 81,
+    "unblockedPartial": 45,
     "catalogResidue": 2
   },
   "closeoutEvidence": {
@@ -175,7 +175,7 @@
   "blockerEvidence": {
     "typedCurrent": 59,
     "typedWithStaleHint": 9,
-    "textOnly": 14
+    "textOnly": 13
   },
   "currentRegistryAtPublish": {
     "total": 1338,
@@ -7429,20 +7429,19 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-24",
-      "updated": "2026-08-24 15:47:24.252856-04",
+      "updated": "2026-08-24 16:02:18.425942-04",
       "itemTotal": 9,
-      "terminalPlanItems": 6,
-      "openPlanItems": 3,
+      "terminalPlanItems": 7,
+      "openPlanItems": 2,
       "workItemTotal": 8,
-      "openWorkItems": 3,
+      "openWorkItems": 2,
       "workItemStates": {
-        "done": 5,
-        "open": 2,
+        "done": 6,
+        "open": 1,
         "blocked": 1
       },
       "itemCounts": {
-        "done": 6,
-        "wip": 1,
+        "done": 7,
         "todo": 1,
         "blocked": 1
       },
@@ -7454,35 +7453,14 @@
           "ownerId": "su-8973ac94-b287-4a91-9b57-e867f2228552",
           "ownerLabel": "su · su-8973a",
           "fleet": null,
-          "intent": "Implement and verify P-008 / WI-41353: deterministic plan-cleanup auto-apply before LLM fallback",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-8973ac94-b287-4a91-9b57-e867f2228552",
-          "ownerLabel": "su · su-8973a",
-          "fleet": null,
-          "intent": "Implement and verify P-008 / WI-41353: deterministic plan-cleanup auto-apply before LLM fallback",
+          "intent": "Advance P-008/WI-41353 and clear its directly introduced red EI-21365808718386746 in PlansPane request/deep-link tests",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-8973ac94-b287-4a91-9b57-e867f2228552",
           "ownerLabel": "su · su-8973a",
           "fleet": null,
-          "intent": "Implement and verify P-008 / WI-41353: deterministic plan-cleanup auto-apply before LLM fallback",
-          "source": "plan-item-claim"
-        },
-        {
-          "ownerId": "su-e40dceb1-945d-4129-b41c-420c8a146457",
-          "ownerLabel": "su · su-e40dc",
-          "fleet": null,
-          "intent": "WI-41352: Add resolver heartbeat, stale timeout classification, owner-visible diagnostics, and a safe restart operation that pres…",
-          "source": "work-item-hold"
-        },
-        {
-          "ownerId": "su-e40dceb1-945d-4129-b41c-420c8a146457",
-          "ownerLabel": "su · su-e40dc",
-          "fleet": null,
-          "intent": "WI-41352: Add resolver heartbeat, stale timeout classification, owner-visible diagnostics, and a safe restart operation that pres…",
+          "intent": "Advance P-008/WI-41353 and clear its directly introduced red EI-21365808718386746 in PlansPane request/deep-link tests",
           "source": "plan-item-claim"
         }
       ],
@@ -7490,7 +7468,6 @@
         "typedBlocked": true,
         "typedHuman": false,
         "refs": [
-          "P-007",
           "P-008"
         ],
         "staleHints": []
@@ -7546,14 +7523,14 @@
           "ownerId": "su-171c4890-58a7-4c55-8efb-28da5a485aa8",
           "ownerLabel": "su · su-171c4",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h23m] Reconcile the one-hour BYOC qualified-tip timeout, verify D-014 progress, and advance only newly actionable admitted work",
+          "intent": "[idle 2h29m] Reconcile the one-hour BYOC qualified-tip timeout, verify D-014 progress, and advance only newly actionable admitted work",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-1b31fc2d-8444-4898-a3bf-bb1afd28606d",
           "ownerLabel": "su · su-1b31f",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h51m] Reconcile timed-out BYOC plan-filtered claimable wake against current D-017 authority and scheduler admission.",
+          "intent": "[idle 2h57m] Reconcile timed-out BYOC plan-filtered claimable wake against current D-017 authority and scheduler admission.",
           "source": "declared-plan"
         },
         {
@@ -7567,35 +7544,35 @@
           "ownerId": "su-2ad0d976-cd12-48b4-9db5-7330906bd433",
           "ownerLabel": "su · su-2ad0d",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 3h50m] Reconcile generation-3 qualified-tip timeout and advance only newly admitted BYOC plan work",
+          "intent": "[idle 3h55m] Reconcile generation-3 qualified-tip timeout and advance only newly admitted BYOC plan work",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-3cc77b1e-f8b1-4d03-9d59-9da62ffa42e0",
           "ownerLabel": "su · su-3cc77",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h56m] Monitor the sole D-018 checkpoint f1cd/4954859a and claim only newly admitted canonical BYOC work after a valid generation-3 fire",
+          "intent": "[idle 3h2m] Monitor the sole D-018 checkpoint f1cd/4954859a and claim only newly admitted canonical BYOC work after a valid generation-3 fire",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-4006440c-d974-4183-84a2-7216a0c72599",
           "ownerLabel": "su · su-40064",
           "fleet": null,
-          "intent": "[idle 2h20m] Reconcile stale BYOC member-dead replay against current plan v369 authority and zero-claim disposition; take no mutation and compact immediately.",
+          "intent": "[idle 2h25m] Reconcile stale BYOC member-dead replay against current plan v369 authority and zero-claim disposition; take no mutation and compact immediately.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-6362e1ba-17b5-49ad-ab2f-6a6a55ecb356",
           "ownerLabel": "su · su-6362e",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 3h58m] Reconcile qualified-current-tip timeout; claim only newly admitted canonical BYOC work and escalate only on demonstrated D-014 successor stall",
+          "intent": "[idle 4h3m] Reconcile qualified-current-tip timeout; claim only newly admitted canonical BYOC work and escalate only on demonstrated D-014 successor stall",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-66e90fce-9fd1-4814-933b-228813c8d7fd",
           "ownerLabel": "su · su-66e90",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "[idle 8h15m] Reconcile timed-out BYOC qualified-current-tip await; verify ownership repair and preserve D-093/D-016",
+          "intent": "[idle 8h20m] Reconcile timed-out BYOC qualified-current-tip await; verify ownership repair and preserve D-093/D-016",
           "source": "declared-plan"
         },
         {
@@ -7609,42 +7586,42 @@
           "ownerId": "su-92eb9f51-511c-4a2b-895a-21bdff9f7019",
           "ownerLabel": "su · su-92eb9",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h30m] Reconcile timed-out BYOC claimable-work await; pull only admitted plan work and verify D-018 serializer progress",
+          "intent": "[idle 2h35m] Reconcile timed-out BYOC claimable-work await; pull only admitted plan work and verify D-018 serializer progress",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-c218faeb-02d5-4079-8424-da913ce495e6",
           "ownerLabel": "su · su-c218f",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "[idle 12m] BYOC exact qualified-tip timeout audit: verify WI-40086 owner/gate progress and take over only if stranded.",
+          "intent": "[idle 17m] BYOC exact qualified-tip timeout audit: verify WI-40086 owner/gate progress and take over only if stranded.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-dab2ef59-f027-44f1-ad76-afe0008d0cea",
           "ownerLabel": "su · su-dab2e",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "[idle 1h36m] BYOC fleet-member continuation under current D-018/D-019 authority: verify canonical plan actionability; claim only a plan-admitted item or retain one filtered claimable wake",
+          "intent": "[idle 1h41m] BYOC fleet-member continuation under current D-018/D-019 authority: verify canonical plan actionability; claim only a plan-admitted item or retain one filtered claimable wake",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-e3b3a9be-26f1-4acb-8e8a-e0862115055b",
           "ownerLabel": "su · su-e3b3a",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 1h45m] Standing down cleanly: predecessor BYOC fleet is paused/winding down with zero claims and successor fleet owns execution",
+          "intent": "[idle 1h51m] Standing down cleanly: predecessor BYOC fleet is paused/winding down with zero claims and successor fleet owns execution",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-e7b14009-c0e2-4f18-87d6-3e6e7161bd0e",
           "ownerLabel": "su · su-e7b14",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h45m] Reconcile the second BYOC claimable-work timeout, pull only newly admitted fleet work, and preserve the verified idle carry state.",
+          "intent": "[idle 2h50m] Reconcile the second BYOC claimable-work timeout, pull only newly admitted fleet work, and preserve the verified idle carry state.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-ed3a4d19-eff6-4fdd-bc39-decc9fecdab3",
           "ownerLabel": "su · su-ed3a4",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h32m] Reconcile the D-018 claimable-work timeout and pull only newly scheduler-admitted BYOC plan work",
+          "intent": "[idle 2h37m] Reconcile the D-018 claimable-work timeout and pull only newly scheduler-admitted BYOC plan work",
           "source": "declared-plan"
         }
       ],
@@ -7876,7 +7853,14 @@
           "ownerId": "su-dbfcdeef-546d-489c-bbc6-de1c2cf449d8",
           "ownerLabel": "su · su-dbfcd",
           "fleet": null,
-          "intent": "[idle 13h29m] Resume WI-41089 capability matrix under fleet ox-alpha-sol-replacements-2026-08-23",
+          "intent": "[idle 13h34m] Resume WI-41089 capability matrix under fleet ox-alpha-sol-replacements-2026-08-23",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-f7d6c64b-fb73-4e42-babb-48e640696606",
+          "ownerLabel": "su · su-f7d6c",
+          "fleet": null,
+          "intent": "Reconcile EI-213458, serializer, and generation-3 after timeout; unpark only after valid fire",
           "source": "declared-plan"
         }
       ],
@@ -7920,42 +7904,42 @@
           "ownerId": "su-019cb42e-66a2-4923-925a-1ae5a9a33b20",
           "ownerLabel": "su · su-019cb",
           "fleet": "nonp2p-bug-drain",
-          "intent": "[idle 3h32m] Execute the leader-directed rev16 non-P2P drain pull: re-orient, make exactly one authoritative scheduler:get_next call, terminalize the admitted item with evidence or checkpoint and re-park if floor-gated.",
+          "intent": "[idle 3h37m] Execute the leader-directed rev16 non-P2P drain pull: re-orient, make exactly one authoritative scheduler:get_next call, terminalize the admitted item with evidence or checkpoint and re-park if floor-gated.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-1405afb7-e8c0-44f8-9119-e88fe978b57f",
           "ownerLabel": "su · su-1405a",
           "fleet": "nonp2p-bug-drain",
-          "intent": "[idle 10h26m] Resume nonp2p bug drain as fleet member after stand-down lift; pull the next scheduler-admitted item",
+          "intent": "[idle 10h31m] Resume nonp2p bug drain as fleet member after stand-down lift; pull the next scheduler-admitted item",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-4a9c05e1-9f29-4e02-88bd-a91d715a7f3a",
           "ownerLabel": "su · su-4a9c0",
           "fleet": "nonp2p-bug-drain",
-          "intent": "[idle 3h33m] Continue nonp2p-bug-drain as fleet member: re-orient and claim exactly one current rev16 admitted non-P2P bug for evidence-backed terminal disposition.",
+          "intent": "[idle 3h38m] Continue nonp2p-bug-drain as fleet member: re-orient and claim exactly one current rev16 admitted non-P2P bug for evidence-backed terminal disposition.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-549dda88-f0e5-4413-a675-127f2c6e5aed",
           "ownerLabel": "su · su-549dd",
           "fleet": null,
-          "intent": "[idle 10h22m] resume nonp2p bug-drain lane",
+          "intent": "[idle 10h27m] resume nonp2p bug-drain lane",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-8004efc4-926c-4160-a61f-79ffe6e0e5a1",
           "ownerLabel": "su · su-8004e",
           "fleet": null,
-          "intent": "[idle 9h7m] Resume nonp2p-bug-drain member lane after Avi lifted stand-down; reconcile live state and pull the next eligible bug.",
+          "intent": "[idle 9h12m] Resume nonp2p-bug-drain member lane after Avi lifted stand-down; reconcile live state and pull the next eligible bug.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-800ffeb0-f5de-4f61-9f3b-46fa85f4db8f",
           "ownerLabel": "su · su-800ff",
           "fleet": null,
-          "intent": "[idle 10h24m] Resume nonp2p bug-drain member lane after owner lifted stand-down",
+          "intent": "[idle 10h29m] Resume nonp2p bug-drain member lane after owner lifted stand-down",
           "source": "declared-plan"
         },
         {
@@ -7983,7 +7967,7 @@
           "ownerId": "su-e10da764-0959-4066-a492-d83d4d738f5e",
           "ownerLabel": "su · su-e10da",
           "fleet": "nonp2p-bug-drain",
-          "intent": "[idle 3h33m] Advance one fresh rev16-admitted non-P2P bug to an evidence-backed terminal disposition.",
+          "intent": "[idle 3h38m] Advance one fresh rev16-admitted non-P2P bug to an evidence-backed terminal disposition.",
           "source": "declared-plan"
         }
       ],
@@ -8034,7 +8018,7 @@
           "ownerId": "su-25de9823-25f2-4f4d-a681-fa611c7e158c",
           "ownerLabel": "su · su-25de9",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 54m] Resume the admitted non-p2p bug-drain fleet lane after compaction; reconcile completed EI-21327237835182281 and pull only the next scheduler-admitted item.",
+          "intent": "[idle 59m] Resume the admitted non-p2p bug-drain fleet lane after compaction; reconcile completed EI-21327237835182281 and pull only the next scheduler-admitted item.",
           "source": "declared-plan"
         },
         {
@@ -8069,18 +8053,18 @@
           "ownerId": "su-4b3f4479-dd24-4da6-92af-5264f6bc75d8",
           "ownerLabel": "su · su-4b3f4",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 22h9m] Resume EI-21146697358057973: verify candidate-bound run-lock guard and preserve release/runtime evidence; do not duplicate the live WI-40086 gate lane.",
+          "intent": "[idle 22h14m] Resume EI-21146697358057973: verify candidate-bound run-lock guard and preserve release/runtime evidence; do not duplicate the live WI-40086 gate lane.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-50a456ac-704b-458a-951e-42c3d82ffe11",
           "ownerLabel": "su · su-50a45",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 8h56m] EI-21331232053861302: release:checkpoint-run waitForEligibility exceeds MCP request deadline",
+          "intent": "[idle 9h1m] EI-21331232053861302: release:checkpoint-run waitForEligibility exceeds MCP request deadline",
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-680fdfc9-5d55-4833-85b1-a1b0577b021c",
+          "ownerId": "su-51eb8913-634b-42bf-8b48-28ee36f36a1f",
           "ownerLabel": "codex",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
           "intent": "",
@@ -8090,56 +8074,56 @@
           "ownerId": "su-688f8865-067e-4d47-99ea-7ae07c9253c6",
           "ownerLabel": "su · su-688f8",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 7m] Recover coalesced member-dead and admission-blocked events; enumerate affected members and claims while preserving rev47, roster, cap, validation, protected-item, source, checkpoint, and deploy walls",
+          "intent": "[idle 1m] Recover coalesced member-dead and admission-blocked events; enumerate affected members and claims while preserving rev47, roster, cap, validation, protected-item, source, checkpoint, and deploy walls",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-688f8865-067e-4d47-99ea-7ae07c9253c6",
           "ownerLabel": "su · su-688f8",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 7m] Recover coalesced member-dead and admission-blocked events; enumerate affected members and claims while preserving rev47, roster, cap, validation, protected-item, source, checkpoint, and deploy walls",
+          "intent": "[idle 1m] Recover coalesced member-dead and admission-blocked events; enumerate affected members and claims while preserving rev47, roster, cap, validation, protected-item, source, checkpoint, and deploy walls",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-688f8865-067e-4d47-99ea-7ae07c9253c6",
           "ownerLabel": "su · su-688f8",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 7m] Recover coalesced member-dead and admission-blocked events; enumerate affected members and claims while preserving rev47, roster, cap, validation, protected-item, source, checkpoint, and deploy walls",
+          "intent": "[idle 1m] Recover coalesced member-dead and admission-blocked events; enumerate affected members and claims while preserving rev47, roster, cap, validation, protected-item, source, checkpoint, and deploy walls",
           "source": "plan-item-claim"
         },
         {
           "ownerId": "su-68c6525f-1dec-4968-8e74-6e4524145b3c",
           "ownerLabel": "su · su-68c65",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 3h1m] Resume D-041 rev47 monitor: reconcile the exact claimable oracle and scheduler pull while preserving WI-39943 and the no-wake wall.",
+          "intent": "[idle 3h6m] Resume D-041 rev47 monitor: reconcile the exact claimable oracle and scheduler pull while preserving WI-39943 and the no-wake wall.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-79c9e5fb-df29-40d9-9b84-58d20b12ceac",
           "ownerLabel": "su · su-79c9e",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 1h44m] Reconcile the non-P2P bug-drain member lane at delivery time; inspect the exact rev47 claimable oracle and advance only admitted work.",
+          "intent": "[idle 1h50m] Reconcile the non-P2P bug-drain member lane at delivery time; inspect the exact rev47 claimable oracle and advance only admitted work.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-841b09c4-42f2-42dc-a411-436c8da33f40",
           "ownerLabel": "su · su-841b0",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 11h5m] Loop wake validation-only recheck for non-p2p drain; verify generation-2 gate, protected items, fleet leader health, claim-spec revision 47, and scheduler-admitted next work.",
+          "intent": "[idle 11h10m] Loop wake validation-only recheck for non-p2p drain; verify generation-2 gate, protected items, fleet leader health, claim-spec revision 47, and scheduler-admitted next work.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-cf19010e-8f19-4637-bcaf-c3f3bc7a59b5",
           "ownerLabel": "su · su-cf190",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 8h42m] EI-21329733885767129: Papercusp MCP transport send errors block checkpoint and compaction writes",
+          "intent": "[idle 8h47m] EI-21329733885767129: Papercusp MCP transport send errors block checkpoint and compaction writes",
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-e390266a-89ff-4cff-bacf-06c0ce626044",
-          "ownerLabel": "codex",
+          "ownerId": "su-de869289-8ccc-463a-a09e-01dbb23ce286",
+          "ownerLabel": "su · su-de869",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "",
+          "intent": "EI-21365854737580197: Standing tsc red with no owner: packages/operator-core/lib/plan-cleanup/run-store.ts (62min, 1 errors)",
           "source": "declared-plan"
         }
       ],
@@ -8258,7 +8242,7 @@
           "ownerId": "su-995c4bec-7464-4b3c-aab6-ba82f529118d",
           "ownerLabel": "su · su-995c4",
           "fleet": "finish-plan-acceptance-20260813",
-          "intent": "[idle 21h44m] WI-40532 independent scorecard only after genuine generation-2 qualified current-tip fire",
+          "intent": "[idle 21h49m] WI-40532 independent scorecard only after genuine generation-2 qualified current-tip fire",
           "source": "declared-plan"
         }
       ],
@@ -8280,20 +8264,20 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-23",
-      "updated": "2026-08-24 15:53:36.38547-04",
+      "updated": "2026-08-24 16:00:35.5818-04",
       "itemTotal": 15,
-      "terminalPlanItems": 7,
-      "openPlanItems": 8,
+      "terminalPlanItems": 8,
+      "openPlanItems": 7,
       "workItemTotal": 15,
-      "openWorkItems": 8,
+      "openWorkItems": 7,
       "workItemStates": {
-        "done": 7,
+        "done": 8,
         "blocked": 2,
-        "open": 6
+        "open": 5
       },
       "itemCounts": {
-        "done": 7,
-        "todo": 5,
+        "done": 8,
+        "todo": 4,
         "wip": 1,
         "blocked": 2
       },
@@ -8314,6 +8298,27 @@
           "fleet": null,
           "intent": "Supervise D-014 main-green recovery: hold qualification fail-closed through EI-213458 audit and D-028 preflight, then verify exact qualification, Stable-C, generation-3, promotion, deploy parity, P-046, and GCP teardown",
           "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-36534c58-7be0-4758-9357-195e8dd01c36",
+          "ownerLabel": "su · su-36534",
+          "fleet": "main-greening-reds-sol-xhigh-20260824",
+          "intent": "Recover and verify WI-41390 / P-049 only",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-36534c58-7be0-4758-9357-195e8dd01c36",
+          "ownerLabel": "su · su-36534",
+          "fleet": "main-greening-reds-sol-xhigh-20260824",
+          "intent": "Recover and verify WI-41390 / P-049 only",
+          "source": "work-item-hold"
+        },
+        {
+          "ownerId": "su-36534c58-7be0-4758-9357-195e8dd01c36",
+          "ownerLabel": "su · su-36534",
+          "fleet": "main-greening-reds-sol-xhigh-20260824",
+          "intent": "Recover and verify WI-41390 / P-049 only",
+          "source": "plan-item-claim"
         },
         {
           "ownerId": "su-66d22bd1-2a2f-4d41-b09b-772c385b1124",
@@ -8379,31 +8384,17 @@
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-e344a761-bfaa-40aa-bff1-0032fe774742",
-          "ownerLabel": "su · su-e344a",
-          "fleet": "main-greening-reds-sol-xhigh-20260824",
-          "intent": "Execute only WI-41388 / stable-candidate-related-gate-2026-08-23 P-047: finish verification and complete Dream/Gym contract repair",
-          "source": "work-item-hold"
-        },
-        {
-          "ownerId": "su-e344a761-bfaa-40aa-bff1-0032fe774742",
-          "ownerLabel": "su · su-e344a",
-          "fleet": "main-greening-reds-sol-xhigh-20260824",
-          "intent": "Execute only WI-41388 / stable-candidate-related-gate-2026-08-23 P-047: finish verification and complete Dream/Gym contract repair",
-          "source": "plan-item-claim"
-        },
-        {
           "ownerId": "su-f00c1a43-4ffb-4ef1-a90e-afe6aaea88c6",
           "ownerLabel": "su · su-f00c1",
           "fleet": null,
-          "intent": "[idle 2h14m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
+          "intent": "[idle 2h19m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-f00c1a43-4ffb-4ef1-a90e-afe6aaea88c6",
           "ownerLabel": "su · su-f00c1",
           "fleet": null,
-          "intent": "[idle 2h14m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
+          "intent": "[idle 2h19m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
           "source": "work-item-hold"
         },
         {
@@ -8512,7 +8503,14 @@
           "ownerId": "su-4aeca89b-a3da-4b74-8897-85c6cfb1b4f2",
           "ownerLabel": "su · su-4aeca",
           "fleet": "p006-calibration-judge-2026-08-22",
-          "intent": "Resume work-queue-admission-and-bulk-dedup-2026-08-24: apply migration 944, then P-002 admission stamping at the _create-core choke point",
+          "intent": "P-002 born-pending: thread `admission` through createWorkItem into both insert branches; drop similarOpen from the two success returns in _create-core.ts",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-4aeca89b-a3da-4b74-8897-85c6cfb1b4f2",
+          "ownerLabel": "su · su-4aeca",
+          "fleet": "p006-calibration-judge-2026-08-22",
+          "intent": "P-002 born-pending: thread `admission` through createWorkItem into both insert branches; drop similarOpen from the two success returns in _create-core.ts",
           "source": "work-item-hold"
         }
       ],
@@ -12290,7 +12288,7 @@
       "reason": "The plan has no executable plan items or linked work.",
       "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
       "created": "2026-08-24",
-      "updated": "2026-08-24 15:48:03.174546-04",
+      "updated": "2026-08-24 16:00:21.844683-04",
       "itemTotal": 0,
       "terminalPlanItems": 0,
       "openPlanItems": 0,
@@ -16385,39 +16383,6 @@
       "nowNext": "P-019's only remaining work is the ESCALATION TIER, which is the PARENT plan's P-006 OWNER GATE (`context-injection-audit-2026-07-28`) — not claimable here, and not to be self-answered. Whoever builds it: start from D-095 §4 + D-098, target `unretrievable` (~9.6% of traffic), and decide EXPLICITLY about the high-SCS deciles 7–10 (zero-hit 12–14%) that D-098 deliberately leaves uncovered rather than inheriting silence about them. Do not wire an LLM leg."
     },
     {
-      "slug": "design-simplification-2026-07-09",
-      "title": "Design simplification + design-doc violation fixes (full-app audit follow-through)",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "text-only-human-blocker",
-      "reason": "Plan prose claims an owner decision/approval/credential blocker, but no structured needs-human state records it.",
-      "recommendation": "Revalidate the human action and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-07-09",
-      "updated": "2026-07-10 16:06:49.897722-04",
-      "itemTotal": 16,
-      "terminalPlanItems": 14,
-      "openPlanItems": 2,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 14,
-        "todo": 2
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Phase 1 done (P-002..P-011). Phase 2: P-012 (letter-spacing baseline) + P-013 (lab routes → /dev, 3 orphans moved+gated, 8 excluded w/ cause) DONE + verified this session. P-015 (one <Button>) FULLY INVENTORIED + DESIGNED on WI-3739 checkpoint but NOT executed — it's a bigger, judgment-laden refactor than the one-liner: .pc-button (43 sites) is used on LINKS not just <button> (needs Button asChild or shared class), .pc-advpanel__btn (1 site) is part of the intentional .pc-advpanel__* panel family (maybe keep), .operator-mini-btn (5 sites) has 130 sprawling globals.css rules (needs a dead-CSS audit first), + 3 inconsistency bugs. Execution = a discrete coordinated pass (hot globals.css + Tauri visual verify across not-found/cupboard/installed/settings/support/adv). Remaining: P-014 (settings IA 24→6, OWNER-GATED), P-015 (execute per WI-3739), P-016 (central categorical palette + flip status-map lint enforce:true), P-017 (accent/info/border alias fold).",
-      "nowNext": "P-015 execution is teed up on WI-3739 (recommend owner weighs in on the Button asChild API question); a fully-agent-executable next item is P-016 (central categorical palette — inventory AdvConversationsTab KIND_COLOR + CupboardClient KIND_TONES + teal literals + AgentThinkingStream hexes first, then flip the status-map lint enforce:true)."
-    },
-    {
       "slug": "deterministic-blueprints-migration-2026-06-13",
       "title": "Deterministic blueprints — migrate the bespoke work-loops into shareable blueprints",
       "harness": "papercusp",
@@ -19686,6 +19651,39 @@
       },
       "nowState": "P-001..P-006 + P-009/P-010 IMPLEMENTED solo (owner-directed) and unit-green, INCLUDING all peer-review folds: (1) P-009 noun-class fallback — the lint now catches its own root-incident line (\"expect the hash to ROLL\"), which is pinned as its first test; (2) checks delivery parity with walls at ALL THREE sites (carry-brief structured checks + 🧪 cold-extras block, loop-fire renderLoopChecksBlock in the un-truncatable priority stack, wake-executor live re-check) — P-001 was prematurely \"done\" before this; (3) P-005 date-constrained so an old-dated [owner:] tag is never upgraded by today's owner turn; plus hex≥8-with-letter tokens, verified-instant stamping, marker-less rows parse as PREDICTED, postNoteInbox filtered via isPendingInterrupt. 278 tests across 7 affected suites (one stale expectation updated to the fold-#1 behavior). tools-md-sync + prompt-weight green. Activation: rides normal git-sync→gate→deploy — NO forced deploy (soak live), no restarts needed. Observed live: the serving host already emits checks/checksLint fields on loop:checkpoint (the ~6-min staging restart cadence picked up the tree edits).",
       "nowNext": "Confirm the final 2-suite re-run green (task bckf570a6); after the next deploy, dogfood: write a checks:[] entry on a real checkpoint + verify checksLint and the cold-wake 🧪 block render. P-007 (cross-surface contradiction flag) and P-008 (fact supersede-notify) are the remaining follow-ups — fleet-placeable."
+    },
+    {
+      "slug": "design-simplification-2026-07-09",
+      "title": "Design simplification + design-doc violation fixes (full-app audit follow-through)",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-07-09",
+      "updated": "2026-07-10 16:06:49.897722-04",
+      "itemTotal": 16,
+      "terminalPlanItems": 14,
+      "openPlanItems": 2,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "done": 14,
+        "todo": 2
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "Phase 1 done (P-002..P-011). Phase 2: P-012 (letter-spacing baseline) + P-013 (lab routes → /dev, 3 orphans moved+gated, 8 excluded w/ cause) DONE + verified this session. P-015 (one <Button>) FULLY INVENTORIED + DESIGNED on WI-3739 checkpoint but NOT executed — it's a bigger, judgment-laden refactor than the one-liner: .pc-button (43 sites) is used on LINKS not just <button> (needs Button asChild or shared class), .pc-advpanel__btn (1 site) is part of the intentional .pc-advpanel__* panel family (maybe keep), .operator-mini-btn (5 sites) has 130 sprawling globals.css rules (needs a dead-CSS audit first), + 3 inconsistency bugs. Execution = a discrete coordinated pass (hot globals.css + Tauri visual verify across not-found/cupboard/installed/settings/support/adv). Remaining: P-014 (settings IA 24→6, OWNER-GATED), P-015 (execute per WI-3739), P-016 (central categorical palette + flip status-map lint enforce:true), P-017 (accent/info/border alias fold).",
+      "nowNext": "P-015 execution is teed up on WI-3739 (recommend owner weighs in on the Button asChild API question); a fully-agent-executable next item is P-016 (central categorical palette — inventory AdvConversationsTab KIND_COLOR + CupboardClient KIND_TONES + teal literals + AgentThinkingStream hexes first, then flip the status-map lint enforce:true)."
     },
     {
       "slug": "desktop-release-hosting-r2-2026-07-12",
