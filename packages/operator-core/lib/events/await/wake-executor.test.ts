@@ -18,8 +18,10 @@ import {
   degradeToInboxOrDrop,
   rehydrateLoopWakeText,
   applyInjectionDoor,
+  defaultSpawnDetached,
   type ExecuteWakeDeps,
 } from './wake-executor';
+import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 // EI-20489286325396940: `wakeSummaryHeadline` (with `payloadIsTimeout`) lives in
 // timeout-fallback.ts, not wake-executor.ts — it is imported BY wake-executor and
 // by engine.ts, so hosting it here would close a wake-executor↔engine import cycle.
@@ -921,6 +923,143 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
     const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, { getLoopStatusFn });
     expect(out).toBe(FROZEN_TEXT);
     expect(getLoopStatusFn).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-41297 — the WIRING guard for WI-41266.
+ *
+ * WI-41266: wake-delivered turns egressed through the inference gateway (:8788)
+ * regardless of the session's `--account=default` choice, because the wake path
+ * re-armed every OTHER non-persisting flag (scheduler deny, subagent deny,
+ * --mcp-config) but never the ACCOUNT ROUTE, and spawned with a raw
+ * `{...process.env}` that inherited the operator's own gateway base URL.
+ *
+ * The fix's helpers (wakeAccountRouteFromArgv / sanitizeInheritedWakeEnv) are
+ * thoroughly unit-tested in inference-gateway/spawn-env.test.ts. What was NOT
+ * covered is that the wake path actually CALLS them — measured 2026-08-24, zero
+ * assertions in this file touched the route, so each of the three wiring lines
+ * could be deleted with all 167 tests still green and the bug class would return
+ * silently. The helpers being correct is not the property we care about.
+ *
+ * These tests fail if that wiring is removed. Keep them behavioural (assert the
+ * ROUTE reaches the child), never a grep for a symbol name.
+ */
+describe('wake account route reaches the resumed child (WI-41266 wiring)', () => {
+  const DEFAULT_ARGV = ['psu', '--no-picker', '--agent=claude', '--account=default'];
+  const AUTO_ARGV = ['psu', '--no-picker', '--agent=claude', '--account=auto'];
+
+  it('a --account=default session\'s resume argv carries the highest-precedence --settings overlay', () => {
+    const route = wakeAccountRouteFromArgv(DEFAULT_ARGV, 'su-default');
+    expect(route).not.toBeNull();
+    expect(route!.mode).toBe('default');
+
+    const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-d', ompThreadId: null }, 'WAKE', route);
+    expect(r).not.toBeNull();
+
+    // `claude --resume` is a NEW CLI process and does not retain the original
+    // launch flags, so the overlay must ride every wake. It outranks
+    // project/user settings, which is what stops a stale apiKeyHelper or an
+    // ambient gateway URL winning over the chosen system login.
+    const settingsIdx = r!.args.indexOf('--settings');
+    expect(settingsIdx).toBeGreaterThan(-1);
+    const overlay = JSON.parse(r!.args[settingsIdx + 1]);
+    // Default route = the machine's own login: every credential selector blanked.
+    expect(overlay.env.ANTHROPIC_BASE_URL).toBe('');
+    expect(overlay.env.ANTHROPIC_AUTH_TOKEN).toBe('');
+    expect(overlay.apiKeyHelper).toBe('');
+    // Global options must precede the positional prompt.
+    expect(settingsIdx).toBeLessThan(r!.args.length - 1);
+    expect(r!.args[r!.args.length - 1]).toBe('WAKE');
+  });
+
+  it('a --account=auto session KEEPS its gateway route across the wake (the fix must not blanket-strip)', () => {
+    const route = wakeAccountRouteFromArgv(AUTO_ARGV, 'su-auto');
+    expect(route!.mode).toBe('auto');
+    // The whole point is honoring the CHOSEN route, not forcing everyone direct.
+    expect(route!.env.ANTHROPIC_BASE_URL).toContain('127.0.0.1');
+    expect(route!.env.ANTHROPIC_AUTH_TOKEN).toBeTruthy();
+
+    const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-a', ompThreadId: null }, 'WAKE', route);
+    const settingsIdx = r!.args.indexOf('--settings');
+    expect(settingsIdx).toBeGreaterThan(-1);
+    const overlay = JSON.parse(r!.args[settingsIdx + 1]);
+    expect(overlay.env.ANTHROPIC_BASE_URL).toBe(route!.env.ANTHROPIC_BASE_URL);
+    expect(overlay.env.ANTHROPIC_AUTH_TOKEN).toBe(route!.env.ANTHROPIC_AUTH_TOKEN);
+  });
+
+  it('a session with NO recorded --account gets no invented overlay (old rows stay byte-identical)', () => {
+    // An old adv row has no trustworthy route; inventing one would be a silent
+    // re-route, which is the same class of bug in the other direction.
+    expect(wakeAccountRouteFromArgv(['psu', '--no-picker'], 'su-old')).toBeNull();
+    const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-o', ompThreadId: null }, 'WAKE', null);
+    expect(r!.args).not.toContain('--settings');
+    expect(r!.args[r!.args.length - 1]).toBe('WAKE');
+  });
+
+  it('the spawn boundary strips the OPERATOR\'s own gateway env so it cannot reach the child', async () => {
+    // The operator host legitimately carries ANTHROPIC_BASE_URL=:8788 for its
+    // in-process SDK calls. Before the fix that leaked into every detached wake
+    // child via `{...process.env}` — this is the leg that made a default-account
+    // session's autonomous turns egress through the gateway.
+    const dir = mkdtempSync(join(tmpdir(), 'wake-route-'));
+    const out = join(dir, 'child-env.txt');
+    const prevBase = process.env.ANTHROPIC_BASE_URL;
+    const prevTok = process.env.ANTHROPIC_AUTH_TOKEN;
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:8788';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'papercusp-gateway';
+    try {
+      defaultSpawnDetached(
+        process.execPath,
+        [
+          '-e',
+          `require('fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({` +
+            `base: process.env.ANTHROPIC_BASE_URL ?? null,` +
+            `tok: process.env.ANTHROPIC_AUTH_TOKEN ?? null,` +
+            `marker: process.env.WAKE_ROUTE_PROBE ?? null }))`,
+        ],
+        { cwd: dir, env: { WAKE_ROUTE_PROBE: 'ok' } },
+      );
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(out) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+      expect(existsSync(out)).toBe(true);
+      const seen = JSON.parse(readFileSync(out, 'utf8'));
+      // Positive control: the explicit per-wake env DID reach the child, so a
+      // null base URL below is real stripping and not a dead probe.
+      expect(seen.marker).toBe('ok');
+      expect(seen.base).toBeNull();
+      expect(seen.tok).toBeNull();
+
+      // FALSIFIABILITY CONTROL (kept permanently, per the repo's mutation
+      // discipline for module subjects — never mutate the shared tree to prove
+      // a guard can fail). Same probe, spawned the way the pre-fix code did:
+      // a raw `{...process.env}`. It MUST see the operator's gateway route.
+      // If this control ever goes null, the ambient pollution this test guards
+      // against has stopped being reproducible and the assertions above have
+      // silently become vacuous — fix the control, do not delete it.
+      const ctlOut = join(dir, 'control-env.txt');
+      const { spawn: rawSpawn } = await import('node:child_process');
+      await new Promise<void>((resolve, reject) => {
+        const c = rawSpawn(
+          process.execPath,
+          [
+            '-e',
+            `require('fs').writeFileSync(${JSON.stringify(ctlOut)}, JSON.stringify({` +
+              `base: process.env.ANTHROPIC_BASE_URL ?? null }))`,
+          ],
+          { cwd: dir, env: { ...process.env } },
+        );
+        c.on('error', reject);
+        c.on('exit', () => resolve());
+      });
+      expect(JSON.parse(readFileSync(ctlOut, 'utf8')).base).toBe('http://127.0.0.1:8788');
+    } finally {
+      if (prevBase === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = prevBase;
+      if (prevTok === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+      else process.env.ANTHROPIC_AUTH_TOKEN = prevTok;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
