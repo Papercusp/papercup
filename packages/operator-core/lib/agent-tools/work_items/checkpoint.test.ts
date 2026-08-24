@@ -1360,6 +1360,48 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.cleared).not.toBe(true);
     });
 
+    it('EI-21282889275455257: a near-cap checks-only patch refuses before evicting the body', async () => {
+      const checks = [{ claim: 'near-cap check holds', recheck: 'run the near-cap probe' }];
+      const renderedChecks = withCarryNoteChecks('', checks);
+      const prior = 'B'.repeat(32000 - renderedChecks.length + 1);
+      expect(prior.length).toBeLessThanOrEqual(32000);
+      expect(withCarryNoteChecks(prior, checks).length).toBeGreaterThan(32000);
+
+      let current = prior;
+      let writes = 0;
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          _ref: unknown,
+          incoming: string | null | undefined,
+          opts?: {
+            guard?: (priorNote: string | null, priorLength: number) => string | null;
+            transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+          },
+        ) => {
+          const blockedReason = opts?.guard?.(current, current.length) ?? undefined;
+          if (blockedReason) return { stored: current, priorLength: current.length, blockedReason };
+          writes += 1;
+          const next = opts?.transform ? opts.transform(current, incoming) : incoming;
+          current = typeof next === 'string' && next.trim().length > 0 ? next : '';
+          return { stored: current || null, priorLength: prior.length };
+        },
+      );
+
+      const r = (await one({ id: 'WI-7', checks })) as {
+        ok: boolean;
+        error?: string;
+        errorCode?: string;
+        recovery?: { append?: { args?: unknown } };
+      };
+
+      expect(r.ok).toBe(false);
+      expect(r.errorCode).toBe('checks_body_overflow');
+      expect(r.error).toContain('evicting the oldest narrative content');
+      expect(r.recovery?.append).toMatchObject({ args: { checks: [] } });
+      expect(writes).toBe(0);
+      expect(current).toBe(prior);
+    });
+
     it('EI-20252594592830798: append:true with checks and no checkpoint is an additive checks-only patch', async () => {
       withPrior(null);
       await one({
