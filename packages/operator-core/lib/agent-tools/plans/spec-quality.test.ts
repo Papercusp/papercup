@@ -57,6 +57,32 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.wouldBlock).toContain('item-contract-coverage');
   });
 
+  it('does not pass empty behavioral evaluations when clauses are only draft', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause({
+          lifecycleStatus: 'draft',
+          acceptedBy: null,
+          acceptedAt: null,
+          acceptanceRef: null,
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('not-applicable');
+    expect(result.ratings.falsifiability.rating).toBe('not-applicable');
+    expect(result.ratings['implementation-independence'].rating).toBe('not-applicable');
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('0 behavioral clause(s)');
+    expect(result.ratings.falsifiability.evidence).toContain('0 behavioral clause(s)');
+    expect(result.ratings['implementation-independence'].evidence).toContain('0 behavioral clause(s)');
+    expect(result.wouldBlock).toEqual(
+      expect.arrayContaining(['item-contract-coverage', 'plan-class-specialization']),
+    );
+  });
+
   it('accepts a fully explicit non-behavioral investigation exemption', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

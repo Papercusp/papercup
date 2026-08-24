@@ -67,6 +67,10 @@ function fail(evidence: string, suggestion: string): SpecQualityRatingEntry {
   return { rating: 'fail', evidence, suggestion };
 }
 
+function notApplicable(evidence: string): SpecQualityRatingEntry {
+  return { rating: 'not-applicable', evidence };
+}
+
 function trimmedField(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -190,32 +194,38 @@ export function evaluatePlanSpecQuality(input: {
   const atomicityFailures = behavioral
     .map((clause) => ({ clause, reason: specBehaviorNonAtomicReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
-  ratings['atomic-observable-behavior'] = atomicityFailures.length
-    ? fail(
-        atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-        'Split compound outcomes into atomic clauses with one observable behavior each.',
-      )
-    : pass(`${behavioral.length} behavioral clause(s) are structurally atomic.`);
+  ratings['atomic-observable-behavior'] = behavioral.length === 0
+    ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
+    : atomicityFailures.length
+      ? fail(
+          atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+          'Split compound outcomes into atomic clauses with one observable behavior each.',
+        )
+      : pass(`${behavioral.length} behavioral clause(s) are structurally atomic.`);
 
   const falsifiabilityFailures = behavioral
     .map((clause) => ({ clause, reason: specBehaviorNonFalsifiableReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
-  ratings.falsifiability = falsifiabilityFailures.length
-    ? fail(
-        falsifiabilityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-        'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
-      )
-    : pass(`${behavioral.length} behavioral clause(s) state falsifiable outcomes.`);
+  ratings.falsifiability = behavioral.length === 0
+    ? notApplicable('0 behavioral clause(s) are available for falsifiability evaluation.')
+    : falsifiabilityFailures.length
+      ? fail(
+          falsifiabilityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+          'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
+        )
+      : pass(`${behavioral.length} behavioral clause(s) state falsifiable outcomes.`);
 
   const couplingFailures = behavioral
     .map((clause) => ({ clause, reason: implementationCouplingReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
-  ratings['implementation-independence'] = couplingFailures.length
-    ? fail(
-        couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-        'Describe externally observable behavior instead of filenames or internal constructs.',
-      )
-    : pass('No active clause is coupled to an obvious implementation filename or construct.');
+  ratings['implementation-independence'] = behavioral.length === 0
+    ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
+    : couplingFailures.length
+      ? fail(
+          couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+          'Describe externally observable behavior instead of filenames or internal constructs.',
+        )
+      : pass('No active clause is coupled to an obvious implementation filename or construct.');
 
   const invalidExemptionSpecIds = exemptions
     .filter((clause) => !validExplicitExemption(clause))
