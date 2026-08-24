@@ -3293,6 +3293,19 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     expect(reason).toMatch(/`tee`/);
   });
 
+  it('does not treat a tee heredoc input redirection as its destination', () => {
+    const command = "sudo -n tee /etc/systemd/system/papercusp-sni-bypass.service >/dev/null <<'UNIT'\n"
+      + '[Unit]\nDescription=probe\nUNIT';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies the real tee destination when a heredoc feeds it', () => {
+    const command = "tee apps/operator/foo.txt <<'UNIT'\ncontent\nUNIT";
+    const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/foo.txt');
+    expect(reason).toMatch(/`tee`/);
+  });
+
   it('denies `sed -i` editing a tree file in place', () => {
     const reason = expectShellWriteDeny(
       runGate(bashCmd("sed -i 's/a/b/' apps/operator/foo.ts", { cwd: CANON }), CANON_ENV),

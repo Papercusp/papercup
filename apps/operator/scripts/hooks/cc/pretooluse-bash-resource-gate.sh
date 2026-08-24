@@ -3463,13 +3463,23 @@ def _strip_redirect_tokens(toks):
         if skip_next:
             skip_next = False
             continue
-        if re.fullmatch(r'\d*>&\d*', t):
+        if re.fullmatch(r'\d*[<>]&(?:\d+|-)?', t) or re.fullmatch(r'\d*>&\d*', t):
             continue
         _m = re.match(r'^\d*(?:>{1,2}|&>)(.*)$', t)
         if _m:
             if _m.group(1) == '':
                 # bare operator token (`>`, `2>`, `>>`, `&>`) — its target, if
                 # any, is the NEXT token; drop both.
+                skip_next = True
+            continue
+        _m = re.match(r'^\d*(?:<<<|<<-?|<>|<)(.*)$', t)
+        if _m:
+            if _m.group(1) == '':
+                # Input redirections (`<`, `<<`, `<<-`, `<<<`, `<>`) likewise
+                # consume the NEXT token when their operand is split. In
+                # particular, a `tee FILE <<EOF` heredoc must leave FILE as
+                # the only positional target; otherwise the heredoc operator
+                # itself is misreported as a path under the tree.
                 skip_next = True
             continue
         out.append(t)
