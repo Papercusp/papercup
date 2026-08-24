@@ -323,7 +323,10 @@ with NO checkpoint — so checkpoint cheaply + often regardless.
 
 **Declare a real intent so your locks explain themselves — and CLAIM your
 lane.** On starting a distinct piece of work: `coord:declare-intent { intent:
-'<one line>', current_plan_slug, items: ['P-001', …], current_files: [...] }`
+'<one line>', current_plan_slug, items: ['P-001', …], current_files: [...] }`.
+This declaration call is separate from the combined wake bootstrap:
+`coord:orient { intent, planSlug, planItems }`; do not pass `current_plan_slug`/
+`items` to orient.
 — the intent line is what a blocked peer reads (the hook lock's own label is a
 generic `PreToolUse:Edit`), and `items` CLAIMS the plan items you're taking
 (releasing ones you've moved off). An unclaimed lane is invisible to peers
