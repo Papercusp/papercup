@@ -113,7 +113,7 @@ describe('decideWorkerParityGate', () => {
 
 describe('readWorkerParityRuns', () => {
   it('maps the bounded ledger projection without reading raw bodies into the result', async () => {
-    const query = vi.fn(async () => [{
+    const query = vi.fn(async (..._args: unknown[]) => [{
       run_id: 'r1',
       harness_slug: 'canary',
       prompt_hash: 'abc',
