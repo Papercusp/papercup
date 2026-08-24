@@ -45,7 +45,7 @@ import watchTool from '../events/watch';
 export default defineTool({
   name: 'state:subscribe',
   description:
-    'Wake me when a registered state CELL changes or crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path. `on` is OPTIONAL — omit it for "wake me when this moves" (op `changed`). A PRESET over watch:create, so it inherits its dedupe (an identical watch joins the existing poller), its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.',
+    'Wake me when a registered state CELL changes or crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path. `on` is OPTIONAL — omit it for "wake me when this moves" (op `changed`), which on an assessed cell follows its semantic CODE, so you wake when the MEANING moves; `target` overrides. A PRESET over watch:create: inherits its dedupe, its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.',
   guidance: {
     when: 'You need to proceed only once a value MOVES or crosses a threshold — a deploy landing, a gate verdict flipping, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.',
     notWhen: 'You need the value now — that is state:read. The event has an exact key already — that is events:await. A recurring TIME schedule — routines own those.',
