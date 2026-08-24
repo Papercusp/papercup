@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
-import { buildReleaseTrace, classifyReleaseWake, type ReleaseTraceGate, type ReleaseTraceInput } from './release-trace';
+import {
+  buildReleaseTrace,
+  classifyReleaseWake,
+  type ReleaseTraceGate,
+  type ReleaseTraceInput,
+} from './release-trace';
 
 const sha = 'a'.repeat(40);
 const green = sha;
@@ -454,7 +459,9 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
       'local green-checkpoint already judged',
     );
-    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain('cannot test it');
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain(
+      'cannot test it',
+    );
     expect(out.nextVerb?.name).toBe('testing:flakiness');
   });
 
@@ -493,7 +500,9 @@ describe('buildReleaseTrace', () => {
       }),
     );
 
-    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain('cannot test it');
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
+      'cannot test it',
+    );
     expect(out.nextVerb).toMatchObject({
       name: 'events:await',
       args: { event: `git-sync:egressed:${sha}` },
@@ -529,7 +538,9 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
       'actively judging this exact detached candidate',
     );
-    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain('cannot test it');
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain(
+      'cannot test it',
+    );
     expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
     expect(out.nextVerb?.reason).toContain(sha);
     expect(out.gate.checkpointRunInFlight?.systemd).toEqual(checkpointRun.systemd);

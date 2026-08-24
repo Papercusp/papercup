@@ -204,7 +204,9 @@ export function readDeployInFlight(deps: ReadDeployInFlightDeps = {}): Promise<D
       ]);
       stdoutOut.attach(child.stdout);
       child.on('error', () => done(null));
-      child.on('close', (code: number | null) => done(code === 0 ? parseSystemctlShow(stdoutOut.text()) : null));
+      child.on('close', (code: number | null) =>
+        done(code === 0 ? parseSystemctlShow(stdoutOut.text()) : null),
+      );
     } catch {
       done(null);
     }
@@ -371,8 +373,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   const lastVerdict = lastCheckpointEvent
     ? {
         tickAtMs: lastCheckpointEvent.createdAtMs,
-        candidate:
-          typeof lastCheckpointEvent.detail?.candidate === 'string' ? lastCheckpointEvent.detail.candidate : null,
+        candidate: typeof lastCheckpointEvent.detail?.candidate === 'string' ? lastCheckpointEvent.detail.candidate : null,
         from: typeof lastCheckpointEvent.detail?.from === 'string' ? lastCheckpointEvent.detail.from : null,
         status: lastCheckpointEvent.status,
         logPath: typeof lastCheckpointEvent.detail?.logPath === 'string' ? lastCheckpointEvent.detail.logPath : null,
@@ -387,12 +388,11 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   const latestCheckpointIsNonVerdict =
     lastCheckpointEvent !== undefined && !isRecordableVerdict(lastCheckpointEvent.status);
   const checkpointRoutine = snap.routines.greenCheckpoint;
-  const checkpointProbe =
-    checkpointRunInFlight == null
-      ? { status: 'unmeasured' as const, detail: null }
-      : checkpointRunInFlight.probeFailed
-        ? { status: 'failed' as const, detail: checkpointRunInFlight.probeDetail ?? null }
-        : { status: 'ok' as const, detail: null };
+  const checkpointProbe = checkpointRunInFlight == null
+    ? { status: 'unmeasured' as const, detail: null }
+    : checkpointRunInFlight.probeFailed
+      ? { status: 'failed' as const, detail: checkpointRunInFlight.probeDetail ?? null }
+      : { status: 'ok' as const, detail: null };
   const measuredRunActive =
     checkpointRunInFlight?.active === true &&
     (checkpointRunInFlight.probeFailed !== true || checkpointRunInFlight.heldExternally === true);
@@ -590,9 +590,9 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       (checkpointRunActive
         ? `${activeCheckpointRecommendation} Cached failing-test names belong to the prior verdict and are suppressed while this fresh verdict is pending.`
         : failingTests.length === 0
-          ? `This verdict names no failing tests — do NOT go hunting for tests. Inspect the checkpoint run log${lastVerdict?.logPath ? ` at ${lastVerdict.logPath}` : ''} or ask the verdict owner for the non-test failure before taking action.`
-          : `Your change can't reach the green pin until the reds are fixed. ` +
-            `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`);
+        ? `This verdict names no failing tests — do NOT go hunting for tests. Inspect the checkpoint run log${lastVerdict?.logPath ? ` at ${lastVerdict.logPath}` : ''} or ask the verdict owner for the non-test failure before taking action.`
+        : `Your change can't reach the green pin until the reds are fixed. ` +
+          `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`);
   } else if (g.consecutiveReds > 0 && g.verdictStale) {
     // The blob says red, but that red is provably superseded or simply unverified. Do NOT dress it
     // up as green either — the honest state is "we don't know", with the one action that resolves it.
@@ -605,7 +605,8 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
         : `Run release:checkpoint-run for a FRESH verdict. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`);
   } else if (fireStale) {
     state = 'gate-wedged';
-    recommendation = `The green-checkpoint is WEDGED — not firing (${fireStaleReason ?? 'stale'}). It produces 0 reds because it never ran, so the gate can't advance. Surface this to an operator; the pipeline can't self-heal a non-firing checkpoint.`;
+    recommendation =
+      `The green-checkpoint is WEDGED — not firing (${fireStaleReason ?? 'stale'}). It produces 0 reds because it never ran, so the gate can't advance. Surface this to an operator; the pipeline can't self-heal a non-firing checkpoint.`;
   } else if (typeof greenPinBehindStaging === 'number' && greenPinBehindStaging > 0) {
     state = 'staging-buffered';
     recommendation =
@@ -685,9 +686,13 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
   // queue until the tool's 20s outer timeout (EI-21307371780991377).  Keep the
   // diagnostic fork-free and let the small local git children finish promptly.
   const load =
-    deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { includeActiveRun: true, useSpawnerSidecar: false }));
+    deps.loadSnapshot ??
+    (() => gitPipelineSnapshot(undefined, { includeActiveRun: true, useSpawnerSidecar: false }));
   const loadInFlight = deps.loadInFlight ?? (() => readDeployInFlight());
-  const [snap, inFlight] = await Promise.all([load(), loadInFlight().catch(() => null)]);
+  const [snap, inFlight] = await Promise.all([
+    load(),
+    loadInFlight().catch(() => null),
+  ]);
   return computeDeployStatus(snap, inFlight);
 }
 

@@ -122,7 +122,9 @@ describe('computeDeployStatus — decision tree', () => {
   });
 
   it('gate-red with no attributable failures does not send responders hunting for tests', () => {
-    const s = computeDeployStatus(mkSnap({ consecutiveReds: 1, failingTests: [] }, { deployedBehindGreenPin: 0 }));
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 1, failingTests: [] }, { deployedBehindGreenPin: 0 }),
+    );
     expect(s.state).toBe('gate-red');
     expect(s.recommendation).toMatch(/names no failing tests/);
     expect(s.recommendation).toMatch(/do NOT go hunting for tests/i);
@@ -260,10 +262,11 @@ describe('computeDeployStatus — decision tree', () => {
       createdAtMs: 1,
     };
     const s = computeDeployStatus(
-      mkSnap({ consecutiveReds: 0, fireStale: false }, { deployedBehindGreenPin: 0, greenPinBehindStaging: 4 }, [
-        skippedLocked,
-        olderVerdict,
-      ]),
+      mkSnap(
+        { consecutiveReds: 0, fireStale: false },
+        { deployedBehindGreenPin: 0, greenPinBehindStaging: 4 },
+        [skippedLocked, olderVerdict],
+      ),
     );
 
     expect(s.gate.lastVerdict?.status).toBe('skipped-locked');
@@ -447,7 +450,9 @@ describe('WI-4489: gate verdict staleness', () => {
   });
 
   it('a stale red never strands a deployable green pin — green-deployable still wins', () => {
-    const s = computeDeployStatus(mkSnap({ consecutiveReds: 4, verdictStale: true }, { deployedBehindGreenPin: 146 }));
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 4, verdictStale: true }, { deployedBehindGreenPin: 146 }),
+    );
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true); // decoupled from gate colour by design (line ~118)
   });
@@ -473,7 +478,9 @@ describe('EI-18646778682511611: an advanced-prefix tick must not report gate.gre
   };
 
   it('⭐ gate.green is false right after an advanced-prefix tick, even though consecutiveReds was reset to 0', () => {
-    const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false }, {}, [advancedPrefixEvent]));
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false }, {}, [advancedPrefixEvent]),
+    );
     expect(s.gate.lastVerdict?.status).toBe('advanced-prefix');
     expect(s.gate.green).toBe(false);
   });
@@ -506,12 +513,16 @@ describe('EI-18646778682511611: an advanced-prefix tick must not report gate.gre
    * settles it for every status at once instead of one incident at a time.
    */
   it('⭐ gate.green is false when the writer RECORDED not-green, even with consecutiveReds 0 and no advanced-prefix event', () => {
-    const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: 'not-green' }, {}));
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: 'not-green' }, {}),
+    );
     expect(s.gate.green).toBe(false);
   });
 
   it('a recorded GREEN verdict still reports gate.green=true', () => {
-    const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: 'green' }, {}));
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false, recordedVerdict: 'green' }, {}),
+    );
     expect(s.gate.green).toBe(true);
   });
 
@@ -584,21 +595,9 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
   });
 
   it('a RED tick with no candidate/logPath recorded (old-CLI skew) degrades to nulls, not a throw', () => {
-    const bareRed: PipelineEventRow = {
-      id: '3',
-      kind: 'green_checkpoint',
-      status: 'not-green',
-      detail: {},
-      createdAtMs: 5,
-    };
+    const bareRed: PipelineEventRow = { id: '3', kind: 'green_checkpoint', status: 'not-green', detail: {}, createdAtMs: 5 };
     const s = computeDeployStatus(mkSnap({}, {}, [bareRed]));
-    expect(s.gate.lastVerdict).toEqual({
-      tickAtMs: 5,
-      candidate: null,
-      from: null,
-      status: 'not-green',
-      logPath: null,
-    });
+    expect(s.gate.lastVerdict).toEqual({ tickAtMs: 5, candidate: null, from: null, status: 'not-green', logPath: null });
   });
 
   it('gate_health.failingTests (WI-4533) is threaded through unchanged', () => {
@@ -608,15 +607,12 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
 
   it('P-009 suppresses a stale historical failing-test list at the shared status writer', () => {
     const s = computeDeployStatus(
-      mkSnap(
-        {
-          consecutiveReds: 3,
-          verdictStale: true,
-          verdictStaleReason: 'the judged candidate was superseded',
-          failingTests: ['historical-red.test.ts'],
-        },
-        {},
-      ),
+      mkSnap({
+        consecutiveReds: 3,
+        verdictStale: true,
+        verdictStaleReason: 'the judged candidate was superseded',
+        failingTests: ['historical-red.test.ts'],
+      }, {}),
     );
     expect(s.state).toBe('gate-verdict-stale');
     expect(s.gate.failingTests).toEqual([]);
@@ -804,11 +800,7 @@ describe('computeDeployInFlight', () => {
   });
 
   it('inactive (the --collect unit was garbage-collected) ⇒ not in flight', () => {
-    const f = computeDeployInFlight({
-      props: { ActiveState: 'inactive', SubState: 'dead' },
-      logPath: '/l',
-      logMtimeMs: 1,
-    });
+    const f = computeDeployInFlight({ props: { ActiveState: 'inactive', SubState: 'dead' }, logPath: '/l', logMtimeMs: 1 });
     expect(f.active).toBe(false);
   });
 

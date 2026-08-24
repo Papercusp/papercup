@@ -781,7 +781,9 @@ export function mapActiveRun(r: {
   return {
     active: r.active,
     ...(r.held_externally ? { heldExternally: true as const } : {}),
-    ...(r.probe_failed ? { probeFailed: true as const, probeDetail: r.probe_detail ?? null } : {}),
+    ...(r.probe_failed
+      ? { probeFailed: true as const, probeDetail: r.probe_detail ?? null }
+      : {}),
     ...(r.systemd
       ? {
           systemd: {

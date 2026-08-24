@@ -46,7 +46,10 @@ import { recordWatchdogPassOutcome } from './watchdog-health';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
-import { isCheckpointRunLockHeldCheap, readCheckpointRunPhaseCheap } from '../release-checkpoint-launch';
+import {
+  isCheckpointRunLockHeldCheap,
+  readCheckpointRunPhaseCheap,
+} from '../release-checkpoint-launch';
 import { integrationRoot } from '../release-deploy-launch';
 import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
@@ -413,8 +416,7 @@ export function parseGreenCheckpointStallEscalation(raw: unknown): GreenCheckpoi
 
   return {
     raw: record,
-    installSlug:
-      typeof record.harness_slug === 'string' && record.harness_slug.trim() ? record.harness_slug.trim() : null,
+    installSlug: typeof record.harness_slug === 'string' && record.harness_slug.trim() ? record.harness_slug.trim() : null,
     candidate,
     failingTests,
     ownershipCovered: typeof ownership?.covered === 'boolean' ? ownership.covered : null,
@@ -555,7 +557,8 @@ export function evaluateGreenStall(
   // bounded result. That phase is a real in-flight run, not evidence of a silent
   // gate. Suppress only on the exact pair; a stale marker, missing lock, unknown
   // route, or any other phase must fail open to the ordinary stall verdict.
-  const checkpointRunDelivering = s.checkpointRunActive === true && s.checkpointRunPhase === 'delivering';
+  const checkpointRunDelivering =
+    s.checkpointRunActive === true && s.checkpointRunPhase === 'delivering';
   const suppressed = rootEngineStale || checkpointRunDelivering;
   const fireStale = !suppressed && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   const verdictStale = !suppressed && s.lastGreenAt != null && now - s.lastGreenAt > noGreenMs;
@@ -605,8 +608,7 @@ export function greenStallEscalationBody(opts: {
     failingTests: (opts.failingTests ?? []).slice(0, 20),
     emitted_at: opts.nowMs,
     // `verdict.reason` already carries the failing-test suffix (EI-7505) when present.
-    detail:
-      `green-checkpoint silent stall (watchdog): ${opts.verdict.reason}. ` +
+    detail: `green-checkpoint silent stall (watchdog): ${opts.verdict.reason}. ` +
       `\`main\` is frozen and the in-routine stall detector cannot see this (it runs only when the routine fires). ` +
       `The dead-executor reaper should auto-recover a wedge; if this persists the bg-host / DBOS engine needs a look.`,
   });
@@ -661,7 +663,10 @@ export interface LastGateRunEvidence {
  * (any error ⇒ null): this only ENRICHES an alarm that is already firing, so a read
  * problem must degrade the alarm's wording, never suppress or break the alarm itself.
  */
-export async function readLastGateRunEvidence(sql: Sql, installSlug: string): Promise<LastGateRunEvidence | null> {
+export async function readLastGateRunEvidence(
+  sql: Sql,
+  installSlug: string,
+): Promise<LastGateRunEvidence | null> {
   try {
     const rows = await sql<
       {
@@ -714,11 +719,10 @@ export async function readLastGateRunEvidence(sql: Sql, installSlug: string): Pr
  *                             implying a test list exists to go fix.
  *   4. anything else / no run on record — state the gap instead of filling it with a guess.
  */
-export function attributeVerdictStale(opts: { failingTests: string[]; last: LastGateRunEvidence | null }): {
-  summary: string;
-  cause: string;
-  remedy: string;
-} {
+export function attributeVerdictStale(opts: {
+  failingTests: string[];
+  last: LastGateRunEvidence | null;
+}): { summary: string; cause: string; remedy: string } {
   const { failingTests, last } = opts;
   const when = last?.observedAt ? ` at ${last.observedAt}` : '';
   const cand = last?.candidate ? ` (candidate ${last.candidate})` : '';
@@ -734,7 +738,7 @@ export function attributeVerdictStale(opts: { failingTests: string[]; last: Last
   if (last?.crashed) {
     return {
       summary:
-        "deploys frozen — the gate's last run CRASHED before rendering a verdict, naming NO failing test. This is NOT a failing suite.",
+        'deploys frozen — the gate\'s last run CRASHED before rendering a verdict, naming NO failing test. This is NOT a failing suite.',
       cause:
         `⚠ NOT a failing suite — the gate's last run${cand}${when} CRASHED before rendering a verdict and named ZERO failing tests. ` +
         `The crash: ${last.firstLine ?? '(no summary was recorded)'}`,
@@ -750,16 +754,17 @@ export function attributeVerdictStale(opts: { failingTests: string[]; last: Last
       summary: 'no green verdicts; deploys frozen (last verdict RED, but it named no failing test).',
       cause: `The last run${cand}${when} rendered a RED verdict but named no failing test — an unattributable red.`,
       remedy:
-        'Read that run\'s own record before re-firing: its AFFECTED_TESTS_FAILING_FILES line names the failing files (read `coverage` first — `files=[]` means "not attributable", NOT "nothing failed").',
+        "Read that run's own record before re-firing: its AFFECTED_TESTS_FAILING_FILES line names the failing files (read `coverage` first — `files=[]` means \"not attributable\", NOT \"nothing failed\").",
     };
   }
 
   if (last) {
     return {
       summary: 'no green verdicts; deploys frozen (the last run recorded no green, and named no failing test).',
-      cause: `The last run${cand}${when} recorded green=${String(last.green)} and named no failing test, yet no green verdict has landed in the window.`,
+      cause:
+        `The last run${cand}${when} recorded green=${String(last.green)} and named no failing test, yet no green verdict has landed in the window.`,
       remedy:
-        'Read that run\'s own record before re-firing — a verdict that did not COUNT (held, superseded, or green-but-not-promoted) reads here as "no green" while the tests are fine.',
+        "Read that run's own record before re-firing — a verdict that did not COUNT (held, superseded, or green-but-not-promoted) reads here as \"no green\" while the tests are fine.",
     };
   }
 
@@ -829,8 +834,10 @@ type GreenCheckpointStallEscalationRow = {
 
 const GREEN_CHECKPOINT_STALL_PHASE = 'green-checkpoint-stall';
 
-const recoveryBody = (parsed: GreenCheckpointStallEscalation, recovery: GreenCheckpointStallRecoveryMarker): string =>
-  JSON.stringify({ ...parsed.raw, recovery });
+const recoveryBody = (
+  parsed: GreenCheckpointStallEscalation,
+  recovery: GreenCheckpointStallRecoveryMarker,
+): string => JSON.stringify({ ...parsed.raw, recovery });
 
 /**
  * Deliver the owner/fleet signal for a recovery that could not make progress.
@@ -899,7 +906,11 @@ async function notifyGreenCheckpointStallRecovery(opts: {
  * `trackGateStall` records the exact red signature, but its normal dispatcher only
  * runs while a verdict is being produced; this sweep closes that silent gap.
  */
-async function recoverStaleGreenCheckpointStalls(sql: Sql, nowMs: number, opts: GreenStallThresholds): Promise<void> {
+async function recoverStaleGreenCheckpointStalls(
+  sql: Sql,
+  nowMs: number,
+  opts: GreenStallThresholds,
+): Promise<void> {
   let rows: GreenCheckpointStallEscalationRow[];
   try {
     rows = await sql<GreenCheckpointStallEscalationRow[]>`
@@ -908,15 +919,12 @@ async function recoverStaleGreenCheckpointStalls(sql: Sql, nowMs: number, opts: 
        WHERE phase = ${GREEN_CHECKPOINT_STALL_PHASE}
          AND escalation IS NOT NULL`;
   } catch (e) {
-    console.warn(
-      `[green-stall-watchdog] green-checkpoint-stall recovery scan failed: ${e instanceof Error ? e.message : e}`,
-    );
+    console.warn(`[green-stall-watchdog] green-checkpoint-stall recovery scan failed: ${e instanceof Error ? e.message : e}`);
     return;
   }
 
   const staleMs = opts.greenCheckpointStallRecoveryStaleMs ?? DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_STALE_MS;
-  const maxAttempts =
-    opts.greenCheckpointStallRecoveryMaxAttempts ?? DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_MAX_ATTEMPTS;
+  const maxAttempts = opts.greenCheckpointStallRecoveryMaxAttempts ?? DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_MAX_ATTEMPTS;
 
   for (const row of rows) {
     const parsed = parseGreenCheckpointStallEscalation(row.escalation);
@@ -962,9 +970,7 @@ async function recoverStaleGreenCheckpointStalls(sql: Sql, nowMs: number, opts: 
            AND phase = ${GREEN_CHECKPOINT_STALL_PHASE}
            AND escalation IS NOT DISTINCT FROM ${originalBody}`;
     } catch (e) {
-      console.warn(
-        `[green-stall-watchdog] recovery claim failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`,
-      );
+      console.warn(`[green-stall-watchdog] recovery claim failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
       continue;
     }
     if (claimed.count !== 1) continue; // another watchdog process owns this row
@@ -993,9 +999,7 @@ async function recoverStaleGreenCheckpointStalls(sql: Sql, nowMs: number, opts: 
           parsed.failingTests,
         )) != null;
     } catch (e) {
-      console.warn(
-        `[green-stall-watchdog] recovery dispatch failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`,
-      );
+      console.warn(`[green-stall-watchdog] recovery dispatch failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
     }
 
     const outcome: GreenCheckpointStallRecoveryMarker['outcome'] = dispatched ? 'dispatched' : 'no-progress';
@@ -1008,9 +1012,7 @@ async function recoverStaleGreenCheckpointStalls(sql: Sql, nowMs: number, opts: 
            AND phase = ${GREEN_CHECKPOINT_STALL_PHASE}
            AND escalation IS NOT DISTINCT FROM ${claimedBody}`;
     } catch (e) {
-      console.warn(
-        `[green-stall-watchdog] recovery result write failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`,
-      );
+      console.warn(`[green-stall-watchdog] recovery result write failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
     }
 
     if (!dispatched && parsed.candidate && parsed.failingTests.length > 0 && parsed.recovery.notifiedAt == null) {
@@ -1031,9 +1033,7 @@ async function recoverStaleGreenCheckpointStalls(sql: Sql, nowMs: number, opts: 
              AND phase = ${GREEN_CHECKPOINT_STALL_PHASE}
              AND escalation IS NOT DISTINCT FROM ${recoveryBody(parsed, finalRecovery)}`;
       } catch (e) {
-        console.warn(
-          `[green-stall-watchdog] recovery notify marker failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`,
-        );
+        console.warn(`[green-stall-watchdog] recovery notify marker failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
       }
     }
   }
@@ -1278,9 +1278,7 @@ async function checkPausedGreenCheckpoint(
             },
           });
         } catch (e) {
-          console.warn(
-            `[green-stall-watchdog] paused green-checkpoint notify failed: ${e instanceof Error ? e.message : e}`,
-          );
+          console.warn(`[green-stall-watchdog] paused green-checkpoint notify failed: ${e instanceof Error ? e.message : e}`);
         }
         await broadcastSevereEvent({
           summary: autoRecovery
@@ -1300,9 +1298,7 @@ async function checkPausedGreenCheckpoint(
             ON CONFLICT (harness_slug, phase)
             DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
         } catch (e) {
-          console.warn(
-            `[green-stall-watchdog] paused green-checkpoint escalation write failed for ${row.install_slug}: ${e instanceof Error ? e.message : e}`,
-          );
+          console.warn(`[green-stall-watchdog] paused green-checkpoint escalation write failed for ${row.install_slug}: ${e instanceof Error ? e.message : e}`);
         }
         out.alarmed.push(row.install_slug);
         console.warn(`[green-stall-watchdog] PAUSED ALARM ${row.install_slug}: ${verdict.reason}`);
@@ -1324,9 +1320,7 @@ async function checkPausedGreenCheckpoint(
   } catch (e) {
     // A paused-gate read must never disable the existing active-stall watchdog.
     passError = e;
-    console.warn(
-      `[green-stall-watchdog] paused green-checkpoint scan failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-    );
+    console.warn(`[green-stall-watchdog] paused green-checkpoint scan failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
   } finally {
     // Scans every green-checkpoint row (no install filter), so a failure means every one of
@@ -1341,7 +1335,10 @@ async function checkPausedGreenCheckpoint(
  * clear the flag + escalation on recovery. Never throws — it rides boot + an
  * interval and must not break either.
  */
-export async function checkGreenStall(sql: Sql, opts: GreenStallThresholds = {}): Promise<GreenStallWatchdogResult> {
+export async function checkGreenStall(
+  sql: Sql,
+  opts: GreenStallThresholds = {},
+): Promise<GreenStallWatchdogResult> {
   const out: GreenStallWatchdogResult = { alarmed: [], recovered: [], suppressed: [] };
   let passError: unknown;
   try {
@@ -1418,9 +1415,15 @@ export async function checkGreenStall(sql: Sql, opts: GreenStallThresholds = {})
         // alarms (we have already won the one-shot flip), so a healthy sweep pays
         // nothing. Fail-soft: no evidence ⇒ `attributeVerdictStale` says so plainly
         // rather than falling back to the old "⇒ a failing suite" guess.
-        const lastRun = verdict.verdictStale ? await readLastGateRunEvidence(sql, row.install_slug) : null;
-        const attribution = verdict.verdictStale ? attributeVerdictStale({ failingTests, last: lastRun }) : null;
-        const reasonText = attribution ? `${verdict.reason} — ${attribution.cause}` : (verdict.reason ?? '');
+        const lastRun = verdict.verdictStale
+          ? await readLastGateRunEvidence(sql, row.install_slug)
+          : null;
+        const attribution = verdict.verdictStale
+          ? attributeVerdictStale({ failingTests, last: lastRun })
+          : null;
+        const reasonText = attribution
+          ? `${verdict.reason} — ${attribution.cause}`
+          : (verdict.reason ?? '');
 
         try {
           const { notifyAttention } = await import('../attention-notify');
@@ -1625,8 +1628,10 @@ export function evaluateMainBehindStaging(
   // advance whose `behindMs` still runs far ahead of it moved the tip end, not the
   // old end (the partial-green salvage's signature) — motion, not progress. See
   // DEFAULT_MAIN_BEHIND_ADVANCE_HORIZON_MS for the derivation of the bound.
-  const advanceConsumedBacklog = s.lastGreenAgeMs != null && s.behindMs <= s.lastGreenAgeMs + advanceHorizonMs;
-  const recentlyAdvanced = s.lastGreenAgeMs != null && s.lastGreenAgeMs <= recentGreenMs && advanceConsumedBacklog;
+  const advanceConsumedBacklog =
+    s.lastGreenAgeMs != null && s.behindMs <= s.lastGreenAgeMs + advanceHorizonMs;
+  const recentlyAdvanced =
+    s.lastGreenAgeMs != null && s.lastGreenAgeMs <= recentGreenMs && advanceConsumedBacklog;
   const stalled = s.commitsBehind > commitsThreshold && s.behindMs > msThreshold && !recentlyAdvanced;
   if (!stalled) return { stalled: false, reason: null };
   const hoursBehind = (s.behindMs / 3_600_000).toFixed(1);
@@ -1776,7 +1781,12 @@ export function computeMainBehindStaging(
   // The OLDEST commit reachable from staging but not main — its age is how
   // long main has been behind by at least this much (a fresh-only lag from
   // commits landing in the last minute reads as ~0, not an hours-old stall).
-  const oldestTsRaw = gitOut(root, ['log', `${mainBranch}..${stagingBranch}`, '--format=%ct', '--reverse']);
+  const oldestTsRaw = gitOut(root, [
+    'log',
+    `${mainBranch}..${stagingBranch}`,
+    '--format=%ct',
+    '--reverse',
+  ]);
   const oldestTs = oldestTsRaw ? Number(oldestTsRaw.split('\n')[0]) : NaN;
   if (!Number.isFinite(oldestTs)) return { commitsBehind, behindMs: null };
   return { commitsBehind, behindMs: Math.max(0, Date.now() - oldestTs * 1000) };
@@ -1788,7 +1798,11 @@ export function computeMainBehindStaging(
  *  never-greened gate returns null, and evaluateMainBehindStaging then falls back
  *  to the depth+age-only signal — an unreadable gate must never SUPPRESS a real
  *  stall, only a demonstrably-recent green does. */
-export async function readGateLastGreenAgeMs(sql: Sql, installSlug: string, nowMs: number): Promise<number | null> {
+export async function readGateLastGreenAgeMs(
+  sql: Sql,
+  installSlug: string,
+  nowMs: number,
+): Promise<number | null> {
   try {
     const rows = await sql<{ last_green_at: string | number | null }[]>`
       SELECT (metadata->'gate_health'->>'lastGreenAt') AS last_green_at
@@ -1965,9 +1979,7 @@ export async function checkMainBehindStaging(
     return out;
   } catch (e) {
     passError = e;
-    console.warn(
-      `[main-behind-staging-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-    );
+    console.warn(`[main-behind-staging-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
   } finally {
     // Single-install pass. `harnessSlug` is resolved inside the try, so it is re-derived here
@@ -2033,7 +2045,9 @@ export interface ReleaseTriggerFreezeVerdict {
  * for every MCP call. Best-effort / fail-soft: a lookup failure or empty history must never block
  * the alarm itself.
  */
-export async function lastReleaseTriggerPauseOwner(sql: Sql): Promise<{ ownerId: string; invokedAtMs: number } | null> {
+export async function lastReleaseTriggerPauseOwner(
+  sql: Sql,
+): Promise<{ ownerId: string; invokedAtMs: number } | null> {
   try {
     const rows = await sql<{ coord_owner_id: string | null; invoked_at_ms: number | string | null }[]>`
       SELECT coord_owner_id, extract(epoch from invoked_at) * 1000 AS invoked_at_ms
@@ -2134,7 +2148,8 @@ export async function checkReleaseTriggerFreeze(
     const verdict = evaluateReleaseTriggerFreeze(
       {
         active: rows[0].active,
-        activeChangedAtMs: rows[0].active_changed_at_ms != null ? Number(rows[0].active_changed_at_ms) : null,
+        activeChangedAtMs:
+          rows[0].active_changed_at_ms != null ? Number(rows[0].active_changed_at_ms) : null,
         deployedBehindGreenPin: status.deploy.deployedBehindGreenPin,
       },
       now,
@@ -2194,9 +2209,7 @@ export async function checkReleaseTriggerFreeze(
           ON CONFLICT (harness_slug, phase)
           DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
       } catch (e) {
-        console.warn(
-          `[release-trigger-freeze-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`,
-        );
+        console.warn(`[release-trigger-freeze-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
       }
       out.alarmed = true;
       console.warn(`[release-trigger-freeze-watchdog] ALARM ${installSlug}: ${reasonWithOwner}`);
@@ -2214,9 +2227,7 @@ export async function checkReleaseTriggerFreeze(
     return out;
   } catch (e) {
     passError = e;
-    console.warn(
-      `[release-trigger-freeze-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-    );
+    console.warn(`[release-trigger-freeze-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
   } finally {
     // Records on the RELEASE-TRIGGER row this pass watches, not on the gate's — an agent
@@ -2384,9 +2395,7 @@ export async function checkReleaseTriggerFireStale(
           ON CONFLICT (harness_slug, phase)
           DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
       } catch (e) {
-        console.warn(
-          `[release-trigger-fire-stale-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`,
-        );
+        console.warn(`[release-trigger-fire-stale-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
       }
       out.alarmed = true;
       console.warn(`[release-trigger-fire-stale-watchdog] ALARM ${installSlug}: ${verdict.reason}`);
@@ -2404,9 +2413,7 @@ export async function checkReleaseTriggerFireStale(
     return out;
   } catch (e) {
     passError = e;
-    console.warn(
-      `[release-trigger-fire-stale-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-    );
+    console.warn(`[release-trigger-fire-stale-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
   } finally {
     await recordWatchdogPassOutcome(
@@ -2426,7 +2433,10 @@ let watchdogTimer: ManagedHandle | null = null;
  * PAPERCUSP_GREEN_STALL_WATCHDOG='0'. The timer is unref'd so it never keeps the
  * process alive on shutdown.
  */
-export function startGreenStallWatchdog(sql: Sql, opts: GreenStallThresholds & { intervalMs?: number } = {}): void {
+export function startGreenStallWatchdog(
+  sql: Sql,
+  opts: GreenStallThresholds & { intervalMs?: number } = {},
+): void {
   if (process.env.PAPERCUSP_GREEN_STALL_WATCHDOG === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
 
