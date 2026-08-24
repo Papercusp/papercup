@@ -2599,13 +2599,16 @@ impl App {
     /// hardcoded tier list, which would be a second copy of a server-owned truth
     /// and would diverge silently the moment the workspace tiers change.
     pub fn open_model_picker(&mut self) {
-        let agent = self.operator_config.agent.as_ref();
-        let tiers: Vec<crate::session_config::ModelTier> = agent
-            .map(|a| a.effective_tiers().to_vec())
-            .unwrap_or_default();
+        // The EFFECTIVE menu as the SERVER computed it — the pui does not merge
+        // override-vs-baseline itself (D-022 §1).
+        let tiers = self.operator_config.tiers.clone();
         // The chat pane IS the `operator` surface, so that is the default it
         // inherits when we send no model.
-        let surface_default = agent.and_then(|a| a.config.surface_models.get("operator").cloned());
+        let surface_default = self
+            .operator_config
+            .agent
+            .as_ref()
+            .and_then(|a| a.config.surface_models.get("operator").cloned());
         let opts = crate::session_config::model_options(&tiers, surface_default.as_deref());
         self.session_picker = Some(crate::session_config::SessionPicker::new(
             crate::session_config::PickerAxis::Model,
@@ -7165,11 +7168,8 @@ mod tests {
     fn app_with_tiers(tiers: Vec<crate::session_config::ModelTier>) -> App {
         let mut a = App::new();
         a.set_operator_config(OperatorConfig {
-            agent: Some(crate::models::AgentConfigResponse {
-                default_tiers: tiers,
-                ..Default::default()
-            }),
-            providers: vec![],
+            tiers,
+            ..Default::default()
         });
         a
     }

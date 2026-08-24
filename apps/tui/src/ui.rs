@@ -4293,9 +4293,9 @@ mod tests {
                     ..Default::default()
                 },
                 effective_backend: "claude-code".into(),
-                ..Default::default()
             }),
             providers: vec![("openai".into(), true), ("elevenlabs".into(), false)],
+            ..Default::default()
         });
         let text = render(&app, 100, 22);
         assert!(text.contains("operator config")); // the section header

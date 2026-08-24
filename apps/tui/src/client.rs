@@ -1112,7 +1112,28 @@ impl OperatorClient {
             }
             Err(_) => Vec::new(),
         };
-        Ok(OperatorConfig { agent, providers })
+        // The EFFECTIVE model-tier menu for the chat pane's model picker
+        // (P-005, WI-41189). `config:tiers-get` returns "stored, else the
+        // committed defaults" — the server does the merge, so the pui never
+        // reimplements that rule (D-022 §1). Assembled here rather than fetched
+        // when the picker opens because this whole read is already on the
+        // periodic refetch, so the menu is warm on the keypress.
+        //
+        // A failure degrades to an EMPTY menu, never to an invented tier list:
+        // the picker still offers its inherit row, which is the honest default.
+        let tiers = match self.run_tool("config:tiers-get", serde_json::json!({})).await {
+            Ok(env) => run_tool_inner_json(&env)
+                .ok()
+                .and_then(|inner| inner.get("tiers").cloned())
+                .and_then(|t| serde_json::from_value(t).ok())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        Ok(OperatorConfig {
+            agent,
+            providers,
+            tiers,
+        })
     }
 
     // --- Fleet status view (pui-fleet-status-view-2026-06-04) ---
