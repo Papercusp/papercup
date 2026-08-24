@@ -67,7 +67,7 @@
   margin-left: auto; min-height: 24px; padding: 0 8px; font-size: 10px;
 }
 .op-resolver-settings--receipt {
-  display: flex; align-items: center; gap: 7px; min-width: 0;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0;
   padding-bottom: 7px; border-bottom: 1px solid color-mix(in srgb, var(--border, #ffffff22) 70%, transparent);
   font-size: 10px;
 }
@@ -80,6 +80,17 @@
   color: var(--fg, #e7e7ea);
 }
 .op-resolver-settings__fixed { margin-left: auto; flex: 0 0 auto; color: var(--fg-mute, #8a8a91); }
+.op-resolver-settings__liveness {
+  display: flex; align-items: center; gap: 6px; flex: 1 0 100%;
+  color: var(--warn, #fbbf24); font-size: 10px;
+}
+.op-resolver-settings__liveness > button {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
+  min-height: 24px; padding: 0 8px; border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--warn, #fbbf24) 52%, transparent);
+  color: var(--warn, #fbbf24); background: color-mix(in srgb, var(--warn, #fbbf24) 9%, transparent);
+}
+.op-resolver-settings__liveness > button:disabled { opacity: 0.58; }
 
 /* ── IDLE: the one button ─────────────────────────────────────────────── */
 .op-inbox__bulk-start {
