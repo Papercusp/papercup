@@ -19,6 +19,8 @@ import {
   runGreenCheckpoint,
   checkpointCandidateProvenance,
   checkpointCandidateSourceFromCli,
+  normalizeCheckpointMaterializationSelection,
+  parseCheckpointMaterializationSelection,
   runCmd,
   quietCutSecFromEnv,
   extractFailingTests,
@@ -2082,6 +2084,119 @@ describe("EI-213458 candidate-source normalization", () => {
     expect(() =>
       checkpointCandidateSourceFromCli("a".repeat(40), "unknown"),
     ).toThrow("expected pinned|tip");
+  });
+});
+
+describe("P-007 pre-materialization related-test selection", () => {
+  it("accepts only internally consistent positive related-selection evidence", () => {
+    const summary =
+      "RELATED_MATERIALIZATION_SELECTION status=selected relatedSelections=1 affected=2 closure=3";
+    const parsed = parseCheckpointMaterializationSelection(
+      [
+        "RELATED_SELECTION ws=@papercusp/web selected=2 total=40 mode=related reason=ok",
+        summary,
+        "RELATED_AFFECTED_WORKSPACE_DIR\tpackages/operator-core",
+        "RELATED_AFFECTED_WORKSPACE_DIR\tapps/operator",
+        "RELATED_DEPENDENCY_WORKSPACE_DIR\tpackages/z",
+        "RELATED_DEPENDENCY_WORKSPACE_DIR\tapps/operator",
+        "RELATED_DEPENDENCY_WORKSPACE_DIR\tpackages/operator-core",
+      ].join("\n"),
+    );
+
+    expect(parsed).toEqual({
+      affectedWorkspaceDirs: ["apps/operator", "packages/operator-core"],
+      workspaceDirs: ["apps/operator", "packages/operator-core", "packages/z"],
+      relatedSelections: 1,
+      summary,
+    });
+
+    expect(
+      parseCheckpointMaterializationSelection(
+        [
+          "RELATED_SELECTION ws=@papercusp/web selected=2 total=40 mode=full reason=over-threshold",
+          summary,
+          "RELATED_AFFECTED_WORKSPACE_DIR\tapps/operator",
+          "RELATED_DEPENDENCY_WORKSPACE_DIR\tapps/operator",
+        ].join("\n"),
+      ),
+    ).toBeNull();
+    expect(
+      normalizeCheckpointMaterializationSelection({
+        affectedWorkspaceDirs: ["../outside"],
+        workspaceDirs: ["../outside"],
+        relatedSelections: 1,
+        summary,
+      }),
+    ).toBeNull();
+  });
+
+  it("prepares exact source and selects its dependency closure before materialization", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps, calls } = stubDeps(true);
+    deps.reportProgress = (phase) => calls.push(phase ?? "progress");
+    deps.prepareSource = async (ref) => {
+      calls.push(`prepare:${ref.slice(0, 7)}`);
+    };
+    deps.selectMaterializationClosure = async (input) => {
+      calls.push(
+        `select:${input.base.slice(0, 7)}:${input.candidate.slice(0, 7)}`,
+      );
+      return {
+        affectedWorkspaceDirs: ["apps/operator"],
+        workspaceDirs: ["apps/operator", "packages/operator-core"],
+        relatedSelections: 1,
+        summary: "positive candidate-exact selection",
+      };
+    };
+    deps.setupTree = async (ref, options) => {
+      calls.push(
+        `setup:${ref.slice(0, 7)}:${String(options?.preparedSource)}:${options?.workspaceDirs?.join(",")}`,
+      );
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(calls).toContain("phase:preselecting");
+    expect(calls).toContain(`prepare:${candidate.slice(0, 7)}`);
+    expect(calls).toContain(
+      `select:${ready.slice(0, 7)}:${candidate.slice(0, 7)}`,
+    );
+    expect(calls).toContain(
+      `setup:${candidate.slice(0, 7)}:true:apps/operator,packages/operator-core`,
+    );
+    expect(calls.indexOf("phase:preselecting")).toBeLessThan(
+      calls.indexOf("phase:materializing"),
+    );
+    expect(calls.indexOf(`prepare:${candidate.slice(0, 7)}`)).toBeLessThan(
+      calls.indexOf("phase:materializing"),
+    );
+  });
+
+  it("reuses prepared source but fails wide when the selector has no positive evidence", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    let setupOptions: unknown;
+    deps.prepareSource = async () => {};
+    deps.selectMaterializationClosure = async () => null;
+    deps.setupTree = async (_ref, options) => {
+      setupOptions = options;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(setupOptions).toEqual({ preparedSource: true });
   });
 });
 

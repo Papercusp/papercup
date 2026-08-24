@@ -35,6 +35,7 @@ function makeIntegration(): string {
   roots.push(root);
   mkdirSync(join(root, 'node_modules/pkg'), { recursive: true });
   mkdirSync(join(root, 'packages/a/node_modules/local'), { recursive: true });
+  mkdirSync(join(root, 'packages/b/node_modules/other'), { recursive: true });
   mkdirSync(
     join(root, '.papercusp/worktrees/repair/node_modules/foreign'),
     { recursive: true },
@@ -44,6 +45,12 @@ function makeIntegration(): string {
     join(root, 'packages/a/node_modules/local/index.js'),
     'local-v1\n',
   );
+  writeFileSync(join(root, 'packages/a/package.json'), '{"name":"a"}\n');
+  writeFileSync(
+    join(root, 'packages/b/node_modules/other/index.js'),
+    'other-v1\n',
+  );
+  writeFileSync(join(root, 'packages/b/package.json'), '{"name":"b"}\n');
   writeFileSync(
     join(root, '.papercusp/worktrees/repair/node_modules/foreign/index.js'),
     'must-not-copy\n',
@@ -55,9 +62,13 @@ function publish(
   integration: string,
   env: NodeJS.ProcessEnv = {},
   generationRoot?: string,
+  workspaceDirs: string[] = [],
 ): ShellResult {
   const args = [SCRIPT, '--integration', integration];
   if (generationRoot) args.push('--generation-root', generationRoot);
+  for (const workspaceDir of workspaceDirs) {
+    args.push('--workspace-dir', workspaceDir);
+  }
   const result = spawnSync('bash', args, {
     encoding: 'utf8',
     env: { ...process.env, ...env },
@@ -155,6 +166,71 @@ describe('immutable dependency generation', () => {
     expect(second.status, second.stderr).toBe(0);
     expect(second.stdout).toContain('reused=true');
     expect(publishedPath(second.stdout)).toBe(generation);
+  });
+
+  it('P-007: publishes only root plus the selected workspace closure and binds it into identity', () => {
+    const integration = makeIntegration();
+    const full = publish(integration);
+    expect(full.status, full.stderr).toBe(0);
+
+    const selected = publish(integration, {}, undefined, ['packages/a']);
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(selected.stdout).toContain('scope=selected');
+    expect(selected.stdout).toMatch(/\bclosure=[0-9a-f]{64}\b/);
+    expect(publishedIdentity(selected.stdout)).not.toBe(
+      publishedIdentity(full.stdout),
+    );
+
+    const generation = publishedPath(selected.stdout);
+    expect(
+      readFileSync(join(generation, 'tree/node_modules/pkg/index.js'), 'utf8'),
+    ).toBe('root-v1\n');
+    expect(
+      readFileSync(
+        join(generation, 'tree/packages/a/node_modules/local/index.js'),
+        'utf8',
+      ),
+    ).toBe('local-v1\n');
+    expect(
+      existsSync(
+        join(generation, 'tree/packages/b/node_modules/other/index.js'),
+      ),
+    ).toBe(false);
+
+    const marker = readFileSync(
+      join(generation, '.papercusp-dependency-generation'),
+      'utf8',
+    );
+    expect(marker).toContain('scope=selected\n');
+    expect(marker).toContain('workspace_dir=packages/a\n');
+
+    const reused = publish(
+      integration,
+      {},
+      undefined,
+      ['packages/a', 'packages/a'],
+    );
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(reused.stdout).toContain('reused=true');
+    expect(publishedPath(reused.stdout)).toBe(generation);
+  });
+
+  it('P-007: rejects a workspace closure that is not a safe repo-relative package directory', () => {
+    const integration = makeIntegration();
+    const result = publish(
+      integration,
+      {},
+      undefined,
+      ['packages/a/../a'],
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      'invalid repo-relative --workspace-dir: packages/a/../a',
+    );
+    expect(
+      existsSync(join(integration, '.papercusp/dependency-generations')),
+    ).toBe(false);
   });
 
   it('selects an exact published identity without re-reading mutable live node_modules', () => {

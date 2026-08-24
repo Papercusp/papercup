@@ -131,6 +131,23 @@ export interface CheckpointSetupIdentity {
   output: string;
 }
 
+export interface CheckpointMaterializationSelection {
+  /** Workspace directories whose tests/guards are actually selected. */
+  affectedWorkspaceDirs: string[];
+  /** Selected workspaces plus their transitive local dependency closure. */
+  workspaceDirs: string[];
+  /** Number of real related-test selector decisions observed in the probe. */
+  relatedSelections: number;
+  summary: string;
+}
+
+export interface CheckpointSetupOptions {
+  /** The exact candidate source checkout already exists in checkpointRoot. */
+  preparedSource?: boolean;
+  /** Relative workspace directories whose package-local dependencies are required. */
+  workspaceDirs?: string[];
+}
+
 export interface CheckpointExecutionContext {
   candidate: string;
   headAtStart?: string;
@@ -152,8 +169,24 @@ export interface CheckpointDeps {
    * and command boundaries are the liveness signal consumed by the self-watchdog.
    */
   reportProgress?(detail?: string): void;
+  /**
+   * Build only the exact source checkout at `ref`, without dependency materialization.
+   * Optional: older/custom harnesses retain the historical full setup path.
+   */
+  prepareSource?(ref: string): Promise<void>;
+  /**
+   * Run the candidate-exact related/affected selector against the prepared source.
+   * Null means the evidence is insufficient and the caller must materialize fully.
+   */
+  selectMaterializationClosure?(input: {
+    candidate: string;
+    base: string;
+  }): Promise<CheckpointMaterializationSelection | null>;
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
-  setupTree(ref: string): Promise<void | CheckpointSetupIdentity>;
+  setupTree(
+    ref: string,
+    options?: CheckpointSetupOptions,
+  ): Promise<void | CheckpointSetupIdentity>;
   /** load-flake-isolation-2026-06-23: re-run ONE originally-failing test file in
    *  ISOLATION (a fresh `vitest run <file>` at single concurrency, same tree+env) to
    *  decide load-flake-vs-real-break. Optional + injected so the realCheckpointDeps
@@ -6554,6 +6587,118 @@ export function checkpointCandidateSourceFromCli(
   return candidateArg ? "pinned" : "tip";
 }
 
+/**
+ * Turn selector output into the only shape allowed to narrow dependency materialization.
+ * Every invalid/empty case returns null so the caller keeps the historical full-generation
+ * path. The producer also validates these paths, but this consumer-side check is the
+ * fail-wide boundary: stdout is evidence, never authority by itself.
+ */
+export function normalizeCheckpointMaterializationSelection(
+  selection: CheckpointMaterializationSelection | null,
+): CheckpointMaterializationSelection | null {
+  if (
+    !selection ||
+    !Number.isInteger(selection.relatedSelections) ||
+    selection.relatedSelections < 1 ||
+    selection.affectedWorkspaceDirs.length < 1 ||
+    selection.workspaceDirs.length < 1 ||
+    selection.workspaceDirs.length > 256
+  ) {
+    return null;
+  }
+  const safeRelativeDir = (dir: string) =>
+    typeof dir === "string" &&
+    dir.length > 0 &&
+    dir.length <= 512 &&
+    !path.posix.isAbsolute(dir) &&
+    path.posix.normalize(dir) === dir &&
+    dir !== "." &&
+    !dir.split("/").some((part) => part === ".." || part === "");
+  if (
+    !selection.workspaceDirs.every(safeRelativeDir) ||
+    !selection.affectedWorkspaceDirs.every(safeRelativeDir)
+  ) {
+    return null;
+  }
+  const workspaceDirs = [...new Set(selection.workspaceDirs)].sort();
+  const affectedWorkspaceDirs = [
+    ...new Set(selection.affectedWorkspaceDirs),
+  ].sort();
+  const closure = new Set(workspaceDirs);
+  if (!affectedWorkspaceDirs.every((dir) => closure.has(dir))) return null;
+  return {
+    ...selection,
+    affectedWorkspaceDirs,
+    workspaceDirs,
+  };
+}
+
+/** Parse the candidate checkout's machine-readable related-selection probe. */
+export function parseCheckpointMaterializationSelection(
+  output: string,
+): CheckpointMaterializationSelection | null {
+  const lines = output.split(/\r?\n/).filter(Boolean);
+  const relatedLines = lines.filter((line) =>
+    line.startsWith("RELATED_SELECTION "),
+  );
+  if (relatedLines.length < 1) return null;
+
+  const relatedWorkspaces = new Set<string>();
+  for (const line of relatedLines) {
+    const match = line.match(
+      /^RELATED_SELECTION ws=(\S+) selected=(\d+) total=(\d+) mode=(\S+) reason=/,
+    );
+    if (!match) return null;
+    const selected = Number(match[2]);
+    const total = Number(match[3]);
+    if (
+      match[4] !== "related" ||
+      !Number.isInteger(selected) ||
+      selected < 1 ||
+      !Number.isInteger(total) ||
+      total < selected ||
+      relatedWorkspaces.has(match[1])
+    ) {
+      return null;
+    }
+    relatedWorkspaces.add(match[1]);
+  }
+
+  const summaries = lines.filter((line) =>
+    line.startsWith("RELATED_MATERIALIZATION_SELECTION status=selected "),
+  );
+  if (summaries.length !== 1) return null;
+  const summaryMatch = summaries[0].match(
+    /^RELATED_MATERIALIZATION_SELECTION status=selected relatedSelections=(\d+) affected=(\d+) closure=(\d+)$/,
+  );
+  if (!summaryMatch) return null;
+
+  const markerValues = (prefix: string) =>
+    lines
+      .filter((line) => line.startsWith(`${prefix}\t`))
+      .map((line) => line.slice(prefix.length + 1));
+  const affectedWorkspaceDirs = markerValues("RELATED_AFFECTED_WORKSPACE_DIR");
+  const workspaceDirs = markerValues("RELATED_DEPENDENCY_WORKSPACE_DIR");
+  const uniqueAffected = new Set(affectedWorkspaceDirs);
+  const uniqueClosure = new Set(workspaceDirs);
+  if (
+    Number(summaryMatch[1]) !== relatedWorkspaces.size ||
+    Number(summaryMatch[2]) !== uniqueAffected.size ||
+    Number(summaryMatch[3]) !== uniqueClosure.size ||
+    uniqueAffected.size !== affectedWorkspaceDirs.length ||
+    uniqueClosure.size !== workspaceDirs.length
+  ) {
+    return null;
+  }
+
+  return normalizeCheckpointMaterializationSelection({
+    affectedWorkspaceDirs,
+    workspaceDirs,
+    relatedSelections: relatedWorkspaces.size,
+    summary: summaries[0],
+  });
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -7360,6 +7505,47 @@ async function runGreenCheckpointInner(
     refireDepth: opts.totalRefires ?? opts.refireAttempts ?? 0,
     pid: process.pid,
   });
+
+  // WI-41251 / P-007: source selection happens before the expensive dependency
+  // generation + pc-heavy exclusive materialization. Optional seams preserve the
+  // historical full path for older/custom harnesses. Every missing, throwing, empty,
+  // zero-evidence, or unsafe selector result fails WIDE by leaving setupOptions undefined.
+  let setupOptions: CheckpointSetupOptions | undefined;
+  if (lastReady && deps.prepareSource && deps.selectMaterializationClosure) {
+    deps.reportProgress?.("phase:preselecting");
+    try {
+      await deps.prepareSource(candidate);
+      // Even a fail-wide selector result can reuse the exact source tree just
+      // prepared above; only dependency narrowing is withheld.
+      setupOptions = { preparedSource: true };
+      const selection = normalizeCheckpointMaterializationSelection(
+        await deps.selectMaterializationClosure({
+          candidate,
+          base: lastReady,
+        }),
+      );
+      if (selection) {
+        setupOptions = {
+          preparedSource: true,
+          workspaceDirs: selection.workspaceDirs,
+        };
+        deps.log(
+          `pre-materialization selection: ${selection.summary}; ` +
+            `${selection.affectedWorkspaceDirs.length} affected workspace(s), ` +
+            `${selection.workspaceDirs.length} workspace(s) in dependency closure`,
+        );
+      } else {
+        deps.log(
+          "pre-materialization selection produced no safe positive evidence — falling back to the full dependency generation",
+        );
+      }
+    } catch (e) {
+      deps.log(
+        `pre-materialization selection failed (${e instanceof Error ? e.message : e}) — ` +
+          "falling back to the full dependency generation",
+      );
+    }
+  }
   // WI-40774: publish MATERIALIZING before setup starts. The checkpoint run-lock by itself
   // only throttles jobs admitted after this run appeared; it cannot drain a test:affected
   // sweep that already holds a pc-heavy slot. realCheckpointDeps.setupTree wraps the copy in
@@ -7375,7 +7561,7 @@ async function runGreenCheckpointInner(
     startMaterializationHeartbeat(phaseLockDir);
   let setupIdentity: void | CheckpointSetupIdentity;
   try {
-    setupIdentity = await deps.setupTree(candidate);
+    setupIdentity = await deps.setupTree(candidate, setupOptions);
   } finally {
     stopMaterializationHeartbeat();
   }
@@ -11280,19 +11466,26 @@ export function realCheckpointDeps(
   // BEFORE any caller waits for the exclusive materialization barrier. The
   // selected identity is then transported into setup-release, so a later
   // install cannot silently move the checkpoint/repair-worktree input.
-  const publishDependencyGeneration = async (ref: string): Promise<string> => {
+  const publishDependencyGeneration = async (
+    ref: string,
+    workspaceDirs: string[] = [],
+  ): Promise<string> => {
     const generationScript = path.join(
       toolingRoot(),
       "apps/operator/bin/release/dependency-generation.sh",
     );
-    const publishedGeneration = await exec(
-      "bash",
-      [generationScript, "--integration", cfg.integrationRoot],
-      {
-        timeoutMs: SETUP_TREE_TIMEOUT_MS,
-        killProcessGroupOnTimeout: true,
-      },
-    );
+    const generationArgs = [
+      generationScript,
+      "--integration",
+      cfg.integrationRoot,
+    ];
+    for (const workspaceDir of workspaceDirs) {
+      generationArgs.push("--workspace-dir", workspaceDir);
+    }
+    const publishedGeneration = await exec("bash", generationArgs, {
+      timeoutMs: SETUP_TREE_TIMEOUT_MS,
+      killProcessGroupOnTimeout: true,
+    });
     const publishedGenerationOutput =
       publishedGeneration.stdout + publishedGeneration.stderr;
     const selectedDependencyGeneration = publishedGenerationOutput.match(
@@ -11872,7 +12065,70 @@ export function realCheckpointDeps(
         return false;
       }
     },
-    async setupTree(ref) {
+    async prepareSource(ref) {
+      const script = path.join(
+        toolingRoot(),
+        "apps/operator/bin/release/setup-release-checkout.sh",
+      );
+      const prepared = await exec(
+        "bash",
+        [
+          script,
+          "--ref",
+          ref,
+          "--integration",
+          cfg.integrationRoot,
+          "--release",
+          cfg.checkpointRoot,
+          "--source-only",
+        ],
+        {
+          timeoutMs: SETUP_TREE_TIMEOUT_MS,
+          killProcessGroupOnTimeout: true,
+        },
+      );
+      const output = prepared.stdout + prepared.stderr;
+      if (!/SETUP_RELEASE_SOURCE_ONLY\s+[^\n]*status=ready/.test(output)) {
+        throw new Error(
+          `source-only setup completed without exact-source readiness evidence for ${ref.slice(0, 64)}`,
+        );
+      }
+      log(
+        `prepared exact candidate source ${ref.slice(0, 12)} before dependency selection`,
+      );
+    },
+    async selectMaterializationClosure({ candidate, base }) {
+      const probe = await exec(
+        process.execPath,
+        [
+          path.join(cfg.checkpointRoot, "scripts/affected-tests.mjs"),
+          "--base",
+          base,
+          "--related",
+          "--print-affected",
+        ],
+        {
+          cwd: cfg.checkpointRoot,
+          allowNonZero: true,
+          timeoutMs: SETUP_TREE_TIMEOUT_MS,
+          killProcessGroupOnTimeout: true,
+        },
+      );
+      if (probe.code !== 0) {
+        log(
+          `candidate ${candidate.slice(0, 12)} related-selection probe exited ${probe.code}; using full dependency generation`,
+        );
+        return null;
+      }
+      const selection = parseCheckpointMaterializationSelection(probe.stdout);
+      if (!selection) {
+        log(
+          `candidate ${candidate.slice(0, 12)} related-selection probe carried no safe positive closure; using full dependency generation`,
+        );
+      }
+      return selection;
+    },
+    async setupTree(ref, options) {
       // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot
       // (the SUBJECT — a per-hive repo has no release scripts). --integration stays the subject.
       const script = path.join(
@@ -11919,8 +12175,10 @@ export function realCheckpointDeps(
           setupOutputRemainders[stream] = "";
         }
       };
-      const selectedDependencyGeneration =
-        await publishDependencyGeneration(ref);
+      const selectedDependencyGeneration = await publishDependencyGeneration(
+        ref,
+        options?.workspaceDirs ?? [],
+      );
       let setup: CheckpointExecResult;
       try {
         setup = await exec(
@@ -11937,6 +12195,7 @@ export function realCheckpointDeps(
             cfg.integrationRoot,
             "--release",
             cfg.checkpointRoot,
+            ...(options?.preparedSource ? ["--prepare-existing"] : []),
             "--node-modules",
             "force",
             "--node-modules-copy",

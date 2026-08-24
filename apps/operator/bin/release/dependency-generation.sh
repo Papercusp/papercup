@@ -40,10 +40,66 @@ dependency_generation_device() {
   stat -c '%d' "$path" 2>/dev/null || stat -f '%d' "$path"
 }
 
+# Empty means the historical full-product generation. A selected generation is
+# configured by repeated --workspace-dir arguments and always retains the root
+# node_modules tree in addition to these package-local trees.
+DEPENDENCY_GENERATION_WORKSPACE_DIRS=()
+DEPENDENCY_GENERATION_SCOPE_MODE='full'
+DEPENDENCY_GENERATION_SCOPE_RECORD=''
+DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT=''
+
+dependency_generation_configure_workspace_dirs() {
+  local root="$1" raw resolved
+  shift
+  DEPENDENCY_GENERATION_WORKSPACE_DIRS=()
+  if [ "$#" -eq 0 ]; then
+    DEPENDENCY_GENERATION_SCOPE_MODE='full'
+    DEPENDENCY_GENERATION_SCOPE_RECORD='scope=full'
+  else
+    DEPENDENCY_GENERATION_SCOPE_MODE='selected'
+    DEPENDENCY_GENERATION_SCOPE_RECORD='scope=selected'
+    while IFS= read -r raw; do
+      case "$raw" in
+        ''|.|/*|./*|../*|*/../*|*/..|*//*|*/|*\\*|*$'\n'*|*$'\r'*|*$'\t'*)
+          dependency_generation_log "FATAL: invalid repo-relative --workspace-dir: $raw"
+          return 2
+          ;;
+      esac
+      resolved="$(cd "$root/$raw" 2>/dev/null && pwd -P)" || {
+        dependency_generation_log "FATAL: --workspace-dir does not exist: $raw"
+        return 2
+      }
+      case "$resolved" in
+        "$root"/*) ;;
+        *)
+          dependency_generation_log "FATAL: --workspace-dir escapes the integration root: $raw"
+          return 2
+          ;;
+      esac
+      [ -f "$resolved/package.json" ] || {
+        dependency_generation_log "FATAL: --workspace-dir has no package.json: $raw"
+        return 2
+      }
+      DEPENDENCY_GENERATION_WORKSPACE_DIRS+=("$raw")
+      DEPENDENCY_GENERATION_SCOPE_RECORD+=$'\n'"workspace_dir=$raw"
+    done < <(printf '%s\n' "$@" | LC_ALL=C sort -u)
+  fi
+  DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(
+    printf '%s\n' "$DEPENDENCY_GENERATION_SCOPE_RECORD" | dependency_generation_sha256
+  )" || return 1
+}
+
 # Product dependency trees only. Coordination worktrees and Git metadata are
 # runtime infrastructure, never dependency-generation inputs.
 dependency_generation_enumerate_node_modules() {
-  local root="$1"
+  local root="$1" dir
+  if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
+    [ -d "$root/node_modules" ] && printf '%s\n' "$root/node_modules"
+    for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+      [ -d "$root/$dir/node_modules" ] && printf '%s\n' "$root/$dir/node_modules"
+    done
+    return 0
+  fi
   find "$root" \
     \( -type d \( -name .papercusp -o -name .git \) -prune \) -o \
     \( -type d -name node_modules -prune -print \)
@@ -172,6 +228,14 @@ dependency_generation_manifest_fingerprint() {
   dependency_generation_sha256 < "$manifest"
 }
 
+dependency_generation_source_fingerprint() {
+  local manifest="$1"
+  {
+    printf 'closure\t%s\n' "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"
+    cat "$manifest"
+  } | dependency_generation_sha256
+}
+
 dependency_generation_set_fingerprint() {
   local root="$1"
   dependency_generation_set_manifest "$root" | dependency_generation_sha256
@@ -204,9 +268,9 @@ dependency_generation_read_field() {
 }
 
 dependency_generation_is_valid() {
-  local generation="$1" expected_identity="${2:-}"
+  local generation="$1" expected_identity="${2:-}" expected_closure="${3:-}"
   local marker="$generation/.papercusp-dependency-generation"
-  local identity expected_snapshot actual_snapshot
+  local identity source closure scope expected_snapshot actual_snapshot
   # Test-only tracing proves that the publish-lock fast path does not silently
   # reintroduce the full tree walk. It is deliberately fail-open and has no
   # effect unless a test supplies the opt-in path.
@@ -217,6 +281,13 @@ dependency_generation_is_valid() {
   identity="$(dependency_generation_read_field "$marker" identity)"
   [ -n "$identity" ] || return 1
   [ -z "$expected_identity" ] || [ "$identity" = "$expected_identity" ] || return 1
+  source="$(dependency_generation_read_field "$marker" source)"
+  [ -n "$source" ] && [ "$identity" = "v1-$source" ] || return 1
+  closure="$(dependency_generation_read_field "$marker" closure)"
+  [ -n "$closure" ] || return 1
+  [ -z "$expected_closure" ] || [ "$closure" = "$expected_closure" ] || return 1
+  scope="$(dependency_generation_read_field "$marker" scope)"
+  case "$scope" in full|selected) ;; *) return 1 ;; esac
   expected_snapshot="$(dependency_generation_read_field "$marker" snapshot)"
   [ -n "$expected_snapshot" ] || return 1
   actual_snapshot="$(dependency_generation_set_fingerprint "$generation/tree" 2>/dev/null || true)"
@@ -446,6 +517,9 @@ dependency_generation_ensure() {
   local quarantine before_manifest after_manifest
   local incumbent_token_before incumbent_token_after incumbent_token
   local current_incumbent_token publish_replacement
+  if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
+    dependency_generation_configure_workspace_dirs "$integration_root" || return $?
+  fi
   mkdir -p "$generation_root"
   dependency_generation_cleanup_abandoned "$generation_root"
 
@@ -459,19 +533,20 @@ dependency_generation_ensure() {
     dependency_generation_remove_build "$build"
     return 1
   }
-  source_before="$(dependency_generation_manifest_fingerprint "$before_manifest")" || {
+  source_before="$(dependency_generation_source_fingerprint "$before_manifest")" || {
     dependency_generation_remove_build "$build"
     return 1
   }
   identity="v1-$source_before"
   generation="$generation_root/$identity"
   incumbent_token_before="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
-  if dependency_generation_is_valid "$generation" "$identity"; then
+  if dependency_generation_is_valid \
+    "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
     dependency_generation_set_manifest "$integration_root" > "$after_manifest" || {
       dependency_generation_remove_build "$build"
       return 1
     }
-    source_after="$(dependency_generation_manifest_fingerprint "$after_manifest")" || {
+    source_after="$(dependency_generation_source_fingerprint "$after_manifest")" || {
       dependency_generation_remove_build "$build"
       return 1
     }
@@ -514,7 +589,7 @@ dependency_generation_ensure() {
     bash -c "$DEPENDENCY_GENERATION_AFTER_COPY_HOOK"
   fi
   dependency_generation_set_manifest "$integration_root" > "$after_manifest" 2>/dev/null || true
-  source_after="$(dependency_generation_manifest_fingerprint "$after_manifest" 2>/dev/null || true)"
+  source_after="$(dependency_generation_source_fingerprint "$after_manifest" 2>/dev/null || true)"
   if [ -z "$source_after" ] || [ "$source_after" != "$source_before" ]; then
     dependency_generation_log_manifest_delta "$before_manifest" "$after_manifest"
     dependency_generation_log 'FATAL: live node_modules changed during generation build; refusing a torn snapshot'
@@ -530,8 +605,9 @@ dependency_generation_ensure() {
     return 1
   }
   marker="$build/.papercusp-dependency-generation"
-  printf 'schema=1\nidentity=%s\nsource=%s\nsnapshot=%s\ncreated=%s\n' \
-    "$identity" "$source_after" "$snapshot" "$(date +%s)" > "$marker"
+  printf 'schema=1\nidentity=%s\nsource=%s\nclosure=%s\nsnapshot=%s\ncreated=%s\n%s\n' \
+    "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
+    "$snapshot" "$(date +%s)" "$DEPENDENCY_GENERATION_SCOPE_RECORD" > "$marker"
 
   dependency_generation_acquire_publish_lock "$generation_root" || {
     dependency_generation_remove_build "$build"
@@ -555,7 +631,8 @@ dependency_generation_ensure() {
   publish_replacement='1'
   if [ -n "$incumbent_token" ] && [ "$incumbent_token" = "$current_incumbent_token" ]; then
     dependency_generation_log "unchanged invalid generation $identity; skipping repeat validation under publish lock"
-  elif dependency_generation_is_valid "$generation" "$identity"; then
+  elif dependency_generation_is_valid \
+    "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
     dependency_generation_remove_build "$build"
     DEPENDENCY_GENERATION_REUSED='true'
     publish_replacement='0'
@@ -581,10 +658,12 @@ dependency_generation_ensure() {
 
 dependency_generation_main() {
   local integration_root='' generation_root=''
+  local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --integration) integration_root="$2"; shift 2 ;;
       --generation-root) generation_root="$2"; shift 2 ;;
+      --workspace-dir) workspace_dirs+=("$2"); shift 2 ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
@@ -594,9 +673,12 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   generation_root="${generation_root:-$integration_root/.papercusp/dependency-generations}"
+  dependency_generation_configure_workspace_dirs \
+    "$integration_root" "${workspace_dirs[@]}" || return $?
   dependency_generation_ensure "$integration_root" "$generation_root" || return $?
-  printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s reused=%s path=%s\n' \
+  printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s closure=%s scope=%s reused=%s path=%s\n' \
     "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+    "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" "$DEPENDENCY_GENERATION_SCOPE_MODE" \
     "$DEPENDENCY_GENERATION_REUSED" "$DEPENDENCY_GENERATION_PATH"
 }
 

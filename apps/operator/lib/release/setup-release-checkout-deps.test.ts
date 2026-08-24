@@ -1240,6 +1240,57 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
     expect(r.stderr).toContain('does not match requested ref');
     expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
   });
+
+  it('P-007: source-only prepares the exact checkout and stops before dependency materialization', () => {
+    const sourceOnlyRoot = join(dirname(releaseRoot), 'source-only');
+    mkdirSync(join(integrationRoot, 'node_modules/source-only-sentinel'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(
+        integrationRoot,
+        'node_modules/source-only-sentinel/package.json',
+      ),
+      '{}',
+    );
+
+    const r = spawnSync(
+      'bash',
+      [
+        SCRIPT_PATH,
+        '--source-only',
+        '--ref',
+        targetSha,
+        '--integration',
+        integrationRoot,
+        '--release',
+        sourceOnlyRoot,
+        '--node-modules',
+        'force',
+      ],
+      { encoding: 'utf8' },
+    );
+
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain(
+      `[setup-release] SETUP_RELEASE_SOURCE_ONLY ref=${targetSha} sha=${targetSha} status=ready`,
+    );
+    expect(git(sourceOnlyRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(
+      existsSync(
+        join(sourceOnlyRoot, 'node_modules/source-only-sentinel/package.json'),
+      ),
+    ).toBe(false);
+  });
+
+  it('P-007: rejects conflicting source-only and dependency-only modes', () => {
+    const r = runPrepare(['--source-only']);
+
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(
+      '--source-only and --prepare-existing are mutually exclusive',
+    );
+  });
 });
 
 /**

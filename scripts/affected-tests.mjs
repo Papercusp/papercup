@@ -205,7 +205,8 @@ let terminalSuppressed = false;
 // pc-heavy allocates this unique, absent path only for callers that opt into
 // the after-ready barrier. The runner publishes it after derivation and before
 // the first task starts; pc-heavy also removes it if this process is killed.
-const preemptReadyFile = process.env.PC_HEAVY_PREEMPT_READY_FILE?.trim() || null;
+const preemptReadyFile =
+  process.env.PC_HEAVY_PREEMPT_READY_FILE?.trim() || null;
 let preemptReadyPublished = false;
 function cleanupPreemptReadyMarker() {
   if (!preemptReadyPublished || !preemptReadyFile) return;
@@ -427,7 +428,8 @@ const positionalArgs = [];
 for (let i = 0; i < args.length; i += 1) {
   const token = args[i];
   if (token.startsWith("--")) {
-    if (VALUE_FLAGS.has(token) && args[i + 1] && !args[i + 1].startsWith("--")) i += 1;
+    if (VALUE_FLAGS.has(token) && args[i + 1] && !args[i + 1].startsWith("--"))
+      i += 1;
     continue;
   }
   positionalArgs.push(token);
@@ -561,7 +563,9 @@ if (unknownFlags.length > 0) {
 }
 
 if (positionalArgs.length > 0) {
-  errSync(`affected-tests.mjs: unexpected positional argument(s): ${positionalArgs.join(", ")}`);
+  errSync(
+    `affected-tests.mjs: unexpected positional argument(s): ${positionalArgs.join(", ")}`,
+  );
   errSync(
     "This command accepts flags only; pass --changed-paths as one comma-delimited value rather than separate positional paths.",
   );
@@ -758,7 +762,10 @@ const GENERATOR_OWNED_AUTHORED_DOCS = new Set([
  */
 function authoredDocGuardArgs() {
   const changed = invariantGuardChangedPaths();
-  if (changed.includes(AUTHORED_DOC_PROJECTOR) || changed.includes(AUTHORED_DOCS_CONFIG))
+  if (
+    changed.includes(AUTHORED_DOC_PROJECTOR) ||
+    changed.includes(AUTHORED_DOCS_CONFIG)
+  )
     return [];
 
   const docsPrefix = `${AUTHORED_DOCS_ROOT}/`;
@@ -767,7 +774,9 @@ function authoredDocGuardArgs() {
       changed
         .filter((file) => file.startsWith(docsPrefix) && /\.mdx?$/.test(file))
         .map((file) => file.slice(docsPrefix.length))
-        .filter((docId) => !docId.startsWith("/") && !docId.split("/").includes(".."))
+        .filter(
+          (docId) => !docId.startsWith("/") && !docId.split("/").includes(".."),
+        )
         .filter((docId) => !GENERATOR_OWNED_AUTHORED_DOCS.has(docId))
         .filter((docId) => existsSync(join(ROOT, AUTHORED_DOCS_ROOT, docId))),
     ),
@@ -1154,7 +1163,8 @@ function declarationMjsInputs() {
   return declarationInputsCache;
 }
 
-const UNENROLLED_MJS_IMPORTS_DETECTOR = "scripts/check-unenrolled-mjs-imports.mjs";
+const UNENROLLED_MJS_IMPORTS_DETECTOR =
+  "scripts/check-unenrolled-mjs-imports.mjs";
 const UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR = "scripts/lib/tracked-files.mjs";
 
 const REPO_WIDE_INVARIANT_GUARDS = [
@@ -1224,7 +1234,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "package.json" ||
       f === "package-lock.json" ||
       f === "scripts/check-vitest-config-enrollment.mjs" ||
-      f === "packages/operator-core/lib/vitest-config-enrollment-guard.test.ts" ||
+      f ===
+        "packages/operator-core/lib/vitest-config-enrollment-guard.test.ts" ||
       /(^|\/)package\.json$/.test(f) ||
       /(^|\/)vitest\.config\.[^/]+$/.test(f),
   },
@@ -2272,9 +2283,11 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "apps/operator/bin/bundle-host.sh" ||
       f === "apps/operator/bin/bundle-host-common.sh" ||
       f === "packages/operator-core/lib/util/cli-entry.ts" ||
-      ((/^(?:apps|libs|packages|scripts)\//.test(f) &&
-        /\.(?:[cm]?[jt]sx?|mjs|cjs)$/.test(f)) &&
-        !/(?:^|\/)(?:\.git|\.next|_retired|build|coverage|dist|dist-host|dist-sidecar|node_modules|out|public|target)\//.test(f) &&
+      (/^(?:apps|libs|packages|scripts)\//.test(f) &&
+        /\.(?:[cm]?[jt]sx?|mjs|cjs)$/.test(f) &&
+        !/(?:^|\/)(?:\.git|\.next|_retired|build|coverage|dist|dist-host|dist-sidecar|node_modules|out|public|target)\//.test(
+          f,
+        ) &&
         !/(?:\.test|\.spec)\.[cm]?[jt]sx?$/.test(f) &&
         !f.endsWith(".d.ts")),
   },
@@ -2586,6 +2599,29 @@ for (const ws of wsByDir.values()) {
     if (!reverseDeps.has(dep)) reverseDeps.set(dep, new Set());
     reverseDeps.get(dep).add(ws.name);
   }
+}
+
+/**
+ * Forward local-dependency closure for dependency materialization.
+ *
+ * Affected-test propagation walks `reverseDeps` because a changed library makes
+ * its consumers relevant. Materialization needs the opposite direction: once a
+ * test/guard workspace is selected, include every local workspace it imports so
+ * package-local toolchains remain available in the isolated checkpoint tree.
+ */
+function localDependencyWorkspaceClosure(startWorkspaces) {
+  const closure = new Map();
+  const queue = [...startWorkspaces];
+  while (queue.length) {
+    const ws = queue.shift();
+    if (!ws || closure.has(ws.name)) continue;
+    closure.set(ws.name, ws);
+    for (const dependencyName of ws.deps) {
+      const dependency = wsByName.get(dependencyName);
+      if (dependency && !closure.has(dependency.name)) queue.push(dependency);
+    }
+  }
+  return [...closure.values()].sort((a, b) => a.dir.localeCompare(b.dir));
 }
 
 // P-016 (D-010): print-only affected-set probe for the green-checkpoint longest-green-
@@ -2946,7 +2982,8 @@ function tsconfigAliasesFor(wsRoot) {
 // A task keeps `relatedFiles` only when the engine returns mode 'related'. Every
 // other outcome leaves it undefined and therefore runs the FULL suite, which is the
 // safe direction: over-running costs minutes, under-running certifies nothing.
-if (relatedOnly && !printAffected) {
+let checkpointMaterializationSelection = null;
+if (relatedOnly) {
   const changedAbs = invariantGuardChangedPaths().map((f) => join(ROOT, f));
   // The unit suite is narrowable whether it is one `test` script or a lane split.
   // Passing the selection to a LANE still runs that lane's own env + include set,
@@ -2957,13 +2994,17 @@ if (relatedOnly && !printAffected) {
   const narrowable = (script) =>
     script === "test" || LANE_SCRIPTS.includes(script);
   const byWorkspace = new Map();
+  let selectionFailedWide = false;
 
   for (const t of tasks) {
     if (!narrowable(t.script)) continue;
     // A zero-match positional filter is a FAILURE for a script without
     // --passWithNoTests. Narrowing legitimately produces zero matches for a lane, so
     // only narrow where an empty run is a clean pass; otherwise leave the task alone.
-    if (!/--passWithNoTests\b/.test(t.ws.scripts?.[t.script] ?? "")) continue;
+    if (!/--passWithNoTests\b/.test(t.ws.scripts?.[t.script] ?? "")) {
+      selectionFailedWide = true;
+      continue;
+    }
 
     if (!byWorkspace.has(t.ws.name)) {
       const wsRoot = join(ROOT, t.ws.dir);
@@ -2989,6 +3030,9 @@ if (relatedOnly && !printAffected) {
           result.mode === "related" ? result.selected.length : result.total
         } total=${result.total} mode=${result.mode} reason=${result.reason}`,
       );
+      if (result.mode !== "related" || result.selected.length < 1) {
+        selectionFailedWide = true;
+      }
     }
 
     const { result, wsRoot } = byWorkspace.get(t.ws.name);
@@ -2996,6 +3040,28 @@ if (relatedOnly && !printAffected) {
       // vitest takes positional filters as substring matches against test paths;
       // workspace-relative paths are what its `include` globs resolve against.
       t.relatedFiles = result.selected.map((f) => relative(wsRoot, f));
+    }
+  }
+
+  // `--related --print-affected` is the checkpoint's cheap, candidate-exact
+  // pre-materialization query. Directory markers are emitted only when EVERY
+  // selector decision is positive related evidence and at least one real selector
+  // ran. A full/empty/error result emits no narrowing authority, so the checkpoint
+  // keeps the historical full immutable dependency generation.
+  if (printAffected && !selectionFailedWide && byWorkspace.size > 0) {
+    const selectedWorkspaces = [
+      ...new Map(tasks.map((task) => [task.ws.name, task.ws])).values(),
+    ].sort((a, b) => a.dir.localeCompare(b.dir));
+    const closure = localDependencyWorkspaceClosure(selectedWorkspaces);
+    if (
+      selectedWorkspaces.length > 0 &&
+      closure.length >= selectedWorkspaces.length
+    ) {
+      checkpointMaterializationSelection = {
+        relatedSelections: byWorkspace.size,
+        affectedWorkspaceDirs: selectedWorkspaces.map((ws) => ws.dir),
+        workspaceDirs: closure.map((ws) => ws.dir),
+      };
     }
   }
 }
@@ -3061,6 +3127,25 @@ if (printAffected) {
   for (const ws of affected) outSync(`AFFECTED_WS\t${ws.name}`);
   for (const guard of selectedInvariantGuards) {
     outSync(`AFFECTED_GUARD\t${guard.workspace}\t${guard.script}`);
+  }
+  if (relatedOnly) {
+    if (checkpointMaterializationSelection) {
+      const selection = checkpointMaterializationSelection;
+      outSync(
+        `RELATED_MATERIALIZATION_SELECTION status=selected relatedSelections=${selection.relatedSelections} ` +
+          `affected=${selection.affectedWorkspaceDirs.length} closure=${selection.workspaceDirs.length}`,
+      );
+      for (const dir of selection.affectedWorkspaceDirs) {
+        outSync(`RELATED_AFFECTED_WORKSPACE_DIR\t${dir}`);
+      }
+      for (const dir of selection.workspaceDirs) {
+        outSync(`RELATED_DEPENDENCY_WORKSPACE_DIR\t${dir}`);
+      }
+    } else {
+      outSync(
+        "RELATED_MATERIALIZATION_SELECTION status=full reason=no-safe-positive-related-selection",
+      );
+    }
   }
   // An enumeration query, not a run: no verdict is owed, and two tests pin that
   // no AFFECTED_TESTS_RESULT appears here. Exempt it from the abort fallback.
@@ -3138,7 +3223,9 @@ const TASK_SHARD_PLAN = planAffectedTaskShards(tasks, {
   maxTasksPerShard: TASK_SHARD_MAX,
   taskKey,
 });
-outSync(formatAffectedTaskShardMarker(TASK_SHARD_PLAN, TASK_CGROUP_MEMORY_MAX_MB));
+outSync(
+  formatAffectedTaskShardMarker(TASK_SHARD_PLAN, TASK_CGROUP_MEMORY_MAX_MB),
+);
 // EI-15802: printed EARLY (before any suite runs) and again in the final
 // summary — a truncated background-task tail is more likely to still show
 // this line than a full multi-suite run's early output, so it survives even
@@ -3666,7 +3753,12 @@ function runCapturedTask(
     // FAILED"). `settled` distinguishes the two: only true from the `child.once("close", ...)`
     // call below, where a `null` field is a DEFINITE "not applicable" (`"none"`), never
     // "pending".
-    const emitProgress = (state, status = null, signal = null, settled = false) => {
+    const emitProgress = (
+      state,
+      status = null,
+      signal = null,
+      settled = false,
+    ) => {
       // Deliberately bypass the ordered replay buffer: this tiny, self-identifying marker is
       // the live pulse consumed by green-checkpoint while the child output remains captured.
       // It contains no child bytes, so concurrent tasks cannot misattribute test output.

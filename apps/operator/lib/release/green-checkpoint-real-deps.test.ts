@@ -2061,6 +2061,105 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
   const generationId = FIXTURE_DEPENDENCY_GENERATION_ID;
 
+  it("P-007: prepares exact source-only checkout and probes related tests in that candidate tree", async () => {
+    const { exec, calls } = makeExec([
+      {
+        code: 0,
+        stdout:
+          "[setup-release] SETUP_RELEASE_SOURCE_ONLY ref=cand123 sha=cand123 status=ready\n",
+      },
+      {
+        code: 0,
+        stdout: [
+          "RELATED_SELECTION ws=@papercusp/web selected=2 total=40 mode=related reason=ok",
+          "RELATED_MATERIALIZATION_SELECTION status=selected relatedSelections=1 affected=1 closure=2",
+          "RELATED_AFFECTED_WORKSPACE_DIR\tapps/operator",
+          "RELATED_DEPENDENCY_WORKSPACE_DIR\tapps/operator",
+          "RELATED_DEPENDENCY_WORKSPACE_DIR\tpackages/operator-core",
+        ].join("\n"),
+      },
+    ]);
+    const deps = realCheckpointDeps(cfg, exec);
+
+    await deps.prepareSource?.("cand123");
+    const selection = await deps.selectMaterializationClosure?.({
+      candidate: "cand123",
+      base: "ready123",
+    });
+
+    expect(calls[0]).toMatchObject({
+      cmd: "bash",
+      args: [
+        expect.stringMatching(
+          /apps\/operator\/bin\/release\/setup-release-checkout\.sh$/,
+        ),
+        "--ref",
+        "cand123",
+        "--integration",
+        "/int",
+        "--release",
+        cpTree,
+        "--source-only",
+      ],
+    });
+    expect(calls[1]).toMatchObject({
+      cmd: process.execPath,
+      args: [
+        join(cpTree, "scripts/affected-tests.mjs"),
+        "--base",
+        "ready123",
+        "--related",
+        "--print-affected",
+      ],
+    });
+    expect(calls[1].opts).toMatchObject({
+      cwd: cpTree,
+      allowNonZero: true,
+      killProcessGroupOnTimeout: true,
+    });
+    expect(selection).toEqual({
+      affectedWorkspaceDirs: ["apps/operator"],
+      workspaceDirs: ["apps/operator", "packages/operator-core"],
+      relatedSelections: 1,
+      summary:
+        "RELATED_MATERIALIZATION_SELECTION status=selected relatedSelections=1 affected=1 closure=2",
+    });
+  });
+
+  it("P-007: selected setup binds workspace closure into generation and reuses prepared source", async () => {
+    const { exec, calls } = makeExec([
+      {
+        code: 0,
+        stdout:
+          `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
+      },
+    ]);
+
+    await realCheckpointDeps(cfg, exec).setupTree("cand123", {
+      preparedSource: true,
+      workspaceDirs: ["apps/operator", "packages/operator-core"],
+    });
+
+    expect(calls[0].args).toEqual([
+      expect.stringMatching(
+        /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
+      ),
+      "--integration",
+      "/int",
+      "--workspace-dir",
+      "apps/operator",
+      "--workspace-dir",
+      "packages/operator-core",
+    ]);
+    expect(calls[1].args).toEqual(
+      expect.arrayContaining([
+        "--prepare-existing",
+        "--node-modules-generation-id",
+        generationId,
+      ]),
+    );
+  });
+
   it("setupTree publishes an identity before the capacity wait and transports that exact pin into setup", async () => {
     const { exec, calls } = makeExec([
       {

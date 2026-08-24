@@ -54,6 +54,7 @@
 #                             [--node-modules-generation-id <v1-sha256>]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
+#                             [--source-only]
 #
 # `--prepare-existing` is a dependency-only recovery mode for a clone that has
 # already been pinned and had its submodules checked out by an earlier step. It
@@ -87,6 +88,7 @@ DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
 
 BUILD_SPA="0"
 PREPARE_EXISTING="0"
+SOURCE_ONLY="0"
 REF_WAS_SET="0"
 
 while [ $# -gt 0 ]; do
@@ -101,6 +103,7 @@ while [ $# -gt 0 ]; do
     --release) RELEASE_ROOT="$2"; shift 2 ;;
     --build-spa) BUILD_SPA="1"; shift ;;
     --prepare-existing) PREPARE_EXISTING="1"; shift ;;
+    --source-only) SOURCE_ONLY="1"; shift ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -116,6 +119,10 @@ esac
 if [ -n "$NODE_MODULES_GENERATION_ID" ] \
   && { [ "$NODE_MODULES_GENERATION_MODE" != "required" ] || [ "$NODE_MODULES_COPY_MODE" != "copy" ]; }; then
   echo "[setup-release] --node-modules-generation-id requires --node-modules-generation required and --node-modules-copy copy" >&2
+  exit 2
+fi
+if [ "$SOURCE_ONLY" = "1" ] && [ "$PREPARE_EXISTING" = "1" ]; then
+  echo "[setup-release] --source-only and --prepare-existing are mutually exclusive" >&2
   exit 2
 fi
 
@@ -466,6 +473,16 @@ log "submodule recursion: cloned=$_sub_cloned archive-fallback=$_sub_fallback tr
 if [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
   log "WARN recursion added NO files despite $_sub_cloned cloned submodule repo(s) — tracked-files guards are probably scanning the superproject only"
 fi
+fi
+
+# P-007 / WI-41251: the checkpoint can now prepare the exact candidate source
+# and run its related-test selector before paying for an immutable dependency
+# generation or the pc-heavy exclusive materialization barrier. A zero exit from
+# this mode retains the same exact-HEAD and submodule guarantees as a full setup;
+# it merely stops at the boundary immediately before dependency work begins.
+if [ "$SOURCE_ONLY" = "1" ]; then
+  log "SETUP_RELEASE_SOURCE_ONLY ref=$REF sha=$TARGET_SHA status=ready"
+  exit 0
 fi
 
 # 3. node_modules ----------------------------------------------------------
