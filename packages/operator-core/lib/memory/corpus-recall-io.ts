@@ -345,10 +345,15 @@ const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
 
 type QueryEmbedder = (text: string) => Promise<number[]>;
 
+export interface CorpusEmbedderWarmupOptions {
+  /** Override the short request acquisition budget for boot/background work. */
+  acquireBudgetMs?: number;
+}
+
 /** Warm state for the query embedder. Module-scoped on purpose: the cost being
  *  avoided is per-PROCESS, not per-call. */
 let warmEmbedder: QueryEmbedder | null = null;
-let warmupInFlight: Promise<void> | null = null;
+let warmupInFlight: Promise<boolean> | null = null;
 
 /**
  * Acquire + prime the query embedder OFF the critical path, and resolve when
@@ -379,21 +384,23 @@ let warmupInFlight: Promise<void> | null = null;
  * A failed acquisition never latches: `warmupInFlight` is cleared so a later
  * call retries, matching the rest of this file's fail-soft posture.
  */
-export function warmCorpusEmbedder(): Promise<void> {
+export function warmCorpusEmbedder(opts: CorpusEmbedderWarmupOptions = {}): Promise<boolean> {
   const started = (warmupInFlight ??= (async () => {
     try {
       const built = (await buildQueryEmbedder({
-        acquireBudgetMs: corpusEmbedBudgetMs(),
+        acquireBudgetMs: opts.acquireBudgetMs ?? corpusEmbedBudgetMs(),
       })) as QueryEmbedder | null;
       if (!built) {
         warmupInFlight = null;
-        return;
+        return false;
       }
       // Pay the cold ONNX/pipeline embed HERE rather than on a turn.
       await built('corpus recall embedder warmup');
       warmEmbedder = built;
+      return true;
     } catch {
       warmupInFlight = null;
+      return false;
     }
   })());
   return started;

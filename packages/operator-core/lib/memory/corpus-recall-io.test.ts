@@ -356,6 +356,13 @@ describe('recallCorpusContext — degradation (never throws, never blocks a turn
     expect((runHybridSearch.mock.calls[0][1] as { embedder: unknown }).embedder).not.toBeNull();
   });
 
+  it('accepts the longer boot acquisition budget so startup can finish a cold warm', async () => {
+    const warmed = await warmCorpusEmbedder({ acquireBudgetMs: 60_000 });
+
+    expect(warmed).toBe(true);
+    expect(buildQueryEmbedder).toHaveBeenCalledWith({ acquireBudgetMs: 60_000 });
+  });
+
   it('a failed acquisition does not latch — a later call retries', async () => {
     buildQueryEmbedder.mockResolvedValue(null as unknown);
     await warmCorpusEmbedder();

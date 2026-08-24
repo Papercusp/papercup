@@ -20,6 +20,7 @@ function makeDeps(overrides: Partial<TranscriptSearchWarmupDeps> = {}) {
   const mergeRosterWithAssignments = vi.fn(
     async (_opts: Record<string, unknown>) => ({ active: [] }),
   );
+  const warmCorpusEmbedder = vi.fn(async (_opts?: { acquireBudgetMs?: number }) => true);
   const deps: TranscriptSearchWarmupDeps = {
     loadEngine: async () => ({ runHybridSearch }),
     loadSources: async () => ({
@@ -29,18 +30,20 @@ function makeDeps(overrides: Partial<TranscriptSearchWarmupDeps> = {}) {
     loadWorkspace: async () => ({ activeWorkspaceId: () => 'ws-1' }),
     loadPg: async () => ({ getOrgPg: () => ({ sql: {} }) }),
     loadRoster: async () => ({ mergeRosterWithAssignments }),
+    loadCorpusWarmup: async () => ({ warmCorpusEmbedder }),
     ...overrides,
   };
-  return { deps, runHybridSearch, buildQueryEmbedder, mergeRosterWithAssignments };
+  return { deps, runHybridSearch, buildQueryEmbedder, mergeRosterWithAssignments, warmCorpusEmbedder };
 }
 
 describe('warmTranscriptSearchPath (WI-4734)', () => {
   it('warms embedder + hybrid search (session_turn only) + roster, and reports both legs', async () => {
-    const { deps, runHybridSearch, buildQueryEmbedder, mergeRosterWithAssignments } = makeDeps();
+    const { deps, runHybridSearch, buildQueryEmbedder, mergeRosterWithAssignments, warmCorpusEmbedder } = makeDeps();
     const res = await warmTranscriptSearchPath({ log: vi.fn(), deps });
 
     expect(res.ok).toBe(true);
-    expect(res.legs).toEqual({ search: true, roster: true });
+    expect(res.legs).toEqual({ search: true, roster: true, corpus: true });
+    expect(warmCorpusEmbedder).toHaveBeenCalledWith({ acquireBudgetMs: 60_000 });
     expect(buildQueryEmbedder).toHaveBeenCalledTimes(1);
     // A short acquire budget would abandon the cold warm to the next human
     // query — the exact failure this module exists to prevent.
@@ -75,9 +78,21 @@ describe('warmTranscriptSearchPath (WI-4734)', () => {
     const log = vi.fn();
     const res = await warmTranscriptSearchPath({ log, deps });
     expect(res.ok).toBe(true);
-    expect(res.legs).toEqual({ search: false, roster: true });
+    expect(res.legs).toEqual({ search: false, roster: true, corpus: true });
     expect(mergeRosterWithAssignments).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('search leg failed'));
+  });
+
+  it('reports a corpus warmup miss without hiding successful transcript legs', async () => {
+    const { deps } = makeDeps({
+      loadCorpusWarmup: async () => ({ warmCorpusEmbedder: vi.fn(async () => false) }),
+    });
+    const log = vi.fn();
+    const res = await warmTranscriptSearchPath({ log, deps });
+
+    expect(res.ok).toBe(true);
+    expect(res.legs).toEqual({ search: true, roster: true, corpus: false });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('corpus leg did not become warm'));
   });
 
   it('even a failing import phase resolves (never throws) — a warmup must not affect boot', async () => {
