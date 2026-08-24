@@ -4,35 +4,35 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: The Mug · Kettle · Cup tier is RETIRED — su + GOAL mode are the only way to drive the app
-description: >-
-  Owner-directed 2026-08-09. The Mug, the Kettle and the Cup/nursery tier are held off by
-  the `papercusp-mug-kettle-system` flag, whose DEFAULT-OFF **is the delivered end state** —
-  not unfinished work waiting for a flip. This is the one canonical account: what was
-  retired, what replaced it, the measured gate inventory, and the two things the flag
-  deliberately does NOT gate (Scout/Blender, and the shared pot substrate the replacement
-  system itself runs on).
-discovered: 2026-08-10
-tags: [mug, kettle, cup, nursery, retirement, feature-flags, cutover, su, goal-mode, scout, blender]
-status: active
+title: "The Mug · Kettle · Cup tier is RETIRED — su + GOAL mode are the only way to drive the app"
+description: "Owner-directed 2026-08-09. The Mug, the Kettle and the Cup/nursery tier are held off by the `papercusp-mug-kettle-system` flag, whose DEFAULT-OFF **is the delivered end state** — not unfinished work waiting for a flip. This is the one canonical account: what was retired, what replaced it, the measured gate inventory, and the two things the flag deliberately does NOT gate (Scout/Blender, and the shared pot substrate the replacement system itself runs on)."
 type: Insight
+discovered: 2026-08-10
+tags: ["mug", "kettle", "cup", "nursery", "retirement", "feature-flags", "cutover", "su", "goal-mode", "scout", "blender"]
+status: active
+documents:
+  - "libs/flags/src/types.ts"
+  - "packages/operator-core/lib/pot/started.ts"
+  - "packages/operator-core/lib/pot/retired-tier-roles.ts"
+  - "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts"
+  - "packages/operator-core/lib/fleet/operator-spawn.ts"
+  - "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts"
+  - "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts"
+  - "packages/operator-core/lib/scout/nudge-recipient.ts"
+  - "apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx"
 normative: true
 governs:
-  - reading or writing anything that assumes a Mug, Kettle, or Cup places work
-  - adding a gate for the retired tier, or extending an existing one
-  - spawning an agent by role, or adding a new spawn door
-  - flipping `papercusp-mug-kettle-system` on or off
-  - deciding whether a doc, prompt, or memory describing the mug/kettle loop is stale
-documents:
-  - libs/flags/src/types.ts
-  - packages/operator-core/lib/pot/started.ts
-  - packages/operator-core/lib/pot/retired-tier-roles.ts
-  - packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts
-  - packages/operator-core/lib/fleet/operator-spawn.ts
-  - packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts
-  - packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts
-  - packages/operator-core/lib/scout/nudge-recipient.ts
-  - apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx
+  - "reading or writing anything that assumes a Mug"
+  - "Kettle"
+  - "or Cup places work"
+  - "adding a gate for the retired tier"
+  - "or extending an existing one"
+  - "spawning an agent by role"
+  - "or adding a new spawn door"
+  - "flipping `papercusp-mug-kettle-system` on or off"
+  - "deciding whether a doc"
+  - "prompt"
+  - "or memory describing the mug/kettle loop is stale"
 ---
 
 **The Mug, the Kettle, and the Cup/nursery tier are retired.** They are gated off, not
@@ -182,18 +182,32 @@ Three verified gaps at the time of the decision (D-005):
    watchdog recipient through the nudge ladder.
 2. **Scout draft plans had no reviewer.** `draft-review-watchdog`'s reviewer *was* the Mug, so
    Scout's output rail dead-ended. Same seam, same fix.
-3. **Cold-start autonomy — still open, and it is a genuine boundary change.** The Mug was
-   minted by the system (a pot wake → `defaultFireHiveWake` → `fireLaunchBlueprint`), with no
-   human needed. Nothing mints an su. Steady state is safe, because an armed su loop is
-   self-sustaining (a dead su with an armed loop comes back via `claude --resume`). What is
-   lost is **recovery from the su population reaching zero** — a fresh box, or every loop
-   ended. Previously the Mug restarted the system; now the owner does. That may well be
-   correct-by-design, but it should be a choice rather than a discovery.
+3. **Cold-start autonomy — RESOLVED by `work-on-everything-goal-2026-08-23` (was: a genuine
+   boundary change, open).** The Mug was minted by the system (a pot wake →
+   `defaultFireHiveWake` → `fireLaunchBlueprint`), with no human needed. Nothing mints an su.
+   Steady state is safe, because an armed su loop is self-sustaining (a dead su with an armed
+   loop comes back via `claude --resume`). What was lost is **recovery from the su population
+   reaching zero** — a fresh box, or every loop ended. The standing-goal system now makes that
+   an explicit choice rather than a discovery: a started package goal carries holder policy
+   `{ requireLive: true, onLoss: 'respawn' }` (its P-010, e2e-verified — kill the session and
+   it comes back), and recovery from zero is the **operator-boot arm** (its P-011), which
+   ships DARK behind explicit owner arming — `FLAGS.STANDING_GOAL_BOOT_ARM`
+   (`papercusp-standing-goal-boot-arm`), owner-authority by design, so the owner decides
+   whether the system may restart itself: arming it makes operator boot respawn a holder
+   for any active, un-paused standing goal with no live holder (a bounded boot window
+   that self-stops after ~10 one-minute passes, so warm-dead presence is still caught),
+   and the boot pass defers whenever the runtime respawner `FLAGS.GOAL_HOLDER_RESPAWN`
+   is armed, which then owns recovery. See
+   [standing-goals-and-goal-packages](/internal/docs/agent-insights/standing-goals-and-goal-packages).
 
 ⚠ **Do not read the loss audit as exhaustive.** The Cup tier's transcript-cap,
 claim-integrity and co-location machinery, and cross-pot placement sovereignty, were **not
-audited**. They are gated-not-deleted, so a miss there is recoverable by flipping the flag —
-which is a large part of why Stage 1 is a flag at all.
+audited** at the time of the decision. They are gated-not-deleted, so a miss there is
+recoverable by flipping the flag — which is a large part of why Stage 1 is a flag at all.
+**That residual audit has since been run** (2026-08-23):
+`work-on-everything-goal-2026-08-23#D-009` verdicts all six previously-un-audited areas —
+five covered by live machinery, one port filed (WI-41149: a live writer for the `cursed`
+N-strikes breaker). The un-audited set is closed.
 
 ## If you find a doc, prompt, or memory that still teaches the Mug
 
