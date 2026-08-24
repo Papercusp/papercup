@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   configureGitnexusDispatch,
+  type GitnexusDispatch,
   gitnexusFacade,
   gitnexusRefusal,
   gitnexusOpForIntent,
@@ -69,6 +70,38 @@ function envelope(body: unknown, trailer = ''): unknown {
   return { content: [{ text: JSON.stringify(body) + trailer }] };
 }
 
+const CURRENT_INDEXED_AT = '2026-08-24T04:00:00.000Z';
+const CURRENT_INDEX_COMMIT = '0123456789abcdef0123456789abcdef01234567';
+
+function listReposEnvelope(options: {
+  repo?: string;
+  indexedAt?: string;
+  lastCommit?: string;
+  commitsBehind?: number;
+} = {}): unknown {
+  return envelope({
+    repositories: [
+      {
+        name: options.repo ?? 'papercusp',
+        indexedAt: options.indexedAt ?? CURRENT_INDEXED_AT,
+        lastCommit: options.lastCommit ?? CURRENT_INDEX_COMMIT,
+        staleness: { commitsBehind: options.commitsBehind ?? 0 },
+      },
+    ],
+  });
+}
+
+type DispatchResponder = GitnexusDispatch;
+
+/** Add the mandatory structured list_repos health probe to an older fixture. */
+function withIndexHealth(
+  responder: DispatchResponder,
+  options: Parameters<typeof listReposEnvelope>[0] = {},
+): DispatchResponder {
+  return async (tool, args) =>
+    tool === 'list_repos' ? listReposEnvelope(options) : responder(tool, args);
+}
+
 const STALE_NOTE =
   '\n---\n⚠ EMPTY/NOT-FOUND RESULT FROM A INDEX (built 34min ago, at commit ' +
   '98d2ec9ced, HEAD has moved since). A symbol written after the index was ' +
@@ -81,7 +114,7 @@ beforeEach(() => {
 
 describe('line normalization (D-008)', () => {
   it('converts the measured zero-indexed startLine to a one-indexed citation', async () => {
-    configureGitnexusDispatch(async () => contextFoundEnvelope());
+    configureGitnexusDispatch(withIndexHealth(async () => contextFoundEnvelope()));
     const a = await gitnexusFacade('symbol', { name: 'pinModuleState' });
     expect(a.sites).toHaveLength(1);
     // 105 (gitnexus) -> 106 (grep -n). The literal is spelled out so a
@@ -98,22 +131,98 @@ describe('line normalization (D-008)', () => {
   });
 
   it('a missing line stays null rather than becoming line 1', async () => {
-    configureGitnexusDispatch(async () =>
-      envelope({
-        status: 'found',
-        symbol: { name: 'x', kind: 'Function', filePath: 'a/b.ts' },
-      }),
+    configureGitnexusDispatch(
+      withIndexHealth(async () =>
+        envelope({
+          status: 'found',
+          symbol: { name: 'x', kind: 'Function', filePath: 'a/b.ts' },
+        }),
+      ),
     );
     const a = await gitnexusFacade('symbol', { name: 'x' });
     expect(a.sites[0]?.line1).toBeNull();
+  });
+
+  it('copies list_repos freshness onto a positive hit', async () => {
+    const seen: string[] = [];
+    configureGitnexusDispatch(
+      withIndexHealth(
+        async (tool) => {
+          seen.push(tool);
+          return contextFoundEnvelope();
+        },
+        {
+          indexedAt: '2026-08-24T03:00:00.000Z',
+          lastCommit: 'fedcba9876543210fedcba9876543210fedcba98',
+          commitsBehind: 7,
+        },
+      ),
+    );
+
+    const a = await gitnexusFacade('symbol', { name: 'pinModuleState' });
+
+    expect(seen).toEqual(['context']);
+    expect(a.freshness).toEqual({
+      health: 'degraded',
+      indexedAt: '2026-08-24T03:00:00.000Z',
+      staleVsDisk: true,
+      indexedCommit: 'fedcba9876543210fedcba9876543210fedcba98',
+    });
+    expect(a.error).toBeNull();
+  });
+
+  it('enriches UID-only edge rows through context before normalizing sites', async () => {
+    const edgeUid = 'Function:pkg/caller.ts:caller';
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    configureGitnexusDispatch(
+      withIndexHealth(async (tool, args) => {
+        seen.push({ tool, args });
+        if (tool === 'context' && args.uid === edgeUid) {
+          return envelope({
+            status: 'found',
+            symbol: {
+              uid: edgeUid,
+              name: 'caller',
+              kind: 'Function',
+              filePath: 'pkg/caller.ts',
+              startLine: 8,
+            },
+          });
+        }
+        return envelope({
+          status: 'found',
+          symbol: {
+            uid: 'Function:pkg/target.ts:target',
+            name: 'target',
+            kind: 'Function',
+            filePath: 'pkg/target.ts',
+            startLine: 20,
+          },
+          incoming: { calls: [{ uid: edgeUid, name: 'caller' }] },
+        });
+      }),
+    );
+
+    const a = await gitnexusFacade('callers', { name: 'target' });
+
+    expect(a.error).toBeNull();
+    expect(a.sites).toEqual([
+      { path: 'pkg/caller.ts', line1: 9, kind: 'function', detail: 'caller' },
+    ]);
+    expect(seen).toEqual([
+      { tool: 'context', args: { name: 'target', repo: 'papercusp' } },
+      { tool: 'context', args: { uid: edgeUid, repo: 'papercusp' } },
+    ]);
   });
 });
 
 describe('failure shaping — an empty answer is never silently confident', () => {
   it('a thrown dispatch yields sites:[] WITH an error and unhealthy health', async () => {
-    configureGitnexusDispatch(async () => {
-      throw new Error('gitnexus mcp process exited');
-    });
+    configureGitnexusDispatch(
+      withIndexHealth(async () => {
+        throw new Error('gitnexus mcp process exited');
+      }),
+    );
     const a = await gitnexusFacade('symbol', { name: 'whatever' });
     expect(a.sites).toEqual([]);
     expect(a.error).toMatch(/process exited/);
@@ -130,7 +239,12 @@ describe('failure shaping — an empty answer is never silently confident', () =
   });
 
   it('a stale index DEGRADES a not-found instead of asserting absence', async () => {
-    configureGitnexusDispatch(async () => envelope({ status: 'not_found' }, STALE_NOTE));
+    configureGitnexusDispatch(
+      withIndexHealth(
+        async () => envelope({ status: 'not_found' }),
+        { lastCommit: '98d2ec9ced', commitsBehind: 64 },
+      ),
+    );
     const a = await gitnexusFacade('symbol', { name: 'writtenFiveMinutesAgo' });
     expect(a.sites).toEqual([]);
     expect(a.freshness.staleVsDisk).toBe(true);
@@ -150,7 +264,9 @@ describe('failure shaping — an empty answer is never silently confident', () =
   it('CONTROL: a not-found from a CURRENT index is a trustworthy empty', async () => {
     // The mirror of the case above. Without this, a bug that marked every
     // answer degraded would pass the stale test and look like rigour.
-    configureGitnexusDispatch(async () => envelope({ status: 'not_found' }));
+    configureGitnexusDispatch(
+      withIndexHealth(async () => envelope({ status: 'not_found' })),
+    );
     const a = await gitnexusFacade('symbol', { name: 'genuinelyAbsent' });
     expect(a.freshness.health).toBe('healthy');
     expect(a.error).toBeNull();
@@ -158,8 +274,10 @@ describe('failure shaping — an empty answer is never silently confident', () =
   });
 
   it('impact reports an unknown target as an explicit error, not an empty set', async () => {
-    configureGitnexusDispatch(async () =>
-      envelope({ error: "Target 'zzz' not found", impactedCount: 0, risk: 'UNKNOWN' }),
+    configureGitnexusDispatch(
+      withIndexHealth(async () =>
+        envelope({ error: "Target 'zzz' not found", impactedCount: 0, risk: 'UNKNOWN' }),
+      ),
     );
     const a = await gitnexusFacade('impact', { name: 'zzz' });
     expect(a.error).toMatch(/not found/);
@@ -250,12 +368,14 @@ describe('truncation is explicit and records the PRE-CUT total', () => {
       filePath: `pkg/file${i}.ts`,
       startLine: i,
     }));
-    configureGitnexusDispatch(async () =>
-      envelope({
-        status: 'found',
-        symbol: { name: 'hot', kind: 'Function', filePath: 'a.ts', startLine: 0 },
-        incoming: { calls },
-      }),
+    configureGitnexusDispatch(
+      withIndexHealth(async () =>
+        envelope({
+          status: 'found',
+          symbol: { name: 'hot', kind: 'Function', filePath: 'a.ts', startLine: 0 },
+          incoming: { calls },
+        }),
+      ),
     );
     const a = await gitnexusFacade('callers', { name: 'hot', limit: 10 });
     expect(a.sites).toHaveLength(10);
@@ -265,7 +385,7 @@ describe('truncation is explicit and records the PRE-CUT total', () => {
   });
 
   it('CONTROL: an under-limit answer is NOT marked truncated', async () => {
-    configureGitnexusDispatch(async () => contextFoundEnvelope());
+    configureGitnexusDispatch(withIndexHealth(async () => contextFoundEnvelope()));
     const a = await gitnexusFacade('callers', { name: 'pinModuleState', limit: 10 });
     expect(a.truncation.truncated).toBe(false);
   });
@@ -276,12 +396,14 @@ describe('truncation is explicit and records the PRE-CUT total', () => {
       filePath: `f${i}.ts`,
       startLine: i,
     }));
-    configureGitnexusDispatch(async () =>
-      envelope({
-        status: 'found',
-        symbol: { name: 'hot', kind: 'Function', filePath: 'a.ts', startLine: 0 },
-        incoming: { calls },
-      }),
+    configureGitnexusDispatch(
+      withIndexHealth(async () =>
+        envelope({
+          status: 'found',
+          symbol: { name: 'hot', kind: 'Function', filePath: 'a.ts', startLine: 0 },
+          incoming: { calls },
+        }),
+      ),
     );
     const a = await gitnexusFacade('callers', { name: 'hot', limit: 10_000 });
     expect(a.sites.length).toBeLessThanOrEqual(MAX_SITES_PER_ANSWER);
@@ -303,7 +425,7 @@ describe('a budget-cut payload is TRUNCATION, not malformation and not absence',
   }
 
   it('reports truncated:true with a remedy, and never impactedCount 0', async () => {
-    configureGitnexusDispatch(async () => budgetCutPayload());
+    configureGitnexusDispatch(withIndexHealth(async () => budgetCutPayload()));
     const a = await gitnexusFacade('impact', { name: 'managedSpawn', limit: 100 });
     expect(a.truncation.truncated).toBe(true);
     expect(a.error).toMatch(/TRUNCATED/);
@@ -337,7 +459,9 @@ describe('a budget-cut payload is TRUNCATION, not malformation and not absence',
   it('CONTROL: a SHORT unparseable body is malformation, not truncation', async () => {
     // Without this control, "unparseable" could be blanket-excused as
     // truncation and a genuinely broken backend would read as merely capped.
-    configureGitnexusDispatch(async () => ({ content: [{ text: '{not json at all' }] }));
+    configureGitnexusDispatch(
+      withIndexHealth(async () => ({ content: [{ text: '{not json at all' }] })),
+    );
     const a = await gitnexusFacade('symbol', { name: 'x' });
     expect(a.truncation.truncated).toBe(false);
     expect(a.freshness.health).toBe('unhealthy');
@@ -346,8 +470,31 @@ describe('a budget-cut payload is TRUNCATION, not malformation and not absence',
 });
 
 describe('the health op never returns a silent "I do not know"', () => {
+  it('measures health from list_repos freshness rather than a context status field', async () => {
+    const seen: string[] = [];
+    configureGitnexusDispatch(
+      withIndexHealth(
+        async (tool) => {
+          seen.push(tool);
+          return envelope({ status: 'found' });
+        },
+        { commitsBehind: 3, lastCommit: 'abc123abc123abc123abc123abc123abc123abcd' },
+      ),
+    );
+
+    const a = await gitnexusFacade('health', {});
+
+    expect(seen).toEqual([]);
+    expect(a.freshness.health).toBe('degraded');
+    expect(a.freshness.staleVsDisk).toBe(true);
+    expect(a.freshness.indexedCommit).toBe('abc123abc123abc123abc123abc123abc123abcd');
+    expect(a.error).toBeNull();
+  });
+
   it('a status-less probe carries an explicit error', async () => {
-    configureGitnexusDispatch(async () => envelope({ something: 'else' }));
+    configureGitnexusDispatch(async (tool) =>
+      tool === 'list_repos' ? envelope({ something: 'else' }) : envelope({ status: 'found' }),
+    );
     const a = await gitnexusFacade('health', {});
     expect(a.freshness.health).toBe('unknown');
     expect(a.error).toMatch(/UNMEASURED/);
@@ -373,7 +520,7 @@ describe('freshness note parsing is defensive', () => {
 
 describe('adoption telemetry', () => {
   it('counts dispatches per op and refusals per intent', async () => {
-    configureGitnexusDispatch(async () => contextFoundEnvelope());
+    configureGitnexusDispatch(withIndexHealth(async () => contextFoundEnvelope()));
     await gitnexusFacade('symbol', { name: 'a' });
     await gitnexusFacade('symbol', { name: 'b' });
     await gitnexusFacade('callers', { name: 'c' });
@@ -388,7 +535,7 @@ describe('adoption telemetry', () => {
   });
 
   it('the snapshot is a copy — a caller cannot mutate the counters', async () => {
-    configureGitnexusDispatch(async () => contextFoundEnvelope());
+    configureGitnexusDispatch(withIndexHealth(async () => contextFoundEnvelope()));
     await gitnexusFacade('symbol', { name: 'a' });
     const s = gitnexusAdoptionSnapshot();
     s.dispatched = 999;
