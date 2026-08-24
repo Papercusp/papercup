@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { _CURATED_FOR_TESTS } from './design-adapter-react-tailwind/registry';
@@ -22,6 +22,16 @@ const plugin = require_(
       content: Array<{ text: string }>;
     }>;
   };
+  _internal: {
+    listMemos: (status?: string) => Promise<Array<{ slug: string; source: string }>>;
+  };
+};
+
+const pluginManifest = JSON.parse(
+  readFileSync(resolve(REPO_ROOT, 'libs/papercusp/plugins/design-phase/papercusp.json'), 'utf8'),
+) as {
+  description: string;
+  tools: Array<{ name: string; description?: string }>;
 };
 
 /** The plugin returns its FULL list for an empty query (searchRegistryEntries). */
@@ -61,6 +71,28 @@ describe('design-phase plugin registry search', () => {
     const result = await search('Seller dock');
 
     expect(result.results).toEqual([]);
+  });
+});
+
+describe('design-phase memo projection (EI-21339929518770631)', () => {
+  it('reads memos from the canonical operator-docs source tree', async () => {
+    const memos = await plugin._internal.listMemos('any');
+    const sources = memos.map((memo) => memo.source.replaceAll('\\', '/'));
+
+    expect(memos.length).toBeGreaterThan(0);
+    expect(memos.some((memo) => memo.slug === 'design-phase-plan')).toBe(true);
+    expect(sources.every((source) => source.includes('/apps/operator-docs/src/content/docs/design/'))).toBe(true);
+    expect(sources.some((source) => source.includes('/apps/operator/content/'))).toBe(false);
+  });
+
+  it('describes the canonical projection path in the plugin manifest', () => {
+    const listMemos = pluginManifest.tools.find((tool) => tool.name === 'list_memos');
+
+    expect(pluginManifest.description).toContain(
+      'apps/operator-docs/src/content/docs/design/design-phase-plan.mdx',
+    );
+    expect(listMemos?.description).toContain('apps/operator-docs/src/content/docs/design/*.mdx');
+    expect(listMemos?.description).not.toContain('apps/operator/content/internal-docs');
   });
 });
 
