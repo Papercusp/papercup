@@ -809,6 +809,55 @@ if ! mkdir -p "$_dir" "$_slot_dir" 2>/dev/null || ! command -v flock >/dev/null 
   exec "$@"
 fi
 
+# ── Blocked-barrier holder identity (EI-21322804786723906) ─────────────────
+# Both refusals below used to report only a COUNT ("only 15/16 heavy slots
+# drained"). That is precisely why this incident was first filed as a STALE
+# writer lock and had to be retracted: with no holder named, the only way to
+# tell a live materializer from an orphaned one is a hand-run fuser/process-tree
+# walk, and the cheap wrong answer ("it's stale, clear it") is the one that
+# looks right. Several sessions repeated that same manual archaeology on this
+# one incident before anyone reached a correct diagnosis. Naming the holder
+# turns a 15-minute mystery into a pid.
+#
+# DIAGNOSTIC ONLY — fail-open by construction, like the coalescing block below.
+# A missing `fuser`, an unreadable /proc, or a holder that exits between the
+# probe and the read must never change the barrier's outcome: every failure path
+# yields an empty description and the caller simply prints less. It must also
+# never be the thing that makes a gate run fail.
+_exclusive_describe_holders() {
+  local _file="$1" _pids='' _pid='' _cmd='' _out=''
+  command -v fuser >/dev/null 2>&1 || return 0
+  [ -e "$_file" ] || return 0
+  _pids="$(fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
+  [ -n "$_pids" ] || return 0
+  for _pid in $_pids; do
+    _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | cut -c1-100 || true)"
+    [ -n "$_cmd" ] || _cmd='(exited before its cmdline could be read)'
+    _out="$_out pid $_pid [$_cmd];"
+  done
+  printf '%s' "$_out"
+}
+
+# Report who still owns each slot this barrier could not drain. Bounded so a
+# wide slot domain cannot turn one refusal into hundreds of log lines.
+_exclusive_report_undrained() {
+  local _i='' _desc='' _listed=0
+  for _i in $(seq 0 $(( _exclusive_slot_count - 1 ))); do
+    [ "${_exclusive_locked[$_i]:-0}" = 1 ] && continue
+    if [ "$_listed" -ge 8 ]; then
+      echo "[pc-heavy]   (further undrained slots not listed)" >&2
+      break
+    fi
+    _desc="$(_exclusive_describe_holders "$_dir/slot.$_i")"
+    if [ -n "$_desc" ]; then
+      echo "[pc-heavy]   undrained slot.$_i held by:$_desc" >&2
+    else
+      echo "[pc-heavy]   undrained slot.$_i: holder could not be identified" >&2
+    fi
+    _listed=$(( _listed + 1 ))
+  done
+}
+
 # ── Exclusive materialization barrier (WI-40774) ───────────────────────────
 # A release run-lock only changes admission for jobs that START after the gate is
 # visible. It cannot make an already-running `test:affected` give back the slot it
@@ -846,6 +895,10 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     _exclusive_writer_now=$(date +%s)
     if [ "$_exclusive_writer_announced" = 0 ]; then
       echo "[pc-heavy] another exclusive materializer owns the writer lock — waiting before touching heavy slots" >&2
+      _exclusive_writer_holders="$(_exclusive_describe_holders "$_exclusive_writer_path")"
+      if [ -n "$_exclusive_writer_holders" ]; then
+        echo "[pc-heavy]   writer lock held by:$_exclusive_writer_holders" >&2
+      fi
       _exclusive_writer_announced=1
     elif [ $(( _exclusive_writer_now - _exclusive_writer_last_heartbeat )) -ge "$_exclusive_heartbeat_every" ]; then
       echo "[pc-heavy] still waiting for the exclusive materialization writer ($((_exclusive_writer_now - _exclusive_writer_started))s elapsed)" >&2
@@ -853,6 +906,13 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     fi
     if [ "$_exclusive_writer_now" -ge "$_exclusive_writer_deadline" ]; then
       echo "[pc-heavy] REFUSED materialization after ${_timeout}s: another exclusive materializer still owns the writer lock; no heavy slots were acquired" >&2
+      _exclusive_writer_holders="$(_exclusive_describe_holders "$_exclusive_writer_path")"
+      if [ -n "$_exclusive_writer_holders" ]; then
+        echo "[pc-heavy]   writer lock held by:$_exclusive_writer_holders" >&2
+        echo "[pc-heavy]   check that pid before assuming a stale lock — a live materializer is not orphaned." >&2
+      else
+        echo "[pc-heavy]   writer lock holder could not be identified" >&2
+      fi
       exit 75
     fi
     sleep 0.2
@@ -888,6 +948,7 @@ if [ "$_exclusive_all_slots" = 1 ]; then
   declare -a _exclusive_fds=()
   declare -a _exclusive_locked=()
   _exclusive_held=0
+  _exclusive_holders_reported=0
   echo "[pc-heavy] exclusive materialization barrier waiting to drain $_exclusive_slot_count heavy slot(s)" >&2
 
   while [ "$_exclusive_held" -lt "$_exclusive_slot_count" ]; do
@@ -907,10 +968,21 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     _exclusive_now=$(date +%s)
     if [ $(( _exclusive_now - _exclusive_last_heartbeat )) -ge "$_exclusive_heartbeat_every" ]; then
       echo "[pc-heavy] exclusive materialization barrier still draining ($((_exclusive_now - _exclusive_started))s elapsed, $_exclusive_held/$_exclusive_slot_count slots held)" >&2
+      # Name the blocker on the FIRST heartbeat, not only at the refusal: this
+      # wait can legitimately last 900s, and whoever is watching should be able
+      # to see who they are waiting on while there is still time to act. Once
+      # only — the identity does not change every 15s, and a 900s wait would
+      # otherwise emit 60 copies of it.
+      if [ "$_exclusive_holders_reported" = 0 ]; then
+        _exclusive_report_undrained
+        _exclusive_holders_reported=1
+      fi
       _exclusive_last_heartbeat="$_exclusive_now"
     fi
     if [ "$_exclusive_now" -ge "$_exclusive_deadline" ]; then
       echo "[pc-heavy] REFUSED materialization after ${_timeout}s: only $_exclusive_held/$_exclusive_slot_count heavy slots drained; refusing to overlap dependency copy with live heavy work" >&2
+      _exclusive_report_undrained
+      echo "[pc-heavy]   check those pids before assuming a stale slot — a live heavy job is not orphaned." >&2
       exit 75
     fi
     sleep 0.2

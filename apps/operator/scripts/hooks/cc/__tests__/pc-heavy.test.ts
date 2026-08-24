@@ -320,6 +320,48 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  // EI-21322804786723906 — the drain refusal used to report only a COUNT
+  // ("only 1/2 heavy slots drained"). A count cannot distinguish a LIVE holder
+  // from an orphaned one, and that gap is not theoretical: this very incident
+  // was first filed as a stale writer lock and had to be retracted after a
+  // hand-run fuser/process-tree walk found a live materializer still making
+  // progress. Several sessions then repeated that same manual archaeology. The
+  // refusal must name the undrained slot AND the pid still holding it, so the
+  // "stale or live?" question is answered by the log instead of by hand.
+  it('names the undrained slot and its live holder pid when the drain times out', async () => {
+    const env = { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE: '0', PC_HEAVY_TIMEOUT_SEC: '4' };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing heavy holder');
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
+
+      // The holder is never released, so the drain must reach its deadline.
+      expect(await barrierExit).toBe(75);
+
+      const err = barrierErr.text();
+      expect(err).toContain('REFUSED materialization');
+      // WHICH slot never drained — not just how many.
+      expect(err).toMatch(/undrained slot\.\d+ held by:/);
+      // WHO still holds it. This is the assertion that makes "stale vs live"
+      // answerable from the log, and the one a count-only refusal cannot pass.
+      expect(err).toContain(`pid ${holder.pid}`);
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+    }
+  });
+
   it('lets scoped verification use the bounded focused lane while exclusive materialization owns ordinary slots', async () => {
     const env = {
       PC_HEAVY_SLOTS: '2',
