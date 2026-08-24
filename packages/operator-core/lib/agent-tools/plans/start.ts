@@ -492,6 +492,10 @@ export default defineTool({
             planSlug: slug,
             assignee: resolveAgentIdentity(ctx).ownerId,
             specId: `plans-start-${slug}`,
+            // The starter may already hold the plan's sole ready row. That is a
+            // successful start, not a floor-gated admission failure; fleet launch
+            // keeps the stricter unclaimed-row requirement.
+            allowCallerHeld: true,
           });
         } catch (error) {
           admissionError = (error as Error).message;
