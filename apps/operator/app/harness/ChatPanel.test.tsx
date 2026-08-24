@@ -149,6 +149,35 @@ describe('ChatPanel — hosting-surface context', () => {
       context: '{"surface":"workflows-detail","planSlug":"meeting-prep"}',
     });
   });
+
+  it('sends a hosting surface initial message once through the canonical stream', async () => {
+    syncRows = [chatRow()];
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(
+      sseStream([`event: done\ndata: ${JSON.stringify({})}\n\n`]),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatPanel
+        slug={SLUG}
+        chatId={CHAT}
+        initialMessage="Build a disarmed Gmail triage workflow"
+        context='{"surface":"workflows-composer","harness":"papercup"}'
+      />,
+    );
+
+    await waitFor(() => expect(fetchMock.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/messages'),
+    )).toHaveLength(1));
+    const request = fetchMock.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('/messages'),
+    )?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      content: 'Build a disarmed Gmail triage workflow',
+      context: '{"surface":"workflows-composer","harness":"papercup"}',
+    });
+  });
 });
 
 describe('ChatPanel — resolved-but-empty is an error, not an eternal spinner (WI-5125)', () => {

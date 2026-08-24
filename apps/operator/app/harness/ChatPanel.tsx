@@ -71,6 +71,13 @@ export interface ChatPanelProps {
    * object currently on screen without forking the agent-chat store.
    */
   context?: string;
+  /**
+   * Optional first user message for an embedding surface that already collected
+   * intent before opening the chat. It is sent once through this component's
+   * canonical /messages stream after the chat row loads — never through a
+   * parallel append path.
+   */
+  initialMessage?: string;
   /** Called when the user archives this chat — parent should remove the dock panel. */
   onArchive?: () => void;
 }
@@ -80,7 +87,7 @@ type SendState =
   | { kind: 'streaming'; partial: string }
   | { kind: 'error'; message: string };
 
-export default function ChatPanel({ slug, chatId, mode, context, onArchive }: ChatPanelProps) {
+export default function ChatPanel({ slug, chatId, mode, context, initialMessage, onArchive }: ChatPanelProps) {
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [chat, setChat] = useState<ChatRow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -88,6 +95,7 @@ export default function ChatPanel({ slug, chatId, mode, context, onArchive }: Ch
   const [sendState, setSendState] = useState<SendState>({ kind: 'idle' });
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const initialMessageSentRef = useRef<string | null>(null);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   // Freshness guards for loadChat: the cached subscription row can lag the
   // locally streamed transcript (per-harness agent_chats invalidation gap) —
@@ -195,8 +203,8 @@ export default function ChatPanel({ slug, chatId, mode, context, onArchive }: Ch
   // Cleanup any in-flight stream on unmount.
   useEffect(() => () => { eventSourceRef.current?.close(); }, []);
 
-  const send = useCallback(async () => {
-    const content = draft.trim();
+  const send = useCallback(async (seed?: string) => {
+    const content = (seed ?? draft).trim();
     if (!content || !chat || sendState.kind === 'streaming') return;
 
     setSendState({ kind: 'streaming', partial: '' });
@@ -321,6 +329,20 @@ export default function ChatPanel({ slug, chatId, mode, context, onArchive }: Ch
       setSendState({ kind: 'error', message: `send failed: ${(err as Error).message}` });
     }
   }, [chat, chatId, context, draft, invalidateDetail, mode, sendState.kind, slug]);
+
+  // A hosting surface may collect the first sentence before the chat exists
+  // (the Workflows composer is the canonical example). Send it through the
+  // exact same streaming path as a typed compose submission, once per
+  // (chat,message) identity. Mark before dispatch so a fast re-render cannot
+  // double-submit while the state transition to `streaming` is batching.
+  useEffect(() => {
+    const content = initialMessage?.trim() ?? '';
+    if (!content || !chat || chat.id !== chatId || sendState.kind !== 'idle') return;
+    const key = `${chatId}\u0000${content}`;
+    if (initialMessageSentRef.current === key) return;
+    initialMessageSentRef.current = key;
+    void send(content);
+  }, [chat, chatId, initialMessage, send, sendState.kind]);
 
   const onArchiveClick = useCallback(async () => {
     if (!await askConfirm({
