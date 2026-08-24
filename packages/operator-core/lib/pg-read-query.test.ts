@@ -257,6 +257,56 @@ describe('pgReadQuery — whole-call deadline (EI-19415142351884573)', () => {
   });
 });
 
+describe('pgReadQuery — same-transaction positive control (WI-41165)', () => {
+  it('runs the known-positive probe before the target on one read-only transaction and caps its evidence', async () => {
+    const calls: string[] = [];
+    const controlRows = [{ id: 'known-1' }, { id: 'known-2' }];
+    const client = {
+      begin: async (fn: (tx: { unsafe: (sql: string) => Promise<unknown> }) => Promise<void>) => {
+        await fn({
+          unsafe: async (sql: string) => {
+            calls.push(sql);
+            if (sql.includes('_pgq_positive_control')) return controlRows;
+            if (sql.includes('AS _pgq LIMIT')) return [];
+            return [];
+          },
+        });
+      },
+    } as never;
+
+    const result = await pgReadQuery('SELECT id FROM t WHERE false', {
+      client,
+      positiveControlSql: "SELECT id FROM t WHERE id = 'known-1'",
+    });
+
+    expect(calls).toEqual([
+      'SET TRANSACTION READ ONLY',
+      'SET LOCAL statement_timeout = 5000',
+      "SET LOCAL TIME ZONE 'UTC'",
+      "SELECT * FROM (SELECT id FROM t WHERE id = 'known-1') AS _pgq_positive_control LIMIT 2",
+      'SELECT * FROM (SELECT id FROM t WHERE false) AS _pgq LIMIT 201',
+    ]);
+    expect(result.rows).toEqual([]);
+    expect(result.positiveControl).toEqual({
+      rows: [{ id: 'known-1' }],
+      rowCount: 1,
+      truncated: true,
+      fields: ['id'],
+    });
+  });
+
+  it('rejects a write-shaped positive control before acquiring a connection', async () => {
+    const begin = vi.fn();
+    await expect(
+      pgReadQuery('SELECT 1', {
+        client: { begin } as never,
+        positiveControlSql: 'DELETE FROM t',
+      }),
+    ).rejects.toThrow(/read-only/i);
+    expect(begin).not.toHaveBeenCalled();
+  });
+});
+
 describe('pgReadQuery — read-only EXPLAIN', () => {
   it('executes EXPLAIN directly inside READ ONLY and caps plan rows', async () => {
     const calls: string[] = [];

@@ -88,27 +88,26 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT or EXPLAIN over a SELECT/WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution.',
+    'Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim.',
   capability: 'intel:read',
   guidance: {
     when:
-      "A genuinely ad-hoc / analytic read or planner diagnostic of PG-canonical state — a one-off group-by/join/slice or EXPLAIN over a SELECT/WITH query you won't run again. NOT the default way to read canonical state: most hot reads already have a stable-shape tool (work_items:claimable, work_items:list, plans:list/plans:items, search:*, gitnexus:query).",
+      'A one-off analytic read or planner diagnostic not covered by a stable-shape tool.',
     notWhen:
-      "A read a documented tool above already covers (hand-written claimability/plan queries are the classic footgun, and a predicate missing workspace_id/harness_slug can match another tenant), or to CHANGE state — writes and EXPLAIN of writes are rejected here. Also: schema_migrations→db:migrations; test_runs→testing:runs (status='failed' matches NOTHING); engineer_issues→issues:list.",
+      'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      'Check a table\'s shape first with `describe: "schema.table"` (or a glob) instead of `psql -c "\\d …"`. ' +
-      'Use `EXPLAIN (FORMAT TEXT) SELECT …` for a bounded planner diagnostic; its explained statement must be SELECT/WITH…SELECT. Alias duplicate output columns (the row cap wraps ordinary queries in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly.',
+      'Use `describe` before guessing schema. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`.',
     returns:
-      '{ rowCount, truncated, fields, elapsedMs, rows } for `sql`; in `code:run`, nested calls are unwrapped to this root object, so read `result.rows`/`result.fields` directly — there is no `result.content` MCP envelope. `describe` returns `{ relation, kind, columns, indexes, constraints }` (or `{ pattern, relationCount, relations }` for a glob). bigint/int8 values return as exact strings, never JS numbers.',
+      'SQL: `{ rowCount, truncated, fields, elapsedMs, rows, positiveControl?, absence? }`; zero rows is `absence.status:"unverified"` unless the same-transaction control found a row. `code:run` returns this root directly. Describe returns relation metadata. bigint/int8 stays exact.',
     seeAlso: [
-      'work_items:claimable (what issue-family work is claimable RIGHT NOW — the SSOT claim floors as a tool; a raw status=open query is not claimability)',
-      'plans:list (plan directory, recency filters, and groupBy/aggregateOnly counts — instead of hand-written SQL over harness_plans)',
-      "db:migrations (did migration NNN apply, or the most recent ones — a typed prefix match over schema_migrations that returns a verdict (pending / draft-not-armed / no-such-migration) instead of ambiguous zero rows)",
-      "testing:runs (a test file's run history, or which tests are failing, over test_runs — typed status enum, and outputTail comes back on the red rows; the hand-written status='failed' literal can never match, so it reads as a clean no-failures)",
-      'issues:list (filed issues by text/state/assignee/scope over engineer_issues, with rollup counts — but it has NO id filter: a single-item read by id is work_items:get)',
-      'dev:pg_active_queries (live / long-running queries)',
-      'dev:pg_table_sizes (table + index sizes)',
-      'dev:pg_health (connection + pool health)',
+      'work_items:claimable',
+      'plans:list',
+      'db:migrations',
+      'testing:runs',
+      'issues:list / work_items:get',
+      'dev:pg_active_queries',
+      'dev:pg_table_sizes',
+      'dev:pg_health',
     ],
   },
   requirePrincipal: false,
@@ -150,6 +149,13 @@ export default defineTool({
         .describe(
           'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
         ),
+      positiveControlSql: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'Known-positive SELECT/WITH…SELECT expected to return at least one row through the same table/scope/instrument. Runs with the primary query in the same read-only transaction and whole-call deadline. Use when zero rows will support an absence claim; do not use count(*) because it always returns a row.',
+        ),
       allowUnscoped: z
         .boolean()
         .optional()
@@ -182,6 +188,10 @@ export default defineTool({
         .describe(
           'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
         ),
+      positiveControlSql: z
+        .never()
+        .optional()
+        .describe('Only valid for SQL calls; omit it when passing `describe`.'),
       allowUnscoped: z
         .boolean()
         .optional()
@@ -249,7 +259,44 @@ export default defineTool({
           `${tenantAdvisory} Add the tenant predicate(s), or pass allowUnscoped: true for a deliberate cross-tenant read.`,
         );
       }
-      const result = await pgReadQuery(sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
+      const positiveControlTenantAdvisory = args.positiveControlSql
+        ? await buildTenantScopeAdvisory(args.positiveControlSql, {
+            workspaceId: ctx.workspaceId,
+            harnessSlug: ctx.harnessSlug,
+          }).catch(() => null)
+        : null;
+      if (positiveControlTenantAdvisory && !args.allowUnscoped) {
+        return jsonError(
+          'positive_control_tenant_scope_required',
+          `${positiveControlTenantAdvisory} Add the tenant predicate(s) to positiveControlSql, or pass allowUnscoped: true for a deliberate cross-tenant read.`,
+        );
+      }
+      const result = await pgReadQuery(sql, {
+        maxRows: args.maxRows,
+        timeoutMs: args.timeoutMs,
+        ...(args.positiveControlSql ? { positiveControlSql: args.positiveControlSql } : {}),
+      });
+      const positiveControl = result.positiveControl
+        ? {
+            status: result.positiveControl.rowCount > 0 ? ('passed' as const) : ('failed' as const),
+            ...result.positiveControl,
+          }
+        : undefined;
+      const absence =
+        result.rowCount === 0
+          ? positiveControl?.status === 'passed'
+            ? { status: 'verified' as const, code: 'positive-control-passed' as const }
+            : {
+                status: 'unverified' as const,
+                code: positiveControl ? ('positive-control-empty' as const) : ('positive-control-not-run' as const),
+              }
+          : undefined;
+      const positiveControlAdvisory =
+        result.rowCount === 0 && absence?.status === 'unverified'
+          ? positiveControl
+            ? '⚠ absence unverified: positiveControlSql also returned 0 rows, so the instrument/scope has not been shown capable of finding a known-positive row.'
+            : '⚠ absence unverified: rowCount is 0 and no positiveControlSql was run. Re-run with a known-positive SELECT through the same table/scope/instrument before treating this as evidence of absence.'
+          : null;
       // EI-20261119579595975: an epoch-seconds literal divided by 1000 before
       // to_timestamp() moves an invoked_at cutoff to 1970 and can make
       // historical tool calls look like post-wake evidence.
@@ -350,6 +397,8 @@ export default defineTool({
           sessionTurnPartsJsonAdvisory,
           corpusNamespaceAdvisory,
           tenantAdvisory,
+          positiveControlTenantAdvisory,
+          positiveControlAdvisory,
           toolRoutingAdvisory,
         ]
           .filter(Boolean)
@@ -365,6 +414,8 @@ export default defineTool({
               fields: result.fields,
               elapsedMs: result.elapsedMs,
               rows: result.rows,
+              ...(positiveControl ? { positiveControl } : {}),
+              ...(absence ? { absence } : {}),
             }),
           },
         ],

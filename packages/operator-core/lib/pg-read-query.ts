@@ -37,6 +37,12 @@ export interface PgReadQueryResult {
   /** Column names (from the first row). */
   fields: string[];
   elapsedMs: number;
+  /**
+   * Optional known-positive probe executed on the same connection, in the same
+   * read-only transaction and under the same whole-call deadline. A zero-row
+   * primary result is evidence of absence only when this probe returned a row.
+   */
+  positiveControl?: Omit<PgReadQueryResult, 'elapsedMs' | 'positiveControl'>;
 }
 
 export class PgReadQueryError extends Error {
@@ -2460,10 +2466,13 @@ export function assertReadOnlyExplainStatement(raw: string): string {
  */
 export async function pgReadQuery(
   rawQuery: string,
-  opts: { maxRows?: number; timeoutMs?: number; client?: OrgSql } = {},
+  opts: { maxRows?: number; timeoutMs?: number; client?: OrgSql; positiveControlSql?: string } = {},
 ): Promise<PgReadQueryResult> {
   const isExplain = startsWithExplain(rawQuery);
   const query = isExplain ? assertReadOnlyExplainStatement(rawQuery) : assertSingleReadStatement(rawQuery);
+  const positiveControlQuery = opts.positiveControlSql
+    ? assertSingleReadStatement(opts.positiveControlSql)
+    : null;
   const maxRows = Math.max(
     1,
     Math.min(PG_READ_QUERY_HARD_MAX_ROWS, Math.trunc(opts.maxRows ?? PG_READ_QUERY_DEFAULT_MAX_ROWS)),
@@ -2476,12 +2485,18 @@ export async function pgReadQuery(
   const sql = opts.client ?? getOrgPgLosslessBigint().sql;
   const startedAt = Date.now();
   let rows: Record<string, unknown>[] = [];
+  let positiveControlRows: Record<string, unknown>[] | null = null;
   const callDeadlineMs = timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
   const work = sql.begin(async (tx) => {
     // READ ONLY must be set before the first data statement in the txn.
     await tx.unsafe('SET TRANSACTION READ ONLY');
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
     await tx.unsafe(SET_LOCAL_UTC);
+    if (positiveControlQuery) {
+      positiveControlRows = (await tx.unsafe(
+        `SELECT * FROM (${positiveControlQuery}) AS _pgq_positive_control LIMIT 2`,
+      )) as unknown as Record<string, unknown>[];
+    }
     const resultRows = (await tx.unsafe(
       isExplain ? query : `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`,
     )) as unknown as Record<string, unknown>[];
@@ -2497,7 +2512,19 @@ export async function pgReadQuery(
   const truncated = rows.length > maxRows;
   const capped = truncated ? rows.slice(0, maxRows) : rows;
   const fields = capped.length ? Object.keys(capped[0]) : [];
-  return { rows: capped, rowCount: capped.length, truncated, fields, elapsedMs };
+  // Assignment happens inside the transaction callback. TypeScript does not
+  // model that awaited closure mutation and otherwise narrows the true branch
+  // to `never`, even though the transaction has settled at this point.
+  const measuredPositiveControlRows = positiveControlRows as Record<string, unknown>[] | null;
+  const positiveControl = measuredPositiveControlRows
+    ? {
+        rows: measuredPositiveControlRows.slice(0, 1),
+        rowCount: Math.min(measuredPositiveControlRows.length, 1),
+        truncated: measuredPositiveControlRows.length > 1,
+        fields: measuredPositiveControlRows.length ? Object.keys(measuredPositiveControlRows[0]) : [],
+      }
+    : undefined;
+  return { rows: capped, rowCount: capped.length, truncated, fields, elapsedMs, positiveControl };
 }
 
 /**
