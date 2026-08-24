@@ -869,7 +869,10 @@ export async function createOneWorkItem(
           repoRoot: rootSelection.root,
         });
         explicitPathsWarning = unresolved
-          ? explicitRepoPathsWarning(unresolved.missing, rootSelection)
+          ? explicitRepoPathsWarning(unresolved.missing, {
+              rootSource: rootSelection.source,
+              root: rootSelection.root,
+            })
           : undefined;
       } catch {
         // EI-20191260047847804: this check is an advisory. A root-resolution or fs
