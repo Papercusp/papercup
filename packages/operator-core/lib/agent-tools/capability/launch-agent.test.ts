@@ -760,6 +760,10 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain(`is ${verdict}`);
       expect(shutdownViaPtyMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
+      if (verdict === 'not-a-window') {
+        expect(textOf(res)).toContain('omit `restoreVisible`');
+        expect(textOf(res)).toContain('ordinary exact resume');
+      }
     },
   );
 

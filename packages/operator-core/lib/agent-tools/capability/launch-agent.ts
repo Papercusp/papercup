@@ -198,7 +198,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. If the target is already ended or no managed host remains, the tool safely falls through to an ordinary exact resume without terminating anything. When a host is present, refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. The old agent-launched, unattended host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
+        'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. If the target is already ended or no managed host remains, the tool safely falls through to an ordinary exact resume without terminating anything. When a host is present, refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. For a stale headless host (`not-a-window`), omit `restoreVisible` and use ordinary exact resume, which performs guarded stale-headless recovery. The old agent-launched host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
       ),
     agent: z
       .enum(['claude', 'codex', 'omp'])
@@ -487,9 +487,14 @@ export default defineTool({
           } else {
             const windowVerdict = isPidInLiveWindowScope(host.pid, nodeCgroupFs);
             if (!restoreVisibleMayShutdown(windowVerdict)) {
+              const recoveryHint =
+                windowVerdict === 'not-a-window'
+                  ? ' This is a stale headless host, not a visible-window restore case; omit `restoreVisible` and retry the ordinary exact resume, which performs guarded stale-headless recovery.'
+                  : '';
               return err(
                 `Cannot restore ${target.sessionId}: desktop-window verdict for ${target.ownerId} is ${windowVerdict}. ` +
-                  'Only a positive dead-window witness permits shutdown; alive, unknown, and not-a-window all refuse. Nothing was terminated.',
+                  'Only a positive dead-window witness permits shutdown; alive, unknown, and not-a-window all refuse. Nothing was terminated.' +
+                  recoveryHint,
               );
             }
             const shutdown = await shutdownViaPty(target.ownerId, {
