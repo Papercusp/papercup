@@ -811,6 +811,14 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 195_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// `events:await` performs a write-side registration after several bounded,
+// best-effort state/catalog probes. Under a busy operator those probes can
+// legitimately outlive ptool's ordinary 30s deadline; abandoning the call
+// then leaves an ambiguous waiter registration that callers may blindly
+// retry. Keep the client outside the MCP transport cap so the server's
+// structured registration result (or timeout) is observed first.
+export const PTOOL_EVENTS_AWAIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
 // `locks:heartbeat_resource` may heartbeat multiple lock ids sequentially and
 // probe the caller plus special coordination domains for each id. Under a
 // serialized package build, each transaction can consume the configured
@@ -829,6 +837,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.

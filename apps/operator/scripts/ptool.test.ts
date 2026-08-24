@@ -16,6 +16,7 @@ import {
   printResult,
   PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
+  PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
@@ -118,6 +119,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(60_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:orient',
@@ -139,6 +141,11 @@ describe('ptool call deadlines', () => {
       name: 'scorecards:emit',
       args: { rubricRef: 'acceptance-demo' },
     })).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'events:await',
+      args: { event: 'wi-40086-qualified-current-tip' },
+    })).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
+    expect(PTOOL_EVENTS_AWAIT_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(180_000);
