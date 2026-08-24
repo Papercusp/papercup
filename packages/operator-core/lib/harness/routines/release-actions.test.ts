@@ -16,7 +16,11 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } 
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
 import { resolveIntegrationRoot, integrationRootEvidence } from './release-actions';
 import { pipelineName } from '../../release/pipeline-name';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // --- mocks (hoisted) ---------------------------------------------------------
@@ -137,6 +141,8 @@ import {
   recordPendingCheckpointVerdict,
   trackGateStall,
   buildCheckpointDetail,
+  buildScheduledCheckpointShell,
+  checkpointRunLogPaths,
   readFrozenCandidateRepairQueue,
   writeFrozenCandidateRepairQueue,
   type AutoServePlan,
@@ -1218,6 +1224,70 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(argv.slice(-2)).toEqual(['/x/tsx', '/x/suite.ts']);
   });
 
+  describe('scheduled checkpoint evidence wrapper', () => {
+    it('writes normal stdout and an attributable terminal record after a successful child', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-'));
+      const paths = checkpointRunLogPaths(dir, 'normal-run', new Date('2026-08-24T15:00:00.000Z'));
+      try {
+        const output = execFileSync(
+          '/bin/bash',
+          [
+            '-c',
+            buildScheduledCheckpointShell(
+              [process.execPath, '-e', "process.stdout.write('normal stdout\\n'); process.stderr.write('normal stderr\\n')"],
+              paths,
+            ),
+          ],
+          { encoding: 'utf8' },
+        );
+
+        expect(output).toContain('normal stdout');
+        expect(readFileSync(paths.logPath, 'utf8')).toMatchObject(expect.stringContaining('normal stdout'));
+        expect(readFileSync(paths.logPath, 'utf8')).toContain('normal stderr');
+        expect(JSON.parse(readFileSync(paths.terminalPath, 'utf8'))).toMatchObject({
+          runId: 'normal-run',
+          logPath: paths.logPath,
+          exitCode: 0,
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('writes terminal evidence when the child exits abnormally without a verdict marker', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-'));
+      const paths = checkpointRunLogPaths(dir, 'abnormal-run', new Date('2026-08-24T15:01:00.000Z'));
+      try {
+        let thrown: { status?: number } | undefined;
+        try {
+          execFileSync(
+            '/bin/bash',
+            [
+              '-c',
+              buildScheduledCheckpointShell(
+                [process.execPath, '-e', "process.stderr.write('abnormal stderr\\n'); process.exit(17)"],
+                paths,
+              ),
+            ],
+            { encoding: 'utf8' },
+          );
+        } catch (error) {
+          thrown = error as { status?: number };
+        }
+
+        expect(thrown?.status).toBe(17);
+        expect(readFileSync(paths.logPath, 'utf8')).toContain('abnormal stderr');
+        expect(JSON.parse(readFileSync(paths.terminalPath, 'utf8'))).toMatchObject({
+          runId: 'abnormal-run',
+          logPath: paths.logPath,
+          exitCode: 17,
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('the PERIODIC gate launches the suite under systemd-run --scope (own cgroup, stdout marker still parsed)', async () => {
     delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
     spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
@@ -1228,6 +1298,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(args).toContain('--scope');
     expect(args.some((a) => /^--property=MemoryMax=\d+G$/.test(a))).toBe(true);
     expect(args.join(' ')).toContain('green-checkpoint.ts');
+    expect(args.at(-1)).toContain('trap _papercusp_write_checkpoint_terminal EXIT');
     // The verdict still lands as a pipeline event (stdout was piped through the scope).
     expect(appendPipelineEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),

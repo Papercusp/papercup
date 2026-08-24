@@ -62,7 +62,6 @@ import {
   buildIsolatedScopeArgv,
   CHECKPOINT_FORKS_BY_MODE,
   checkpointScopeMemoryMaxG,
-  escapeSystemdServiceArgument,
   SCOPE_LAUNCH_FAILURE_RE,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
 } from '../../systemd-scope';
@@ -121,6 +120,11 @@ export function checkpointRunLogPaths(
   const fileSafeRunId = runId.replace(/[^a-zA-Z0-9_-]/g, '-') || 'run';
   const logPath = path.join(logDir, `${stamp}-scheduled-${fileSafeRunId}.log`);
   return { runId, logPath, terminalPath: `${logPath}.terminal.json` };
+}
+
+/** Keep the scheduled wrapper's evidence directory aligned with the CLI's release config. */
+function scheduledCheckpointLogDir(): string {
+  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? path.join(homedir(), '.papercusp', 'checkpoint-logs');
 }
 
 function shellQuote(value: string): string {
@@ -357,6 +361,14 @@ function runScript(
   // Isolation kill-switch: PAPERCUSP_CHECKPOINT_SCOPE=0 forces the pre-2026-07-01
   // direct spawn (ops escape hatch, peer of PAPERCUSP_GATEWAY_RPM_SMOOTH).
   const wantScope = !!isolate && process.env.PAPERCUSP_CHECKPOINT_SCOPE !== '0';
+  // The routine parent is not the durable owner of a scheduled run: it can be reaped while
+  // the systemd scope keeps the suite alive. Put the log + EXIT terminal writer INSIDE that
+  // scope, before the suite starts, so a completed or abnormal child exit leaves attributable
+  // evidence even when this parent never observes `close`. The direct kill-switch path stays
+  // byte-compatible with the historical escape hatch.
+  const scopedPayload = wantScope
+    ? ['/bin/bash', '-c', buildScheduledCheckpointShell(base, checkpointRunLogPaths(scheduledCheckpointLogDir()))]
+    : base;
   const attempt = (argv: string[], fallback: (() => Promise<RunResult>) | null): Promise<RunResult> =>
     new Promise((resolve) => {
       const startedAt = Date.now();
@@ -429,7 +441,7 @@ function runScript(
       );
     });
   return wantScope
-    ? attempt(buildIsolatedScopeArgv(base, isolate.memoryMaxG), () => attempt(base, null))
+    ? attempt(buildIsolatedScopeArgv(scopedPayload, isolate.memoryMaxG), () => attempt(base, null))
     : attempt(base, null);
 }
 
