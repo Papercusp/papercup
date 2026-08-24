@@ -33,14 +33,38 @@ function compactToolArgs(args: unknown): unknown {
   }
 }
 
+/** Current Codex message records carry their readable text in response-item
+ * content blocks. Keep this tiny extractor local to the timeline vocabulary:
+ * ingest applies its own redaction/capping policy, while this live stream is
+ * capped at the SSE boundary after parsing. */
+function codexMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((block): block is { type?: string; text: string } => {
+      if (!block || typeof block !== 'object') return false;
+      const candidate = block as { type?: unknown; text?: unknown };
+      return (
+        (candidate.type === 'text' ||
+          candidate.type === 'input_text' ||
+          candidate.type === 'output_text') &&
+        typeof candidate.text === 'string'
+      );
+    })
+    .map((block) => block.text)
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 /**
  * Codex rollout jsonl → timeline entries. Wire shape per line:
  *   { timestamp: ISO, type: 'session_meta'|'event_msg'|'response_item'|
  *     'turn_context'|'compacted', payload: {...} }
  *
  * Mapping (the pane's vocabulary):
- *  - event_msg/user_message            → prompt (turn boundary)
- *  - event_msg/agent_message           → text
+ *  - response_item/message user        → prompt (canonical current shape)
+ *  - response_item/message assistant   → text (canonical current shape)
+ *  - event_msg user_message/agent_message → legacy prompt/text fallback
  *  - response_item/function_call,
  *    custom_tool_call, tool_search_call → tool_use
  *  - response_item/function_call_output,
@@ -49,9 +73,28 @@ function compactToolArgs(args: unknown): unknown {
  *    summary exists (the content itself ships encrypted — skipped otherwise)
  *  - compacted                         → status
  *  - everything else (session_meta, token_count, turn_context,
- *    response_item/message duplicates of agent_message, …) → skipped
+ *    developer/system messages, …) → skipped
  */
 export function createCodexTimelineParser(): TimelineLineParser {
+  // Older Codex builds wrote the same visible message twice: once as an
+  // event_msg and once as response_item/message. Current builds write only the
+  // response item. Remember the last visible message so supporting both wire
+  // generations cannot duplicate a turn. Tool/meta records deliberately do not
+  // reset this key: they can sit between the two representations of one message;
+  // a real next turn changes role/text (normally via its prompt) and advances it.
+  let lastVisibleMessageKey: string | null = null;
+  const visibleMessage = (
+    role: 'user' | 'assistant',
+    text: string,
+    ts: string | undefined,
+  ): AgentTimelineEntry[] => {
+    if (!text.trim()) return [];
+    const key = `${role}\u0000${text}`;
+    if (key === lastVisibleMessageKey) return [];
+    lastVisibleMessageKey = key;
+    return [{ kind: role === 'user' ? 'prompt' : 'text', text, ts }];
+  };
+
   return {
     parseLine(line: string): AgentTimelineEntry[] {
       let rec: {
@@ -70,14 +113,19 @@ export function createCodexTimelineParser(): TimelineLineParser {
 
       if (rec.type === 'event_msg') {
         if (pt === 'user_message' && typeof p.message === 'string') {
-          return [{ kind: 'prompt', text: p.message, ts }];
+          return visibleMessage('user', p.message, ts);
         }
         if (pt === 'agent_message' && typeof p.message === 'string') {
-          return [{ kind: 'text', text: p.message, ts }];
+          return visibleMessage('assistant', p.message, ts);
         }
         return [];
       }
       if (rec.type === 'response_item') {
+        if (pt === 'message') {
+          const role = p.role === 'user' ? 'user' : p.role === 'assistant' ? 'assistant' : null;
+          if (!role) return [];
+          return visibleMessage(role, codexMessageText(p.content), ts);
+        }
         if (pt === 'function_call' || pt === 'custom_tool_call' || pt === 'tool_search_call') {
           const ns = typeof p.namespace === 'string' ? `${p.namespace}.` : '';
           const name = typeof p.name === 'string' ? p.name : pt;

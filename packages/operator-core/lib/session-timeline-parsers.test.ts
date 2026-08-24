@@ -24,6 +24,78 @@ describe('createCodexTimelineParser', () => {
     }))).toEqual([{ kind: 'text', text: 'On it.', ts: 't2' }]);
   });
 
+  it('maps current response_item/message rows and skips injected developer text', () => {
+    const parser = p();
+    expect(parser.parseLine(JSON.stringify({
+      timestamp: 't1',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'show the turn history' }],
+      },
+    }))).toEqual([{ kind: 'prompt', text: 'show the turn history', ts: 't1' }]);
+
+    expect(parser.parseLine(JSON.stringify({
+      timestamp: 't2',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          { type: 'output_text', text: 'First paragraph.' },
+          { type: 'output_text', text: 'Second paragraph.' },
+        ],
+      },
+    }))).toEqual([{
+      kind: 'text',
+      text: 'First paragraph.\n\nSecond paragraph.',
+      ts: 't2',
+    }]);
+
+    expect(parser.parseLine(JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'developer',
+        content: [{ type: 'input_text', text: 'hidden instructions' }],
+      },
+    }))).toEqual([]);
+  });
+
+  it('deduplicates legacy event_msg and canonical response_item copies of one message', () => {
+    const parser = p();
+    expect(parser.parseLine(JSON.stringify({
+      timestamp: 'legacy-ts',
+      type: 'event_msg',
+      payload: { type: 'agent_message', message: 'Done.' },
+    }))).toEqual([{ kind: 'text', text: 'Done.', ts: 'legacy-ts' }]);
+    expect(parser.parseLine(JSON.stringify({
+      timestamp: 'canonical-ts',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Done.' }],
+      },
+    }))).toEqual([]);
+
+    // The inverse order occurs in some rollout generations too.
+    const inverse = p();
+    expect(inverse.parseLine(JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Again' }],
+      },
+    }))).toHaveLength(1);
+    expect(inverse.parseLine(JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'user_message', message: 'Again' },
+    }))).toEqual([]);
+  });
+
   it('maps function_call (+namespace, string args) → tool_use with parsed input', () => {
     const [e] = p().parseLine(JSON.stringify({
       timestamp: 't',
