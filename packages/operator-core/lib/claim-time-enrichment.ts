@@ -260,17 +260,24 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
    * argument rather than a second, differently-shaped path.
    */
   const outcomes = new Map<ClaimTimeEnrichmentLeg, ClaimTimeLegOutcome>();
-  const runLeg = async <T>(
+  const runLeg = async <T, G>(
     leg: ClaimTimeEnrichmentLeg,
-    hasInput: boolean,
-    run: () => Promise<T | null>,
+    // The gate may be the leg's INPUT VALUE, not just a boolean, and the leg
+    // receives it NARROWED. A `Boolean(x)` gate is opaque to the compiler, so a
+    // leg gated on `Boolean(workItemId)` still saw `string | null` inside and had
+    // to re-check it or widen its callee — the gate and the leg's precondition
+    // drifting into two separately-maintained facts. Passing the value makes them
+    // one fact, checked once. Genuinely compound preconditions (`a || b`) stay
+    // boolean: there is no single value to hand down.
+    hasInput: G,
+    run: (input: NonNullable<G>) => Promise<T | null>,
   ): Promise<T | null> => {
     if (!hasInput) {
       outcomes.set(leg, 'skipped-no-input');
       return null;
     }
     try {
-      const value = await run();
+      const value = await run(hasInput);
       outcomes.set(leg, value ? 'delivered' : 'empty');
       return value;
     } catch {
@@ -351,14 +358,14 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
 
       // Whether a finding this item rests on has since been RETRACTED in its own
       // thread. Needs a live (non-settled) work-item row.
-      runLeg('retraction', Boolean(wi), async () => {
+      runLeg('retraction', wi, async (wi) => {
         const m = await import('./agent-tools/work_items/retraction-advisory');
-        const advisory = wi ? await m.getClaimTimeRetractionAdvisory(wi, harness) : null;
+        const advisory = await m.getClaimTimeRetractionAdvisory(wi, harness);
         return advisory ? { retractionWarning: advisory.retractionWarning } : null;
       }),
 
       // Whether the item's stated author is still the right one to revalidate it.
-      runLeg('authorship', Boolean(workItemId), async () => {
+      runLeg('authorship', workItemId, async (workItemId) => {
         const m = await import('./work-item-prior-work');
         const hint = await m.getClaimTimeAuthorshipRevalidationHint({ harness, workItemId, workspaceId });
         const warning = m.authorshipRevalidationWarning(hint);
@@ -367,7 +374,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
 
       // WI-39498: the plan says this is already DONE while the row is still open,
       // so the work may already be finished. The zombie guard.
-      runLeg('planContradiction', Boolean(workItemId), async () => {
+      runLeg('planContradiction', workItemId, async (workItemId) => {
         const m = await import('./work-item-plan-contradiction');
         const hint = await m.getClaimTimePlanItemContradiction({ workItemId, payload: wi?.payload });
         const warning = m.planItemContradictionWarning(hint, workItemId);
@@ -384,11 +391,9 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       //
       // ⚠ ADVISORY (D-017): reported, never enforced here. P-013 owns any refusal.
       // Needs a live work-item — a bare plan-item claim has no item to resolve edges for.
-      runLeg('behaviorContract', Boolean(behaviorContractWorkItem), async () => {
+      runLeg('behaviorContract', behaviorContractWorkItem, async (behaviorContractWorkItem) => {
         const m = await import('./behavior-contract-claim-port');
-        return behaviorContractWorkItem
-          ? await m.getClaimTimeBehaviorContract(behaviorContractWorkItem, harness)
-          : null;
+        return await m.getClaimTimeBehaviorContract(behaviorContractWorkItem, harness);
       }),
 
       // EI-21267393427094356: which stored payload paths are dead at HEAD, and where
@@ -417,7 +422,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       // a machine-link-only leg is silent for four items in five. The hint STAMPS which
       // tier matched so a prose-derived guess can never read as a recorded link.
       // Needs an identified work-item — a bare plan-item claim has no row to compare.
-      runLeg('planItemLanded', Boolean(workItemId), async () => {
+      runLeg('planItemLanded', workItemId, async (workItemId) => {
         const m = await import('./work-item-plan-item-landed');
         const hint = await m.getClaimTimePlanItemLanded({
           workItemId,
