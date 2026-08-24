@@ -223,6 +223,24 @@ describe("BulkResolverSettingsControl", () => {
     });
   });
 
+  it("renders the canonical stale diagnostic and exposes the restart action", () => {
+    const onRestart = vi.fn();
+    render(
+      <BulkResolverSettingsControl
+        kind="inbox-resolve"
+        settings={settings()}
+        effective={{ account: "default", carry: "warm" }}
+        liveness={{ state: "stale", measuredFrom: "start", ageMs: 360_000 }}
+        onRestart={onRestart}
+      />,
+    );
+    expect(screen.getByTestId("inbox-resolve-resolver-stale").textContent).toContain(
+      "never reported after launch",
+    );
+    fireEvent.click(screen.getByTestId("inbox-resolve-restart"));
+    expect(onRestart).toHaveBeenCalledTimes(1);
+  });
+
   it("names legacy rows instead of inventing settings they never recorded", () => {
     expect(formatResolverLaunchReceipt({})).toBe(
       "Launch settings not recorded (legacy run)",

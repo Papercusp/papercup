@@ -87,9 +87,10 @@ export default function InboxBulkStrip({
   onAcceptAll,
   acceptingCount,
 }: InboxBulkStripProps) {
-  const { start, stop, dismiss } = useBulkRunOps();
+  const { start, stop, restart, dismiss } = useBulkRunOps();
   const resolverSettings = useBulkResolverSettings('inbox-resolve');
   const [starting, setStarting] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const counts = deriveRunCounts(items, run);
 
@@ -114,6 +115,24 @@ export default function InboxBulkStrip({
     }
   }, [visible, starting, start, filterSnapshot, onRunStarted, resolverSettings]);
 
+  const onRestart = useCallback(async () => {
+    if (!run || restarting) return;
+    setRestarting(true);
+    setNotice(null);
+    try {
+      const result = await restart(run.runId);
+      if (!result.ok) {
+        setNotice(result.error ?? 'could not restart the resolver');
+      } else if (!result.launched) {
+        setNotice(`resolver could not restart${result.launchError ? `: ${result.launchError}` : ''}`);
+      } else {
+        setNotice(`Resolver restarted · ${result.preservedOutcomes ?? 0} completed outcome${result.preservedOutcomes === 1 ? '' : 's'} preserved`);
+      }
+    } finally {
+      setRestarting(false);
+    }
+  }, [run, restart, restarting]);
+
   /* ── RUNNING ─────────────────────────────────────────────────────────── */
   if (isRunning && run) {
     return (
@@ -122,6 +141,9 @@ export default function InboxBulkStrip({
           kind="inbox-resolve"
           settings={resolverSettings}
           effective={run.launchSnapshot ?? {}}
+          liveness={run.liveness}
+          onRestart={() => void onRestart()}
+          restartBusy={restarting}
         />
         <div className="op-inbox__bulk-head">
           <span className="op-inbox__bulk-spin" aria-hidden="true">
@@ -163,6 +185,7 @@ export default function InboxBulkStrip({
             {counts.left} left
           </span>
         </div>
+        {notice ? <div className="op-inbox__bulk-notice" role="status">{notice}</div> : null}
       </div>
     );
   }

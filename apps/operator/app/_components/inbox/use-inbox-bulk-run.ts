@@ -36,6 +36,7 @@ import type {
   BulkResolverLaunchProfile,
   EffectiveBulkResolverLaunch,
 } from '@papercusp/operator-core/lib/agent-config-constants';
+import type { RunLiveness } from '@papercusp/operator-core/lib/attention/bulk-run-store';
 import { loadResolverLaunchProfile } from '../bulk-resolver/bulk-resolver-settings';
 
 /** Mirrors `BulkRunPhase` in packages/operator-core/lib/attention/bulk-run-store.ts. */
@@ -69,6 +70,9 @@ export interface BulkRun {
   createdAt: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  heartbeatAt?: string | null;
+  resolverOwner?: string | null;
+  liveness?: RunLiveness;
 }
 
 /** One item's outcome as the sync query returns it (`BulkRunItemRow`). */
@@ -111,6 +115,7 @@ export interface StartResult {
   runId?: string;
   launched?: boolean;
   launchError?: string;
+  preservedOutcomes?: number;
   error?: string;
 }
 
@@ -249,6 +254,7 @@ export function useBulkRunOps(): {
     launch?: BulkResolverLaunchProfile,
   ) => Promise<StartResult>;
   stop: (runId: string) => Promise<void>;
+  restart: (runId: string) => Promise<StartResult>;
   dismiss: (runId: string) => Promise<void>;
   acceptRecommendation: (
     runId: string,
@@ -286,6 +292,22 @@ export function useBulkRunOps(): {
 
   const stop = useCallback(async (runId: string) => {
     await postOp({ op: 'stop', runId });
+  }, []);
+
+  const restart = useCallback(async (runId: string): Promise<StartResult> => {
+    try {
+      const json = await postOp({ op: 'restart', runId });
+      return {
+        ok: true,
+        runId,
+        launched: json.launched === true,
+        launchError: typeof json.launchError === 'string' ? json.launchError : undefined,
+        preservedOutcomes:
+          typeof json.preservedOutcomes === 'number' ? json.preservedOutcomes : undefined,
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }, []);
 
   const dismiss = useCallback(async (runId: string) => {
@@ -340,5 +362,5 @@ export function useBulkRunOps(): {
     [],
   );
 
-  return { start, stop, dismiss, acceptRecommendation };
+  return { start, stop, restart, dismiss, acceptRecommendation };
 }

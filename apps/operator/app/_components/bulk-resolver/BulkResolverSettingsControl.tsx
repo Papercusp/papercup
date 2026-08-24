@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AlertCircle, Check, Loader2, Settings2 } from "lucide-react";
+import { AlertCircle, Check, Loader2, RotateCcw, Settings2 } from "lucide-react";
 import { Button } from "@/app/harness/Button";
 import {
   Combobox,
@@ -28,6 +28,7 @@ import {
   type EffectiveBulkResolverLaunch,
 } from "@papercusp/operator-core/lib/agent-config-constants";
 import type { BulkResolverSettingsState } from "./bulk-resolver-settings";
+import type { RunLiveness } from "@papercusp/operator-core/lib/attention/bulk-run-store";
 
 type LaunchReceipt = Partial<EffectiveBulkResolverLaunch>;
 
@@ -81,12 +82,20 @@ export interface BulkResolverSettingsControlProps {
   /** Exact click-time snapshot from a running/review run. Presence makes the
    * control a read-only launch receipt; absence edits the next-run defaults. */
   effective?: LaunchReceipt | null;
+  /** Server-derived from the canonical run-store classifier. The UI renders
+   * this verdict; it never carries its own heartbeat timeout. */
+  liveness?: RunLiveness | null;
+  onRestart?: () => void;
+  restartBusy?: boolean;
 }
 
 export default function BulkResolverSettingsControl({
   kind,
   settings,
   effective,
+  liveness,
+  onRestart,
+  restartBusy = false,
 }: BulkResolverSettingsControlProps) {
   const [open, setOpen] = useState(false);
   const profile = settings.profile;
@@ -128,6 +137,7 @@ export default function BulkResolverSettingsControl({
   const label = kind === "inbox-resolve" ? "Inbox resolver" : "Plans resolver";
 
   if (effective !== undefined) {
+    const stale = liveness?.state === "stale" ? liveness : null;
     return (
       <div
         className="op-resolver-settings op-resolver-settings--receipt"
@@ -140,6 +150,39 @@ export default function BulkResolverSettingsControl({
         <span className="op-resolver-settings__fixed">
           fresh · headless · su
         </span>
+        {stale ? (
+          <div
+            className="op-resolver-settings__liveness"
+            role="alert"
+            data-testid={`${kind}-resolver-stale`}
+          >
+            <AlertCircle size={12} aria-hidden="true" />
+            <span>
+              {stale.measuredFrom === "start"
+                ? "Resolver never reported after launch"
+                : "Resolver stopped reporting"}
+            </span>
+            {onRestart ? (
+              <button
+                type="button"
+                disabled={restartBusy}
+                onClick={onRestart}
+                data-testid={`${kind}-restart`}
+              >
+                {restartBusy ? (
+                  <Loader2
+                    size={11}
+                    className="op-resolver-settings__spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <RotateCcw size={11} aria-hidden="true" />
+                )}
+                {restartBusy ? "Restarting…" : "Restart resolver"}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   }
