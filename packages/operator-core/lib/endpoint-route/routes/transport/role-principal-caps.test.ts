@@ -70,20 +70,35 @@ describe('loadRoleCapabilities', () => {
     { timeout: 60_000 },
     async () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+      expect(caps.has('coord:read')).toBe(true);
       expect(caps.has('coord:write')).toBe(true);
+      expect(caps.has('operator:read')).toBe(true);
       expect(caps.has('testing:run')).toBe(true);
       expect(caps.has('operator:write')).toBe(false);
       expect(caps.has('capability:fs-read')).toBe(true);
       expect(caps.has('capability:fs-write')).toBe(false);
       expect(caps.has('capability:bash')).toBe(false);
 
-      const [{ default: emit }, { default: run }, { default: read }, { default: capture }] = await Promise.all([
+      const [
+        { default: emit },
+        { default: run },
+        { default: read },
+        { default: capture },
+        { default: getRubric },
+        { default: listScorecards },
+        { default: listTestRuns },
+      ] = await Promise.all([
         import('../../../agent-tools/scorecards/emit.js'),
         import('../../../agent-tools/testing/run.js'),
         import('../../../agent-tools/capability/read.js'),
         import('../../../agent-tools/improvements/capture.js'),
+        import('../../../agent-tools/rubrics/get.js'),
+        import('../../../agent-tools/scorecards/list.js'),
+        import('../../../agent-tools/testing/runs.js'),
       ]);
-      for (const tool of [emit, run, read, capture]) expect(tool.agentRoles).toContain('judge');
+      for (const tool of [emit, run, read, capture, getRubric, listScorecards, listTestRuns]) {
+        expect(tool.agentRoles).toContain('judge');
+      }
     },
   );
 

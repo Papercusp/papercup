@@ -24,6 +24,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: vi.fn() }));
+// `backgroundWorkersEnabled` reads env, which `hostExecutesRoutines` consults; left real.
 
 // Stub both dynamically-imported registry modules so the test controls exactly which handlers
 // count as registered, and loads none of the ~100-module action graph.
@@ -38,7 +39,6 @@ vi.mock('../harness/routines/system-actions', () => ({
 }));
 
 import * as dbOrg from '@papercusp/db-org';
-import * as harnessCore from '../harness-core';
 import * as workspaceRegistry from '../workspace-registry';
 import { mockOrgPgSql } from '../testing/mock-org-pg';
 
@@ -59,6 +59,12 @@ function makeSql(opts: { activeRoutines?: unknown[]; targetRoles?: string[] }) {
   }) as unknown as Parameters<typeof mockOrgPgSql>[1];
 }
 
+/**
+ * Note there is no `resolveProject` stub: every case here leaves the ACTIVE-routines result
+ * empty, so the harness-resolution leg never runs. Stubbing it anyway would need a cast that
+ * disables the typecheck `vi.mocked` exists to give (`lint:mock-cast-escape`), in exchange for
+ * covering a code path none of these tests reach.
+ */
 function arrange(opts: {
   standing: string[];
   targetRoles?: string[];
@@ -71,21 +77,17 @@ function arrange(opts: {
     makeSql({ activeRoutines: opts.activeRoutines, targetRoles: opts.targetRoles }),
   );
   vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(WS);
-  vi.mocked(harnessCore.resolveProject).mockResolvedValue({ slug: 'papercusp' } as any);
 }
 
 describe('unscheduled system actions (EI-18752496371939475, direction 3)', () => {
-  const prevEnv = { ...process.env };
-
   beforeEach(() => {
     vi.clearAllMocks();
     // `hostExecutesRoutines` gates the check; make this host one that does.
-    process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
-    delete process.env.PAPERCUSP_DISABLE_BACKGROUND_WORKERS;
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '1');
   });
 
   afterEach(() => {
-    process.env = { ...prevEnv };
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -135,8 +137,7 @@ describe('unscheduled system actions (EI-18752496371939475, direction 3)', () =>
     // an empty offender list here means "we did not look" — a caller that reads it as "healthy"
     // would clear a TRUE finding written by the host that does run routines.
     arrange({ standing: ['gc-dead-loops'], targetRoles: [] });
-    process.env.PAPERCUSP_DISABLE_BACKGROUND_WORKERS = '1';
-    delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
 
     const res = await validateActiveRoutines(WS, { silent: true });
 

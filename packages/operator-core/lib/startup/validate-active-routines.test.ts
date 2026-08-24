@@ -30,6 +30,12 @@ const { registeredRef } = vi.hoisted(() => ({ registeredRef: { current: new Set<
 vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/system-actions', () => ({
   getSystemAction: (name: string) => (registeredRef.current.has(name) ? () => undefined : undefined),
+  // EI-18752496371939475: the unscheduled-action check (direction 3) imports this from the same
+  // module. A mock that omits it does not fail loudly — the call throws, the check swallows it
+  // and warns, and every test here dies on the console guard instead of on its own assertion.
+  // Empty is the right stand-in: these tests are about directions 1 and 2, and an empty registry
+  // makes direction 3 report NOT-APPLICABLE rather than flagging everything.
+  listStandingSystemActions: () => [] as string[],
 }));
 
 import * as dbOrg from '@papercusp/db-org';

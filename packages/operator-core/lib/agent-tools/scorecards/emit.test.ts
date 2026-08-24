@@ -18,7 +18,7 @@ const task = (taskId: string, label: string, headless = true) => ({
 }) as never;
 
 describe('dedicated acceptance judge lifecycle', () => {
-  it('admits judge only on scorecards:emit, without widening the shared coordination role set', () => {
+  it('admits judge on scorecards:emit without widening the shared coordination role set', () => {
     expect(scorecardEmitTool.agentRoles).toContain('judge');
     expect(COORD_ROLES).not.toContain('judge');
   });
