@@ -188,6 +188,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // P-017 slice D: plan DECISIONS and the current spec are protected rows inside the
     // prior-attempt brief, so adding a decision changes what an open panel should show.
     'workItems.priorAttempts',
+    // P-011: the acceptance gate reads the plan row itself — its status, its exemption
+    // class, and the `forcedPast` waiver stamped onto it. A force recorded on the plan
+    // must not leave an open verdict panel still claiming an unwaived pass.
+    'plans.acceptanceGate',
     'plans.list',
     'coord.plans',
     // plans.get (EI-7433): scoped by plan slug (mig 507's natural-key
@@ -470,6 +474,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // silently under-reports a gap it claims to measure is the defect this plan exists to
     // end. Same on-demand mounting, so the bust costs nothing while the section is closed.
     'plans.specCoverage',
+    // P-011: the acceptance gate grades against SCORECARDS (work-item rows) and counts
+    // unfinished PLAN ITEMS — so a grading, a verdict, or an item completion all move it.
+    'plans.acceptanceGate',
     // Goal surfaces count OPEN and needs-human items per goal, so a state flip
     // or a new goal-stamped item moves both the rail glance and the detail page.
     'goals.list',
@@ -577,12 +584,23 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // `plans.specCoverage` (the plan-surface census) shares the clause tables for the same
   // reason: a clause revised after its evidence was recorded is exactly the transition
   // that flips its verdict from satisfied to spec_proof_stale.
-  'harness_shared.plan_spec_clauses': ['workItems.behaviorContract', 'plans.specCoverage'],
-  'harness_shared.plan_spec_clause_revisions': ['workItems.behaviorContract', 'plans.specCoverage'],
+  // `plans.acceptanceGate` rides the same tables because the census is one of its five
+  // check families — a clause revised after its evidence was recorded is what flips the
+  // whole gate to spec_proof_stale, not just the census panel.
+  'harness_shared.plan_spec_clauses': [
+    'workItems.behaviorContract',
+    'plans.specCoverage',
+    'plans.acceptanceGate',
+  ],
+  'harness_shared.plan_spec_clause_revisions': [
+    'workItems.behaviorContract',
+    'plans.specCoverage',
+    'plans.acceptanceGate',
+  ],
   'harness_shared.work_item_spec_revision_edges': ['workItems.behaviorContract'],
   // The OTHER half of the freshness verdict: recording evidence at the current revision is
   // what CLEARS a stale-proof refusal, so an open census panel must not miss it either.
-  'harness_shared.spec_evidence_bindings': ['plans.specCoverage'],
+  'harness_shared.spec_evidence_bindings': ['plans.specCoverage', 'plans.acceptanceGate'],
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',
