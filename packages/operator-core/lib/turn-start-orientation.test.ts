@@ -35,6 +35,7 @@ const base: OrientationState = {
   loopFireWithheld: false,
   improvementTriage: null,
   executableFrontier: null,
+  neverDropFacts: [],
 };
 const withWork: OrientationState = {
   held: [
@@ -53,6 +54,7 @@ const withWork: OrientationState = {
   loopFireWithheld: false,
   improvementTriage: null,
   executableFrontier: null,
+  neverDropFacts: [],
 };
 
 /** The context generation most of these cases hold fixed; P-023's own block varies it. */
@@ -546,5 +548,96 @@ describe('turn-start-orientation — what it costs', () => {
       budgetChars: 10,
     });
     expect(out).toBe('');
+  });
+});
+
+/**
+ * EI-21309540201944554. coord:orient folds the never-drop tier on EVERY tick
+ * (EI-18725816532600240, after a cold wake was told to implement an approach a
+ * `dead-end:` fact had already falsified). This block fires even more often and
+ * did not inherit that rule, so a settled do-not-repeat was invisible to the
+ * agent it was written for unless it spent a coord:orient round-trip.
+ */
+describe('never-drop facts fold', () => {
+  const KEYS = [
+    'guard-rail:verifying-owner-speech-in-transcripts',
+    'wall:host-bundle-unbuildable-at-staging-head',
+    'dead-end:readinbox-push-filters-into-sql',
+  ];
+  const factLine = (state: OrientationState): string | undefined =>
+    renderOrientationLines(state).find((l) => l.includes('never-drop facts'));
+
+  it('surfaces the keys, and says how many it did not show', () => {
+    const line = factLine({ ...base, neverDropFacts: KEYS });
+    expect(line).toBeDefined();
+    expect(line).toContain('guard-rail:verifying-owner-speech-in-transcripts');
+    expect(line).toContain('+1 more');
+  });
+
+  it('truncates a long key WITHOUT eating the type prefix', () => {
+    // The prefix says how much authority the fact carries; a key clipped to a
+    // bare "guard-r…" would cost the reader the only glanceable part.
+    const line = factLine({ ...base, neverDropFacts: [`guard-rail:${'x'.repeat(120)}`] });
+    expect(line).toContain('guard-rail:');
+    expect(line).toContain('…');
+  });
+
+  it('ranks the do-not-repeat ABOVE the what-to-work-on lines', () => {
+    const lines = renderOrientationLines({
+      ...base,
+      neverDropFacts: KEYS,
+      improvementTriage: {
+        pending: 5,
+        considered: 100,
+        lowerBound: true,
+        top: { id: 'EI-9', lane: 'human', title: 'some untriaged thing' },
+      },
+    });
+    const factIdx = lines.findIndex((l) => l.includes('never-drop facts'));
+    const triageIdx = lines.findIndex((l) => l.includes('improvement triage'));
+    expect(factIdx).toBeGreaterThanOrEqual(0);
+    // Ordering IS the feature: a guard rail is worth almost nothing once the
+    // agent has already picked an approach off the line below it.
+    expect(triageIdx).toBeGreaterThan(factIdx);
+  });
+
+  it('is not an empty orientation when a never-drop fact is the only signal', () => {
+    expect(isEmptyOrientation(base)).toBe(true);
+    expect(isEmptyOrientation({ ...base, neverDropFacts: KEYS })).toBe(false);
+  });
+
+  it('re-emits when a NEW guard rail lands — the turn it first applies is the one that matters', () => {
+    const before = fingerprintOrientation({ ...base, neverDropFacts: [KEYS[0]] }, EPOCH);
+    const after = fingerprintOrientation({ ...base, neverDropFacts: KEYS }, EPOCH);
+    expect(orientationUnchanged(before, after)).toBe(false);
+  });
+
+  it('does NOT re-emit merely because the fold returned the same keys in another order', () => {
+    const a = fingerprintOrientation({ ...base, neverDropFacts: [KEYS[0], KEYS[1]] }, EPOCH);
+    const b = fingerprintOrientation({ ...base, neverDropFacts: [KEYS[1], KEYS[0]] }, EPOCH);
+    expect(orientationUnchanged(a, b)).toBe(true);
+  });
+
+  it('stays inside the default budget even with many long keys', () => {
+    // composeOrientationBlock BREAKS on the first line that does not fit, so an
+    // unbounded fact line would silently truncate every line below it.
+    const many = Array.from({ length: 25 }, (_, i) => `guard-rail:${'long-slug-'.repeat(4)}${i}`);
+    const out = composeOrientationBlock({
+      state: { ...base, neverDropFacts: many },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
+    expect(out).toContain('never-drop facts');
+  });
+
+  it('still renders the higher-priority warning lines alongside it', () => {
+    const out = composeOrientationBlock({
+      state: { ...base, neverDropFacts: KEYS, unansweredDirected: 2 },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out).toContain('directed msg(s) awaiting YOUR reply');
+    expect(out).toContain('never-drop facts');
   });
 });
