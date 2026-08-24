@@ -1200,7 +1200,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     warn.mockRestore();
   });
 
-  it('buildIsolatedScopeArgv wraps the payload in a memory-capped transient user SCOPE', () => {
+  it('buildIsolatedScopeArgv wraps worker payloads in a memory-capped transient user SCOPE', () => {
     const argv = buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16);
     expect(argv[0]).toBe('systemd-run');
     expect(argv).toContain('--user');
@@ -1208,7 +1208,12 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(argv).toContain('--collect');
     expect(argv).toContain('--property=CollectMode=inactive-or-failed');
     expect(argv).toContain('--property=MemoryMax=16G');
-    expect(argv).toContain('--property=MemorySwapMax=0'); // mirror the bg-host swap policy
+    // WI-41206: worker scopes page at their cap instead of being OOM-killed when the host
+    // has free swap. The deny policy remains an explicit opt-in for known thrashers.
+    expect(argv).not.toContain('--property=MemorySwapMax=0');
+    expect(buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16, 'deny')).toContain(
+      '--property=MemorySwapMax=0',
+    );
     // Payload appended verbatim, in order, at the end.
     expect(argv.slice(-2)).toEqual(['/x/tsx', '/x/suite.ts']);
   });
