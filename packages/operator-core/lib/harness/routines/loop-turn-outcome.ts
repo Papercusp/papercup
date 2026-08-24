@@ -205,10 +205,205 @@ export interface LoopTurnOutcomeDeps {
   recordFire?: typeof defaultRecordFire;
   /** Injected pause seam for terminal context-overflow deaths. */
   autoPause?: typeof defaultAutoPauseLoopRoutine;
+  /** Context-overflow recovery seams. Each defaults to the production carry-respawn path. */
+  selfCompactionAvailability?: typeof defaultSelfCompactionAvailability;
+  buildRespawnSpec?: typeof buildOwnerRespawnLaunchSpec;
+  injectPsuHost?: typeof defaultInjectIntoHost;
+  markRespawnExpected?: typeof defaultMarkRespawnExpected;
+  bumpSessionEpoch?: typeof defaultBumpSessionEpoch;
+  materializeLoop?: typeof defaultMaterializeLoop;
+  /** Test/diagnostic seam; production resolves the owner's effective model window. */
+  effectiveWindowTokens?: number;
   now?: number;
   /** P-006 turn-settle nag seams. */
   getLoopCarryNote?: typeof defaultGetLoopCarryNote;
   stashWallNag?: typeof defaultStashLoopWallNag;
+}
+
+interface ContextOverflowRecoveryResult {
+  queued: boolean;
+  rearmed: boolean;
+  reason?: string;
+}
+
+async function resolveRecoveryWindowTokens(ownerId: string, override?: number): Promise<number> {
+  if (override != null && Number.isFinite(override) && override > 0) return Math.floor(override);
+  try {
+    const observed = await estimateContextWindowForOwner(ownerId);
+    if (observed != null && Number.isFinite(observed) && observed > 0) return Math.floor(observed);
+    const modelSpec = await resolveModelSpecForOwner(ownerId);
+    if (modelSpec) return modelWindowForSpec(modelSpec);
+  } catch {
+    // The recovery must not fail merely because telemetry/model lookup is unavailable.
+  }
+  return FALLBACK_EFFECTIVE_WINDOW_TOKENS;
+}
+
+function numericPayloadValue(payload: Record<string, unknown>, key: string): number | undefined {
+  const value = payload[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function recoveryKickoff(ref: LoopRoutineRef, ownerId: string, intervalSec: number): string {
+  const payload = ref.payloadTemplate;
+  // Preserve an explicit custom prompt. The default prompt is rebuilt as COLD so it does not
+  // tell the successor that it is continuing a warm transcript after the carry-respawn.
+  if (payload.customWakePrompt === true && typeof payload.kickoff === 'string' && payload.kickoff.trim()) {
+    return payload.kickoff;
+  }
+  const goal = typeof payload.goal === 'string' && payload.goal.trim() ? payload.goal : 'resume after context-overflow recovery';
+  return buildLoopWakePrompt({
+    ownerId,
+    intervalSec,
+    harness: ref.installSlug,
+    goal,
+    carry: 'cold',
+    continuation: payload.continuation === 'gated' ? 'gated' : 'settle',
+    mode: payload.mode === 'monitor' ? 'monitor' : 'work',
+  });
+}
+
+function recoveryMaterializeInput(ref: LoopRoutineRef, ownerId: string, now: number): MaterializeLoopInput {
+  const payload = ref.payloadTemplate;
+  const intervalSec = ref.intervalSec ?? 60;
+  const goal = typeof payload.goal === 'string' && payload.goal.trim() ? payload.goal : undefined;
+  const costCapCents = numericPayloadValue(payload, 'costCapCents');
+  const maxFires = numericPayloadValue(payload, 'maxFires');
+  const maxDurationSec = numericPayloadValue(payload, 'maxDurationSec');
+  return {
+    workspaceId: ref.workspaceId,
+    harnessSlug: ref.installSlug,
+    ownerId,
+    intervalSec,
+    kickoff: recoveryKickoff(ref, ownerId, intervalSec),
+    customWakePrompt: payload.customWakePrompt === true,
+    ...(goal ? { goal } : {}),
+    ...(costCapCents != null ? { costCapCents } : {}),
+    ...(maxFires != null ? { maxFires } : {}),
+    ...(maxDurationSec != null ? { maxDurationSec } : {}),
+    carry: 'cold',
+    continuation: payload.continuation === 'gated' ? 'gated' : 'settle',
+    mode: payload.mode === 'monitor' ? 'monitor' : 'work',
+    active: true,
+    onlyIfInactive: true,
+    sql: undefined,
+    now: new Date(now),
+  };
+}
+
+function recoveryFirstPrompt(ownerId: string, spec: RespawnLaunchSpec): string {
+  if (spec.firstPrompt?.trim()) return spec.firstPrompt;
+  try {
+    return tagTurnForInjection({
+      sid: ownerId,
+      origin: 'watchdog',
+      text: CONTEXT_OVERFLOW_RECOVERY_PROMPT,
+    }).taggedText;
+  } catch {
+    return CONTEXT_OVERFLOW_RECOVERY_PROMPT;
+  }
+}
+
+/**
+ * Queue a deterministic carry-respawn for a context-overflowed loop owner, then restore the
+ * loop as a COLD routine. Every step before the host accepts the carry is deliberately guarded:
+ * the old loop stays paused and no marker/epoch write or materialization can claim that a
+ * successor exists when it does not. `onlyIfInactive` on the final materialization is the CAS
+ * rail against an explicit loop:arm racing this stale death observation.
+ */
+async function recoverContextOverflow(
+  sql: Sql,
+  ref: LoopRoutineRef,
+  deps: LoopTurnOutcomeDeps,
+  now: number,
+): Promise<ContextOverflowRecoveryResult> {
+  const ownerId = ref.targetOwnerId?.trim();
+  if (!ownerId) return { queued: false, rearmed: false, reason: 'missing_target_owner' };
+
+  let availability: SelfCompactionAvailability;
+  try {
+    const canCompact = deps.selfCompactionAvailability ?? defaultSelfCompactionAvailability;
+    availability = canCompact(ownerId);
+  } catch (e) {
+    return {
+      queued: false,
+      rearmed: false,
+      reason: `host_probe_failed:${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (!availability.available) return { queued: false, rearmed: false, reason: availability.reason };
+
+  const effectiveWindowTokens = await resolveRecoveryWindowTokens(ownerId, deps.effectiveWindowTokens);
+  const buildSpec = deps.buildRespawnSpec ?? buildOwnerRespawnLaunchSpec;
+  let spec: RespawnLaunchSpec | null;
+  try {
+    spec = await buildSpec(ownerId, {
+      effectiveWindowTokens,
+      buildOpts: { workspaceId: ref.workspaceId, boundaryDeliberate: true },
+    });
+  } catch (e) {
+    return {
+      queued: false,
+      rearmed: false,
+      reason: `carry_build_failed:${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (!spec) return { queued: false, rearmed: false, reason: 'carry_build_failed' };
+
+  const inject = deps.injectPsuHost ?? defaultInjectIntoHost;
+  let queued = false;
+  try {
+    queued = await inject(
+      availability.host.sock,
+      {
+        mode: 'carry-respawn',
+        data: recoveryFirstPrompt(ownerId, spec),
+        systemPromptAddendum: spec.systemPromptAddendum,
+        ownerId,
+      },
+      CARRY_RESPAWN_SOCKET_TIMEOUT_MS,
+    );
+  } catch (e) {
+    return {
+      queued: false,
+      rearmed: false,
+      reason: `carry_queue_failed:${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  if (!queued) return { queued: false, rearmed: false, reason: 'carry_queue_rejected' };
+
+  // The host accepted the cut. Only now may SessionEnd skip claim release and the successor
+  // re-prime memory after its context boundary. Both writes are best-effort, matching the
+  // deliberate session:request-compaction path; neither can turn an accepted queue into a
+  // reported failure.
+  try {
+    await (deps.markRespawnExpected ?? defaultMarkRespawnExpected)(ownerId);
+  } catch (e) {
+    log(`respawn marker failed for loop ${ref.id}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  try {
+    await (deps.bumpSessionEpoch ?? defaultBumpSessionEpoch)(sql, ownerId);
+  } catch (e) {
+    log(`session epoch bump failed for loop ${ref.id}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  try {
+    const materialized = await (deps.materializeLoop ?? defaultMaterializeLoop)({
+      ...recoveryMaterializeInput(ref, ownerId, now),
+      sql,
+    });
+    return {
+      queued: true,
+      rearmed: materialized.changed,
+      ...(materialized.changed ? {} : { reason: 'cold_rearm_raced_existing_active_loop' }),
+    };
+  } catch (e) {
+    return {
+      queued: true,
+      rearmed: false,
+      reason: `cold_rearm_failed:${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 }
 
 /**
@@ -220,7 +415,16 @@ export async function handleLoopResumeTurnExit(
   d: DeliveryWork,
   raw: ResumeTurnExitRaw,
   deps: LoopTurnOutcomeDeps = {},
-): Promise<{ handled: boolean; routineId?: string; class?: string; rearmedMs?: number; nagged?: boolean }> {
+): Promise<{
+  handled: boolean;
+  routineId?: string;
+  class?: string;
+  rearmedMs?: number;
+  nagged?: boolean;
+  recoveryQueued?: boolean;
+  recoveryRearmed?: boolean;
+  recoveryReason?: string;
+}> {
   try {
     const routineId = loopRoutineIdFromSource(d.source);
     if (!routineId) return { handled: false }; // not a loop wake — nothing to attribute
@@ -281,6 +485,7 @@ export async function handleLoopResumeTurnExit(
     const contextOverflow = String(klass) === 'context_overflow';
     let delayMs: number | undefined;
     let rearmed = false;
+    let recovery: ContextOverflowRecoveryResult | undefined;
     if (contextOverflow || staleResumeTarget) {
       const autoPause = deps.autoPause ?? defaultAutoPauseLoopRoutine;
       const pauseReason = contextOverflow
@@ -292,6 +497,14 @@ export async function handleLoopResumeTurnExit(
         pauseReason,
         'loop-turn-outcome',
       ).catch((e) => log(`terminal pause failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
+      if (contextOverflow) {
+        recovery = await recoverContextOverflow(sql, ref, deps, now);
+        log(
+          `loop '${routineId}' context-overflow recovery: ${recovery.queued ? 'carry queued' : 'carry not queued'}${
+            recovery.reason ? ` (${recovery.reason})` : ''
+          }${recovery.rearmed ? ', cold loop re-armed' : ''}`,
+        );
+      }
     } else {
       // 429-aware re-arm (P1a) — only while still parked at 'infinity' (the dead turn).
       const intervalMs = (ref.intervalSec ?? 60) * 1000;
@@ -356,7 +569,11 @@ export async function handleLoopResumeTurnExit(
               `leader, consider relaunching leadership on another account/session rather than waiting out the cap.` +
               (contextOverflow
                 ? ` [context-overflow terminal guard: the loop was paused instead of re-arming the same ` +
-                  `oversized warm transcript; recover it with a fresh carry-respawn or corrected launch.]`
+                  `oversized warm transcript; ${
+                    recovery?.queued
+                      ? 'a carry-respawn was queued and the loop will resume cold.'
+                      : `recovery was not queued${recovery?.reason ? ` (${recovery.reason})` : ''}.`
+                  }]`
                 : staleResumeTarget
                 ? ` [stale-resume-target terminal guard: the loop was paused instead of re-arming a ` +
                   `missing native session; relaunch or rebind the owner before resuming the loop.]`
@@ -388,7 +605,19 @@ export async function handleLoopResumeTurnExit(
       }
     }
 
-    return { handled: true, routineId, class: klass, rearmedMs: rearmed ? delayMs : undefined };
+    return {
+      handled: true,
+      routineId,
+      class: klass,
+      rearmedMs: rearmed ? delayMs : undefined,
+      ...(recovery
+        ? {
+            recoveryQueued: recovery.queued,
+            recoveryRearmed: recovery.rearmed,
+            ...(recovery.reason ? { recoveryReason: recovery.reason } : {}),
+          }
+        : {}),
+    };
   } catch (e) {
     log(`handler failed (fail-soft): ${e instanceof Error ? e.message : e}`);
     return { handled: false };
