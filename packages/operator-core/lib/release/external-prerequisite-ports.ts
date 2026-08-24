@@ -40,6 +40,7 @@ import {
   isPrerequisiteSatisfied,
   resolvePrerequisiteReadiness,
   rowToAttestation,
+  type ExternalCapabilityKind,
   type ExternalPrerequisiteAttestation,
   type ExternalPrerequisiteAttestationRow,
   type ExternalPrerequisiteSpec,
@@ -328,9 +329,18 @@ export function createProbeRunnerPorts(
   };
 }
 
-/** One prerequisite's derived verdict, as of a single evaluation instant. */
+/**
+ * One prerequisite's derived verdict, as of a single evaluation instant.
+ *
+ * Carries `capabilityKind` and `owningWorkItem` from the spec so that a refusal built
+ * from these snapshots can NAME the accountable lane without re-joining against the
+ * spec list — the item's requirement that an operator not have to "re-read work items
+ * to discover" which wall is down.
+ */
 export interface PrerequisiteReadinessSnapshot {
   readonly key: string;
+  readonly capabilityKind: ExternalCapabilityKind;
+  readonly owningWorkItem: string;
   readonly readiness: PrerequisiteReadiness;
   readonly satisfied: boolean;
 }
@@ -368,7 +378,13 @@ export async function readScopePrerequisiteReadiness(
 
   return specs.map((spec) => {
     const readiness = resolvePrerequisiteReadiness(rowToAttestation(byKey.get(spec.key) ?? null), nowMs);
-    return { key: spec.key, readiness, satisfied: isPrerequisiteSatisfied(readiness) };
+    return {
+      key: spec.key,
+      capabilityKind: spec.capabilityKind,
+      owningWorkItem: spec.owningWorkItem,
+      readiness,
+      satisfied: isPrerequisiteSatisfied(readiness),
+    };
   });
 }
 
@@ -387,4 +403,80 @@ export function unsatisfiedPrerequisites(
   snapshots: readonly PrerequisiteReadinessSnapshot[],
 ): PrerequisiteReadinessSnapshot[] {
   return snapshots.filter((s) => !s.satisfied);
+}
+
+/** Why one prerequisite refused, as data rather than prose. */
+export interface PrerequisiteRefusalEntry {
+  readonly key: string;
+  readonly capabilityKind: ExternalCapabilityKind;
+  /** The lane accountable for this wall — so the operator does not go hunting. */
+  readonly owningWorkItem: string;
+  /** The readiness state that refused: 'absent' | 'expired' | 'unknown'. */
+  readonly state: PrerequisiteReadiness['state'];
+  /** The machine-readable discriminator behind `state`. */
+  readonly reason: string;
+  /** Set only when the receipt lapsed, so a caller can say how stale it is. */
+  readonly expiredAt?: string;
+}
+
+/**
+ * A typed refusal naming every prerequisite that is not standing.
+ *
+ * The P-005 item asks for exactly this shape: "an absent/expired prerequisite is a
+ * typed, named refusal (NOT a prose wall an operator must re-read work items to
+ * discover)". So each entry carries its own key, its state, the discriminating reason
+ * and — the part that removes the hunting — the `owningWorkItem` accountable for it.
+ * `summary` is DERIVED from the entries for a human reader; it is a rendering of the
+ * data, never the place the information lives.
+ */
+export interface ExternalPrerequisiteRefusal {
+  readonly refused: true;
+  readonly code: 'external-prerequisite-not-standing';
+  readonly prerequisites: PrerequisiteRefusalEntry[];
+  readonly summary: string;
+}
+
+/** The discriminating reason for a non-ready readiness, as a stable token. */
+function refusalReason(readiness: PrerequisiteReadiness): string {
+  switch (readiness.state) {
+    case 'absent':
+      return readiness.reason; // 'no-attestation' | 'probe-reported-absent'
+    case 'expired':
+      return 'receipt-expired';
+    case 'unknown':
+      return readiness.reason;
+    case 'ready':
+      // Unreachable for a refusal entry; kept exhaustive so a new readiness member
+      // is a compile error here rather than a silently missing reason.
+      return 'ready';
+  }
+}
+
+/**
+ * Build the gate's refusal, or `null` when every prerequisite is standing.
+ *
+ * Returning `null` rather than an empty refusal keeps the caller's check honest: a
+ * gate writes `const refusal = refusePrerequisites(...); if (refusal) …`, which cannot
+ * accidentally treat "nothing refused" as a refusal object that happens to be empty.
+ */
+export function refusePrerequisites(
+  snapshots: readonly PrerequisiteReadinessSnapshot[],
+): ExternalPrerequisiteRefusal | null {
+  const failing = unsatisfiedPrerequisites(snapshots);
+  if (failing.length === 0) return null;
+
+  const prerequisites: PrerequisiteRefusalEntry[] = failing.map((s) => ({
+    key: s.key,
+    capabilityKind: s.capabilityKind,
+    owningWorkItem: s.owningWorkItem,
+    state: s.readiness.state,
+    reason: refusalReason(s.readiness),
+    ...(s.readiness.state === 'expired' ? { expiredAt: s.readiness.expiredAt } : {}),
+  }));
+
+  const summary =
+    `${prerequisites.length} external prerequisite${prerequisites.length === 1 ? '' : 's'} not standing: ` +
+    prerequisites.map((p) => `${p.key} (${p.state}: ${p.reason}, owner ${p.owningWorkItem})`).join('; ');
+
+  return { refused: true, code: 'external-prerequisite-not-standing', prerequisites, summary };
 }
