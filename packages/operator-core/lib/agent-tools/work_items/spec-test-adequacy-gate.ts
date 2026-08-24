@@ -9,10 +9,11 @@ import { listSpecClauses } from '../plans/spec-clauses-store';
 import {
   planStampOf,
   resolveWorkItemBehaviorContract,
-  type PlanStamp,
+  type ResolveBehaviorContractDeps,
   type WorkItemBehaviorContract,
   type WorkItemForContract,
 } from '../plans/behavior-contract-resolver';
+import type { EnforcementEligibility } from '../plans/spec-enforcement-eligibility';
 import {
   evaluateSpecTestAdequacy,
   requiredProofFloor,
@@ -49,6 +50,21 @@ type WorkItemForSpecGate = WorkItemForContract;
 const ENFORCEABLE_LIFECYCLE = new Set(['active', 'accepted']);
 
 /**
+ * Human-readable gloss for each machine-readable eligibility reason.
+ *
+ * Keyed by `EnforcementEligibility['reason']` so a new reason cannot be added there and
+ * silently render as `undefined` here — the `satisfies` makes tsc demand this entry.
+ */
+const NOT_ENFORCED_BECAUSE = {
+  historical:
+    "the plan already shipped, so its clauses are carried for visibility and never block — no action needed",
+  'pre-enforcement':
+    'the plan is still a draft, so its clauses are candidate inputs until it is promoted (D-012)',
+  'not-yet-reconciled':
+    'the plan is active but has not adopted behavior clauses yet — reconcile that plan to enforce them',
+} satisfies Record<Extract<EnforcementEligibility, { enforcing: false }>['reason'], string>;
+
+/**
  * Build the advisory report (D-013). Returns undefined when there is nothing to say, so
  * a caller can treat a populated string as "worth surfacing" without inferring a verdict
  * from its mere presence.
@@ -57,28 +73,37 @@ const ENFORCEABLE_LIFECYCLE = new Set(['active', 'accepted']);
  * obligations that were invisible before P-016 resolved applicability across plan
  * namespaces. Naming them without acting on them is exactly the split D-013 assigns.
  */
-function advisoryImpactReport(
-  contract: WorkItemBehaviorContract,
-  stamp: PlanStamp | null,
-): string | undefined {
+function advisoryImpactReport(contract: WorkItemBehaviorContract): string | undefined {
   const parts: string[] = [];
   // The resolver's own report: a behavior-changing item that resolved no clause at all.
   if (contract.impact.report) parts.push(contract.impact.report);
 
-  // Clauses reachable ONLY through an edge into another plan's namespace (or through no
-  // plan stamp at all). Before P-016 the gate scoped its edge read to the stamped plan,
-  // so these resolved to nothing and were silently absent rather than reported.
-  const unenforced = contract.groups
-    .filter((group) => group.planSlug !== stamp?.planSlug)
-    .flatMap((group) =>
-      group.clauses
-        .filter((clause) => ENFORCEABLE_LIFECYCLE.has(clause.lifecycleStatus))
-        .map((clause) => `${group.planSlug}/${clause.specId}@${clause.revision}`),
-    );
-  if (unenforced.length) {
+  // Clauses this item genuinely owns that are nonetheless NOT enforced, grouped by WHY.
+  //
+  // P-013 moved the boundary this report describes. Under P-016 the unenforced set was
+  // "every namespace but the stamped one", because cross-namespace resolution was
+  // reported-only; that is no longer true — a cross-namespace clause in an eligible plan
+  // now refuses. The remaining unenforced set is exactly the plans that are not yet
+  // ELIGIBLE, so the report must name the eligibility reason rather than repeat the old
+  // provenance split. Reporting the reason is also P-013's own scope line ("instrument
+  // gate reasons"): `historical` is a correct permanent exemption and needs no follow-up,
+  // while `not-yet-reconciled` is a migration TODO on that plan. A bare "not enforced"
+  // collapses the two, and they want opposite action.
+  const byReason = new Map<string, string[]>();
+  for (const group of contract.groups) {
+    if (group.eligibility.enforcing) continue;
+    const labels = group.clauses
+      .filter((clause) => ENFORCEABLE_LIFECYCLE.has(clause.lifecycleStatus))
+      .map((clause) => `${group.planSlug}/${clause.specId}@${clause.revision}`);
+    if (labels.length === 0) continue;
+    const bucket = byReason.get(group.eligibility.reason);
+    if (bucket) bucket.push(...labels);
+    else byReason.set(group.eligibility.reason, [...labels]);
+  }
+  for (const [reason, labels] of byReason) {
     parts.push(
-      `resolved ${unenforced.length} active clause(s) outside this item's plan provenance: ${unenforced.join(', ')}. ` +
-        'Reported, not enforced — P-013 owns turning cross-namespace resolution into a hard gate.',
+      `resolved ${labels.length} active clause(s) that are NOT enforced (${NOT_ENFORCED_BECAUSE[reason]}): ` +
+        `${labels.join(', ')}. Reported, not enforced.`,
     );
   }
 
@@ -130,12 +155,19 @@ export async function specTestAdequacyCompletionGate(
     listEdges?: typeof listWorkItemSpecRevisionEdges;
     listEvidence?: typeof listSpecEvidence;
     listCards?: typeof listScorecards;
+    /**
+     * Forwarded to the contract resolver, which needs plan status to decide eligibility.
+     * Exposed here rather than left to the resolver's default so this gate stays fully
+     * injectable — a unit test that could not stub it would open a real database.
+     */
+    listPlanStatuses?: ResolveBehaviorContractDeps['listPlanStatuses'];
   } = {},
 ): Promise<SpecAdequacyCompletionGateResult> {
   const listClauses = deps.listClauses ?? listSpecClauses;
   const listEdges = deps.listEdges ?? listWorkItemSpecRevisionEdges;
   const listEvidence = deps.listEvidence ?? listSpecEvidence;
   const listCards = deps.listCards ?? listScorecards;
+  const listPlanStatuses = deps.listPlanStatuses;
 
   // D-012/D-013: applicability is BEHAVIOR-owned, not plan-owned. Resolve the item's
   // whole contract across plan namespaces FIRST. Before P-016 this function opened with
@@ -143,26 +175,39 @@ export async function specTestAdequacyCompletionGate(
   // read edges scoped to `stamp.planSlug`, so (i) a STANDALONE bug/change resolved
   // nothing at all and (ii) an edge into another plan's namespace was invisible. Both
   // are resolvable states now, which is the gap D-012 exists to close.
-  const contract = await resolveWorkItemBehaviorContract(input.workItem, { listEdges, listClauses });
+  const contract = await resolveWorkItemBehaviorContract(input.workItem, {
+    listEdges,
+    listClauses,
+    listPlanStatuses,
+  });
   const stamp = planStampOf(input.workItem);
-  const impactReport = advisoryImpactReport(contract, stamp);
+  const impactReport = advisoryImpactReport(contract);
   const withReport = <T extends object>(result: T): T & { impactReport?: string } =>
     impactReport ? { ...result, impactReport } : result;
 
-  // ⚠ D-013 SPLITS this surface deliberately, and the split is load-bearing: P-016
-  // REPORTS the newly-resolved surface; P-013 turns the same reconciled condition into
-  // hard enforcement. So the ENFORCED set below stays exactly what the plan-stamped path
-  // enforced before P-016 — the stamped namespace's own clauses, same merge order, same
-  // lifecycle filter. Widening it here would ship P-013's hard gate early and could
-  // refuse completions fleet-wide on edges authored as documentation. The newly-visible
-  // clauses travel in `impactReport` instead, where they inform without blocking.
-  const enforcedGroup = stamp
-    ? contract.groups.find((group) => group.planSlug === stamp.planSlug)
-    : undefined;
-  const clauses = (enforcedGroup?.clauses ?? []).filter((clause) =>
-    ENFORCEABLE_LIFECYCLE.has(clause.lifecycleStatus),
-  );
-  if (!stamp || clauses.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
+  // P-013 CLOSES the D-013 split this block used to hold open. P-016 resolved clauses
+  // across plan namespaces but deliberately enforced only the stamped namespace's, so a
+  // cross-namespace obligation was visible and toothless; that half-state was always
+  // meant to end here.
+  //
+  // The enforced set is now every ELIGIBLE namespace's clauses — eligibility being the
+  // single predicate in `spec-enforcement-eligibility.ts`, computed once by the resolver
+  // so this gate and the sync-resolver view that renders it cannot drift. That predicate
+  // is what keeps the widening from refusing fleet-wide: a shipped plan (historical), a
+  // draft (pre-enforcement), and an active-but-unreconciled plan all stay report-only, so
+  // enforcement arrives per plan as each is reconciled — "new and explicitly reconciled
+  // plans, then migrate active plans individually", which is this item's scope line.
+  //
+  // The `!stamp` early return is GONE with it, and that is a behavior change worth naming:
+  // a standalone bug/change whose edges reach an eligible plan's clauses is now enforced.
+  // Keeping that return would have re-created the D-012 gap one level down — an item
+  // escaping its own resolved obligations purely by carrying no plan provenance.
+  const enforcingGroups = contract.groups.filter((group) => group.eligibility.enforcing);
+  const enforcedPlanSlugs = enforcingGroups.map((group) => group.planSlug);
+  const clauses = enforcingGroups
+    .flatMap((group) => group.clauses)
+    .filter((clause) => ENFORCEABLE_LIFECYCLE.has(clause.lifecycleStatus));
+  if (clauses.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
 
   if (!input.attestation) {
     const potentiallyTestRequiring = clauses.filter(
@@ -183,9 +228,21 @@ export async function specTestAdequacyCompletionGate(
 
   const relevant = clauses.filter((clause) => requiredProofFloor(clause, input.attestation!.classRef) !== 'none');
   if (relevant.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
+  // ⚠ The evidence read is scoped by the SAME namespaces as the enforced clause set, and
+  // that coupling is not optional. This was `planSlug: stamp.planSlug` — a single-plan
+  // read. Widening the enforced set above while leaving this read single-plan would make
+  // every cross-namespace clause find ZERO evidence and refuse spuriously: the gate would
+  // demand proof it had just made itself unable to see. `listSpecEvidence` takes
+  // `planSlugs` for exactly this reason, and it is ONE query, not an N-plan fan-out, so
+  // the 1000-row safety limit below still caps the whole selection.
+  //
+  // Evidence is not cross-credited between namespaces despite the wider read:
+  // `evaluateSpecTestAdequacy` matches each row on `planSlug` AND `specId`, so two plans
+  // sharing a spec id cannot satisfy each other's clause.
+  const harnessSlug = stamp?.harnessSlug ?? input.workItem.harness?.trim() ?? undefined;
   const evidence = await listEvidence({
-    harnessSlug: stamp.harnessSlug,
-    planSlug: stamp.planSlug,
+    harnessSlug,
+    planSlugs: enforcedPlanSlugs,
     workItemIds: [input.workItem.id],
     specIds: relevant.map((clause) => clause.specId),
     current: input.attestation.current,
