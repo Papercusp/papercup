@@ -232,7 +232,7 @@ export async function insertGoalRow(tx: GoalSqlTag, row: GoalRowInput): Promise<
        ${row.inputSchema && Object.keys(row.inputSchema).length ? JSON.stringify(row.inputSchema) : null}::jsonb,
        ${row.inputs && Object.keys(row.inputs).length ? JSON.stringify(row.inputs) : null}::jsonb,
        ${row.outputSchema && Object.keys(row.outputSchema).length ? JSON.stringify(row.outputSchema) : null}::jsonb,
-       ${JSON.stringify(row.propertySchema ?? {})}::jsonb)
+       COALESCE(${row.propertySchema && Object.keys(row.propertySchema).length ? JSON.stringify(row.propertySchema) : null}::jsonb, '{}'::jsonb))
   `;
 }
 
