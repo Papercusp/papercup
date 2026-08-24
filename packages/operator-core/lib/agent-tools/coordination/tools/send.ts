@@ -1400,7 +1400,8 @@ async function sendOne(
       const timeoutNote =
         `Wake completion timed out for ${targets}; delivery is UNKNOWN because the underlying wake ` +
         'may still finish after this response. Verify pickup via coord:inbox/coord:read or the ' +
-        'recipient work-item checkpoint before claiming the holder was nudged.';
+        'recipient work-item checkpoint; if a receiptEvent also times out, check coord:watermark ' +
+        '({ agent, sent_ts }) for messages_shown_ts/read_through_ts before claiming the holder was nudged.';
       wake.note = wake.note ? `${wake.note} ${timeoutNote}` : timeoutNote;
     }
     const missed =

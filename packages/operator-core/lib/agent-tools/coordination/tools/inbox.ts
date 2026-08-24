@@ -15,6 +15,7 @@ import {
   drainAndDeliverUserMailbox,
   getSupersededMap,
   getRemoteOriginMsgIds,
+  sendMessage,
 } from "../messages";
 import { heartbeatPresence, getPresence } from "../presence";
 import { createPresenceBeatThrottle } from "../presence-beat-throttle";
@@ -131,6 +132,127 @@ export { excludeIntentDeclares, isAmbientBroadcast, coalesceRepeatedBroadcasts }
  *  (UNANSWERED_NEWEST_CAP=3) since a single-recipient inbox read wants EVERY
  *  unanswered msg_id it can filter on, not just the newest few for display. */
 const UNANSWERED_FILTER_CAP = 200;
+
+const receiptEventKey = (msgId: string): string => `coord:receipt:${msgId}`;
+
+function isDuplicateKeyError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && current; depth += 1) {
+    if (
+      typeof current === "object" &&
+      current !== null &&
+      (current as { code?: unknown }).code === "23505"
+    ) {
+      return true;
+    }
+    current =
+      typeof current === "object" && current !== null
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
+}
+
+/**
+ * Return receipt-requesting directed messages that this read shows for the
+ * first time. The watermark is a timestamp cursor, so the strict comparison
+ * matches the write-through guard below; repeated VIEW reads retry only when a
+ * receipt emission failed before the cursor advanced.
+ */
+export function newlyShownReceiptEntries(
+  entries: readonly Record<string, unknown>[],
+  ownerId: string,
+  previousShownTs: string,
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const msgId = entry.msg_id;
+    const ts = entry.ts;
+    const to = entry.to;
+    if (
+      typeof msgId !== "string" ||
+      msgId.length === 0 ||
+      typeof ts !== "string" ||
+      ts.length === 0 ||
+      (previousShownTs.length > 0 && ts <= previousShownTs) ||
+      entry.receipt !== true ||
+      !Array.isArray(to) ||
+      !to.includes(ownerId) ||
+      to.includes("*") ||
+      seen.has(msgId)
+    ) {
+      return false;
+    }
+    seen.add(msgId);
+    return true;
+  });
+}
+
+async function emitReadReceipt(
+  entry: Record<string, unknown>,
+  identity: { ownerId: string; workspaceId?: string | null },
+): Promise<void> {
+  const msgId = entry.msg_id as string;
+  const key = receiptEventKey(msgId);
+  const payload = {
+    msg_id: msgId,
+    delivered: true,
+    read: true,
+    woken: 0,
+  };
+
+  // Fire the local latch first. This covers same-machine senders immediately;
+  // the stable fed-event below carries the same key back to a remote origin.
+  const { emitAwaitedEvent } = await import("../../../events/await/engine");
+  await emitAwaitedEvent({
+    key,
+    payload,
+    summary: `[receipt] ${msgId}`,
+    source: "coord:inbox",
+    workspaceId: identity.workspaceId ?? undefined,
+  });
+
+  const harnessSlug = entry.harness_slug;
+  if (typeof harnessSlug !== "string" || harnessSlug.length === 0) return;
+
+  let machine = "unknown";
+  try {
+    const { machineFingerprint } = await import("../../../identity/device-keychain-id");
+    machine = machineFingerprint();
+  } catch {
+    // The receipt remains useful without an optional machine label.
+  }
+
+  try {
+    await sendMessage(
+      {
+        ownerId: "fed-receipt",
+        ownerLabel: "fed-receipt",
+        source: "system",
+        workspaceId: identity.workspaceId ?? undefined,
+        userId: null,
+      } as never,
+      {
+        // The event key is the replay key. A second inbox read or a projection
+        // race therefore hits the fed unique index instead of duplicating the
+        // receipt row; that duplicate is an already-successful receipt.
+        msgId: key,
+        to: [],
+        summary: `[receipt] ${msgId}`,
+        harnessSlug,
+        extra: {
+          fed_event: {
+            key,
+            payload: { ...payload, machine },
+            source: "fed-receipt",
+          },
+        },
+      },
+    );
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) throw error;
+  }
+}
 
 /** context-trimming-tiers P-012: a trimmed/standard session gets TIGHTER
  *  DEFAULTS (fewer entries, shorter bodies) — explicit `limit`/`max_body_chars`
@@ -784,6 +906,21 @@ export default defineTool({
       }
     }
 
+    // EI-213057 READ-RECEIPT: emit receipts for newly SHOWN directed messages before
+    // advancing this agent's `messages_shown_ts` cursor. The watermark is the sender's
+    // read proof, so a failed receipt must leave it untouched; the next VIEW read then
+    // retries the same stable `coord:receipt:<msg_id>` event instead of falsely claiming
+    // the sender can observe a receipt that was never persisted.
+    const newlyShownReceipts = newlyShownReceiptEntries(
+      injectionEntries as unknown as Array<Record<string, unknown>>,
+      identity.ownerId,
+      wm.messages_shown_ts,
+    );
+    const receiptResults = await Promise.allSettled(
+      newlyShownReceipts.map((entry) => emitReadReceipt(entry, identity)),
+    );
+    const receiptsEmitted = receiptResults.every((result) => result.status === "fulfilled");
+
     // EI-2042 READ-RECEIPT: advance this agent's `messages_shown_ts` cursor to the newest
     // entry just SHOWN to them — DETERMINISTICALLY here in tool code (the moment the
     // `[coord+N]` block is assembled for the agent), NOT via the LLM/turn-end hook. This
@@ -793,7 +930,7 @@ export default defineTool({
     // re-delivers). Monotonic by guard (only ever forward — you can't un-see a message;
     // writeWatermark itself is last-write-wins, so the guard is what keeps shown_ts from
     // moving backward) + best-effort (a write failure must never break the inbox read).
-    if (summary.newest_ts && summary.newest_ts > wm.messages_shown_ts) {
+    if (receiptsEmitted && summary.newest_ts && summary.newest_ts > wm.messages_shown_ts) {
       await writeWatermark(identity.ownerId, {
         messages_shown_ts: summary.newest_ts,
       }).catch(() => {});

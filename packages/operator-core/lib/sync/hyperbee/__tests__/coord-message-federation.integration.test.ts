@@ -700,9 +700,10 @@ describe('coord_event_log federation (real PG)', () => {
       expect(sendMessage).toHaveBeenCalledTimes(1);
       const [identity, opts] = vi.mocked(sendMessage).mock.calls[0] as [
         { ownerId: string },
-        { to: string[]; harnessSlug?: string; extra?: { fed_event?: { key: string; payload: Record<string, unknown> } } },
+        { msgId?: string; to: string[]; harnessSlug?: string; extra?: { fed_event?: { key: string; payload: Record<string, unknown> } } },
       ];
       expect(identity.ownerId).toBe('fed-receipt');
+      expect(opts.msgId).toBe('coord:receipt:rcpt-1');
       expect(opts.to).toEqual([]); // no inbox noise
       expect(opts.harnessSlug).toBe(HARNESS); // rides back over the same hive scope
       expect(opts.extra?.fed_event?.key).toBe('coord:receipt:rcpt-1');
@@ -867,8 +868,10 @@ describe('coord_event_log federation (real PG)', () => {
       );
       expect(sendMessage).toHaveBeenCalledTimes(1);
       const opts2 = vi.mocked(sendMessage).mock.calls[0][1] as {
+        msgId?: string;
         extra?: { fed_event?: { key: string; payload: Record<string, unknown> } };
       };
+      expect(opts2.msgId).toBe('coord:receipt:q-5');
       expect(opts2.extra?.fed_event?.key).toBe('coord:receipt:q-5');
       expect(opts2.extra?.fed_event?.payload).toMatchObject({
         delivered: false,

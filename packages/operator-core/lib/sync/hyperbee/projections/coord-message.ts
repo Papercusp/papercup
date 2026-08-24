@@ -258,6 +258,7 @@ async function writeToPg(
               userId: null,
             } as never,
             {
+              msgId: `coord:receipt:${row.msg_id}`,
               to: [],
               summary: `[receipt] ${row.msg_id}`,
               harnessSlug: row.harness_slug,
@@ -552,6 +553,7 @@ async function writeToPg(
             userId: null,
           } as never,
           {
+            msgId: `coord:receipt:${row.msg_id}`,
             to: [],
             summary: `[receipt] ${row.msg_id}`,
             harnessSlug: row.harness_slug,

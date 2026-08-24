@@ -29,6 +29,9 @@ const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
   readWatermark: vi.fn(async () => ({ messages_shown_ts: "" })),
   writeWatermark: vi.fn(async () => ({})),
+  emitAwaitedEvent: vi.fn(async () => ({})),
+  sendMessage: vi.fn(async () => ({})),
+  machineFingerprint: vi.fn(() => "test-machine"),
 }));
 
 vi.mock("../identity", () => ({
@@ -45,6 +48,7 @@ vi.mock("../actor-identity", () => ({
 vi.mock("../messages", () => ({
   readInbox: M.readInbox,
   drainAndDeliverUserMailbox: vi.fn(async () => {}),
+  sendMessage: M.sendMessage,
 }));
 vi.mock("../presence", () => ({
   heartbeatPresence: vi.fn(async () => {}),
@@ -56,6 +60,12 @@ vi.mock("../watermarks", () => ({
 }));
 vi.mock("@papercusp/coordination/core", () => ({
   emptyWatermark: () => ({ messages_shown_ts: "" }),
+}));
+vi.mock("../../../events/await/engine", () => ({
+  emitAwaitedEvent: M.emitAwaitedEvent,
+}));
+vi.mock("../../../identity/device-keychain-id", () => ({
+  machineFingerprint: M.machineFingerprint,
 }));
 vi.mock("../presence-snapshot", () => ({
   resolvePresenceScope: async () => ({}),
@@ -101,6 +111,9 @@ beforeEach(() => {
   M.readInbox.mockImplementation(async () => []);
   M.readWatermark.mockImplementation(async () => ({ messages_shown_ts: "" }));
   M.writeWatermark.mockImplementation(async () => ({}));
+  M.emitAwaitedEvent.mockImplementation(async () => ({}));
+  M.sendMessage.mockImplementation(async () => ({}));
+  M.machineFingerprint.mockImplementation(() => "test-machine");
 });
 
 describe("coord:inbox EI-2042 read-receipt write-through", () => {
@@ -153,5 +166,73 @@ describe("coord:inbox EI-2042 read-receipt write-through", () => {
       "owner-z",
       expect.objectContaining({ messages_shown_ts: a.ts }),
     );
+  });
+
+  it("emits a stable receipt for a newly shown directed message before advancing the cursor", async () => {
+    const a = {
+      ...msg("2026-07-18T10:00:00.000Z", "receipt-1"),
+      receipt: true,
+      harness_slug: "harness-a",
+    };
+    M.readInbox.mockImplementation(async () => [a]);
+
+    await callInbox();
+
+    expect(M.emitAwaitedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "coord:receipt:receipt-1",
+        payload: expect.objectContaining({ msg_id: "receipt-1", read: true }),
+      }),
+    );
+    expect(M.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: "fed-receipt" }),
+      expect.objectContaining({
+        msgId: "coord:receipt:receipt-1",
+        extra: expect.objectContaining({
+          fed_event: expect.objectContaining({ key: "coord:receipt:receipt-1" }),
+        }),
+      }),
+    );
+    expect(M.writeWatermark).toHaveBeenCalledWith("owner-a", {
+      messages_shown_ts: a.ts,
+    });
+  });
+
+  it("leaves the cursor unchanged when receipt emission fails so a later VIEW retries", async () => {
+    const a = {
+      ...msg("2026-07-18T10:00:00.000Z", "receipt-retry"),
+      receipt: true,
+      harness_slug: "harness-a",
+    };
+    M.readInbox.mockImplementation(async () => [a]);
+    M.sendMessage.mockRejectedValueOnce(new Error("fed outbox unavailable"));
+
+    await callInbox();
+    expect(M.writeWatermark).not.toHaveBeenCalled();
+
+    await callInbox();
+    expect(M.sendMessage).toHaveBeenCalledTimes(2);
+    expect(M.writeWatermark).toHaveBeenCalledWith("owner-a", {
+      messages_shown_ts: a.ts,
+    });
+  });
+
+  it("does not re-emit a receipt after the read watermark already covers the message", async () => {
+    const a = {
+      ...msg("2026-07-18T10:00:00.000Z", "receipt-once"),
+      receipt: true,
+      harness_slug: "harness-a",
+    };
+    M.readInbox.mockImplementation(async () => [a]);
+    M.readWatermark
+      .mockImplementationOnce(async () => ({ messages_shown_ts: "" }))
+      .mockImplementationOnce(async () => ({ messages_shown_ts: a.ts }));
+
+    await callInbox();
+    await callInbox();
+
+    expect(M.emitAwaitedEvent).toHaveBeenCalledTimes(1);
+    expect(M.sendMessage).toHaveBeenCalledTimes(1);
+    expect(M.writeWatermark).toHaveBeenCalledTimes(1);
   });
 });
