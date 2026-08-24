@@ -42,6 +42,7 @@ import { stampLoopArmedAt } from './loop-dead-man';
 import { extractGoalWorkItemIds } from './loop-goal-staleness';
 import { recordLoopTransition } from './loop-transition-log';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import { boundedPgReadTxn } from '../../pg-read-query';
 // Import from the dependency-free automatic-tool-names.ts, NOT from
 // '../../agent-tools/sessions/timeline' (which re-exports the same constant) — timeline.ts
 // imports `@papercusp/agent-mcp`, whose index.ts unconditionally imports './bootstrap' and
@@ -1797,7 +1798,8 @@ export async function getLoopStatuses(
   const owners = [...new Set(ownerIds.filter(Boolean))];
   if (owners.length === 0) return out;
   const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await sql<any[]>`
+  const rows = await boundedPgReadTxn<any[]>(
+    (tx) => tx`
     SELECT DISTINCT ON (r.target_owner_id)
            r.install_slug,
            r.name,
@@ -1997,7 +1999,9 @@ export async function getLoopStatuses(
      WHERE r.target_owner_id = ANY(${owners}::text[])
        AND r.reschedule_interval_sec IS NOT NULL
      ORDER BY r.target_owner_id, r.active DESC, r.updated_at DESC
-  `;
+    `,
+    { client: opts.sql },
+  );
   for (const r of rows) {
     const ownerId = String(r.target_owner_id);
     out.set(ownerId, loopStatusFromRow(r, ownerId));
@@ -2042,15 +2046,19 @@ export async function countAgentToolCallsInWindow(
   try {
     const sql = opts.sql ?? getOrgPg().sql;
     const agentToolPredicate = agentToolInvocationPredicate(sql);
-    const [row] = await sql<{ n: number }[]>`
-      SELECT count(*)::int AS n
-        FROM harness_shared.tool_invocations
-       WHERE coord_owner_id = ${ownerId}
-         AND invoked_at > ${new Date(sinceMs).toISOString()}::timestamptz
-         AND invoked_at <= ${new Date(untilMs).toISOString()}::timestamptz
-         AND tool_name <> ALL(${sql.array([...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES])}::text[])
-         AND ${agentToolPredicate}
-    `;
+    const [row] = await boundedPgReadTxn<Array<{ n: number }>>(
+      async (tx) =>
+        await tx<Array<{ n: number }>>`
+          SELECT count(*)::int AS n
+            FROM harness_shared.tool_invocations
+           WHERE coord_owner_id = ${ownerId}
+             AND invoked_at > ${new Date(sinceMs).toISOString()}::timestamptz
+             AND invoked_at <= ${new Date(untilMs).toISOString()}::timestamptz
+             AND tool_name <> ALL(${sql.array([...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES])}::text[])
+             AND ${agentToolPredicate}
+        `,
+      { client: opts.sql },
+    );
     return row ? Number(row.n) : 0;
   } catch (e) {
     console.warn('[loop] countAgentToolCallsInWindow failed (evidence unavailable):', e as Error);
@@ -2091,7 +2099,7 @@ export async function readActiveLoopFacts(
   opts: { sql?: Sql } = {},
 ): Promise<PriorLoopFacts | null> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await sql<
+  const rows = await boundedPgReadTxn<
     Array<{
       active: boolean;
       reschedule_interval_sec: number | null;
@@ -2100,18 +2108,21 @@ export async function readActiveLoopFacts(
       fire_count: number | null;
       armed_at: string | null;
     }>
-  >`
-    SELECT r.active,
-           r.reschedule_interval_sec,
-           r.payload_template,
-           COALESCE((r.metadata->>'fire_count')::int, 0) AS fire_count,
-           r.metadata->>'armed_at'                       AS armed_at
-      FROM harness_shared.routines r
-     WHERE r.target_owner_id = ${ownerId}
-       AND r.reschedule_interval_sec IS NOT NULL
-     ORDER BY r.active DESC, r.updated_at DESC
-     LIMIT 1
-  `;
+  >(
+    (tx) => tx`
+      SELECT r.active,
+             r.reschedule_interval_sec,
+             r.payload_template,
+             COALESCE((r.metadata->>'fire_count')::int, 0) AS fire_count,
+             r.metadata->>'armed_at'                       AS armed_at
+        FROM harness_shared.routines r
+       WHERE r.target_owner_id = ${ownerId}
+         AND r.reschedule_interval_sec IS NOT NULL
+       ORDER BY r.active DESC, r.updated_at DESC
+       LIMIT 1
+    `,
+    { client: opts.sql },
+  );
   const r = rows[0];
   if (!r) return null;
   const pt = (r.payload_template ?? {}) as Record<string, unknown>;
