@@ -73,6 +73,9 @@ describe('loadRecentCalls', () => {
     expect(query).toContain("e.body->>'plan_slug' AS declared_plan_slug");
     expect(query).toContain("e.body->'declared_plan_items' AS declared_plan_items");
     expect(query).toContain("e.body->'declared_goal_refs' AS declared_goal_refs");
+    expect(query).toContain("f.last_launch_transaction AS launch_transaction");
+    expect(query).toContain("LEFT JOIN harness_shared.agent_fleets AS f");
+    expect(query).toContain("i.metadata_json->'launchOutcome'->>'transactionId'");
     expect(query).toContain('LEFT JOIN harness_shared.coord_event_log AS e');
     // WI-38670 live falsifier: the lifecycle intent `coord:emit` carried the old
     // EI goal under the new intent event id, then the first real call carried the
@@ -128,6 +131,49 @@ describe('loadRecentCalls', () => {
       declaredPlanSlug: 'shared-plan',
       declaredPlanItems: ['P-016'],
       declaredGoalRefs: ['WI-1', 'WI-2'],
+    });
+  });
+
+  it('hydrates a launch outcome from the persisted transaction joined by telemetry identity', async () => {
+    const sql = vi.fn(async () => [
+      {
+        id: '8',
+        owner: 'su-a',
+        tool_name: 'fleet:launch-on-plan',
+        status: 'timeout',
+        invoked_at: new Date(T0).toISOString(),
+        intent_event_id: null,
+        goal_ref: null,
+        declared_plan_slug: null,
+        declared_plan_items: null,
+        declared_goal_refs: null,
+        args_json: { count: 1 },
+        call_origin: null,
+        launch_fleet: 'fleet-a',
+        launch_transaction: {
+          transactionId: 'tx-1',
+          state: 'partial',
+          openedMemberIds: ['member-1'],
+          verifiedMemberIds: [],
+          failed: [{ ownerId: 'member-2', phase: 'spawn', reason: 'refused' }],
+        },
+      },
+    ]);
+
+    const [call] = await loadRecentCalls({
+      workspaceId: 'test-workspace',
+      sinceMs: T0,
+      limit: 10,
+      sql: sql as never,
+    });
+
+    expect(call.launchOutcome).toEqual({
+      fleet: 'fleet-a',
+      transactionId: 'tx-1',
+      state: 'partial',
+      openedMemberIds: ['member-1'],
+      verifiedMemberIds: [],
+      failedOwnerIds: ['member-2'],
     });
   });
 });

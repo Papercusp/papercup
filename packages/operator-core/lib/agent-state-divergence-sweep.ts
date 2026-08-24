@@ -179,6 +179,42 @@ interface CallRow {
   declared_goal_refs: unknown;
   args_json: unknown;
   call_origin: string | null;
+  launch_fleet: string | null;
+  launch_transaction: unknown;
+}
+
+function launchOutcomeFromRow(
+  fleet: string | null,
+  transaction: unknown,
+): DivergenceCall['launchOutcome'] | undefined {
+  let value = transaction;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!fleet || !value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row.transactionId !== 'string' || row.transactionId.length === 0) return undefined;
+  const strings = (input: unknown): string[] =>
+    Array.isArray(input) ? input.filter((item): item is string => typeof item === 'string' && item.length > 0) : [];
+  const failedOwnerIds = Array.isArray(row.failed)
+    ? row.failed.flatMap((failure) => {
+        if (!failure || typeof failure !== 'object' || Array.isArray(failure)) return [];
+        const ownerId = (failure as Record<string, unknown>).ownerId;
+        return typeof ownerId === 'string' && ownerId.length > 0 ? [ownerId] : [];
+      })
+    : [];
+  return {
+    fleet,
+    transactionId: row.transactionId,
+    state: typeof row.state === 'string' ? row.state : 'unknown',
+    openedMemberIds: strings(row.openedMemberIds),
+    verifiedMemberIds: strings(row.verifiedMemberIds),
+    failedOwnerIds,
+  };
 }
 
 /**
@@ -202,12 +238,20 @@ export async function loadRecentCalls(opts: {
            i.intent_event_id, i.goal_ref, e.body->>'plan_slug' AS declared_plan_slug,
            e.body->'declared_plan_items' AS declared_plan_items,
            e.body->'declared_goal_refs' AS declared_goal_refs,
-           i.args_json, i.call_origin
+           i.args_json, i.call_origin,
+           f.fleet_slug AS launch_fleet,
+           f.last_launch_transaction AS launch_transaction
       FROM harness_shared.tool_invocations AS i
       LEFT JOIN harness_shared.coord_event_log AS e
         ON e.workspace_id = i.workspace_id
        AND e.surface = 'messages'
        AND e.id = i.intent_event_id
+      LEFT JOIN harness_shared.agent_fleets AS f
+        ON f.workspace_id = i.workspace_id
+       AND i.tool_name = 'fleet:launch-on-plan'
+       AND f.fleet_slug = i.metadata_json->'launchOutcome'->>'fleet'
+       AND f.last_launch_transaction->>'transactionId' =
+           i.metadata_json->'launchOutcome'->>'transactionId'
      WHERE i.workspace_id = ${opts.workspaceId}
        AND i.invoked_at > ${since}
        AND i.coord_owner_id IS NOT NULL
@@ -267,6 +311,7 @@ export async function loadRecentCalls(opts: {
       ? r.declared_goal_refs.filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
       : undefined,
     args: r.args_json ?? undefined,
+    launchOutcome: launchOutcomeFromRow(r.launch_fleet, r.launch_transaction),
   }));
 }
 
