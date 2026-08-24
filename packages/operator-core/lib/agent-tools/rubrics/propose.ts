@@ -107,7 +107,9 @@ export const rubricsProposeArgs = z.object({
   releaseGating: z
     .boolean()
     .optional()
-    .describe('mark this rubric as a release gate; every criterion then requires a unique machine-readable instrument binding'),
+    .describe(
+      'mark this standard-kind rubric as a release gate; acceptance-kind rubrics are one-shot and cannot set releaseGating; every standard criterion then requires a unique machine-readable instrument binding',
+    ),
   dropKeys: z
     .array(z.string().min(1))
     .max(100)
@@ -135,6 +137,20 @@ export const rubricsProposeArgs = z.object({
     .describe(
       "loss-guard ack (P-008): why a stored 'violatable' criterion is intentionally being downgraded to settle-once (removing its provisional-until-terminal protection)",
     ),
+}).superRefine((args, ctx) => {
+  // Keep the published dispatch schema aligned with rubricTemplateDataSchema and
+  // proposeRubric: acceptance rubrics are one-shot definitions of done, so they
+  // cannot participate in the reusable standard rubric release gate. Without this
+  // check, callers pass schema validation and only discover the invalid combination
+  // after the whole-document proposal reaches the handler.
+  if (args.kind === 'acceptance' && args.releaseGating === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['releaseGating'],
+      message:
+        'releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt; set kind:\'standard\' for a reusable release bar',
+    });
+  }
 });
 
 export default defineTool({
