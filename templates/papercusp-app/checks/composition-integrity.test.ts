@@ -187,6 +187,51 @@ describe.skipIf(!root || !have(INVARIANT_IDS) || !have(CHASSIS_IDS))("papercusp-
     }
   });
 
+  /**
+   * P-005: the dual-target tax, PINNED.
+   *
+   * GUIDE.md, template.yaml and the `dual-target-is-opt-in` MUST all quote
+   * "5 declarations vs 4". That is a number DESCRIBING code (the manifests'
+   * checks arrays), so it drifts the moment any closure member gains a check —
+   * and prose cannot notice. This is the pin: it fails, naming both counts, so
+   * whoever adds the check also updates the three places that quote the tax.
+   *
+   * Read the assertion for what it measures: check DECLARATIONS, not seconds.
+   * The single declaration `both` adds is a build-and-boot check, the most
+   * expensive kind, so wall clock grows by more than 4→5 suggests.
+   */
+  it("P-005: `both` costs exactly ONE more check declaration than a single target (5 vs 4)", () => {
+    const unionFor = (target: string | string[]) => {
+      const r = resolveSelection(root!, { target, agents: "none" }, manifests);
+      expect(r.ok, r.errors.join("; ")).toBe(true);
+      const c = composeTemplates(r.templates);
+      expect(c.ok, c.errors.join("; ")).toBe(true);
+      return c.composition!.checks.map((x) => `${x.templateId}:${x.item.id}`).sort();
+    };
+
+    const desktop = unionFor("desktop");
+    const web = unionFor("web");
+    const both = unionFor(["desktop", "web"]);
+
+    expect(desktop.length, `desktop-only union drifted: ${desktop.join(", ")}`).toBe(4);
+    expect(web.length, `web-only union drifted: ${web.join(", ")}`).toBe(4);
+    expect(both.length, `dual-target union drifted: ${both.join(", ")}`).toBe(5);
+
+    // NOT a doubling: the three non-chassis checks are shared and paid once.
+    const shared = desktop.filter((k) => web.includes(k));
+    expect(shared).toEqual([
+      "papercusp-app:composition-integrity",
+      "papercusp-data-layer:components-integrated",
+      "papercusp-ui:components-integrated",
+    ]);
+    // Each chassis contributes exactly one — that one is the whole tax.
+    expect(both.length - desktop.length).toBe(1);
+    expect(both.filter((k) => !shared.includes(k))).toEqual([
+      "papercusp-tauri-desktop-shell:boot-e2e",
+      "papercusp-web-host:boot-e2e",
+    ]);
+  });
+
   it("an unanswered or unknown `target` is an ERROR, never a silent default", () => {
     expect(resolveSelection(root!, {}, manifests).ok).toBe(false);
     const bogus = resolveSelection(root!, { target: "mainframe" }, manifests);

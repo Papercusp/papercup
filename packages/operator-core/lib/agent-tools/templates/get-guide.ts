@@ -27,9 +27,9 @@ const fail = (status: number, error: string) => ({
 export default defineTool({
   name: 'templates:get-guide',
   description:
-    "Read a Cupboard app-template's build knowledge: its GUIDE.md (the composition prompt in MUST/SHOULD/FREE tiers) + COMPONENT_CATALOG + template.yaml (checks + pinned components), read from the local bundled store. Pass `template` as the ref (e.g. \"papercusp-webapp\") or the listing id. Returns { ok, template:{id,ref,title,category?,scope?}, branch, guide, componentCatalog?, manifest?, guideTruncated, supplyChain }. `supplyChain` is THIS install's resolved libs/generic root — use its path for `file:` deps; the GUIDE's own example path is dev-checkout-relative and does not exist on an install. This is the build-time knowledge a building agent follows — read it before templates:new-app, or to answer 'how do I build from <template>'.",
+    "Read a Cupboard app-template's build knowledge: its GUIDE.md (the composition prompt in MUST/SHOULD/FREE tiers) + COMPONENT_CATALOG + template.yaml (checks + pinned components), read from the local bundled store. Pass `template` as the ref (e.g. \"papercusp-app\") or the listing id. Returns { ok, template:{id,ref,title,category?,scope?}, branch, guide, componentCatalog?, manifest?, guideTruncated, supplyChain }. `supplyChain` is THIS install's resolved libs/generic root — use its path for `file:` deps; the GUIDE's own example path is dev-checkout-relative and does not exist on an install. This is the build-time knowledge a building agent follows — read it before templates:new-app, or to answer 'how do I build from <template>'.",
   guidance: {
-    when: 'You have a template ref (from templates:list, or the user named one like "papercusp-webapp") and need to read HOW to build from it — the GUIDE.md is the composition prompt.',
+    when: 'You have a template ref (from templates:list, or the user named one like "papercusp-app") and need to read HOW to build from it — the GUIDE.md is the composition prompt.',
     notWhen:
       'You just want to start building now → templates:new-app materializes the template AND hands the GUIDE to a builder in one step. Browsing what templates exist → templates:list.',
     chaining: 'templates:list → templates:get-guide { template } → templates:new-app { template, slug }.',
@@ -43,7 +43,7 @@ export default defineTool({
       .string()
       .min(1)
       .max(200)
-      .describe('Template listing ref (e.g. "papercusp-webapp") or listing id (uuid).'),
+      .describe('Template listing ref (e.g. "papercusp-app") or listing id (uuid).'),
   }),
   async handler(args) {
     // The GUIDE is written ONCE, but "where are the component packages" is a

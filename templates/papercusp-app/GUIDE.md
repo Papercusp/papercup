@@ -65,9 +65,20 @@ that shape the composition — above all `target`, which picks the chassis.
 3. **`full-union-green`** — the composed app passes the FULL union of its
    closure's checks, not a subset you found convenient.
 4. **`dual-target-is-opt-in`** — `target: both` is chosen deliberately and
-   stated in the ship disclosure. The code is already shared; what doubles is
-   the **checks**, on every build. Choose it because the app genuinely ships
-   two artifacts, never because it sounded more flexible.
+   stated in the ship disclosure. **Measured (P-005), so you can stop guessing
+   at the tax:** the union is **5 check declarations for `both` against 4 for
+   either target alone**. Each chassis contributes exactly ONE check — its
+   `boot-e2e` — while `papercusp-app:composition-integrity`,
+   `papercusp-data-layer:components-integrated` and
+   `papercusp-ui:components-integrated` are shared and paid once either way.
+   So dual-target is **+1 declaration, not a doubling**.
+
+   Read that number for what it is: a count of check *declarations*, not
+   seconds. The one check it adds is the most expensive kind there is — build
+   the app, boot the host, probe health — so the wall-clock cost is larger than
+   `+25%` suggests, and only running both suites would say by how much. Choose
+   `both` because the app genuinely ships two artifacts, never because it
+   sounded more flexible.
 5. **`agents-are-explicit`** — no hives and no seam unless you answered
    `agents: pots`. The default answer cannot drag the plane in, and
    `checks/composition-integrity.test.ts` proves it rather than asserting it.

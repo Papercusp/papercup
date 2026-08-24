@@ -23,9 +23,9 @@ const ok = (payload: Record<string, unknown>) => ({
 export default defineTool({
   name: 'templates:list',
   description:
-    'Browse the app-template storefront — the official "Papercusp Official: …" templates a NEW app is composed from (whole-app: papercusp-webapp, desktop-app, agentic-desktop-app, android-app, iphone-app; aspect: mobile-base, android-shell, iphone-shell, data-sync, search, ui, release-pipeline, data-layer, …). V1: these ship BUNDLED and are listed from the local store (works offline). Returns { ok, reachable, count, source, templates:[{ id, ref, title, description, category?, scope?, githubUrl }] }. `ref` (e.g. "papercusp-webapp") is the handle you pass to templates:get-guide / templates:new-app.',
+    'Browse the app-template storefront — the official "Papercusp Official: …" templates a NEW app is composed from (whole-app: papercusp-app for desktop/web, android-app, iphone-app; aspect: mobile-base, android-shell, iphone-shell, data-sync, search, ui, release-pipeline, data-layer, …). V1: these ship BUNDLED and are listed from the local store (works offline). Returns { ok, reachable, count, source, templates:[{ id, ref, title, description, category?, scope?, githubUrl }] }. `ref` (e.g. "papercusp-app") is the handle you pass to templates:get-guide / templates:new-app.',
   guidance: {
-    when: 'A user asks to build/scaffold an app (or "use the papercusp-webapp template") and you need to discover which official templates exist before building. The entry point to the app-template flow.',
+    when: 'A user asks to build/scaffold an app (or "use the papercusp-app template") and you need to discover which official templates exist before building. The entry point to the app-template flow.',
     notWhen:
       'You already know the template ref → skip to templates:get-guide (read the build guide) or templates:new-app (materialize + start building). Installing a blueprint/plugin (that is the Cupboard install path, not a template). A plan/rubric template — that is plans:*-template-data, unrelated.',
     chaining: 'templates:list → templates:get-guide { template } → templates:new-app { template, slug }.',

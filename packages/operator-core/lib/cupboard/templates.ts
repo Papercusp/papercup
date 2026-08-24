@@ -13,7 +13,7 @@
  *
  * Template CONTENT is NOT in this checkout — it lives in the public mirror repo
  * (`github_url`, e.g. https://github.com/Papercusp/templates), one subdir per
- * template keyed by `listing_ref` (e.g. `papercusp-webapp`). GUIDE.md is read
+ * template keyed by `listing_ref` (e.g. `papercusp-app`). GUIDE.md is read
  * straight from raw.githubusercontent (public mirror ⇒ no auth, no clone needed).
  */
 import { resolveCupboardBaseUrl } from './base-url';
@@ -25,7 +25,7 @@ const TIMEOUT_MS = 10_000;
 export interface TemplateListing {
   /** Listing uuid (stable id for detail / materialize). */
   id: string;
-  /** listing_ref — the within-repo subdir AND the human handle (e.g. `papercusp-webapp`). */
+  /** listing_ref — the within-repo subdir AND the human handle (e.g. `papercusp-app`). */
   ref: string;
   title: string;
   description: string;
@@ -89,7 +89,7 @@ export async function fetchCupboardTemplates(
 
 /**
  * Resolve a template by listing id (uuid) OR listing_ref (the human handle like
- * `papercusp-webapp`). Tries the detail endpoint first (uuid), then falls back to
+ * `papercusp-app`). Tries the detail endpoint first (uuid), then falls back to
  * a kind=template scan matched by ref/id. Kind-checked: a non-template listing is
  * rejected so this can't be pointed at a blueprint/plugin repo.
  */

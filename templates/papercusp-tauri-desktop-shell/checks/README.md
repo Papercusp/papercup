@@ -33,4 +33,4 @@ TEMPLATE_CHECKS_CONFIG=/path/to/checks-config.json npx vitest run checks/
 ```
 
 Worked example config:
-`../../papercusp-agentic-desktop-app/reference/worked-example.checks-config.json`.
+`../../papercusp-app/reference/worked-example.checks-config.json`.
