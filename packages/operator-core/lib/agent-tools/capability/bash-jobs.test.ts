@@ -30,7 +30,9 @@ import {
   createStreamingLineCap,
   detectBufferingLastStage,
   detectMissingCommandDiagnostic,
+  detectSelfOutputRedirect,
   formatBufferingPipelineAdvice,
+  formatSelfRedirectAdvice,
   formatPreflightAttributionSnapshot,
   formatJobLogEndMarker,
   getJob,
@@ -1039,4 +1041,110 @@ describe('background job deadlines (WI-6677)', () => {
     expect(out).toContain('deadline reached');
     expect(out).not.toContain('most likely died QUEUED');
   }, 30_000);
+});
+
+describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
+  it('detects the reported shape: trailing append redirect with 2>&1', () => {
+    expect(detectSelfOutputRedirect('npm run --workspace "$ws" "$script" >> /tmp/p005-part3-guards.log 2>&1')).toEqual(
+      { target: '/tmp/p005-part3-guards.log', op: '>>', literalPath: true },
+    );
+  });
+
+  it('detects a redirect ANYWHERE in the command, not just the last stage', () => {
+    expect(detectSelfOutputRedirect('for i in 1 2 3; do echo $i >> /tmp/probe.log; sleep 20; done')).toEqual({
+      target: '/tmp/probe.log',
+      op: '>>',
+      literalPath: true,
+    });
+  });
+
+  it('returns null for a plain command and for a pipe-only command', () => {
+    expect(detectSelfOutputRedirect('npm run build')).toBeNull();
+    expect(detectSelfOutputRedirect('cmd 2>&1 | tail -45')).toBeNull();
+  });
+
+  it('ignores stderr-only redirects — stdout still reaches the capability log', () => {
+    expect(detectSelfOutputRedirect('cmd 2> /tmp/err.log')).toBeNull();
+    expect(detectSelfOutputRedirect('cmd 2>> /tmp/err.log')).toBeNull();
+  });
+
+  it('ignores fd dups and process substitution', () => {
+    expect(detectSelfOutputRedirect('echo hi >&2')).toBeNull();
+    expect(detectSelfOutputRedirect('cmd > >(tee /tmp/x)')).toBeNull();
+  });
+
+  it('flags the &> both-streams redirect', () => {
+    expect(detectSelfOutputRedirect('cmd &> /tmp/both.log')).toEqual({
+      target: '/tmp/both.log',
+      op: '&>',
+      literalPath: true,
+    });
+  });
+
+  it('a $var target is detected but marked non-literal (unsafe to stat)', () => {
+    expect(detectSelfOutputRedirect('cmd > "$OUT/run.log"')).toEqual({
+      target: '$OUT/run.log',
+      op: '>',
+      literalPath: false,
+    });
+  });
+
+  it('a redirect inside quotes is prose, not a redirect', () => {
+    expect(detectSelfOutputRedirect("echo 'a > b'")).toBeNull();
+    expect(detectSelfOutputRedirect('echo "x > y"')).toBeNull();
+  });
+
+  it('a digit glued to the preceding word still redirects stdout (`echo hi1>f`)', () => {
+    expect(detectSelfOutputRedirect('echo hi1>/tmp/f.log')).toEqual({
+      target: '/tmp/f.log',
+      op: '>',
+      literalPath: true,
+    });
+  });
+
+  it('explicit fd-1 redirect counts', () => {
+    expect(detectSelfOutputRedirect('cmd 1> /tmp/f.log')).toEqual({
+      target: '/tmp/f.log',
+      op: '1>',
+      literalPath: true,
+    });
+  });
+
+  it('returns the LAST redirect when several are present', () => {
+    expect(detectSelfOutputRedirect('a > /tmp/first.log; b >> /tmp/second.log')?.target).toBe('/tmp/second.log');
+  });
+
+  it('a 2>&1 dup AFTER a stdout redirect does not clobber the finding', () => {
+    expect(detectSelfOutputRedirect('cmd > /tmp/x.log 2>&1')?.target).toBe('/tmp/x.log');
+  });
+
+  it('a relative or glob target is detected but non-literal', () => {
+    expect(detectSelfOutputRedirect('cmd > out.log')).toEqual({ target: 'out.log', op: '>', literalPath: false });
+    expect(detectSelfOutputRedirect('cmd > /tmp/run-*.log')?.literalPath).toBe(false);
+  });
+});
+
+describe('formatSelfRedirectAdvice (EI-21301075566136325)', () => {
+  it('says an empty tail means "not measured" and points at the redirect target', () => {
+    const advice = formatSelfRedirectAdvice({ target: '/tmp/run.log', op: '>>', literalPath: true }, null);
+    expect(advice).toContain('redirects its own stdout');
+    expect(advice).toContain('/tmp/run.log');
+    expect(advice).toContain('"not measured"');
+    expect(advice).toContain('size/mtime');
+  });
+
+  it('includes the fresh probe measurement when one was taken', () => {
+    const advice = formatSelfRedirectAdvice(
+      { target: '/tmp/run.log', op: '>>', literalPath: true },
+      { sizeBytes: 9738, mtimeMs: Date.UTC(2026, 7, 24, 2, 0, 0) },
+    );
+    expect(advice).toContain('9738 bytes');
+    expect(advice).toContain('2026-08-24T02:00:00.000Z');
+  });
+
+  it('special-cases /dev/null as deliberately discarded output', () => {
+    const advice = formatSelfRedirectAdvice({ target: '/dev/null', op: '>', literalPath: true }, null);
+    expect(advice).toContain('discards its own stdout');
+    expect(advice).not.toContain('size/mtime');
+  });
 });

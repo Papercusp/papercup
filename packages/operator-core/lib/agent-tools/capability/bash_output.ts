@@ -16,8 +16,10 @@ import {
   JOB_LOG_END_MARKER_PREFIX,
   JOB_LOG_DIED_MARKER_PREFIX,
   detectBufferingLastStage,
+  detectSelfOutputRedirect,
   formatJobLogDiedMarker,
   formatBufferingPipelineAdvice,
+  formatSelfRedirectAdvice,
   getJob,
   readJobOutput,
   scratchDir,
@@ -811,6 +813,42 @@ export default defineTool({
         };
         const recoveredLogPath = stranded?.logPath ?? ledgerRow?.logPath ?? undefined;
 
+        // EI-21301075566136325: a command that redirects its OWN stdout writes
+        // nothing to the capability log, so `total_bytes_written: 0` /
+        // `output_tail: ""` is the EXPECTED reading for it — presenting that as
+        // "how far it got" turns "not measured" into what reads as "the job got
+        // nowhere" (the documented false-absence class), inviting a caller to
+        // relaunch a live job. Detect the redirect from the ledger argv (the
+        // raw command is always its last element — see startBackground), say so
+        // wherever advice points at output_tail, and when the target is a
+        // literal path, stat it and report the ACTUAL progress signal.
+        const ledgerRawCommand =
+          ledgerRow?.argv && ledgerRow.argv.length > 0 ? ledgerRow.argv[ledgerRow.argv.length - 1] : undefined;
+        const selfRedirect = ledgerRawCommand ? detectSelfOutputRedirect(ledgerRawCommand) : null;
+        const selfRedirectProbe =
+          selfRedirect?.literalPath && selfRedirect.target !== '/dev/null'
+            ? (() => {
+                try {
+                  const st = statSync(selfRedirect.target);
+                  return { sizeBytes: st.size, mtimeMs: st.mtimeMs };
+                } catch {
+                  return null;
+                }
+              })()
+            : null;
+        const selfRedirectNote = selfRedirect ? ` ${formatSelfRedirectAdvice(selfRedirect, selfRedirectProbe)}` : '';
+        const selfRedirectFields = selfRedirect
+          ? {
+              output_redirected_by_command: selfRedirect.target,
+              ...(selfRedirectProbe
+                ? {
+                    redirect_target_bytes: selfRedirectProbe.sizeBytes,
+                    redirect_target_mtime: new Date(selfRedirectProbe.mtimeMs).toISOString(),
+                  }
+                : {}),
+            }
+          : {};
+
         // EI-20011476155595470: a child killed outside the normal close path
         // can leave a durable terminal ledger row but no JOB END line in the
         // spill log. Make that state self-describing for raw log readers. Do
@@ -852,6 +890,7 @@ export default defineTool({
                   ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   recovered_from_log_marker: true,
+                  ...selfRedirectFields,
                   ...strandedOutput,
                   output: recoveredStrandedOutput,
                 }),
@@ -877,6 +916,7 @@ export default defineTool({
                   ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   recovered_from_died_marker: true,
+                  ...selfRedirectFields,
                   ...strandedOutput,
                   output: strandedLog.output,
                 }),
@@ -910,10 +950,15 @@ export default defineTool({
           const ledgerArgv = ledgerRow?.argv;
           const rawCommand = ledgerArgv && ledgerArgv.length > 0 ? ledgerArgv[ledgerArgv.length - 1] : undefined;
           const bufferingStage = rawCommand ? detectBufferingLastStage(rawCommand) : null;
-          const growthAdvice = bufferingStage
-            ? formatBufferingPipelineAdvice(bufferingStage, 'tracking-lost')
-            : 'Keep polling capability:bash_output (the log tail below will keep growing as it runs)';
-          const readPathAdvice = bufferingStage ? '' : ', or read log_path directly';
+          // A self-output redirect trumps the buffering-stage note: whatever the
+          // pipeline stages do, the bytes land in the command's own file, so the
+          // capability tail below will never grow (EI-21301075566136325).
+          const growthAdvice = selfRedirect
+            ? formatSelfRedirectAdvice(selfRedirect, selfRedirectProbe)
+            : bufferingStage
+              ? formatBufferingPipelineAdvice(bufferingStage, 'tracking-lost')
+              : 'Keep polling capability:bash_output (the log tail below will keep growing as it runs)';
+          const readPathAdvice = bufferingStage || selfRedirect ? '' : ', or read log_path directly';
           return {
             content: [
               {
@@ -938,6 +983,7 @@ export default defineTool({
                   ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                   ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
                   ...(diedMarkerWritten ? { job_died_marker_written: true } : {}),
+                  ...selfRedirectFields,
                   ...strandedOutput,
                   output: recoveredStrandedOutput,
                   advice:
@@ -979,6 +1025,7 @@ export default defineTool({
                     ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                     ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                     recovered_from_ledger: true,
+                    ...selfRedirectFields,
                     ...strandedOutput,
                     output: recoveredStrandedOutput,
                   }),
@@ -1022,9 +1069,10 @@ export default defineTool({
                   advice:
                     "This job's in-memory tracking is gone, and the durable task ledger CONFIRMS it actually ended " +
                     `(state=${ledgerVerdict.state}${exitDetail}) — not a guess.${strandedAdvice ?? ''} Re-run ` +
-                    'capability:bash if you still need the result; check output_tail below for how far it got.',
+                    `capability:bash if you still need the result; check output_tail below for how far it got.${selfRedirectNote}`,
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
+                  ...selfRedirectFields,
                   ...strandedOutput,
                 }),
               },
@@ -1082,9 +1130,10 @@ export default defineTool({
                 ok: false,
                 ...jobIdentity,
                 reason: cause,
-                advice,
+                advice: `${advice}${selfRedirectNote}`,
                 log_path: recoveredLogPath,
                 total_bytes_written: stranded.sizeBytes,
+                ...selfRedirectFields,
                 ...strandedOutput,
               }),
             },
