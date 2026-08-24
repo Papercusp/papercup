@@ -6104,7 +6104,7 @@
           "POST"
         ]
       },
-      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`; free-text `q` is not an inbox argument — use `coord:feed` when you need query matching over summary/body/from/to. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`; free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for query matching or a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
       "capabilities": [
         "coord:read"
       ],
