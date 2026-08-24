@@ -601,6 +601,19 @@ describe('buildTenantScopeAdvisory — per-table overrides (EI-18669912007336072
     expect(advisory).toContain('harness_plans');
     expect(advisory).not.toContain('agent_facts');
   });
+
+  it('suggests workspace-only scope for operator-local coord_thread_posts', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT id, thread_id, body FROM harness_shared.coord_thread_posts WHERE thread_id = 'issue-thread-WI-6270'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('coord_thread_posts');
+    expect(advisory).toContain("workspace_id = 'papercusp-workspace'");
+    expect(advisory).not.toContain('harness_slug =');
+    expect(advisory).toContain('work_items:get');
+    expect(calls).toHaveLength(0); // the override captures the nullable federation column
+  });
 });
 
 // EI-18749676091756794: the generic heuristic prescribed a WRONG query for

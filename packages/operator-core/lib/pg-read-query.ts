@@ -365,6 +365,19 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
         : "scope = '<harness|workspace|owner|work_item|role>' AND scope_ref = '<the matching id>'",
     preferredTool: 'facts:list (already scopes by scope + scope_ref)',
   },
+  // Operator-scope work-item comments are stored in this workspace-scoped table
+  // with harness_slug NULL. Requiring the federation column in the remediation
+  // text turns a real post into a false empty (EI-21356613677322316): the guard
+  // must suggest the stable workspace predicate that actually finds local posts.
+  coord_thread_posts: {
+    requiredColumns: ['workspace_id'],
+    keyDescription: 'workspace_id — harness_slug is NULL for operator-scope/local posts',
+    suggest: (opts) =>
+      opts.workspaceId
+        ? `workspace_id = '${opts.workspaceId.replaceAll("'", "''")}'`
+        : 'workspace_id = \'<workspace>\'',
+    preferredTool: 'work_items:get { detail: true } (for work-item comment threads)',
+  },
 };
 
 /**
