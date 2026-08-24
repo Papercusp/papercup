@@ -8,6 +8,7 @@ import {
   type AdoptionState,
   type SpecReconciliationRow,
 } from './spec-reconciliation';
+import { computeSpecEnforcementLatency } from './spec-enforcement-latency';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -61,6 +62,16 @@ export default defineTool({
     // number a reader treats as a total — the defect `countsAreFloor` exists to prevent.
     const { rows, rollup } = await computeSpecReconciliationLedger({ harnessSlug });
 
+    // The WORK-ITEM axis, computed alongside but kept structurally separate: it is returned as
+    // its own top-level block and never merged into a plan row, because a per-item duration
+    // living on a per-plan row is how a plan census quietly starts reporting an item statistic.
+    // Its own `rows` (one per measured item) are deliberately NOT shipped — this tool's rows are
+    // plans, and the latency question is answered by the distribution, not by 7,000 durations.
+    const latency =
+      args.includeLatency === false
+        ? undefined
+        : (await computeSpecEnforcementLatency({}, { harnessSlug })).rollup;
+
     const wanted = new Set<AdoptionState>(args.adoption ?? ['adopted', 'legacy-val-only', 'no-behavior-declared']);
     const matching = rows.filter((r) => {
       if (!args.includeHistorical && r.lane === 'historical') return false;
@@ -75,6 +86,7 @@ export default defineTool({
         ok: true,
         harnessSlug,
         rollup,
+        latency,
         rows: shown.map(compactRow),
         rowsMatched: matching.length,
         rowsShown: shown.length,
