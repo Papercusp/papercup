@@ -17,6 +17,7 @@ import { listTasks } from '../../task-manager/store';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
+import { cpuBusyPercent } from '../../task-manager/inventory-shared';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { TASK_STATES } from '../../task-manager/types';
 import { redactSensitiveText } from '../../sensitive-text';
@@ -43,6 +44,34 @@ function safeDiagnosticText(
 function localDiagnosticSecrets(): readonly string[] {
   const token = readSuperuserToken();
   return token ? [token] : [];
+}
+
+type CpuSample = {
+  cpuUsecTotal: number;
+  sampledAtMs: number;
+};
+
+const CPU_SAMPLE_RETENTION_MS = 15 * 60 * 1000;
+const cpuSamples = new Map<string, CpuSample>();
+
+function pruneCpuSamples(nowMs: number): void {
+  for (const [taskId, sample] of cpuSamples) {
+    if (nowMs - sample.sampledAtMs > CPU_SAMPLE_RETENTION_MS) {
+      cpuSamples.delete(taskId);
+    }
+  }
+}
+
+function currentCpuBusyPercent(
+  taskId: string,
+  cpuUsec: number | null | undefined,
+  sampledAtMs: number,
+): number | null {
+  if (cpuUsec == null) return null;
+  const next = { cpuUsecTotal: cpuUsec, sampledAtMs };
+  const previous = cpuSamples.get(taskId);
+  cpuSamples.set(taskId, next);
+  return cpuBusyPercent(previous, next);
 }
 
 const taskResultSchema = z.object({
@@ -73,6 +102,7 @@ const taskResultSchema = z.object({
       rssMb: z.number().int().nonnegative().nullable(),
       peakRssMb: z.number().int().nonnegative().nullable(),
       cpuSec: z.number().int().nonnegative().nullable(),
+      cpuBusyPercent: z.number().nonnegative().nullable(),
       pids: z.number().int().nonnegative().nullable(),
       confined: z.boolean(),
       scopeUnit: z.string().nullable().optional(),
@@ -97,16 +127,16 @@ export default defineTool({
   // removing one — the D-010 failure this gate exists to prevent (see WI-6464 and the exemption's
   // reason-class (ii)). Revisit the moment a SECOND surface derives the inventory independently.
   description:
-    'Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered — and verifier-owned systemd scopes in `live.verifierGroups`. Pass `live:true` to reconcile against the kernel first (slower, authoritative).',
+    'Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, cumulative CPU time, sampled current CPU busy percentage, RSS/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered — and verifier-owned systemd scopes in `live.verifierGroups`. Pass `live:true` to reconcile against the kernel first (slower, authoritative).',
   capability: 'intel:read',
   guidance: {
-    when: 'You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is eating memory, or whether anything bypassed the spawn chokepoint. Also the honest answer to "is my background job still alive" for anything started through managedSpawn.',
+    when: 'You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is using CPU or memory right now, or whether anything bypassed the spawn chokepoint. Also the honest answer to "is my background job still alive" for anything started through managedSpawn.',
     notWhen:
       'NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job\'s OUTPUT use `capability:bash_output`.',
     chaining:
       'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
@@ -228,6 +258,8 @@ export default defineTool({
       byState[r.state] = (byState[r.state] ?? 0) + 1;
       byClass[r.class] = (byClass[r.class] ?? 0) + 1;
     }
+    const sampledAtMs = Date.now();
+    pruneCpuSamples(sampledAtMs);
 
     return {
       content: [
@@ -252,6 +284,7 @@ export default defineTool({
                 rssMb: mb(r.lastMemoryBytes),
                 peakRssMb: mb(r.peakMemoryBytes),
                 cpuSec: r.cpuUsec == null ? null : Math.round(r.cpuUsec / 1_000_000),
+                cpuBusyPercent: currentCpuBusyPercent(r.taskId, r.cpuUsec, sampledAtMs),
                 pids: r.pidsCurrent,
                 confined: r.confined,
                 scopeUnit: r.scopeUnit,

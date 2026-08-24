@@ -138,6 +138,96 @@ describe('processes:list structured output', () => {
     expect(structured.tasks).toHaveLength(25);
   });
 
+  it('derives current CPU busy percentage from successive cumulative samples', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const row = (cpuUsec: number): TaskRow => ({
+      taskId: 'cpu-rate-task',
+      workspaceId: 'default',
+      rootTaskId: 'cpu-rate-task',
+      class: 'bash-job',
+      title: 'cpu-rate-task',
+      argv: [],
+      launchedBy: 'su-test',
+      workItemId: null,
+      planSlug: null,
+      parentTaskId: null,
+      confined: true,
+      state: 'running',
+      startedAt: '2026-08-24T09:00:00.000Z',
+      lastSeenAt: '2026-08-24T09:00:00.000Z',
+      lastMemoryBytes: 1024,
+      peakMemoryBytes: 2048,
+      cpuUsec,
+      pidsCurrent: 1,
+      scopeUnit: 'pc-cpu-rate-task.scope',
+      memoryMaxBytes: null,
+      deadlineAt: null,
+      exitCode: null,
+      exitReason: null,
+      logPath: null,
+      detail: {},
+    });
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-24T09:01:00.000Z'));
+      vi.mocked(listTasks).mockResolvedValueOnce([row(0)]);
+      const first = await dispatchProjectedTool(
+        projected,
+        'processes:list',
+        {},
+        {
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          workspaceId: 'default',
+          runId: 'processes-list-cpu-first',
+          role: 'operator',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: true,
+          tx: makeTx(),
+        },
+        {},
+      );
+      vi.setSystemTime(new Date('2026-08-24T09:01:01.000Z'));
+      vi.mocked(listTasks).mockResolvedValueOnce([row(1_000_000)]);
+      const second = await dispatchProjectedTool(
+        projected,
+        'processes:list',
+        {},
+        {
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          workspaceId: 'default',
+          runId: 'processes-list-cpu-second',
+          role: 'operator',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: true,
+          tx: makeTx(),
+        },
+        {},
+      );
+
+      expect(first.ok, JSON.stringify(first)).toBe(true);
+      expect(second.ok, JSON.stringify(second)).toBe(true);
+      expect(
+        (first.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0],
+      ).toMatchObject({ cpuSec: 0, cpuBusyPercent: null });
+      expect(
+        (second.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0],
+      ).toMatchObject({ cpuSec: 1, cpuBusyPercent: 100 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('surfaces the validated scopeUnit for a live unaccounted group', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
