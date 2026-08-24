@@ -2121,7 +2121,8 @@ describe('unified work_items surface (real PG)', () => {
       embedderResolver: resolver,
     });
     expect(resolver).toHaveBeenCalledTimes(1);
-    expect(embed).toHaveBeenCalledWith('warmup singleflight');
+    expect(embed).toHaveBeenNthCalledWith(1, 'work-items search embedder warmup');
+    expect(embed).toHaveBeenNthCalledWith(2, 'warmup singleflight', expect.any(AbortSignal));
     expect(warm.legs.semantic.blocked).toBeNull();
   });
 
