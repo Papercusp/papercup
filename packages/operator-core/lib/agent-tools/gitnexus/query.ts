@@ -31,23 +31,31 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 
 import {
   GITNEXUS_FACADE_OPS,
+  GITNEXUS_NOT_ROUTABLE,
   gitnexusFacade,
+  gitnexusRefusal,
   type GitnexusFacadeOp,
 } from '../../code-intelligence/gitnexus-facade.ts';
+import type { CodeIntelIntent } from '../../code-intelligence/contracts.ts';
 
-// Zod needs a non-empty tuple; derived from the facade so the two cannot drift.
-const OP_VALUES = [...GITNEXUS_FACADE_OPS] as [GitnexusFacadeOp, ...GitnexusFacadeOp[]];
+// Keep the closed operation set, but also accept intents that the facade
+// deliberately refuses. That lets an agent receive the typed `useInstead`
+// guidance rather than a schema error with no redirect.
+const OP_VALUES = [
+  ...GITNEXUS_FACADE_OPS,
+  ...Object.keys(GITNEXUS_NOT_ROUTABLE),
+] as [string, ...string[]];
 
 export default defineTool({
   name: 'graph:query',
   description:
-    'Curated call-graph intelligence over the GitNexus index. `op`: symbol | callers | callees | impact | health. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. Refusals and backend faults come back as `error`, never as an empty result — so empty `sites` proves absence only when `error===null` and `freshness.health==="healthy"`.',
+    'Curated call-graph intelligence over the GitNexus index. `op`: symbol | callers | callees | impact | health, or a refused intent such as references/text-search to receive a typed redirect. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. Refusals and backend faults come back as `error`, never as an empty result — so empty `sites` proves absence only when `error===null` and `freshness.health==="healthy"`.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
       'Use lsp:query for compiler truth (definitions, references, types) and text search for text. Prefer this over the raw gitnexus.* plugin tools, which return unranked results with no freshness or truncation contract (D-021).',
     chaining:
-      'op:"symbol" to locate the symbol → op:"callers"/"callees" for its edges → op:"impact" for the change radius. If results look stale, op:"health" reports index freshness rather than guessing.',
+    'op:"symbol" to locate the symbol → op:"callers"/"callees" for its edges → op:"impact" for the change radius. If results look stale, op:"health" reports structured list_repos freshness. If you need references, diagnostics, text search, or another refused intent, pass that intent as `op` to receive its concrete useInstead redirect.',
   },
   capability: 'intel:read',
   requirePrincipal: false,
@@ -89,6 +97,14 @@ export default defineTool({
       .describe('Cap on returned sites. Clamped to the facade budget.'),
   }),
   async handler(args, ctx) {
+    const op = args.op as string;
+    if (!GITNEXUS_FACADE_OPS.includes(op as GitnexusFacadeOp)) {
+      // OP_VALUES admits these intentionally so the refusal map is reachable
+      // through the actual agent-facing tool, not just through unit imports.
+      const refusal = gitnexusRefusal(op as CodeIntelIntent, args.name ?? '');
+      if (refusal) return { data: refusal };
+    }
+
     // The dispatcher is passed PER CALL rather than installed into the module
     // global by this handler. It closes over `ctx` — which carries the calling
     // principal and workspace — so publishing it to a process-wide global would
@@ -113,7 +129,7 @@ export default defineTool({
       : undefined;
 
     const answer = await gitnexusFacade(
-      args.op,
+      op as GitnexusFacadeOp,
       {
         name: args.name,
         kind: args.kind,
