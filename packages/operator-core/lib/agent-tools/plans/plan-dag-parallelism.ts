@@ -11,6 +11,15 @@ const RELEASE_GATE_RE =
 const FOUNDATION_BUILD_RE =
   /\b(?:adapter|api|backend|build|core|database|foundation(?:al)?|frontend|implement(?:ation)?|infrastructure|provider|provision|scaffold|schema|storage)\b/i;
 
+// Keep the semantic summaries below the generic result door's lean 300-char
+// string cap. Ordinary plans still show their complete path; pathological DAGs
+// retain both ends and an exact omitted count instead of losing the chokepoint
+// to the raw-array prefix (WI-41311 / P-052).
+const CRITICAL_PATH_SUMMARY_MAX_ITEMS = 24;
+const CRITICAL_PATH_SUMMARY_EDGE_ITEMS = CRITICAL_PATH_SUMMARY_MAX_ITEMS / 2;
+const FAN_IN_SUMMARY_MAX_ITEMS = 5;
+const FAN_IN_SUMMARY_MAX_BLOCKERS = 4;
+
 export interface PlanDagBlockingEdge {
   itemId: string;
   blockerId: string;
@@ -60,12 +69,41 @@ export interface PlanDagParallelismDiagnostics {
   readyWidth: number;
   readyItemIds: string[];
   criticalPathDepth: number;
+  criticalPathSummary: string;
+  topFanInChokepointsSummary: string;
   criticalPathItemIds: string[];
   blockingEdges: PlanDagBlockingEdge[];
   nonReadyItems: PlanDagNonReadyItem[];
   fanInChokepoints: PlanDagFanInChokepoint[];
   phaseInversions: PlanDagPhaseInversion[];
   releaseGateBlocksBuild: PlanDagReleaseGateBlock[];
+}
+
+function summarizeCriticalPath(path: readonly string[]): string {
+  if (path.length === 0) return 'depth=0: none';
+  if (path.length <= CRITICAL_PATH_SUMMARY_MAX_ITEMS) {
+    return `depth=${path.length}: ${path.join(' -> ')}`;
+  }
+  const head = path.slice(0, CRITICAL_PATH_SUMMARY_EDGE_ITEMS);
+  const tail = path.slice(-CRITICAL_PATH_SUMMARY_EDGE_ITEMS);
+  const omitted = path.length - head.length - tail.length;
+  return `depth=${path.length}: ${head.join(' -> ')} -> … +${omitted} item(s) … -> ${tail.join(' -> ')}`;
+}
+
+function summarizeFanInChokepoints(chokepoints: readonly PlanDagFanInChokepoint[]): string {
+  if (chokepoints.length === 0) return 'top=0/0: none';
+  const ranked = [...chokepoints].sort(
+    (a, b) => b.blockerIds.length - a.blockerIds.length || a.itemId.localeCompare(b.itemId),
+  );
+  const shown = ranked.slice(0, FAN_IN_SUMMARY_MAX_ITEMS);
+  const entries = shown.map((entry) => {
+    const blockerIds = entry.blockerIds.slice(0, FAN_IN_SUMMARY_MAX_BLOCKERS);
+    const omitted = entry.blockerIds.length - blockerIds.length;
+    const suffix = omitted > 0 ? `,…+${omitted}` : '';
+    return `${entry.itemId}(${entry.blockerIds.length})<-[${blockerIds.join(',')}${suffix}]`;
+  });
+  const suffix = ranked.length > shown.length ? `; … +${ranked.length - shown.length} chokepoint(s)` : '';
+  return `top=${shown.length}/${ranked.length}: ${entries.join('; ')}${suffix}`;
 }
 
 function phaseOrdinal(phase: string | null): number | null {
@@ -193,10 +231,15 @@ export function analyzePlanDagParallelism(planItems: readonly PlanItem[]): PlanD
 
   return {
     nonTerminal: nonTerminalItems.length,
-    nonTerminalItemIds: nonTerminalItems.map((item) => item.id),
     readyWidth: readyItems.length,
-    readyItemIds: readyItems.map((item) => item.id),
     criticalPathDepth: criticalPath.depth,
+    // Deliberately precede every raw array in insertion order: the generic
+    // result projector is domain-neutral and walks non-identity fields in that
+    // order, so these source-owned semantic answers survive when arrays cap.
+    criticalPathSummary: summarizeCriticalPath(criticalPath.path),
+    topFanInChokepointsSummary: summarizeFanInChokepoints(fanInChokepoints),
+    nonTerminalItemIds: nonTerminalItems.map((item) => item.id),
+    readyItemIds: readyItems.map((item) => item.id),
     criticalPathItemIds: criticalPath.path,
     blockingEdges,
     nonReadyItems,

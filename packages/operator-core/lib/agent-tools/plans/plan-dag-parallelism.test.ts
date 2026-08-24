@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanItem } from '@papercusp/plan-parser';
+import { projectBoundedPayload } from '@papercusp/tooldef';
 import { analyzePlanDagParallelism } from './plan-dag-parallelism';
 
 const item = (args: {
@@ -47,6 +48,7 @@ describe('analyzePlanDagParallelism', () => {
 
     expect(result.readyWidth).toBe(1);
     expect(result.criticalPathDepth).toBe(3);
+    expect(result.criticalPathSummary).toBe('depth=3: P-001 -> P-002 -> P-003');
     expect(result.criticalPathItemIds).toEqual(['P-001', 'P-002', 'P-003']);
     expect(result.blockingEdges.map(({ itemId, blockerId }) => `${itemId}<-${blockerId}`)).toEqual([
       'P-002<-P-001',
@@ -63,6 +65,7 @@ describe('analyzePlanDagParallelism', () => {
     ]);
 
     expect(result.fanInChokepoints).toEqual([{ itemId: 'P-004', blockerIds: ['P-001', 'P-002'] }]);
+    expect(result.topFanInChokepointsSummary).toBe('top=1/1: P-004(2)<-[P-001,P-002]');
     expect(result.phaseInversions).toEqual([{
       itemId: 'P-001',
       itemPhase: 'Phase 1',
@@ -90,5 +93,37 @@ describe('analyzePlanDagParallelism', () => {
       expect.objectContaining({ itemId: 'P-001', reason: 'cycle' }),
       expect.objectContaining({ itemId: 'P-002', reason: 'cycle' }),
     ]);
+  });
+
+  it('keeps semantic DAG summaries legible when the generic result cap truncates the raw arrays', () => {
+    const chain = Array.from({ length: 30 }, (_, index) => {
+      const id = `P-${String(index + 1).padStart(3, '0')}`;
+      const blockerId = index === 0 ? undefined : `P-${String(index).padStart(3, '0')}`;
+      return item({ id, blockedBy: blockerId ? [blockerId] : [] });
+    });
+    const fanIn = Array.from({ length: 7 }, (_, index) => item({
+      id: `P-${String(index + 31).padStart(3, '0')}`,
+      blockedBy: chain.slice(0, index + 2).map(({ id }) => id),
+    }));
+    const result = analyzePlanDagParallelism([...chain, ...fanIn]);
+
+    expect(result.criticalPathSummary).toContain('depth=30: P-001 -> P-002');
+    expect(result.criticalPathSummary).toContain('… +6 item(s) …');
+    expect(result.criticalPathSummary).toContain('P-029 -> P-030');
+    expect(result.topFanInChokepointsSummary).toContain(
+      'top=5/7: P-037(8)<-[P-001,P-002,P-003,P-004,…+4]',
+    );
+
+    const projected = projectBoundedPayload(
+      { parallelism: result },
+      { toolName: 'plans:start', tier: 'trimmed', targetChars: 7_000 },
+    );
+    const bounded = projected.parallelism as Record<string, unknown>;
+
+    expect(bounded.criticalPathSummary).toBe(result.criticalPathSummary);
+    expect(bounded.topFanInChokepointsSummary).toBe(result.topFanInChokepointsSummary);
+    expect(Array.isArray(bounded.criticalPathItemIds)).toBe(true);
+    expect((bounded.criticalPathItemIds as unknown[]).length).toBeLessThan(result.criticalPathItemIds.length);
+    expect(projected._projection.omittedCount).toBeGreaterThan(0);
   });
 });
