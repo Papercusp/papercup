@@ -10,6 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { filterInboxByUnanswered } from './inbox';
+import inboxTool from './inbox';
 
 type E = { msg_id: string; from?: unknown };
 const rows: E[] = [
@@ -43,5 +44,13 @@ describe('filterInboxByUnanswered (EI-13159)', () => {
   it('a msg_id in the set that no longer exists in the inbox window is simply absent from the result', () => {
     const unanswered = new Set(['ghost-id']);
     expect(filterInboxByUnanswered(rows, unanswered)).toEqual([]);
+  });
+});
+
+describe('coord:inbox unanswered filter aliases (EI-21374977511049906)', () => {
+  it('accepts both canonical snake_case and the camelCase compatibility alias', () => {
+    const args = inboxTool.args as { safeParse: (value: unknown) => { success: boolean } };
+    expect(args.safeParse({ unanswered_only: true }).success).toBe(true);
+    expect(args.safeParse({ unansweredOnly: true }).success).toBe(true);
   });
 });

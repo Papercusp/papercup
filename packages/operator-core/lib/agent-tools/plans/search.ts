@@ -74,34 +74,34 @@ type Scope = (typeof SCOPES)[number];
 
 const argsSchema = z
   .object({
-  query: z
-    .string()
-    .min(1)
-    .optional()
-    .describe('Search query (case-insensitive, whitespace-tokenized). Required unless `slug` is supplied.'),
-  slug: z
-    .string()
-    .min(1)
-    .optional()
-    .describe('Compatibility shorthand for a slug-only search. Equivalent to `{ query: slug, scope: ["slug"] }`; `query` wins when both are supplied.'),
-  scope: z
-    .array(z.enum(SCOPES as unknown as [Scope, ...Scope[]]))
-    .optional()
-    .describe('Scopes to search. Default: all.'),
-  limit: z.number().int().min(1).max(50).optional().describe('Max results. Default 20.'),
-  includeArchived: z.boolean().optional().describe('Search archived plans too. Default true (the dispersal problem was *unfindable*).'),
-  includeLegacy: z.boolean().optional().describe('Search legacy plans (prose only). Default true.'),
-  harness: harnessArg,
-  semantic: z
-    .boolean()
-    .optional()
-    .describe(
-      'Fuse embedding-cosine hits with the lexical ranking via Reciprocal Rank Fusion (RRF) instead of ' +
-        'scoring lexical alone — a topically-exact plan whose lexical score is low/zero can still rank near ' +
-        'the top on the strength of its semantic rank. Default on (off under vitest); false = lexical-only. ' +
-        'Read `legs` on the response for whether it actually ran: legs.degraded=true means the ranking is ' +
-        'NOT the one this promises.',
-    ),
+    query: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Search query (case-insensitive, whitespace-tokenized). Required unless `slug` is supplied.'),
+    slug: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Compatibility shorthand for a slug-only search. Equivalent to `{ query: slug, scope: ["slug"] }`; `query` wins when both are supplied.'),
+    scope: z
+      .array(z.enum(SCOPES as unknown as [Scope, ...Scope[]]))
+      .optional()
+      .describe('Scopes to search. Default: all.'),
+    limit: z.number().int().min(1).max(50).optional().describe('Max results. Default 20.'),
+    includeArchived: z.boolean().optional().describe('Search archived plans too. Default true (the dispersal problem was *unfindable*).'),
+    includeLegacy: z.boolean().optional().describe('Search legacy plans (prose only). Default true.'),
+    harness: harnessArg,
+    semantic: z
+      .boolean()
+      .optional()
+      .describe(
+        'Fuse embedding-cosine hits with the lexical ranking via Reciprocal Rank Fusion (RRF) instead of ' +
+          'scoring lexical alone — a topically-exact plan whose lexical score is low/zero can still rank near ' +
+          'the top on the strength of its semantic rank. Default on (off under vitest); false = lexical-only. ' +
+          'Read `legs` on the response for whether it actually ran: legs.degraded=true means the ranking is ' +
+          'NOT the one this promises.',
+      ),
   })
   .superRefine((args, ctx) => {
     if (!args.query && !args.slug) {

@@ -138,6 +138,23 @@ afterAll(async () => {
 });
 
 describe('plans:search slug scope (F-FIX-028/029)', () => {
+  it('accepts the slug shorthand and restricts it to the slug scope', async () => {
+    const schema = searchTool.args as { safeParse: (value: unknown) => { success: boolean } };
+    expect(schema.safeParse({ slug: SLUG_A, harness: HARNESS, semantic: false }).success).toBe(true);
+
+    const ctx = { metadata: () => {}, log: () => {}, progress: () => {} } as never;
+    const res = (await searchTool.handler(
+      { slug: SLUG_A, harness: HARNESS, semantic: false } as never,
+      ctx,
+    )) as { content: { text: string }[] };
+    const hits = (JSON.parse(res.content[0].text) as { hits: Hit[] }).hits;
+    const a = hits.find((h) => h.plan === SLUG_A);
+    expect(a, 'slug shorthand must surface the named plan').toBeTruthy();
+    expect(a?.matches).toEqual([
+      expect.objectContaining({ scope: 'slug', snippet: SLUG_A }),
+    ]);
+  });
+
   it('finds a plan by a slug fragment present in NO scored scope', async () => {
     const hits = await runSearch('frobnicate');
     const a = hits.find((h) => h.plan === SLUG_A);
