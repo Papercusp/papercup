@@ -18,6 +18,13 @@
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
+import {
+  PG_READ_QUERY_CALL_OVERHEAD_MS,
+  PG_READ_QUERY_DEFAULT_TIMEOUT_MS,
+  SET_LOCAL_UTC,
+  callTimeoutMessage,
+  withCallDeadline,
+} from './pg-read-query';
 
 export type DependencyTraversalDirection = 'blockers' | 'blocked';
 
@@ -134,9 +141,11 @@ interface DependencyTraversalRow {
   hit_depth_limit: boolean;
 }
 
+type DependencyQueryParams = Array<string | number | boolean | string[]>;
+
 type DependencyTraversalQuery = (
   text: string,
-  params: Array<string | number | string[]>,
+  params: DependencyQueryParams,
 ) => Promise<DependencyTraversalRow[]>;
 
 interface DependencyBottleneckRow {
@@ -160,7 +169,7 @@ interface DependencyBottleneckRow {
 
 type DependencyBottleneckQuery = (
   text: string,
-  params: Array<string | number | boolean | string[]>,
+  params: DependencyQueryParams,
 ) => Promise<DependencyBottleneckRow[]>;
 
 const ISSUE_FAMILY_KINDS = ['bug', 'change', 'task'];
@@ -168,6 +177,34 @@ const PLAN_ITEM_RE = /^P-\d{3,}$/;
 const WORK_ITEM_RE = /^(?:WI|EI|F)-\d+$/i;
 
 export const DEFAULT_DEPENDENCY_TRAVERSAL_MAX_DEPTH = 64;
+
+/**
+ * Traversal is a read-only diagnostic, but it is also the query that exposed
+ * orphaned recursive backends. Keep the server-side cap and the client-side
+ * acquire/execute deadline in one place, borrowing the proven pg-read-query
+ * bounds instead of creating a second timeout policy.
+ */
+const DEPENDENCY_QUERY_TIMEOUT_MS = PG_READ_QUERY_DEFAULT_TIMEOUT_MS;
+
+async function runDependencyQuery<T>(
+  text: string,
+  params: DependencyQueryParams,
+  injectedQuery?: (text: string, params: DependencyQueryParams) => Promise<T[]>,
+): Promise<T[]> {
+  if (injectedQuery) return injectedQuery(text, params);
+
+  const sql = getOrgPg().sql;
+  const callDeadlineMs = DEPENDENCY_QUERY_TIMEOUT_MS + PG_READ_QUERY_CALL_OVERHEAD_MS;
+  let rows: T[] = [];
+  const work = sql.begin(async (tx) => {
+    await tx.unsafe('SET TRANSACTION READ ONLY');
+    await tx.unsafe(`SET LOCAL statement_timeout = ${DEPENDENCY_QUERY_TIMEOUT_MS}`);
+    await tx.unsafe(SET_LOCAL_UTC);
+    rows = (await tx.unsafe(text, params as never[])) as unknown as T[];
+  });
+  await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(DEPENDENCY_QUERY_TIMEOUT_MS, callDeadlineMs));
+  return rows;
+}
 
 /**
  * Resolve a work-item identity only from a typed blocker's stable ref.
@@ -448,45 +485,86 @@ all_nodes AS (
 const DEPENDENCY_TRAVERSAL_SQL = String.raw`
 WITH RECURSIVE
 ${DEPENDENCY_GRAPH_CTES},
-walk AS (
-  SELECT $4::text AS node_key,
-         0 AS depth,
-         ARRAY[$4::text] AS path,
-         NULL::text AS edge_key,
-         NULL::text AS subject_key,
-         NULL::text AS dependency_key,
-         NULL::text AS relation,
-         NULL::text AS external_ref
+frontier_walk(frontier_keys, visited_keys, depth) AS (
+  SELECT ARRAY[$4::text], ARRAY[$4::text], 0
   UNION ALL
-  SELECT next_step.next_key,
-         walk.depth + 1,
-         walk.path || next_step.next_key,
-         next_step.edge_key,
-         next_step.subject_key,
-         next_step.dependency_key,
-         next_step.relation,
-         next_step.external_ref
-    FROM walk
-    JOIN LATERAL (
-      SELECT edge.edge_key, edge.subject_key, edge.dependency_key,
-             edge.relation, edge.external_ref,
-             CASE
-               WHEN edge.relation = 'coverage' AND edge.subject_key = walk.node_key
-                 THEN edge.dependency_key
-               WHEN edge.relation = 'coverage' AND edge.dependency_key = walk.node_key
-                 THEN edge.subject_key
-               WHEN $5 = 'blockers' AND edge.subject_key = walk.node_key
-                 THEN edge.dependency_key
-               WHEN $5 = 'blocked' AND edge.dependency_key = walk.node_key
-                 THEN edge.subject_key
-             END AS next_key
-        FROM all_edges edge
-       WHERE (edge.relation = 'coverage' AND walk.node_key IN (edge.subject_key, edge.dependency_key))
-          OR ($5 = 'blockers' AND edge.subject_key = walk.node_key)
-          OR ($5 = 'blocked' AND edge.dependency_key = walk.node_key)
-    ) next_step ON next_step.next_key IS NOT NULL
+  SELECT next_frontier.frontier_keys,
+         walk.visited_keys || next_frontier.frontier_keys,
+         walk.depth + 1
+    FROM frontier_walk walk
+   CROSS JOIN LATERAL (
+     SELECT COALESCE(array_agg(next_step.next_key ORDER BY next_step.next_key), ARRAY[]::text[]) AS frontier_keys
+       FROM (
+         SELECT DISTINCT CASE
+                  WHEN edge.relation = 'coverage' AND edge.subject_key = current.node_key
+                    THEN edge.dependency_key
+                  WHEN edge.relation = 'coverage' AND edge.dependency_key = current.node_key
+                    THEN edge.subject_key
+                  WHEN $5 = 'blockers' AND edge.subject_key = current.node_key
+                    THEN edge.dependency_key
+                  WHEN $5 = 'blocked' AND edge.dependency_key = current.node_key
+                    THEN edge.subject_key
+                END AS next_key
+           FROM unnest(walk.frontier_keys) AS current(node_key)
+           JOIN all_edges edge
+             ON (edge.relation = 'coverage' AND current.node_key IN (edge.subject_key, edge.dependency_key))
+             OR ($5 = 'blockers' AND edge.subject_key = current.node_key)
+             OR ($5 = 'blocked' AND edge.dependency_key = current.node_key)
+       ) next_step
+      WHERE next_step.next_key IS NOT NULL
+        AND NOT next_step.next_key = ANY(walk.visited_keys)
+   ) next_frontier
    WHERE walk.depth < $6
-     AND NOT next_step.next_key = ANY(walk.path)
+     AND cardinality(next_frontier.frontier_keys) > 0
+),
+reachable_nodes AS (
+  SELECT $4::text AS node_key, 0 AS depth
+  UNION ALL
+  SELECT unnest(walk.frontier_keys), walk.depth
+    FROM frontier_walk walk
+   WHERE walk.depth > 0
+),
+reachable_nodes_dedup AS (
+  SELECT node_key, min(depth)::int AS depth
+    FROM reachable_nodes
+   GROUP BY node_key
+),
+frontier_depth_limit AS (
+  SELECT COALESCE(bool_or(
+           next_step.next_key IS NOT NULL
+           AND NOT next_step.next_key = ANY(walk.visited_keys)
+         ), false) AS hit_depth_limit
+    FROM frontier_walk walk
+   CROSS JOIN LATERAL unnest(walk.frontier_keys) AS current(node_key)
+   LEFT JOIN LATERAL (
+     SELECT CASE
+              WHEN edge.relation = 'coverage' AND edge.subject_key = current.node_key
+                THEN edge.dependency_key
+              WHEN edge.relation = 'coverage' AND edge.dependency_key = current.node_key
+                THEN edge.subject_key
+              WHEN $5 = 'blockers' AND edge.subject_key = current.node_key
+                THEN edge.dependency_key
+              WHEN $5 = 'blocked' AND edge.dependency_key = current.node_key
+                THEN edge.subject_key
+            END AS next_key
+       FROM all_edges edge
+      WHERE (edge.relation = 'coverage' AND current.node_key IN (edge.subject_key, edge.dependency_key))
+         OR ($5 = 'blockers' AND edge.subject_key = current.node_key)
+         OR ($5 = 'blocked' AND edge.dependency_key = current.node_key)
+   ) next_step ON true
+   WHERE walk.depth = $6
+),
+reachable_edges AS (
+  SELECT DISTINCT ON (edge.edge_key)
+         edge.edge_key, edge.subject_key, edge.dependency_key, edge.relation, edge.external_ref,
+         subject.depth AS subject_depth, dependency.depth AS dependency_depth
+    FROM all_edges edge
+    JOIN reachable_nodes_dedup subject ON subject.node_key = edge.subject_key
+    JOIN reachable_nodes_dedup dependency ON dependency.node_key = edge.dependency_key
+   WHERE edge.relation = 'coverage'
+      OR ($5 = 'blockers' AND edge.subject_key = subject.node_key)
+      OR ($5 = 'blocked' AND edge.dependency_key = dependency.node_key)
+   ORDER BY edge.edge_key
 )
 SELECT node.node_key,
        node.node_kind,
@@ -497,20 +575,42 @@ SELECT node.node_key,
        node.plan_slug,
        node.item_id,
        walk.depth,
-       walk.edge_key,
-       walk.subject_key,
-       walk.dependency_key,
-       walk.relation,
-       walk.external_ref,
-       (walk.depth = $6 AND EXISTS (
-         SELECT 1 FROM all_edges edge
-          WHERE (edge.relation = 'coverage' AND walk.node_key IN (edge.subject_key, edge.dependency_key))
-             OR ($5 = 'blockers' AND edge.subject_key = walk.node_key)
-             OR ($5 = 'blocked' AND edge.dependency_key = walk.node_key)
-       )) AS hit_depth_limit
-  FROM walk
+       NULL::text AS edge_key,
+       NULL::text AS subject_key,
+       NULL::text AS dependency_key,
+       NULL::text AS relation,
+       NULL::text AS external_ref,
+       (walk.depth = $6 AND (SELECT hit_depth_limit FROM frontier_depth_limit)) AS hit_depth_limit
+  FROM reachable_nodes_dedup walk
   JOIN all_nodes node ON node.node_key = walk.node_key
- ORDER BY walk.depth, node.node_key, walk.edge_key NULLS FIRST
+UNION ALL
+SELECT node.node_key,
+       node.node_kind,
+       node.ref,
+       node.status,
+       node.title,
+       node.harness_slug,
+       node.plan_slug,
+       node.item_id,
+       destination.depth,
+       edge.edge_key,
+       edge.subject_key,
+       edge.dependency_key,
+       edge.relation,
+       edge.external_ref,
+       false AS hit_depth_limit
+  FROM reachable_edges edge
+  JOIN reachable_nodes_dedup subject ON subject.node_key = edge.subject_key
+  JOIN reachable_nodes_dedup dependency ON dependency.node_key = edge.dependency_key
+  JOIN reachable_nodes_dedup destination
+    ON destination.node_key = CASE
+         WHEN edge.relation = 'coverage'
+           THEN CASE WHEN subject.depth >= dependency.depth THEN subject.node_key ELSE dependency.node_key END
+         WHEN $5 = 'blockers' THEN dependency.node_key
+         ELSE subject.node_key
+       END
+  JOIN all_nodes node ON node.node_key = destination.node_key
+ ORDER BY depth, node_key, edge_key NULLS FIRST
 `;
 
 /**
@@ -559,33 +659,71 @@ candidate_identity AS (
       ON edge.relation = 'coverage'
      AND candidate.blocker_key IN (edge.subject_key, edge.dependency_key)
 ),
-blocked_walk AS (
-  SELECT blocker_key,
-         blocker_key AS node_key,
-         0 AS depth,
-         ARRAY[blocker_key] AS path
+blocked_walk(blocker_key, frontier_keys, visited_keys, depth) AS (
+  SELECT blocker_key, ARRAY[blocker_key], ARRAY[blocker_key], 0
     FROM candidate_blockers
   UNION ALL
   SELECT walk.blocker_key,
-         next_step.next_key,
-         walk.depth + 1,
-         walk.path || next_step.next_key
+         next_frontier.frontier_keys,
+         walk.visited_keys || next_frontier.frontier_keys,
+         walk.depth + 1
     FROM blocked_walk walk
-    JOIN LATERAL (
-      SELECT CASE
-               WHEN edge.relation = 'coverage' AND edge.subject_key = walk.node_key
-                 THEN edge.dependency_key
-               WHEN edge.relation = 'coverage' AND edge.dependency_key = walk.node_key
-                 THEN edge.subject_key
-               WHEN edge.dependency_key = walk.node_key
-                 THEN edge.subject_key
-             END AS next_key
-        FROM all_edges edge
-       WHERE (edge.relation = 'coverage' AND walk.node_key IN (edge.subject_key, edge.dependency_key))
-          OR (edge.relation <> 'coverage' AND edge.dependency_key = walk.node_key)
-    ) next_step ON next_step.next_key IS NOT NULL
+   CROSS JOIN LATERAL (
+     SELECT COALESCE(array_agg(next_step.next_key ORDER BY next_step.next_key), ARRAY[]::text[]) AS frontier_keys
+       FROM (
+         SELECT DISTINCT CASE
+                  WHEN edge.relation = 'coverage' AND edge.subject_key = current.node_key
+                    THEN edge.dependency_key
+                  WHEN edge.relation = 'coverage' AND edge.dependency_key = current.node_key
+                    THEN edge.subject_key
+                  WHEN edge.relation <> 'coverage' AND edge.dependency_key = current.node_key
+                    THEN edge.subject_key
+                END AS next_key
+           FROM unnest(walk.frontier_keys) AS current(node_key)
+           JOIN all_edges edge
+             ON (edge.relation = 'coverage' AND current.node_key IN (edge.subject_key, edge.dependency_key))
+             OR (edge.relation <> 'coverage' AND edge.dependency_key = current.node_key)
+       ) next_step
+      WHERE next_step.next_key IS NOT NULL
+        AND NOT next_step.next_key = ANY(walk.visited_keys)
+   ) next_frontier
    WHERE walk.depth < $6
-     AND NOT next_step.next_key = ANY(walk.path)
+     AND cardinality(next_frontier.frontier_keys) > 0
+),
+blocked_reachable AS (
+  SELECT blocker_key, blocker_key AS node_key, 0 AS depth
+    FROM candidate_blockers
+  UNION ALL
+  SELECT walk.blocker_key, unnest(walk.frontier_keys), walk.depth
+    FROM blocked_walk walk
+   WHERE walk.depth > 0
+),
+blocked_reachable_dedup AS (
+  SELECT blocker_key, node_key, min(depth)::int AS depth
+    FROM blocked_reachable
+   GROUP BY blocker_key, node_key
+),
+depth_limit_signal AS (
+  SELECT walk.blocker_key,
+         bool_or(next_step.next_key IS NOT NULL
+                 AND NOT next_step.next_key = ANY(walk.visited_keys)) AS depth_limited
+    FROM blocked_walk walk
+   CROSS JOIN LATERAL unnest(walk.frontier_keys) AS current(node_key)
+   LEFT JOIN LATERAL (
+     SELECT CASE
+              WHEN edge.relation = 'coverage' AND edge.subject_key = current.node_key
+                THEN edge.dependency_key
+              WHEN edge.relation = 'coverage' AND edge.dependency_key = current.node_key
+                THEN edge.subject_key
+              WHEN edge.relation <> 'coverage' AND edge.dependency_key = current.node_key
+                THEN edge.subject_key
+            END AS next_key
+       FROM all_edges edge
+      WHERE (edge.relation = 'coverage' AND current.node_key IN (edge.subject_key, edge.dependency_key))
+         OR (edge.relation <> 'coverage' AND edge.dependency_key = current.node_key)
+   ) next_step ON true
+   WHERE walk.depth = $6
+   GROUP BY walk.blocker_key
 ),
 ranked AS (
   SELECT candidate.blocker_key,
@@ -609,35 +747,20 @@ ranked AS (
               AND represented.node_kind = 'work_item'
          ) AS last_progress_at,
          count(DISTINCT root.node_key)::int AS open_blocked_count,
-         bool_or(
-           walk.depth = $6 AND EXISTS (
-             SELECT 1
-               FROM all_edges edge
-              WHERE (
-                      (edge.relation = 'coverage' AND walk.node_key IN (edge.subject_key, edge.dependency_key))
-                   OR (edge.relation <> 'coverage' AND edge.dependency_key = walk.node_key)
-                    )
-                AND (CASE
-                       WHEN edge.relation = 'coverage' AND edge.subject_key = walk.node_key
-                         THEN edge.dependency_key
-                       WHEN edge.relation = 'coverage' AND edge.dependency_key = walk.node_key
-                         THEN edge.subject_key
-                       WHEN edge.dependency_key = walk.node_key
-                         THEN edge.subject_key
-                     END) <> ALL(walk.path)
-           )
-         ) AS depth_limited
+         COALESCE(depth_signal.depth_limited, false) AS depth_limited
     FROM candidate_blockers candidate
     JOIN all_nodes blocker ON blocker.node_key = candidate.blocker_key
-    JOIN blocked_walk walk ON walk.blocker_key = candidate.blocker_key
+    JOIN blocked_reachable_dedup walk ON walk.blocker_key = candidate.blocker_key
     JOIN plan_roots root ON root.node_key = walk.node_key
+    LEFT JOIN depth_limit_signal depth_signal ON depth_signal.blocker_key = candidate.blocker_key
    WHERE NOT EXISTS (
      SELECT 1
        FROM candidate_identity identity
       WHERE identity.blocker_key = candidate.blocker_key
         AND identity.identity_key = root.node_key
    )
-   GROUP BY candidate.blocker_key, blocker.node_kind, blocker.ref, blocker.status, blocker.title
+   GROUP BY candidate.blocker_key, blocker.node_kind, blocker.ref, blocker.status, blocker.title,
+            depth_signal.depth_limited
   HAVING count(DISTINCT root.node_key) > 0
 ),
 ordered AS (
@@ -650,18 +773,11 @@ population AS (
          COALESCE(bool_or(depth_limited), false) AS depth_limited
     FROM ranked
 ),
-target_paths AS (
-  SELECT DISTINCT walk.path
-    FROM blocked_walk walk
+rooted_blockers AS (
+  SELECT DISTINCT walk.blocker_key
+    FROM blocked_reachable_dedup walk
     JOIN plan_roots root ON root.node_key = walk.node_key
    WHERE $11::boolean
-),
-graph_edge_pairs AS (
-  SELECT DISTINCT
-         path[step_index + 1] AS subject_key,
-         path[step_index] AS dependency_key
-    FROM target_paths
-   CROSS JOIN LATERAL generate_series(1, array_length(path, 1) - 1) AS steps(step_index)
 ),
 graph_edges AS (
   SELECT DISTINCT ON (edge.subject_key, edge.dependency_key, edge.relation)
@@ -670,24 +786,23 @@ graph_edges AS (
          edge.dependency_key,
          edge.relation,
          edge.external_ref
-    FROM graph_edge_pairs pair
-    JOIN all_edges edge
-      ON (
-           edge.relation <> 'coverage'
-       AND edge.subject_key = pair.subject_key
-       AND edge.dependency_key = pair.dependency_key
-         )
-      OR (
-           edge.relation = 'coverage'
-       AND (
-            (edge.subject_key = pair.subject_key AND edge.dependency_key = pair.dependency_key)
-         OR (edge.subject_key = pair.dependency_key AND edge.dependency_key = pair.subject_key)
-           )
-         )
+    FROM all_edges edge
+    JOIN blocked_reachable_dedup subject_scope
+      ON subject_scope.node_key = edge.subject_key
+    JOIN blocked_reachable_dedup dependency_scope
+      ON dependency_scope.node_key = edge.dependency_key
+    JOIN rooted_blockers rooted_subject ON rooted_subject.blocker_key = subject_scope.blocker_key
+    JOIN rooted_blockers rooted_dependency ON rooted_dependency.blocker_key = dependency_scope.blocker_key
+   WHERE $11::boolean
    ORDER BY edge.subject_key, edge.dependency_key, edge.relation, edge.edge_key
 ),
 graph_node_keys AS (
   SELECT node_key FROM plan_roots WHERE $11::boolean
+  UNION
+  SELECT walk.node_key
+    FROM blocked_reachable_dedup walk
+    JOIN rooted_blockers rooted ON rooted.blocker_key = walk.blocker_key
+   WHERE $11::boolean
   UNION
   SELECT subject_key FROM graph_edges
   UNION
@@ -790,10 +905,7 @@ export async function traverseDependencies(
   const direction = args.direction ?? 'blockers';
   const maxDepth = Math.max(1, Math.min(256, Math.floor(args.maxDepth ?? DEFAULT_DEPENDENCY_TRAVERSAL_MAX_DEPTH)));
   const coordinationWorkspaceId = args.coordinationWorkspaceId?.trim() || DEFAULT_COORD_WORKSPACE;
-  const query: DependencyTraversalQuery =
-    deps.query ??
-    ((text, params) => getOrgPg().sql.unsafe<DependencyTraversalRow[]>(text, params));
-  const rows = await query(DEPENDENCY_TRAVERSAL_SQL, [
+  const rows = await runDependencyQuery<DependencyTraversalRow>(DEPENDENCY_TRAVERSAL_SQL, [
     workspaceId,
     harnessSlug,
     coordinationWorkspaceId,
@@ -801,7 +913,7 @@ export async function traverseDependencies(
     direction,
     maxDepth,
     ISSUE_FAMILY_KINDS,
-  ]);
+  ], deps.query);
 
   const nodes = new Map<string, DependencyTraversalNode>();
   const edges = new Map<string, DependencyTraversalEdge>();
@@ -871,10 +983,7 @@ export async function readDependencyBottlenecks(
   const maxDepth = Math.max(1, Math.min(256, Math.floor(args.maxDepth ?? DEFAULT_DEPENDENCY_TRAVERSAL_MAX_DEPTH)));
   const limit = Math.max(1, Math.min(50, Math.floor(args.limit ?? 10)));
   const coordinationWorkspaceId = args.coordinationWorkspaceId?.trim() || DEFAULT_COORD_WORKSPACE;
-  const query: DependencyBottleneckQuery =
-    deps.query ??
-    ((text, params) => getOrgPg().sql.unsafe<DependencyBottleneckRow[]>(text, params));
-  const rows = await query(DEPENDENCY_BOTTLENECK_SQL, [
+  const rows = await runDependencyQuery<DependencyBottleneckRow>(DEPENDENCY_BOTTLENECK_SQL, [
     workspaceId,
     harnessSlug,
     coordinationWorkspaceId,
@@ -886,7 +995,7 @@ export async function readDependencyBottlenecks(
     planSlug,
     limit,
     args.includeGraph === true,
-  ]);
+  ], deps.query);
   const populationRow = rows.find((row) => row.row_kind === 'population');
   if (!populationRow) throw new Error('dependency bottleneck query returned no population row');
   const candidates = Number(populationRow.candidate_count);
