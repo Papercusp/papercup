@@ -46,9 +46,8 @@ import { detectGlStrategy } from './gl-strategy';
 
 function hasBin(bin: string): boolean {
   try {
-    return spawnSync('command', ['-v', bin], {
+    return spawnSync('which', [bin], {
       stdio: 'ignore',
-      shell: true,
       timeout: 10_000,
       killSignal: 'SIGKILL',
     }).status === 0;

@@ -279,7 +279,10 @@ export function hostGlProbe(): GlProbe {
   return {
     hasBinary(name) {
       try {
-        return spawnSync('command', ['-v', name], { stdio: 'ignore', shell: true }).status === 0;
+        // `command` is a shell builtin, but passing an argv array with the shell option
+        // makes Node concatenate the arguments and emit DEP0190. `which` accepts
+        // the same binary-name lookup without routing caller data through a shell.
+        return spawnSync('which', [name], { stdio: 'ignore' }).status === 0;
       } catch {
         return false;
       }

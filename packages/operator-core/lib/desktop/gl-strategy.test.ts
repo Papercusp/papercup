@@ -13,7 +13,19 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+
+const childProcessMocks = vi.hoisted(() => ({
+  spawnSync: vi.fn(),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawnSync: childProcessMocks.spawnSync,
+  };
+});
 import {
   applyGlStrategy,
   buildGlSelectScript,
@@ -26,6 +38,7 @@ import {
   selectGlStrategy,
   SOFTWARE_RENDERER_MARKERS,
   VIRTUALGL_ARGV,
+  hostGlProbe,
 } from './gl-strategy';
 
 const DISPLAY = ':191';
@@ -192,6 +205,15 @@ describe('applyGlStrategy', () => {
     expect(argv).toEqual(['xterm']);
     expect(env.LIBGL_ALWAYS_SOFTWARE).toBe('1');
     expect(env.__GLX_VENDOR_LIBRARY_NAME).toBe('mesa');
+  });
+});
+
+describe('hostGlProbe', () => {
+  it('looks up binaries through argv without enabling shell interpolation', () => {
+    childProcessMocks.spawnSync.mockReset().mockReturnValue({ status: 0 });
+
+    expect(hostGlProbe().hasBinary('vglrun')).toBe(true);
+    expect(childProcessMocks.spawnSync).toHaveBeenCalledWith('which', ['vglrun'], { stdio: 'ignore' });
   });
 });
 
