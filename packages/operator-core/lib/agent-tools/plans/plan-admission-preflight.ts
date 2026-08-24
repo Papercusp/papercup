@@ -271,6 +271,8 @@ export function evaluateExactPlanAdmission(args: {
 export async function preflightExactPlanAdmission(args: {
   workspaceId: string; harnessSlug: string; planSlug: string; assignee: string;
   specId: string; fleetSlug?: string; claimKinds?: readonly string[]; requestedSeats?: number;
+  /** Allow plans:start to report success when this caller already holds every ready row. */
+  allowCallerHeld?: boolean;
 }): Promise<ExactPlanAdmission> {
   const row = await getPlanRow(args.planSlug, { workspaceId: args.workspaceId, harnessSlug: args.harnessSlug });
   if (!row) {
