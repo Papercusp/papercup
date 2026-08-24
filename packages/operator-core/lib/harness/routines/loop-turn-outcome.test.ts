@@ -92,6 +92,14 @@ const refRow = {
   workspace_id: 'ws-papercusp',
   reschedule_interval_sec: 120,
   target_owner_id: 'su-owner',
+  payload_template: {
+    goal: 'drain the bug queue',
+    continuation: 'gated',
+    mode: 'monitor',
+    costCapCents: 25,
+    maxFires: 8,
+    maxDurationSec: 900,
+  },
 };
 
 describe('loopRoutineIdFromSource', () => {
@@ -249,6 +257,217 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
       }),
     );
     expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('a context-overflow death queues carry-respawn first, then re-arms the loop cold through CAS', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(false);
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const order: string[] = [];
+    const autoPause = vi.fn(async () => {
+      order.push('pause');
+    });
+    const availability = vi.fn(() => ({
+      available: true as const,
+      reason: null,
+      host: { ownerId: 'su-owner', sock: '/tmp/su-owner.sock' },
+    }));
+    const buildRespawnSpec = vi.fn(async () => ({
+      systemPromptAddendum: 'RECOVERY-ADDENDUM',
+      firstPrompt: null,
+      budgetChars: 24_000,
+      openOwnerQuestion: { crossesOpenOwnerMessage: false },
+    }));
+    const injectPsuHost = vi.fn(async () => {
+      order.push('inject');
+      return true;
+    });
+    const markRespawnExpected = vi.fn(async () => {
+      order.push('mark');
+    });
+    const bumpSessionEpoch = vi.fn(async () => {
+      order.push('epoch');
+      return 1;
+    });
+    let materializedInput: unknown;
+    const materializeLoop = vi.fn(async (input: unknown) => {
+      order.push('materialize');
+      materializedInput = input;
+      return {
+        id: 'loop_su_owner',
+        name: 'loop-su-owner',
+        nextFireAt: null,
+        targetRole: 'system:loop-wake',
+        intervalSec: 120,
+        changed: true,
+      };
+    });
+
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({ stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }),
+      {
+        sql: sql as never,
+        recordFire,
+        autoPause,
+        selfCompactionAvailability: availability as never,
+        buildRespawnSpec: buildRespawnSpec as never,
+        injectPsuHost: injectPsuHost as never,
+        markRespawnExpected: markRespawnExpected as never,
+        bumpSessionEpoch: bumpSessionEpoch as never,
+        materializeLoop: materializeLoop as never,
+        effectiveWindowTokens: 210_000,
+      },
+    );
+
+    expect(res).toMatchObject({
+      handled: true,
+      class: 'context_overflow',
+      recoveryQueued: true,
+      recoveryRearmed: true,
+    });
+    expect(res.rearmedMs).toBeUndefined();
+    expect(order).toEqual(['pause', 'inject', 'mark', 'epoch', 'materialize']);
+    expect(buildRespawnSpec).toHaveBeenCalledWith(
+      'su-owner',
+      expect.objectContaining({
+        effectiveWindowTokens: 210_000,
+        buildOpts: { workspaceId: 'ws-papercusp', boundaryDeliberate: true },
+      }),
+    );
+    expect(injectPsuHost).toHaveBeenCalledWith(
+      '/tmp/su-owner.sock',
+      expect.objectContaining({
+        mode: 'carry-respawn',
+        ownerId: 'su-owner',
+        systemPromptAddendum: 'RECOVERY-ADDENDUM',
+        data: expect.stringContaining('Context-overflow recovery queued'),
+      }),
+      15 * 60_000,
+    );
+    expect(bumpSessionEpoch).toHaveBeenCalledWith(sql, 'su-owner');
+    expect(materializedInput).toMatchObject({
+      workspaceId: 'ws-papercusp',
+      harnessSlug: 'papercusp',
+      ownerId: 'su-owner',
+      intervalSec: 120,
+      carry: 'cold',
+      active: true,
+      onlyIfInactive: true,
+      sql,
+    });
+    expect((materializedInput as { kickoff: string }).kickoff).toContain("COLD loop (carry:'cold')");
+    // The legacy warm re-arm is guarded out for the entire context-overflow branch.
+    expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
+  });
+
+  it('a context-overflow death with no carry-capable host stays paused and performs no recovery writes', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(false);
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const autoPause = vi.fn(async () => {});
+    const availability = vi.fn(() => ({ available: false as const, reason: 'no_live_pty_host' as const, host: null }));
+    const buildRespawnSpec = vi.fn(async () => null);
+    const injectPsuHost = vi.fn(async () => true);
+    const markRespawnExpected = vi.fn(async () => {});
+    const bumpSessionEpoch = vi.fn(async () => 1);
+    const materializeLoop = vi.fn(async (_input: unknown) => ({
+      id: 'loop_su_owner',
+      name: 'loop-su-owner',
+      nextFireAt: null,
+      targetRole: 'system:loop-wake',
+      intervalSec: 120,
+      changed: true,
+    }));
+
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({ stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }),
+      {
+        sql: sql as never,
+        recordFire,
+        autoPause,
+        selfCompactionAvailability: availability as never,
+        buildRespawnSpec: buildRespawnSpec as never,
+        injectPsuHost: injectPsuHost as never,
+        markRespawnExpected: markRespawnExpected as never,
+        bumpSessionEpoch: bumpSessionEpoch as never,
+        materializeLoop: materializeLoop as never,
+      },
+    );
+
+    expect(res).toMatchObject({
+      handled: true,
+      class: 'context_overflow',
+      recoveryQueued: false,
+      recoveryRearmed: false,
+      recoveryReason: 'no_live_pty_host',
+    });
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(buildRespawnSpec).not.toHaveBeenCalled();
+    expect(injectPsuHost).not.toHaveBeenCalled();
+    expect(markRespawnExpected).not.toHaveBeenCalled();
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+    expect(materializeLoop).not.toHaveBeenCalled();
+    expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
+  });
+
+  it('a context-overflow carry-build failure stays paused and never invokes the socket or cold re-arm', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(false);
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const autoPause = vi.fn(async () => {});
+    const availability = vi.fn(() => ({
+      available: true as const,
+      reason: null,
+      host: { ownerId: 'su-owner', sock: '/tmp/su-owner.sock' },
+    }));
+    const buildRespawnSpec = vi.fn(async () => null);
+    const injectPsuHost = vi.fn(async () => true);
+    const markRespawnExpected = vi.fn(async () => {});
+    const bumpSessionEpoch = vi.fn(async () => 1);
+    const materializeLoop = vi.fn(async (_input: unknown) => ({
+      id: 'loop_su_owner',
+      name: 'loop-su-owner',
+      nextFireAt: null,
+      targetRole: 'system:loop-wake',
+      intervalSec: 120,
+      changed: true,
+    }));
+
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({ stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }),
+      {
+        sql: sql as never,
+        recordFire,
+        autoPause,
+        selfCompactionAvailability: availability as never,
+        buildRespawnSpec: buildRespawnSpec as never,
+        injectPsuHost: injectPsuHost as never,
+        markRespawnExpected: markRespawnExpected as never,
+        bumpSessionEpoch: bumpSessionEpoch as never,
+        materializeLoop: materializeLoop as never,
+        effectiveWindowTokens: 200_000,
+      },
+    );
+
+    expect(res).toMatchObject({
+      handled: true,
+      class: 'context_overflow',
+      recoveryQueued: false,
+      recoveryRearmed: false,
+      recoveryReason: 'carry_build_failed',
+    });
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(injectPsuHost).not.toHaveBeenCalled();
+    expect(markRespawnExpected).not.toHaveBeenCalled();
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+    expect(materializeLoop).not.toHaveBeenCalled();
+    expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
   });
 
   it('a missing native resume session pauses the loop and never re-arms the stale target', async () => {
