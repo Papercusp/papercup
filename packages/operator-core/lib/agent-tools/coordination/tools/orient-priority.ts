@@ -21,6 +21,12 @@ export interface OrientOptionalLeg {
 export const ORIENT_CORE_RESULT_KEYS = [
   'ok',
   'me',
+  // EI-18763132241176410: CORE for the same reason as `leaderBrief` below — it is a
+  // small, safety-critical disclosure naming the population `me` was queried over.
+  // Evicted under budget pressure it would be missing precisely when payloads are
+  // tight, restoring the silent narrow read (`agents:1, claims:0` from a self-scoped
+  // query) that it exists to make legible.
+  'assignmentsScope',
   'claimable',
   'claimableHarnessScope',
   'claimableTruncated',
