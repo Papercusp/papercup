@@ -180,7 +180,7 @@ describe('applyResultDoor', () => {
     expect(parsed._projection.cursor.args.file_path).toBe(
       (doored._meta!.resultDoor as { spillPath: string }).spillPath,
     );
-    expect(parsed._projection.next).toContain('follow next_cursor until eof');
+    expect(parsed._projection.next).toContain('follow next_cursor;');
     // EI-20335562969900283: the bounded text projection is intentionally not
     // valid against an arbitrary tool's full output schema (it may omit rows
     // or required fields).  structuredContent was explicitly requested as the
@@ -852,7 +852,7 @@ describe('applyResultDoor', () => {
         );
         const pointer = boundedBody(doored)._projection.next;
         expect(pointer).not.toContain('The FULL result is at');
-        expect(pointer).toContain('recover the exact spill bytes');
+        expect(pointer).toContain('recover spill;');
         expect(pointer).toContain('No upstream truncation marker was detected');
         const spill = readSpill('ws-1', 'plans:get', RUN_ID);
         expect(spill).not.toContain('# result-door spill — FULL tool result');
@@ -975,7 +975,7 @@ describe('applyResultDoor', () => {
         { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID },
       );
       const pointer = boundedBody(doored)._projection.next;
-      expect(pointer).toContain('recover the exact spill bytes');
+      expect(pointer).toContain('recover spill;');
       expect(pointer).not.toContain('TOOL ITSELF already truncated');
     });
 
