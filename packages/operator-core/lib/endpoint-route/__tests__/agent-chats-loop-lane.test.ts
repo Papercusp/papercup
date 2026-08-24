@@ -89,6 +89,7 @@ const MOCKED_MODULES = [
   '../../harness-registry',
   '../../operator-notes',
   '@papercusp/orchestrator/role-prompt',
+  '../../prompt-assembly',
   '../../agent-chats-data',
   '@papercusp/db-org',
   '../../agent-loop/chat-engine',
@@ -103,6 +104,8 @@ afterEach(() => {
 });
 
 interface LoopLaneMocks {
+  assembleHarnessRolePrompt: ReturnType<typeof vi.fn>;
+  assembleOperatorRolePrompt: ReturnType<typeof vi.fn>;
   runLoopChatTurn: ReturnType<typeof vi.fn>;
   resolveLoopApproval: ReturnType<typeof vi.fn>;
   listPendingLoopApprovals: ReturnType<typeof vi.fn>;
@@ -135,6 +138,14 @@ async function loopLaneRoutes(
   });
   const resolveLoopApproval = vi.fn(async () => true);
   const listPendingLoopApprovals = vi.fn(async () => []);
+  const assembleHarnessRolePrompt = vi.fn(() => ({
+    text: 'ROLE PROMPT',
+    meta: { runId: 'run-test' },
+  }));
+  const assembleOperatorRolePrompt = vi.fn(() => ({
+    text: 'OPERATOR ROLE PROMPT',
+    sections: [],
+  }));
 
   vi.doMock('../../agent-tools', () => ({}));
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -145,7 +156,10 @@ async function loopLaneRoutes(
   });
   vi.doMock('../../operator-notes', () => ({ projectDirForSlug: vi.fn(async () => '/tmp/proj') }));
   vi.doMock('@papercusp/orchestrator/role-prompt', () => ({
-    assembleRolePrompt: () => ({ text: 'ROLE PROMPT', meta: { runId: 'run-test' } }),
+    assembleRolePrompt: assembleHarnessRolePrompt,
+  }));
+  vi.doMock('../../prompt-assembly', () => ({
+    assembleRolePrompt: assembleOperatorRolePrompt,
   }));
   vi.doMock('../../agent-chats-data', () => ({
     readFeatureLockState: vi.fn(async () => null),
@@ -173,7 +187,15 @@ async function loopLaneRoutes(
   const routes = (await import('../routes/agent-chats/index')).default as RouteDefinition<undefined>[];
   return {
     routes,
-    mocks: { runLoopChatTurn, resolveLoopApproval, listPendingLoopApprovals, updates, updateArgs },
+    mocks: {
+      assembleHarnessRolePrompt,
+      assembleOperatorRolePrompt,
+      runLoopChatTurn,
+      resolveLoopApproval,
+      listPendingLoopApprovals,
+      updates,
+      updateArgs,
+    },
   };
 }
 
@@ -220,6 +242,25 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     expect(finalUpdate[1]).toBe(12); // total_input_tokens increment
     expect(finalUpdate[2]).toBe(7); // total_output_tokens increment
     expect(finalUpdate[3]).toBe(5); // cost cents (0.05 USD)
+  });
+
+  it('assembles an operator chat from the operator prompt stack, not the blueprint stack', async () => {
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow, role: 'operator' });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const res = (await messages.handler(
+      postReq({ content: 'run the native operator loop', engine: 'loop' }),
+      ctxFor(CHAT),
+    )) as Response;
+    expect(res.status).toBe(200);
+    const { closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+
+    expect(mocks.assembleOperatorRolePrompt).toHaveBeenCalledWith({
+      role: 'operator',
+      toolNames: [],
+    });
+    expect(mocks.assembleHarnessRolePrompt).not.toHaveBeenCalled();
+    expect(mocks.runLoopChatTurn.mock.calls[0][0].system).toContain('OPERATOR ROLE PROMPT');
   });
 
   it('an engine errorMessage persists a failure-marker turn and still closes the stream', async () => {

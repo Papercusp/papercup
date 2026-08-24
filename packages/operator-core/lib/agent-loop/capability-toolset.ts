@@ -46,10 +46,51 @@ export interface CapabilityToolsetOpts {
   registry?: () => ProjectedTool[];
 }
 
+/** Selection-only subset used by prompt assembly before a dispatcher exists. */
+export type CapabilityToolSelectionOpts = Pick<
+  CapabilityToolsetOpts,
+  'names' | 'prefixes' | 'registry'
+>;
+
 /** A projected tool's MCP name, when it is MCP-exposed. */
 function mcpName(t: ProjectedTool): string | undefined {
   const name = (t as { expose?: { mcp?: { name?: unknown } } }).expose?.mcp?.name;
   return typeof name === 'string' && name ? name : undefined;
+}
+
+function selectCapabilityTools(
+  opts: CapabilityToolSelectionOpts,
+): Array<{ name: string; tool: ProjectedTool }> {
+  const prefixes = opts.prefixes ?? ['capability:'];
+  const wantNames = new Set(opts.names ?? []);
+  const all = (opts.registry ?? listAllProjectedTools)();
+
+  const selected: Array<{ name: string; tool: ProjectedTool }> = [];
+  const seen = new Set<string>();
+  for (const t of all) {
+    const name = mcpName(t);
+    if (!name || seen.has(name)) continue;
+    if (wantNames.has(name) || prefixes.some((p) => name.startsWith(p))) {
+      seen.add(name);
+      selected.push({ name, tool: t });
+    }
+  }
+
+  const missing = [...wantNames].filter((n) => !seen.has(n));
+  if (missing.length) {
+    throw new Error(`capabilityToolset: named tool(s) not in the projected registry: ${missing.join(', ')}`);
+  }
+  return selected;
+}
+
+/**
+ * Exact names the loop will expose for a selection. Prompt builders use this
+ * before the principal-bound dispatcher (and therefore the executable
+ * LoopTools) can be constructed, keeping advertised tools and executable tools
+ * on the same selector instead of duplicating the `capability:` filter.
+ */
+export function capabilityToolNames(opts: CapabilityToolSelectionOpts = {}): string[] {
+  return selectCapabilityTools(opts).map(({ name }) => name);
 }
 
 /** Flatten an MCP-shaped result into a JSON-serializable tool_result payload:
@@ -79,27 +120,7 @@ export function flattenDispatchResult(result: DispatchResult): unknown {
  * misconfiguration that must fail loud at construction, not mid-conversation).
  */
 export function capabilityToolset(opts: CapabilityToolsetOpts): LoopTool[] {
-  const prefixes = opts.prefixes ?? ['capability:'];
-  const wantNames = new Set(opts.names ?? []);
-  const all = (opts.registry ?? listAllProjectedTools)();
-
-  const selected: Array<{ name: string; tool: ProjectedTool }> = [];
-  const seen = new Set<string>();
-  for (const t of all) {
-    const name = mcpName(t);
-    if (!name || seen.has(name)) continue;
-    if (wantNames.has(name) || prefixes.some((p) => name.startsWith(p))) {
-      seen.add(name);
-      selected.push({ name, tool: t });
-    }
-  }
-
-  const missing = [...wantNames].filter((n) => !seen.has(n));
-  if (missing.length) {
-    throw new Error(`capabilityToolset: named tool(s) not in the projected registry: ${missing.join(', ')}`);
-  }
-
-  return selected.map(({ name, tool }) => ({
+  return selectCapabilityTools(opts).map(({ name, tool }) => ({
     name,
     description: tool.description,
     inputSchema: tool.inputSchema,

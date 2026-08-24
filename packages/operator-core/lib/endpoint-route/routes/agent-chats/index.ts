@@ -16,7 +16,8 @@ import { join } from 'node:path';
 import { sseResponse } from '@papercusp/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { getLegacyClient } from '@papercusp/db-org';
-import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { assembleRolePrompt as assembleHarnessRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { assembleRolePrompt as assembleOperatorRolePrompt } from '../../../prompt-assembly';
 import { getPromptOverride } from '../../../harness-prompt-overrides';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
@@ -36,6 +37,7 @@ import {
 } from '../../../agent-chat-lock';
 import { dispatchProjectedTool } from '@papercusp/agent-mcp';
 import {
+  capabilityToolNames,
   capabilityToolset,
   type DispatchResult,
   type ToolDispatcher,
@@ -385,16 +387,36 @@ const messagesRoute = defineTool({
       try {
         chatOverride = (await getPromptOverride(activeWorkspaceId(), slug, chat.role)) ?? undefined;
       } catch { /* fall back to config.json default */ }
-      const r = assembleRolePrompt({
-        slug,
-        role: chat.role,
-        projectDir,
-        featureId: chat.feature_id ?? undefined,
-        // 'discuss' (client sends it per message) reframes the worker to
-        // advise-first; anything else is the default interactive chat.
-        mode: body.mode === 'discuss' ? 'discuss' : 'chat',
-        promptOverrideText: chatOverride,
-      });
+      // The persisted role registry spans TWO prompt stacks. Harness roles
+      // (worker/reviewer/...) resolve through the blueprint chain; `operator`
+      // is the workspace control-plane persona and canonically lives under
+      // apps/operator/prompts. The pui native seam deliberately creates an
+      // operator chat (D-016), so sending it through the blueprint-only
+      // assembler fails before the stream opens: base has no operator.md.
+      // Keep the role intact and select the owning assembler here. Advertise
+      // the exact capability:* set the loop will construct below, derived from
+      // the same selector rather than a second hard-coded list.
+      const rolePrompt = chat.role === 'operator'
+        ? {
+            text: assembleOperatorRolePrompt({
+              role: 'operator',
+              toolNames: capabilityToolNames(),
+            }).text,
+            runId: `${Math.floor(Date.now() / 1000)}-operator${chat.feature_id ? `-${chat.feature_id}` : ''}`,
+          }
+        : (() => {
+            const r = assembleHarnessRolePrompt({
+              slug,
+              role: chat.role,
+              projectDir,
+              featureId: chat.feature_id ?? undefined,
+              // 'discuss' (client sends it per message) reframes the worker to
+              // advise-first; anything else is the default interactive chat.
+              mode: body.mode === 'discuss' ? 'discuss' : 'chat',
+              promptOverrideText: chatOverride,
+            });
+            return { text: r.text, runId: r.meta.runId };
+          })();
       const lockNoticeGuidance = itemHarness.isLegacyBlueprint
         ? `add a note (it lands in \`.papercusp/notes/${chat.feature_id}.md\`, which the next worker tick reads)`
         : `leave a comment on ${chat.feature_id} (\`work_items:comment\`) for whoever is working it`;
@@ -502,9 +524,9 @@ const messagesRoute = defineTool({
       // memory / history. Previously it sat last (after planContextSection),
       // effectively an appendix the model could reach only after wading through
       // lock/plan boilerplate for a feature it may not even recognize yet.
-      const promptText = `${r.text}${dossierSection}${lockNotice}${planContextSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
-      const systemText = `${r.text}${dossierSection}${lockNotice}${planContextSection}${memorySection}`;
-      assembled = { text: promptText, runId: r.meta.runId, systemText };
+      const promptText = `${rolePrompt.text}${dossierSection}${lockNotice}${planContextSection}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
+      const systemText = `${rolePrompt.text}${dossierSection}${lockNotice}${planContextSection}${memorySection}`;
+      assembled = { text: promptText, runId: rolePrompt.runId, systemText };
     } catch (e) {
       return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });
     }

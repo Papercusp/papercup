@@ -4,7 +4,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ProjectedTool } from '@papercusp/tooldef';
-import { capabilityToolset, flattenDispatchResult, type ToolDispatcher } from './capability-toolset';
+import {
+  capabilityToolNames,
+  capabilityToolset,
+  flattenDispatchResult,
+  type ToolDispatcher,
+} from './capability-toolset';
 
 function fakeProjected(name: string, description = `desc of ${name}`): ProjectedTool {
   return {
@@ -27,6 +32,18 @@ const okDispatch: ToolDispatcher = async (name, args) => ({
 });
 
 describe('capabilityToolset', () => {
+  it('shares one selector with prompt-time capability names', () => {
+    expect(capabilityToolNames({ registry }).sort()).toEqual([
+      'capability:bash',
+      'capability:read',
+    ]);
+    expect(capabilityToolNames({ registry, names: ['work_items:get'] }).sort()).toEqual([
+      'capability:bash',
+      'capability:read',
+      'work_items:get',
+    ]);
+  });
+
   it('selects by default capability: prefix and projects def fields', () => {
     const tools = capabilityToolset({ dispatch: okDispatch, registry });
     expect(tools.map((t) => t.name).sort()).toEqual(['capability:bash', 'capability:read']);
