@@ -2069,6 +2069,13 @@ describe("OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)", () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain("work_items:release");
   });
 
+  it("seeds events:cancel as the correction half of events:await", () => {
+    // EI-21345492095209440: a trimmed client that can register a wait must be able
+    // to retract it without a tools:find/tools:invoke round-trip.
+    expect([...CORE_MCP_TOOL_NAMES]).toContain("events:cancel");
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain("events:cancel");
+  });
+
   it("is identical to the canonical orchestrator CORE_MCP_TOOL_NAMES, order preserved", () => {
     expect([...OMP_CORE_MCP_TOOL_NAMES]).toEqual([...CORE_MCP_TOOL_NAMES]);
   });

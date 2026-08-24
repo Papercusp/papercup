@@ -3084,11 +3084,15 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   "loop:status",
   "loop:end",
   // Event-wait lifecycle (fleet-member-dx-improvements-2026-07-10 P-008): keep the
-  // seeded OMP spine aligned with the canonical event sleep/emit/catalog verbs.
+  // seeded OMP spine aligned with the canonical event sleep/catalog/cancel verbs.
   // (events:emit cut 2026-07-19 in lockstep — 29 calls/14d seeded, no reach demand;
   // members await, leaders/the system emit; reachable via tools:find/invoke.)
   "events:await",
   "events:catalog",
+  // EI-21345492095209440: events:cancel is the correction half of the seeded
+  // events:await lifecycle; a trimmed client must be able to retract its own wait
+  // without a tools:find/tools:invoke round-trip.
+  "events:cancel",
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   "session:request-compaction",
