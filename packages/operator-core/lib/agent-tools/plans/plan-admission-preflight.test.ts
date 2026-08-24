@@ -347,6 +347,67 @@ describe('evaluateExactPlanAdmission', () => {
       seatShortfall: null,
     });
   });
+
+  it('admits plans:start when the caller already holds every actionable ready row', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{
+        id: 'WI-1',
+        family: 'issue',
+        sourcePlanItemIds: ['P-001'],
+        payload: null,
+        assignee: 'su-caller',
+        takenAt: '2026-08-24T02:10:42.079Z',
+      }],
+      laneHealth: lane({
+        issue: 0,
+        issueMatchedByFilter: 1,
+        issueExcluded: { taken: 1 },
+        featureReachable: false,
+      }),
+      assignee: 'su-caller',
+      allowCallerHeld: true,
+    });
+
+    expect(verdict).toMatchObject({
+      ready: true,
+      status: 'ready',
+      reason: 'ready',
+      executableWidth: 0,
+      blockingRows: [{
+        planItemId: 'P-001',
+        workItemId: 'WI-1',
+        holder: 'su-caller',
+      }],
+    });
+    expect(verdict.message).toContain('caller already holds all 1 actionable ready row(s)');
+  });
+
+  it('does not let plans:start bypass a row held by another caller', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{
+        id: 'WI-1',
+        family: 'issue',
+        sourcePlanItemIds: ['P-001'],
+        payload: null,
+        assignee: 'su-other',
+        takenAt: '2026-08-24T02:10:42.079Z',
+      }],
+      laneHealth: lane({
+        issue: 0,
+        issueMatchedByFilter: 1,
+        issueExcluded: { taken: 1 },
+        featureReachable: false,
+      }),
+      assignee: 'su-caller',
+      allowCallerHeld: true,
+    });
+
+    expect(verdict).toMatchObject({ ready: false, reason: 'floor-gated' });
+  });
 });
 
 describe('preflightExactPlanAdmission IO wiring', () => {

@@ -126,6 +126,8 @@ function zeroClaimableLaneMessage(planSlug: string, lane: FleetLaneHealth): stri
 export function evaluateExactPlanAdmission(args: {
   planSlug: string; planItems: PlanItem[]; workItems: AdmissionWorkItem[];
   laneHealth: FleetLaneHealth | null; sourceCapExhausted?: boolean; requestedSeats?: number;
+  /** Allow plans:start to report success when this caller already owns every ready row. */
+  assignee?: string; allowCallerHeld?: boolean;
 }): ExactPlanAdmission {
   const resolved = resolveEffectiveStatusForItems(args.planItems);
   const parallelism = analyzePlanDagParallelism(args.planItems);
@@ -169,6 +171,17 @@ export function evaluateExactPlanAdmission(args: {
           }));
       }).sort((a, b) => a.planItemId.localeCompare(b.planItemId) || a.workItemId.localeCompare(b.workItemId))
     : [];
+  // `readClaimSpecLaneHealth` deliberately excludes taken rows from claimable. That is
+  // correct for a new fleet, but plans:start is also called by the agent that may have
+  // already claimed the plan's only actionable row. In that case a zero claimable count
+  // is not a floor-gated failure: the caller already owns the complete ready frontier.
+  const callerHoldsAllReadyRows = args.allowCallerHeld === true
+    && args.requestedSeats == null
+    && Boolean(args.assignee)
+    && parallelism.readyItemIds.length > 0
+    && parallelism.readyItemIds.every((planItemId) =>
+      blockingRows.some((row) => row.planItemId === planItemId && row.holder === args.assignee),
+    );
   const base = {
     plan: args.planSlug,
     planItems: {
@@ -211,6 +224,16 @@ export function evaluateExactPlanAdmission(args: {
   const somePositive = (args.laneHealth.featureFamily?.claimable ?? 0) > 0 || args.laneHealth.issueFamily.claimable > 0;
   if (unreachable || ((featureZero || issueZero) && somePositive)) {
     return finish(base, 'refused', 'family-disagreement', 'Actionable promoted families disagree with the exact-plan lane reachability/counts.');
+  }
+  if (callerHoldsAllReadyRows) {
+    return finish(
+      base,
+      'ready',
+      'ready',
+      'Exact-plan admission is ready: the caller already holds all ' +
+        blockingRows.length +
+        ' actionable ready row(s); no additional claimable row is required.',
+    );
   }
   if (args.laneHealth.effective.claimable === 0) {
     return finish(base, 'refused', 'floor-gated', zeroClaimableLaneMessage(args.planSlug, args.laneHealth));
@@ -257,6 +280,8 @@ export async function preflightExactPlanAdmission(args: {
       workItems: [],
       laneHealth: null,
       requestedSeats: args.requestedSeats,
+      assignee: args.assignee,
+      allowCallerHeld: args.allowCallerHeld,
     });
     return { ...empty, reason: 'plan-not-found', status: 'refused', message: `Plan '${args.planSlug}' was not found.` };
   }
@@ -280,5 +305,7 @@ export async function preflightExactPlanAdmission(args: {
     planSlug: args.planSlug, planItems: planItemsForRow(row), workItems, laneHealth,
     sourceCapExhausted: workItems.length >= WORK_ITEMS_MAX_LIMIT,
     requestedSeats: args.requestedSeats,
+    assignee: args.assignee,
+    allowCallerHeld: args.allowCallerHeld,
   });
 }
