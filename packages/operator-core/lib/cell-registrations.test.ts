@@ -72,20 +72,24 @@ describe('P-006: git.pipelinePosition registers under the D-038 contract', () =>
   });
 
   /**
-   * Axis 1's independence rule, locked against the specific mistake P-006 nearly
-   * made: pairing the headline with `stages[].health`, which for the serving stage is
-   * COMPUTED FROM the falsifier and therefore adds no new information.
+   * The independence INTENT, surviving P-006's deletion of the axis that used to
+   * police it. The specific mistake it is locked against is unchanged: substantiating
+   * the headline with `stages[].health`, which for the serving stage is COMPUTED FROM
+   * the headline and therefore adds no new information.
+   *
+   * ⚠ This is now a claim about the SHIPPED REGISTRATION, not about a validator. P-006
+   * deleted axis 1 along with the falsifier, so `validateCellSpec` no longer refuses a
+   * self-substantiating cell — asserting that it does would pin a rule that is gone.
+   * What still holds, and is worth pinning, is that this cell's declared evidence names
+   * measurements the headline does not already contain.
    */
-  it('names a falsifier from an independent measurement, not a re-projection', () => {
-    const f = GIT_PIPELINE_POSITION_CELL.falsifier;
-    expect(f.field).not.toBe(GIT_PIPELINE_POSITION_CELL.headline);
-    expect(f.measurement).not.toContain(GIT_PIPELINE_POSITION_CELL.headline);
-    // A self-referential falsifier must be caught rather than merely discouraged.
-    const selfFalsifying = {
-      ...GIT_PIPELINE_POSITION_CELL,
-      falsifier: { ...f, measurement: 'recomputed from positions.deployed' },
-    };
-    expect(validateCellSpec(selfFalsifying).some((r) => r.axis === 1)).toBe(true);
+  it('substantiates its assessment from measurements independent of the headline', () => {
+    const a = GIT_PIPELINE_POSITION_CELL.assessment;
+    expect(a).not.toBeNull();
+    expect(a!.evidence.length).toBeGreaterThan(0);
+    for (const path of a!.evidence) expect(path).not.toBe(GIT_PIPELINE_POSITION_CELL.headline);
+    // The assessment path is a third field, distinct from the headline it interprets.
+    expect(a!.path).not.toBe(GIT_PIPELINE_POSITION_CELL.headline);
   });
 
   /** Axis 3: `parameter`, said out loud. Inference would have concluded `global`. */
@@ -216,23 +220,25 @@ describe('P-007: the four verdict cells', () => {
   });
 
   /**
-   * D-014, asserted rather than trusted: ownership stays a CELL with its own falsifier,
-   * and the pointer is only a route to it. If someone ever "simplifies" this by folding
-   * ownership into the verdict cell as a second falsifier, this fails.
+   * D-014, asserted rather than trusted: ownership stays a CELL with its own declared
+   * semantics, and the pointer is only a route to it. If someone ever "simplifies" this
+   * by folding ownership into the verdict cell as extra evidence, this fails.
    */
-  it('the pointer did NOT replace the ownership cell — it still owns its own falsifier', () => {
+  it('the pointer did NOT replace the ownership cell — it still owns its own assessment', () => {
     registerBuiltinCells();
     const ownership = listCellsUnchecked().find((c) => c.cell === 'gate.greenCheckpoint.ownership');
 
     expect(ownership).toBeDefined();
-    expect(ownership!.falsifier.field).toBe('gate.ownership.holderSessionState');
-    // ...and the cell pointing AT it keeps its own, unrelated falsifier. THE INTENT is
-    // "not the ownership falsifier" — the ancestry field it names is incidental and was
-    // legitimately repointed to the polarity-correct projection (EI-20046248345042252),
-    // so assert the intent explicitly rather than leaving a bare literal that reads as a
-    // break the next time the sign is corrected.
-    expect(GATE_VERDICT_CELL.falsifier.field).not.toBe(ownership!.falsifier.field);
-    expect(GATE_VERDICT_CELL.falsifier.field).toBe('verdictProvenance.mainBehindStaging');
+    expect(ownership!.assessment).not.toBeNull();
+    expect(ownership!.assessment!.evidence).toContain('gate.ownership.holderSessionState');
+    // ...and the cell pointing AT it substantiates its own, unrelated claim. THE INTENT
+    // is "not the ownership cell's evidence" — the ancestry field it names is incidental
+    // and was legitimately repointed to the polarity-correct projection
+    // (EI-20046248345042252), so assert the intent explicitly rather than leaving a bare
+    // literal that reads as a break the next time the sign is corrected.
+    expect(GATE_VERDICT_CELL.assessment).not.toBeNull();
+    expect(GATE_VERDICT_CELL.assessment!.evidence).not.toContain('gate.ownership.holderSessionState');
+    expect(GATE_VERDICT_CELL.assessment!.evidence).toContain('verdictProvenance.mainBehindStaging');
   });
 
   /**
@@ -289,18 +295,25 @@ describe('P-007: the four verdict cells', () => {
   });
 
   /**
-   * Cells 1 and 4 are MUTUAL falsifiers — each is the other's headline. That is the
-   * design (a test-verdict tally and a git ancestry check are different apparatus), and
-   * it is worth pinning because it looks like a mistake to a later reader who might
-   * "fix" it into a self-referential pairing.
+   * The gate tally CITES the ancestry check as evidence — each is different apparatus
+   * (a test-verdict tally vs. a git ancestry walk), and the pairing is worth pinning
+   * because it looks like a mistake to a later reader who might "fix" it into a
+   * self-substantiating cell.
+   *
+   * ⚠ Post-P-006 this asserts the shipped DECLARATIONS, not a validator: axis 1 was
+   * deleted with the falsifier, so `validateCellSpec` no longer refuses a cell that
+   * substantiates itself. The per-cell loop below is what still catches that.
    */
-  it('pairs the gate tally and the ancestry check as mutual falsifiers', () => {
-    expect(GATE_VERDICT_CELL.falsifier.field).toBe(MAIN_BEHIND_STAGING_CELL.headline);
-    expect(MAIN_BEHIND_STAGING_CELL.falsifier.field).not.toBe(GATE_VERDICT_CELL.headline);
-    // Independence is per-cell: neither may falsify itself.
+  it('substantiates the gate tally with the ancestry check, and no cell with itself', () => {
+    expect(GATE_VERDICT_CELL.assessment).not.toBeNull();
+    expect(GATE_VERDICT_CELL.assessment!.evidence).toContain(MAIN_BEHIND_STAGING_CELL.headline);
+    expect(MAIN_BEHIND_STAGING_CELL.assessment).not.toBeNull();
+    expect(MAIN_BEHIND_STAGING_CELL.assessment!.evidence).not.toContain(GATE_VERDICT_CELL.headline);
+    // Independence is per-cell: no cell may substantiate its own headline with itself.
     for (const spec of NEW_CELLS) {
-      expect(spec.falsifier.field).not.toBe(spec.headline);
-      expect(validateCellSpec(spec).some((r) => r.axis === 1)).toBe(false);
+      expect(spec.assessment).not.toBeNull();
+      expect(spec.assessment!.path).not.toBe(spec.headline);
+      expect(spec.assessment!.evidence).not.toContain(spec.headline);
     }
   });
 

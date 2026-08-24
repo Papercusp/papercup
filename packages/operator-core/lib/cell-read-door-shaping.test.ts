@@ -14,7 +14,7 @@
  *      in the resolver".
  *
  * So a correct, fully-explained measurement was rendered as a code bug in a blameless
- * resolver, and `serving.startedSinceCodeChange` — the falsifier CLAUDE.md names as the
+ * resolver, and `serving.startedSinceCodeChange` — the measurement CLAUDE.md names as the
  * ONLY way to separate "deployed sha X" from "the process is EXECUTING X" — silently
  * stopped arriving on every read of the cell built to kill that exact misreading.
  *
@@ -39,7 +39,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./events/await/predicate-watch')>();
   return {
     ...actual,
-    // Only the DISPATCH is faked. `valueAtPath`, the own-key falsifier walk and the
+    // Only the DISPATCH is faked. `valueAtPath`, the own-key `pathExists` walk and the
     // hoist/drift classification are all the REAL ones — this suite is about them.
     dispatchReadOnlyTool: (...args: unknown[]) => dispatchReadOnlyTool(...args),
   };
@@ -54,16 +54,33 @@ const ENV = { workspaceId: 'default', harnessSlug: 'papercusp', role: 'su' };
 const READER = { ownerId: 'su-me', roles: ['su'], harnessSlug: 'papercusp', workItems: ['WI-1'] };
 
 /** A registrable spec shaped like the real DEPLOYED_SHA_CELL — same headline, same
- *  falsifier field, same hoist — so this suite exercises the cell that actually broke. */
+ *  assessment path, same EVIDENCE field, same hoist — so this suite exercises the cell
+ *  that actually broke.
+ *
+ *  ⚠ `serving.startedSinceCodeChange` is deliberately the declared EVIDENCE path (P-006:
+ *  the falsifier this fixture used to carry is gone, and its independent measurement is
+ *  what an assessment carries as evidence). That matters here and is not cosmetic: the
+ *  live door drops exactly that field, and D-008 DOWNGRADES a resolved code whose
+ *  declared substantiation did not arrive — so the truncation/drift split this suite
+ *  exists to pin is still reachable through this path, one field over. */
 function deployedShaLikeSpec(over: Partial<CellSpec> = {}): CellSpec {
   return {
     cell: 'test.deployedSha',
     owner: 'test',
     headline: 'deployedSha',
-    falsifier: {
-      field: 'serving.startedSinceCodeChange',
-      measurement: 'a live systemd start-time probe compared against when the code last changed',
-      kills: '"deployed sha X" read as "the process is EXECUTING X"',
+    assessment: {
+      path: 'assessments.deployedSha',
+      codes: {
+        executing: {
+          meaning: 'A sha is deployed and the serving process started after the code changed.',
+          safeAction: 'Exercise the deployed behaviour; nothing is outstanding.',
+        },
+        'restart-required': {
+          meaning: 'A sha is deployed, but the process predates it and is executing older code.',
+          safeAction: 'Restart the serving runtime. Another deploy will not change what is running.',
+        },
+      },
+      evidence: ['serving.startedSinceCodeChange'],
     },
     nullable: true,
     unknownHoist: 'verdictUnknown',
@@ -113,7 +130,7 @@ describe('WI-38266: a truncated payload makes an absence UNATTRIBUTABLE, not the
     expect(r.unknownHoist?.fullRead).toEqual({ tool: 'dev:pipeline_position', args: {} });
   });
 
-  it('the FALSIFIER reports truncatedByDoor — so the headline reads as UNFALSIFIED, not confirmed', async () => {
+  it('the ASSESSMENT reports truncatedByDoor — so the headline reads as UNINTERPRETED, not confirmed', async () => {
     registerCell(deployedShaLikeSpec());
     dispatchReadOnlyTool.mockResolvedValue(TRUNCATED_PAYLOAD);
 
@@ -121,11 +138,21 @@ describe('WI-38266: a truncated payload makes an absence UNATTRIBUTABLE, not the
 
     expect(r.status).toBe('value');
     if (r.status !== 'value') return;
-    expect(r.falsifier?.truncatedByDoor).toBe(true);
-    expect(r.falsifier?.drifted).toBeUndefined();
-    // `kills` must survive: a reader who lost the measurement still has to be told which
-    // false reading is now un-killed.
-    expect(r.falsifier?.kills).toContain('EXECUTING');
+    expect(r.assessment?.status).toBe('unavailable');
+    expect(r.assessment?.truncatedByDoor).toBe(true);
+    // The whole point, one field over: `not-measured` sends the reader to RE-READ.
+    // `insufficient-data` is the branch that accuses the resolver of drift, and must
+    // not also be reachable from a truncated payload.
+    expect(r.assessment?.unknown?.code).toBe('not-measured');
+    // A safe action must survive: a reader who lost the interpretation still has to be
+    // told what they may safely do — which is the conservative thing, not nothing.
+    expect(r.assessment?.safeAction).toBeTruthy();
+    expect(r.assessment?.code).toBeNull();
+    // The evidence entry carries the SAME split, per-path: the field the door dropped
+    // is unattributable, never blamed on the resolver.
+    const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
+    expect(ev?.truncatedByDoor).toBe(true);
+    expect(ev?.drifted).toBeUndefined();
   });
 
   it('the PROSE stops accusing the resolver and names the re-read instead', () => {
@@ -160,8 +187,10 @@ describe('WI-38266: a truncated payload makes an absence UNATTRIBUTABLE, not the
     expect(r.status).toBe('value');
     if (r.status !== 'value') return;
     // `serving` is named nowhere in omittedFields, yet must NOT be blamed on the resolver.
-    expect(r.falsifier?.truncatedByDoor).toBe(true);
-    expect(r.falsifier?.drifted).toBeUndefined();
+    const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
+    expect(ev?.truncatedByDoor).toBe(true);
+    expect(ev?.drifted).toBeUndefined();
+    expect(r.assessment?.truncatedByDoor).toBe(true);
   });
 });
 
@@ -177,8 +206,14 @@ describe('WI-38266 CONTROLS — real drift must still be reported as drift', () 
     if (r.status !== 'value') return;
     expect(r.unknownHoist?.drifted).toBe(true);
     expect(r.unknownHoist?.truncatedByDoor).toBeUndefined();
-    expect(r.falsifier?.drifted).toBe(true);
-    expect(r.falsifier?.truncatedByDoor).toBeUndefined();
+    // The assessment's own split, untruncated: a genuinely absent path IS the
+    // resolver's drift, and must still be reported as such rather than softened.
+    expect(r.assessment?.status).toBe('unavailable');
+    expect(r.assessment?.unknown?.code).toBe('insufficient-data');
+    expect(r.assessment?.truncatedByDoor).toBeUndefined();
+    const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
+    expect(ev?.drifted).toBe(true);
+    expect(ev?.truncatedByDoor).toBeUndefined();
   });
 
   it('DRIFT CONTROL: projection present but truncated:false ⇒ still drifted', async () => {
@@ -202,6 +237,7 @@ describe('WI-38266 CONTROLS — real drift must still be reported as drift', () 
       deployedSha: 'abc123',
       verdictUnknown: [],
       serving: { startedSinceCodeChange: true },
+      assessments: { deployedSha: 'executing' },
       projection: { kind: 'bounded', truncated: true, fullRead: { tool: 'dev:pipeline_position', args: {} } },
     });
 
@@ -213,8 +249,14 @@ describe('WI-38266 CONTROLS — real drift must still be reported as drift', () 
     expect(r.unknownHoist?.value).toEqual([]);
     expect(r.unknownHoist?.drifted).toBeUndefined();
     expect(r.unknownHoist?.truncatedByDoor).toBeUndefined();
-    expect(r.falsifier?.value).toBe(true);
-    expect(r.falsifier?.truncatedByDoor).toBeUndefined();
+    // Same rule for the assessment: everything it declares ARRIVED, so a self-declared
+    // truncation elsewhere in the payload must not downgrade a fully-substantiated code.
+    expect(r.assessment?.status).toBe('resolved');
+    expect(r.assessment?.code).toBe('executing');
+    expect(r.assessment?.truncatedByDoor).toBeUndefined();
+    const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
+    expect(ev?.value).toBe(true);
+    expect(ev?.truncatedByDoor).toBeUndefined();
   });
 
   it('CALIBRATION: the drift prose still names a registration defect', () => {

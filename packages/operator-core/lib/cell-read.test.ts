@@ -43,10 +43,19 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
     cell: 'test.cell',
     owner: 'test',
     headline: 'positions.deployed',
-    falsifier: {
-      field: 'serving.startedSinceCodeChange',
-      measurement: 'process start time vs code mtime',
-      kills: '"deployed ✓" read as "the running process executes my code"',
+    assessment: {
+      path: 'serving.deployState',
+      codes: {
+        live: {
+          meaning: 'the running process is executing the commit this cell reports.',
+          safeAction: 'Read the deployed sha as authoritative.',
+        },
+        stale: {
+          meaning: 'the commit is checked out on disk but the process was never restarted onto it.',
+          safeAction: 'Restart the serving unit before concluding the deploy took effect.',
+        },
+      },
+      evidence: ['serving.startedSinceCodeChange'],
     },
     nullable: false,
     callerRelativity: { kind: 'global' },
@@ -498,80 +507,26 @@ describe('P-021 — the material lens rides the SAME dispatch', () => {
 });
 
 /**
- * WI-6506 — THE FALSIFIER REACHES THE READER.
+ * P-006 (was WI-6506) — THE DECLARED SEMANTICS REACH THE READER, walked over the REAL
+ * built-ins rather than a fixture.
  *
- * The defect these tests exist against: `falsifier` had exactly ONE runtime consumer
- * in the whole tree (`validateCellSpec`'s STRING checks, at registration) and
- * `cell-read.ts` never mentioned the word at all (`grep -c falsifier cell-read.ts` →
- * 0) — a reader got the headline and never the independent measurement declared to
- * contradict a false reading of it. Same shape as D-039's `unknownHoist` bug above:
- * declared, validated, and read by nothing.
+ * The defect this block exists against is a CLASS, not one field: a property declared
+ * on every cell, validated at registration, and read by nothing. It has now bitten
+ * twice — `unknownHoist` (D-039, below) and `falsifier` (WI-6506, whose fixture-level
+ * tests this block used to hold). P-006 deleted `falsifier` outright and made
+ * `assessment` the one property that carries a cell's meaning, so the sweep is
+ * REPOINTED at it rather than removed: the fixture-level assessment semantics
+ * (MISSING ≠ NULL, undeclared code, door truncation) are covered in
+ * `cell-assessment.test.ts`, and what only THIS block can prove is that all ten
+ * shipped registrations are actually REACHABLE — path, declared code and every
+ * evidence path — through `readCell`'s single dispatch.
+ *
+ * ⚠ A fixture-only test would have passed throughout the entire life of both bugs.
+ * That is why the sweep below walks `BUILTIN_CELLS`.
  */
-describe('WI-6506 — the falsifier rides the SAME dispatch to the reader', () => {
-  it('delivers field/value/kills extracted from the SAME payload — no second resolver call', async () => {
-    registerCell(spec());
-    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: { startedSinceCodeChange: false } });
-
-    const r = await readCell('test.cell', READER, ENV);
-
-    expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
-    expect(r.status).toBe('value');
-    if (r.status === 'value') {
-      expect(r.falsifier).toEqual({
-        field: 'serving.startedSinceCodeChange',
-        value: false,
-        kills: '"deployed ✓" read as "the running process executes my code"',
-      });
-    }
-  });
-
-  it('a null AT the falsifier path is a REAL resolved answer, not drift', async () => {
-    registerCell(spec());
-    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: { startedSinceCodeChange: null } });
-
-    const r = await readCell('test.cell', READER, ENV);
-    expect(r.status).toBe('value');
-    if (r.status === 'value') {
-      expect(r.falsifier.value).toBeNull();
-      expect(r.falsifier.drifted).toBeUndefined();
-    }
-  });
-
-  it('⚠ a MISSING falsifier path is reported drifted, never silently null', async () => {
-    registerCell(spec());
-    // `serving` is present, but the declared LEAF key is absent — registration drift,
-    // not a measured silence.
-    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: {} });
-
-    const r = await readCell('test.cell', READER, ENV);
-    expect(r.status).toBe('value');
-    if (r.status === 'value') {
-      expect(r.falsifier.drifted).toBe(true);
-      expect(r.falsifier.value).toBeNull();
-    }
-  });
-
-  it('⚠ a legitimately-null INTERMEDIATE segment is drift, not a resolved null — own-key existence, never valueAtPath', async () => {
-    // The exact ambiguity the item is filed about: `valueAtPath` short-circuits on
-    // `cur == null` at EVERY segment, so a null `serving.nested` and a genuinely
-    // missing `serving.nested.leaf` key both read as `undefined` through it — byte-
-    // identical to the healthy "measured null" case. This is precisely what bit
-    // `agent.goal`'s `goal.agreement` (P-011, cell-assessment-reality.test.ts): the
-    // own-key walk must tell them apart instead of silently agreeing with the wrong
-    // one of the two.
-    registerCell(spec({ falsifier: { field: 'serving.nested.leaf', measurement: 'x', kills: 'y' } }));
-    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: { nested: null } });
-
-    const r = await readCell('test.cell', READER, ENV);
-    expect(r.status).toBe('value');
-    if (r.status === 'value') {
-      expect(r.falsifier.drifted).toBe(true);
-      expect(r.falsifier.value).toBeNull();
-    }
-  });
-
+describe('P-006 — every built-in cell delivers its DECLARED assessment through readCell', () => {
   /** Recursive merge of two `{a:{b:v}}`-shaped payload fragments — needed because a
-   *  cell's headline and falsifier can share a top-level key (`gate.greenCheckpoint.candidate`
+   *  cell's headline and assessment can share a top-level key (`gate.greenCheckpoint.candidate`
    *  declares both under `changeInCandidate`), and a shallow spread would let the
    *  second fragment silently clobber the first's leaf. */
   function deepMerge(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
@@ -612,20 +567,42 @@ describe('WI-6506 — the falsifier rides the SAME dispatch to the reader', () =
 
   const pollBuiltins = BUILTIN_CELLS.filter((s) => s.changeSignal.kind === 'poll');
 
-  it('the sweep is NON-VACUOUS — there are registered poll cells to check', () => {
+  it('the sweep is NON-VACUOUS — there are registered poll cells, each declaring a real assessment', () => {
     expect(pollBuiltins.length).toBeGreaterThanOrEqual(6);
-    for (const s of pollBuiltins) expect(s.falsifier.field.trim()).toBeTruthy();
+    for (const s of pollBuiltins) {
+      /** P-006's own requirement, asserted over the shipped population rather than a
+       *  fixture: a value-bearing cell may not carry `null` here. Registration refuses
+       *  it (`assessment-missing`), and this is the check that the refusal is
+       *  non-vacuous — i.e. that there is a population for it to police. */
+      expect(s.assessment).not.toBeNull();
+      expect(s.assessment?.path.trim()).toBeTruthy();
+      expect(Object.keys(s.assessment?.codes ?? {}).length).toBeGreaterThan(0);
+      expect(s.assessment?.evidence.length).toBeGreaterThan(0);
+    }
   });
 
   it.each(pollBuiltins.map((s) => [s.cell, s] as const))(
-    '%s delivers its declared falsifier through readCell, undrifted',
+    '%s delivers its declared assessment through readCell, resolved',
     async (_cell, s) => {
       registerCell(s);
+      const a = s.assessment;
+      // Guarded rather than asserted non-null: the non-vacuity test above owns that
+      // claim, and a `!` here would turn its failure into an unreadable TypeError.
+      if (a == null) throw new Error(`${s.cell} is a poll cell with no assessment — see the non-vacuity test`);
+
       const headlinePath = (s.changeSignal as { path: string }).path;
-      const payload = deepMerge(
+      // The FIRST declared code, chosen from the spec rather than hard-coded: an
+      // undeclared code is refused by `assessmentFrom`, so this can only pass by
+      // reading the registration the cell actually shipped.
+      const declaredCode = Object.keys(a.codes)[0];
+      let payload = deepMerge(
         payloadAtPath(headlinePath, s.nullable ? null : 'headline-value'),
-        payloadAtPath(s.falsifier.field, 'falsifier-value'),
+        payloadAtPath(a.path, declaredCode),
       );
+      // Evidence is part of the contract, not decoration: a resolved code whose
+      // declared substantiation did not arrive is DOWNGRADED to unavailable (D-008).
+      // So every declared evidence path has to be reachable too, or this fails.
+      for (const e of a.evidence) payload = deepMerge(payload, payloadAtPath(e, 'evidence-value'));
       dispatchReadOnlyTool.mockResolvedValue(payload);
 
       const subject = s.callerRelativity.kind === 'parameter' ? 'a-subject' : undefined;
@@ -633,12 +610,15 @@ describe('WI-6506 — the falsifier rides the SAME dispatch to the reader', () =
 
       expect(r.status).toBe('value');
       if (r.status === 'value') {
-        // The assertion the bug would have failed: PRESENT, keyed by what the spec
-        // declares rather than by a name this test hard-codes, and NOT drifted.
-        expect(r.falsifier.field).toBe(s.falsifier.field);
-        expect(r.falsifier.kills).toBe(s.falsifier.kills);
-        expect(r.falsifier.value).toBe('falsifier-value');
-        expect(r.falsifier.drifted).toBeUndefined();
+        // The assertion the bug class would have failed: PRESENT, keyed by what the
+        // spec declares rather than by a name this test hard-codes, and RESOLVED —
+        // carrying the meaning and the safe action, not merely the code.
+        expect(r.assessment?.status).toBe('resolved');
+        expect(r.assessment?.path).toBe(a.path);
+        expect(r.assessment?.code).toBe(declaredCode);
+        expect(r.assessment?.meaning).toBe(a.codes[declaredCode].meaning);
+        expect(r.assessment?.safeAction).toBe(a.codes[declaredCode].safeAction);
+        expect(r.assessment?.evidence.map((e) => e.path)).toEqual([...a.evidence]);
       }
     },
   );
