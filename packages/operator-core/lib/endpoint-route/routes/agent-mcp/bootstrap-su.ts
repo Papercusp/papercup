@@ -48,7 +48,13 @@ import {
   type SuLaunchSpecRecord,
 } from '../../../su-persona-render';
 import { getOrgPg } from '@papercusp/db-org';
-import { classifyPrePinnedOwnerRows, describePrePinnedConflicts } from './pre-pinned-owner-rows';
+import {
+  classifyPrePinnedOwnerRows,
+  describePrePinnedConflicts,
+  resolvePrePinnedOwnerLiveness,
+} from './pre-pinned-owner-rows';
+import { findLiveHost } from '../../../events/await/psu-pty-discovery';
+import { probeProcessLiveness } from '../../../agent-tools/coordination/presence';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -1897,7 +1903,28 @@ const post = defineTool({
       // than by re-identifying rows across two traversals of the query result — see
       // that module for why the previous filter/includes shape was a latent
       // reclassify-every-precursor-as-a-conflict bug rather than a style question.
-      const { precursors, conflicts } = classifyPrePinnedOwnerRows(live);
+      // EI-21365235532676472: a FAILED resume can strand an un-ended adv_sessions row
+      // whose process is gone — coord presence already reports the owner ended, yet
+      // this binding keeps refusing every fresh-successor launch with the 409 below.
+      // Resolve THREE-WAY process evidence once for this owner (both witnesses are
+      // owner-keyed) and attach it to every candidate row: findLiveHost is positive
+      // live evidence; ONLY an authoritative ESRCH on this machine's supervisor-beat
+      // pid may put a row in the reclaimable bucket. Live/unknown rows stay blocking,
+      // because absence of evidence is not proof of death.
+      const beatRows = await sql<Array<{ pid: number | null; host: string | null }>>`
+        SELECT pid, host
+          FROM harness_shared.coord_presence
+         WHERE owner_id = ${requestedSid}
+         LIMIT 1
+      `;
+      const liveness = resolvePrePinnedOwnerLiveness(requestedSid, {
+        findHost: findLiveHost,
+        beat: beatRows[0] ?? null,
+        probeBeat: probeProcessLiveness,
+      });
+      const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(
+        live.map((row) => ({ ...row, liveness })),
+      );
       if (conflicts.length > 0) {
         // Carry WHY each live row failed the precursor test. This refusal is
         // launch-blocking and reaches the owner (psu prints it; since WI-37841 it
@@ -1912,6 +1939,16 @@ const post = defineTool({
           },
           409,
         );
+      }
+      // EI-21365235532676472: reclaimableConflicts carry POSITIVE dead-process evidence
+      // (authoritative ESRCH on the supervisor-beat pid of this machine). End those
+      // stranded bindings so the documented fresh-successor recovery path can run
+      // instead of 409-ing forever. 'reconciler' because THIS launch noticed the death;
+      // exit_code stays null because we observed neither a voluntary exit nor a signal.
+      // markAdvSessionEnded is idempotent — it stamps only an unset ended_at — so a
+      // concurrent genuine teardown cannot be double-written.
+      for (const stranded of reclaimableConflicts) {
+        await markAdvSessionEnded(Number(stranded.id), null, 'reconciler');
       }
       // Newest wins: a retried launch can leave an older precursor behind, and the
       // one this psu belongs to is the most recent. Older ones are left alone —
