@@ -40,7 +40,27 @@ const PC_HEAVY = process.env.PROBE_SCRIPT || join(ROOT, 'scripts', 'pc-heavy.sh'
 
 let dir = '';
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'pcheavy-')); });
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+// A preemptible monitor survives the outer wrapper long enough to reap its
+// isolated child group. The test's `finally` sends the teardown signal, but a
+// synchronous rm immediately afterwards can race that last cleanup and report
+// ENOTEMPTY when the monitor recreates one of its pid/lock artifacts. Keep the
+// guard bounded: transient teardown gets a chance to settle; a genuine leak
+// still fails the suite instead of being hidden by an unbounded sleep.
+async function removeFixtureDirEventually(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOTEMPTY' || Date.now() >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
+afterEach(async () => removeFixtureDirEventually(dir));
 
 // Returns ProcessEnv, not Record<string, string>: every `spawn(..., { env: baseEnv(...) })`
 // site in this file failed overload resolution under the narrower type (TS2769, then TS2339
