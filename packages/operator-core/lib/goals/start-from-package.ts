@@ -66,6 +66,7 @@ import { ensurePlanRefListDatatype } from './package-property-datatypes';
 import { validatePropertySchemaDeclaration } from '../typed-properties-db';
 import { startGoalById } from './start-goal-by-id';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal } from './drain-fleet-mint';
+import { killCriterionProblem } from './kill-criterion';
 
 /**
  * The rolling-window default for a STANDING ceiling that declares none: one
@@ -504,6 +505,19 @@ export async function startGoalFromPackage(
     constructedKeys = built.overriddenKeys;
   }
   const effective = effectiveGoalContent(content);
+
+  const criterion = effective.killCriterion?.trim();
+  if (criterion) {
+    const problem = killCriterionProblem(criterion);
+    if (problem) {
+      return {
+        ok: false,
+        reason: 'kill-criterion-invalid',
+        detail: problem,
+        activeInstances,
+      };
+    }
+  }
 
   // ── 4c. typed property declarations (P-025). MINT path — and, since P-022,
   // ALSO an adopt whose constructor produced the declaration: the stub's

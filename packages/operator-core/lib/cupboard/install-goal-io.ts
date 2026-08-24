@@ -149,6 +149,13 @@ async function defaultGoalStubSeeder({
     }
   }
 
+  const criterion = pkg.killCriterion?.trim();
+  if (criterion) {
+    const { killCriterionProblem } = await import('../goals/kill-criterion');
+    const problem = killCriterionProblem(criterion);
+    if (problem) return { seeded: false, reason: `killCriterion invalid: ${problem}` };
+  }
+
   const id = goalId(pkg.title);
   await insertGoalRow(sql, {
     id,
