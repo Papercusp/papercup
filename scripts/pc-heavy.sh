@@ -273,8 +273,17 @@ _pc_heavy_internal_preempt_run() {
     fi
   }
 
+  # NOTE (EI-21348799817176368): every expansion in the functions reachable from
+  # the traps below is `:-` defaulted. Those handlers run on EXIT/TERM/INT/HUP,
+  # and a trap can fire OUTSIDE this function's dynamic extent — at which point
+  # bash's dynamically-scoped `local`s are gone and `set -u` (line 191) kills the
+  # CLEANUP HANDLER on an unbound variable instead of reaping the workload group.
+  # Observed live at load1=109: "line 277: _preempt_child_pid: unbound variable".
+  # `"${x:-}"` is byte-identical to `"$x"` whenever x is set, so this is inert on
+  # the normal path and only converts that crash into the no-op the guards below
+  # already handle.
   _preempt_group_alive() {
-    [ -n "$_preempt_child_pid" ] && kill -0 -- "-${_preempt_child_pid}" 2>/dev/null
+    [ -n "${_preempt_child_pid:-}" ] && kill -0 -- "-${_preempt_child_pid:-}" 2>/dev/null
   }
   _preempt_leader_alive() {
     [ -n "$_preempt_wait_pid" ] && kill -0 "$_preempt_wait_pid" 2>/dev/null
@@ -293,21 +302,21 @@ _pc_heavy_internal_preempt_run() {
   _preempt_reap_group() {
     local _deadline=''
     if _preempt_group_alive; then
-      kill -TERM -- "-${_preempt_child_pid}" 2>/dev/null || true
-      _deadline=$(( $(date +%s) + _preempt_term_grace ))
+      kill -TERM -- "-${_preempt_child_pid:-}" 2>/dev/null || true
+      _deadline=$(( $(date +%s) + ${_preempt_term_grace:-30} ))
       while _preempt_group_alive && [ "$(date +%s)" -lt "$_deadline" ]; do
-        sleep "$_preempt_poll"
+        sleep "${_preempt_poll:-0.1}"
       done
       if _preempt_group_alive; then
-        kill -KILL -- "-${_preempt_child_pid}" 2>/dev/null || true
+        kill -KILL -- "-${_preempt_child_pid:-}" 2>/dev/null || true
       fi
     fi
-    [ -n "$_preempt_wait_pid" ] && wait "$_preempt_wait_pid" 2>/dev/null || true
-    rm -f "$_preempt_pid_file" 2>/dev/null || true
+    [ -n "${_preempt_wait_pid:-}" ] && wait "${_preempt_wait_pid:-}" 2>/dev/null || true
+    [ -n "${_preempt_pid_file:-}" ] && rm -f "${_preempt_pid_file:-}" 2>/dev/null || true
   }
   _preempt_forward_signal() {
     local _sig="$1" _code="$2"
-    [ -n "$_preempt_child_pid" ] && kill "-${_sig}" -- "-${_preempt_child_pid}" 2>/dev/null || true
+    [ -n "${_preempt_child_pid:-}" ] && kill "-${_sig}" -- "-${_preempt_child_pid:-}" 2>/dev/null || true
     _preempt_reap_group
     trap - EXIT TERM INT HUP
     exit "$_code"
