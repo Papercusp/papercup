@@ -599,6 +599,12 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // lookback, pinned by __tests__/check-github-identity-terms.test.ts. Prose can now justify
     // itself without editing code — which is the actual defect a stripper could never have fixed.
     'check-github-identity-terms.mjs',
+    // check-host-bundle-builds.mjs does not scan JS/TS source for code tokens. It invokes the
+    // host bundler and compares the generated systemd runner byte-for-byte with its source;
+    // `readFileSync` is used for equality, and `.test` only filters child-process diagnostics.
+    // The property-based prefilter therefore sees a guard-shaped exposure, but masking would
+    // not affect any analyzed text. Keep the exposure declared rather than adding a no-op import.
+    'check-host-bundle-builds.mjs',
     // check-migration-fixture-drift.mjs was REMOVED here on 2026-08-10 (WI-37717). It scans
     // TWO surfaces and both are now masked: migration .sql text via stripSqlComments (inside
     // extractIntroducedColumns — the input is definitionally SQL, so no extension dispatch is
