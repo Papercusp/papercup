@@ -19,7 +19,7 @@ import {
   settleRunPhase,
   type BulkRunRow,
 } from '../../attention/bulk-run-store';
-import { notifyBulkRunChanged } from '../../attention/bulk-run-sync';
+import { notifyPlanCleanupRunChanged } from '../../attention/bulk-run-sync';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { gatherCleanupInputs } from '../../plan-cleanup/gather';
 import { scanForCleanupFindings, type CleanupFinding, type CleanupEvidenceRef } from '../../plan-cleanup/scanner';
@@ -199,7 +199,7 @@ export const cleanupAct = defineTool({
         });
       }
 
-      await notifyBulkRunChanged().catch(() => undefined);
+      await notifyPlanCleanupRunChanged().catch(() => undefined);
       return toolJson({
         ok: true,
         runId,
@@ -330,7 +330,7 @@ export const cleanupReport = defineTool({
         wrote: 0,
       });
     }
-    await notifyBulkRunChanged().catch(() => undefined);
+    await notifyPlanCleanupRunChanged().catch(() => undefined);
     if (result.missing.length === 0) return bulkContent(env);
     return bulkContent({
       ...(env as unknown as Record<string, unknown>),
@@ -370,7 +370,7 @@ export const cleanupSettle = defineTool({
           error: clampText(args.error, LIMITS.ANNOTATION)?.trim() || 'resolver abandoned the run',
         })
       : await settleRunPhase({ runId });
-    await notifyBulkRunChanged().catch(() => undefined);
+    await notifyPlanCleanupRunChanged().catch(() => undefined);
     return toolJson({
       ok: true,
       runId,
