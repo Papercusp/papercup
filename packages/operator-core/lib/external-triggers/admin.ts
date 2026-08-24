@@ -6,6 +6,7 @@
  * state, storm policy, or recent-run outcomes from drifting away from the tool
  * surface.
  */
+import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import { parseStormPolicy } from './binding-engine';
 import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor } from './social/storm-policy';
@@ -273,6 +274,32 @@ export interface ExternalTriggerPlanAdminSnapshot {
   nextFire: string | null;
   manualSource: 'input-schema' | 'template' | null;
 }
+
+export interface ExternalTriggerLastEventTestRun {
+  id: string;
+  bindingId: string;
+  sourceTriggerRunId: string;
+  sourceDeliveryId: string;
+  providerDedupeKey: string;
+  status: 'pending';
+  triggeredAt: string;
+  requestedBy: string;
+  /**
+   * The plan reached by this run may perform a provider write (for example a
+   * Gmail draft or Slack thread reply). The caller must surface this before it
+   * asks for confirmation; this flag keeps that consequence in the response.
+   */
+  providerWritePossible: true;
+}
+
+export type QueueExternalTriggerLastEventTestResult =
+  | { ok: true; run: ExternalTriggerLastEventTestRun }
+  | {
+      ok: false;
+      error: 'binding_not_found' | 'not_plan_binding' | 'no_last_event';
+      bindingId: string;
+      detail: string;
+    };
 
 interface SourceDbRow {
   id: string;
@@ -1115,6 +1142,138 @@ export async function loadExternalTriggerPlanAdminSnapshot(
     nextFire: iso(routine?.nextFire ?? null),
     manualSource: row.hasInputSchema ? 'input-schema' : row.template ? 'template' : null,
   };
+}
+
+/**
+ * Queue a distinct test execution from the latest settled provider event that
+ * reached one binding.
+ *
+ * This deliberately does NOT re-ingest the provider event: doing that would
+ * either be swallowed by delivery dedupe or, worse, require weakening the
+ * provider replay invariant. Instead the new trigger-run references the same
+ * canonical delivery and copies the already-validated `args.trigger` envelope.
+ * Its own test-scoped dedupe key makes repeated, explicitly confirmed tests
+ * distinct while the original provider dedupe key remains inside the copied
+ * trigger payload for correlation and anchored response handling.
+ */
+export async function queueExternalTriggerLastEventTestRun(
+  sql: postgres.Sql,
+  workspaceId: string,
+  input: { bindingId: string; requestedBy: string },
+): Promise<QueueExternalTriggerLastEventTestResult> {
+  const ws = required(workspaceId, 'workspace_id');
+  const bindingId = required(input.bindingId, 'binding_id');
+  const requestedBy = required(input.requestedBy, 'requested_by');
+  return sql.begin(async (tx) => {
+    const bindings = await tx<
+      Array<{
+        id: string;
+        planHarnessSlug: string | null;
+        planSlug: string | null;
+        action: Record<string, unknown>;
+      }>
+    >`
+      SELECT id::text,
+             plan_harness_slug AS "planHarnessSlug",
+             plan_slug AS "planSlug",
+             action
+        FROM harness_shared.trigger_bindings
+       WHERE workspace_id = ${ws}
+         AND id = ${bindingId}::uuid
+         AND detached_at IS NULL
+       FOR SHARE`;
+    const binding = bindings[0];
+    if (!binding) {
+      return {
+        ok: false,
+        error: 'binding_not_found',
+        bindingId,
+        detail: 'The external-trigger binding does not exist in this workspace or was detached.',
+      };
+    }
+    const action = typeof binding.action.type === 'string' ? binding.action.type.trim() : 'launch-plan';
+    if (action !== 'launch-plan' || !binding.planHarnessSlug || !binding.planSlug) {
+      return {
+        ok: false,
+        error: 'not_plan_binding',
+        bindingId,
+        detail: 'Run with last event is available only for bindings that launch a plan.',
+      };
+    }
+
+    const sourceRuns = await tx<
+      Array<{
+        id: string;
+        deliveryId: string;
+        providerDedupeKey: string;
+        args: Record<string, unknown>;
+      }>
+    >`
+      SELECT tr.id::text,
+             tr.delivery_id::text AS "deliveryId",
+             tr.dedupe_key AS "providerDedupeKey",
+             tr.args
+        FROM harness_shared.trigger_runs tr
+        JOIN harness_shared.trigger_deliveries d
+          ON d.workspace_id = tr.workspace_id AND d.id = tr.delivery_id
+       WHERE tr.workspace_id = ${ws}
+         AND tr.binding_id = ${bindingId}::uuid
+         AND tr.status IN ('succeeded', 'failed', 'skipped')
+         AND d.sink_kind = 'event-bus'
+         AND d.sink_ref = 'workspace'
+         AND d.outcome = 'delivered'
+         AND jsonb_typeof(tr.args -> 'trigger') = 'object'
+         AND NOT (tr.outcome ? 'runWithLastEvent')
+       ORDER BY d.received_at DESC, tr.triggered_at DESC, tr.id DESC
+       LIMIT 1
+       FOR SHARE OF tr, d`;
+    const source = sourceRuns[0];
+    if (!source) {
+      return {
+        ok: false,
+        error: 'no_last_event',
+        bindingId,
+        detail: 'No settled provider event is available for this binding yet.',
+      };
+    }
+
+    const runId = randomUUID();
+    const requestedAt = new Date().toISOString();
+    const testDedupeKey = `test:${source.id}:${runId}`;
+    const audit = {
+      runWithLastEvent: {
+        sourceTriggerRunId: source.id,
+        sourceDeliveryId: source.deliveryId,
+        providerDedupeKey: source.providerDedupeKey,
+        requestedBy,
+        requestedAt,
+      },
+    };
+    const inserted = await tx<Array<{ id: string; triggeredAt: Date | string }>>`
+      INSERT INTO harness_shared.trigger_runs
+        (workspace_id, id, binding_id, delivery_id, dedupe_key, status, args, outcome, updated_at)
+      VALUES (
+        ${ws}, ${runId}::uuid, ${bindingId}::uuid, ${source.deliveryId}::uuid,
+        ${testDedupeKey}, 'pending', ${JSON.stringify(source.args)}::text::jsonb,
+        ${JSON.stringify(audit)}::text::jsonb, now()
+      )
+      RETURNING id::text, triggered_at AS "triggeredAt"`;
+    if (!inserted[0]) throw new Error('external_trigger_last_event_test_insert_failed');
+    return {
+      ok: true,
+      run: {
+        id: inserted[0].id,
+        bindingId,
+        sourceTriggerRunId: source.id,
+        sourceDeliveryId: source.deliveryId,
+        providerDedupeKey: source.providerDedupeKey,
+        status: 'pending',
+        triggeredAt: iso(inserted[0].triggeredAt) as string,
+        requestedBy,
+        providerWritePossible: true,
+      },
+    };
+  });
 }
 
 export async function setExternalTriggerBindingArmed(

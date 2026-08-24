@@ -1497,6 +1497,7 @@ import './triggers/create';
 import './triggers/bind';
 import './triggers/arm';
 import './triggers/disarm';
+import './triggers/run-with-last-event';
 import './triggers/status';
 // external-triggers-gmail-slack-2026-08-22 P-011 — anchored, draft-only
 // Gmail response seam. Recipient/thread/token come from the trigger run; there

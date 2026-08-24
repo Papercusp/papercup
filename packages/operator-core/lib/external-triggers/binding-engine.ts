@@ -491,7 +491,7 @@ export async function dispatchPendingTriggerRuns(
           await sql`
             UPDATE harness_shared.trigger_runs
                SET status = 'succeeded',
-                   outcome = ${JSON.stringify({
+                   outcome = outcome || ${JSON.stringify({
                      goalId: started.goalId,
                      agentOwnerId: started.ownerId,
                      ...(started.warnings.length ? { warnings: started.warnings } : {}),
@@ -509,7 +509,7 @@ export async function dispatchPendingTriggerRuns(
           await sql`
             UPDATE harness_shared.trigger_runs
                SET status = 'skipped',
-                   outcome = ${JSON.stringify({ goalId: row.goalId, refusal: started.reason })}::text::jsonb,
+                   outcome = outcome || ${JSON.stringify({ goalId: row.goalId, refusal: started.reason })}::text::jsonb,
                    error = ${started.detail}, completed_at = now(), updated_at = now()
              WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
           result.skipped += 1;
@@ -543,7 +543,7 @@ export async function dispatchPendingTriggerRuns(
       await sql`
         UPDATE harness_shared.trigger_runs
            SET status = 'succeeded', plan_run_ref = ${String(planRunId)},
-               outcome = ${JSON.stringify({
+               outcome = outcome || ${JSON.stringify({
                  instancePlanSlug: launched.instanceSlug,
                  planRunId,
                  minted: launched.minted,

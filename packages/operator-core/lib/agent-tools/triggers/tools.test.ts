@@ -4,6 +4,7 @@ const loadSnapshot = vi.fn();
 const createSource = vi.fn();
 const createBinding = vi.fn();
 const setArmed = vi.fn();
+const queueLastEvent = vi.fn();
 const invalidate = vi.fn();
 
 vi.mock('../../external-triggers/admin', () => ({
@@ -11,6 +12,7 @@ vi.mock('../../external-triggers/admin', () => ({
   createExternalTriggerSource: (...args: unknown[]) => createSource(...args),
   createExternalTriggerBinding: (...args: unknown[]) => createBinding(...args),
   setExternalTriggerBindingArmed: (...args: unknown[]) => setArmed(...args),
+  queueExternalTriggerLastEventTestRun: (...args: unknown[]) => queueLastEvent(...args),
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -27,6 +29,7 @@ import createTool from './create';
 import bindTool from './bind';
 import armTool from './arm';
 import disarmTool from './disarm';
+import runWithLastEventTool from './run-with-last-event';
 import statusTool from './status';
 
 const ctx = { workspaceId: 'ws-1', role: 'operator' } as never;
@@ -61,18 +64,33 @@ beforeEach(() => {
   createSource.mockResolvedValue({ id: '00000000-0000-4000-8000-000000000003', kind: 'slack' });
   createBinding.mockResolvedValue({ id: '10000000-0000-4000-8000-000000000003', armed: false });
   setArmed.mockImplementation(async (_sql, _ws, id, armed) => ({ id, armed }));
+  queueLastEvent.mockResolvedValue({
+    ok: true,
+    run: {
+      id: '30000000-0000-4000-8000-000000000001',
+      bindingId: '10000000-0000-4000-8000-000000000001',
+      sourceTriggerRunId: '30000000-0000-4000-8000-000000000000',
+      sourceDeliveryId: '40000000-0000-4000-8000-000000000001',
+      providerDedupeKey: 'gmail:message-1',
+      status: 'pending',
+      triggeredAt: '2026-08-24T00:00:00.000Z',
+      requestedBy: 'su-test',
+      providerWritePossible: true,
+    },
+  });
   invalidate.mockResolvedValue(undefined);
 });
 
 describe('triggers:* tool surface', () => {
-  it('registers all six tools with routing guidance', () => {
-    const tools = [listTool, createTool, bindTool, armTool, disarmTool, statusTool];
+  it('registers all seven tools with routing guidance', () => {
+    const tools = [listTool, createTool, bindTool, armTool, disarmTool, runWithLastEventTool, statusTool];
     expect(tools.map((tool) => tool.name)).toEqual([
       'triggers:list',
       'triggers:create',
       'triggers:bind',
       'triggers:arm',
       'triggers:disarm',
+      'triggers:run-with-last-event',
       'triggers:status',
     ]);
     for (const tool of tools) {
@@ -135,6 +153,20 @@ describe('triggers:* tool surface', () => {
       ['ws-1', bindingId, true],
       ['ws-1', bindingId, false],
     ]);
+  });
+
+  it('queues a confirmed last-event test through the shared audited seam', async () => {
+    const bindingId = '10000000-0000-4000-8000-000000000001';
+    const out = body(await runWithLastEventTool.handler({ bindingId, confirm: true } as never, ctx));
+    expect(out).toMatchObject({
+      ok: true,
+      run: { bindingId, status: 'pending', providerWritePossible: true },
+    });
+    expect(queueLastEvent).toHaveBeenCalledWith(expect.anything(), 'ws-1', {
+      bindingId,
+      requestedBy: 'su-test',
+    });
+    expect(invalidate).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-1' });
   });
 
   it('returns scoped status and a typed not-found result', async () => {
