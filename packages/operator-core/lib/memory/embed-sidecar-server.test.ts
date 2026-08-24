@@ -196,6 +196,77 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(defaultWorkerStates.reranker).toBe(getRerankWorkerState);
   });
 
+  // EI-21341585960652821. The guard for an outage class this endpoint was
+  // STRUCTURALLY unable to report. On 2026-08-24 the sidecar sat 100% slot-
+  // saturated for hours — novel query embeds queueing ~11.4s median (max 67.8s)
+  // against 1200ms/4000ms caller budgets, i.e. semantic retrieval dead fleet-
+  // wide — while /healthz answered 200 in 0.6ms with every model `warm`. Five
+  // separate work-items were filed for that single cause because no surface
+  // could see the shared queue.
+  //
+  // `workers.embedder.pendingCount` looked like the backlog signal but is
+  // `_pending.size` (units already handed to the worker), so it is capped at
+  // `concurrency` and CANNOT EXCEED it — pinned at the cap, a 2-deep backlog and
+  // a 2000-deep one are the same reading. This test therefore asserts the thing
+  // that gauge could never say: a backlog LARGER than the concurrency limit.
+  it('GET /healthz reports the FIFO backlog — the state `pendingCount` structurally cannot express', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let started = 0;
+    const gatedBuilders: EmbedderBuilders = {
+      ...fakeBuilders,
+      gemma: async (kind) => async (text: string) => {
+        started++;
+        await gate;
+        return [text.length, kind === 'query' ? 1 : 2];
+      },
+    };
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: gatedBuilders,
+      warmAtBoot: false,
+      log: () => {},
+      concurrency: 1,
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+
+    // THREE DISTINCT texts: per-text coalescing would collapse identical ones
+    // into a single unit and there would be no queue to observe. With
+    // concurrency 1 this is 1 in flight and 2 genuinely waiting.
+    const inFlight = ['alpha', 'bravo', 'charlie'].map((t) =>
+      fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'query', texts: [t] }),
+      }),
+    );
+    while (started < 1) await new Promise((r) => setTimeout(r, 5));
+
+    type Health = {
+      concurrency: number;
+      queue: { depth: number; active: number; saturated: boolean };
+    };
+    // Poll rather than sampling once: the three requests race to arrive, so a
+    // single read can legitimately catch only the first two.
+    let body!: Health;
+    const deadline = Date.now() + 2000;
+    for (;;) {
+      body = (await (await fetch(`${baseUrl}/healthz`)).json()) as Health;
+      if (body.queue.depth >= 2 || Date.now() > deadline) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // depth 2 > concurrency 1 — a value the old gauge could not have produced.
+    expect(body.queue.depth).toBe(2);
+    expect(body.queue.active).toBe(body.concurrency);
+    expect(body.queue.saturated).toBe(true);
+
+    release();
+    await Promise.all(inFlight);
+  });
+
   it('GET /healthz ADVERTISES every route it serves (EI-19314150478401738)', async () => {
     await boot();
     const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as { capabilities: string[] };
