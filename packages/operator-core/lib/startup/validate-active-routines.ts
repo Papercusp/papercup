@@ -844,6 +844,54 @@ export async function enforceActiveRoutines(workspaceId?: string): Promise<Enfor
       }
     }
   }
+
+  // EI-18752496371939475, direction 3. This path passes `silent: true`, so the validator's own
+  // report is suppressed and MUST be re-emitted here — the boot caller only logs when `ok`,
+  // and `ok` is now false precisely BECAUSE of this finding, so without this the dead action
+  // stays invisible at exactly the moment we detected it. That is the same trap direction 1
+  // fell into (EI-19367772473246483); do not remove this block to reduce boot noise.
+  //
+  // Deliberately NOT auto-healed. There is no DB flip that fixes it: seeding a row means
+  // choosing a cadence, a scope and an active state, which is the seed script's job and often
+  // a human-gated bring-up (`test-webview-reaper` prescribes a --dry-run preview BEFORE going
+  // live). Guessing one here could arm a reaper nobody reviewed.
+  if (result.unscheduledCheckApplicable) {
+    if (result.unscheduledSystemActions.length > 0) {
+      const offenders = result.unscheduledSystemActions.map((action) => ({
+        // No row exists, so there is no install scope to key the episode by — the ACTION is
+        // the identity.
+        installSlug: EMPTY_INSTALL_SLUG,
+        routineName: action,
+      }));
+      const aged = await ageFatalClass(ws, 'unscheduled-system-action', offenders, nowMs);
+      if (aged) {
+        const line =
+          `${formatUnscheduledSystemActions(result.unscheduledSystemActions, aged.severity)} ` +
+          `[${aged.recurrence}]`;
+        if (aged.severity === 'fatal') console.error(line);
+        else console.warn(line);
+      }
+    } else {
+      // Offender set went empty on a host that CAN see the registry: someone ran the seed (or
+      // declared the action on-demand). Clear the marks, or `routines:list` keeps rendering a
+      // now-scheduled action as dead forever — the same stale-mark bug direction 1 hit above.
+      try {
+        const { sql } = getOrgPg();
+        const cleared = await clearRoutineValidationMarks(sql, ws, 'unscheduled-system-action', []);
+        if (cleared > 0) {
+          console.log(
+            `[routine-validation] RESOLVED: cleared ${cleared} stale unscheduled-system-action ` +
+              `mark(s) — every standing system action now has a routine row in this workspace.`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          '[routine-validation] could not clear resolved unscheduled-system-action marks ' +
+            `(non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+  }
   if (stillProblematic.length > 0) {
     const aged = await ageFatalClass(ws, 'unpauseable-routine', stillProblematic, nowMs);
     if (aged) {

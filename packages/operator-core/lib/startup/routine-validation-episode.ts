@@ -38,7 +38,15 @@
  */
 
 /** The two FATAL classes that structurally cannot self-limit, and so need aging. */
-export type RoutineValidationFatalClass = 'unregistered-system-action' | 'unpauseable-routine';
+export type RoutineValidationFatalClass =
+  | 'unregistered-system-action'
+  | 'unpauseable-routine'
+  // EI-18752496371939475: a registered `standing` system action with NO routine row — built,
+  // imported, green, and never once fired. Aged like its two siblings because it shares their
+  // defining property: the remedy is a human or code change, so the condition cannot resolve
+  // its own premise and would otherwise emit an identical FATAL on every boot forever, which
+  // is how a real finding becomes background noise.
+  | 'unscheduled-system-action';
 
 /**
  * The placeholder `validateActiveRoutines` substitutes for a blank/absent `install_slug`
