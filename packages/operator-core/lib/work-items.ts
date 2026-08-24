@@ -3560,6 +3560,18 @@ export async function setWorkItemState(
   if (result && result.state !== wi.state) {
     const transitioned = result;
     const prevState = wi.state;
+    // EI-21342578761370279: LEAVING a settled state retires that terminal
+    // cycle's `work-item:done:<id>` fire latch — left in place it reports
+    // `fired_undeclared` against a LIVE (reopened) item and makes the done-gate
+    // look already-satisfied. Bounded to latches recorded before this
+    // transition so a fast close→reopen→close cannot erase the NEW cycle's
+    // row. Fire-and-forget + lazy import, same shape as the emits below.
+    if (isSettledWorkItemState(prevState ?? '')) {
+      const reopenedAtMs = Date.now();
+      void trackDetached(import('./events/await/store'))
+        .then((m) => m.clearKeyFire(`work-item:done:${id}`, { firedBefore: reopenedAtMs }))
+        .catch(() => {});
+    }
     void trackDetached(import('./work-items-events'))
       .then((m) => m.emitWorkItemStatusEvent(transitioned, prevState))
       .catch(() => {});
