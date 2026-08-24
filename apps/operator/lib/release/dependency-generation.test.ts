@@ -21,6 +21,12 @@ const SCRIPT = join(
 
 const roots: string[] = [];
 
+interface ShellResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
 function makeIntegration(): string {
   const root = mkdtempSync(join(tmpdir(), 'dependency-generation-'));
   roots.push(root);
@@ -45,11 +51,16 @@ function makeIntegration(): string {
 function publish(
   integration: string,
   env: NodeJS.ProcessEnv = {},
-): ReturnType<typeof spawnSync> {
-  return spawnSync('bash', [SCRIPT, '--integration', integration], {
+): ShellResult {
+  const result = spawnSync('bash', [SCRIPT, '--integration', integration], {
     encoding: 'utf8',
     env: { ...process.env, ...env },
   });
+  return {
+    status: result.status,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
 }
 
 function publishedPath(stdout: string): string {
@@ -145,6 +156,40 @@ describe('immutable dependency generation', () => {
     expect(result.stderr).toContain('removing abandoned build');
   });
 
+  it('preserves live and freshly-created owner state during cleanup', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+    const live = join(generationRoot, '.build-live-writer');
+    const freshWithoutMarker = join(generationRoot, '.build-fresh-no-marker');
+    mkdirSync(live, { recursive: true });
+    mkdirSync(freshWithoutMarker, { recursive: true });
+    writeFileSync(
+      join(live, '.papercusp-generation-writer'),
+      `host=${execFileSync('hostname', { encoding: 'utf8' }).trim()}\npid=${process.pid}\nstarted=${Math.floor(Date.now() / 1000)}\n`,
+    );
+
+    const result = publish(integration);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(freshWithoutMarker)).toBe(true);
+  });
+
+  it('publishes and reuses via the BSD-compatible metadata fallback', () => {
+    const integration = makeIntegration();
+    const env = { DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT: '1' };
+    const first = publish(integration, env);
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stdout).toContain('reused=false');
+
+    const second = publish(integration, env);
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toContain('reused=true');
+    expect(publishedPath(second.stdout)).toBe(publishedPath(first.stdout));
+  });
+
   it('hardlinks on one filesystem and has an independent portable-copy fallback', () => {
     const integration = makeIntegration();
     const result = publish(integration);
@@ -159,10 +204,11 @@ describe('immutable dependency generation', () => {
       'dependency_generation_materialize_tree "$SOURCE" "$DEST"',
     ].join('\n');
 
-    spawnSync('bash', ['-c', wrapper], {
+    const hardlinkResult = spawnSync('bash', ['-c', wrapper], {
       env: { ...process.env, SCRIPT, SOURCE: source, DEST: hardlinked },
       encoding: 'utf8',
     });
+    expect(hardlinkResult.status, String(hardlinkResult.stderr ?? '')).toBe(0);
     expect(statSync(join(hardlinked, 'pkg/index.js')).ino).toBe(
       statSync(join(source, 'pkg/index.js')).ino,
     );
@@ -177,7 +223,7 @@ describe('immutable dependency generation', () => {
       },
       encoding: 'utf8',
     });
-    expect(portable.status, portable.stderr).toBe(0);
+    expect(portable.status, String(portable.stderr ?? '')).toBe(0);
     expect(statSync(join(copied, 'pkg/index.js')).ino).not.toBe(
       statSync(join(source, 'pkg/index.js')).ino,
     );

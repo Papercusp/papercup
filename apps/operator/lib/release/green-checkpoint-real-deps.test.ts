@@ -149,7 +149,19 @@ function makeExec(responses: ExecResp[]) {
   let i = 0;
   const exec: CheckpointExec = async (cmd, args, opts) => {
     calls.push({ cmd, args, opts });
-    const r = responses[i++] ?? { code: 0 };
+    const programmed = responses[i++];
+    const isSetupRelease =
+      cmd === "bash" &&
+      args.some((arg) => arg.endsWith("setup-release-checkout.sh"));
+    const r =
+      programmed ??
+      (isSetupRelease
+        ? {
+            code: 0,
+            stdout:
+              "[setup-release] DEPENDENCY_GENERATION_PIN identity=v1-fixture",
+          }
+        : { code: 0 });
     return { code: r.code, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
   return { exec, calls };
