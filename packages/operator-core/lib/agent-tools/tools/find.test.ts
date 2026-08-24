@@ -131,6 +131,26 @@ describe('buildEmbeddingIndex (boot-time index builder)', () => {
 });
 
 describe('buildCorpus (live registry → corpus + embed text)', () => {
+  it('reuses a snapshot until the projected registry revision changes', () => {
+    const first = buildCorpus();
+    const second = buildCorpus();
+    expect(second.corpus).toBe(first.corpus);
+    expect(second.embedText).toBe(first.embedText);
+
+    const name = 'test:tools-find-corpus-cache';
+    defineTool({
+      name,
+      capability: 'test:read',
+      requirePrincipal: false,
+      args: z.object({ value: z.string() }),
+      handler: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+    });
+
+    const afterRegistration = buildCorpus();
+    expect(afterRegistration.corpus).not.toBe(first.corpus);
+    expect(afterRegistration.corpus.some((entry) => entry.tool === name)).toBe(true);
+  });
+
   it('includes tools:find itself, with arg-schema text folded in', () => {
     const { corpus, embedText } = buildCorpus();
     const self = corpus.find((e) => e.tool === 'tools:find');
