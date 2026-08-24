@@ -11,9 +11,173 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
+import { boundedOrgTxn } from '../pg-bounded-txn';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 export const CHECKPOINT_QUIESCENCE_PAUSE_MARKER = 'D-012/D-013 live quiescence hold under ';
 export const CHECKPOINT_SERIALIZER_HOLD_REASON_PREFIX = 'D-016 sole serializer hold:';
+export const CHECKPOINT_SERIALIZER_TRANSITION_METADATA_KEY = 'checkpointSerializerTransition';
+
+export type PausedCheckpointTransitionResult =
+  | {
+      status: 'armed' | 'already-armed';
+      gateWorkItemId: string;
+      prerequisiteWorkItems: string[];
+      armedAtMs: number;
+    }
+  | {
+      status: 'refused';
+      reason:
+        | 'routine-not-found'
+        | 'routine-not-paused'
+        | 'routine-already-active'
+        | 'gate-item-not-found'
+        | 'gate-item-not-owned-by-caller'
+        | 'prerequisite-not-found'
+        | 'prerequisite-not-terminal';
+      detail: string;
+    }
+  | { status: 'unreadable'; error: string };
+
+type TransitionRoutineRow = {
+  active: boolean;
+  metadata: Record<string, unknown> | null;
+};
+
+type TransitionWorkItemRow = {
+  feature_id: string;
+  taken_by: string | null;
+  status: string | null;
+};
+
+const recordOf = (value: unknown): Record<string, unknown> | null =>
+  value != null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * Atomically hand a deliberate paused checkpoint back to the existing routine
+ * engine. The transaction verifies that the caller still owns the gate item and
+ * every named prerequisite is terminal, clears the pause record into lastPause,
+ * and makes the row due NOW. The routine engine's own compare-and-claim then
+ * starts exactly one checkpoint across every host; this function never spawns a
+ * competing detached unit.
+ *
+ * Idempotence is carried on the routine row. Repeating the same transition after
+ * it was armed reports already-armed without moving next_fire_at again.
+ */
+export async function armPausedCheckpointTransition(opts: {
+  callerOwnerId: string;
+  gateWorkItemId: string;
+  prerequisiteWorkItems: readonly string[];
+  installSlug?: string;
+  workspaceId?: string;
+  nowMs?: number;
+}): Promise<PausedCheckpointTransitionResult> {
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
+  const workspaceId = opts.workspaceId?.trim() || activeWorkspaceId();
+  const gateWorkItemId = opts.gateWorkItemId.trim();
+  const prerequisiteWorkItems = [...new Set(opts.prerequisiteWorkItems.map((id) => id.trim()).filter(Boolean))];
+  const nowMs = opts.nowMs ?? Date.now();
+
+  try {
+    return await boundedOrgTxn(async (tx) => {
+      const routines = await tx<TransitionRoutineRow[]>`
+        SELECT active, metadata
+          FROM harness_shared.routines
+         WHERE workspace_id = ${workspaceId}
+           AND install_slug = ${installSlug}
+           AND name = 'green-checkpoint'
+           AND group_slug = 'release'
+           AND target_role = 'system:green-checkpoint'
+         FOR UPDATE`;
+      const routine = routines[0];
+      if (!routine) return { status: 'refused', reason: 'routine-not-found', detail: 'release green-checkpoint routine row not found' };
+
+      const metadata = { ...(recordOf(routine.metadata) ?? {}) };
+      const priorTransition = recordOf(metadata[CHECKPOINT_SERIALIZER_TRANSITION_METADATA_KEY]);
+      const sameTransition =
+        priorTransition?.callerOwnerId === opts.callerOwnerId &&
+        priorTransition?.gateWorkItemId === gateWorkItemId &&
+        JSON.stringify(priorTransition?.prerequisiteWorkItems ?? []) === JSON.stringify(prerequisiteWorkItems);
+      if (routine.active) {
+        if (sameTransition) {
+          const priorArmedAt = Number(priorTransition?.armedAtMs);
+          return {
+            status: 'already-armed',
+            gateWorkItemId,
+            prerequisiteWorkItems,
+            armedAtMs: Number.isFinite(priorArmedAt) ? priorArmedAt : nowMs,
+          };
+        }
+        return { status: 'refused', reason: 'routine-already-active', detail: 'green-checkpoint is already active under a different transition' };
+      }
+
+      const pause = recordOf(metadata.pause);
+      if (!pause) return { status: 'refused', reason: 'routine-not-paused', detail: 'inactive routine has no deliberate metadata.pause record' };
+
+      const ids = [gateWorkItemId, ...prerequisiteWorkItems];
+      const rows = await tx<TransitionWorkItemRow[]>`
+        SELECT feature_id, taken_by, status
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId}
+           AND harness_slug = ${installSlug}
+           AND feature_id = ANY(${ids}::text[])
+         FOR UPDATE`;
+      const byId = new Map(rows.map((row) => [row.feature_id, row]));
+      const gate = byId.get(gateWorkItemId);
+      if (!gate) return { status: 'refused', reason: 'gate-item-not-found', detail: `${gateWorkItemId} was not found in ${installSlug}` };
+      if (gate.taken_by !== opts.callerOwnerId) {
+        return {
+          status: 'refused',
+          reason: 'gate-item-not-owned-by-caller',
+          detail: `${gateWorkItemId} is held by ${gate.taken_by ?? '(unclaimed)'}, not ${opts.callerOwnerId}`,
+        };
+      }
+
+      const terminal = new Set<string>(ANY_FAMILY_TERMINAL_STATES as readonly string[]);
+      for (const prerequisite of prerequisiteWorkItems) {
+        const item = byId.get(prerequisite);
+        if (!item) {
+          return { status: 'refused', reason: 'prerequisite-not-found', detail: `${prerequisite} was not found in ${installSlug}` };
+        }
+        if (!item.status || !terminal.has(item.status)) {
+          return {
+            status: 'refused',
+            reason: 'prerequisite-not-terminal',
+            detail: `${prerequisite} is ${item.status ?? '(unknown)'}, not terminal`,
+          };
+        }
+      }
+
+      metadata.lastPause = { ...pause, resumedAtMs: nowMs, resumedBy: opts.callerOwnerId };
+      delete metadata.pause;
+      metadata[CHECKPOINT_SERIALIZER_TRANSITION_METADATA_KEY] = {
+        callerOwnerId: opts.callerOwnerId,
+        gateWorkItemId,
+        prerequisiteWorkItems,
+        armedAtMs: nowMs,
+      };
+      const updated = await tx<{ active: boolean }[]>`
+        UPDATE harness_shared.routines
+           SET active = true,
+               next_fire_at = now(),
+               metadata = ${JSON.stringify(metadata)}::text::jsonb,
+               updated_at = now()
+         WHERE workspace_id = ${workspaceId}
+           AND install_slug = ${installSlug}
+           AND name = 'green-checkpoint'
+           AND active = false
+        RETURNING active`;
+      if (!updated[0]?.active) {
+        return { status: 'refused', reason: 'routine-already-active', detail: 'routine changed before the transition could arm' };
+      }
+      return { status: 'armed', gateWorkItemId, prerequisiteWorkItems, armedAtMs: nowMs };
+    });
+  } catch (error) {
+    return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 export interface CheckpointSerializerAuthorityEvidence {
   active: boolean | null;
