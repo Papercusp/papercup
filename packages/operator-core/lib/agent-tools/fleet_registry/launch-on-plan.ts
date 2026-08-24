@@ -2700,14 +2700,27 @@ export default defineTool({
           unmeasuredProtectedAgentScopes:
             protectedAgentMemory.unmeasuredProtectedAgentScopes + reservedForSpawnedLeader,
         });
-        if (hostMemoryClamp.clamped) openCount = hostMemoryClamp.openCount;
+        // ADVISORY ONLY — deliberately does NOT reduce openCount.
+        //
+        // WI-41206 / plan remove-memory-derived-work-refusals-2026-08-24.
+        // [owner 2026-08-24] "if the user wants to run a lot of agents and use up
+        // the memory and force pagination that is their choice."
+        //
+        // Why the refusal was wrong, measured 2026-08-24: it reserved each live scope's
+        // full MemoryMax — 74 scopes x 6 GiB = 444 GiB of ceiling — against 188.6 GiB of
+        // usable RAM, while those same scopes held 23 GiB RSS in total. Once the
+        // population crossed floor(188.6/6)=31 it therefore returned 0 for EVERY headless
+        // launch, indefinitely. At the time of removal the host measured PSI memory
+        // full avg60=1.16 (the EI-21170449710478148 incident threshold is 5), zero
+        // pswpout over a 10s sample, and 1.87 TB of free swap that this arithmetic never
+        // counted. A worker that exceeds its budget should page and get slower, not be
+        // refused; MemoryMax on the scope remains as the per-worker runaway backstop.
+        //
+        // The figures stay in the returned result so callers keep the observability.
       } catch (e: any) {
-        // This is a safety admission, not an advisory telemetry read. If the
-        // protected-scope ledger cannot be read, do not open an unbounded headless
-        // wave against an unknown host population; visible launches remain
-        // unaffected because they do not use this guard.
-        hostMemoryAdmissionError = `host-memory admission unavailable — refusing new headless members until the live task ledger can be read: ${e?.message ?? e}`;
-        openCount = 0;
+        // Telemetry, not admission: an unreadable ledger means we cannot REPORT the
+        // protected-scope population, never that the launch is refused.
+        hostMemoryAdmissionError = `host-memory telemetry unavailable (advisory only — launch NOT refused): ${e?.message ?? e}`;
       }
     }
     if (openCount <= 0) {
