@@ -86,3 +86,13 @@ export { classifyHttpError, classifyTurnError, probeStatelessTransport };
 // WI-5071: converse needs the runner's effective-backend resolution (session
 // reuse is a claude-code-only lever) — re-exported through the same shim.
 export { resolveBackend };
+// P-007 (own-tui-full-divorce-2026-08-24): the agent-loop's gateway-native
+// ModelPort adapter (lib/agent-loop/anthropic-port.ts) reuses the stateless
+// family's transport resolution + tier headers + OAuth-framed system param —
+// re-exported through this shim like everything else operator-core consumes.
+export {
+  resolveStatelessTransport,
+  priorityTierHeaders,
+  buildSystemParam,
+  type StatelessTransport,
+} from '@papercusp/papercusp-shared/agent';
