@@ -198,6 +198,18 @@ export function deriveSessionState(input: {
    *  (not probed) must NEVER be passed here as `true` — only an affirmative
    *  ESRCH result may. */
   pidConfirmedDead?: boolean;
+  /**
+   * A wake was AFFIRMATIVELY attempted on this owner and NO activity followed
+   * it (`isConfirmedWakeAttemptMiss` above). This is direct evidence about
+   * dispatchability rather than a timing heuristic: we did the thing that is
+   * supposed to start a turn, and no turn started.
+   *
+   * Conservative by construction — it is only ever true when an attempt
+   * timestamp EXISTS, so a never-woken idle session is unaffected, and it goes
+   * false the moment activity postdates the attempt. Never pass a "we did not
+   * check" as `true`.
+   */
+  wakeAttemptMiss?: boolean;
   /** The owner still has a plan/work-item claim that cleanup must reconcile. */
   claimsHeld?: boolean;
 }): SessionState {
@@ -211,6 +223,29 @@ export function deriveSessionState(input: {
   // (invoke-once.ts) as dead and serves a self-contradictory row (`ended` while
   // lastActiveSecAgo is seconds).
   if (input.liveTurn) return input.stale ? 'draining' : 'live';
+  // WARM-DEAD (EI-21356139961831796). `hardStale` above is the time-based
+  // backstop for a lingering wake-await, but it is keyed on the HEARTBEAT
+  // clock, so it only catches a process that DIED. A process that is alive and
+  // heartbeating while its agent loop is wedged keeps `hardStale` false and
+  // `wakeable` true forever, and fell through to `parked` — the docstring's
+  // "ideal dispatch target". Measured case: pid alive 22h54m, heartbeat 7s
+  // fresh, last turn 21h25m ago, two delivered wakes and zero turns, still
+  // scored the top consult responder.
+  //
+  // A confirmed wake MISS settles it without a new timer: we already did the
+  // thing that starts a turn and nothing started, so this owner is not a
+  // dispatch target whatever its heartbeat says. Placed AFTER `liveTurn` so an
+  // in-flight turn always wins — the two cannot disagree, since
+  // `isConfirmedWakeAttemptMiss` is false whenever activity postdates the
+  // attempt. `claimsHeld` mirrors the `hardStale` line: claims outlive the
+  // session until cleanup reconciles them.
+  //
+  // This also removes a live contradiction: release-force-guard.ts already
+  // reads this exact signal as not-live (`live = … && !wakeAttemptMiss`) for
+  // the highest-stakes call it makes — force-releasing a peer's claim — while
+  // the shared oracle behind consult routing, coord:dispatch, fleet:assignments
+  // and coord:roster was calling the same owner the best available target.
+  if (input.wakeAttemptMiss) return input.claimsHeld ? 'suspect' : 'ended';
   if (!input.wakeable) return 'ended';
   if (input.stale) return 'draining';
   return 'parked';
