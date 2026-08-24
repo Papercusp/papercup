@@ -184,6 +184,10 @@ export function buildScheduledCheckpointShell(
  * candidate-bound red result. Best-effort: a wake failure must not change gate recording.
  */
 async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdict): Promise<void> {
+  // Candidate-pinned runs are diagnostics, not observations of the live gate. Keep their
+  // append-only pipeline history (the caller records it separately), but never wake red
+  // subscribers from the legacy/version-skew fallback.
+  if (verdict.diagnostic === 'candidate-pinned') return;
   if (verdict.green !== false || !verdict.candidate) return;
   const pipeline = pipelineName(root);
   const candidate = verdict.candidate;
@@ -515,6 +519,8 @@ function runScript(
 export interface CheckpointVerdict {
   reason: string;
   green?: boolean | null;
+  /** Explicit provenance for a diagnostic run; absent means a normal gate observation. */
+  diagnostic?: 'candidate-pinned';
   candidate?: string;
   from?: string | null;
   summary?: string;
@@ -657,6 +663,7 @@ export interface CheckpointVerdict {
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
 export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
+  if (v.diagnostic) detail.diagnostic = v.diagnostic;
   if (v.promotionPending === true) detail.promotionPending = true;
   if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
   if (v.from) detail.from = v.from.slice(0, 12);
@@ -907,6 +914,9 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     status: verdict.reason,
     detail: buildCheckpointDetail(verdict),
   });
+  // A pinned candidate is retained as diagnostic pipeline evidence, but it must not become
+  // shared gate state or trigger any repair/escalation machinery.
+  if (verdict.diagnostic === 'candidate-pinned') return true;
   // EI-19405864032365760: `summary` rides along so the 'migrations-pending' abort path can name
   // the pending migration in `gate_health.inconclusive` — it is the only field carrying it.
   await trackGateStall(
@@ -954,6 +964,9 @@ export async function recordPendingCheckpointVerdict(
     status: 'decision-pending',
     detail: buildCheckpointDetail(verdict),
   });
+  // Keep the pending diagnostic row for history, but never mutate gate health or dispatch a
+  // fixer for a candidate that was explicitly pinned for investigation.
+  if (verdict.diagnostic === 'candidate-pinned') return true;
   await trackGateStall(
     target,
     verdict.reason,
@@ -1105,7 +1118,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // EI-20981232855780375: an old CLI can record the red result but cannot emit the
     // candidate-bound awaitable wake. Keep this strictly on the parsed red fallback;
     // modern producer-side recording already emits it, and crash/green results do not.
-    if (parsed?.green === false && parsed.candidate) {
+    if (parsed?.diagnostic !== 'candidate-pinned' && parsed?.green === false && parsed.candidate) {
       await emitLegacyRedVerdictEvent(root, parsed);
     }
   }
@@ -1118,7 +1131,12 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // ran this exact check. Dispatching here TOO for a recordedByRun verdict would double-fire
   // the dedup'd decision for every routine tick on a modern CLI; gating on !recordedByRun
   // keeps this a pure fallback instead of a race with the producer-side dispatch.
-  if (!recordedByRun && !parsed?.repairQueue && shouldDispatchReleaseFixer(status, candidate, failingTests)) {
+  if (
+    parsed?.diagnostic !== 'candidate-pinned' &&
+    !recordedByRun &&
+    !parsed?.repairQueue &&
+    shouldDispatchReleaseFixer(status, candidate, failingTests)
+  ) {
     await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -1130,7 +1148,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // verdict so it resets on green; fail-safe.
   // WI-4494: skipped when the run recorded its own verdict — see `recordedByRun` above. A second
   // trackGateStall for ONE verdict would count the same red twice.
-  if (!recordedByRun) {
+  if (parsed?.diagnostic !== 'candidate-pinned' && !recordedByRun) {
     // EI-13288: thread the parsed run's own retriage verdict through this fallback recorder too
     // (version-skew / crash path) — same as the WI-4494 producer-side path above.
     // EI-20767792192323374: thread `summary` here too. Both abort reasons ('migrations-pending',
@@ -1157,9 +1175,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // pass absorbed (red under load, green in isolation) — proven flakes keyed by
   // `<ws>::<file>`, finer-grained than the workspace-retry markers, so a chronically
   // load-flaky FILE trips the same quarantine nudge.
-  await trackFlakeHistory(ctx, summary, flakeSuspects).catch((e) =>
-    console.warn(`${orchestratorStdoutTag()} flake history failed: ${e instanceof Error ? e.message : e}`),
-  );
+  if (parsed?.diagnostic !== 'candidate-pinned') {
+    await trackFlakeHistory(ctx, summary, flakeSuspects).catch((e) =>
+      console.warn(`${orchestratorStdoutTag()} flake history failed: ${e instanceof Error ? e.message : e}`),
+    );
+  }
 });
 
 /** P-004 thresholds: a gate held this many consecutive hourly checkpoints — or
@@ -1761,8 +1781,10 @@ export async function trackGateStall(
     promotionPending?: boolean;
     green?: boolean | null;
     runId?: string;
+    diagnostic?: 'candidate-pinned';
   } = {},
 ): Promise<void> {
+  if (options.diagnostic === 'candidate-pinned') return;
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
