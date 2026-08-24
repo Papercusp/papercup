@@ -136,6 +136,7 @@ function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLim
     [
       'active',
       'activeSource',
+      'processAuthority',
       'candidate',
       'candidateSource',
       'initialCandidate',
@@ -147,6 +148,8 @@ function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLim
       'totalRefires',
       'absoluteCeiling',
       'startedAtMs',
+      'progressAtMs',
+      'currentPhase',
       'elapsedSec',
       'asOfAgeMs',
     ],

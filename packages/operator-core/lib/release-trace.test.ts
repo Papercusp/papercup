@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
-import {
-  buildReleaseTrace,
-  classifyReleaseWake,
-  type ReleaseTraceGate,
-  type ReleaseTraceInput,
-} from './release-trace';
+import { buildReleaseTrace, classifyReleaseWake, type ReleaseTraceGate, type ReleaseTraceInput } from './release-trace';
 
 const sha = 'a'.repeat(40);
 const green = sha;
@@ -459,9 +454,7 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
       'local green-checkpoint already judged',
     );
-    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain(
-      'cannot test it',
-    );
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain('cannot test it');
     expect(out.nextVerb?.name).toBe('testing:flakiness');
   });
 
@@ -500,9 +493,7 @@ describe('buildReleaseTrace', () => {
       }),
     );
 
-    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
-      'cannot test it',
-    );
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain('cannot test it');
     expect(out.nextVerb).toMatchObject({
       name: 'events:await',
       args: { event: `git-sync:egressed:${sha}` },
@@ -538,9 +529,7 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
       'actively judging this exact detached candidate',
     );
-    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain(
-      'cannot test it',
-    );
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain('cannot test it');
     expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
     expect(out.nextVerb?.reason).toContain(sha);
     expect(out.gate.checkpointRunInFlight?.systemd).toEqual(checkpointRun.systemd);
@@ -663,6 +652,36 @@ describe('buildReleaseTrace', () => {
       expect(out.gate.redOwner).toMatchObject({ state: 'owned-live', covered: true });
       expect(out.gate.redOwner?.label).toContain('checkpoint-candidate');
       expect(out.gate.redOwner?.label).not.toContain('CONFIRMED GONE');
+    });
+
+    it('prefers measured pre-lock process authority before a candidate is published', () => {
+      const out = buildReleaseTrace(
+        input({
+          position: position({
+            positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+            gate: {
+              ...position().gate,
+              checkpointRunInFlight: {
+                active: true,
+                activeSource: 'process-authority',
+                processAuthority: {
+                  workspace: 'papercusp-workspace',
+                  harness: 'papercusp',
+                  cgroupPath: '/user.slice/run-u42.scope',
+                  pid: 4242,
+                },
+                candidate: null,
+                startedAtMs: 123,
+                elapsedSec: 10,
+                asOfAgeMs: null,
+              },
+            },
+          }),
+          gate: redGate({ state: 'owner-gone', covered: false, label: 'obsolete fixer gone' }),
+        }),
+      );
+      expect(out.gate.redOwner).toMatchObject({ state: 'owned-live', covered: true });
+      expect(out.gate.redOwner?.label).toMatch(/gate-authorized checkpoint process/i);
     });
 
     it('keeps the D-016 paused-routine serializer authoritative over historical fixer lineage', () => {
