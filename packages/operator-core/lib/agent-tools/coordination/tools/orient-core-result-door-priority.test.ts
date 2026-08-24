@@ -208,6 +208,9 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
     const result = {
       ok: true,
       me: 'me-value',
+      // EI-18763132241176410: the roster leg's scope disclosure. Always emitted by the
+      // producer, so the fixture supplies it like any other CORE field.
+      assignmentsScope: { scope: 'self', ref: 'su-1', coversPeers: false, note: 'narrow' },
       claimable: [],
       claimableHarnessScope: { requested: 'h', resolved: 'h', resolution: 'requested' },
       claimableTruncated: { shown: 0, total: 1, more: 'work_items:list' },

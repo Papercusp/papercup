@@ -73,6 +73,20 @@ describe('deriveAssignmentsScope', () => {
     }
   });
 
+  it('CONTROL: the property above actually fails against a broken derivation', () => {
+    // Falsifiability control (kept permanently, per the repo's mutation discipline for
+    // an imported module: never mutate the shared tree to prove a guard can fail).
+    // This is the pre-fix shape — a reading that always claims coverage. If the
+    // property test above ever passes for BOTH implementations, it has stopped
+    // measuring anything and the guard is decorative.
+    const brokenDerive = (args: { agent?: string | null }) => ({ ...args, coversPeers: true });
+
+    const selfScoped = { agent: 'su-1', harness: 'papercusp' };
+    expect(deriveAssignmentsScope(selfScoped).coversPeers).toBe(false); // real: narrow
+    expect(brokenDerive(selfScoped).coversPeers).toBe(true); // broken: claims coverage
+    expect(deriveAssignmentsScope(selfScoped).coversPeers).not.toBe(brokenDerive(selfScoped).coversPeers);
+  });
+
   it('reports the widest reading when nothing filters the query', () => {
     const scope = deriveAssignmentsScope({});
     expect(scope.scope).toBe('harness');
