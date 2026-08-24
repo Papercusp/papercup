@@ -223,6 +223,16 @@ function isDirected(to: string[]): boolean {
   return to.length > 0 && to.every((id) => !isSelectorOrWildcard(id));
 }
 
+/** WI-41323: read the per-message unverified-claim kind back off a bulk item
+ *  result for the envelope hoist. `BulkItemResult`'s index signature types every
+ *  extra field `unknown`, so the narrowing lives here ONCE — a cast at each read
+ *  site is the thing that goes stale silently when the field's shape moves. */
+function readClaimKind(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const claim = (value as { claim?: unknown }).claim;
+  return typeof claim === 'string' ? claim : null;
+}
+
 /**
  * Whether `address` is the same owner-id alias that the live recipient
  * resolver accepts for `ownerId`. This matters when a reply closes a thread
@@ -2303,22 +2313,16 @@ export default defineTool({
     // and a single send still comes back as results[0], one level down. The
     // per-message object stays where it is; this is the line that gets READ.
     const claimed = env.results.filter(
-      (result) =>
-        result.ok &&
-        typeof (result as { unverifiedAuthorityClaim?: unknown }).unverifiedAuthorityClaim ===
-          'object' &&
-        (result as { unverifiedAuthorityClaim?: unknown }).unverifiedAuthorityClaim !== null,
+      (result) => result.ok && readClaimKind(result.unverifiedAuthorityClaim) !== null,
     );
     const authorityClaimWarning =
       claimed.length > 0
         ? (() => {
             const kinds = [
               ...new Set(
-                claimed.map(
-                  (result) =>
-                    (result as { unverifiedAuthorityClaim: { claim: string } })
-                      .unverifiedAuthorityClaim.claim,
-                ),
+                claimed
+                  .map((result) => readClaimKind(result.unverifiedAuthorityClaim))
+                  .filter((kind): kind is string => kind !== null),
               ),
             ].join('/');
             return (
