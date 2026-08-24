@@ -325,6 +325,128 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
     }
   });
 
+  // P-010: a SHARED GATE INPUT (scripts/, libs/test-config/) is part of every ordinary task's
+  // dependency closure, not just of the repo-wide guards. So changing the test RUNNER itself
+  // must invalidate reuse for a workspace that is byte-identical.
+  //
+  // Measured live during the P-010 controlled repair (2026-08-24): git-sync committed
+  // scripts/affected-tests.mjs between an initial run and its repair verification, and all 20
+  // tasks correctly missed with dependency-closure-changed. Nothing guarded that: the sibling
+  // P-009 case above keeps scripts/affected-tests.mjs in its fixture file set but only ever
+  // mutates a transitive workspace dep and an unrelated workspace, so a narrowing of the
+  // closure filter in passingTaskVerdictDependencyProvenance would let a CHANGED RUNNER replay
+  // stale passing verdicts — silently, because reuse is fail-closed and logs no error.
+  //
+  // The two controls are load-bearing and must not be deleted: the calibration case proves the
+  // identity can still HIT (otherwise every miss assertion below passes for the wrong reason),
+  // and the out-of-closure case proves a miss means "this file is in the closure" rather than
+  // "any mutation anywhere invalidates".
+  it("invalidates an unchanged workspace's reuse when a shared gate input changes", () => {
+    const root = mkdtempSync(join(tmpdir(), "repair-cache-shared-input-"));
+    try {
+      const files = [
+        "package-lock.json",
+        "scripts/affected-tests.mjs",
+        "libs/test-config/src/vitest-config.ts",
+        "packages/clean/src/index.ts",
+        "packages/other/src/index.ts",
+      ];
+      for (const file of files) {
+        mkdirSync(join(root, file, ".."), { recursive: true });
+        writeFileSync(join(root, file), `${file}:initial\n`);
+      }
+      const workspaces = new Map([
+        ["@fixture/clean", { dir: "packages/clean", deps: [] }],
+        ["@fixture/other", { dir: "packages/other", deps: [] }],
+      ]);
+      const task: FixtureTask = {
+        key: "@fixture/clean :: test",
+        script: "test",
+        workspace: "@fixture/clean",
+        initialStatus: 0,
+        finalStatus: 0,
+        absorptionRan: false,
+      };
+      const trackedScan = { files, unscannedPresent: [] as string[] };
+      // Deliberately EMPTY: this is an ordinary task, so any invalidation below comes from the
+      // shared-gate-input rule and never from the whole-tree repo-wide binding.
+      const repoWideTaskKeys = new Set<string>();
+
+      const identityNow = (): PassingTaskVerdictIdentity | null => {
+        const provenance = passingTaskVerdictDependencyProvenance({
+          root,
+          taskKey: task.key,
+          script: task.script,
+          workspaceName: task.workspace,
+          workspaces,
+          trackedScan,
+          repoWideTaskKeys,
+        });
+        if (!provenance.ok) return null;
+        return buildPassingTaskVerdictIdentity({
+          taskKey: task.key,
+          command: commandFor(task, root),
+          environment: passingTaskVerdictIdentityEnvironment(
+            buildGreenCheckpointEnv(BASE, INITIAL_LAUNCH_ENV, INITIAL_RUN),
+          ).environment,
+          gateConfig,
+          dependencyHash: provenance.hash,
+        });
+      };
+
+      const initialIdentity = identityNow();
+      expect(initialIdentity).not.toBeNull();
+      const cache = mergePassingTaskVerdictUpdates(
+        emptyPassingTaskVerdictCache(),
+        INITIAL_RUN,
+        { [task.key]: passingTaskVerdictEntry(initialIdentity!, "initial-pass") },
+        "initial-pass",
+      );
+      const decideNow = () =>
+        decidePassingTaskVerdict({
+          enabled: true,
+          cacheRead: { cache, reason: "cache-ready" },
+          entry: passingTaskVerdictCacheEntry(cache, INITIAL_RUN, task.key),
+          identity: identityNow(),
+        });
+
+      // CONTROL (calibration): nothing changed, so reuse MUST hit. Without this, the two
+      // miss assertions below would also pass if the identity were simply always-different.
+      expect(decideNow()).toEqual({ hit: true, reason: "identity-match" });
+
+      // NEGATIVE CONTROL: a workspace OUTSIDE this task's closure changes. The closure is
+      // scoped, so this must still hit — proving the misses below are caused by the specific
+      // file, not by mutation-in-general.
+      writeFileSync(join(root, "packages/other/src/index.ts"), "other:changed\n");
+      expect(decideNow()).toEqual({ hit: true, reason: "identity-match" });
+
+      // The runner itself changes: an ordinary task with a byte-identical workspace must miss.
+      writeFileSync(join(root, "scripts/affected-tests.mjs"), "runner:changed\n");
+      expect(decideNow()).toEqual({
+        hit: false,
+        reason: "dependency-closure-changed",
+      });
+
+      // The other documented shared gate input must bind the same way. Restore the runner
+      // first so this asserts libs/test-config on its own rather than riding the prior miss.
+      writeFileSync(
+        join(root, "scripts/affected-tests.mjs"),
+        "scripts/affected-tests.mjs:initial\n",
+      );
+      expect(decideNow()).toEqual({ hit: true, reason: "identity-match" });
+      writeFileSync(
+        join(root, "libs/test-config/src/vitest-config.ts"),
+        "test-config:changed\n",
+      );
+      expect(decideNow()).toEqual({
+        hit: false,
+        reason: "dependency-closure-changed",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps complete child-environment identity fail-closed for admitted test inputs", () => {
     const initialEnvironment = passingTaskVerdictIdentityEnvironment(
       buildGreenCheckpointEnv(BASE, INITIAL_LAUNCH_ENV, INITIAL_RUN),
