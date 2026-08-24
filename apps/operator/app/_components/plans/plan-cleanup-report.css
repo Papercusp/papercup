@@ -8,6 +8,15 @@
   color: var(--bad);
 }
 
+.plan-cleanup-report__loading {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-mute);
+  background: var(--bg);
+}
+
 .review-report__footer code {
   color: var(--fg);
   font-size: 0.95em;
