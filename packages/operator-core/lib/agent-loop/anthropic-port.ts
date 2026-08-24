@@ -27,6 +27,7 @@
  * runAgentTurn's governor around each step is P-009 (sessions) territory,
  * where per-session pacing decisions actually live.
  */
+import { costFromTokens } from '@papercusp/model-pricing';
 import {
   buildSystemParam,
   priorityTierHeaders,
@@ -288,6 +289,20 @@ async function defaultRawStream(
   return client.messages.stream(rest, signal ? { signal } : {}) as AsyncIterable<unknown>;
 }
 
+/** Stamp costUsd onto a stop event's usage from the canonical price table
+ *  (P-009 usage accounting; @papercusp/model-pricing is D-002-A's single
+ *  source of truth). Unknown model ⇒ usage left WITHOUT costUsd — never a
+ *  fabricated $0; the session store records the turn as unpriced instead. */
+export function withCost(
+  model: string,
+  ev: Extract<ModelStreamEvent, { type: 'stop' }>,
+): Extract<ModelStreamEvent, { type: 'stop' }> {
+  if (!ev.usage) return ev;
+  const { usd, priced } = costFromTokens(model, ev.usage);
+  if (!priced) return ev;
+  return { ...ev, usage: { ...ev.usage, costUsd: usd } };
+}
+
 /** Gateway-native ModelPort: anthropic-messages dialect over the stateless
  *  family's transport (OAuth-direct or gateway-pool, per the shared choice). */
 export function createAnthropicPort(opts: AnthropicPortOpts = {}): ModelPort {
@@ -304,7 +319,9 @@ export function createAnthropicPort(opts: AnthropicPortOpts = {}): ModelPort {
         return;
       }
       try {
-        yield* parseAnthropicStream(raw);
+        for await (const ev of parseAnthropicStream(raw)) {
+          yield ev.type === 'stop' ? withCost(req.model, ev) : ev;
+        }
       } catch (e) {
         if (req.signal?.aborted) {
           yield { type: 'stop', reason: 'aborted' };
