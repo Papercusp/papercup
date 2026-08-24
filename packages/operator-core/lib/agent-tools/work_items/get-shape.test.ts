@@ -697,6 +697,50 @@ describe("detail:true — content out, evidence-of-content IN", () => {
 });
 
 describe("threadLimit — bounded diagnostic thread stays consumable", () => {
+  it("keeps the requested window when an oversized exact read reaches the compact floor", () => {
+    const threadWindow = {
+      posts: [{
+        id: 7,
+        thread_id: "thread-1",
+        author_id: "su-peer",
+        body: "latest evidence",
+        created_ts: "2026-08-12T10:00:00.000Z",
+      }],
+      total: 150,
+      topics: ["release-gate"],
+      createdAt: "2026-08-12T09:00:00.000Z",
+    };
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          checkpoint: "C".repeat(40_000),
+          holder: {
+            goalRef: "WI-1",
+            goalText: "H".repeat(40_000),
+            assumptions: { keys: ["hold"] },
+            agreement: "sole",
+            competing: [],
+          },
+          lifecycle: { events: Array.from({ length: 100 }, (_, i) => ({ kind: `event-${i}` })) },
+          priorAttempts: { attempts: [{ text: "A".repeat(10_000) }] },
+          threadWindow,
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+
+    expect(out._shapeNote?.singleItemFloor).toMatch(/reduced identity/);
+    expect(out.results[0].threadWindow).toMatchObject({
+      shown: 1,
+      total: 150,
+      posts: [{ id: 7, body: "latest evidence" }],
+    });
+    expect(out._shapeNote?.dropped ?? []).not.toContain("threadWindow");
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(
+      RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE,
+    );
+  });
+
   it("keeps the bounded window, counts it, and marks large post bodies", () => {
     const threadWindow = {
       posts: Array.from({ length: 6 }, (_, i) => ({
