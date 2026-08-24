@@ -186,6 +186,12 @@ import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/acti
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
 import { parseUsageReset, clampUsageRearmDelayMs } from '@papercusp/papercusp-shared/agent';
 import { recordLoopTransition } from './loop-transition-log';
+import { countAgentToolCallsInWindow as defaultCountAgentToolCallsInWindow } from './loop';
+import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
+import {
+  recordZeroToolFireObservation as defaultRecordZeroToolFireObservation,
+  zeroToolEscalationThreshold,
+} from './loop-zero-tool-escalation';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
@@ -928,6 +934,14 @@ export async function reconcileLoopRoutines(
      *  'ok' lifecycle settle to a provider-kill 'error'. Default opens an advisory coord
      *  escalation. Fail-soft at the call site — never blocks the re-arm it accompanies. */
     escalateLifecycleDeath?: (info: LifecycleDeathInfo) => Promise<void>;
+    /** WI-41228: canonical agent-authored tool-call evidence for the dispatched fire window. */
+    countAgentToolCallsInWindow?: typeof defaultCountAgentToolCallsInWindow;
+    /** WI-41228: idempotent routine-metadata streak writer, injectable for focused tests. */
+    recordZeroToolFireObservation?: typeof defaultRecordZeroToolFireObservation;
+    /** WI-41228: shared disarm primitive used before the existing dead-loop termination path. */
+    autoPauseLoopRoutine?: typeof defaultAutoPauseLoopRoutine;
+    /** Test/config seam; production defaults to PAPERCUSP_LOOP_ZERO_TOOL_ESCALATION_THRESHOLD (3). */
+    zeroToolThreshold?: number;
   } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
@@ -940,6 +954,10 @@ export async function reconcileLoopRoutines(
   const escalateDeadLoop = opts.escalateDeadLoop ?? defaultEscalateDeadLoop;
   const cancelInboxWake = opts.cancelInboxWake ?? defaultCancelInboxWake;
   const escalateLifecycleDeath = opts.escalateLifecycleDeath ?? defaultEscalateLifecycleDeath;
+  const countAgentToolCallsInWindow = opts.countAgentToolCallsInWindow ?? defaultCountAgentToolCallsInWindow;
+  const recordZeroToolFireObservation = opts.recordZeroToolFireObservation ?? defaultRecordZeroToolFireObservation;
+  const autoPauseLoopRoutine = opts.autoPauseLoopRoutine ?? defaultAutoPauseLoopRoutine;
+  const zeroToolThreshold = opts.zeroToolThreshold ?? zeroToolEscalationThreshold();
 
   // Loop routines in scope: a PARKED pure loop (rebase off completion), an armed cron+loop
   // (fold the sooner — unchanged), OR (EI-11407) an ARMED pure loop that has fired at least
@@ -1259,8 +1277,7 @@ export async function reconcileLoopRoutines(
         // A legitimately long turn keeps beating, so it stays exempt via the recency term.
         const lastActiveMs = tsMs(row.presence_last_active_at) ?? 0;
         const looksDeadOrStuck =
-          row.parked &&
-          (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= stuckParkMs(intervalMs));
+          row.parked && (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= stuckParkMs(intervalMs));
         if (!looksDeadOrStuck) {
           continue; // still in flight (recent post-fire activity) / nothing to fold — leave it
         }
@@ -1371,8 +1388,53 @@ export async function reconcileLoopRoutines(
       // `deferPastWall` branch can actually push the next fire out.
       // WI-36792: a 'gate-backoff' re-arm targets the gate's own expiry, not the interval —
       // and never sooner than one interval, so it can never out-pace the loop's own cadence.
-      const rearmMs =
-        gateRetryMs != null ? Math.max(gateRetryMs, intervalMs) : (turnDeath?.rearmDelayMs ?? intervalMs);
+      const rearmMs = gateRetryMs != null ? Math.max(gateRetryMs, intervalMs) : (turnDeath?.rearmDelayMs ?? intervalMs);
+
+      // WI-41228 (P-005) — ESCALATION RUNG R4. A fire can settle cleanly at the session layer
+      // while the agent produces zero authored tool calls (expired bearer, split state, or a new
+      // failure mode). Re-arming that shape forever is silent starvation. Count only after a
+      // DISPATCHED fire has reached a settle/stuck decision: gate-backoff is deliberately excluded
+      // because the gate refused the fire and no turn ran. The canonical counter excludes automatic
+      // carry bookkeeping. A null read is evidence-unavailable, not zero, so it fails open.
+      if (via !== 'gate-backoff') {
+        const evidenceUntilMs = via === 'stuck-backstop' ? nowMs : completedAt;
+        const toolCalls = await runWithWorkspace(row.routine_workspace_id, () =>
+          countAgentToolCallsInWindow(row.target_owner_id, lastFiredMs, evidenceUntilMs, { sql: db }),
+        ).catch((e) => {
+          console.warn(
+            `[loop-reconcile] zero-tool evidence read failed for '${row.id}' — leaving the existing re-arm path intact: ${e instanceof Error ? e.message : e}`,
+          );
+          return null;
+        });
+
+        if (toolCalls != null) {
+          const fireToken = new Date(lastFiredMs).toISOString();
+          const observation = await recordZeroToolFireObservation(db, {
+            routineId: row.id,
+            fireToken,
+            toolCalls,
+            threshold: zeroToolThreshold,
+          }).catch((e) => {
+            console.warn(
+              `[loop-reconcile] zero-tool streak write failed for '${row.id}' — leaving the existing re-arm path intact: ${e instanceof Error ? e.message : e}`,
+            );
+            return null;
+          });
+
+          if (observation?.atThreshold) {
+            const reason =
+              `zero-tool escalation (WI-41228): ${observation.streak} consecutive dispatched turns ` +
+              `recorded zero agent-authored tool calls (threshold=${observation.threshold}, ` +
+              `last_fire=${observation.fireToken})`;
+            // Pause FIRST so this fire cannot be re-armed below. Then reuse the existing terminal
+            // path for attributed fire history, ghost-await cancellation, deduped human escalation,
+            // and the loud terminal log. Cause-agnostic by design; no blind auto-respawn loop.
+            await autoPauseLoopRoutine(db, row.id, reason, 'loop-zero-tool-escalation');
+            await terminateDeadLoop(row, reason);
+            continue;
+          }
+        }
+      }
 
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's
       // pooled `prepare: false` connection rejects a Date bind param ("the string argument must

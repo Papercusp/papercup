@@ -12,7 +12,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
 import { parseUsageReset } from '@papercusp/papercusp-shared/agent';
-import { reconcileLoopRoutines, classifyLoopLifecycleTurn, defaultEscalateLifecycleDeath } from './reconcile-loop-routines';
+import {
+  reconcileLoopRoutines as reconcileLoopRoutinesImpl,
+  classifyLoopLifecycleTurn,
+  defaultEscalateLifecycleDeath,
+} from './reconcile-loop-routines';
 
 // EI-18668025239634541 recurrence guard: mocked so the test below can assert on the
 // `meta.subjectSignature` (conditionKey) `defaultEscalateLifecycleDeath` passes through —
@@ -28,7 +32,12 @@ import { openEscalation } from '../../agent-tools/coordination/escalations';
  *  re-arm — these tests pin it to "no breach" so the original re-arm assertions still hold). */
 const NEVER_BREACH_GUARD = vi.fn(async () => ({ breach: false }) as { breach: boolean; reason?: string });
 
-/** HERMETIC wrapper — do NOT call reconcileLoopRoutines bare. fakeSql intercepts the SQL,
+/** HERMETIC module-level wrapper. Legacy fakeSql seams do not implement sql.unsafe/sql.array,
+ *  so evidence defaults to unavailable; WI-41228 tests inject explicit counts. */
+const reconcileLoopRoutines = (o: NonNullable<Parameters<typeof reconcileLoopRoutinesImpl>[0]>) =>
+  reconcileLoopRoutinesImpl({ countAgentToolCallsInWindow: async () => null, ...o });
+
+/** HERMETIC wrapper — do NOT call reconcileLoopRoutinesImpl bare. fakeSql intercepts the SQL,
  *  but the DEFAULT recordFire/readFireState bind getOrgPg() — the LIVE dev database — so a
  *  bare call leaks fire-state writes into dev PG (the EI-7006 time-bomb flake, 2026-07-03).
  *  Explicit injections in `o` still win (spread order). */
@@ -1006,6 +1015,123 @@ describe('reconcileLoopRoutines — dead-owner terminal guard (WI-1399)', () => 
   });
 });
 
+describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI-41228)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+  const settledRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'rt-zero-tool',
+    target_owner_id: 'su-zero-tool',
+    interval_sec: 60,
+    parked: true,
+    is_cron: false,
+    install_slug: 'papercusp',
+    name: 'loop-su-zero-tool',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    lifecycle_completed_at: pgString(T0 + 5_000),
+    turn_journal_completed_at: null,
+    lifecycle_started_at: null,
+    presence_last_active_at: null,
+    last_assistant_text_after_fire: null,
+    turns_ingest_watermark: null,
+    ...overrides,
+  });
+
+  it('the Nth zero-tool dispatched fire pauses then terminates exactly once without re-arming', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const countAgentToolCallsInWindow = vi.fn(async () => 0);
+    const recordZeroToolFireObservation = vi.fn(async () => ({
+      counted: true,
+      streak: 3,
+      toolCalls: 0,
+      fireToken: new Date(T0).toISOString(),
+      threshold: 3,
+      atThreshold: true,
+    }));
+    const autoPauseLoopRoutine = vi.fn(async () => {});
+    const cancelInboxWake = vi.fn(async () => 1);
+    const escalateDeadLoop = vi.fn(async () => {});
+
+    const res = await reconcileLoopRoutines({
+      sql: fakeSql([settledRow()], updates),
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      countAgentToolCallsInWindow,
+      recordZeroToolFireObservation,
+      autoPauseLoopRoutine,
+      cancelInboxWake,
+      escalateDeadLoop,
+      zeroToolThreshold: 3,
+    });
+
+    expect(countAgentToolCallsInWindow).toHaveBeenCalledWith('su-zero-tool', T0, T0 + 5_000, expect.anything());
+    expect(recordZeroToolFireObservation).toHaveBeenCalledTimes(1);
+    expect(autoPauseLoopRoutine).toHaveBeenCalledWith(
+      expect.anything(),
+      'rt-zero-tool',
+      expect.stringContaining('3 consecutive dispatched turns'),
+      'loop-zero-tool-escalation',
+    );
+    expect(res.rearmed).toBe(0);
+    expect(res.terminated).toHaveLength(1);
+    expect(updates).toHaveLength(0);
+    expect(cancelInboxWake).toHaveBeenCalledTimes(1);
+    expect(escalateDeadLoop).toHaveBeenCalledTimes(1);
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-zero-tool', 'loop-terminal-unreachable', 'error');
+  });
+
+  it('a pre-threshold zero-tool fire keeps the existing healthy-settle outcome mapping', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const autoPauseLoopRoutine = vi.fn(async () => {});
+    const res = await reconcileLoopRoutines({
+      sql: fakeSql([settledRow()], updates),
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      countAgentToolCallsInWindow: vi.fn(async () => 0),
+      recordZeroToolFireObservation: vi.fn(async () => ({
+        counted: true,
+        streak: 2,
+        toolCalls: 0,
+        fireToken: new Date(T0).toISOString(),
+        threshold: 3,
+        atThreshold: false,
+      })),
+      autoPauseLoopRoutine,
+      zeroToolThreshold: 3,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(autoPauseLoopRoutine).not.toHaveBeenCalled();
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-zero-tool',
+      expect.stringContaining('lifecycle'),
+      'ok',
+    );
+  });
+
+  it('unavailable tool-call evidence fails open and preserves the existing re-arm', async () => {
+    const updates: unknown[][] = [];
+    const recordZeroToolFireObservation = vi.fn();
+    const res = await reconcileLoopRoutines({
+      sql: fakeSql([settledRow()], updates),
+      nowMs: T0 + 10_000,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+      countAgentToolCallsInWindow: vi.fn(async () => null),
+      recordZeroToolFireObservation,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(recordZeroToolFireObservation).not.toHaveBeenCalled();
+  });
+});
+
 describe('reconcileLoopRoutines — circuit-open fast path (EI-7006)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
@@ -1786,17 +1912,21 @@ describe('reconcileLoopRoutines — gate-backoff re-arm for a parked loop (WI-36
   it("records NO fire outcome — an 'ok' would ERASE the streak the backoff is computed from", async () => {
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
+    const countAgentToolCallsInWindow = vi.fn(async () => 0);
     await reconcile({
       sql: fakeSql([parkedRow()], updates),
       nowMs: T0 + 26_000,
       recordFire,
       readFireState: WITHHELD_STATE,
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      countAgentToolCallsInWindow,
     });
     // The asymmetry is load-bearing, not an oversight: this re-arm observed nothing about the
     // turn. 'ok' would reset consecutive_errors (the loop re-fires at once and reads as healthy);
     // 'error' would double-count a failure the fire path already recorded.
     expect(recordFire).not.toHaveBeenCalled();
+    // WI-41228: a withheld fire dispatched NO turn, so it must not feed the zero-tool streak.
+    expect(countAgentToolCallsInWindow).not.toHaveBeenCalled();
   });
 
   it('CONTROL — an ALLOWING gate re-arms nothing on this leg (proves the branch reads the verdict)', async () => {
