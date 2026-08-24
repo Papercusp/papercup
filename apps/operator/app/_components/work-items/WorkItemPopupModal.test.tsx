@@ -11,6 +11,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const { syncResults, syncLoading, syncCalls } = vi.hoisted(() => ({
   syncResults: {} as Record<string, unknown[]>,
@@ -34,6 +35,15 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+// WorkItemDetail renders URL-backed sections from DetailPanel, so the popup
+// test must provide the same nuqs adapter as the component-level suites.
+const renderPopup = (ui: Parameters<typeof render>[0]) =>
+  render(ui, {
+    wrapper: ({ children }) => (
+      <NuqsTestingAdapter searchParams="">{children}</NuqsTestingAdapter>
+    ),
+  });
+
 import WorkItemPopupModal from './WorkItemPopupModal';
 
 afterEach(() => {
@@ -45,14 +55,14 @@ afterEach(() => {
 
 describe('WorkItemPopupModal — open/closed', () => {
   it('renders nothing when id is null (closed)', () => {
-    render(<WorkItemPopupModal id={null} harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    renderPopup(<WorkItemPopupModal id={null} harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
     expect(screen.queryByTestId('wi-popup-body')).toBeNull();
   });
 });
 
 describe('WorkItemPopupModal — harness gating', () => {
   it('renders a "no harness context" empty state and never queries when harnessSlug is null', () => {
-    render(<WorkItemPopupModal id="WI-5952" harnessSlug={null} onSelect={() => {}} onClose={() => {}} />);
+    renderPopup(<WorkItemPopupModal id="WI-5952" harnessSlug={null} onSelect={() => {}} onClose={() => {}} />);
     expect(screen.getByText(/No harness context for WI-5952/)).toBeTruthy();
     const call = syncCalls.find((c) => c.queryName === 'workItems.detail');
     expect(call?.enabled).toBe(false);
@@ -62,13 +72,13 @@ describe('WorkItemPopupModal — harness gating', () => {
 describe('WorkItemPopupModal — loading / not-found / found', () => {
   it('shows a loading state while the query is in flight', () => {
     syncLoading.current = true;
-    render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    renderPopup(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
     expect(screen.getByText(/Loading WI-5952/)).toBeTruthy();
   });
 
   it('shows "no item found" when the query settles with no matching row', () => {
     syncResults['workItems.detail'] = [];
-    render(<WorkItemPopupModal id="WI-9999" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    renderPopup(<WorkItemPopupModal id="WI-9999" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
     expect(screen.getByText(/No item found for WI-9999/)).toBeTruthy();
   });
 
@@ -76,7 +86,7 @@ describe('WorkItemPopupModal — loading / not-found / found', () => {
     syncResults['workItems.detail'] = [
       { id: 'WI-5952', kind: 'task', family: 'issue', title: 'Build the popup', state: 'wip' },
     ];
-    render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    renderPopup(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
     const call = syncCalls.find((c) => c.queryName === 'workItems.detail');
     expect(call).toMatchObject({ enabled: true, args: { harnessSlug: 'papercusp', id: 'WI-5952' } });
   });
@@ -85,7 +95,7 @@ describe('WorkItemPopupModal — loading / not-found / found', () => {
     syncResults['workItems.detail'] = [
       { id: 'WI-5952', kind: 'task', family: 'issue', title: 'Build the popup', state: 'wip' },
     ];
-    render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
+    renderPopup(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={() => {}} />);
     expect(screen.getByText('WI-5952')).toBeTruthy();
     expect(screen.getByText('Build the popup')).toBeTruthy();
     // Inline Discuss is now the only popup-adjacent chat entry point. The
@@ -101,7 +111,7 @@ describe('WorkItemPopupModal — cross-link + close', () => {
       { id: 'F-100', kind: 'feature', family: 'feature', title: 'A feature', state: 'open' },
     ];
     const onSelect = vi.fn();
-    render(<WorkItemPopupModal id="F-100" harnessSlug="papercusp" onSelect={onSelect} onClose={() => {}} />);
+    renderPopup(<WorkItemPopupModal id="F-100" harnessSlug="papercusp" onSelect={onSelect} onClose={() => {}} />);
     fireEvent.click(screen.getByText(/Open feature detail/));
     expect(onSelect).toHaveBeenCalledWith('F-100');
   });
@@ -111,7 +121,7 @@ describe('WorkItemPopupModal — cross-link + close', () => {
       { id: 'WI-5952', kind: 'task', family: 'issue', title: 'Build the popup', state: 'wip' },
     ];
     const onClose = vi.fn();
-    render(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={onClose} />);
+    renderPopup(<WorkItemPopupModal id="WI-5952" harnessSlug="papercusp" onSelect={() => {}} onClose={onClose} />);
     fireEvent.click(screen.getByTestId('wi-popup-close'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
