@@ -40,6 +40,14 @@ JavaScript template literal**: V8 resolves it before `exec_command` starts, so a
 shell variable such as `${PAPERCUSP_WORKSPACE}` becomes a JavaScript
 `ReferenceError`. Keep that command in a normal JavaScript string, or escape the
 dollar sign as `\${...}` when a template literal is genuinely necessary.
+The same boundary bites REGEX metacharacters: a brace sentinel written as
+`'^\\\\{'` in JavaScript reaches ripgrep as `^\\\\{` (literal backslash plus a
+bare `{`), which it rejects with `repetition quantifier expects a valid decimal`.
+When matching LITERAL braces or similar sentinels, skip regex parsing entirely
+with fixed-string matching and DROP the anchors (`-F` treats `^` literally too):
+`rg -n -F '{'`. Or keep exactly ONE backslash inside a single-quoted shell
+literal (`rg -n -o '^\{'`); every layer between your JS source and rg's parser
+adds one phantom escape.
 
 ```bash
 ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")
