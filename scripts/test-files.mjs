@@ -169,6 +169,15 @@ const NON_WORKSPACE_VITEST_ROUTES = [
     cwd: 'libs/generic/template-kit',
     config: 'vitest.config.ts',
   },
+  // papercusp-app's composition check is the one non-fixture template suite owned by
+  // template-kit. Routing it through the repository-root config discovers the same check in
+  // the gitignored desktop sidecar mirror and executes both versions in one result.
+  {
+    prefix: 'templates/papercusp-app/',
+    pathPattern: /\/checks\/composition-integrity\.test\.[cm]?[jt]sx?$/,
+    cwd: 'libs/generic/template-kit',
+    config: 'vitest.config.ts',
+  },
 ];
 
 // papercusp-desktop is intentionally not a root npm workspace: it is the Tauri/Cargo desktop
