@@ -508,30 +508,6 @@ export default defineTool({
       };
     }
 
-    // An explicitly supplied empty harness is different from an omitted harness. The
-    // Codex `ptool` fallback used to expand an unset PAPERCUSP_HARNESS_SLUG into
-    // `--harness=""`; treating that value as omitted let the workspace-home fallback
-    // silently install the loop under an unrelated harness (EI-21104346635924603).
-    // Refuse the malformed explicit selector before reading prior loop state or any
-    // workspace-home fallback. Keep '*'/'all' valid: they are the documented
-    // workspace-global selectors and are resolved below.
-    if (args.harness !== undefined && args.harness.trim() === '') {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: 'empty_harness',
-              message:
-                'Refusing to arm: `harness` was supplied as an empty value. Omit `harness` to use the session/home-harness resolution, or pass a concrete harness slug such as `papercusp`.',
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
-
     const identity = resolveAgentIdentity(ctx);
     // WI-1471: honor an explicit owner override (mirrors loop:end/loop:status,
     // which already accept `ownerId` with no extra gate beyond this tool's own

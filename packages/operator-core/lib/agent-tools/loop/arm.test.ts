@@ -433,19 +433,19 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(b).toMatchObject({ ok: false, error: 'no_harness' });
   });
 
-  it('EI-21104346635924603: refuses an explicitly empty harness before unrelated workspace-home fallback', async () => {
+  it('EI-21355404648960524: treats an explicitly empty harness as omitted and resolves the workspace home', async () => {
+    homePotM.mockResolvedValueOnce('workspace-home');
+    mockReturnOnceTyped(potHomeM, 'workspace-home');
     const out = await tool.handler(
       { intervalSec: 120, goal: 'g', harness: '' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
     ) as Out;
     const b = body(out);
 
-    expect(b).toMatchObject({ ok: false, error: 'empty_harness' });
-    expect(b.message).toContain('Omit `harness`');
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'workspace-home' } });
+    expect(homePotM).toHaveBeenCalledWith('ws-1');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'workspace-home' }));
     expect(briefM).not.toHaveBeenCalled();
-    expect(priorLoopM).not.toHaveBeenCalled();
-    expect(homePotM).not.toHaveBeenCalled();
-    expect(materializeM).not.toHaveBeenCalled();
   });
 
   it('EI-20185529721601434: resolves a workspace-scoped wildcard session to its formal home pot', async () => {
