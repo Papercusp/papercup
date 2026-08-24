@@ -45,6 +45,10 @@ const readArgsSchema = z
       ),
     limit: z.number().int().min(1).max(200).optional().describe('Max turns (default 40 for a session read; exact ref reads default to 1, or 2×context+1).'),
   })
+  // `mode` and `query` belong to sessions:search. Keep this navigation tool
+  // closed at the source schema too, so stale callers fail with a useful
+  // unrecognized-key error before reaching the handler (EI-212937).
+  .strict()
   .superRefine((args, ctx) => {
     if (Boolean(args.ref) === Boolean(args.session)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass exactly one of `ref` or `session`' });
@@ -66,13 +70,13 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included). " +
+    "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included). Search-only `query` and `mode` arguments belong to sessions:search and are rejected here. " +
     "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {
     when:
       "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). Or read where a session left off; use order:'asc' for the opening turns.",
     notWhen:
-      'Finding WHERE something was said — sessions:search. Raw un-indexed files — dev:claude_session op=read (being absorbed here).',
+      'Finding WHERE something was said — sessions:search (which owns `query` and `mode`). Raw un-indexed files — dev:claude_session op=read (being absorbed here).',
     chaining: 'sessions:search result.ref → sessions:read { ref, context? }.',
     // EI-10882: the RESPONSE shape, stated up front. Arg schemas were published
     // but return shapes were not, so the only way to learn the shape was to call
