@@ -1021,6 +1021,22 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(written).not.toContain('- ✓ ');
     });
 
+    it('keeps a pending rerun VERIFIED when it supports an explicit non-admission claim', async () => {
+      const evidence = 'Stable C remains non-admitting; exact rerun was pending.';
+      const b = body(
+        await call({
+          did: 'checkpointed the non-admission evidence',
+          checks: [{ claim: 'Stable C remains non-admitting', recheck: 'repeat the exact rerun', verified: evidence }],
+        }),
+      );
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toBeUndefined();
+      const [, written] = setLoopCarryNote.mock.calls.at(-1) as [unknown, string];
+      expect(written).toContain('- ✓ ');
+      expect(written).toContain(evidence);
+      expect(written).not.toContain('- ⚠ ');
+    });
+
     it('keeps clean verification evidence as VERIFIED', async () => {
       const b = body(
         await call({
