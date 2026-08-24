@@ -1,0 +1,1035 @@
+/**
+ * cell-assessment-schema-and-falsifier-removal-2026-08-21 P-004 — ASSERT EVERY
+ * REGISTERED CELL'S ASSESSMENT IS REAL.
+ *
+ * Replaces `cell-falsifier-reality.test.ts`, and inherits its premise wholesale: the
+ * sibling declaration suite (`cell-registrations.test.ts`) compares a DECLARATION TO
+ * ANOTHER DECLARATION and never calls a resolver, so it is satisfied by a spec whose
+ * `assessment.path` names something NO RESOLVER PRODUCES. `validateCellSpec` cannot
+ * close that gap either — it is deliberately domain-free and only normalises strings.
+ *
+ * ── WHAT THIS FILE ADDS OVER THE FALSIFIER SUITE IT REPLACES ───────────────────
+ *
+ * A falsifier could only ever be checked for EXISTENCE: it named a field and some
+ * prose, and "did the field arrive" was the whole of what a machine could ask. An
+ * assessment declares a CLOSED CODE MAP, which makes three further questions
+ * decidable — and all three are failure modes the old suite structurally could not
+ * see:
+ *
+ *   1. PRODUCIBILITY — can every declared code actually be emitted? A code declared
+ *      but unreachable is a promise the resolver cannot keep, and the reader who
+ *      branches on it waits forever for a state that never arrives.
+ *   2. CLOSURE — can the resolver emit a code the spec does NOT declare? That read
+ *      is refused at runtime (`assessmentFrom` downgrades it to `unavailable`), so
+ *      the drift shows up as a cell that silently stops answering.
+ *   3. CONSTANCY / SIGN — does the assessment actually MOVE with its inputs, in the
+ *      declared direction? A constant assessment distinguishes nothing, and an
+ *      inverted one is worse than none: `git.mainBehindStaging` shipped exactly that
+ *      bug (EI-20046248345042252) and answered its own name backwards for weeks,
+ *      with the WRONG answer as the STANDING one rather than an edge case.
+ *
+ * ── THE PAYLOAD THESE PATHS ARE WALKED AGAINST ─────────────────────────────────
+ *
+ * NOT the resolver function's return value — the RESULT OF THE POLL TOOL named in
+ * `changeSignal.tool`, because that is what `readCell` dispatches. Confusing the two
+ * produces a confident false alarm: `resolveOwnerGoal()` returns no `goalRef` and no
+ * `goalUnknown` anywhere, so probing the raw resolver reports `agent.goal`'s declared
+ * paths missing. They are not missing; `coord:goal` hoists them flat precisely so the
+ * goal-less case reads as null instead of drift.
+ *
+ * ⚠ AND IT USES THE SHARED `pathExists` FROM `state-plane-stamp` — the SAME function
+ * `assessmentFrom` calls. The old suite carried its own copy, which meant this guard
+ * could disagree with the read it was guarding. Importing the real one makes "the
+ * test says the path is there" and "the read can find the path" the same claim.
+ */
+
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import type { CellSpec } from './cell-registry';
+import { BUILTIN_CELLS } from './cell-registrations';
+import { pathExists } from './state-plane-stamp';
+import { CELL_UNKNOWN_CODES } from './cell-contract';
+import {
+  gitPipelinePosition,
+  assessPipelinePosition,
+  assessGateVerdict,
+  assessGateCandidate,
+  assessDeployedSha,
+  assessMainBehindStaging,
+} from './git-pipeline-position';
+import { assessGateOwnership } from './coord/gate-ownership';
+// ⚠ The REAL assessor, imported past the module mock below (which spreads the actual
+// module for exactly this reason): it is the SUBJECT of the goal control rows, and a
+// stubbed one would make every row assert against the mock instead of the code.
+import { assessAgentGoal } from './agent-tools/coordination/agent-goal-sources';
+import { assessHostMemoryPressure } from './agent-tools/state/host-memory';
+import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './agent-tools/testing/coverage';
+import hostMemoryPressureTool from './agent-tools/state/host-memory';
+import coverageTool from './agent-tools/testing/coverage';
+
+/**
+ * The no-real-PG rail's DOCUMENTED opt-out, taken for the same reason the falsifier
+ * suite took it (EI-19316737896654304): this file's entire premise is that declared
+ * paths are walked against a payload THIS BOX'S LIVE RESOLVER actually produced.
+ * Renaming to `*.integration.test.ts` would build against a throwaway testcontainer
+ * whose empty gate/deploy state produces a differently-shaped payload — silently
+ * converting a reality check into a fixture check, which is the class of guard this
+ * file exists to replace. Everything here asserts payload SHAPE and pivots off values
+ * read from the same live run, so no live row's contents can make it pass or fail.
+ */
+let forbidRealPgBefore: string | undefined;
+beforeAll(() => {
+  forbidRealPgBefore = process.env.PAPERCUSP_FORBID_REAL_PG;
+  delete process.env.PAPERCUSP_FORBID_REAL_PG;
+});
+afterAll(() => {
+  if (forbidRealPgBefore === undefined) delete process.env.PAPERCUSP_FORBID_REAL_PG;
+  else process.env.PAPERCUSP_FORBID_REAL_PG = forbidRealPgBefore;
+});
+
+/** Every path a cell's ASSESSMENT declares into its resolver's payload. */
+function assessmentPaths(spec: CellSpec): Array<{ label: string; path: string }> {
+  const a = spec.assessment;
+  if (!a) return [];
+  return [
+    { label: 'assessment.path', path: a.path },
+    ...a.evidence.map((path, i) => ({ label: `assessment.evidence[${i}]`, path })),
+  ];
+}
+
+/**
+ * THE PREDICATE every live check below shares — extracted so it can be FALSIFIED.
+ *
+ * A guard that has never failed is a guard nobody has tested, and this file passed
+ * whole on its first run. Rather than mutate the shared tree to find out (a probe that
+ * git-sync can commit mid-run), the controls at the bottom of this file feed this
+ * function deliberately-broken specs against a REAL payload and assert it names the
+ * break — permanently, on every future run, instead of once today.
+ */
+function missingAssessmentPaths(spec: CellSpec, payload: unknown): string[] {
+  return assessmentPaths(spec)
+    .filter(({ path }) => !pathExists(payload, path).exists)
+    .map(({ path }) => path);
+}
+
+/** Same spec with ONE declared path replaced by a name no resolver produces. */
+function withBrokenPath(spec: CellSpec, which: 'assessment.path' | 'evidence'): CellSpec {
+  const a = spec.assessment!;
+  return {
+    ...spec,
+    assessment:
+      which === 'assessment.path'
+        ? { ...a, path: `${a.path}__NO_SUCH_FIELD` }
+        : { ...a, evidence: [`${a.evidence[0]}__NO_SUCH_FIELD`, ...a.evidence.slice(1)] },
+  };
+}
+
+const PIPELINE_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'dev:pipeline_position',
+);
+const GOAL_CELLS = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'coord:goal');
+const HOST_MEMORY_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'host:memory_pressure',
+);
+const COVERAGE_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'testing:coverage',
+);
+
+async function livePipelinePayload(path?: string) {
+  return gitPipelinePosition(path === undefined ? {} : { path });
+}
+
+/** `limit: 1` — the ROW LIST is irrelevant to a path walk, and the aggregates these
+ *  paths read are computed in SQL over the whole population regardless. */
+async function liveCoveragePayload(): Promise<unknown> {
+  // `.data` — the handler returns a `{ data }` envelope that `dispatchReadOnlyTool`
+  // unwraps, and THAT unwrapped object is what readCell walks. Walking the envelope
+  // would report every declared path missing at its first segment.
+  const result = await (coverageTool as unknown as { handler: (args: unknown) => Promise<{ data: unknown }> }).handler({
+    limit: 1,
+  });
+  return result.data;
+}
+
+async function liveHostMemoryPayload(): Promise<unknown> {
+  const result = await (
+    hostMemoryPressureTool as unknown as {
+      handler: (args: unknown, context: unknown) => Promise<{ content: Array<{ type: string; text: string }> }>;
+    }
+  ).handler({}, {});
+  return JSON.parse(result.content[0].text);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * THE PERMANENT SYNTHETIC CONTROLS.
+ *
+ * One table per cell, driving the cell's REAL pure assessor. Each row states the
+ * exact code that input must produce, so the table proves BOTH directions at once:
+ * every declared code is reachable (producibility), and nothing outside the declared
+ * set is emitted (closure).
+ *
+ * ⚠ THE ROWS ASSERT AN EXACT CODE, NEVER MERELY "some code". That is what makes this
+ * a sign detector rather than a coverage checklist — an inverted comparison keeps
+ * producing the same SET of codes while mapping them to the wrong inputs, so a table
+ * asserting only reachability would stay green through exactly the bug that shipped
+ * on `git.mainBehindStaging`.
+ *
+ * `null` rows are the unavailable branch, and they are not filler: each one is a
+ * state the resolver must REFUSE to code, and refusing is what keeps an apparatus
+ * failure from being reported as a finding about the subject.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+type Control = { readonly label: string; readonly expect: string | null };
+
+const LADDER = (committedLocal: boolean, onStaging: boolean, inMain: boolean, deployed: boolean) => ({
+  committedLocal,
+  onStaging,
+  inMain,
+  deployed,
+});
+const PIPE = (over: Partial<Parameters<typeof assessPipelinePosition>[0]>) =>
+  assessPipelinePosition({
+    targetSha: 'abc1234',
+    dirtyUncommitted: false,
+    positions: LADDER(true, true, true, true),
+    positionsUnknown: [],
+    positionsNewerCommit: [],
+    servingStartedSinceCodeChange: true,
+    ...over,
+  });
+
+const GOALOF = (agreement: string, competing: readonly string[] = []) =>
+  ({
+    ref: 'WI-1',
+    source: 'work-item',
+    agreement,
+    competing,
+    corroboratedBy: [],
+    declaredAt: '2026-08-24T00:00:00.000Z',
+  }) as never;
+
+const CONTROLS: Record<string, readonly Control[]> = {
+  'git.pipelinePosition': [
+    { label: 'deployed + process started after the code', expect: PIPE({}) },
+    { label: 'deployed but the process predates the code', expect: PIPE({ servingStartedSinceCodeChange: false }) },
+    {
+      label: 'dirty working tree, nothing committed',
+      expect: PIPE({ targetSha: null, dirtyUncommitted: true, positions: LADDER(false, false, false, false) }),
+    },
+    { label: 'committed, not pushed', expect: PIPE({ positions: LADDER(true, false, false, false) }) },
+    { label: 'on staging, not promoted', expect: PIPE({ positions: LADDER(true, true, false, false) }) },
+    { label: 'in main, not deployed', expect: PIPE({ positions: LADDER(true, true, true, false) }) },
+    { label: 'an unreadable git leg refuses a code', expect: PIPE({ positionsUnknown: ['onStaging'] }) },
+    {
+      label: 'a broken ladder (deployed but not in main) refuses a code',
+      expect: PIPE({ positions: LADDER(true, true, false, true) }),
+    },
+    { label: 'an unprobeable process refuses a code', expect: PIPE({ servingStartedSinceCodeChange: null }) },
+  ],
+  'gate.greenCheckpoint.verdict': [
+    {
+      label: 'a run ended with no verdict',
+      expect: assessGateVerdict({
+        inconclusive: { status: 'cancelled' },
+        consecutiveReds: 9,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: false,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'reds, judged against a superseded candidate',
+      expect: assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 3,
+        verdictStale: true,
+        fireStale: false,
+        mainBehindStaging: true,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'reds about the current candidate',
+      expect: assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 3,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: true,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'zero reds because the gate never fired',
+      expect: assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 0,
+        verdictStale: false,
+        fireStale: true,
+        mainBehindStaging: true,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'green, with the normal staging buffer',
+      expect: assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 0,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: true,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'green and level with staging',
+      expect: assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 0,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: false,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'an unmeasured red counter refuses a code',
+      expect: assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 0,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: false,
+        verdictUnknownLegs: ['gate.consecutiveReds'],
+      }),
+    },
+  ],
+  'gate.greenCheckpoint.candidate': [
+    { label: 'no run in flight', expect: assessGateCandidate({ judgingSha: null, verdictUnknownLegs: [] }) },
+    {
+      label: 'a candidate read from a non-authoritative probe',
+      expect: assessGateCandidate({ judgingSha: 'abc', judgingShaSource: 'run-probe', verdictUnknownLegs: [] }),
+    },
+    {
+      label: 'a marker-backed candidate containing this path',
+      expect: assessGateCandidate({
+        judgingSha: 'abc',
+        judgingShaSource: 'retriage-marker',
+        judgingContainsPath: true,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'a marker-backed candidate NOT containing this path',
+      expect: assessGateCandidate({
+        judgingSha: 'abc',
+        judgingShaSource: 'retriage-marker',
+        judgingContainsPath: false,
+        verdictUnknownLegs: [],
+      }),
+    },
+    {
+      label: 'an unresolved containment verdict refuses a code',
+      expect: assessGateCandidate({
+        judgingSha: 'abc',
+        judgingShaSource: 'retriage-marker',
+        judgingContainsPath: null,
+        verdictUnknownLegs: [],
+      }),
+    },
+  ],
+  'gate.greenCheckpoint.ownership': [
+    {
+      label: 'two work-items claim the condition',
+      expect: assessGateOwnership({ claimState: 'held', holderSessionState: 'live', duplicates: ['WI-1', 'WI-2'] }),
+    },
+    {
+      label: 'no owning object exists',
+      expect: assessGateOwnership({ claimState: 'no-object', holderSessionState: null, duplicates: [] }),
+    },
+    {
+      label: 'an owning item nobody holds',
+      expect: assessGateOwnership({ claimState: 'claimable', holderSessionState: null, duplicates: [] }),
+    },
+    {
+      label: 'the lease lapsed',
+      expect: assessGateOwnership({ claimState: 'lease-expired', holderSessionState: null, duplicates: [] }),
+    },
+    {
+      label: 'held by a live session',
+      expect: assessGateOwnership({ claimState: 'held', holderSessionState: 'live', duplicates: [] }),
+    },
+    /**
+     * D-018's sign-flip, pinned as its own row. `recorded` is authoritatively ALIVE
+     * per the session log — the verdict helper that shipped in P-005 counted it as a
+     * DEAD holder and therefore reported live holders as abandoned claims. A table
+     * that only exercised `live` would pass through that bug unchanged.
+     */
+    {
+      label: 'held by a `recorded` session — ALIVE, not abandoned (D-018)',
+      expect: assessGateOwnership({ claimState: 'held', holderSessionState: 'recorded', duplicates: [] }),
+    },
+    {
+      label: 'held by an ambiguous (draining) session',
+      expect: assessGateOwnership({ claimState: 'held', holderSessionState: 'draining', duplicates: [] }),
+    },
+    {
+      label: 'held by a session the oracle confirms ended',
+      expect: assessGateOwnership({ claimState: 'held', holderSessionState: 'ended', duplicates: [] }),
+    },
+    {
+      label: 'an unreadable claim store refuses a code',
+      expect: assessGateOwnership({ claimState: null, holderSessionState: 'live', duplicates: [] }),
+    },
+  ],
+  'deploy.3070.sha': [
+    {
+      label: 'a sha is deployed and the process started after it',
+      expect: assessDeployedSha({ deployedSha: 'abc', servingStartedSinceCodeChange: true, verdictUnknownLegs: [] }),
+    },
+    {
+      label: 'a sha is deployed but the process predates it',
+      expect: assessDeployedSha({ deployedSha: 'abc', servingStartedSinceCodeChange: false, verdictUnknownLegs: [] }),
+    },
+    {
+      label: 'the serving process could not be probed',
+      expect: assessDeployedSha({ deployedSha: 'abc', servingStartedSinceCodeChange: null, verdictUnknownLegs: [] }),
+    },
+    /**
+     * ⚠ A null sha is a FAILED READ of the release checkout's HEAD, never "nothing is
+     * deployed" — the inference the resolver used to make and P-007 corrected.
+     */
+    {
+      label: 'an unreadable release HEAD refuses a code (it is NOT "nothing deployed")',
+      expect: assessDeployedSha({ deployedSha: null, servingStartedSinceCodeChange: true, verdictUnknownLegs: [] }),
+    },
+  ],
+  'git.mainBehindStaging': [
+    {
+      label: 'main is level with staging',
+      expect: assessMainBehindStaging({ mainBehindStaging: false, fireStale: false, verdictUnknownLegs: [] }),
+    },
+    {
+      label: 'behind, gate still firing — the normal steady state',
+      expect: assessMainBehindStaging({ mainBehindStaging: true, fireStale: false, verdictUnknownLegs: [] }),
+    },
+    {
+      label: 'behind AND the gate is not firing',
+      expect: assessMainBehindStaging({ mainBehindStaging: true, fireStale: true, verdictUnknownLegs: [] }),
+    },
+    {
+      label: 'an unresolved branch tip refuses a code',
+      expect: assessMainBehindStaging({ mainBehindStaging: null, fireStale: false, verdictUnknownLegs: [] }),
+    },
+  ],
+  'host.memoryPressure': [
+    {
+      label: 'PSI at the critical threshold',
+      expect: assessHostMemoryPressure({ pressure: 'crit', stale: false, unknownCount: 0, memFreePct: 80 }),
+    },
+    {
+      label: 'PSI at the warning threshold',
+      expect: assessHostMemoryPressure({ pressure: 'warn', stale: false, unknownCount: 0, memFreePct: 80 }),
+    },
+    {
+      label: 'reclaim stable, free capacity below the warning threshold',
+      expect: assessHostMemoryPressure({ pressure: 'ok', stale: false, unknownCount: 0, memFreePct: 5 }),
+    },
+    {
+      label: 'reclaim stable with ample free capacity',
+      expect: assessHostMemoryPressure({ pressure: 'ok', stale: false, unknownCount: 0, memFreePct: 80 }),
+    },
+    {
+      label: 'a stale capture refuses a code',
+      expect: assessHostMemoryPressure({ pressure: 'ok', stale: true, unknownCount: 0, memFreePct: 80 }),
+    },
+    {
+      label: 'a missing PSI leg refuses a code',
+      expect: assessHostMemoryPressure({ pressure: 'ok', stale: false, unknownCount: 1, memFreePct: 80 }),
+    },
+  ],
+  'agent.goal': [
+    { label: 'the agent holds nothing', expect: assessAgentGoal(null, []) },
+    { label: 'a corroborated ref', expect: assessAgentGoal(GOALOF('corroborated'), []) },
+    { label: 'a ref with a single source', expect: assessAgentGoal(GOALOF('sole'), []) },
+    { label: 'sources disagree', expect: assessAgentGoal(GOALOF('divergent'), []) },
+    /**
+     * Competing claims OUTRANK a corroborating edge — the measured case (3 of 19
+     * holders held two work-items at once) that the precedence rule alone cannot see.
+     */
+    {
+      label: 'corroborated BUT competing claims exist — competing wins',
+      expect: assessAgentGoal(GOALOF('corroborated', ['WI-2']), []),
+    },
+    { label: 'a failed resolver leg refuses a code', expect: assessAgentGoal(GOALOF('corroborated'), [{}]) },
+  ],
+  'testing.census.population': [
+    {
+      label: 'no provider was ever registered',
+      expect: assessTestingCensusPopulation({ surfaces: 0, providersRegistered: 0, lastCensusAt: null }),
+    },
+    {
+      label: 'providers registered, census never ran',
+      expect: assessTestingCensusPopulation({ surfaces: 0, providersRegistered: 1, lastCensusAt: null }),
+    },
+    {
+      label: 'the census ran and honestly found nothing',
+      expect: assessTestingCensusPopulation({
+        surfaces: 0,
+        providersRegistered: 1,
+        lastCensusAt: '2026-08-24T00:00:00.000Z',
+      }),
+    },
+    {
+      label: 'a non-empty population',
+      expect: assessTestingCensusPopulation({ surfaces: 12, providersRegistered: 1, lastCensusAt: null }),
+    },
+  ],
+  'testing.coverage.floor': [
+    {
+      label: 'no denominator — the census enumerated zero surfaces',
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0 }),
+    },
+    {
+      label: 'unwaived gaps below the floor',
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2 }),
+    },
+    {
+      label: 'gaps exist but every one is waived',
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }),
+    },
+    {
+      label: 'every surface meets the floor',
+      expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0 }),
+    },
+  ],
+};
+
+/**
+ * The code each control row is EXPECTED to produce, kept beside the table rather than
+ * inside it so a reviewer can read the mapping without evaluating calls. Index-aligned
+ * to CONTROLS; the partition test below proves the alignment rather than assuming it.
+ */
+const EXPECTED: Record<string, readonly (string | null)[]> = {
+  'git.pipelinePosition': [
+    'live',
+    'restart-required',
+    'uncommitted',
+    'awaiting-push',
+    'awaiting-gate',
+    'awaiting-deploy',
+    null,
+    null,
+    null,
+  ],
+  'gate.greenCheckpoint.verdict': [
+    'inconclusive',
+    'red-stale',
+    'red-current',
+    'not-firing',
+    'passing-buffered',
+    'passing-current',
+    null,
+  ],
+  'gate.greenCheckpoint.candidate': [
+    'no-active-run',
+    'inferred-candidate',
+    'judging-current-path',
+    'judging-without-current-path',
+    null,
+  ],
+  'gate.greenCheckpoint.ownership': [
+    'duplicate-owners',
+    'unowned',
+    'claimable',
+    'lease-expired',
+    'held-live',
+    'held-live',
+    'held-needs-confirmation',
+    'held-by-ended-session',
+    null,
+  ],
+  'deploy.3070.sha': ['executing', 'restart-required', 'process-unverified', null],
+  'git.mainBehindStaging': ['caught-up', 'normal-buffer', 'gate-stalled', null],
+  'host.memoryPressure': ['critical', 'warning', 'stable-low-free', 'stable', null, null],
+  'agent.goal': ['nothing-held', 'corroborated', 'sole', 'divergent', 'divergent', null],
+  'testing.census.population': ['no-providers', 'census-not-run', 'empty-measured', 'populated'],
+  'testing.coverage.floor': ['no-population', 'below-floor', 'measured-with-waivers', 'meets-floor'],
+};
+
+describe('P-004: the ten-of-ten partition — every built-in cell is assessed, with no residue', () => {
+  /**
+   * NON-VACUITY, and it is load-bearing rather than ceremony. P-009 found that every
+   * scanning guard on this plane mutation-tested its predicate while asserting NOTHING
+   * about the size of its corpus — so a filter that silently matched nothing left the
+   * suite green with zero cells examined. The plan item demands an EXPLICIT ten-of-ten
+   * partition with zero residue, and this is it.
+   */
+  it('registers exactly ten cells and routes every one to a resolver family', () => {
+    expect(BUILTIN_CELLS).toHaveLength(10);
+    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length).toBe(
+      BUILTIN_CELLS.length,
+    );
+    expect(PIPELINE_CELLS).toHaveLength(6);
+    expect(GOAL_CELLS).toHaveLength(1);
+    expect(HOST_MEMORY_CELLS).toHaveLength(1);
+    expect(COVERAGE_CELLS).toHaveLength(2);
+  });
+
+  /**
+   * ⚠ THE RESIDUE CHECK, and it is what makes P-006 safe to attempt. `CellSpec.assessment`
+   * is OPTIONAL until the cutover (D-011 rule 1), so a cell that never migrated would
+   * register happily and answer `unavailable` forever — indistinguishable, to a reader,
+   * from a cell that honestly could not assess itself. This is the only assertion that
+   * separates "not migrated" from "measured and unavailable".
+   */
+  it('leaves NO cell without an assessment — a value-bearing cell without one is unfinished', () => {
+    const missing = BUILTIN_CELLS.filter((c) => c.assessment === undefined).map((c) => c.cell);
+    expect(missing, `these cells still carry no assessment declaration: ${missing.join(', ') || '(none)'}`).toEqual([]);
+  });
+
+  /** Every cell has a control table, and every table is aligned with its expectations. */
+  it('gives every cell a permanent synthetic control table', () => {
+    for (const spec of BUILTIN_CELLS) {
+      const rows = CONTROLS[spec.cell];
+      const expected = EXPECTED[spec.cell];
+      expect(rows, `${spec.cell} has no control table — its codes are unproven`).toBeDefined();
+      expect(expected, `${spec.cell} has no expectation list`).toBeDefined();
+      expect(rows!.length, `${spec.cell}: control rows and expectations are misaligned`).toBe(expected!.length);
+      expect(rows!.length, `${spec.cell}: a control table needs more than one row to show movement`).toBeGreaterThan(1);
+    }
+  });
+});
+
+describe('P-004: every declared assessment path exists in a LIVE resolver payload', () => {
+  it.each(PIPELINE_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment + evidence paths arrive from dev:pipeline_position',
+    async (_id, spec) => {
+      // A `parameter`-relative cell is dispatched WITH its subject; a `global` one with
+      // `{}`. Reproducing that split matters — the per-path legs are unmeasured on a
+      // no-arg call.
+      const payload = await livePipelinePayload(
+        spec.callerRelativity.kind === 'parameter' ? 'packages/operator-core/lib/cell-registrations.ts' : undefined,
+      );
+      for (const { label, path } of assessmentPaths(spec)) {
+        const r = pathExists(payload, path);
+        expect(
+          r.exists,
+          `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload (missing at ` +
+            `"${r.missingAt}"). assessmentFrom DOWNGRADES the whole assessment to \`unavailable\` when any ` +
+            `declared evidence path does not arrive, so this cell would stop answering — silently, and on the ` +
+            `ordinary path. Either the resolver's shape changed or the declaration has a typo.`,
+        ).toBe(true);
+      }
+    },
+    20_000,
+  );
+
+  it.each(COVERAGE_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment + evidence paths arrive from the real testing:coverage handler',
+    async (_id, spec) => {
+      const payload = await liveCoveragePayload();
+      for (const { label, path } of assessmentPaths(spec)) {
+        const r = pathExists(payload, path);
+        expect(
+          r.exists,
+          `${spec.cell}: declared ${label} "${path}" is ABSENT (missing at "${r.missingAt}"). This asserts ` +
+            `PRESENCE, not a non-null value: coverage.pct is null over an empty census by design.`,
+        ).toBe(true);
+      }
+    },
+    20_000,
+  );
+
+  it.each(HOST_MEMORY_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment + evidence paths arrive from the real host:memory_pressure handler',
+    async (_id, spec) => {
+      const payload = await liveHostMemoryPayload();
+      for (const { label, path } of assessmentPaths(spec)) {
+        const r = pathExists(payload, path);
+        expect(r.exists, `${spec.cell}: declared ${label} "${path}" is ABSENT (missing at "${r.missingAt}").`).toBe(
+          true,
+        );
+      }
+    },
+    20_000,
+  );
+
+  /**
+   * ⚠ THE LIVE CODE MUST BE A DECLARED ONE. This is drift in the direction the READ
+   * refuses rather than the one it reports: `assessmentFrom` will not pass an
+   * undeclared code through, so a resolver that ships a new verdict without adding it
+   * to the registration makes the cell answer `unavailable` — a cell that stops
+   * working, not one that answers wrongly. Nothing else in the suite would notice.
+   */
+  it.each(PIPELINE_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — the code the live resolver actually emitted is DECLARED',
+    async (_id, spec) => {
+      const payload = await livePipelinePayload(
+        spec.callerRelativity.kind === 'parameter' ? 'packages/operator-core/lib/cell-registrations.ts' : undefined,
+      );
+      const live = pathExists(payload, spec.assessment!.path);
+      // A null is legitimate — the resolver refusing to code an unresolved state.
+      if (typeof live.value !== 'string') return;
+      expect(
+        Object.keys(spec.assessment!.codes),
+        `${spec.cell}: the live resolver emitted "${live.value}", which the registration does not declare. ` +
+          `readCell would refuse it and this cell would answer \`unavailable\`.`,
+      ).toContain(live.value);
+    },
+    20_000,
+  );
+});
+
+describe('P-004: every declared code is PRODUCIBLE, and nothing outside the declaration is emitted', () => {
+  /**
+   * The core claim of this file. Driven against each cell's REAL pure assessor, so a
+   * declaration and a resolver cannot drift apart without one of these rows changing.
+   */
+  it.each(BUILTIN_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — each control input produces exactly the code the truth table names',
+    (_id, spec) => {
+      const rows = CONTROLS[spec.cell]!;
+      const expected = EXPECTED[spec.cell]!;
+      rows.forEach((row, i) => {
+        expect(
+          row.expect,
+          `${spec.cell}: control "${row.label}" produced ${JSON.stringify(row.expect)} but the P-001 truth ` +
+            `table says ${JSON.stringify(expected[i])}. Either the assessor's logic moved or its comparison ` +
+            `was inverted — this row exists to make that impossible to ship silently.`,
+        ).toBe(expected[i]);
+      });
+    },
+  );
+
+  it.each(BUILTIN_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — every DECLARED code is reachable from a real input',
+    (_id, spec) => {
+      const produced = new Set((EXPECTED[spec.cell] ?? []).filter((c): c is string => typeof c === 'string'));
+      const declared = Object.keys(spec.assessment!.codes);
+      const unreachable = declared.filter((c) => !produced.has(c));
+      expect(
+        unreachable,
+        `${spec.cell}: declared code(s) ${unreachable.join(', ')} are produced by NO control input. A code a ` +
+          `reader can branch on but the resolver can never emit is a promise it cannot keep.`,
+      ).toEqual([]);
+    },
+  );
+
+  it.each(BUILTIN_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — no control input produces a code the registration does not declare',
+    (_id, spec) => {
+      const declared = new Set(Object.keys(spec.assessment!.codes));
+      const undeclared = (EXPECTED[spec.cell] ?? []).filter(
+        (c): c is string => typeof c === 'string' && !declared.has(c),
+      );
+      expect(
+        [...new Set(undeclared)],
+        `${spec.cell}: the assessor can emit code(s) the registration does not declare. readCell refuses an ` +
+          `undeclared code, so the cell would answer \`unavailable\` instead of reporting them.`,
+      ).toEqual([]);
+    },
+  );
+
+  /**
+   * CLOSURE AGAINST THE READ-HEALTH VOCABULARY. D-008 keeps domain meaning and read
+   * health as separate vocabularies so an apparatus failure can never masquerade as a
+   * finding about the subject. The registry enforces this at registration — and this
+   * asserts it against the codes the assessors actually PRODUCE, which is where the
+   * collision was hiding: `testing.coverage.floor` emitted `not-measured`, a
+   * CellUnknownCode, until D-012 renamed it `no-population`.
+   */
+  it.each(BUILTIN_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — no produced code collides with the read-health vocabulary',
+    (_id, spec) => {
+      const collisions = (EXPECTED[spec.cell] ?? []).filter(
+        (c): c is string => typeof c === 'string' && (CELL_UNKNOWN_CODES as readonly string[]).includes(c),
+      );
+      expect(
+        [...new Set(collisions)],
+        `${spec.cell}: produces ${collisions.join(', ')}, which is ALSO a CellUnknownCode. "the apparatus ` +
+          `failed" and "a verdict about the subject" would become one token.`,
+      ).toEqual([]);
+    },
+  );
+});
+
+describe('P-004: assessments MOVE with their inputs, in the declared direction', () => {
+  /**
+   * THE CONSTANCY DETECTOR. An assessment that answers the same code for every input
+   * distinguishes nothing, and it is the failure a path-existence check cannot see:
+   * the path is there, the code is a valid declared string, and the cell is useless.
+   */
+  it.each(BUILTIN_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — is not constant across its control inputs',
+    (_id, spec) => {
+      const codes = new Set((EXPECTED[spec.cell] ?? []).filter((c): c is string => typeof c === 'string'));
+      expect(
+        codes.size,
+        `${spec.cell}: every control input produced the same code. A constant assessment carries no ` +
+          `information — it is a field that always agrees with itself.`,
+      ).toBeGreaterThan(1);
+    },
+  );
+
+  /**
+   * THE SIGN DETECTOR, stated as OPPOSING PAIRS.
+   *
+   * Each pair holds every input fixed but one — the field that DECIDES between two
+   * codes — and names both outcomes. An inverted comparison keeps emitting the same
+   * SET of codes (so a reachability check stays green) while attaching them to the
+   * wrong inputs, which is precisely the shape of the bug `git.mainBehindStaging`
+   * shipped: the cell answered its own name backwards, and because the normal steady
+   * state is `behind`, the WRONG answer was the standing one.
+   */
+  const PAIRS: ReadonlyArray<readonly [string, string, string, string, string]> = [
+    // [cell, decisive field, code when the field is "positive", code when negated, note]
+    [
+      'git.pipelinePosition',
+      'serving.startedSinceCodeChange',
+      PIPE({ servingStartedSinceCodeChange: true }) ?? '',
+      PIPE({ servingStartedSinceCodeChange: false }) ?? '',
+      'live vs restart-required',
+    ],
+    [
+      'gate.greenCheckpoint.verdict',
+      'gate.verdictStale',
+      assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 3,
+        verdictStale: true,
+        fireStale: false,
+        mainBehindStaging: false,
+        verdictUnknownLegs: [],
+      }) ?? '',
+      assessGateVerdict({
+        inconclusive: null,
+        consecutiveReds: 3,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: false,
+        verdictUnknownLegs: [],
+      }) ?? '',
+      'a stale red must not read as a current one',
+    ],
+    [
+      'gate.greenCheckpoint.candidate',
+      'changeInCandidate.judgingContainsPath',
+      assessGateCandidate({
+        judgingSha: 'abc',
+        judgingShaSource: 'retriage-marker',
+        judgingContainsPath: true,
+        verdictUnknownLegs: [],
+      }) ?? '',
+      assessGateCandidate({
+        judgingSha: 'abc',
+        judgingShaSource: 'retriage-marker',
+        judgingContainsPath: false,
+        verdictUnknownLegs: [],
+      }) ?? '',
+      'is the gate judging MY change',
+    ],
+    [
+      'gate.greenCheckpoint.ownership',
+      'gate.ownership.holderSessionState',
+      assessGateOwnership({ claimState: 'held', holderSessionState: 'live', duplicates: [] }) ?? '',
+      assessGateOwnership({ claimState: 'held', holderSessionState: 'ended', duplicates: [] }) ?? '',
+      'a dead holder must not read as live ownership',
+    ],
+    [
+      'deploy.3070.sha',
+      'serving.startedSinceCodeChange',
+      assessDeployedSha({ deployedSha: 'abc', servingStartedSinceCodeChange: true, verdictUnknownLegs: [] }) ?? '',
+      assessDeployedSha({ deployedSha: 'abc', servingStartedSinceCodeChange: false, verdictUnknownLegs: [] }) ?? '',
+      'executing vs restart-required',
+    ],
+    [
+      'git.mainBehindStaging',
+      'gate.fireStale',
+      assessMainBehindStaging({ mainBehindStaging: true, fireStale: true, verdictUnknownLegs: [] }) ?? '',
+      assessMainBehindStaging({ mainBehindStaging: true, fireStale: false, verdictUnknownLegs: [] }) ?? '',
+      'THE polarity bug this detector exists for (EI-20046248345042252)',
+    ],
+    [
+      'host.memoryPressure',
+      'host.memFreePct',
+      assessHostMemoryPressure({ pressure: 'ok', stale: false, unknownCount: 0, memFreePct: 5 }) ?? '',
+      assessHostMemoryPressure({ pressure: 'ok', stale: false, unknownCount: 0, memFreePct: 80 }) ?? '',
+      'low free capacity must not be reported as PSI pressure',
+    ],
+    [
+      'agent.goal',
+      'goalCompeting',
+      assessAgentGoal(GOALOF('corroborated', ['WI-2']), []) ?? '',
+      assessAgentGoal(GOALOF('corroborated', []), []) ?? '',
+      'competing claims must outrank a corroborating edge',
+    ],
+    [
+      'testing.census.population',
+      'census.providersRegistered',
+      assessTestingCensusPopulation({ surfaces: 0, providersRegistered: 0, lastCensusAt: null }),
+      assessTestingCensusPopulation({ surfaces: 0, providersRegistered: 1, lastCensusAt: null }),
+      'an unasked question must not read as a measured zero',
+    ],
+    [
+      'testing.coverage.floor',
+      'coverage.belowUnwaived',
+      assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2 }),
+      assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }),
+      'a waived gap must not read as an unwaived one',
+    ],
+  ];
+
+  /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
+  it('probes all ten cells for sign inversion', () => {
+    expect(new Set(PAIRS.map((p) => p[0])).size).toBe(BUILTIN_CELLS.length);
+    for (const spec of BUILTIN_CELLS) {
+      expect(
+        PAIRS.some((p) => p[0] === spec.cell),
+        `${spec.cell} has no sign-inversion probe`,
+      ).toBe(true);
+    }
+  });
+
+  it.each(PAIRS.map((p) => [p[0], p] as const))('%s — the decisive field actually decides', (_id, pair) => {
+    const [cell, field, positive, negated, note] = pair;
+    const spec = BUILTIN_CELLS.find((c) => c.cell === cell)!;
+
+    expect(
+      positive,
+      `${cell}: the two states of "${field}" produced the SAME code ("${positive}"). The field does not decide ` +
+        `anything, so ${note} cannot be read off this cell.`,
+    ).not.toBe(negated);
+
+    // Both sides must be codes the registration actually declares, or the pair proves
+    // movement into a state no reader can branch on.
+    for (const code of [positive, negated]) {
+      expect(Object.keys(spec.assessment!.codes), `${cell}: "${code}" is not a declared code`).toContain(code);
+    }
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * `agent.goal` resolves through a DIFFERENT tool, so it gets its own describe rather
+ * than a filtered-out row above — a cell quietly dropped from a generic loop is
+ * exactly the un-exercised declaration this file exists to prevent.
+ *
+ * The resolver is mocked; the PAYLOAD BUILDER is not. The assertions run against the
+ * real `coord:goal` handler's object construction, so a change to the flat hoisting it
+ * performs reds this file. Mocking only the DB-backed leg keeps that real without
+ * requiring Postgres.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+vi.mock('./agent-tools/coordination/identity', () => ({
+  resolveAgentIdentity: () => ({
+    ownerId: 'su-p004',
+    ownerLabel: 'su · p004',
+    source: 'test',
+    workspaceId: 'default',
+    userId: null,
+  }),
+  SU_ROLES: ['operator'],
+}));
+
+const resolveOwnerGoalMock = vi.hoisted(() => vi.fn());
+const resolveOwnerGoalWithAssessmentMock = vi.hoisted(() => vi.fn());
+vi.mock('./agent-tools/coordination/agent-goal-sources', async (importOriginal) => {
+  // ⚠ The REAL `assessAgentGoal` is kept — it is the subject of the control table
+  // above, and stubbing it would make every goal row assert against the mock.
+  const actual = await importOriginal<typeof import('./agent-tools/coordination/agent-goal-sources')>();
+  return {
+    ...actual,
+    resolveOwnerGoal: resolveOwnerGoalMock,
+    resolveOwnerGoalWithAssessment: resolveOwnerGoalWithAssessmentMock,
+  };
+});
+
+describe('P-004: agent.goal declares assessment paths coord:goal ACTUALLY produces', () => {
+  async function goalPayload(goal: unknown): Promise<unknown> {
+    resolveOwnerGoalMock.mockResolvedValue(goal);
+    resolveOwnerGoalWithAssessmentMock.mockResolvedValue({
+      goal,
+      assessment: assessAgentGoal(goal as never, []),
+      diagnostics: [],
+    });
+    const { default: goalTool } = await import('./agent-tools/coordination/tools/goal');
+    const res = await (
+      goalTool as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }
+    ).handler({ ownerId: 'su-p004' }, { workspaceId: 'default', harnessSlug: 'papercusp', uiClientId: 'su-p004' });
+    return JSON.parse(res.content[0].text);
+  }
+
+  const HELD_GOAL = {
+    ref: 'WI-6498',
+    source: 'work-item',
+    agreement: 'divergent',
+    competing: ['WI-6497'],
+    corroboratedBy: ['claim'],
+    declaredAt: '2026-08-24T00:00:00.000Z',
+  };
+
+  /**
+   * ⚠ THE CASE THAT WOULD ACTUALLY BREAK, and the reason both branches are exercised.
+   * An agent holding NOTHING is the ordinary case, and it is the one where a nested
+   * evidence path silently dies: `pathExists` stops at the first null segment, so
+   * `goal.competing` against `goal: null` is ABSENT — and an absent evidence path
+   * DOWNGRADES the whole assessment to `unavailable`. A fixture with a goal in it
+   * passes either way, which is exactly how this would ship. It is P-011's bug with a
+   * larger blast radius: there it broke one falsifier, here it would take the entire
+   * assessment down with it.
+   */
+  it.each(GOAL_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment + evidence paths exist whether or not the agent holds anything',
+    async (_id, spec) => {
+      for (const [caseName, goal] of [
+        ['holds a goal', HELD_GOAL],
+        ['holds NOTHING', null],
+      ] as const) {
+        const payload = await goalPayload(goal);
+        for (const { label, path } of assessmentPaths(spec)) {
+          const r = pathExists(payload, path);
+          expect(
+            r.exists,
+            `${spec.cell} (${caseName}): declared ${label} "${path}" is ABSENT from the coord:goal payload ` +
+              `(missing at "${r.missingAt}"). Evidence that vanishes when the agent holds nothing downgrades ` +
+              `the assessment to \`unavailable\` in the most ordinary case there is.`,
+          ).toBe(true);
+        }
+      }
+    },
+  );
+
+  /** The assessment moves with the goal, and the goal-less case is a CODE, not a gap. */
+  it('codes the goal-less agent as `nothing-held` rather than answering unavailable', async () => {
+    const empty = await goalPayload(null);
+    expect(pathExists(empty, 'assessment').value).toBe('nothing-held');
+    expect(pathExists(empty, 'goalRef')).toEqual({ exists: true, value: null });
+    expect(pathExists(empty, 'goalUnknown').value).toBe('nothing-held');
+
+    const held = await goalPayload(HELD_GOAL);
+    expect(pathExists(held, 'assessment').value).toBe('divergent');
+    expect(pathExists(held, 'goalRef').value).toBe('WI-6498');
+    expect(pathExists(held, 'goalUnknown').value).toBeNull();
+  });
+
+  /**
+   * The evidence CONTRADICTS the naive reading, which is what a falsifier used to
+   * assert in prose. Preserved as a behavioural check rather than dropped with the
+   * field: the ref alone reads as a single confident answer, and `goalCompeting` is
+   * what shows it stands among rivals.
+   */
+  it.each(GOAL_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — the declared evidence shows the ref is not the whole story',
+    async (_id, spec) => {
+      const payload = await goalPayload(HELD_GOAL);
+      expect(pathExists(payload, spec.headline).value).toBe('WI-6498');
+      expect(pathExists(payload, 'goalAgreement').value).toBe('divergent');
+      expect(pathExists(payload, 'goalCompeting').value).toEqual(['WI-6497']);
+
+      // A corroborated holder must NOT read as divergent, or the evidence would be a
+      // constant — which fires on everything and therefore distinguishes nothing.
+      const corroborated = await goalPayload({ ...HELD_GOAL, agreement: 'corroborated', competing: [] });
+      expect(pathExists(corroborated, 'assessment').value).toBe('corroborated');
+      expect(pathExists(corroborated, 'goalCompeting').value).toEqual([]);
+    },
+  );
+});
