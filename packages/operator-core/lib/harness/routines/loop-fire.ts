@@ -127,6 +127,10 @@ export interface LoopFireDeps {
   /** EI-10901: read the owner's currently-active BLOCKING awaits (defaults to
    *  listParkedAwaitsForSubscribers, scoped to one owner). */
   listBlockingAwaits?: (targetOwnerId: string) => Promise<BlockingAwaitLike[]>;
+  /** EI-21350609923930437: re-arm a parked pure loop at the suppression threshold before
+   *  withholding its wake. Injected for tests; a failed write fails open and delivers the
+   *  wake rather than leaving the claimed row parked forever. */
+  rescheduleSuppressedWake?: (input: SuppressedLoopRearmInput) => Promise<boolean>;
   /** EI-18673998482704275-followup (WI-5862): self-heal seam for a `!reached` miss —
    *  defaults to ensureInboxWakeArmedForActiveSession (a live adv_sessions row but no
    *  active standing inbox-wake await ⇒ re-arm it and report true). Injected for tests. */
@@ -164,6 +168,15 @@ export interface BlockingAwaitLike {
   expiresTs: string | null;
   /** ISO creation time — the suppression-quiet clock's origin (no new state needed). */
   createdAt: string;
+}
+
+/** Inputs for the parked-loop re-arm that accompanies await suppression. */
+export interface SuppressedLoopRearmInput {
+  routineId: string;
+  /** The earliest threshold at which the suppression decision must be revisited. */
+  resumeAtMs: number;
+  /** Injectable for tests; production falls back to the operator's org connection. */
+  sql?: Sql;
 }
 
 /** Ceiling on how long a blocking await may silence loop wakes, measured from the
@@ -221,6 +234,33 @@ export function decideLoopAwaitSuppression(input: {
 async function defaultListBlockingAwaits(targetOwnerId: string): Promise<BlockingAwaitLike[]> {
   const rows = await listParkedAwaitsForSubscribers([targetOwnerId]);
   return rows.map((r) => ({ eventKey: r.eventKey, expiresTs: r.expiresTs, createdAt: r.createdAt }));
+}
+
+/**
+ * Move a claimed pure loop off the in-flight `infinity` sentinel when its wake is withheld
+ * because the owner is parked on a blocking await. `claimDueRoutine` parks pure loops at
+ * infinity before calling `fireLoopWake`; without this write, returning from the suppression
+ * guard permanently removes the row from the due scan and the computed `resumeAtMs` is dead
+ * data. The infinity predicate also makes this CAS safe against a concurrent loop:arm or
+ * completion re-arm that already installed a finite schedule.
+ */
+export async function rescheduleLoopAfterAwaitSuppression(input: SuppressedLoopRearmInput): Promise<boolean> {
+  if (!Number.isFinite(input.resumeAtMs)) return false;
+  const db = input.sql ?? getOrgPg().sql;
+  const resumeAtIso = new Date(input.resumeAtMs).toISOString();
+  const rows = await db<{ id: string }[]>`
+    UPDATE harness_shared.routines
+       SET next_fire_at = GREATEST(now(), ${resumeAtIso}::timestamptz),
+           updated_at = now()
+     WHERE id = ${input.routineId}
+       AND active = TRUE
+       AND reschedule_interval_sec IS NOT NULL
+       AND next_fire_at = 'infinity'::timestamptz
+       AND NOT jsonb_exists(trigger_config, 'cron')
+       AND NOT jsonb_exists(trigger_config, 'rrule')
+     RETURNING id
+  `;
+  return rows.length > 0;
 }
 
 /** Read the loop kickoff (wake-turn text) from the routine's payload_template, if any. */
@@ -649,6 +689,7 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         })
       : defaultGetLoopCarryNoteWithMeta);
   const recordWithheld = deps.recordWithheld ?? defaultRecordWithheld;
+  const rescheduleSuppressedWake = deps.rescheduleSuppressedWake ?? rescheduleLoopAfterAwaitSuppression;
 
   if (!input.targetOwnerId) {
     return { fired: false, reason: 'no-target', detail: 'loop routine has no target_owner_id to wake' };
@@ -721,13 +762,35 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   if (!isMonitorLoop && blockingAwaits.length > 0) {
     const decision = decideLoopAwaitSuppression({ awaits: blockingAwaits, nowMs: Date.now() });
     if (decision.suppress) {
-      return {
-        fired: false,
-        reason: 'await-blocking',
-        detail:
-          `owner is parked on a blocking await (${decision.drivingEventKey ?? blockingAwaits[0]?.eventKey}) — ` +
-          `wake withheld until ${decision.resumeAtMs != null ? new Date(decision.resumeAtMs).toISOString() : 'it fires'}`,
-      };
+      let rearmFailed = false;
+      if (decision.resumeAtMs != null) {
+        try {
+          await rescheduleSuppressedWake({
+            routineId: input.routineId,
+            resumeAtMs: decision.resumeAtMs,
+            sql: input.sql,
+          });
+        } catch (error) {
+          // The row is already parked by claimDueRoutine. If this repair write fails, do not
+          // return the old silent-withhold result: fail open and deliver this wake so the
+          // completion-rebase can restore a finite schedule instead of creating a new wedge.
+          rearmFailed = true;
+          console.warn(
+            `[loop-fire] await suppression re-arm failed for '${input.routineId}' — delivering wake: ${
+              error instanceof Error ? error.message : error
+            }`,
+          );
+        }
+      }
+      if (!rearmFailed) {
+        return {
+          fired: false,
+          reason: 'await-blocking',
+          detail:
+            `owner is parked on a blocking await (${decision.drivingEventKey ?? blockingAwaits[0]?.eventKey}) — ` +
+            `wake withheld until ${decision.resumeAtMs != null ? new Date(decision.resumeAtMs).toISOString() : 'it fires'}`,
+        };
+      }
     }
   }
 
