@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
+import { hashPlanContent } from '../content-hash';
 import {
   cleanupPlans,
   registerHarnessProject,
@@ -54,6 +55,36 @@ async function activationAudit(sql: postgres.Sql, planSlug = SLUG) {
       (${fx.workspaceId}, ${HARNESS}, ${planSlug}, 1, 'su-test', 'activation',
        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
        1, 1, ${'a'.repeat(64)}, '[]'::jsonb, '[]'::jsonb)`;
+}
+
+async function appendPlanRevision(sql: postgres.Sql, body: string) {
+  const contentHash = hashPlanContent(body);
+  const rows = await sql<Array<{ id: number | string; seq: number }>>`
+    INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
+       rationale, author_kind, author_id, session_id, session_kind, created_at)
+    SELECT ${fx.workspaceId}, ${HARNESS}, ${SLUG}, COALESCE(MAX(seq), 0) + 1,
+           ${contentHash}, ${body}, 'activation notice regression', 'agent', 'su-test',
+           'session-test', 'codex', ${Date.now()}
+      FROM harness_shared.plan_revisions
+     WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    RETURNING id, seq`;
+  return { id: Number(rows[0]!.id), seq: Number(rows[0]!.seq), contentHash };
+}
+
+async function activationAuditAt(
+  sql: postgres.Sql,
+  anchor: { id: number; seq: number; contentHash: string },
+) {
+  await sql`
+    INSERT INTO harness_shared.plan_audits
+      (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
+       activation, audited_plan_revision_id, audited_plan_revision_seq,
+       audited_plan_content_hash, items, findings)
+    VALUES
+      (${fx.workspaceId}, ${HARNESS}, ${SLUG}, 1, 'su-test', 'activation',
+       ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
+       ${anchor.id}, ${anchor.seq}, ${anchor.contentHash}, '[]'::jsonb, '[]'::jsonb)`;
 }
 
 const flipReady = (body: string) => body.replace('status: draft', 'status: ready');
@@ -110,5 +141,76 @@ describe('conversation activation audit gate', () => {
       async (current) => ({ newBody: current!.replace('prove the gate', 'prove the shared gate'), value: { ok: true } }),
     );
     expect(cosmetic).toMatchObject({ kind: 'applied', value: { ok: true } });
+  });
+
+  it('preserves the audit after cosmetic and substantive edits while surfacing exact revision/materiality guidance', async () => {
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
+    const audited = await appendPlanRevision(fx.admin, DRAFT);
+    await activationAuditAt(fx.admin, audited);
+
+    const cosmetic = await withPlanLock<{ ok: true }>(
+      {} as never,
+      {
+        slug: SLUG,
+        harnessSlug: HARNESS,
+        workspaceId: fx.workspaceId,
+        intent: 'test cosmetic post-audit edit notice',
+        afterWrite: async (body) => { await appendPlanRevision(fx.admin, body); },
+      },
+      async (current) => ({
+        newBody: current!.replace('# Activation gate', '# Activation gate '),
+        value: { ok: true },
+      }),
+    );
+
+    expect(cosmetic).toMatchObject({
+      kind: 'applied',
+      activationAudit: {
+        status: 'preserved',
+        auditedPlanRevision: { id: audited.id, seq: 1, contentHash: audited.contentHash },
+        currentPlanRevision: { seq: 2, recorded: true },
+        changedSinceAudit: true,
+        revisionGap: 1,
+        reAudit: {
+          decision: 'editing_agent',
+          notRequiredWhen: expect.arrayContaining(['spelling', 'formatting', 'cosmetic-only wording']),
+        },
+      },
+      value: { ok: true, activationAudit: { status: 'preserved' } },
+    });
+
+    const substantive = await withPlanLock<{ ok: true }>(
+      {} as never,
+      {
+        slug: SLUG,
+        harnessSlug: HARNESS,
+        workspaceId: fx.workspaceId,
+        intent: 'test substantive post-audit edit notice',
+        afterWrite: async (body) => { await appendPlanRevision(fx.admin, body); },
+      },
+      async (current) => ({
+        newBody: current!.replace('prove the gate', 'prove the gate and preserve backward compatibility'),
+        value: { ok: true },
+      }),
+    );
+
+    expect(substantive).toMatchObject({
+      kind: 'applied',
+      activationAudit: {
+        auditedPlanRevision: { id: audited.id, seq: 1 },
+        currentPlanRevision: { seq: 3, recorded: true },
+        revisionGap: 2,
+        reAudit: {
+          requiredWhen: expect.arrayContaining(['requirements', 'constraints', 'acceptance criteria']),
+          instruction: expect.stringContaining("Re-run plans:audit { phase:'activation' }"),
+        },
+      },
+    });
+
+    const auditRows = await fx.admin<Array<{ n: number; audited_seq: number }>>`
+      SELECT count(*)::int AS n, max(audited_plan_revision_seq)::int AS audited_seq
+        FROM harness_shared.plan_audits
+       WHERE workspace_id = ${fx.workspaceId} AND plan_slug = ${SLUG} AND audit_kind = 'activation'`;
+    expect(auditRows).toEqual([{ n: 1, audited_seq: 1 }]);
   });
 });

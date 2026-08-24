@@ -602,7 +602,7 @@ export async function setFleetLaunchTransaction(opts: {
   );
 }
 
-/** Persist or clear the target recipe. This is intentionally separate from COLS so
+/** Persist or disable the target recipe. This is intentionally separate from COLS so
  * legacy fleet reads remain compatible with pre-600 test schemas. */
 export async function setFleetHeadcountTarget(opts: {
   workspaceId: string;
@@ -615,7 +615,7 @@ export async function setFleetHeadcountTarget(opts: {
   if (opts.target == null) {
     await s.unsafe(
       `UPDATE harness_shared.agent_fleets
-          SET headcount_target = NULL, headcount_config = NULL,
+          SET headcount_target = NULL,
               headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
               headcount_last_error = NULL, updated_at = $3
         WHERE workspace_id = $1 AND fleet_slug = $2`,
@@ -637,7 +637,7 @@ export async function setFleetHeadcountTarget(opts: {
 function headcountRowToTarget(r: {
   workspace_id: string;
   fleet_slug: string;
-  headcount_target: number;
+  headcount_target: number | null;
   headcount_config: FleetHeadcountConfig;
   headcount_next_attempt_at: string | number | null;
   headcount_backoff_ms: string | number | null;
@@ -647,7 +647,10 @@ function headcountRowToTarget(r: {
   return {
     workspaceId: r.workspace_id,
     fleetSlug: r.fleet_slug,
-    target: Number(r.headcount_target),
+    // A disabled governor still carries a canonical launch profile. Saved-spec
+    // consumers reconstruct one member from that profile, while governor reads
+    // continue filtering on headcount_target IS NOT NULL and stay disabled.
+    target: Number(r.headcount_target ?? 1),
     config,
     nextAttemptAt: r.headcount_next_attempt_at == null ? null : Number(r.headcount_next_attempt_at),
     backoffMs: Number(r.headcount_backoff_ms ?? 0),
@@ -670,7 +673,13 @@ export async function listFleetHeadcountTargets(workspaceId: string, sql?: Sql):
   return rows.map(headcountRowToTarget);
 }
 
-/** Read one fleet's persisted launch profile without scanning every enabled target. */
+/**
+ * Read one fleet's persisted launch profile without scanning every enabled
+ * target. Unlike the governor reads above, this intentionally returns a saved
+ * config even when headcount_target is NULL: disabling automatic restoration
+ * must not erase the boot-baked model/account/headless/carry contract needed by
+ * a later takeover, respawn, or explicit top-up.
+ */
 export async function getFleetHeadcountTarget(
   workspaceId: string,
   fleetSlug: string,
@@ -680,7 +689,7 @@ export async function getFleetHeadcountTarget(
   const rows = (await s.unsafe(
     `SELECT ${HEADCOUNT_COLS} FROM harness_shared.agent_fleets
       WHERE workspace_id = $1 AND fleet_slug = $2
-        AND headcount_target IS NOT NULL AND headcount_config IS NOT NULL
+        AND headcount_config IS NOT NULL
       LIMIT 1`,
     [workspaceId, fleetSlug],
   )) as unknown as Parameters<typeof headcountRowToTarget>[0][];

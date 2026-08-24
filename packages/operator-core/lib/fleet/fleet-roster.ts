@@ -315,6 +315,12 @@ export function foldFleetRoster(
 export interface ListFleetRosterOpts {
   fleetSlug: string;
   workspaceId?: string | null;
+  /**
+   * Optional durable leader to enrich from the full presence read. A leader may
+   * lead more than one fleet while a presence row carries only one fleet label,
+   * so this entry is returned separately and never joins the queried roster.
+   */
+  leaderOwnerId?: string | null;
   /** Also include local agents with NULL fleet_slug (no fleet) sharing the workspace.
    *  Default FALSE — a fleet roster is exactly its labeled members. */
   includeUnattributed?: boolean;
@@ -433,6 +439,13 @@ export type FleetRosterDegradedLeg =
 export interface ListFleetRosterResult {
   entries: FleetRosterEntry[];
   degradedLegs: FleetRosterDegradedLeg[];
+  /**
+   * Liveness-only durable-leader enrichment. When requested, this is sourced
+   * from the full presence read even if the leader's fleet label points at a
+   * different fleet; it is intentionally absent for callers that did not pass
+   * `leaderOwnerId` and null when the requested leader has no presence row.
+   */
+  leaderEntry?: FleetRosterEntry | null;
 }
 
 /**
@@ -447,6 +460,7 @@ export interface ListFleetRosterResult {
  */
 export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promise<ListFleetRosterResult> {
   const { fleetSlug, workspaceId } = opts;
+  const leaderOwnerId = opts.leaderOwnerId ?? null;
   const includeUnattributed = opts.includeUnattributed === true;
   const readPresence = opts.readPresence ?? defaultReadFleetPresence;
   const degradedLegs: FleetRosterDegradedLeg[] = [];
@@ -470,9 +484,22 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   const presence = filterPresenceToFleet(presenceAll, fleetSlug, includeUnattributed);
   const inFleet = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
+  // A durable leader can be labelled with a different fleet when it leads more
+  // than one fleet. Enrich that one row from the full presence read, but keep it
+  // out of `presence`, `inFleet`, and the assignment/count path below.
+  const leaderPresence =
+    leaderOwnerId != null && !inFleet.has(leaderOwnerId)
+      ? presenceAll.find((p) => p.ownerId === leaderOwnerId)
+      : undefined;
+  const enrichmentIds = [
+    ...new Set([
+      ...localIds,
+      ...(leaderPresence && !leaderPresence.federated ? [leaderOwnerId as string] : []),
+    ]),
+  ];
 
   const [tier1Result, wakeabilityResult, recordedResult, selfWakeResult, rowsResult] = await Promise.all([
-    withBoundedTimeout(fetchPresenceTier1(localIds), {
+    withBoundedTimeout(fetchPresenceTier1(enrichmentIds), {
       fallback: new Map<string, PresenceTier1Joins>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:tier1',
@@ -481,7 +508,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     // sessionState. Best-effort — a slow/failed query degrades to
     // heartbeat-only `alive` (today's pre-WI-3818 behavior), never breaks the
     // roster read.
-    withBoundedTimeout(fetchWakeability(localIds), {
+    withBoundedTimeout(fetchWakeability(enrichmentIds), {
       fallback: new Map<string, WakeabilitySignals>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:wakeability',
@@ -492,7 +519,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     // here via the oracle's deriveVerdict. Best-effort like every other leg,
     // and IN the same parallel fan-out (a serial extra leg would add up to a
     // whole extra SUBREAD_TIMEOUT of latency to every roster read).
-    withBoundedTimeout(recordedLiveOwnerIds(localIds), {
+    withBoundedTimeout(recordedLiveOwnerIds(enrichmentIds), {
       fallback: new Set<string>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:recorded',
@@ -503,7 +530,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     // degraded read leaves `selfWake: null` (UNKNOWN) on every row rather than
     // asserting `'none'`, which would manufacture a false stranded-member alarm
     // out of a slow query.
-    withBoundedTimeout(fetchSelfWake(localIds), {
+    withBoundedTimeout(fetchSelfWake(enrichmentIds), {
       fallback: new Map<string, SelfWakeSignals>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:selfwake',
@@ -522,16 +549,40 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   // (assignmentFromPresence) when no assignment row is found — so entries
   // still exist with identity/intent/liveness, just without doing/queued/load.
   const assignments = groupByAgent(rowsResult.value).filter((a) => inFleet.has(a.agentId));
+  const nowMs = Date.now();
   const entries = foldFleetRoster(
     presence,
     assignments,
     tier1Result.value,
-    Date.now(),
+    nowMs,
     wakeabilityResult.value,
     recordedResult.value,
     selfWakeResult.value,
   );
-  return { entries, degradedLegs };
+  let leaderEntry: FleetRosterEntry | null | undefined;
+  if (leaderOwnerId != null) {
+    if (inFleet.has(leaderOwnerId)) {
+      leaderEntry = entries.find((entry) => entry.agentId === leaderOwnerId) ?? null;
+    } else if (leaderPresence) {
+      leaderEntry =
+        foldFleetRoster(
+          [leaderPresence],
+          [],
+          tier1Result.value,
+          nowMs,
+          wakeabilityResult.value,
+          recordedResult.value,
+          selfWakeResult.value,
+        ).find((entry) => entry.agentId === leaderOwnerId) ?? null;
+    } else {
+      leaderEntry = null;
+    }
+  }
+  return {
+    entries,
+    degradedLegs,
+    ...(leaderOwnerId != null ? { leaderEntry } : {}),
+  };
 }
 
 /**

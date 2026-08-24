@@ -819,6 +819,13 @@ export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 // structured registration result (or timeout) is observed first.
 export const PTOOL_EVENTS_AWAIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
+// `plans:get` is the durable plan-read path used during agent wake/bootstrap. A large
+// nested plan response can spend ~28.5s through the MCP proxy even when the direct
+// operator read is healthy; the ordinary 30s ptool deadline turns that slow-but-valid
+// wrapped read into an ambiguous tools:invoke timeout. Keep the client deadline above
+// the observed proxy path without changing the ordinary deadline for unrelated tools.
+export const PTOOL_PLANS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
 // `locks:heartbeat_resource` may heartbeat multiple lock ids sequentially and
 // probe the caller plus special coordination domains for each id. Under a
 // serialized package build, each transaction can consume the configured
@@ -838,6 +845,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
+  ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.

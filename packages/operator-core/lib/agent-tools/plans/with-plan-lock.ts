@@ -21,6 +21,10 @@
 
 import { withWorkspace } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
+import {
+  getActivationAuditEditNotice,
+  type ActivationAuditEditNotice,
+} from '../../plan-audits';
 import { hashPlanContent } from './content-hash';
 import { summarizeForcedPast } from './forced-past-stamp';
 import { writePlanIndexRows } from './plan-index-rows';
@@ -201,6 +205,13 @@ export interface AppliedResult<T> {
    * harness's registered workspace, so the clear silently updated zero rows).
    */
   scope: { workspaceId: string; harnessSlug: string };
+  /**
+   * Present after a successful write when this plan already has an activation
+   * audit. Also copied onto object-shaped `value` payloads so existing
+   * agent-facing writers that spread their value surface the notice without a
+   * second per-verb implementation.
+   */
+  activationAudit?: ActivationAuditEditNotice;
 }
 
 export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
@@ -570,12 +581,41 @@ export async function withPlanLock<T>(
       if (writtenBody !== null && opts.afterWrite) {
         await opts.afterWrite(writtenBody, { workspaceId, harnessSlug });
       }
+      let activationAudit: ActivationAuditEditNotice | null = null;
+      if (writtenBody !== null) {
+        try {
+          activationAudit = await getActivationAuditEditNotice({
+            workspaceId,
+            harnessSlug,
+            planSlug: slug,
+            currentContentHash: hashPlanContent(writtenBody),
+            planVersion: applied.version,
+          });
+        } catch (err) {
+          // The plan write is already committed. A read-side notice failure must
+          // never make the caller retry and duplicate a successful mutation.
+          console.warn(
+            `[with-plan-lock] activation-audit edit notice unavailable for ${slug}: ` +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        }
+      }
       // P-010 ongoing per-part federation — flag-gated + best-effort (never throws),
       // so it can't disturb the committed write or the afterWrite revision.
       if (writtenBody !== null) {
         await capturePlanPartsForWrite(workspaceId, harnessSlug, slug, priorBody, writtenBody);
       }
-      return applied;
+      if (!activationAudit) return applied;
+
+      // Most plans:* writers return an object and spread it into their response.
+      // Copying the central notice onto that value closes those paths without
+      // duplicating DB reads or materiality wording in every handler. Callers
+      // that shape fields individually can read result.activationAudit.
+      const value =
+        typeof applied.value === 'object' && applied.value !== null && !Array.isArray(applied.value)
+          ? ({ ...applied.value, activationAudit } as T)
+          : applied.value;
+      return { ...applied, value, activationAudit };
     }
     return result;
   }).catch((err: unknown) => {

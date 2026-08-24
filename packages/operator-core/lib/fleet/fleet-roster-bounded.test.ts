@@ -58,7 +58,7 @@ const { listFleetRosterDiagnosed, listFleetRoster, FLEET_ROSTER_SUBREAD_TIMEOUT_
   './fleet-roster'
 );
 
-function pres(ownerId: string): FleetFoldPresence {
+function pres(ownerId: string, fleetSlug = 'p2p-parity-lanes'): FleetFoldPresence {
   return {
     ownerId,
     ownerLabel: null,
@@ -70,7 +70,7 @@ function pres(ownerId: string): FleetFoldPresence {
     heartbeatAt: '2026-07-10T10:00:00Z',
     lastActiveAt: '2026-07-10T10:00:00Z',
     agentRole: null,
-    fleetSlug: 'p2p-parity-lanes',
+    fleetSlug,
     fleetRole: 'member',
     userId: null,
     stale: false,
@@ -113,6 +113,40 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     expect(result.degradedLegs).toEqual([]);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].agentId).toBe('su-1');
+  });
+
+  it('enriches a multi-fleet leader without adding it to the queried roster', async () => {
+    vi.setSystemTime(new Date('2026-07-10T10:00:10Z'));
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(
+      new Map<string, WakeabilitySignals>([
+        ['su-member', { wakeable: true, liveTurn: true }],
+        ['su-leader', { wakeable: true, liveTurn: true }],
+      ]),
+    );
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      leaderOwnerId: 'su-leader',
+      readPresence: async () => [
+        pres('su-member'),
+        { ...pres('su-leader', 'other-fleet'), fleetRole: 'leader' },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.entries.map((entry) => entry.agentId)).toEqual(['su-member']);
+    expect(result.leaderEntry).toEqual(
+      expect.objectContaining({
+        agentId: 'su-leader',
+        fleetSlug: 'other-fleet',
+        sessionState: 'live',
+        alive: true,
+      }),
+    );
+    expect(fetchWakeabilityMock).toHaveBeenCalledWith(['su-member', 'su-leader']);
   });
 
   it('degrades to an EMPTY roster (not a hang) when presence itself never resolves, reporting the leg', async () => {

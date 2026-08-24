@@ -269,6 +269,7 @@ export default defineTool({
       datatypes: v.datatypes,
       version: result.version,
       revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+      ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
     });
   },
 });

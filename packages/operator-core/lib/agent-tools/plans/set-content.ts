@@ -660,6 +660,7 @@ export default defineTool({
             // when the best-effort append failed — the file write still
             // succeeded; the gap is recoverable via P-005's backfill.
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
             // WI-40825: open work-items minted from items this write rewrote or
             // removed. A whole-document write is the easiest way to reword an
             // item without noticing anyone is executing it.

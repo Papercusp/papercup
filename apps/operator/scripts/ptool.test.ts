@@ -18,6 +18,7 @@ import {
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
+  PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
@@ -120,7 +121,12 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
+    expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(60_000);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:get',
+      args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
+    })).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:orient',
       args: {},

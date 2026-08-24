@@ -38,7 +38,7 @@
  * this module as proving an audit was honest — it proves the citations point at
  * files that exist, which is a strictly weaker and still useful claim.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -171,6 +171,54 @@ export interface AuditedPlanRevision {
   id: number;
   seq: number;
   contentHash: string;
+}
+
+/**
+ * Semantic changes that require the editing agent to repeat the activation
+ * audit. This is deliberately guidance, not a server-side classifier: only the
+ * editor has the conversation + change context needed to judge materiality.
+ */
+export const ACTIVATION_REAUDIT_MATERIAL_CHANGES = [
+  'requirements',
+  'scope',
+  'constraints',
+  'decisions',
+  'dependencies',
+  'sequencing',
+  'acceptance criteria',
+  'open questions',
+  'promised follow-ups',
+] as const;
+
+export const ACTIVATION_REAUDIT_COSMETIC_CHANGES = [
+  'spelling',
+  'formatting',
+  'cosmetic-only wording',
+] as const;
+
+export interface ActivationAuditEditNotice {
+  /** Later writes preserve the append-only audit; they never invalidate it. */
+  status: 'preserved';
+  auditSeq: number;
+  auditedPlanRevision: AuditedPlanRevision;
+  currentPlanRevision: {
+    /** Null only when best-effort plan-revision capture missed this write. */
+    id: number | null;
+    /** Null only when best-effort plan-revision capture missed this write. */
+    seq: number | null;
+    contentHash: string;
+    /** The canonical harness_plans CAS version after the edit. */
+    planVersion: number;
+    recorded: boolean;
+  };
+  changedSinceAudit: boolean;
+  revisionGap: number | null;
+  reAudit: {
+    decision: 'editing_agent';
+    requiredWhen: readonly string[];
+    notRequiredWhen: readonly string[];
+    instruction: string;
+  };
 }
 
 export interface PlanAudit {
@@ -665,6 +713,97 @@ export async function getLatestActivationAudit(
   } catch {
     return null;
   }
+}
+
+/**
+ * Build the response metadata every successful post-audit plan write returns.
+ * Exported as a pure core so the materiality contract is pinned without a DB.
+ */
+export function buildActivationAuditEditNotice(input: {
+  audit: PlanAudit;
+  currentPlanRevision: { id: number; seq: number; contentHash: string } | null;
+  currentContentHash: string;
+  planVersion: number;
+}): ActivationAuditEditNotice | null {
+  const audited = input.audit.auditedPlanRevision;
+  if (input.audit.auditKind !== 'activation' || !audited) return null;
+
+  const current = input.currentPlanRevision?.contentHash === input.currentContentHash
+    ? input.currentPlanRevision
+    : null;
+  const changedSinceAudit = current
+    ? current.id !== audited.id || current.seq !== audited.seq || current.contentHash !== audited.contentHash
+    : input.currentContentHash !== audited.contentHash || input.planVersion > 0;
+  const revisionGap = current ? Math.max(0, current.seq - audited.seq) : null;
+  const currentLabel = current
+    ? `revision ${current.seq}`
+    : `plan version ${input.planVersion} (revision row unavailable)`;
+
+  return {
+    status: 'preserved',
+    auditSeq: input.audit.auditSeq,
+    auditedPlanRevision: audited,
+    currentPlanRevision: {
+      id: current?.id ?? null,
+      seq: current?.seq ?? null,
+      contentHash: input.currentContentHash,
+      planVersion: input.planVersion,
+      recorded: current !== null,
+    },
+    changedSinceAudit,
+    revisionGap,
+    reAudit: {
+      decision: 'editing_agent',
+      requiredWhen: ACTIVATION_REAUDIT_MATERIAL_CHANGES,
+      notRequiredWhen: ACTIVATION_REAUDIT_COSMETIC_CHANGES,
+      instruction:
+        `Activation audit #${input.audit.auditSeq} covered revision ${audited.seq}; the plan is now ${currentLabel}. ` +
+        `The audit remains recorded. Re-run plans:audit { phase:'activation' } if this edit materially changes ` +
+        `${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}. ` +
+        `${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} do not require another audit.`,
+    },
+  };
+}
+
+/**
+ * Read the preserved activation audit and compare it with the exact current
+ * revision after a plan write. The current row is accepted only when its hash
+ * matches the bytes just written; a best-effort revision-capture miss is
+ * surfaced truthfully as recorded:false rather than mislabeling an older row.
+ */
+export async function getActivationAuditEditNotice(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  currentContentHash: string;
+  planVersion: number;
+}): Promise<ActivationAuditEditNotice | null> {
+  const audit = await getLatestActivationAudit(input.planSlug, {
+    workspaceId: input.workspaceId,
+  });
+  if (!audit?.auditedPlanRevision) return null;
+
+  const currentPlanRevision = await withWorkspace(input.workspaceId, async (tx) => {
+    const rows = await tx<Array<{ id: number | string; seq: number; content_hash: string }>>`
+      SELECT id, seq, content_hash
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND plan_slug = ${input.planSlug}
+       ORDER BY seq DESC
+       LIMIT 1`;
+    const row = rows[0];
+    return row
+      ? { id: Number(row.id), seq: Number(row.seq), contentHash: row.content_hash }
+      : null;
+  });
+
+  return buildActivationAuditEditNotice({
+    audit,
+    currentPlanRevision,
+    currentContentHash: input.currentContentHash,
+    planVersion: input.planVersion,
+  });
 }
 
 export interface EffectiveItemAudit {

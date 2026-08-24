@@ -52,6 +52,7 @@ import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
+import type { ActivationAuditEditNotice } from '../../plan-audits';
 
 /** Boolean that also accepts the exact wire strings 'true'/'false' — same
  * EI-302 manifest-pinned-schema tolerance as plans:new's `force`. */
@@ -85,11 +86,11 @@ const argsSchema = z
 export default defineTool({
   name: 'plans:start',
   description:
-    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
+    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready', and that transition is refused until `plans:audit { phase:'activation' }` has recorded a complete source-conversation audit. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
   guidance: {
-    when: 'An agent is asked to begin work on a specific plan — this starts its item-promotion path into work-items.',
+    when: "After re-reading the complete plan-related conversation, mapping every requirement/constraint/correction/rejected alternative/decision/acceptance condition/open question/follow-up, repairing omissions, and recording `plans:audit { phase:'activation' }` — this starts the plan's item-promotion path into work-items.",
     notWhen: 'The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.',
-    chaining: 'plans:list to find the slug, then plans:start { slug }.',
+    chaining: "sessions:search/read (complete source conversation) → repair the draft → plans:audit { phase:'activation' } → plans:start { slug }. If an edit response carries activationAudit metadata, compare audited/current revisions and re-audit only for a material change; cosmetic-only edits do not require it.",
     seeAlso: [
       'plans:launch (have an agent autonomously advance the started plan)',
       'plans:set-status (manually move items along once started)',
@@ -428,6 +429,7 @@ export default defineTool({
         }
 
         let autoApproved = false;
+        let activationAudit: ActivationAuditEditNotice | null = null;
         try {
           const flipResult = await withPlanLock<boolean>(
             ctx as never,
@@ -444,6 +446,9 @@ export default defineTool({
             },
           );
           autoApproved = flipResult.kind === 'applied' && flipResult.value === true;
+          activationAudit = flipResult.kind === 'applied'
+            ? (flipResult.activationAudit ?? null)
+            : null;
         } catch {
           /* best effort — the plan is started regardless of the status flip */
         }
@@ -521,6 +526,7 @@ export default defineTool({
             autoApproved,
             transitioned,
             previousOpStatus: row?.prev_op_status ?? null,
+            ...(activationAudit ? { activationAudit } : {}),
             promotion,
             ...(promotionError ? { promotionError } : {}),
             admission,
@@ -544,6 +550,7 @@ export default defineTool({
           autoApproved,
           transitioned,
           previousOpStatus: row?.prev_op_status ?? null,
+          ...(activationAudit ? { activationAudit } : {}),
           promotion,
           admission,
           ...(promotionError ? { promotionError } : {}),

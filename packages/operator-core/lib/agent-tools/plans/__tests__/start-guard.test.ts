@@ -12,6 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
+const activationMocks = vi.hoisted(() => ({ gate: vi.fn() }));
 
 const H = vi.hoisted(() => {
   const state: {
@@ -110,6 +111,11 @@ vi.mock('../plan-admission-preflight', () => ({
   preflightExactPlanAdmission: (...args: unknown[]) => admissionMocks.preflight(...args),
 }));
 
+vi.mock('../plan-activation-gate', async (orig) => {
+  const actual = await orig<typeof import('../plan-activation-gate')>();
+  return { ...actual, evaluateConversationActivationGate: (...args: unknown[]) => activationMocks.gate(...args) };
+});
+
 vi.mock('../plan-spec-quality-gate', () => ({
   evaluatePlanSpecQualityGate: vi.fn(async () => H.state.specQuality),
 }));
@@ -165,6 +171,8 @@ const run = async (args: Record<string, unknown>) =>
   };
 
 beforeEach(() => {
+  activationMocks.gate.mockReset();
+  activationMocks.gate.mockResolvedValue({ satisfied: true, auditSeq: 1 });
   admissionMocks.preflight.mockReset();
   admissionMocks.preflight.mockResolvedValue({
     ready: true,
@@ -217,6 +225,24 @@ const expectNoOpStatusWrite = (): void => {
 };
 
 describe('plans:start terminal guard', () => {
+  it('refuses before start gates/promotion when the conversation audit is missing', async () => {
+    activationMocks.gate.mockResolvedValue({
+      satisfied: false,
+      code: 'conversation_audit_required',
+      message: 'run plans:audit phase activation',
+    });
+
+    const result = await run({ slug: 'mock' });
+
+    expect(result.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'conversation_audit_required',
+      message: 'run plans:audit phase activation',
+    });
+    expect(admissionMocks.preflight).not.toHaveBeenCalled();
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
   it('fails closed before promotion when an adopted spec set lacks a current quality verdict', async () => {
     H.state.specQuality = {
       satisfied: false,

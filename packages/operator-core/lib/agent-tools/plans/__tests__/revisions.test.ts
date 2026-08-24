@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyAuthor,
   planRevisionCapture,
+  resolvePlanRevisionSessionRef,
   resolvePlanSessionRef,
   revisionDiffStat,
 } from '../revisions';
@@ -86,6 +87,47 @@ describe('resolvePlanSessionRef', () => {
       sessionId: null,
       sessionKind: null,
     });
+  });
+});
+
+describe('resolvePlanRevisionSessionRef', () => {
+  it('preserves explicit plan-run provenance without consulting the interactive-session resolver', async () => {
+    let resolverCalled = false;
+    await expect(resolvePlanRevisionSessionRef(
+      { planRunSessionId: 'run-exact' },
+      identity('static-client'),
+      { resolveSelfSession: async () => { resolverCalled = true; return null; } },
+    )).resolves.toEqual({ sessionId: 'run-exact', sessionKind: 'plan_run' });
+    expect(resolverCalled).toBe(false);
+  });
+
+  it.each(['claude', 'omp', 'codex'] as const)(
+    'records an ordinary agent write against its retrievable %s transcript',
+    async (sourceKind) => {
+      await expect(resolvePlanRevisionSessionRef(
+        {},
+        identity('static-client'),
+        {
+          resolveSelfSession: async (ownerId) => ({
+            sourceKind,
+            sessionId: `${sourceKind}-session-for-${ownerId}`,
+          }),
+        },
+      )).resolves.toEqual({
+        sessionId: `${sourceKind}-session-for-owner-static-client`,
+        sessionKind: sourceKind,
+      });
+    },
+  );
+
+  it('keeps a human editor save conversation-free', async () => {
+    let resolverCalled = false;
+    await expect(resolvePlanRevisionSessionRef(
+      {},
+      identity('principal'),
+      { resolveSelfSession: async () => { resolverCalled = true; return null; } },
+    )).resolves.toEqual({ sessionId: null, sessionKind: null });
+    expect(resolverCalled).toBe(false);
   });
 });
 

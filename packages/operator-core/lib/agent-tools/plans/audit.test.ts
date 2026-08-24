@@ -213,4 +213,59 @@ describe('plans:audit phase:activation', () => {
     ]);
     expect(mockResolveSourceRefs).not.toHaveBeenCalled();
   });
+
+  it('persists a long scattered conversation map including corrections and negative constraints before activation', async () => {
+    const mappings = [
+      {
+        id: 'M-001',
+        sourceRefs: ['session_turn:codex:session-full-id:4'],
+        requirement: 'The export must remain backward compatible.',
+        planTargets: ['P-001'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-002',
+        sourceRefs: ['session_turn:codex:session-full-id:57', 'session_turn:codex:session-full-id:61'],
+        requirement: 'Correction: use the canonical reader rather than the earlier proposed copy.',
+        planTargets: ['D-001'],
+        disposition: 'repaired',
+      },
+      {
+        id: 'M-003',
+        sourceRefs: ['session_turn:codex:session-full-id:143'],
+        requirement: 'Do not invalidate an audit for spelling or formatting changes.',
+        planTargets: ['section:Requirements'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-004',
+        sourceRefs: ['session_turn:codex:session-full-id:198'],
+        requirement: 'A promised follow-up must remain represented in the execution plan.',
+        planTargets: ['P-006'],
+        disposition: 'covered',
+      },
+    ];
+    const refs = mappings.flatMap((mapping) => mapping.sourceRefs);
+    mockResolveSourceRefs.mockImplementation(async (_sql, _workspaceId, requested) =>
+      requested.map((ref) => ({ ref, ok: true as const, source: 'index' as const })),
+    );
+
+    const result = ((await tool.handler(activationArgs({
+      sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 220 }],
+      mappings,
+      repairedOmissions: ['Replaced the superseded copy design with the canonical reader.'],
+      rejectedOrSuperseded: ['Rejected automatic invalidation after cosmetic edits.'],
+    }) as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', sourceRefsResolved: refs.length });
+    expect(mockResolveSourceRefs).toHaveBeenCalledWith(expect.anything(), 'test-workspace', refs);
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({
+      activation: expect.objectContaining({
+        mappings,
+        repairedOmissions: ['Replaced the superseded copy design with the canonical reader.'],
+        rejectedOrSuperseded: ['Rejected automatic invalidation after cosmetic edits.'],
+        unresolvedBlockers: [],
+      }),
+    }));
+  });
 });

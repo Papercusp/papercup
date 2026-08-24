@@ -238,6 +238,7 @@ export default defineTool({
             version: result.version,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
             ...(planItemDrift ? { planItemDrift } : {}),
             // Item-parse feedback (WI-3363), computed in evaluateSetContent — a
             // targeted edit can silently break (or fix) an item line, so report

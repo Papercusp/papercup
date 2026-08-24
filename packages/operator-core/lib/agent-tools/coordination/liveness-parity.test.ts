@@ -169,6 +169,25 @@ describe('cross-surface liveness parity (P-001)', () => {
     }
   });
 
+  it('an actively tool-calling recorded successor is live before its inbox wake is armed', () => {
+    const v = deriveVerdict(
+      {
+        ownerId: 'su-recorded-active',
+        source: 'session-log',
+        heartbeatAt: iso(5_000),
+        stale: false,
+      },
+      { wakeable: false, liveTurn: true },
+      new Set(['su-recorded-active']),
+      NOW,
+      () => null,
+    );
+
+    expect(v.sessionState).toBe('live');
+    expect(v.wakeable).toBe(false);
+    expect(v.confirmLiveness).toBe(false);
+  });
+
   it('resolveSessionStates (the send/handoff MISS path) agrees, including via hydration', async () => {
     const verdicts = await resolveSessionStates(
       // Bare ids only — hydration must fill heartbeat/stale/pid, exactly like

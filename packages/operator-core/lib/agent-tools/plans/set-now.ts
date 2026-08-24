@@ -225,6 +225,7 @@ export default defineTool({
           slug,
           filePath: result.filePath,
           revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
           ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
         };
       },

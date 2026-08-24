@@ -239,6 +239,53 @@ describe('fleet:status', () => {
     expect(out.leaderVacant).toBe(false);
   });
 
+  it('uses a leader liveness-only enrichment without changing the queried fleet census', async () => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [
+        {
+          agentId: 'su-member',
+          agentRole: 'su',
+          fleetRole: 'member',
+          alive: true,
+          sessionState: 'live',
+        },
+      ],
+      // The leader is live, but its one presence row is labelled with another
+      // fleet. This entry must inform the leader verdict without becoming a
+      // member of `rocket`.
+      leaderEntry: {
+        agentId: 'su-leader',
+        agentRole: 'su',
+        fleetRole: 'leader',
+        fleetSlug: 'other-fleet',
+        alive: true,
+        sessionState: 'live',
+        heartbeatFresh: true,
+        lastActiveSecAgo: 1,
+      },
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leader).toEqual({
+      agentId: 'su-leader',
+      sessionState: 'live',
+      heartbeatFresh: true,
+      lastActiveSecAgo: 1,
+      presenceRow: true,
+    });
+    expect(out.leaderLive).toBe(true);
+    expect(out.leaderVacant).toBe(false);
+    expect(out.memberCount).toBe(1);
+    expect(out.members.map((member: { agentId: string }) => member.agentId)).toEqual(['su-member']);
+    expect(h.listFleetRosterDiagnosed).toHaveBeenCalledWith({
+      fleetSlug: 'rocket',
+      workspaceId: 'ws',
+      leaderOwnerId: 'su-leader',
+    });
+  });
+
   it('reports memberCount from the roster (presence) and beeCount from the nursery, plus workspace runningBees (WI-1764 #4 / WI-1813)', async () => {
     h.listFleetRosterDiagnosed.mockResolvedValueOnce({
       entries: [

@@ -222,6 +222,7 @@ export default defineTool({
       from: result.value.from,
       to: result.value.to,
       revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+      ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
     });
   },
 });

@@ -227,6 +227,7 @@ export default defineTool({
             ...(result.value.nowStamped ? { nowStamped: true } : {}),
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
           }),
         },
       ],

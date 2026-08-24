@@ -235,6 +235,7 @@ export default defineTool({
       template: v.template,
       version: result.version,
       revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+      ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
     });
   },
 });

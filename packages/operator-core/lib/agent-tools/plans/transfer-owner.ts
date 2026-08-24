@@ -195,6 +195,7 @@ export default defineTool({
           to: result.value.to,
           ...(result.value.coOwners !== undefined ? { coOwners: result.value.coOwners } : {}),
           revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
         };
       },
       { keyOf: (slug) => ({ slug }) },

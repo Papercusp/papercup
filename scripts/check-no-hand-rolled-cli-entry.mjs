@@ -161,6 +161,11 @@ function lineAt(source, offset) {
  * The input is masked first, so the expressions below only see executable code.
  */
 export function findGuards(source, fileName = 'cli-entry.mjs') {
+  // Every supported spelling contains this exact token. Avoid running the
+  // parser-backed masker over the vast majority of source files that cannot
+  // possibly match; the repository ratchet calls this once per source file
+  // and otherwise sits on Vitest's 60s default timeout under fleet load.
+  if (!source.includes('import.meta.url')) return [];
   const masked = stripCommentsAndStrings(source, fileName);
   const patterns = [
     {

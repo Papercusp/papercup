@@ -37,6 +37,9 @@ export type PlanRevisionAuthorKind = 'agent' | 'human';
  *  reconstructed from a past git commit (P-005). */
 export type PlanRevisionSessionKind =
   | 'plan_run'
+  | 'claude'
+  | 'omp'
+  | 'codex'
   | 'operator_chat'
   | 'agent_chat'
   | 'git_backfill';
@@ -214,14 +217,10 @@ export interface PlanSessionRef {
 
 /**
  * Resolve the conversation a plan write belongs to from the call ctx.
- * Only the `plan_run` kind is threaded (P-006): a plan-run agent's MCP
- * calls carry `planRunSessionId` via `?plan_run=` on the MCP URL.
- * Every other write — an SU engineer session, a browser `/admin/plans`
- * save, a git backfill — has no threaded conversation, so this returns
- * `{ null, null }` and the revision's session columns stay null (the
- * "direct edit" case, P-019). `operator_chat` / `agent_chat` linkage
- * would each need their own surface to thread a session id and is not
- * in P-006's scope.
+ * The synchronous transport-owned branch resolves only `plan_run`; ordinary
+ * SU/agent transcripts require the owner→live-session resolver and are added by
+ * `resolvePlanRevisionSessionRef` below. Browser `/admin/plans` saves and git
+ * backfills remain the null/direct-edit case.
  */
 export function resolvePlanSessionRef(ctx: PlanSessionCtx): PlanSessionRef {
   const planRun = ctx.planRunSessionId;
@@ -229,6 +228,42 @@ export function resolvePlanSessionRef(ctx: PlanSessionCtx): PlanSessionRef {
     return { sessionId: planRun, sessionKind: 'plan_run' };
   }
   return { sessionId: null, sessionKind: null };
+}
+
+export interface ResolvePlanRevisionSessionDeps {
+  resolveSelfSession?: (
+    ownerId: string,
+  ) => Promise<{ sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string } | null>;
+}
+
+/**
+ * Resolve every agent-authored plan write to a retrievable conversation.
+ * Explicit plan-run provenance wins. Ordinary SU/agent calls reuse the same
+ * owner→native-session resolver as sessions:read { session:'self' }, so the
+ * stored session id remains directly readable after the writer exits. Human
+ * editor saves stay null: a browser principal is not an agent transcript.
+ */
+export async function resolvePlanRevisionSessionRef(
+  ctx: PlanSessionCtx,
+  identity: AgentIdentity,
+  deps: ResolvePlanRevisionSessionDeps = {},
+): Promise<PlanSessionRef> {
+  const explicit = resolvePlanSessionRef(ctx);
+  if (explicit.sessionId) return explicit;
+  if (classifyAuthor(identity) !== 'agent') return explicit;
+
+  try {
+    const resolve = deps.resolveSelfSession
+      ?? (await import('../../search/self-session')).resolveSelfSession;
+    const self = await resolve(identity.ownerId);
+    if (self) {
+      return { sessionId: self.sessionId, sessionKind: self.sourceKind };
+    }
+  } catch {
+    // Revision capture is best-effort by contract. A transcript resolver miss
+    // must not block the already-successful plan write.
+  }
+  return explicit;
 }
 
 /**
@@ -239,10 +274,11 @@ export function resolvePlanSessionRef(ctx: PlanSessionCtx): PlanSessionRef {
  * revision capture through this one helper so the behaviour is
  * identical (P-002 / P-003).
  *
- * The conversation a write belongs to is resolved from the call ctx
- * itself (`resolvePlanSessionRef`, P-006) — the verb does not pass it.
- * A launched plan-run agent's writes carry `session_kind = 'plan_run'`
- * + its run id; every other writer records null session columns.
+ * The conversation a write belongs to is resolved from the call ctx and the
+ * writer's stable owner id — the verb does not pass it. A launched plan-run
+ * agent carries `session_kind = 'plan_run'`; ordinary SU/agent writers resolve
+ * to their native `claude` / `omp` / `codex` transcript. Human editor saves
+ * retain null session columns.
  */
 export function planRevisionCapture(
   ctx: PlanRevisionCtx,
@@ -259,7 +295,6 @@ export function planRevisionCapture(
     identity = null;
   }
   const id = identity;
-  const sessionRef = resolvePlanSessionRef(ctx);
   const recorded: { current: RecordedRevision | null } = { current: null };
 
   const afterWrite = id
@@ -272,6 +307,7 @@ export function planRevisionCapture(
         // the same resolvePlanScope (audit P-008).
         const harnessSlug = opts.harnessSlug ?? scope?.harnessSlug;
         const workspaceId = opts.workspaceId ?? scope?.workspaceId;
+        const sessionRef = await resolvePlanRevisionSessionRef(ctx, id);
         recorded.current = await recordPlanRevision({
           planSlug: slug,
           ...(harnessSlug ? { harnessSlug } : {}),

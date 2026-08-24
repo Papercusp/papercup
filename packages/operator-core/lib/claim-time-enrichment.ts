@@ -57,6 +57,11 @@ export const CLAIM_TIME_ENRICHMENT_LEGS = [
   'retraction',
   'authorship',
   'planContradiction',
+  // P-011 'behaviorContract' is IMPLEMENTED below and runs on the delegating surface,
+  // but is deliberately NOT registered yet: registering it asserts parity across all
+  // four claim surfaces, and three of them still hand-wire their own enrichment batch.
+  // Register it in the SAME change that wires those three, so the parity guard never
+  // states a coverage it does not have. See WI-40090's checkpoint for the finish plan.
 ] as const;
 
 export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number];
@@ -94,6 +99,13 @@ export interface ClaimTimeEnrichment {
   authorshipRevalidationWarning?: string;
   planItemContradiction?: unknown;
   planItemContradictionWarning?: string;
+  /**
+   * P-011: WHICH behavior clauses this item is on the hook for, at WHICH revision.
+   * ⚠ ADVISORY (D-017) — the resolver reports; P-013 owns turning any of it into a
+   * refusal. A consumer must not render it as a blocker.
+   */
+  behaviorContract?: unknown;
+  behaviorContractNote?: string;
 }
 
 export interface ClaimTimeEnrichmentOpts {
@@ -120,8 +132,15 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
   const workspaceId = opts.workspaceId ?? undefined;
   const workItemId = wi?.id ?? null;
 
-  const [planDecisions, priorAttemptBrief, premises, retractionWarning, authorship, planContradiction] =
-    await Promise.all([
+  const [
+    planDecisions,
+    priorAttemptBrief,
+    premises,
+    retractionWarning,
+    authorship,
+    planContradiction,
+    behaviorContract,
+  ] = await Promise.all([
       // What OTHERS ruled that governs this item. Available from either a
       // work-item payload stamp or an explicit plan pointer.
       import('./plan-decisions-claim-port')
@@ -225,6 +244,45 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
             })
             .catch(() => null)
         : Promise.resolve(null),
+
+      // P-011: WHICH promises this item is on the hook for, at WHICH revision.
+      //
+      // The claimant is exactly who needs this and the claim is exactly when — until
+      // now the resolved contract was legible only to the COMPLETION gate, so an agent
+      // discovered which clauses it had to satisfy by being REFUSED at the end, after
+      // the work was done. Same port the gate uses (`resolveWorkItemBehaviorContract`),
+      // so what a claimant is told cannot drift from what they will be held to.
+      //
+      // ⚠ ADVISORY (D-017): reported, never enforced here. P-013 owns any refusal.
+      // Needs a live work-item — a bare plan-item claim has no item to resolve edges for.
+      wi
+        ? import('./agent-tools/plans/behavior-contract-resolver')
+            .then(async (m) => {
+              const contract = await m.resolveWorkItemBehaviorContract({
+                id: wi.id,
+                kind: null,
+                harness,
+                payload: wi.payload,
+                sourcePlanSlug: wi.sourcePlanSlug,
+                ...(wi.sourcePlanItemIds ? { sourcePlanItemIds: wi.sourcePlanItemIds } : {}),
+              });
+              // An item on the hook for NOTHING is a real, common answer — saying so
+              // would be noise on most claims, so only a non-empty contract decorates.
+              if (!contract || contract.enforceable.length === 0) return null;
+              const staleEdges = contract.groups.reduce((n, g) => n + g.staleEdges.length, 0);
+              return {
+                behaviorContract: contract,
+                behaviorContractNote:
+                  `⚠ ADVISORY — this item is on the hook for ${contract.enforceable.length} behavior ` +
+                  `clause(s); satisfy them at their CURRENT revision or the completion gate will refuse` +
+                  (staleEdges > 0
+                    ? `. ${staleEdges} existing coverage claim(s) are pinned to a SUPERSEDED revision and must be re-proven`
+                    : '') +
+                  '.',
+              };
+            })
+            .catch(() => null)
+        : Promise.resolve(null),
     ]);
 
   return {
@@ -234,5 +292,6 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     ...(retractionWarning ?? {}),
     ...(authorship ?? {}),
     ...(planContradiction ?? {}),
+    ...(behaviorContract ?? {}),
   };
 }

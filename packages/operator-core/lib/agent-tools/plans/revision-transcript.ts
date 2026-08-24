@@ -11,16 +11,15 @@
  * own context window.
  *
  * Routing by the revision's `session_kind`:
- *   - `plan_run`     → the `plan_run_turns` store (the populated case).
+ *   - `plan_run`     → the `plan_run_turns` store.
+ *   - `claude` / `omp` / `codex` → the canonical session-turn index with
+ *                      permanent archive fallback (ordinary SU/agent writes).
  *   - `null`         → a direct `/admin/plans` editor save — no
  *                      conversation; `available: false`.
  *   - `git_backfill` → a revision reconstructed from a git commit —
  *                      no conversation; `available: false`.
- *   - `operator_chat` / `agent_chat` → not yet produced by any writer
- *                      (D-016: `resolvePlanSessionRef` only ever
- *                      yields `plan_run`); `available: false` with
- *                      `session_kind_unsupported` until a writer
- *                      exists (D-020).
+ *   - `operator_chat` / `agent_chat` → no writer/reader bridge yet;
+ *                      `available:false` with session_kind_unsupported.
  *
  * `available: false` is a normal result, not an error — the UI
  * (P-019) shows a "direct edit" tag for it. Only a missing revision
@@ -34,6 +33,10 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { resolvePlanScope } from './source';
 import { getPlanRevisionById } from './revisions';
 import { readPlanRunTranscript } from './runs';
+import {
+  isIndexedAgentSessionKind,
+  readAgentSessionTranscript,
+} from './revision-session-transcript';
 
 const argsSchema = z.object({
   // z.coerce on the numerics so the same schema accepts numeric MCP
@@ -72,7 +75,7 @@ type UnavailableReason =
 export default defineTool({
   name: 'plans:revision-transcript',
   description:
-    'The conversation behind a plan revision — scoped: paginated by cursor, narrowable by query, never a whole-transcript dump. Returns turns from the plan-run transcript; revisions from a direct editor save or a git backfill report available:false.',
+    'The conversation behind a plan revision — scoped: paginated by cursor, narrowable by query, never a whole-transcript dump. Reads plan-run and ordinary Claude/OMP/Codex agent transcripts; direct editor saves and git backfills report available:false.',
   guidance: {
     when: 'You need the reasoning behind a specific revision — the raw conversation, drilled into around a decision via query/cursor.',
     notWhen:
@@ -118,10 +121,12 @@ export default defineTool({
         revisionId: revision.id,
         planSlug: revision.planSlug,
         seq: revision.seq,
+        sessionId: revision.sessionId,
         sessionKind: revision.sessionKind,
       };
 
-      // Routing — only `plan_run` has a retrievable transcript today.
+      // Routing — plan-run and ordinary SU/agent transcripts share one page
+      // envelope even though they live in different existing stores.
       let unavailable: UnavailableReason | null = null;
       if (revision.sessionKind === 'git_backfill') {
         unavailable = 'git_backfill';
@@ -130,10 +135,15 @@ export default defineTool({
         revision.sessionKind === 'agent_chat'
       ) {
         unavailable = 'session_kind_unsupported';
-      } else if (revision.sessionKind !== 'plan_run' || !revision.sessionId) {
-        // null session_kind (direct edit) — or a plan_run kind with no
-        // session id, which should not happen.
+      } else if (!revision.sessionId) {
+        // null session_kind (direct edit) — or a typed kind with no session id,
+        // which should not happen.
         unavailable = 'no_session';
+      } else if (
+        revision.sessionKind !== 'plan_run'
+        && !isIndexedAgentSessionKind(revision.sessionKind)
+      ) {
+        unavailable = 'session_kind_unsupported';
       }
 
       if (unavailable) {
@@ -154,11 +164,19 @@ export default defineTool({
         };
       }
 
-      const page = await readPlanRunTranscript(revision.sessionId!, {
+      const transcriptOpts = {
         query: args.query,
         cursor: args.cursor,
         limit: args.limit,
-      });
+      };
+      const page = revision.sessionKind === 'plan_run'
+        ? await readPlanRunTranscript(revision.sessionId!, transcriptOpts)
+        : await readAgentSessionTranscript(
+            scope.workspaceId,
+            revision.sessionKind as 'claude' | 'omp' | 'codex',
+            revision.sessionId!,
+            transcriptOpts,
+          );
       ctxAny.metadata?.({
         revisionId: revision.id,
         available: true,

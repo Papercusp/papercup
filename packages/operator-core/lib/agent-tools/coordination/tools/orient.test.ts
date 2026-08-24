@@ -17,6 +17,7 @@ import {
 import orientTool from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
+import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 
 // Register every orient fold so the guard checks the projected metadata, not
 // merely a duplicated source-file regex. These imports intentionally mirror
@@ -149,6 +150,11 @@ describe('coord:orient args', () => {
       warnSpy.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it('keeps the aggregate fallback before the MCP transport cap with serialization headroom', () => {
+    expect(ORIENT_AGGREGATE_TIMEOUT_MS).toBeLessThan(MCP_TRANSPORT_CAP_MS);
+    expect(MCP_TRANSPORT_CAP_MS - ORIENT_AGGREGATE_TIMEOUT_MS).toBeGreaterThanOrEqual(3_000);
   });
 
   it('starts bounded post-compaction recovery before composeOrient so the budgets overlap', () => {

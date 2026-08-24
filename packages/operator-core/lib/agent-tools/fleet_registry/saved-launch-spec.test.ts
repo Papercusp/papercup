@@ -219,6 +219,21 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
     });
   });
 
+  it('treats a preserved one-seat profile as canonical after auto-top-up is disabled', () => {
+    const result = resolveLoadedSavedFleetLaunchSpec({
+      ...base,
+      target: { ...target, target: 1 },
+      requireSaved: true,
+      requested: { headless: true },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      found: true,
+      target: 1,
+      effective: { member: { headless: true } },
+    });
+  });
+
   it('fails closed when the canonical read or stored model/effort pair is invalid', async () => {
     const readTarget = vi.fn().mockRejectedValue(new Error('pg unavailable'));
     await expect(resolveSavedFleetLaunchSpec({ ...base, readTarget })).resolves.toMatchObject({

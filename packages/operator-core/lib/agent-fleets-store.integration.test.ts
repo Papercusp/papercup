@@ -22,6 +22,7 @@ import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
   getFleet,
+  getFleetHeadcountTarget,
   claimFleetHeadcountAttempt,
   listFleetHeadcountTargets,
   recordFleetHeadcountAttempt,
@@ -368,5 +369,37 @@ describe('fleet headcount target (WI-2479)', () => {
     expect(await readBackoffTarget()).toMatchObject({ backoffMs: 120_000, lastError: 'spawn failed again' });
     await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-backoff', succeeded: true, now: 9_500_000, sql: rootSql });
     expect(await readBackoffTarget()).toMatchObject({ backoffMs: 0, nextAttemptAt: null, lastError: null });
+  });
+
+  it('disables automatic top-up without erasing the canonical launch recipe', async () => {
+    await insertFleet('headcount-disabled-profile');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'headcount-disabled-profile', target: 5, config, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'headcount-disabled-profile', target: null, sql: rootSql,
+    });
+
+    expect(await listFleetHeadcountTargets(WS, rootSql)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ fleetSlug: 'headcount-disabled-profile' })]),
+    );
+    expect(await claimFleetHeadcountAttempt({
+      workspaceId: WS, fleetSlug: 'headcount-disabled-profile', now: 10_000_000, sql: rootSql,
+    })).toBeNull();
+    expect(await getFleetHeadcountTarget(WS, 'headcount-disabled-profile', rootSql)).toMatchObject({
+      fleetSlug: 'headcount-disabled-profile', target: 1, config,
+    });
+    const [row] = await rootSql.unsafe<{
+      headcount_target: number | null;
+      headcount_config: typeof config | string;
+    }[]>(
+      `SELECT headcount_target, headcount_config
+         FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'headcount-disabled-profile'],
+    );
+    expect(row?.headcount_target).toBeNull();
+    expect(typeof row?.headcount_config === 'string' ? JSON.parse(row.headcount_config) : row?.headcount_config)
+      .toMatchObject(config);
   });
 });

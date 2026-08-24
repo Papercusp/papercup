@@ -3,18 +3,19 @@
  * tool records the validated recipe that later routine ticks may top up. */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { getFleet, setFleetHeadcountTarget, type FleetHeadcountConfig } from '../../agent-fleets-store';
+import { getFleet, getFleetHeadcountTarget, setFleetHeadcountTarget, type FleetHeadcountConfig } from '../../agent-fleets-store';
 import { FLEET_MAX_TARGET_MEMBERS } from '../../agent-config-constants';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
+import { resolveLoadedSavedFleetLaunchSpec } from './saved-launch-spec';
 import { json, resolveFleetCaller } from './_shared';
 
 export default defineTool({
   name: 'fleet:headcount-target',
   description:
-    'Persist a bounded target member count and launch recipe for a fleet. The dark, routine-backed governor uses this recipe to top up missing headless members with duplicate suppression and exponential backoff.',
+    'Persist a bounded target member count and canonical launch recipe for a fleet. target:null disables automatic top-up but PRESERVES the launch recipe for takeover/respawn. Existing boot-baked settings fail closed unless replaceExisting:true includes an audit reason.',
   guidance: {
     when: 'After a fleet:launch-on-plan wave, when the fleet should maintain a target member count across member death and operator restarts.',
-    notWhen: 'For a one-off launch wave, use fleet:launch-on-plan. Clear the governor with target:null when the fleet should stop auto-top-up.',
+    notWhen: 'For a one-off launch wave, use fleet:launch-on-plan. Disable the governor with target:null; the saved launch recipe deliberately survives.',
   },
   capability: 'fleet:headcount-target',
   requirePrincipal: false,
@@ -24,7 +25,7 @@ export default defineTool({
     target: z.number().int().min(1).max(FLEET_MAX_TARGET_MEMBERS).nullable().describe('Desired live member count, or null to disable the governor.'),
     harness: z.string().min(1).describe('Harness containing the plan.'),
     plan: z.string().min(1).describe('Plan whose work the top-up members should pull.'),
-    agent: z.enum(['claude', 'omp', 'codex']).default('claude'),
+    agent: z.enum(['claude', 'omp', 'codex']).optional().describe('Agent backend. Omit to preserve an existing profile; a new profile defaults to claude.'),
     model: z.string().min(1).optional(),
     effort: z.string().min(1).max(40).optional(),
     account: z.string().min(1).optional(),
@@ -36,6 +37,12 @@ export default defineTool({
     compactionLimit: z.number().int().min(20_000).max(900_000).optional(),
     carry: z.enum(['warm', 'cold']).optional(),
     extraArgs: z.array(z.string()).max(20).optional(),
+    replaceExisting: z.boolean().optional().default(false).describe('Allow an intentional change to an existing canonical launch recipe. Requires reason.'),
+    reason: z.string().min(1).max(500).optional().describe('Audit reason required with replaceExisting:true.'),
+  }).superRefine((args, ctx) => {
+    if (args.replaceExisting && !args.reason) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'reason is required when replaceExisting=true' });
+    }
   }),
   async handler(args, ctx) {
     const { workspaceId, ownerId } = resolveFleetCaller(ctx);
@@ -43,7 +50,7 @@ export default defineTool({
     if (!fleet) return json({ ok: false, error: `no fleet '${args.fleet}' in this workspace` }, true);
     if (args.target == null) {
       await setFleetHeadcountTarget({ workspaceId, fleetSlug: args.fleet, target: null });
-      return json({ ok: true, fleet: args.fleet, target: null, disabled: true, by: ownerId });
+      return json({ ok: true, fleet: args.fleet, target: null, disabled: true, launchProfilePreserved: true, by: ownerId });
     }
     try {
       const resolved = await resolveHarnessPlansDir(args.harness, { workspaceId });
@@ -52,14 +59,40 @@ export default defineTool({
     } catch (error) {
       return json({ ok: false, error: `could not validate plan: ${error instanceof Error ? error.message : String(error)}` }, true);
     }
+    const existing = await getFleetHeadcountTarget(workspaceId, args.fleet);
+    let replacementConflicts: unknown[] = [];
+    if (existing) {
+      const resolution = resolveLoadedSavedFleetLaunchSpec({
+        target: existing,
+        workspaceId,
+        fleetSlug: args.fleet,
+        requested: args,
+        reusePath: 'fleet:headcount-target canonical recipe update',
+      });
+      if (!resolution.ok) {
+        if (resolution.error !== 'saved_launch_spec_conflict' || !args.replaceExisting) {
+          return json({
+            ok: false,
+            error: resolution.error,
+            message: resolution.message,
+            conflicts: resolution.conflicts,
+            hint: resolution.error === 'saved_launch_spec_conflict'
+              ? 'Re-call with replaceExisting:true and a concrete reason for an intentional audited boot-setting change.'
+              : undefined,
+          }, true);
+        }
+        replacementConflicts = resolution.conflicts;
+      }
+    }
     const config: FleetHeadcountConfig = {
+      ...(existing?.config ?? {}),
       plan: args.plan,
       harness: args.harness,
-      agent: args.agent,
+      agent: args.agent ?? existing?.config.agent ?? 'claude',
       ...(args.model ? { model: args.model } : {}),
       ...(args.effort ? { effort: args.effort } : {}),
       ...(args.account ? { account: args.account } : {}),
-      headless: args.headless ?? true,
+      headless: args.headless ?? existing?.config.headless ?? true,
       ...(args.role ? { role: args.role } : {}),
       ...(args.brief ? { brief: args.brief } : {}),
       ...(args.launchContext ? { launchContext: args.launchContext } : {}),
@@ -69,6 +102,19 @@ export default defineTool({
       ...(args.extraArgs?.length ? { extraArgs: args.extraArgs } : {}),
     };
     await setFleetHeadcountTarget({ workspaceId, fleetSlug: args.fleet, target: args.target, config });
-    return json({ ok: true, fleet: args.fleet, target: args.target, config, enabled: true, by: ownerId });
+    return json({
+      ok: true,
+      fleet: args.fleet,
+      target: args.target,
+      config,
+      enabled: true,
+      launchProfile: {
+        existed: !!existing,
+        replaced: replacementConflicts.length > 0,
+        conflicts: replacementConflicts,
+        reason: replacementConflicts.length > 0 ? args.reason : undefined,
+      },
+      by: ownerId,
+    });
   },
 });

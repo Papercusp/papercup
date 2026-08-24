@@ -3,14 +3,15 @@
  * "conversation behind a revision" verb (plan-agent-launch-2026-05-21 P-008 /
  * D-002). The three IO helpers are mocked (their own suites cover them); this
  * pins the handler's job: route by the revision's `session_kind`, emit the
- * right `available`/`reason`, forward query/cursor/limit into
- * `readPlanRunTranscript` on the one populated branch, and fail safe.
+ * right `available`/`reason`, forward query/cursor/limit into the plan-run or
+ * ordinary agent-session reader, and fail safe.
  *
  *   - missing revision        → isError not_found (revisionId echoed)
  *   - git_backfill            → available:false reason git_backfill
  *   - operator_chat/agent_chat→ available:false reason session_kind_unsupported
  *   - null kind / no sessionId→ available:false reason no_session
  *   - plan_run + sessionId    → available:true, forwards opts, surfaces page
+ *   - claude/omp/codex        → available:true through session index/archive
  *   - thrown helper           → isError transcript_unavailable (msg ≤400 chars)
  *   - ctx.metadata            → available:false on unavailable, +turnCount on ok
  */
@@ -19,14 +20,20 @@ import transcriptTool from './revision-transcript';
 import { resolvePlanScope } from './source';
 import { getPlanRevisionById, type PlanRevisionRef } from './revisions';
 import { readPlanRunTranscript, type PlanRunTranscriptPage } from './runs';
+import { readAgentSessionTranscript } from './revision-session-transcript';
 
 vi.mock('./source');
 vi.mock('./revisions');
 vi.mock('./runs');
+vi.mock('./revision-session-transcript', async (orig) => {
+  const actual = await orig<typeof import('./revision-session-transcript')>();
+  return { ...actual, readAgentSessionTranscript: vi.fn() };
+});
 
 const mockScope = vi.mocked(resolvePlanScope);
 const mockGetRevision = vi.mocked(getPlanRevisionById);
 const mockReadTranscript = vi.mocked(readPlanRunTranscript);
+const mockReadAgentTranscript = vi.mocked(readAgentSessionTranscript);
 
 /** Build a revision ref, defaulting the unspecified fields. */
 function revision(over: Partial<PlanRevisionRef> = {}): PlanRevisionRef {
@@ -65,6 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockScope.mockResolvedValue({ workspaceId: 'ws-1', harnessSlug: 'papercup' });
   mockReadTranscript.mockResolvedValue(emptyPage);
+  mockReadAgentTranscript.mockResolvedValue(emptyPage);
 });
 
 describe('plans:revision-transcript — missing revision', () => {
@@ -188,6 +196,40 @@ describe('plans:revision-transcript — plan_run branch (available:true)', () =>
     });
     expect(body).toMatchObject({ available: true, query: null, turns: [], nextCursor: null });
   });
+});
+
+describe('plans:revision-transcript — ordinary agent-session branches', () => {
+  it.each(['claude', 'omp', 'codex'] as const)(
+    'routes %s revisions through the indexed session/archive reader',
+    async (sourceKind) => {
+      const page: PlanRunTranscriptPage = {
+        turns: [{ seq: 0, role: 'user', content: 'source requirement', createdAt: 100 }],
+        nextCursor: null,
+      };
+      mockGetRevision.mockResolvedValue(revision({
+        sessionKind: sourceKind,
+        sessionId: `${sourceKind}-session`,
+      }));
+      mockReadAgentTranscript.mockResolvedValue(page);
+
+      const { isError, body } = await callTool({ revisionId: 42, query: 'requirement', cursor: 3, limit: 9 });
+
+      expect(isError).toBeFalsy();
+      expect(mockReadAgentTranscript).toHaveBeenCalledWith(
+        'ws-1',
+        sourceKind,
+        `${sourceKind}-session`,
+        { query: 'requirement', cursor: 3, limit: 9 },
+      );
+      expect(body).toMatchObject({
+        available: true,
+        sessionKind: sourceKind,
+        sessionId: `${sourceKind}-session`,
+        turns: page.turns,
+      });
+      expect(mockReadTranscript).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('plans:revision-transcript — error handling', () => {

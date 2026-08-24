@@ -41,6 +41,7 @@ import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../../capability/foreground-transport-cap';
 import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
 import { shapeOrient } from './orient-shape';
 import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
@@ -175,12 +176,14 @@ const ORIENT_PANE_CONTEXT_TIMEOUT_MS = 10_000;
  *  still an order of magnitude under the 300s wedge this exists to prevent. */
 const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
 /**
- * EI-21223537749399745: individual fold budgets do not bound the sequential sum of
- * composeOrient plus the handler-owned enrichment folds. Keep one aggregate fence below
- * the 120s dispatch budget so a still-running fold returns an honest unknown orientation
- * instead of becoming a transport timeout with no state at all.
+ * EI-21223537749399745 / EI-21307071637678068: individual fold budgets do not bound the
+ * sequential sum of composeOrient plus the handler-owned enrichment folds. The aggregate
+ * fence must beat the MCP transport cap, not merely the server's 120s dispatch budget;
+ * otherwise a direct coord:orient caller gets an opaque -32001 before this honest unknown
+ * fallback can be serialized. Reuse the shared 50s foreground ceiling, which carries the
+ * transport's required response-serialization headroom.
  */
-export const ORIENT_AGGREGATE_TIMEOUT_MS = 105_000;
+export const ORIENT_AGGREGATE_TIMEOUT_MS = FOREGROUND_TIMEOUT_CEILING_MS;
 
 export function withOrientAggregateTimeout<T>(work: Promise<T> | (() => Promise<T>), fallback: T): Promise<T> {
   return withBoundedTimeout(work, {

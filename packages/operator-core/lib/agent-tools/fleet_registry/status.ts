@@ -320,7 +320,11 @@ export default defineTool({
     // droppable-first detail; the roster itself reports its OWN per-sub-read
     // degradation (fleet-roster.ts) rather than degrading as a single unit.
     const [rosterResult, completionStatsResult, runningBeesResult, beeCountResult] = await Promise.all([
-      listFleetRosterDiagnosed({ fleetSlug: args.fleet, workspaceId }),
+      listFleetRosterDiagnosed({
+        fleetSlug: args.fleet,
+        workspaceId,
+        leaderOwnerId: fleet.leaderOwnerId,
+      }),
       args.harness
         ? withBoundedTimeout<CompletionIntegrityStats | null>(getCompletionIntegrityStats(args.harness), {
             fallback: null,
@@ -339,7 +343,19 @@ export default defineTool({
         label: 'fleet:status:beeCount',
       }),
     ]);
-    const roster = reconcileFleetStatusLiveness(rosterResult.entries);
+    // A leader can be present in another fleet's labelled roster when it leads
+    // multiple fleets. Reconcile the liveness-only enrichment alongside the
+    // queried roster, then project the queried ids back out before calculating
+    // members/counts so cross-fleet leadership never changes this fleet's census.
+    const queriedRosterIds = new Set(rosterResult.entries.map((member) => member.agentId));
+    const rosterForLiveness =
+      fleet.leaderOwnerId &&
+      rosterResult.leaderEntry &&
+      !queriedRosterIds.has(fleet.leaderOwnerId)
+        ? [...rosterResult.entries, rosterResult.leaderEntry]
+        : rosterResult.entries;
+    const reconciledRoster = reconcileFleetStatusLiveness(rosterForLiveness);
+    const roster = reconciledRoster.filter((member) => queriedRosterIds.has(member.agentId));
     const completionStats = completionStatsResult.value;
     const runningBees = runningBeesResult.value;
     const beeCount = beeCountResult.value;
@@ -388,7 +404,7 @@ export default defineTool({
     // verdict is positive evidence that the slot is gone. A null registry leader is an
     // explicit vacancy.
     const leaderMember = fleet.leaderOwnerId
-      ? roster.find((member) => member.agentId === fleet.leaderOwnerId)
+      ? reconciledRoster.find((member) => member.agentId === fleet.leaderOwnerId)
       : undefined;
     const leaderSessionState = leaderMember?.sessionState ?? null;
     const leaderVacant =
