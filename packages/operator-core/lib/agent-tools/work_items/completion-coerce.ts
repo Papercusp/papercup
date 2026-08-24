@@ -79,6 +79,23 @@ function joinToString(v: readonly unknown[]): string {
 }
 
 /**
+ * Normalize the boolean completion flag without guessing at multi-valued input.
+ *
+ * LLM callers occasionally wrap a scalar in a one-element array while producing
+ * the rest of the completion record. Unwrap only that lossless shape; an array
+ * with multiple entries remains invalid because it cannot truthfully represent a
+ * boolean flag. String spellings retain the existing true/false coercion.
+ */
+function coerceBooleanFlag(v: unknown): unknown {
+  const candidate = Array.isArray(v) && v.length === 1 ? v[0] : v;
+  if (typeof candidate !== 'string') return candidate;
+  const s = candidate.trim().toLowerCase();
+  if (['true', 'yes', 'y', '1'].includes(s)) return true;
+  if (['false', 'no', 'n', '0'].includes(s)) return false;
+  return candidate;
+}
+
+/**
  * EI-7311: a JSON-STRINGIFIED completion object (e.g. `completion: '{"summary":
  * "...", "tests": "..."}'`) used to hit the bare-string branch below and get
  * wrapped whole as `{ summary: <the entire JSON text> }` — silently DROPPING every
@@ -244,12 +261,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
         return entry.path.trim();
       });
     }
-    const addedTests = verification.addedTests;
-    if (typeof addedTests === 'string') {
-      const s = addedTests.trim().toLowerCase();
-      if (['true', 'yes', 'y', '1'].includes(s)) verification.addedTests = true;
-      if (['false', 'no', 'n', '0'].includes(s)) verification.addedTests = false;
-    }
+    verification.addedTests = coerceBooleanFlag(verification.addedTests);
     out.verification = verification;
   }
 
@@ -284,12 +296,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
   }
 
   for (const f of BOOL_FIELDS) {
-    const val = out[f];
-    if (typeof val === 'string') {
-      const s = val.trim().toLowerCase();
-      if (['true', 'yes', 'y', '1'].includes(s)) out[f] = true;
-      if (['false', 'no', 'n', '0'].includes(s)) out[f] = false;
-    }
+    out[f] = coerceBooleanFlag(out[f]);
   }
 
   // derive a summary if the caller omitted it (after array-coercion, so whatLanded[0] is safe).

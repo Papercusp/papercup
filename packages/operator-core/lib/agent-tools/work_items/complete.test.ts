@@ -2446,6 +2446,21 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
+    it('unwraps a one-element addedTests array and joins top-level testsRun arrays', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        addedTests: [true],
+        testsRun: ['focused completion test', 'green'],
+      }) as { addedTests: unknown; testsRun: unknown };
+      expect(out.addedTests).toBe(true);
+      expect(out.testsRun).toBe('focused completion test; green');
+    });
+
+    it('keeps multi-element addedTests arrays invalid instead of guessing a boolean', () => {
+      const out = coerceCompletionShape({ summary: 's', addedTests: [true, false] }) as { addedTests: unknown };
+      expect(out.addedTests).toEqual([true, false]);
+    });
+
     it('coerces array-valued aliases nested under verification before schema validation', () => {
       const out = coerceCompletionShape({
         summary: 's',
@@ -2482,6 +2497,30 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     it('an array in a string-typed field is joined (the "tests: expected string, received array")', () => {
       const out = coerceCompletionShape({ summary: 's', tests: ['67 green', 'vitest'] }) as { tests: unknown };
       expect(out.tests).toBe('67 green; vitest');
+    });
+
+    it('wires scalar↔array recovery through the published args schema', () => {
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: any };
+        }
+      ).safeParse({
+        id: 'WI-21308742764698474',
+        completion: {
+          workItem: 'WI-21308742764698474',
+          summary: 'shape recovery',
+          addedTests: [true],
+          testsRun: ['focused completion test', 'green'],
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        completion: {
+          addedTests: true,
+          testsRun: 'focused completion test; green',
+        },
+      });
     });
 
     it('derives a summary from title / whatLanded / status when omitted (the 2× missing summary)', () => {
