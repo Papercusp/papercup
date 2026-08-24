@@ -158,7 +158,14 @@ export function _clearQueryEmbedCacheForTests(): void {
 }
 
 function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder {
-  return (text: string) => {
+  const trim = (): void => {
+    while (queryEmbedCache.size > QUERY_EMBED_CACHE_MAX) {
+      const oldest = queryEmbedCache.keys().next().value;
+      if (oldest === undefined) break;
+      queryEmbedCache.delete(oldest);
+    }
+  };
+  return (text: string, signal?: AbortSignal) => {
     const key = `${mode}:${dims}:${text}`;
     const now = Date.now();
     const hit = queryEmbedCache.get(key);
@@ -168,14 +175,23 @@ function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder
       queryEmbedCache.set(key, hit);
       return hit.p;
     }
-    const p = embed(text);
-    queryEmbedCache.set(key, { at: now, p });
-    p.catch(() => queryEmbedCache.delete(key)); // never cache a failure
-    while (queryEmbedCache.size > QUERY_EMBED_CACHE_MAX) {
-      const oldest = queryEmbedCache.keys().next().value;
-      if (oldest === undefined) break;
-      queryEmbedCache.delete(oldest);
+    const p = embed(text, signal);
+    if (signal) {
+      // Never share an abortable in-flight promise: one short-budget caller
+      // must not cancel work another caller still needs. Cache only the
+      // completed deterministic vector, after its caller still owns it.
+      return p.then((vector) => {
+        const completed = Promise.resolve(vector);
+        queryEmbedCache.set(key, { at: Date.now(), p: completed });
+        trim();
+        return vector;
+      });
     }
+    queryEmbedCache.set(key, { at: now, p });
+    p.catch(() => {
+      if (queryEmbedCache.get(key)?.p === p) queryEmbedCache.delete(key);
+    }); // never cache a failure (without deleting a newer successful fill)
+    trim();
     return p;
   };
 }

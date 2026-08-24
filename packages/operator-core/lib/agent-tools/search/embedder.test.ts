@@ -47,6 +47,7 @@ import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } 
 import { PROSE_VECTOR_DIMS } from '../../search/prose-vector-dims';
 import { readCredentials } from '../../credentials';
 import { loadVoicePrefs } from '../../voice-prefs';
+import { buildSidecarAwareEmbedder } from '../../memory/embed-sidecar-wiring';
 
 const savedKey = process.env.OPENAI_API_KEY;
 
@@ -308,5 +309,40 @@ describe('query-embed memo (WI-4734 — facet/window re-queries must not re-pay 
     await expect(embedder!('q-b')).rejects.toThrow('openai_embed_500');
     expect(await embedder!('q-b')).toEqual([2]); // retried — the failure was not cached
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not share an abortable in-flight embed, but caches its completed vector (WI-41248)', async () => {
+    vi.mocked(readCredentials).mockResolvedValue({});
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'local' } as never);
+    const pending: Array<{
+      signal: AbortSignal | undefined;
+      resolve: (vector: number[]) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    const inner = vi.fn((_text: string, signal?: AbortSignal) =>
+      new Promise<number[]>((resolve, reject) => {
+        pending.push({ signal, resolve, reject });
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }),
+    );
+    vi.mocked(buildSidecarAwareEmbedder).mockResolvedValueOnce(inner);
+    const embed = await buildQueryEmbedder();
+    expect(embed).not.toBeNull();
+
+    const firstAbort = new AbortController();
+    const secondAbort = new AbortController();
+    const first = embed!('same query', firstAbort.signal);
+    const second = embed!('same query', secondAbort.signal);
+    expect(inner).toHaveBeenCalledTimes(2); // no shared cancellation ownership
+
+    const reason = new Error('first caller expired');
+    firstAbort.abort(reason);
+    await expect(first).rejects.toBe(reason);
+    pending[1].resolve([0.4, 0.5]);
+    await expect(second).resolves.toEqual([0.4, 0.5]);
+
+    // Once complete, the deterministic vector is safe to share again.
+    await expect(embed!('same query', new AbortController().signal)).resolves.toEqual([0.4, 0.5]);
+    expect(inner).toHaveBeenCalledTimes(2);
   });
 });
