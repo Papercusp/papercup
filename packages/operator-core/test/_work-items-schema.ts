@@ -131,6 +131,20 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     closed_ts bigint,
     last_released_by text,
     last_released_at timestamptz,
+    -- migration 944 (plan work-queue-admission-and-bulk-dedup-2026-08-24, P-002): the
+    -- admission-gate axis, orthogonal to status. NULL = pre-gate legacy row, which
+    -- isAdmitted() reads as ADMITTED — so a fixture row that omits it behaves exactly as
+    -- it did before the gate, which is what keeps every existing suite green.
+    -- These three MUST be here as well as on the two compat views: 946 appends them to
+    -- engineer_issues (view + INSTEAD OF trigger) and a view cannot select a base column
+    -- that does not exist, so without this line every integration test that files an
+    -- issue dies on 'column "admission" does not exist'. The live CHECK constraint
+    -- (admission IN ('pending','admitted','auto','unreviewed')) is deliberately omitted
+    -- here for the same reason the other CHECKs are — fixtures insert deliberately-odd
+    -- rows, and the enum is asserted against the migration by its own unit test.
+    admission text,
+    admitted_at timestamptz,
+    admitted_by text,
     -- migration 721 (WI-6934): payload->>'lane' materialised as a STORED generated column
     -- so the observation-lane floor filters without detoasting payload. work-items.ts's
     -- observationLaneExclusionSql now emits "wi.lane IS DISTINCT FROM 'observation'", and
@@ -252,7 +266,18 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       source_plan_slug,
       source_plan_item_ids,
       redundancy,
-      expected_cost_cents
+      expected_cost_cents,
+      -- migrations 944 + 946 (plan work-queue-admission-and-bulk-dedup-2026-08-24, P-002):
+      -- 944 put these three on the base table; 946 appends them to the production view AND
+      -- to the INSTEAD OF trigger's INSERT. Both halves have to be mirrored here — see the
+      -- THIRD COPY warning above — because createIssue now NAMES admission in its INSERT
+      -- column list, so a fixture view lacking them fails every integration test that files
+      -- an issue with 'column "admission" does not exist'. Note 946 patches the live view via
+      -- pg_get_viewdef replace rather than a literal CREATE VIEW line, so (like migration 698)
+      -- there is no "CREATE VIEW ... admission" text in the migration file to grep for.
+      admission,
+      admitted_at,
+      admitted_by
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;
@@ -322,8 +347,8 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- UPDATE ... SET authority = ... through the view was silently DROPPED: no error,
       -- no warning, no write. Anything added to work_items that the issue family must be
       -- able to write has to be added to all three places in this function.
-      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, taken_by, taken_at, item_kind, origin, author_pubkey, assignee_rank, rank_writer, rank_updated_at, fed_ts, fed_hlc, ts, created_ts, updated_ts, payload, terminal_owner, terminal_completion_ref, last_progress_at, authority, parent_id)
-      VALUES (COALESCE(NEW.workspace_id,'default'), v_slug, NEW.issue_id, NEW.title, COALESCE(NEW.body,''), COALESCE(NEW.state,'open'), NEW.assignee, NEW.assigned_at, COALESCE(NEW.kind,'bug'), COALESCE(NEW.origin,'local'), NEW.author_pubkey, NEW.assignee_rank, NEW.rank_writer, NEW.rank_updated_at, NEW.fed_ts, NEW.fed_hlc, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.created_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, v_payload || jsonb_build_object('_ei', v_ei), NEW.terminal_owner, NEW.terminal_completion_ref, NEW.last_progress_at, NEW.authority, NEW.parent_id);
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, taken_by, taken_at, item_kind, origin, author_pubkey, assignee_rank, rank_writer, rank_updated_at, fed_ts, fed_hlc, ts, created_ts, updated_ts, payload, terminal_owner, terminal_completion_ref, last_progress_at, authority, parent_id, admission, admitted_at, admitted_by)
+      VALUES (COALESCE(NEW.workspace_id,'default'), v_slug, NEW.issue_id, NEW.title, COALESCE(NEW.body,''), COALESCE(NEW.state,'open'), NEW.assignee, NEW.assigned_at, COALESCE(NEW.kind,'bug'), COALESCE(NEW.origin,'local'), NEW.author_pubkey, NEW.assignee_rank, NEW.rank_writer, NEW.rank_updated_at, NEW.fed_ts, NEW.fed_hlc, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.created_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, v_payload || jsonb_build_object('_ei', v_ei), NEW.terminal_owner, NEW.terminal_completion_ref, NEW.last_progress_at, NEW.authority, NEW.parent_id, NEW.admission, NEW.admitted_at, NEW.admitted_by);
       RETURN NEW;
     ELSE
       -- Mig 499: release-cooldown provenance (mirrors the feature-family release stamp) —
