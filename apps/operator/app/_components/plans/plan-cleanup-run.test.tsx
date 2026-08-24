@@ -34,6 +34,7 @@ import PlansCleanupStrip, {
 import {
   derivePlanCleanupCounts,
   snapshotPlanSlugs,
+  usePlanCleanupOps,
   usePlanCleanupRun,
   type PlanCleanupFinding,
   type PlanCleanupRun,
@@ -172,6 +173,28 @@ describe("usePlanCleanupRun", () => {
       queryName: "plans.cleanupRun",
       args: {},
       enabled: false,
+    });
+  });
+});
+
+describe("usePlanCleanupOps", () => {
+  it("records one owner acceptance through the plan-cleanup route", async () => {
+    H.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, phase: "complete", accepted: true }),
+    });
+    const { result } = renderHook(() => usePlanCleanupOps());
+    const accepted = await result.current.accept(
+      "run-1",
+      "finding-1",
+      "owner checked it",
+    );
+    expect(accepted).toEqual({ ok: true, phase: "complete" });
+    expect(JSON.parse(H.fetch.mock.calls[0]![1].body as string)).toEqual({
+      op: "accept",
+      runId: "run-1",
+      findingId: "finding-1",
+      note: "owner checked it",
     });
   });
 });
