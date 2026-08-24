@@ -184,7 +184,7 @@ describe('the removed scorecard port (D-003)', () => {
       'saveAttestation',
       'wakeLaneOwner',
     ]);
-    expect((ports as Record<string, unknown>).refreshScorecardCriterion).toBeUndefined();
+    expect((ports as unknown as Record<string, unknown>).refreshScorecardCriterion).toBeUndefined();
   });
 });
 
