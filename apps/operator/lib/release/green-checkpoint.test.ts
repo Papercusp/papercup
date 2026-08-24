@@ -330,7 +330,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error("a green initial candidate must not prepare a repair worktree");
+      throw new Error(
+        "a green initial candidate must not prepare a repair worktree",
+      );
     };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("a green initial candidate must not dispatch a fixer");
@@ -356,7 +358,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       green: true,
       reason: "advanced",
     });
-    expect(trace).toEqual(["write:ready-to-test", "setup", "suite", "write:clear"]);
+    expect(trace).toEqual([
+      "write:ready-to-test",
+      "setup",
+      "suite",
+      "write:clear",
+    ]);
     expect(persisted[0]).toMatchObject({
       schemaVersion: 3,
       phase: "ready-to-test",
@@ -484,10 +491,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     let dispatchCount = 0;
     deps.readFrozenRepairQueue = async () => queue;
     deps.frozenRepairFixerAlive = async () => {
-      throw new Error("liveness must not be queried for an active dispatch reservation");
+      throw new Error(
+        "liveness must not be queried for an active dispatch reservation",
+      );
     };
     deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error("worktree must not be prepared while another checkpoint owns dispatch");
+      throw new Error(
+        "worktree must not be prepared while another checkpoint owns dispatch",
+      );
     };
     deps.dispatchFrozenRepairFixer = async () => {
       dispatchCount += 1;
@@ -553,9 +564,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       reason: "not-green",
       candidate: frozen,
     });
-    expect((events["green-checkpoint:red"].payload as { sha: string }).sha).toBe(
-      frozen,
-    );
+    expect(
+      (events["green-checkpoint:red"].payload as { sha: string }).sha,
+    ).toBe(frozen);
     expect(
       events[`green-checkpoint:red:${pipeline}`].cancelSiblingKeysFor,
     ).toEqual(["release:green", `release:green:${pipeline}`]);
@@ -642,7 +653,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       return { spawnId: "fixer-1", runId: "run-1" };
     };
     deps.finalizeFrozenRepairFixer = async (reserved, fired) => {
-      const { dispatchReservation: _reservation, ...withoutReservation } = reserved;
+      const { dispatchReservation: _reservation, ...withoutReservation } =
+        reserved;
       const finalized: FrozenCandidateRepairQueue = fired?.spawnId
         ? {
             ...withoutReservation,
@@ -865,8 +877,16 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const repaired = await commit("b", "fixed", "isolated repair");
 
     await git(repo, ["reset", "--hard", ready]);
-    const transportedQuietCut = await commit("b", "fixed independently", "canonical quiet-cut target");
-    const youngStagingTip = await commit("c", "young", "newer tip after launch target was selected");
+    const transportedQuietCut = await commit(
+      "b",
+      "fixed independently",
+      "canonical quiet-cut target",
+    );
+    const youngStagingTip = await commit(
+      "c",
+      "young",
+      "newer tip after launch target was selected",
+    );
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
       schemaVersion: 3,
@@ -1416,10 +1436,7 @@ describe("in-flight candidate retirement ownership", () => {
     const clear = vi.fn(async () => {});
 
     await expect(
-      retireInFlightCandidateAfterResult(
-        { reason: "skipped-locked" },
-        clear,
-      ),
+      retireInFlightCandidateAfterResult({ reason: "skipped-locked" }, clear),
     ).resolves.toBe(false);
     expect(clear).not.toHaveBeenCalled();
   });
@@ -2103,7 +2120,9 @@ describe("runGreenCheckpoint", () => {
     expect(calls.findIndex((call) => call.startsWith("setup:"))).toBeLessThan(
       calls.indexOf("phase:suite"),
     );
-    expect(calls.indexOf("phase:suite")).toBeLessThan(calls.indexOf("runGreen"));
+    expect(calls.indexOf("phase:suite")).toBeLessThan(
+      calls.indexOf("runGreen"),
+    );
   });
 
   /**
@@ -2675,8 +2694,12 @@ describe("runGreenCheckpoint", () => {
     const message = error instanceof Error ? error.message : String(error);
     expect(message).toContain("timed out after 500ms");
     expect(message).toContain("--- last captured child output ---");
-    expect(message).toContain("[stdout] [setup-release] root snapshot complete");
-    expect(message).toContain("[stderr] [setup-release] copying nested dependency tree");
+    expect(message).toContain(
+      "[stdout] [setup-release] root snapshot complete",
+    );
+    expect(message).toContain(
+      "[stderr] [setup-release] copying nested dependency tree",
+    );
   });
 
   it("reports child output progress while retaining stdout and stderr", async () => {
