@@ -71,7 +71,11 @@ import {
   type CompletionRecord,
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
-import { completionTreeStamp, completionTreeStampForEvidence } from './completion-freshness';
+import {
+  completionTreeContentIdentityMatches,
+  completionTreeStamp,
+  completionTreeStampForEvidence,
+} from './completion-freshness';
 export { completionTreeStamp, completionTreeStampForEvidence };
 export type {
   CompletionTreeStampProbe,
@@ -159,7 +163,7 @@ const completionSpec = z
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
       `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
-      `If verification.coverage.residue is present it must be non-empty; use ['none'] for explicit zero residue. ` +
+      `If verification.coverage.residue is present it may be empty to explicitly declare zero residue; ['none'] remains accepted for compatibility. ` +
       `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
   );
 
@@ -316,18 +320,6 @@ function reportMalformedCompletionCoverage(
     for (const candidate of candidates) {
       if (hasMalformedCoverageShape(candidate.value)) {
         addIssue({ code: 'custom', message: COMPLETION_COVERAGE_CONTRACT, path: candidate.path });
-      } else if (
-        candidate.value &&
-        typeof candidate.value === 'object' &&
-        !Array.isArray(candidate.value) &&
-        Array.isArray((candidate.value as Record<string, unknown>).residue) &&
-        ((candidate.value as Record<string, unknown>).residue as unknown[]).length === 0
-      ) {
-        addIssue({
-          code: 'custom',
-          message: `${COMPLETION_COVERAGE_CONTRACT} The residue array must be non-empty; use residue:['none'] for zero residue.`,
-          path: [...candidate.path, 'residue'],
-        });
       }
     }
   };
@@ -1329,11 +1321,12 @@ export function claimsUniversalVerification(completion: {
 
 /**
  * A valid coverage record accounts for every named population entry and states
- * the residue explicitly. `residue: ['none']` is the explicit zero-residue
- * form; omission is not silently treated as complete coverage.
+ * the residue explicitly. `residue: []` is the natural zero-residue form and
+ * `residue: ['none']` remains accepted for compatibility; omission is not
+ * silently treated as complete coverage.
  */
 export function hasEnumeratedVerificationCoverage(coverage: CompletionCoverage | undefined): boolean {
-  if (!coverage?.population?.length || !coverage.residue?.length) return false;
+  if (!coverage?.population?.length || coverage.residue === undefined) return false;
   const population = coverage.population;
   const populationSet = new Set(population);
   // A population is an enumeration, not a bag of labels. Duplicate names make an
@@ -1825,35 +1818,21 @@ async function completeOne(
     typeof it.completion.duplicateOf === 'string' &&
     it.completion.duplicateOf.trim().length > 0 &&
     it.completion.duplicateOf.trim() !== it.id;
-  // EI-20471001877504040: an explicitly supplied empty residue array is not
-  // the same thing as "no residue". WI-39043 closed with `residue: []` while
-  // its buyer-visible production probe event was still live because the
-  // universal-claim wording gate below did not apply to that otherwise
-  // ordinary verification completion. Omission remains valid for completions
-  // that make no residue claim at all; once a caller supplies the field, they
-  // must state either the real residue or the deliberate zero form `['none']`.
-  const explicitEmptyResidue =
-    closeIntentRequested &&
-    Array.isArray(completionEvidenceForGate?.coverage?.residue) &&
-    completionEvidenceForGate.coverage.residue.length === 0;
   const verificationCoverageGap =
-    explicitEmptyResidue ||
     (closeIntentRequested &&
       !duplicateCloseCoverageException &&
       isVerificationWorkItem(existing) &&
       claimsUniversalVerification(it.completion) &&
       !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage));
   const misplacedResidueEntries = misplacedResiduePopulationEntries(completionEvidenceForGate?.coverage);
-  const verificationCoverageError = explicitEmptyResidue
-    ? `REJECTED — ${it.id} supplied completion.verification.coverage.residue as an empty array. An empty array is not evidence that residue was checked. List the actual residue, or pass residue:['none'] to make an explicit zero-residue claim. ${COMPLETION_COVERAGE_CONTRACT}`
-    : verificationCoverageGap
+  const verificationCoverageError = verificationCoverageGap
     ? // EI-20223460482316333 / EI-20224260070669261 / EI-20225113964896785 /
       // EI-20225202699515538 / EI-20222447336206097 — five agents filed the SAME
       // friction on 2026-08-12 alone: the refusal named the *concept* ("enumerated
       // coverage") but never the FIELD PATH or the shape, so a caller who agreed with
       // it still could not comply without reading this file. A refusal that cannot be
       // acted on is a wall, not a gate. The exact path + the two rules that actually
-      // fail (total partition, non-empty residue) are now in the message itself.
+      // fail (total partition, explicit residue field) are now in the message itself.
       misplacedResidueEntries.length > 0
         ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but population entries ${misplacedResidueEntries.map((entry) => JSON.stringify(entry)).join(', ')} are in residue. Residue is not a partition bucket; move those entries to checked, notChecked, or notApplicable. ${COMPLETION_COVERAGE_CONTRACT}`
         : `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. ${COMPLETION_COVERAGE_CONTRACT} Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
@@ -1878,7 +1857,7 @@ async function completeOne(
   // (P-002 measured 4.2% of evidence-bearing rows carry no `verifiedHow`) both land
   // `proposed` — the partial case is rejected explicitly rather than assumed away,
   // because an "is the object present?" test passes every one of them.
-  const completionAuthority = authorityForCompletion(completionEvidenceForGate);
+  const authorityByEvidence = authorityForCompletion(completionEvidenceForGate);
 
   // EI-19319623239777505: the object actually PERSISTED to the row additionally carries
   // the caller's free-text `completion.summary`. This is deliberately a SEPARATE object
@@ -1932,6 +1911,11 @@ async function completeOne(
     completionEvidenceBeforeStamp && treeStamp
       ? { ...completionEvidenceBeforeStamp, treeStamp }
       : completionEvidenceBeforeStamp;
+  const committedContentIdentityMissing =
+    authorityByEvidence === 'committed' &&
+    Boolean(completionEvidenceForGate?.filesChanged?.length) &&
+    !completionTreeContentIdentityMatches(treeStamp?.contentIdentity);
+  const completionAuthority = committedContentIdentityMissing ? 'proposed' : authorityByEvidence;
   // EI-20268156880922192: the completion record is durable, but a cited
   // session-local scratch path or account-local artifact URL is not. Scan the
   // exact persisted evidence shape, warn after recording, and fail open if the
@@ -2366,7 +2350,9 @@ async function completeOne(
     stampedAuthority === 'proposed'
       ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
         `claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. ` +
-        (insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
+        (committedContentIdentityMissing
+          ? `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`
+          : insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
           ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +
             `be true: if this close added or changed tests, it changed at least one file, and a completion ` +
             `nobody can locate is the exact claim this gate exists to refuse. To settle it, re-call ` +
@@ -2634,7 +2620,7 @@ export default defineTool({
   description:
     'Complete one or more work-items with structured evidence; renders and broadcasts it. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys) to converge item, plan item, claim, and checkpoint; without `state` it only records. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys) — terminal closes cannot omit it. Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`["none"]` means zero); residue is separate. Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys) — terminal closes cannot omit it. Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is a separate explicit array (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',

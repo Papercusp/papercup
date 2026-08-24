@@ -55,7 +55,7 @@ export const CompletionVerifiedHowSchema = z
 
 /** The complete repair contract shown for malformed coverage input. */
 export const COMPLETION_COVERAGE_CONTRACT =
-  'Coverage contract at completion.verification.coverage: population, checked, notChecked, and notApplicable are the partition buckets; residue is a separate list, never a fifth bucket. Every population entry must appear verbatim in exactly one status bucket. All buckets are string arrays; residue must be non-empty, and residue:[\'none\'] declares zero residue.';
+  'Coverage contract at completion.verification.coverage: population, checked, notChecked, and notApplicable are the partition buckets; residue is a separate list, never a fifth bucket. Every population entry must appear verbatim in exactly one status bucket. All buckets are string arrays; an explicit empty residue array (residue:[]) declares zero residue, and residue:[\'none\'] remains accepted as a compatibility form. Universal-verification closes must include the residue array.';
 
 function isCoverageRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -86,9 +86,9 @@ export function hasMalformedCoverageShape(value: unknown): boolean {
   }
 
   const residue = value.residue;
-  // An empty array has the right shape; the child `.min(1)` schema owns the
-  // field-level residue path for that semantic error. Shape preflight should
-  // only collapse scalar/non-string bucket values into the repair contract.
+  // An empty array has the right shape and is the natural explicit zero-residue
+  // form. Shape preflight should only collapse scalar/non-string bucket values
+  // into the repair contract.
   return residue !== undefined && !isStringArray(residue);
 }
 
@@ -98,7 +98,8 @@ export function hasMalformedCoverageShape(value: unknown): boolean {
  * A universal claim ("every page", "all facts", "nothing invented") is not
  * auditable from a sentence alone. The population must be enumerated, each
  * entry must be assigned a checked/not-checked/not-applicable status, and the
- * residue must be explicit (use `residue: ['none']` when there is none).
+ * residue must be explicit (use `residue: []` or the compatibility form
+ * `residue: ['none']` when there is none).
  * The completion gate performs the cross-field accounting check; this schema
  * keeps the durable shape typed and shared by both completion aliases.
  */
@@ -130,9 +131,8 @@ export const CompletionCoverageSchema = z
     .describe('Population entries that do not apply; entries must be copied verbatim and appear at most once.'),
   residue: z
     .array(z.string().min(1))
-    .min(1)
     .optional()
-    .describe("A separate residue list, never a partition bucket; for universal closes it is required and non-empty. Use ['none'] for zero residue."),
+    .describe("A separate residue list, never a partition bucket; for universal closes it must be present and may be empty. Use [] or ['none'] for zero residue."),
     }),
   )
   .describe(
@@ -143,6 +143,13 @@ export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 /** Caller-facing contract for the server-generated verification tree stamp. */
 export const COMPLETION_TREE_STAMP_CONTRACT =
   'Server-stamped verification metadata: `work_items:complete` records `treeStamp` from the observed checkout when available; callers must omit `treeStamp`. When present in persisted evidence, `headSha` is a full lowercase 40- or 64-character commit SHA; short hashes are invalid.';
+
+/** Server-observed Git blob identities for each declared changed path. */
+export type CompletionTreeContentIdentity = {
+  path: string;
+  workingTreeBlobSha: string | null;
+  headBlobSha: string | null;
+};
 
 /**
  * EI-18682004530991057 (proposal 3) — what tree a completion's verification was
@@ -176,6 +183,24 @@ export const CompletionTreeStampSchema = z
       .string()
       .regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/)
       .describe('Server-recorded full lowercase 40- or 64-character commit SHA; short hashes are invalid.'),
+    /**
+     * Server-observed Git blob identities for the declared changed paths. A null
+     * identity is intentional evidence of an unavailable/missing side (for example
+     * a dirty worktree file that is absent from HEAD); it must never be treated as a
+     * match by a reader.
+     */
+    contentIdentity: z
+      .array(
+        z.object({
+          path: z.string().min(1),
+          workingTreeBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
+          headBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
+        }),
+      )
+      .min(1)
+      .max(60)
+      .optional()
+      .describe('Server-recorded per-path Git blob identities; present only when declared content was observed.'),
   })
   .describe(COMPLETION_TREE_STAMP_CONTRACT);
 export type CompletionTreeStamp = z.infer<typeof CompletionTreeStampSchema>;

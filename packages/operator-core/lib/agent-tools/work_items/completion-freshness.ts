@@ -7,21 +7,113 @@
  * the same exact observation, without importing the complete tool into reads.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import type {
   CompletionTreeStamp,
+  CompletionTreeContentIdentity,
   CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_PATHS_PROBED = 60;
+const OBJECT_SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+export type { CompletionTreeContentIdentity } from '../../coord-lifecycle/records';
 
 /** Injected reads for {@link completionTreeStamp}, so it is unit-testable. */
 export interface CompletionTreeStampProbe {
   repoRoot?: string | null;
   /** Returns file contents, or undefined when the path does not exist / cannot be read. */
   readFile?: (absPath: string) => string | undefined;
+  /** Returns raw file bytes, preserving Git's blob hash semantics for binary files. */
+  readBytes?: (absPath: string) => Uint8Array | undefined;
+  /** Declared paths whose working-tree and HEAD blob identities should be recorded. */
+  filesChanged?: readonly string[];
+  /** Injectable HEAD tree lookup; production uses one bounded `git ls-tree` read. */
+  headBlobs?: (repoRoot: string, headSha: string, paths: readonly string[]) => ReadonlyMap<string, string | null> | undefined;
+}
+
+function normalizedRepoPath(repoRoot: string, raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.includes('*') || trimmed.includes('?')) return undefined;
+  const abs = nodePath.resolve(repoRoot, trimmed);
+  if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) return undefined;
+  return nodePath.relative(repoRoot, abs).split(nodePath.sep).join('/');
+}
+
+function gitBlobSha(bytes: Uint8Array, shaLength: number): string {
+  const algorithm = shaLength === 64 ? 'sha256' : 'sha1';
+  const header = Buffer.from(`blob ${bytes.byteLength}\0`, 'utf8');
+  return createHash(algorithm).update(header).update(bytes).digest('hex');
+}
+
+function headBlobMap(repoRoot: string, headSha: string, paths: readonly string[]): ReadonlyMap<string, string | null> | undefined {
+  try {
+    const output = execFileSync('git', ['-C', repoRoot, 'ls-tree', '-r', '-z', headSha, '--', ...paths], {
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024,
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const result = new Map<string, string | null>();
+    for (const record of output.split('\0')) {
+      if (!record) continue;
+      const tab = record.indexOf('\t');
+      if (tab < 0) continue;
+      const [mode, type, sha] = record.slice(0, tab).split(/\s+/);
+      const path = record.slice(tab + 1);
+      if (type === 'blob' && mode && sha && OBJECT_SHA_RE.test(sha)) result.set(path, sha);
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
+}
+
+function contentIdentity(
+  repositoryRoot: string,
+  headSha: string,
+  filesChanged: readonly string[],
+  probe: CompletionTreeStampProbe,
+): CompletionTreeContentIdentity[] | undefined {
+  const paths = [...new Set(filesChanged.slice(0, MAX_PATHS_PROBED).map((path) => normalizedRepoPath(repositoryRoot, path)))] as string[];
+  if (paths.length === 0 || paths.some((path) => !path)) return undefined;
+  const head = (probe.headBlobs ?? headBlobMap)(repositoryRoot, headSha, paths);
+  if (!head) return undefined;
+  const readBytes =
+    probe.readBytes ??
+    ((abs: string) => {
+      try {
+        return readFileSync(abs);
+      } catch {
+        return undefined;
+      }
+    });
+  return paths.map((path) => {
+    const bytes = readBytes(nodePath.join(repositoryRoot, path));
+    return {
+      path,
+      workingTreeBlobSha: bytes === undefined ? null : gitBlobSha(bytes, headSha.length),
+      headBlobSha: head.get(path) ?? null,
+    };
+  });
+}
+
+export function completionTreeContentIdentityMatches(
+  identity: readonly CompletionTreeContentIdentity[] | undefined,
+): boolean {
+  return Boolean(
+    identity?.length &&
+      identity.every(
+        (entry) =>
+          entry.workingTreeBlobSha !== null &&
+          entry.headBlobSha !== null &&
+          entry.workingTreeBlobSha === entry.headBlobSha,
+      ),
+  );
 }
 
 /**
@@ -57,20 +149,32 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
 
     const head = readFile(nodePath.join(gitDir, 'HEAD'))?.trim();
     if (!head) return undefined;
-    if (SHA_RE.test(head)) return { repositoryRoot, headSha: head };
+    if (SHA_RE.test(head)) {
+      const stamp: CompletionTreeStamp = { repositoryRoot, headSha: head };
+      const identity = probe.filesChanged ? contentIdentity(repositoryRoot, head, probe.filesChanged, probe) : undefined;
+      return identity ? { ...stamp, contentIdentity: identity } : stamp;
+    }
 
     const ref = /^ref:\s*(.+)$/.exec(head)?.[1]?.trim();
     if (!ref) return undefined;
 
     const loose = readFile(nodePath.join(gitDir, ref))?.trim();
-    if (loose && SHA_RE.test(loose)) return { repositoryRoot, headSha: loose };
+    if (loose && SHA_RE.test(loose)) {
+      const stamp: CompletionTreeStamp = { repositoryRoot, headSha: loose };
+      const identity = probe.filesChanged ? contentIdentity(repositoryRoot, loose, probe.filesChanged, probe) : undefined;
+      return identity ? { ...stamp, contentIdentity: identity } : stamp;
+    }
 
     const packed = readFile(nodePath.join(gitDir, 'packed-refs'));
     if (!packed) return undefined;
     for (const line of packed.split('\n')) {
       if (!line || line.startsWith('#') || line.startsWith('^')) continue;
       const [sha, name] = line.trim().split(/\s+/, 2);
-      if (name === ref && sha && SHA_RE.test(sha)) return { repositoryRoot, headSha: sha };
+      if (name === ref && sha && SHA_RE.test(sha)) {
+        const stamp: CompletionTreeStamp = { repositoryRoot, headSha: sha };
+        const identity = probe.filesChanged ? contentIdentity(repositoryRoot, sha, probe.filesChanged, probe) : undefined;
+        return identity ? { ...stamp, contentIdentity: identity } : stamp;
+      }
     }
     return undefined;
   } catch {
@@ -83,6 +187,8 @@ export interface CompletionTreeStampForEvidenceProbe {
   exists?: (abs: string) => boolean;
   /** Forwarded to completionTreeStamp after the owning repository is selected. */
   readFile?: (abs: string) => string | undefined;
+  readBytes?: (abs: string) => Uint8Array | undefined;
+  headBlobs?: (repoRoot: string, headSha: string, paths: readonly string[]) => ReadonlyMap<string, string | null> | undefined;
 }
 
 /**
@@ -128,7 +234,13 @@ export function completionTreeStampForEvidence(
     }
   }
 
-  return completionTreeStamp({ repoRoot: selectedRoot, readFile: probe.readFile });
+  return completionTreeStamp({
+    repoRoot: selectedRoot,
+    readFile: probe.readFile,
+    readBytes: probe.readBytes,
+    headBlobs: probe.headBlobs,
+    filesChanged: declared,
+  });
 }
 
 export type CompletionFreshnessVerdict = 'fresh' | 'stale' | 'unavailable';
@@ -150,7 +262,26 @@ function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
   const repositoryRoot = typeof record.repositoryRoot === 'string' ? record.repositoryRoot.trim() : '';
   const headSha = typeof record.headSha === 'string' ? record.headSha.trim() : '';
   if (!repositoryRoot || !SHA_RE.test(headSha)) return undefined;
-  return { repositoryRoot: nodePath.resolve(repositoryRoot), headSha };
+  const rawIdentity = record.contentIdentity;
+  let contentIdentity: CompletionTreeContentIdentity[] | undefined;
+  if (rawIdentity !== undefined) {
+    if (!Array.isArray(rawIdentity) || rawIdentity.length === 0 || rawIdentity.length > MAX_PATHS_PROBED) return undefined;
+    contentIdentity = [];
+    for (const candidate of rawIdentity) {
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
+      const entry = candidate as Record<string, unknown>;
+      const path = typeof entry.path === 'string' ? entry.path.trim() : '';
+      const workingTreeBlobSha = entry.workingTreeBlobSha;
+      const headBlobSha = entry.headBlobSha;
+      if (
+        !path ||
+        (workingTreeBlobSha !== null && (typeof workingTreeBlobSha !== 'string' || !OBJECT_SHA_RE.test(workingTreeBlobSha))) ||
+        (headBlobSha !== null && (typeof headBlobSha !== 'string' || !OBJECT_SHA_RE.test(headBlobSha)))
+      ) return undefined;
+      contentIdentity.push({ path, workingTreeBlobSha, headBlobSha });
+    }
+  }
+  return { repositoryRoot: nodePath.resolve(repositoryRoot), headSha, ...(contentIdentity ? { contentIdentity } : {}) };
 }
 
 /**
@@ -166,9 +297,23 @@ export function completionFreshnessForEvidence(
   const stored = storedTreeStamp((evidence as Record<string, unknown>).treeStamp);
   if (!stored) return undefined;
 
+  if (!stored.contentIdentity?.length) {
+    return {
+      verdict: 'unavailable',
+      storedTreeStamp: stored,
+      reason: `Committed content identity was not recorded for ${stored.repositoryRoot}; completion freshness is not established.`,
+    };
+  }
+
   let current: CompletionTreeStamp | undefined;
   try {
-    current = (probe.currentStamp ?? ((stamp) => completionTreeStamp({ repoRoot: stamp.repositoryRoot })))(stored);
+    current =
+      (probe.currentStamp ??
+        ((stamp) =>
+          completionTreeStamp({
+            repoRoot: stamp.repositoryRoot,
+            filesChanged: stamp.contentIdentity?.map((entry) => entry.path),
+          })))(stored);
   } catch {
     current = undefined;
   }
@@ -178,6 +323,32 @@ export function completionFreshnessForEvidence(
       verdict: 'unavailable',
       storedTreeStamp: stored,
       reason: `Current HEAD could not be observed for ${stored.repositoryRoot}; completion freshness is not established.`,
+    };
+  }
+
+  if (!current.contentIdentity?.length) {
+    return {
+      verdict: 'unavailable',
+      storedTreeStamp: stored,
+      currentTreeStamp: current,
+      reason: `Current committed content identity could not be observed for ${stored.repositoryRoot}; completion freshness is not established.`,
+    };
+  }
+
+  if (!completionTreeContentIdentityMatches(stored.contentIdentity)) {
+    return {
+      verdict: 'stale',
+      storedTreeStamp: stored,
+      currentTreeStamp: current,
+      reason: 'Stored completion content identity does not match its declared HEAD; re-verify before trusting it.',
+    };
+  }
+  if (!completionTreeContentIdentityMatches(current.contentIdentity)) {
+    return {
+      verdict: 'stale',
+      storedTreeStamp: stored,
+      currentTreeStamp: current,
+      reason: 'Current working-tree content does not match committed HEAD for every declared path; re-verify before trusting it.',
     };
   }
 

@@ -325,4 +325,44 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
       ),
     ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
   });
+
+  it('records per-path working-tree and HEAD blob identities', () => {
+    const workingTree = Buffer.from('dirty-but-present\n');
+    const headBlob = '3'.repeat(40);
+    const result = completionTreeStampForEvidence(
+      { filesChanged: ['src/fix.ts'] },
+      [OPERATOR_ROOT],
+      {
+        exists: () => true,
+        readFile,
+        readBytes: () => workingTree,
+        headBlobs: () => new Map([['src/fix.ts', headBlob]]),
+      },
+    );
+
+    expect(result).toMatchObject({
+      repositoryRoot: OPERATOR_ROOT,
+      headSha: OPERATOR_SHA,
+      contentIdentity: [{ path: 'src/fix.ts', headBlobSha: headBlob }],
+    });
+    expect(result?.contentIdentity?.[0]?.workingTreeBlobSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(result?.contentIdentity?.[0]?.workingTreeBlobSha).not.toBe(headBlob);
+  });
+
+  it('records a null HEAD blob when a dirty worktree path is absent from HEAD', () => {
+    const result = completionTreeStampForEvidence(
+      { filesChanged: ['src/new-fix.ts'] },
+      [OPERATOR_ROOT],
+      {
+        exists: () => true,
+        readFile,
+        readBytes: () => Buffer.from('new fix\n'),
+        headBlobs: () => new Map(),
+      },
+    );
+
+    expect(result?.contentIdentity).toEqual([
+      expect.objectContaining({ path: 'src/new-fix.ts', headBlobSha: null }),
+    ]);
+  });
 });
