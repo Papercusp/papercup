@@ -191,12 +191,12 @@ export default defineTool({
     // not, reconcile it before computing deploy status; otherwise a stale snapshot
     // `fireStale` survives into release:trace even though a fresh verdict is in flight.
     const positionCheckpointRun = position.gate?.checkpointRunInFlight ?? null;
-    const checkpointRunInFlight =
+    const reconciledActiveRun =
       positionCheckpointRun?.active === true && snapshot.activeRun?.active !== true
         ? positionCheckpointRun
         : (snapshot.activeRun ?? positionCheckpointRun);
     const reconciledSnapshot =
-      checkpointRunInFlight === snapshot.activeRun ? snapshot : { ...snapshot, activeRun: checkpointRunInFlight };
+      reconciledActiveRun === snapshot.activeRun ? snapshot : { ...snapshot, activeRun: reconciledActiveRun };
     const deploy = computeDeployStatus(reconciledSnapshot);
     // Keep the snapshot fallback for narrow contract doubles that only provide
     // the deploy state; production computeDeployStatus always supplies gate.
@@ -297,7 +297,7 @@ export default defineTool({
         // Preserve the live run projection from gitPipelinePosition. The terminal
         // observedCandidate can legitimately name an older verdict while this run
         // is judging a newer candidate.
-        checkpointRunInFlight,
+        checkpointRunInFlight: positionCheckpointRun ?? undefined,
         // EI-21103060581352507: preserve the gate's terminal no-verdict
         // authority so release:trace can refuse an await for a cancelled
         // candidate whose measured producer is already gone.
