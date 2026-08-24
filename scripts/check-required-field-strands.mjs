@@ -137,14 +137,32 @@ export function submoduleFor(file, prefixes) {
 }
 
 /**
+ * Resolve the gitlink recorded by the superproject at `base` to the commit that
+ * the owning submodule should use as its own base. A superproject revision is
+ * not normally present in a submodule's object database, so passing `base`
+ * directly to `git show`/`git diff` there either skips the file or emits the
+ * misleading `bad revision` failure this guard is meant to make actionable.
+ */
+export function submoduleRevisionAt(base, prefix) {
+  const revision = git(
+    ['rev-parse', '--verify', '--end-of-options', `${base}:${prefix}`],
+    { allowFail: true },
+  );
+  const normalized = revision?.trim();
+  return normalized || null;
+}
+
+/**
  * `file`'s contents at `base`, asked of whichever repository actually tracks it.
  * Returns null when the file has no version there (new file, or a base that repo lacks) —
  * the same contract the caller already handles by skipping the candidate.
  */
 function showAtBase(file, base) {
   const prefix = submoduleFor(file, submodulePrefixes());
-  if (!prefix) return git(['show', `${base}:${file}`], { allowFail: true });
-  return git(['show', `${base}:${file.slice(prefix.length + 1)}`], {
+  const repositoryBase = prefix ? submoduleRevisionAt(base, prefix) : base;
+  if (!repositoryBase) return null;
+  if (!prefix) return git(['show', `${repositoryBase}:${file}`], { allowFail: true });
+  return git(['show', `${repositoryBase}:${file.slice(prefix.length + 1)}`], {
     allowFail: true,
     cwd: resolve(ROOT, prefix),
   });
@@ -447,10 +465,15 @@ function main() {
     // The superproject diff above lists a changed submodule as a single GITLINK entry, never
     // the .ts files inside it — so without this the inferred mode silently skips every
     // submodule edit (EI-20020054576584970). Ask each submodule about its own working tree.
+    // The base is a superproject revision, so first follow its gitlink to the corresponding
+    // submodule commit. Passing the superproject SHA directly is invalid in that repository
+    // and produces one misleading `fatal: bad revision` per submodule (EI-21350226746257830).
     // allowFail per submodule: an uninitialised checkout, or a `base` that repo does not
     // have, must degrade to "examined nothing here" rather than abort the whole run.
     for (const prefix of submodulePrefixes()) {
-      const subStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], {
+      const submoduleBase = submoduleRevisionAt(base, prefix);
+      if (!submoduleBase) continue;
+      const subStatus = git(['diff', '--name-status', submoduleBase, '--', '*.ts', '*.tsx'], {
         allowFail: true,
         cwd: resolve(ROOT, prefix),
       });
