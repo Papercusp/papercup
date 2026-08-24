@@ -307,6 +307,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     },
     note: 'Closed-loop feedback throttling fleet concurrency against loop pressure.',
   },
+  {
+    name: 'loop-pressure-governor-burn',
+    file: 'packages/operator-core/lib/loop-pressure-governor.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'Reads remote provider-pool burn and sheds agent concurrency before quota exhaustion; that failure domain is outside the listed operator substrate.',
+  },
 
   // ── DBOS / routines engine ───────────────────────────────────────────────────────
   {
