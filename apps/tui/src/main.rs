@@ -36,6 +36,7 @@ mod notify;
 mod operator_voice_bus;
 mod plans_board;
 mod reap;
+mod session_config;
 mod session_panes;
 mod shared_cache;
 mod sse;
@@ -966,7 +967,12 @@ async fn run<B: Backend>(
                     text,
                     app.harness.clone(),
                     app.agent_chat_id.clone(),
-                    None, // server-side default model (PAPERCUSP_LOOP_CHAT_MODEL)
+                    // The model picker's choice (P-005 final lane, WI-41189).
+                    // `None` still means "send no model", so the server applies
+                    // its own default (PAPERCUSP_LOOP_CHAT_MODEL) exactly as
+                    // before — the picker adds an override, it does not move
+                    // the default into the client.
+                    app.chat_model.clone(),
                     tx.clone(),
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;

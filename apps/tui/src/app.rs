@@ -1196,6 +1196,14 @@ pub struct App {
     /// pattern): open flag + cursor over ["All Pots", ...harnesses].
     pub pot_picker_open: bool,
     pub pot_picker_sel: usize,
+    /// The open model/account picker overlay (P-005 final lane, WI-41189).
+    pub session_picker: Option<crate::session_config::SessionPicker>,
+    /// Model override for THIS chat's turns. `None` ⇒ send no `model` at all and
+    /// let the server apply the surface default.
+    pub chat_model: Option<String>,
+    /// What the last picker action actually did — the SETTER's own report, never
+    /// an echo of what was picked.
+    pub session_note: Option<String>,
     /// Shared active-harness slug the backend poller reads each loop.
     pub active_harness: Arc<Mutex<String>>,
     /// Shared (harness, plan) the poller fetches plan-item-states for (P-005a) —
@@ -1638,6 +1646,9 @@ impl App {
             all_pots: true,
             pot_picker_open: false,
             pot_picker_sel: 0,
+            session_picker: None,
+            chat_model: None,
+            session_note: None,
             active_harness: Arc::new(Mutex::new("papercup".to_string())),
             active_plan: Arc::new(Mutex::new(None)),
             features: Vec::new(),
@@ -2580,6 +2591,62 @@ impl App {
     /// Settings tab (P10b): store the read-only operator-config overview.
     pub fn set_operator_config(&mut self, c: OperatorConfig) {
         self.operator_config = c;
+    }
+
+    /// Open the model picker over the SERVER'S tier menu (`/api/agent-config`:
+    /// the workspace override, else the committed baseline). If agent-config has
+    /// not loaded, the menu is just the inherit row — deliberately NOT a
+    /// hardcoded tier list, which would be a second copy of a server-owned truth
+    /// and would diverge silently the moment the workspace tiers change.
+    pub fn open_model_picker(&mut self) {
+        let agent = self.operator_config.agent.as_ref();
+        let tiers: Vec<crate::session_config::ModelTier> = agent
+            .map(|a| a.effective_tiers().to_vec())
+            .unwrap_or_default();
+        // The chat pane IS the `operator` surface, so that is the default it
+        // inherits when we send no model.
+        let surface_default = agent.and_then(|a| a.config.surface_models.get("operator").cloned());
+        let opts = crate::session_config::model_options(&tiers, surface_default.as_deref());
+        self.session_picker = Some(crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Model,
+            opts,
+        ));
+    }
+
+    /// Apply the highlighted row. A DISABLED row NEVER applies and the overlay
+    /// STAYS OPEN carrying the reason — closing on a refusal would be
+    /// indistinguishable from having applied it.
+    pub fn commit_session_picker(&mut self) {
+        let Some(p) = self.session_picker.as_ref() else {
+            return;
+        };
+        let axis = p.axis;
+        let picked = match p.commit() {
+            Ok(opt) => Ok((opt.id.clone(), opt.label.clone())),
+            Err(reason) => Err(reason),
+        };
+        match picked {
+            Err(reason) => self.session_note = Some(reason),
+            Ok((id, label)) => {
+                match axis {
+                    crate::session_config::PickerAxis::Model => {
+                        self.chat_model = crate::session_config::model_pick(&id);
+                        self.session_note = Some(match &self.chat_model {
+                            Some(spec) => format!("next turn runs on {spec}"),
+                            None => "next turn uses the server's configured model".to_string(),
+                        });
+                    }
+                    crate::session_config::PickerAxis::Account => {
+                        // Not wired: `accounts:pin` targets an agent owner-id,
+                        // which an agent-chat payload does not carry. Reported
+                        // rather than silently no-op'd.
+                        self.session_note =
+                            Some(format!("account {label} not applied — no target agent id"));
+                    }
+                }
+                self.session_picker = None;
+            }
+        }
     }
 
     /// Settings tab (P10): store the operator feature flags as a sorted Vec (the
@@ -5093,6 +5160,33 @@ impl App {
         }
         // Pot-picker overlay (D-003) captures navigation while open: j/k moves
         // over ["All Pots", ...pots], Enter applies, Esc closes unchanged.
+        // Model/account picker overlay (P-005 final lane): captures all input
+        // while open, like the pot picker below.
+        if self.session_picker.is_some() {
+            return match code {
+                KeyCode::Esc => {
+                    self.session_picker = None;
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    self.commit_session_picker();
+                    Action::Render
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if let Some(p) = self.session_picker.as_mut() {
+                        p.move_sel(1);
+                    }
+                    Action::Render
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if let Some(p) = self.session_picker.as_mut() {
+                        p.move_sel(-1);
+                    }
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
         if self.pot_picker_open {
             return match code {
                 KeyCode::Esc => {
@@ -5747,6 +5841,12 @@ impl App {
             // vim insert idiom; while composing, all keys go to the message.
             KeyCode::Char('i') if self.tab == Tab::Operator => {
                 self.chat_composing = true;
+                Action::Render
+            }
+            // Model picker for the chat pane (P-005 final lane, WI-41189): which
+            // model the NEXT turn runs at. The menu is the server's tier list.
+            KeyCode::Char('m') if self.tab == Tab::Operator => {
+                self.open_model_picker();
                 Action::Render
             }
             // Push-to-talk (voice-mode-tui-port-2026-06-05 P2). `v` on the
@@ -7058,6 +7158,86 @@ mod tests {
             session_id: Some(format!("sid-{owner}")),
             ..Default::default()
         }
+    }
+
+    // ---- model/account picker wiring (P-005 final lane, WI-41189) ----
+
+    fn app_with_tiers(tiers: Vec<crate::session_config::ModelTier>) -> App {
+        let mut a = App::new();
+        a.set_operator_config(OperatorConfig {
+            agent: Some(crate::models::AgentConfigResponse {
+                default_tiers: tiers,
+                ..Default::default()
+            }),
+            providers: vec![],
+        });
+        a
+    }
+
+    fn tier(name: &str, spec: &str) -> crate::session_config::ModelTier {
+        crate::session_config::ModelTier {
+            name: name.to_string(),
+            spec: spec.to_string(),
+            when: None,
+            backend: None,
+        }
+    }
+
+    #[test]
+    fn model_picker_menu_is_the_servers_tier_list_not_a_local_copy() {
+        let mut a = app_with_tiers(vec![tier("quick", "haiku"), tier("deep", "opus:high")]);
+        a.open_model_picker();
+        let p = a.session_picker.as_ref().expect("picker opens");
+        let ids: Vec<&str> = p.options.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![crate::session_config::MODEL_INHERIT, "haiku", "opus:high"]
+        );
+    }
+
+    #[test]
+    fn model_picker_with_no_server_config_offers_only_inherit() {
+        // The guard against a hardcoded fallback menu: if agent-config has not
+        // loaded, we do NOT invent tiers.
+        let mut a = App::new();
+        a.open_model_picker();
+        assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 1);
+    }
+
+    #[test]
+    fn picking_a_model_sets_the_override_the_next_turn_sends() {
+        let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
+        a.open_model_picker();
+        a.session_picker.as_mut().unwrap().move_sel(1);
+        a.commit_session_picker();
+        assert_eq!(a.chat_model.as_deref(), Some("opus:high"));
+        assert!(a.session_picker.is_none(), "closes after applying");
+        assert!(a.session_note.as_deref().unwrap().contains("opus:high"));
+    }
+
+    #[test]
+    fn picking_the_inherit_row_clears_the_override_so_the_server_default_applies() {
+        let mut a = app_with_tiers(vec![tier("deep", "opus:high")]);
+        a.chat_model = Some("opus:high".to_string());
+        a.open_model_picker(); // row 0 is inherit
+        a.commit_session_picker();
+        assert_eq!(a.chat_model, None, "None ⇒ send no model at all");
+    }
+
+    #[test]
+    fn a_disabled_row_reports_its_reason_and_leaves_the_picker_open() {
+        let mut a = App::new();
+        a.session_picker = Some(crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Account,
+            crate::session_config::account_options(&[], None),
+        ));
+        a.session_picker.as_mut().unwrap().sel = 1; // the un-settable default row
+        a.commit_session_picker();
+        assert!(
+            a.session_picker.is_some(),
+            "closing on a refusal would read as success"
+        );
+        assert!(a.session_note.as_deref().unwrap().contains("RESPAWNED"));
     }
 
     #[test]

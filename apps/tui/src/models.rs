@@ -1519,6 +1519,10 @@ pub struct AgentConfigInner {
     /// Per-chat-surface model (operator → sonnet).
     #[serde(default)]
     pub surface_models: std::collections::BTreeMap<String, String>,
+    /// The workspace's model-tier OVERRIDE menu. Empty ⇒ the committed baseline
+    /// (`AgentConfigResponse::default_tiers`) is in effect.
+    #[serde(default)]
+    pub tiers: Vec<crate::session_config::ModelTier>,
 }
 
 /// `GET /api/agent-config` → `{ config: {...}, effectiveBackend, binaries, envOverrides }`.
@@ -1529,6 +1533,25 @@ pub struct AgentConfigResponse {
     pub config: AgentConfigInner,
     #[serde(default)]
     pub effective_backend: String,
+    /// The committed default tier menu. The route surfaces this specifically so
+    /// a client gets the workspace baseline "without a client-side operator-core
+    /// constant import" — so the pui's model picker reads it instead of carrying
+    /// its own copy of the tier list (derived-truth-ladder).
+    #[serde(default)]
+    pub default_tiers: Vec<crate::session_config::ModelTier>,
+}
+
+impl AgentConfigResponse {
+    /// The tier menu actually in effect: the workspace override when it has
+    /// rows, else the committed baseline. Never a hardcoded fallback — if the
+    /// server sent neither, the menu is genuinely empty and says so.
+    pub fn effective_tiers(&self) -> &[crate::session_config::ModelTier] {
+        if self.config.tiers.is_empty() {
+            &self.default_tiers
+        } else {
+            &self.config.tiers
+        }
+    }
 }
 
 /// One provider's credential status from `operator:credentials_status` — whether a

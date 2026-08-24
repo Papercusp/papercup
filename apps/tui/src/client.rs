@@ -491,6 +491,51 @@ impl OperatorClient {
         self.post_json("/api/agent-mcp/run-tool", run_tool_body(name, args))
             .await
     }
+
+    /// The inference-gateway account pool, for the chat pane's account picker
+    /// (P-005, WI-41189). `accounts:status` is the row shape the menu reads
+    /// (id/label/provider/available + the freshness fields); `accounts:list` is
+    /// the pool INVENTORY and carries no capacity reading, so it is the wrong
+    /// read for a picker that must say whether an account can serve.
+    ///
+    /// A pool that fails to parse yields an EMPTY menu rather than an error: the
+    /// picker still renders Auto (and the disabled default row), which is the
+    /// honest degradation — those two do not depend on the pool.
+    pub async fn accounts_status(&self) -> Result<Vec<crate::session_config::AccountRow>> {
+        let env = self.run_tool("accounts:status", serde_json::json!({})).await?;
+        let inner = run_tool_inner_json(&env)?;
+        let Some(rows) = inner.get("accounts") else {
+            return Ok(Vec::new());
+        };
+        Ok(serde_json::from_value(rows.clone()).unwrap_or_default())
+    }
+
+    /// Pin `agent` to a pool account. ⚠ `accounts:pin`/`accounts:unpin` are
+    /// defined in `agent-tools/gateway/gateway.ts`, NOT in `agent-tools/
+    /// accounts/` — grepping the accounts directory for them finds nothing.
+    ///
+    /// Returns the tool's OWN reply so the caller can tell a pin that is in
+    /// force from one that is merely durable (`appliedLive:false`); see
+    /// `session_config::describe_pin_outcome`. NOT `accounts:set-session-
+    /// override`, which reads like the natural setter but is a FLEET-WIDE steer
+    /// over which account NEW spawns get.
+    pub async fn account_pin(&self, agent: &str, account: &str) -> Result<serde_json::Value> {
+        let env = self
+            .run_tool(
+                "accounts:pin",
+                serde_json::json!({ "agent": agent, "account": account }),
+            )
+            .await?;
+        run_tool_inner_json(&env)
+    }
+
+    /// Remove a dynamic pin; the agent reverts to its spawn-time routing.
+    pub async fn account_unpin(&self, agent: &str) -> Result<serde_json::Value> {
+        let env = self
+            .run_tool("accounts:unpin", serde_json::json!({ "agent": agent }))
+            .await?;
+        run_tool_inner_json(&env)
+    }
     /// Cross-process cache key for `plans_list`'s response (D-004 of
     /// `fleet-deltas-leader-primitives-2026-07-10`) — bump this if the query
     /// shape below ever changes, so a stale-shaped cache entry from an older

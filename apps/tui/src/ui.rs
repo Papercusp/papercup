@@ -146,6 +146,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_palette(f, app);
     } else if app.pot_picker_open {
         draw_pot_picker(f, app);
+    } else if let Some(picker) = &app.session_picker {
+        draw_session_picker(f, picker);
     } else if let Some(menu) = &app.fleet_action_menu {
         draw_fleet_menu(f, menu);
     } else if let Some(rev) = &app.wake_review {
@@ -2927,6 +2929,49 @@ fn draw_pot_picker(f: &mut Frame, app: &App) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
+/// The model/account picker overlay (P-005 final lane, WI-41189).
+///
+/// A DISABLED row still RENDERS, marked, with its reason underneath — a menu
+/// that silently drops rows it cannot apply misreports what the control does,
+/// and the reason is usually the thing the operator actually needs to learn
+/// (e.g. that a `--account=default` session must be respawned, not re-pinned).
+fn draw_session_picker(f: &mut Frame, picker: &crate::session_config::SessionPicker) {
+    let area = centered_rect(60, 60, f.area());
+    let items: Vec<ListItem> = picker
+        .options
+        .iter()
+        .map(|o| {
+            let mut lines = vec![Line::from(Span::styled(
+                if o.disabled {
+                    format!("{} — not settable", o.label)
+                } else {
+                    o.label.clone()
+                },
+                if o.disabled {
+                    Theme::dim()
+                } else {
+                    Theme::popup()
+                },
+            ))];
+            if let Some(h) = &o.hint {
+                lines.push(Line::from(Span::styled(format!("  {h}"), Theme::dim())));
+            }
+            ListItem::new(lines)
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(
+        picker.sel.min(picker.options.len().saturating_sub(1)),
+    ));
+    let list = List::new(items)
+        .style(Theme::popup())
+        .block(Theme::popup_block(Line::from(picker.title())))
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, &mut state);
+}
+
 /// The Fleet `[r]/[n]/[f]` no-session action menu (pui-workbench-usability
 /// D-002). Surfaced when Enter on a roster agent finds no single reachable
 /// session, so Enter never silently focuses empty space. Only the viable choices
@@ -4245,8 +4290,10 @@ mod tests {
                     cmd: "claude -p".into(),
                     models,
                     surface_models: surf,
+                    ..Default::default()
                 },
                 effective_backend: "claude-code".into(),
+                ..Default::default()
             }),
             providers: vec![("openai".into(), true), ("elevenlabs".into(), false)],
         });
@@ -4590,6 +4637,22 @@ mod tests {
         app.cupboard_search_input = "worker".into();
         let search = render(&app, 240, 18);
         assert!(search.contains("Search the Cupboard"));
+    }
+
+    #[test]
+    fn session_picker_overlay_renders_rows_and_marks_the_unsettable_one() {
+        let mut app = App::new();
+        app.session_picker = Some(crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Account,
+            crate::session_config::account_options(&[], None),
+        ));
+        let text = render(&app, 110, 24);
+        assert!(text.contains("Account"), "titled by axis");
+        assert!(text.contains("Auto"));
+        assert!(
+            text.contains("not settable"),
+            "the default-account row renders MARKED rather than being hidden"
+        );
     }
 
     #[test]
