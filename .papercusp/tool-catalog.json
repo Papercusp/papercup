@@ -11061,7 +11061,7 @@
           "POST"
         ]
       },
-      "description": "Persist a bounded target member count and launch recipe for a fleet. The dark, routine-backed governor uses this recipe to top up missing headless members with duplicate suppression and exponential backoff.",
+      "description": "Persist a bounded target member count and canonical launch recipe for a fleet. target:null disables automatic top-up but PRESERVES the launch recipe for takeover/respawn. Existing boot-baked settings fail closed unless replaceExisting:true includes an audit reason.",
       "capabilities": [
         "fleet:headcount-target"
       ],
@@ -11080,7 +11080,7 @@
       ],
       "guidance": {
         "when": "After a fleet:launch-on-plan wave, when the fleet should maintain a target member count across member death and operator restarts.",
-        "notWhen": "For a one-off launch wave, use fleet:launch-on-plan. Clear the governor with target:null when the fleet should stop auto-top-up."
+        "notWhen": "For a one-off launch wave, use fleet:launch-on-plan. Disable the governor with target:null; the saved launch recipe deliberately survives."
       }
     },
     {
@@ -12716,7 +12716,7 @@
           "POST"
         ]
       },
-      "description": "Curated call-graph intelligence over the GitNexus index. `op`: symbol | callers | callees | impact | health. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. Refusals and backend faults come back as `error`, never as an empty result — so empty `sites` proves absence only when `error===null` and `freshness.health===\"healthy\"`.",
+      "description": "Curated call-graph intelligence over the GitNexus index. `op`: symbol | callers | callees | impact | health, or a refused intent such as references/text-search to receive a typed redirect. Returns `{sites, truncation, freshness, latencyMs, error}`; `line1` is one-indexed. Refusals and backend faults come back as `error`, never as an empty result — so empty `sites` proves absence only when `error===null` and `freshness.health===\"healthy\"`.",
       "capabilities": [
         "intel:read"
       ],
@@ -12779,7 +12779,7 @@
       "guidance": {
         "when": "You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.",
         "notWhen": "Use lsp:query for compiler truth (definitions, references, types) and text search for text. Prefer this over the raw gitnexus.* plugin tools, which return unranked results with no freshness or truncation contract (D-021).",
-        "chaining": "op:\"symbol\" to locate the symbol → op:\"callers\"/\"callees\" for its edges → op:\"impact\" for the change radius. If results look stale, op:\"health\" reports index freshness rather than guessing."
+        "chaining": "op:\"symbol\" to locate the symbol → op:\"callers\"/\"callees\" for its edges → op:\"impact\" for the change radius. If results look stale, op:\"health\" reports structured list_repos freshness. If you need references, diagnostics, text search, or another refused intent, pass that intent as `op` to receive its concrete useInstead redirect."
       }
     },
     {
@@ -28899,7 +28899,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and `assumptions` (`\"none\"` or fact keys). Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a complete population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`[\"none\"]` means zero). In `completion.verification`, use only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; put descriptive tests/typecheck/diff in top-level aliases instead. Keep `deferred`/`coordNotes` outside verification; cite live-UI artifacts; use `completion.duplicateOf` for duplicates.",
+        "when": "After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and `assumptions` (`\"none\"` or fact keys). Use `dropped`/`closed`/`deprecated` only for discard/wontfix. Universal-verification claims require a complete population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is non-empty (`[\"none\"]` means zero), and residue is separate from the status buckets. In `completion.verification`, use only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; put descriptive tests/typecheck/diff in top-level aliases instead. Keep `deferred`/`coordNotes` outside verification; cite live-UI artifacts; use `completion.duplicateOf` for duplicates.",
         "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.",
         "chaining": "work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits."
       }
