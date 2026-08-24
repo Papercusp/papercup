@@ -361,4 +361,55 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
       SELECT count(*)::int AS remaining FROM harness_shared.substrate_outbox`;
     expect(remaining).toBe(0);
   });
+
+  it('A3: a row lock cannot wedge best-effort GC or the drain pass', async () => {
+    const now = Date.now();
+    const oldDrainedAt = now - OUTBOX_GC_AGE_MS - 60_000;
+    const lockedId = await seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated',
+      op: 'put',
+      key: 'F-LOCKED-GC',
+      row: featureRow('F-LOCKED-GC'),
+      drained_at: oldDrainedAt,
+    });
+
+    let locked!: () => void;
+    const lockedReady = new Promise<void>((resolve) => { locked = resolve; });
+    let release!: () => void;
+    const releaseLock = new Promise<void>((resolve) => { release = resolve; });
+    const lockTxn = db.sql.begin(async (tx) => {
+      await tx`SELECT id FROM harness_shared.substrate_outbox WHERE id = ${lockedId} FOR UPDATE`;
+      locked();
+      await releaseLock;
+    });
+    await lockedReady;
+
+    try {
+      const { handle } = makeFakeHandle();
+      const drained = await Promise.race([
+        drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3, _gcMaxBatches: 1 }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('GC waited on a locked row')), 2_000);
+        }),
+      ]);
+      expect(drained).toBe(0);
+
+      const [stillPresent] = await db.sql<{ present: boolean }[]>`
+        SELECT EXISTS(
+          SELECT 1 FROM harness_shared.substrate_outbox WHERE id = ${lockedId}
+        ) AS present`;
+      expect(stillPresent.present).toBe(true);
+    } finally {
+      release();
+      await lockTxn;
+    }
+
+    const { handle } = makeFakeHandle();
+    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3, _gcMaxBatches: 1 });
+    const [afterRelease] = await db.sql<{ present: boolean }[]>`
+      SELECT EXISTS(
+        SELECT 1 FROM harness_shared.substrate_outbox WHERE id = ${lockedId}
+      ) AS present`;
+    expect(afterRelease.present).toBe(false);
+  });
 });

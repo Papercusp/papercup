@@ -513,7 +513,9 @@ export async function drainOutboxOnce(
              AND harness_slug = ${handle.harnessSlug}
              AND drained_at IS NOT NULL
              AND drained_at < ${now - OUTBOX_GC_AGE_MS}
+           ORDER BY id
            LIMIT ${gcBatch}
+           FOR UPDATE SKIP LOCKED
         )
         DELETE FROM harness_shared.substrate_outbox o
          USING del
