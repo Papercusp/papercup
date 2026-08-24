@@ -1944,14 +1944,25 @@ export const FLAGS = {
   // half of plan completion. The audit gate above re-resolves the plan's code citations
   // against the tree; this one reads the plan's first-class spec clauses and refuses
   // (spec_proof_stale) when a clause was REVISED after its evidence was recorded, so its
-  // only proof is bound to a promise that no longer applies. Deliberately narrow: an
-  // enforceable clause with NO evidence at all is REPORTED in the aggregate and never
-  // refused, because widening WHICH clauses are enforced is P-013's (D-013/D-017/D-018),
-  // and refusing it here would freeze ships fleet-wide on clauses authored as
-  // documentation. Legacy-safe: a plan that has adopted no clauses is report-only, and a
-  // truncated evidence census degrades to report-only rather than rendering a floor as a
-  // refusal. Bypassable per-ship with the same reasoned `force` as the code-truth family
-  // (D-003). Default ON; OFF restores the pre-P-008 shipping path byte-identically.
+  // only proof is bound to a promise that no longer applies.
+  //
+  // P-013 WIDENED IT (2026-08-24). This comment previously read "an enforceable clause
+  // with NO evidence at all is REPORTED and never refused, because widening WHICH clauses
+  // are enforced is P-013's". P-013 did that widening: an enforceable clause with no
+  // evidence at any revision now refuses too (spec_clause_unproven) — the weaker condition
+  // no longer passes where the stronger one refuses.
+  //
+  // What stops it freezing ships fleet-wide is not narrowness any more but per-plan
+  // ELIGIBILITY (spec-enforcement-eligibility.ts): a shipped/superseded plan (D-018) and a
+  // draft (D-012) stay report-only, and so does an active plan that has adopted no clauses
+  // — so enforcement arrives as each plan is reconciled, individually, rather than all at
+  // once. A not-yet-eligible plan still NAMES its findings in `wouldBlock`, so the
+  // migration lane is visible rather than silently exempt.
+  //
+  // Legacy-safe otherwise: a truncated evidence census degrades to report-only rather than
+  // rendering a floor as a refusal, and an unreadable plan status degrades to
+  // non-enforcing. Bypassable per-ship with the same reasoned `force` as the code-truth
+  // family (D-003). Default ON; OFF restores the pre-P-008 shipping path byte-identically.
   PLAN_SPEC_COVERAGE_GATE: "papercusp-plan-spec-coverage-gate",
   // infra-perf-reliability-audit-round4 P-005 (D-005): switch listEscalations({status:'open'})
   // to read the materialized harness_shared.coord_open_escalations projection (mig 355) instead
