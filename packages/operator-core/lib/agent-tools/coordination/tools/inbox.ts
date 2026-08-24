@@ -570,7 +570,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`; free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for query matching or a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`. Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. Bound a direct read with `limit` — `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
     notWhen:
@@ -588,11 +588,6 @@ export default defineTool({
         tool: 'coord:feed',
         args: { since: '<ISO-timestamp>', owner: '<your ownerId>' },
         note: 'coord:inbox has NO time filter by ratified decision (D-002: agents never hand-carry read cursors — the WI-1600 seed-to-now footgun); it is a VIEW bounded by `limit`. A time-bounded read of your own traffic is coord:feed { since, owner } (owner = a literal ownerId; feed does not resolve "self")',
-      },
-      since_ts: {
-        tool: 'coord:feed',
-        args: { since: '<ISO-timestamp>', owner: '<your ownerId>' },
-        note: 'coord:inbox has NO time filter by ratified decision (D-002); use coord:feed { since, owner } for a time-bounded read (feed also accepts legacy since_ts; owner = a literal ownerId)',
       },
     },
   },
