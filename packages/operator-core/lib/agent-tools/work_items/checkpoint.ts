@@ -1003,6 +1003,8 @@ export default defineTool({
           // original `shrink_blocked — ` prefix unchanged.
           const hasOwnCode = /^[a-z][a-z0-9_]*\s+—\s/.test(blockedReason);
           const errorCode = hasOwnCode ? blockedReason.split(' — ', 1)[0] : 'shrink_blocked';
+          const bodyRecoveryArg =
+            typeof it.checkpoint === 'string' && it.checkpoint.length > 0 ? { checkpoint: it.checkpoint } : {};
           return {
             ok: false as const,
             id: it.id,
@@ -1014,16 +1016,22 @@ export default defineTool({
             // append preserves the detailed prior; confirmShrink is the deliberate
             // full-replacement escape hatch. `append:false` is included on replace
             // because this option also serves append_base_unreadable failures.
+            // Preserve the caller's original body in the retry args. The guarded
+            // write did not change the stored checkpoint, so replaying that original
+            // body without checks is the actionable body-only recovery. Omitting it
+            // would turn an append with a fresh finding into a checks-only no-op and
+            // silently discard the finding when the caller follows the structured
+            // recipe.
             recovery: {
               append: {
                 args:
                   errorCode === 'append_checks_overflow'
                     ? additiveRowsMode && !wantsAppend
-                      ? { rowsMode: 'merge', checks: [] }
-                      : { append: true, checks: [] }
+                      ? { ...bodyRecoveryArg, rowsMode: 'merge', checks: [] }
+                      : { ...bodyRecoveryArg, append: true, checks: [] }
                     : errorCode === 'checks_body_overflow'
                       ? { checks: [] }
-                    : { append: true },
+                      : { append: true },
                 description:
                   errorCode === 'append_checks_overflow'
                     ? 'Retry as an additive body-only append (omit checks or pass checks: []) after separately retiring stale rows if needed.'
