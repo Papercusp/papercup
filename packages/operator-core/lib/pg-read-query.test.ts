@@ -1459,6 +1459,17 @@ describe('parseMissingColumnName (the ONE 42703 name parser)', () => {
 });
 
 describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
+  it('redirects the public work-item id to the canonical feature_id column', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT id FROM harness_shared.work_items WHERE workspace_id = 'ws'",
+      'column "id" does not exist',
+    );
+    expect(out).toContain('public work-item id');
+    expect(out).toContain('feature_id');
+    expect(out).toContain('workspace_id');
+    expect(out).toContain('harness_shared.work_items');
+  });
+
   it('names install_slug for the routines table when harness_slug is guessed', () => {
     const out = buildSchemaColumnRedirect(
       "SELECT harness_slug FROM harness_shared.routines WHERE workspace_id = 'ws'",

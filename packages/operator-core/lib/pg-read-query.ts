@@ -701,6 +701,12 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
   message?: string;
 }> = [
   {
+    relation: 'work_items',
+    missing: 'id',
+    message:
+      'the public work-item id maps to the canonical `feature_id` column; include `workspace_id` in the predicate',
+  },
+  {
     relation: 'routines',
     missing: 'harness_slug',
     actual: 'install_slug',
