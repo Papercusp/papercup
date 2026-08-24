@@ -50,7 +50,12 @@ import { clearPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 import { readProcessIdentity } from '../../process-identity';
-import { markAdvSessionEnded } from '../../adv-sessions';
+import {
+  hasAdvSessionTerminalEvidence,
+  latestAdvSessionByCoordOwner,
+  markAdvSessionEnded,
+  repairStaleAdvSessionTerminalMarkers,
+} from '../../adv-sessions';
 
 /** Console-marker substring stamped into every fleet/desktop launch command
  *  (capability:terminal / fleet:launch-on-plan) — identifies a papercusp tab
@@ -100,6 +105,8 @@ export interface KillDeps {
   audit?: (action: string, subject: string, details: Record<string, unknown>) => Promise<void>;
   /** Atomically stamp the terminal tuple after this endpoint confirms the host died. */
   markSessionEnded?: (id: string, signal: 'SIGTERM' | 'SIGKILL') => Promise<void>;
+  /** Repair an observer-written terminal marker before unmanaged liveness is read. */
+  repairStaleAdvSessionTerminalMarkers?: (ownerId: string) => Promise<number>;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -264,6 +271,15 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   // ── leg 2: desktop interactive psu session ──
   const host = deps.findHost?.(input.target) ?? null;
   if (!host) {
+    // `ended_by` is terminal evidence even when a crash/reconciler left
+    // `ended_at` unset. Heal that split-brain tuple before presence can classify
+    // an already-dead OMP session as live unmanaged.
+    try {
+      await deps.repairStaleAdvSessionTerminalMarkers?.(input.target);
+    } catch {
+      /* fail-soft: the authoritative adv-session read below still wins */
+    }
+
     // OMP-hook sessions declare presence directly but do not have a psu-pty
     // discovery socket for fleet:kill to own. Do not mistake that missing
     // process handle for death: preserving the fresh presence row is safer
@@ -466,6 +482,12 @@ async function findLiveUnmanagedSession(
   workspaceId: string,
 ): Promise<LiveUnmanagedSession | null> {
   try {
+    // Presence is a heartbeat, not terminal authority. If the newest recorded
+    // adv session has an end marker, preserve that positive death evidence even
+    // when the OMP hook heartbeat is still fresh.
+    const advSession = await latestAdvSessionByCoordOwner(ownerId);
+    if (hasAdvSessionTerminalEvidence(advSession)) return null;
+
     const { sql } = getOrgPg();
     const cutoff = new Date(Date.now() - PRESENCE_STALE_MS).toISOString();
     const rows = await sql<Array<{ source: string; heartbeat_at: Date | string | null }>>`
@@ -551,6 +573,7 @@ export default defineTool({
         const { releaseSeatConsumptions } = await import('../../fleet/seat-accounting');
         await releaseSeatConsumptions(ownerIds);
       },
+      repairStaleAdvSessionTerminalMarkers,
       markSessionEnded: (id, signal) => markAdvSessionEnded(Number(id), null, 'signal', { signal }),
       audit: (action, subject, details) => writeKillAudit(action, subject, details, workspaceId, actor.ownerId),
     };

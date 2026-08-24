@@ -925,6 +925,19 @@ export function describeSessionEndTime(
 }
 
 /**
+ * Does the persisted row contain positive terminal evidence?
+ *
+ * Normally `ended_at` and `ended_by` are written together. A non-null writer
+ * without its timestamp is still terminal evidence, though: treating that
+ * half-written tuple as live is the stale-binding bug this predicate prevents.
+ */
+export function hasAdvSessionTerminalEvidence(
+  row: Pick<AdvSessionRow, 'endedAt' | 'endedBy'> | null | undefined,
+): boolean {
+  return row != null && (row.endedAt != null || row.endedBy != null);
+}
+
+/**
  * Mark a session ended.
  *
  * `endedBy` is REQUIRED on purpose: a row that cannot say who ended it cannot say whether
@@ -978,6 +991,38 @@ export async function markAdvSessionEnded(
     }
   } catch (e) {
     warnUnlessMissingTable(e, 'markAdvSessionEnded');
+  }
+}
+
+/**
+ * Repair the impossible half-terminal state left by an observer that recorded
+ * `ended_by` before its `ended_at` write completed.  A non-null writer is
+ * terminal evidence, so an open timestamp makes every liveness reader disagree
+ * with the teardown writer and can strand the owner as an apparently-live
+ * session.  The predicate is deliberately narrow and idempotent: it fills only
+ * the missing timestamp and never overwrites an existing terminal tuple.
+ *
+ * The repair is owner-scoped because the two callers that need it are resolving
+ * one target. It is best-effort like the other adv-session lifecycle helpers;
+ * callers use {@link hasAdvSessionTerminalEvidence} so a failed timestamp repair
+ * cannot erase the terminal meaning already carried by `ended_by`.
+ */
+export async function repairStaleAdvSessionTerminalMarkers(coordOwnerId: string): Promise<number> {
+  if (!coordOwnerId.trim()) return 0;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET ended_at = now()
+       WHERE coord_owner_id = ${coordOwnerId}
+         AND ended_at IS NULL
+         AND ended_by IS NOT NULL
+       RETURNING id
+    `;
+    return rows.length;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'repairStaleAdvSessionTerminalMarkers');
+    return 0;
   }
 }
 

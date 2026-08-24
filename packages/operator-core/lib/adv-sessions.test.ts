@@ -11,8 +11,10 @@ import {
   isDeadTerminalLaunch,
   isFailedTerminalLaunch,
   fallbackCodexLaunchSpecFromAdvSession,
+  hasAdvSessionTerminalEvidence,
   readAdvSessionLaunchRecordByOwner,
   markAdvSessionShutdownAcceptedByOwner,
+  repairStaleAdvSessionTerminalMarkers,
   shutdownAcceptedOwnerIds,
   toIsoTimestamp,
   type AdvSessionRow,
@@ -80,6 +82,33 @@ describe('accepted session shutdown marker (EI-21266145962856513)', () => {
       const tail = SOURCE.slice(from, from + 3000);
       expect(tail, fn).toMatch(/shutdown_accepted_at = NULL/);
     }
+  });
+});
+
+describe('stale adv-session terminal marker repair (EI-21365346411486602)', () => {
+  it('treats either half of the terminal tuple as positive death evidence', () => {
+    expect(hasAdvSessionTerminalEvidence({ endedAt: null, endedBy: 'reconciler' })).toBe(true);
+    expect(hasAdvSessionTerminalEvidence({ endedAt: '2026-08-24T20:00:00Z', endedBy: null })).toBe(true);
+    expect(hasAdvSessionTerminalEvidence({ endedAt: null, endedBy: null })).toBe(false);
+  });
+
+  it('fills only the missing terminal timestamp for the requested owner', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 17840 }, { id: 17841 }]);
+
+    await expect(repairStaleAdvSessionTerminalMarkers('su-stale')).resolves.toBe(2);
+
+    const template = (advSessionRowsMock.mock.calls as unknown[][])[0]?.[0];
+    const sql = (template as readonly string[]).join(' ');
+    expect(sql).toContain('SET ended_at = now()');
+    expect(sql).toContain('coord_owner_id');
+    expect(sql).toContain('ended_at IS NULL');
+    expect(sql).toContain('ended_by IS NOT NULL');
+    expect(sql).toContain('RETURNING id');
+  });
+
+  it('is a no-op for a blank owner and does not touch the database', async () => {
+    await expect(repairStaleAdvSessionTerminalMarkers('   ')).resolves.toBe(0);
+    expect(advSessionRowsMock).not.toHaveBeenCalled();
   });
 });
 
