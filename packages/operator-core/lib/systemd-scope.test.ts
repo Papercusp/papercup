@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildTaskScopeArgv, buildTaskServiceArgv, escapeSystemdServiceArgument } from './systemd-scope';
+import {
+  buildIsolatedScopeArgv,
+  buildTaskScopeArgv,
+  buildTaskServiceArgv,
+  escapeSystemdServiceArgument,
+} from './systemd-scope';
 
 const PROPS = { unit: 'papercusp-bash-job-test.service', slice: 'papercusp-bash-job.slice' };
 
@@ -44,5 +49,14 @@ describe('transient service payload escaping', () => {
     });
     expect(argv).toContain('--property=MemoryAccounting=yes');
     expect(argv).toContain(`--property=MemoryMax=${32 * 1024 * 1024}`);
+  });
+
+  it('defaults memory-capped worker scopes to swap allowed; deny remains explicit', () => {
+    const worker = buildIsolatedScopeArgv(['/bin/false'], 6);
+    expect(worker).toContain('--property=MemoryMax=6G');
+    expect(worker).not.toContain('--property=MemorySwapMax=0');
+
+    const protectedOrchestrator = buildIsolatedScopeArgv(['/bin/false'], 6, 'deny');
+    expect(protectedOrchestrator).toContain('--property=MemorySwapMax=0');
   });
 });

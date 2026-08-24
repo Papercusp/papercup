@@ -99,6 +99,28 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
     }
   });
 
+  it('classifies Codex thread/resume no-rollout-found stderr as permanent, not a retryable crash', () => {
+    // EI-21264970189305370 verbatim: the rollout ROW is gone (-32600), a different codex
+    // message from the stale-rollout-PATH shape above. Before the third regex alternation
+    // this classified agent_crash (retryable) and the owning loop re-armed into the same
+    // wall for 7 consecutive fires.
+    const out = classifyResumeTurnExit(
+      raw({
+        outputProtocol: 'codex-jsonl',
+        exitCode: 1,
+        stderrTail:
+          'Error: thread/resume: thread/resume failed: no rollout found for thread id 01a02a91-496c-7590-a025-cf88426d6320 (code -32600)\n',
+      }),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.class).toBe('permanent');
+      expect(out.error.retryable).toBe(false);
+      expect(out.error.surfaceToUser).toBe(true);
+      expect(out.error.provider).toBe('openai');
+    }
+  });
+
   it('classifies a prompt-overflow death as context_overflow, not agent_crash', () => {
     const out = classifyResumeTurnExit(raw({ exitCode: 1, stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }));
     expect(out.ok).toBe(false);

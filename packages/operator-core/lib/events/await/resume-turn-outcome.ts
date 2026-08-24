@@ -55,12 +55,17 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
 
 /**
  * A resume can be launched successfully and still point at a session that has already
- * been reaped (or whose transcript was never archived). The CLI reports that as
- * `Session "<id>" not found`; retrying the same native id can never recover it.
+ * been reaped (or whose transcript was never archived). The CLIs report that as
+ * `Session "<id>" not found` (claude/omp), `codex_rollout::list: state db returned
+ * stale rollout path for thread <id>` (codex, rollout row present but file gone), or
+ * `thread/resume failed: no rollout found for thread id <id>` (codex -32600, rollout
+ * row itself gone — EI-21264970189305370: this shape re-armed as a retryable
+ * agent_crash for 7 consecutive fires before the loop gave up). Retrying the same
+ * native id can never recover any of them.
  * Keep this narrow so ordinary agent errors remain retryable crashes.
  */
 const STALE_RESUME_TARGET_RE =
-  /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b|\bcodex_rollout::list:\s+state db returned stale rollout path for thread\b/i;
+  /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b|\bcodex_rollout::list:\s+state db returned stale rollout path for thread\b|\bno rollout found for thread\b/i;
 
 export function isStaleResumeTargetMessage(message: string): boolean {
   return STALE_RESUME_TARGET_RE.test(message);

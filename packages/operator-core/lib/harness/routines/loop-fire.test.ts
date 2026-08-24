@@ -10,6 +10,7 @@ import {
   renderLoopChecksBlock,
   loopCheckpointStaleMs,
   decideLoopAwaitSuppression,
+  rescheduleLoopAfterAwaitSuppression,
   LOOP_WAKE_FULL_TEMPLATE_EVERY,
   LOOP_WAKE_CHECKPOINT_MAX_CHARS,
   LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS,
@@ -35,6 +36,7 @@ function mkDeps(
     | 'takeWallNag'
     | 'renderOwnerDirectives'
     | 'listBlockingAwaits'
+    | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
   >
 > {
@@ -56,6 +58,7 @@ function mkDeps(
     takeWallNag: vi.fn(async () => null) as never,
     renderOwnerDirectives: vi.fn(async () => null) as never,
     listBlockingAwaits: vi.fn(async () => []) as never,
+    rescheduleSuppressedWake: vi.fn(async () => true) as never,
     ensureWakeArmed: vi.fn(async () => false) as never,
     ...over,
   };
@@ -69,6 +72,30 @@ const baseInput = {
   targetOwnerId: 'su-pinned',
   payloadTemplate: null as Record<string, unknown> | null,
 };
+
+describe('rescheduleLoopAfterAwaitSuppression — parked-loop CAS (EI-21350609923930437)', () => {
+  it('moves a pure loop from infinity to the computed resume threshold', async () => {
+    const statements: string[] = [];
+    const values: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+      statements.push(strings.join(' ? '));
+      values.push(args);
+      return Promise.resolve([{ id: 'rt-parked' }]);
+    }) as never;
+    const resumeAtMs = Date.parse('2026-08-24T16:30:00.000Z');
+
+    await expect(
+      rescheduleLoopAfterAwaitSuppression({ sql, routineId: 'rt-parked', resumeAtMs }),
+    ).resolves.toBe(true);
+
+    expect(statements[0]).toContain('SET next_fire_at = GREATEST(now()');
+    expect(statements[0]).toContain("next_fire_at = 'infinity'::timestamptz");
+    expect(statements[0]).toContain("NOT jsonb_exists(trigger_config, 'cron')");
+    expect(statements[0]).toContain("NOT jsonb_exists(trigger_config, 'rrule')");
+    expect(values[0]).toContain('2026-08-24T16:30:00.000Z');
+    expect(values[0]).toContain('rt-parked');
+  });
+});
 
 describe('renderLoopChecksBlock — contested verification is explicit on wake', () => {
   it('labels contested evidence ⚠ so a successor is told to re-check it', () => {
@@ -280,6 +307,55 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
   });
 
   describe('BLOCKING-AWAIT suppression (EI-10901)', () => {
+    it('re-arms a parked pure loop at the earliest suppression threshold before withholding', async () => {
+      const rearm = vi.fn(async () => true) as never;
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          {
+            eventKey: 'work-item:claimable',
+            expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(),
+            createdAt: new Date().toISOString(),
+          },
+        ]) as never,
+        rescheduleSuppressedWake: rearm,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+      expect(rearm).toHaveBeenCalledTimes(1);
+      expect(rearm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routineId: baseInput.routineId,
+          resumeAtMs: expect.any(Number),
+        }),
+      );
+      const resumeAtMs = (rearm as ReturnType<typeof vi.fn>).mock.calls[0][0].resumeAtMs as number;
+      expect(resumeAtMs).toBeGreaterThan(Date.now());
+      expect(deps.wake).not.toHaveBeenCalled();
+    });
+
+    it('a re-arm write failure fails open and delivers the wake instead of leaving the row parked', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          {
+            eventKey: 'work-item:claimable',
+            expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(),
+            createdAt: new Date().toISOString(),
+          },
+        ]) as never,
+        rescheduleSuppressedWake: vi.fn(async () => {
+          throw new Error('routine update unavailable');
+        }) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.wake).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('await suppression re-arm failed'));
+      warn.mockRestore();
+    });
+
     it('an active blocking await → fire WITHHELD, no wake, nothing recorded (silent, benign skip)', async () => {
       const deps = mkDeps({
         listBlockingAwaits: vi.fn(async () => [

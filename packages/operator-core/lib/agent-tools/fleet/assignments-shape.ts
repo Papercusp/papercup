@@ -214,6 +214,19 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   return {
     ok: d.ok ?? true,
     ...(d.self !== undefined ? { self: d.self } : {}),
+    // EI-18763132241176410: `scope` QUALIFIES the counts contract below — it names the
+    // population the query asked about ({ agent, plan, fleet, harness, selfScoped,
+    // filtered }). This reconstruction used to drop it, so `summary` survived verbatim
+    // while the caveat scoping it did not: a self-scoped read rendered as a bare
+    // `agents:1, claims:0` with nothing marking it NOT MEASURED. Worst at trimmed tier,
+    // i.e. exactly when a busy leader/Mug is reading a nested `me` under budget
+    // pressure. Measured 2026-08-24: coord:orient reported agents:1/claims:0 while
+    // fleet:assignments {harness} reported agents:39/claims:51/stalled:3 — the caller
+    // could not tell those apart, and `me.summary.population` cannot close the gap
+    // (it reports which resolved rows were KEPT, never which population was ASKED
+    // about, so it reads a self-consistent candidates:1/counted:1). Tiny and uniform
+    // across tiers, so it is preserved unconditionally rather than tier-gated.
+    ...(d.scope !== undefined ? { scope: d.scope } : {}),
     summary: d.summary ?? null,
     orphaned: orphaned.rows,
     ...(orphaned.note ? { orphaned_note: orphaned.note } : {}),

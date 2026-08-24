@@ -96,6 +96,21 @@ describe('spawnProcMesh formation failure is typed (EI-115)', () => {
     expect(mesh.readers[0].cfg.peerIndex).toBe(1);
     await mesh.teardown();
   });
+
+  it('an over-budget mesh resolves with an advisory instead of throwing (WI-41206)', async () => {
+    const logs: string[] = [];
+    const mesh = await spawnProcMesh({
+      readers: 1,
+      ...FIXED,
+      log: (message: string) => logs.push(message),
+      availableBytes: 1,
+      spawnChild: fakeChild({ admits: () => true }),
+    });
+
+    expect(mesh.readers).toHaveLength(1);
+    expect(logs.join('\n')).toContain('[mesh]');
+    await mesh.teardown();
+  });
 });
 
 describe('local perf peer boot', () => {
