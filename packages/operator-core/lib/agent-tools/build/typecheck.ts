@@ -72,7 +72,11 @@ import {
   syntaxBrokenFiles,
 } from '../../tsc-diagnostics';
 import type { TscDiagnostic, TscFileCount } from '../../tsc-diagnostics';
-import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import {
+  resolveAgentWorkspaceRoot,
+  resolveCapabilityIntegrationRoot,
+} from '../capability/base-dir';
+import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { tscHeapEnv } from '../tsc-heap';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
@@ -300,6 +304,38 @@ export function resolveProjectPath(root: string, project: string): string | null
   } catch {
     return null;
   }
+}
+
+export type TypecheckRootSource = 'requested' | 'integration-root';
+
+export interface SelectedTypecheckRoot {
+  root: string;
+  source: TypecheckRootSource;
+}
+
+/**
+ * Select the checkout that actually contains the requested TypeScript project.
+ *
+ * A valid caller root remains authoritative. A phantom harness root may fall back
+ * to the explicitly published integration checkout, but only when that checkout
+ * resolves the same project operand. When neither root resolves it, preserve the
+ * caller root so the handler's existing `project_not_found` refusal stays loud and
+ * reports the tree the caller actually supplied.
+ */
+export function selectTypecheckRoot(
+  project: string,
+  requestedRoot: string,
+  integrationRoot = resolveCapabilityIntegrationRoot(),
+): SelectedTypecheckRoot {
+  const preferred: SelectedTypecheckRoot = { root: requestedRoot, source: 'requested' };
+  const selected = selectUnambiguousEvidenceRoot<TypecheckRootSource>({
+    preferred,
+    ...(integrationRoot
+      ? { fallback: { root: integrationRoot, source: 'integration-root' as const } }
+      : {}),
+    resolvesEvery: (root) => resolveProjectPath(root, project) !== null,
+  });
+  return selected ?? preferred;
 }
 
 /**
@@ -710,7 +746,8 @@ export default defineTool({
     // this tool typechecked the RELEASE tree, not the tree the agent just edited,
     // and reported it clean. Use the same projectDir → PAPERCUSP_INTEGRATION_ROOT
     // → cwd resolver every capability tool uses.
-    const root = resolveAgentWorkspaceRoot(ctx);
+    const requestedRoot = resolveAgentWorkspaceRoot(ctx);
+    const root = selectTypecheckRoot(args.project, requestedRoot).root;
     const started = Date.now();
 
     // Pre-flight the project so the refusal can be specific and name alternatives.

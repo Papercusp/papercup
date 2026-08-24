@@ -38,6 +38,7 @@ import buildTypecheck, {
   boundDiagnostics,
   ambientTypePackages,
   projectDeclaresTypes,
+  selectTypecheckRoot,
 } from './typecheck';
 // The EI-18776865728050036 class guard moved to capability/foreground-transport-cap.test.ts
 // (EI-20645849301780712) — it now lives beside the module it guards, and its tool list is
@@ -151,6 +152,96 @@ describe('resolveProjectPath — tsc\'s own project resolution', () => {
 
   it('returns null for a path that does not exist at all', () => {
     expect(resolveProjectPath(root, 'packages/does-not-exist')).toBeNull();
+  });
+});
+
+describe('selectTypecheckRoot — phantom-root fallback', () => {
+  let requested: string;
+  let integration: string;
+  let phantom: string;
+
+  beforeAll(() => {
+    requested = mkdtempSync(join(tmpdir(), 'build-typecheck-root-requested-'));
+    integration = mkdtempSync(join(tmpdir(), 'build-typecheck-root-integration-'));
+    phantom = mkdtempSync(join(tmpdir(), 'build-typecheck-root-phantom-'));
+    for (const root of [requested, integration]) {
+      mkdirSync(join(root, 'packages', 'alpha'), { recursive: true });
+      writeFileSync(join(root, 'packages', 'alpha', 'tsconfig.json'), '{}');
+    }
+  });
+
+  afterAll(() => {
+    for (const root of [requested, integration, phantom]) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the integration checkout when the requested root cannot resolve the project', () => {
+    expect(selectTypecheckRoot('packages/alpha', phantom, integration))
+      .toEqual({ root: integration, source: 'integration-root' });
+  });
+
+  it('keeps a valid requested checkout authoritative when both roots resolve the project', () => {
+    expect(selectTypecheckRoot('packages/alpha', requested, integration))
+      .toEqual({ root: requested, source: 'requested' });
+  });
+
+  it('preserves the requested root when neither tree resolves the project', () => {
+    expect(selectTypecheckRoot('packages/missing', phantom, integration))
+      .toEqual({ root: phantom, source: 'requested' });
+  });
+
+  it('uses the canonical fallback in the raw handler, not only in the pure selector', async () => {
+    const priorIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = integration;
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
+    try {
+      queueMicrotask(() => child.emit('close', 0));
+      const raw = await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: 'packages/alpha' }, { projectDir: phantom });
+
+      expect(raw.data).toMatchObject({
+        ok: true,
+        project: 'packages/alpha/tsconfig.json',
+        errorCount: 0,
+      });
+      expect(spawnMock).toHaveBeenCalledWith(
+        'npx',
+        expect.arrayContaining(['-p', join(integration, 'packages', 'alpha', 'tsconfig.json')]),
+        expect.objectContaining({ cwd: integration }),
+      );
+    } finally {
+      spawnMock.mockReset();
+      if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+    }
+  });
+
+  it('keeps project_not_found loud and rooted at the caller tree when fallback also misses', async () => {
+    const priorIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = integration;
+    try {
+      const raw = await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: 'packages/missing' }, { projectDir: phantom });
+
+      expect(raw.data).toMatchObject({
+        ok: false,
+        error: 'project_not_found',
+        project: 'packages/missing',
+        searchedFrom: phantom,
+      });
+    } finally {
+      if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+    }
   });
 });
 
