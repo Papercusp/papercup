@@ -48,6 +48,18 @@
  * it. Together these encode the real invariant — "an idle agent with a nonempty
  * queue is a bug" — instead of guessing at liveness.
  *
+ * STOOD-DOWN SUPPRESSION (EI-21275606411048371, recurring class of dropped
+ * EI-18734910825871393): conjunct (4) already requires NO armed loop, so
+ * everyone this sweep could wake EITHER never armed one — the silent stall
+ * WI-6054 targets — OR ended one. An owner whose engine-loop routine row(s)
+ * are now ALL inactive wound down deliberately (`loop:end` is the
+ * persona-mandated wind-down act), and re-waking them every throttle hour to
+ * re-discover "nothing scoped to do" is itself the defect: each wake a full
+ * billable turn, repeated indefinitely because every verification turn
+ * refreshes `last_tool_call_at` back INTO the idle window. Those owners are
+ * suppressed (see `engine-loop-standdown.ts`); never-armed owners stay fully
+ * rescuable, and any reader failure fails OPEN to the unsuppressed sweep.
+ *
  * WAKE, not inject: an injected coord message lands on the recipient's NEXT
  * turn, and the defining property of a halted agent is that there will never be
  * a next turn. `claim-discipline-watch` is inject-only for the opposite reason
@@ -67,6 +79,11 @@ import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { claimSpecReferencesField } from '../../scheduler/claim-spec';
 import { readIssueClaimability } from '../../scheduler/get-next';
 import { boundedUnguardedHaltSweep } from '../../turn-end-tracking-io';
+import {
+  isStoodDownOwner,
+  readEngineLoopRowsByOwner,
+  type EngineLoopRowsByOwner,
+} from './engine-loop-standdown';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 export const HALT_RESCUE_OWNER = 'unguarded-halt-rescue';
@@ -157,6 +174,27 @@ export function selectSweepCandidates(
       return idle >= idleMs && idle <= maxIdleMs;
     })
     .sort((a, b) => a.agentId.localeCompare(b.agentId));
+}
+
+/**
+ * PURE: split sweep candidates into rescuable vs STOOD DOWN (the owner has ≥1
+ * engine-loop routine row and every such row is inactive ⇒ deliberate
+ * wind-down). `loopRows == null` — a failed reader — passes EVERYTHING through,
+ * fail-open to the pre-fix behavior: a missed suppression costs one throttled
+ * wake, a wrong permanent suppression strands a recoverable halt. Signal
+ * semantics + lift conditions live in `engine-loop-standdown.ts`.
+ */
+export function partitionStoodDown(
+  candidates: readonly HaltCandidate[],
+  loopRows: EngineLoopRowsByOwner | null | undefined,
+): { rescuable: HaltCandidate[]; stoodDown: HaltCandidate[] } {
+  if (loopRows == null) return { rescuable: [...candidates], stoodDown: [] };
+  const rescuable: HaltCandidate[] = [];
+  const stoodDown: HaltCandidate[] = [];
+  for (const c of candidates) {
+    (isStoodDownOwner(loopRows, c.agentId) ? stoodDown : rescuable).push(c);
+  }
+  return { rescuable, stoodDown };
 }
 
 export function rescueSummary(): string {
@@ -301,18 +339,34 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
     return;
   }
 
+  // ── Stood-down suppression (EI-21275606411048371) ──────────────────────────
+  // Read BEFORE the per-agent claim-spec fan-out: suppressing here also saves
+  // the claimability reads for members we must not wake anyway.
+  const loopRows = await readEngineLoopRowsByOwner(
+    candidates.map((c) => c.agentId),
+    { workspaceId: ctx.workspaceId },
+  ).catch(() => null);
+  const { rescuable, stoodDown } = partitionStoodDown(candidates, loopRows);
+  if (rescuable.length === 0) {
+    console.log(
+      `[unguarded-halt-rescue] ${all.length} member(s) → ${candidates.length} idle in an active fleet → ` +
+        `${stoodDown.length} stood down (engine loop ended) → nothing to rescue`,
+    );
+    return;
+  }
+
   // Is there work for each candidate? The effective spec, assignee-relative
   // cooldown, and fleet authorization can differ even within one fleet.
   const claimableByCandidate = new Map<string, number>();
   await Promise.all(
-    candidates.map(async (candidate) => {
+    rescuable.map(async (candidate) => {
       claimableByCandidate.set(
         candidate.agentId,
         await claimableForCandidate(candidate, ctx.workspaceId),
       );
     }),
   );
-  const withWork = candidates.filter((c) => (claimableByCandidate.get(c.agentId) ?? 0) > 0);
+  const withWork = rescuable.filter((c) => (claimableByCandidate.get(c.agentId) ?? 0) > 0);
 
   // Only now — for agents that are idle in an active fleet WITH work waiting — is
   // the (more expensive, per-agent) halt predicate worth evaluating.
@@ -351,6 +405,7 @@ registerSystemAction('unguarded-halt-rescue', async (ctx: SystemActionCtx) => {
 
   console.log(
     `[unguarded-halt-rescue] ${all.length} member(s) → ${candidates.length} idle in an active fleet → ` +
+      `${stoodDown.length} stood down → ${rescuable.length} rescuable → ` +
       `${withWork.length} with claimable work → ${halted.length} halted → ${rescuing.length} woken` +
       (halted.length > rescuing.length ? ` (${halted.length - rescuing.length} deferred)` : '') +
       (recentlyRescued.size > 0 ? `, ${recentlyRescued.size} within throttle` : ''),
