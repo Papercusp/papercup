@@ -8,7 +8,7 @@
  * tags the note; reports a bench miss immediately when no wake handle is
  * found) and list mode (resolves the fleet, filters to bench-tagged rows).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
@@ -81,6 +81,7 @@ import { listFleetAssignments, groupByAgent } from '../../fleet/assignments';
 import { deriveFleetMembership } from '../coordination/identity';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 const lane = (claimable: number, matchedByFilter = claimable) => ({
   claimable,
@@ -434,7 +435,11 @@ describe('fleet:bench — list mode', () => {
   });
 
   it('an explicit { fleet } overrides the caller\'s own launch-env fleet', async () => {
-    vi.mocked(groupByAgent).mockReturnValue([]);
+    // ...Once, NOT a permanent mockReturnValue: vi.clearAllMocks() clears calls but
+    // NOT return values, so a permanent one here silently pins an EMPTY roster for
+    // every test added after this point in the file (which then read as
+    // `member_not_found` for a member that is plainly in the fixture).
+    vi.mocked(groupByAgent).mockReturnValueOnce([]);
     const out = await call({ list: true, fleet: 'other-fleet' });
     expect(out).toMatchObject({ fleet: 'other-fleet' });
   });
@@ -444,5 +449,155 @@ describe('fleet:bench — list mode', () => {
     const out = await call({ list: true });
     expect(out).toMatchObject({ ok: false, error: 'no_fleet' });
     expect(listFleetAssignments).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * EI-21334781727749359 — the stage path's read legs must be BUDGETED.
+ *
+ * The regression these lock down is not "wrong answer" but "no answer in time":
+ * sixteen concurrent per-member renewals each ran ~35s server-side, past the MCP
+ * client deadline, and every caller was told the mutation MAY have executed. A
+ * tool whose worst case is an unbounded wait with unknown write state cannot be
+ * called safely, so each leg is pinned to its budget AND to its failure DIRECTION
+ * — the two legs deliberately fail opposite ways, and swapping them would either
+ * wedge every bench on a slow read or re-open the membership hole.
+ *
+ * Fake timers are used so the guard asserts the DEADLINE fires, not that a real
+ * multi-second wall-clock sleep elapsed.
+ */
+describe('fleet:bench — bounded read legs [EI-21334781727749359]', () => {
+  const hangForever = () => new Promise<never>(() => {});
+  /** Mirrors BENCH_LANE_READ_BUDGET_MS; the calibration only needs A deadline to
+   *  observe, so this deliberately does not import the constant — a test that
+   *  reads its expectation from the code under test cannot contradict it. */
+  const BENCH_LANE_BUDGET_UNDER_TEST = 6_000;
+  let warned: string[];
+
+  beforeEach(() => {
+    // withBoundedTimeout announces a degradation on console.warn, and
+    // vitest-fail-on-console turns that into a failure. Capture it instead of
+    // silencing it: the warning is the only direct evidence that the DEADLINE
+    // fired, as opposed to the read having failed some other way.
+    warned = [];
+    vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => void warned.push(a.join(' ')));
+  });
+
+  afterEach(() => {
+    vi.mocked(console.warn).mockRestore?.();
+  });
+
+  const callWithDeadline = async (args: Record<string, unknown>) => {
+    vi.useFakeTimers();
+    try {
+      const pending = call(args);
+      // Past BOTH budgets (roster 5s, lane 6s). If a bound is ever removed, the
+      // underlying mock never settles, so this promise never resolves and the test
+      // fails on a timeout rather than passing vacuously.
+      await vi.advanceTimersByTimeAsync(30_000);
+      return await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  it('LANE read fails OPEN: a lane read that never returns still benches, and says the guard was skipped', async () => {
+    vi.mocked(readFleetLaneHealth).mockImplementationOnce(hangForever);
+
+    const out = await callWithDeadline({ member: 'su-worker', wakeEvent: 'gate:x', stagedAssignment: 'take P-004' });
+
+    // The bench MUST still be registered — refusing here would let one slow read
+    // wedge every bench on the fleet, the outage design note (1) forbids.
+    expect(out).toMatchObject({ ok: true, member: 'su-worker' });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    // ...and it must NOT be dressed up as a verified-empty queue.
+    expect(out.lane).toMatchObject({ verdict: 'unknown', unavailable_reason: 'timeout' });
+    expect((out.lane as Record<string, unknown>).claimable).toBeNull();
+    // Prove the BOUND is what ended the wait. Without this the test would also pass
+    // if readFleetLaneHealth had merely returned null on its own, which is a
+    // different code path and would leave the real regression uncovered.
+    expect(warned.join('\n')).toContain('fleet-bench:laneHealth exceeded 6000ms');
+  });
+
+  it('ROSTER read fails CLOSED: a hung roster refuses fast and stages NOTHING', async () => {
+    vi.mocked(listFleetAssignments).mockImplementationOnce(hangForever);
+
+    const out = await callWithDeadline({ member: 'su-worker', wakeEvent: 'gate:x' });
+
+    expect(out).toMatchObject({ ok: false, error: 'roster_read_timeout', member: 'su-worker' });
+    // The whole point of failing closed here: no write happened, so the caller
+    // never has to hand-verify whether one did.
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
+    // An unreadable roster must never be reported as "that member is absent".
+    expect(out.error).not.toBe('member_not_found');
+    expect(warned.join('\n')).toContain('fleet-bench:roster exceeded 5000ms');
+  });
+
+  it('an unreadable roster does not degrade into benching an unknown member', async () => {
+    vi.mocked(listFleetAssignments).mockImplementationOnce(hangForever);
+    const out = await callWithDeadline({ member: 'su-never-existed', wakeEvent: 'gate:x' });
+    expect(out).toMatchObject({ ok: false, error: 'roster_read_timeout' });
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('list mode refuses on an unreadable roster instead of reporting an empty bench roster', async () => {
+    vi.mocked(listFleetAssignments).mockImplementationOnce(hangForever);
+    const out = await callWithDeadline({ list: true, fleet: 'p2p-git' });
+    expect(out).toMatchObject({ ok: false, error: 'roster_read_timeout' });
+    // A zero count here would read as "nobody is benched", a different claim entirely.
+    expect(out.benched_count).toBeUndefined();
+  });
+
+  /**
+   * FALSIFIABILITY CONTROLS — permanent, in-test, never a mutation of production
+   * code (a probe that mutates this shared tree can be committed by the git-sync
+   * sweep even when nothing goes wrong).
+   *
+   * The cases above assert that the handler SETTLES while a read hangs. That is
+   * only meaningful if an UNBOUNDED await of the same hang would NOT settle — so
+   * the negative control demonstrates exactly that, and the calibration proves the
+   * instrument (fake timers + this deadline) can observe a bound firing at all. If
+   * a future edit drops a budget, `await pending` above stops resolving and those
+   * tests go red rather than passing vacuously; if instead the harness itself
+   * breaks, the calibration goes red and tells you the tests below prove nothing.
+   */
+  it('CONTROL: an UNBOUNDED await of the same hang never settles (so the assertions above discriminate)', async () => {
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      // The pre-fix shape: await the expensive read with no budget at all.
+      void (async () => {
+        await hangForever();
+        settled = true;
+      })();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('CALIBRATION: a BOUNDED await of that same hang does settle, degraded, at its deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = withBoundedTimeout<null>(hangForever, {
+        fallback: null,
+        timeoutMs: BENCH_LANE_BUDGET_UNDER_TEST,
+        label: 'calibration',
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(result).toMatchObject({ value: null, degraded: true, reason: 'timeout' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the healthy path is unchanged: a fast lane read reports its real verdict and no timeout marker', async () => {
+    const out = await call({ member: 'su-worker', wakeEvent: 'gate:x' });
+    expect(out).toMatchObject({ ok: true });
+    expect((out.lane as Record<string, unknown>).unavailable_reason).toBeUndefined();
+    expect((out.lane as Record<string, unknown>).verdict).toBe('drained');
   });
 });

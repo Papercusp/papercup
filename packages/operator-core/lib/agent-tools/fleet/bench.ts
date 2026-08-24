@@ -62,6 +62,55 @@ import { readFleetLaneHealth } from '../../fleet/lane-health';
 const BENCH_NOTE_PREFIX = FLEET_BENCH_NOTE_PREFIX;
 
 /**
+ * EI-21334781727749359 — THE STAGE PATH'S READ LEGS ARE BOUNDED.
+ *
+ * The incident: a leader renewed a bench for sixteen members at once. Every one of
+ * those sixteen calls exceeded the MCP client deadline, and every one of them
+ * warned that the mutation MAY have executed — so the leader had to hand-verify
+ * sixteen rows before it could safely retry. The invocation ledger shows what
+ * actually happened: all sixteen ran genuinely concurrently, each took ~34-36.5s
+ * SERVER-side, and each returned `status: ok`. The server was succeeding; the
+ * client had simply stopped waiting. Nothing was broken — it was too slow to be
+ * reachable, which is indistinguishable from broken at the call site.
+ *
+ * WHY it is slow, measured rather than assumed: the claim-candidate aggregate
+ * behind `readFleetLaneHealth` is the most expensive query family in this system
+ * (pg_stat_statements: mean 3.5-12s, max ~15s, ~50,000s of cumulative DB time
+ * across ~7,900 calls). Benching is inherently PER MEMBER, so renewing a bench for
+ * N members fires N of these AT ONCE. In the same 55s window the cheap tools were
+ * completely healthy — 296 `coord:glance`/`activity:report` calls averaged ~280ms —
+ * while every tool that runs this aggregate went slow together (`scheduler:get_next`
+ * 25s, `fleet:leader-brief` 24s, `coord:orient` 15.5s). So this is not general host
+ * load and not pool starvation: it is a specific expensive read, fanned out N-wide
+ * by this tool's own per-member shape, with no budget on it.
+ *
+ * The two legs fail in DELIBERATELY OPPOSITE directions, because they guard
+ * opposite things:
+ *
+ *  - LANE HEALTH FAILS OPEN. Design note (1) above already requires this: an
+ *    unreadable count must never refuse, or one slow read wedges every bench on the
+ *    fleet and a read failure becomes a coordination outage. A read that cannot
+ *    finish in budget IS an unreadable count, so it takes the EXISTING
+ *    `verdict:'unknown'` path rather than a new one. All that is added is honesty
+ *    about WHICH kind of unknown it was — a timeout is reported as a timeout
+ *    instead of being silently indistinguishable from a spec-read error.
+ *  - THE ROSTER FAILS CLOSED. It is the EI-21277320983534020 membership check, so
+ *    degrading it to "assume the member exists" would re-open exactly that hole and
+ *    allocate a bench row that can never wake anyone. An unreadable roster refuses
+ *    fast instead, BEFORE any state is allocated — a retryable answer in seconds,
+ *    with no mutation and therefore no ambiguity about whether one happened.
+ *
+ * Bounding is the fix rather than a mitigation because the caller-visible defect is
+ * the UNBOUNDEDNESS: a tool whose worst case is "silently past the client deadline,
+ * mutation state unknown" has no safe way to be called. Making the aggregate itself
+ * cheaper is a separate, system-wide concern shared with get_next/leader-brief/orient
+ * (recorded on this item's completion evidence); it would not make an unbounded call
+ * safe, and this bound holds even if that cost regresses again.
+ */
+const BENCH_ROSTER_READ_BUDGET_MS = 5_000;
+const BENCH_LANE_READ_BUDGET_MS = 6_000;
+
+/**
  * WI-5938 — PARK/PULL IS DERIVED STATE, NOT PROSE.
  *
  * The incident: a leader sent ONE message that both asserted the lane was live AND told
@@ -200,6 +249,51 @@ async function resolveBenchPayloadFilter(member: string, workspaceId: string | n
   };
 }
 
+type FleetRosterRows = Awaited<ReturnType<typeof listFleetAssignments>>;
+
+/**
+ * Bounded fleet-roster read (EI-21334781727749359). `null` means the read did NOT
+ * finish inside its budget, or threw — which this tool treats as REFUSE, never as
+ * "the roster came back empty" and therefore never as "that member is absent".
+ * Collapsing an unreadable roster into an absent member is precisely the confusion
+ * an absence claim without a positive control produces.
+ */
+async function readFleetRosterBounded(
+  args: Parameters<typeof listFleetAssignments>[0],
+): Promise<{ rows: FleetRosterRows | null; reason: 'timeout' | 'error' | null }> {
+  const read = await withBoundedTimeout<FleetRosterRows | null>(
+    () => listFleetAssignments(args),
+    { fallback: null, timeoutMs: BENCH_ROSTER_READ_BUDGET_MS, label: 'fleet-bench:roster' },
+  );
+  // withBoundedTimeout absorbs a THROW as well as a deadline, so carry which one it
+  // was. Reporting a failed read as "timed out" would be a small lie that sends the
+  // reader to look at load when the real answer is in an exception.
+  return { rows: read.value, reason: read.value === null ? (read.reason ?? 'error') : null };
+}
+
+/** The one refusal shape for an unreadable roster, shared by both modes so they
+ *  cannot drift into disagreeing about what an unreadable roster means. */
+function rosterUnavailable(fleet: string, reason: 'timeout' | 'error' | null, member?: string) {
+  const timedOut = reason === 'timeout';
+  return {
+    data: {
+      ok: false as const,
+      error: 'roster_read_timeout' as const,
+      reason: reason ?? 'error',
+      fleet,
+      ...(member ? { member } : {}),
+      ...(timedOut ? { budget_ms: BENCH_ROSTER_READ_BUDGET_MS } : {}),
+      hint:
+        (timedOut
+          ? `The fleet roster for '${fleet}' did not come back within ${BENCH_ROSTER_READ_BUDGET_MS}ms, `
+          : `The fleet roster read for '${fleet}' FAILED (not a timeout — it threw), `) +
+        'so membership could not be verified. NOTHING was staged and no state was allocated — this is a ' +
+        'clean, retryable refusal, not an ambiguous partial write. Retry; if it persists, read ' +
+        'fleet:assignments directly to see whether the roster read itself is unhealthy.',
+    },
+  };
+}
+
 export default defineTool({
   name: 'fleet:bench',
   profile: 'engineer',
@@ -238,7 +332,12 @@ export default defineTool({
       "carries `lane.verdict`: 'drained' (0 claimable, 0 matching) | 'gated' (0 claimable but " +
       "rows matched — blocked, still benchable) | 'unknown' (the count could not be read, so " +
       'the guard failed OPEN rather than wedging the fleet on a read error) — never a ' +
-      'zero-ish reading dressed up as a verified-empty queue.',
+      'zero-ish reading dressed up as a verified-empty queue. Both read legs are BUDGETED ' +
+      'so N concurrent per-member renewals cannot run past the client deadline with the ' +
+      "write's fate unknown: an unreadable roster refuses fast with `roster_read_timeout` " +
+      '(nothing staged, safe to retry), while a lane read that misses its budget benches ' +
+      "anyway and reports `lane.unavailable_reason:'timeout'` — the guard was SKIPPED, " +
+      'which is not evidence the lane was drained.',
     seeAlso: [
       'events:await (a member self-registering, instead of the leader staging it for them)',
       'events:emit (fires the key — reports waiters/woken)',
@@ -322,12 +421,13 @@ export default defineTool({
       // drops a benched member who has no active claim—the exact row needed to
       // discover the registered bench.  The fleet slug is the authoritative
       // scope for this roster; keep the optional harness out of this read.
-      const rows = await listFleetAssignments({
+      const rosterRead = await readFleetRosterBounded({
         workspaceId,
         fleet,
         activeOnly: true,
       });
-      const memberIds = groupByAgent(rows)
+      if (rosterRead.rows === null) return rosterUnavailable(fleet, rosterRead.reason);
+      const memberIds = groupByAgent(rosterRead.rows)
         .filter((g) => g.fleetSlug === fleet)
         .map((g) => g.agentId);
       const parked = memberIds.length > 0 ? await listParkedAwaitsForSubscribers(memberIds) : [];
@@ -369,13 +469,15 @@ export default defineTool({
         },
       };
     }
-    const memberGroups = groupByAgent(
-      await listFleetAssignments({
-        workspaceId,
-        fleet: benchFleet,
-        activeOnly: true,
-      }),
-    );
+    const stageRosterRead = await readFleetRosterBounded({
+      workspaceId,
+      fleet: benchFleet,
+      activeOnly: true,
+    });
+    if (stageRosterRead.rows === null) {
+      return rosterUnavailable(benchFleet, stageRosterRead.reason, args.member);
+    }
+    const memberGroups = groupByAgent(stageRosterRead.rows);
     if (!memberGroups.some((group) => group.agentId === args.member)) {
       return {
         data: {
@@ -392,8 +494,14 @@ export default defineTool({
 
     // WI-5938: park/pull is derived state — resolve it BEFORE staging anything, so a
     // refused bench never leaves a half-registered await behind.
-    const laneHealth = benchFleet
-      ? await readFleetLaneHealth({
+    // EI-21334781727749359: BOUNDED. This is the ~3.5-12s claim-candidate aggregate,
+    // and benching is per-member, so a leader renewing N benches fires N of them at
+    // once. Unbounded, that is what pushed all sixteen concurrent renewals past the
+    // client deadline with their mutation state unknown. A read that misses its budget
+    // is an unreadable count, which takes the EXISTING fail-open path below.
+    const laneRead = await withBoundedTimeout<Awaited<ReturnType<typeof readFleetLaneHealth>>>(
+      () =>
+        readFleetLaneHealth({
           fleet: benchFleet,
           harness: args.harness,
           workspaceId,
@@ -401,8 +509,15 @@ export default defineTool({
           // count against them as an exclusion, or a member holding work would read as a
           // gated lane rather than a live one.
           assignee: args.member,
-        })
-      : null;
+        }),
+      { fallback: null, timeoutMs: BENCH_LANE_READ_BUDGET_MS, label: 'fleet-bench:laneHealth' },
+    );
+    const laneHealth = laneRead.value;
+    // Distinguish the two ways a count goes unknown. Both fail open, but only one of
+    // them means "ask again in a moment" — reporting them as the same thing is how a
+    // transient slow read gets mistaken for a permanently unscoped lane.
+    const laneUnavailableReason =
+      laneHealth !== null ? null : laneRead.degraded ? (laneRead.reason ?? 'unreadable') : 'unreadable';
     const verdict = benchQueueVerdict(laneHealth);
 
     if (verdict.refuse && !args.force) {
@@ -505,6 +620,25 @@ export default defineTool({
           claimable: verdict.claimable,
           matched_by_filter: verdict.matchedByFilter,
           spec_ref: verdict.specRef,
+          // EI-21334781727749359: say WHY the count is unknown when it is. 'timeout'
+          // means the guard was skipped because the read missed its budget — the bench
+          // stands (fail-open, per design note (1)), but the park/pull check did NOT
+          // run, so this is not evidence the lane is drained.
+          ...(laneUnavailableReason
+            ? {
+                unavailable_reason: laneUnavailableReason,
+                ...(laneUnavailableReason === 'timeout'
+                  ? {
+                      budget_ms: BENCH_LANE_READ_BUDGET_MS,
+                      unavailable_advice:
+                        `The lane read exceeded ${BENCH_LANE_READ_BUDGET_MS}ms, so the WI-5938 park/pull ` +
+                        'guard was SKIPPED for this bench rather than wedging it. The bench is registered. ' +
+                        'If you need the guarantee that this member had nothing claimable, read ' +
+                        'work_items:claimable under the same spec and re-check.',
+                    }
+                  : {}),
+              }
+            : {}),
         },
         ...(verdict.refuse && args.force
           ? {
