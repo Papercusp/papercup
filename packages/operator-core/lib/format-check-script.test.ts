@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildPrettierArgs,
   buildPrettierCheckArgs,
+  buildPrettierWholeFileArgs,
   characterRangeForLines,
   normalizeScopedPaths,
   parseAddedLineRanges,
@@ -71,6 +72,15 @@ describe('scoped repository format check', () => {
     expect(args).toContain('40');
   });
 
+  it('builds a whole-file stdin invocation only for explicitly task-created files', () => {
+    expect(buildPrettierWholeFileArgs('/tmp/prettier.cjs', 'new-file.ts')).toEqual([
+      '/tmp/prettier.cjs',
+      '--ignore-unknown',
+      '--stdin-filepath',
+      'new-file.ts',
+    ]);
+  });
+
   it('ignores formatter changes outside the requested range', () => {
     const source = 'changed();\ntrailing();\n';
     const formatted = 'changed();\ntrailing();';
@@ -83,6 +93,22 @@ describe('scoped repository format check', () => {
     expect(parseFormatCliArgs(['--write', 'package.json'])).toEqual({
       mode: 'write',
       paths: ['package.json'],
+    });
+  });
+
+  it('keeps an explicit creation set separate from range-scoped paths', () => {
+    expect(parseFormatCliArgs(['--write', '--new-file', 'scripts/check-format.mjs', 'package.json'])).toEqual({
+      mode: 'write',
+      paths: ['package.json'],
+      newFilePaths: ['scripts/check-format.mjs'],
+    });
+  });
+
+  it('accepts an equals form for the explicit creation set', () => {
+    expect(parseFormatCliArgs(['--new-file=scripts/check-format.mjs'])).toEqual({
+      mode: 'check',
+      paths: [],
+      newFilePaths: ['scripts/check-format.mjs'],
     });
   });
 
