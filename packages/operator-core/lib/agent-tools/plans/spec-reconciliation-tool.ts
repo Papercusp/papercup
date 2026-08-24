@@ -9,6 +9,7 @@ import {
   type SpecReconciliationRow,
 } from './spec-reconciliation';
 import { computeSpecEnforcementLatency } from './spec-enforcement-latency';
+import { computeSpecEnforcementEscape } from './spec-enforcement-escape';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -30,8 +31,8 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Include the work-item-axis claim-to-completion latency rollup, split by whether the ' +
-        "item's plan was enforcement-eligible. Default true.",
+      'Include the work-item-axis outcome rollups — claim-to-completion latency and defect ' +
+        "escape — each split by whether the item's plan was enforcement-eligible. Default true.",
     ),
 });
 
@@ -67,10 +68,13 @@ export default defineTool({
     // living on a per-plan row is how a plan census quietly starts reporting an item statistic.
     // Its own `rows` (one per measured item) are deliberately NOT shipped — this tool's rows are
     // plans, and the latency question is answered by the distribution, not by 7,000 durations.
-    const latency =
+    const [latency, escape] =
       args.includeLatency === false
-        ? undefined
-        : (await computeSpecEnforcementLatency({}, { harnessSlug })).rollup;
+        ? [undefined, undefined]
+        : await Promise.all([
+            computeSpecEnforcementLatency({}, { harnessSlug }).then((l) => l.rollup),
+            computeSpecEnforcementEscape({}, { harnessSlug }).then((e) => e.rollup),
+          ]);
 
     const wanted = new Set<AdoptionState>(args.adoption ?? ['adopted', 'legacy-val-only', 'no-behavior-declared']);
     const matching = rows.filter((r) => {
@@ -87,6 +91,7 @@ export default defineTool({
         harnessSlug,
         rollup,
         latency,
+        escape,
         rows: shown.map(compactRow),
         rowsMatched: matching.length,
         rowsShown: shown.length,
