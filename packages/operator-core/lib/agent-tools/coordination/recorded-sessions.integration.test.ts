@@ -13,7 +13,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
-import { claimAdvSessionResume, listRecordedLiveSessions, reactivateAdvSession } from '../../adv-sessions';
+import { claimAdvSessionResume, listRecordedLiveSessions } from '../../adv-sessions';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
@@ -107,44 +107,8 @@ describe('listRecordedLiveSessions (real PG)', () => {
   });
 });
 
-describe('reactivateAdvSession (resume re-activates an ended row → roster surfaces it)', () => {
-  it('clears ended_at/exit_code so an ended (resumed) session becomes live + listable', async () => {
-    // An ended session — invisible to the live roster, exactly like a session
-    // the user exited and is about to `psu --resume`.
-    const rows = await admin`
-      INSERT INTO harness_shared.adv_sessions (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code)
-      VALUES (${WS}, 'claude', 'console', 's-resumed', now() - interval '90 minutes', now() - interval '30 minutes', 0)
-      RETURNING id`;
-    const id = Number(rows[0].id);
-    expect((await listRecordedLiveSessions({ workspaceId: WS })).map((r) => r.coordOwnerId)).toEqual([]);
-
-    // Resume re-activates the row.
-    expect(await reactivateAdvSession(id)).toBe(true);
-
-    const live = await listRecordedLiveSessions({ workspaceId: WS });
-    expect(live.map((r) => r.coordOwnerId)).toEqual(['s-resumed']);
-    expect(live[0].endedAt).toBeNull();
-  });
-
-  it('is idempotent — re-activating an already-live row is a no-op (returns false)', async () => {
-    const rows = await admin`
-      INSERT INTO harness_shared.adv_sessions (workspace_id, agent, mode, coord_owner_id, started_at, ended_at)
-      VALUES (${WS}, 'claude', 'console', 's-live2', now() - interval '5 minutes', NULL)
-      RETURNING id`;
-    expect(await reactivateAdvSession(Number(rows[0].id))).toBe(false);
-  });
-
-  it('returns false for an unknown id', async () => {
-    expect(await reactivateAdvSession(99999999)).toBe(false);
-  });
-});
-
 /**
  * claimAdvSessionResume (EI-21247460909447431) — the single-winner resume claim.
- *
- * Separate from reactivateAdvSession above on purpose: that one is an idempotent
- * self-report where `false` means "already live, no-op". Here `false` means
- * "another writer won — do not spawn", so the two cannot share a predicate.
  *
  * The regression this pins: an `ended_at IS NOT NULL`-only predicate cannot
  * claim a row whose process died WITHOUT recording its exit, making such a
@@ -154,15 +118,27 @@ describe('reactivateAdvSession (resume re-activates an ended row → roster surf
 describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
   async function seedRow(startedAgo: string, ended: boolean): Promise<number> {
     const rows = await admin`
-      INSERT INTO harness_shared.adv_sessions (workspace_id, agent, mode, coord_owner_id, started_at, ended_at)
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code)
       VALUES (${WS}, 'claude', 'console', ${`s-claim-${Math.random().toString(36).slice(2, 10)}`},
-              now() - ${startedAgo}::interval, ${ended ? new Date() : null})
+              now() - ${startedAgo}::interval, ${ended ? new Date() : null}, ${ended ? 137 : null})
       RETURNING id`;
     return Number(rows[0].id);
   }
 
-  it('claims a cleanly-ENDED row', async () => {
-    expect(await claimAdvSessionResume(await seedRow('90 minutes', true))).toBe(true);
+  it('claims a cleanly-ENDED row and makes it live/listable', async () => {
+    const id = await seedRow('90 minutes', true);
+
+    expect(await claimAdvSessionResume(id)).toBe(true);
+
+    const [row] = await admin`
+      SELECT coord_owner_id, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}`;
+    expect(row.ended_at).toBeNull();
+    expect(row.exit_code).toBeNull();
+    expect((await listRecordedLiveSessions({ workspaceId: WS })).map((r) => r.coordOwnerId))
+      .toContain(row.coord_owner_id);
   });
 
   it('claims a row that was NEVER marked ended (process died without recording its exit)', async () => {
