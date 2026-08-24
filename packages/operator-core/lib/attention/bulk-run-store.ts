@@ -528,15 +528,33 @@ export async function createRun(input: {
 
   let rows: RawRunRow[];
   try {
-    rows = await sql<RawRunRow[]>`
-      INSERT INTO harness_shared.attention_bulk_runs
-        (workspace_id, run_id, harness_slug, requested_by, phase, run_kind, seed_refs,
-         filter_snapshot, total_items)
-      VALUES (${ws}, ${runId}, ${input.harnessSlug ?? null}, ${input.requestedBy ?? null},
-              'pending', ${runKind}, ${JSON.stringify(seedRefs)}::jsonb,
-              ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb, ${totalItems})
-      RETURNING ${sql.unsafe(RUN_COLUMNS)}
-    `;
+    // The run row and its complete membership snapshot are one durable unit.
+    // If any item seed fails, rolling back the transaction prevents a pending
+    // run with a partial manifest from occupying the single-flight slot.
+    rows = await sql.begin(async (tx) => {
+      const inserted = await tx<RawRunRow[]>`
+        INSERT INTO harness_shared.attention_bulk_runs
+          (workspace_id, run_id, harness_slug, requested_by, phase, run_kind, seed_refs,
+           filter_snapshot, total_items)
+        VALUES (${ws}, ${runId}, ${input.harnessSlug ?? null}, ${input.requestedBy ?? null},
+                'pending', ${runKind}, ${JSON.stringify(seedRefs)}::jsonb,
+                ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb, ${totalItems})
+        RETURNING ${tx.unsafe(RUN_COLUMNS)}
+      `;
+
+      for (let i = 0; i < unique.length; i += 1) {
+        const it = unique[i]!;
+        await tx`
+          INSERT INTO harness_shared.attention_bulk_run_items
+            (workspace_id, run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id, outcome)
+          VALUES (${ws}, ${runId}, ${it.itemId}, ${i}, ${it.kind ?? null}, ${it.title ?? null},
+                  ${JSON.stringify(it.ref ?? {})}::jsonb, ${it.ownerAgentId ?? null}, 'pending')
+          ON CONFLICT (workspace_id, run_id, item_id) DO NOTHING
+        `;
+      }
+
+      return inserted;
+    });
   } catch (e) {
     // The rail firing (migration 916→937) means a concurrent start won the race
     // between our check above and this insert. Re-read and report it as the
@@ -547,17 +565,6 @@ export async function createRun(input: {
       throw new BulkRunAlreadyActiveError(live?.runId ?? null, live?.phase ?? null, runKind);
     }
     throw e;
-  }
-
-  for (let i = 0; i < unique.length; i += 1) {
-    const it = unique[i]!;
-    await sql`
-      INSERT INTO harness_shared.attention_bulk_run_items
-        (workspace_id, run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id, outcome)
-      VALUES (${ws}, ${runId}, ${it.itemId}, ${i}, ${it.kind ?? null}, ${it.title ?? null},
-              ${JSON.stringify(it.ref ?? {})}::jsonb, ${it.ownerAgentId ?? null}, 'pending')
-      ON CONFLICT (workspace_id, run_id, item_id) DO NOTHING
-    `;
   }
 
   return mapRun(rows[0]!);
