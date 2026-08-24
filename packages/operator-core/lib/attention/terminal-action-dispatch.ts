@@ -36,6 +36,8 @@ export interface TerminalActionDependencies {
     slug: string;
     itemId: string;
     status: 'done' | 'dropped';
+    /** Audit rationale — plans:set-status REQUIRES a nonblank reason for `dropped`. */
+    rationale?: string;
   }): Promise<void>;
   /** Best-effort brain nudge after `done`; Drop intentionally never calls it. */
   wakePlanLoop(input: { harnessSlug: string | null; reason: string }): Promise<void> | void;
@@ -84,8 +86,10 @@ export async function dispatchAttentionTerminalAction(input: {
   item: TerminalAttentionItem;
   actionId: string;
   deps: TerminalActionDependencies;
+  /** Caller's audit rationale, threaded into effects that require a reason (plan-item drops). */
+  rationale?: string;
 }): Promise<TerminalActionResult> {
-  const { item, actionId, deps } = input;
+  const { item, actionId, deps, rationale } = input;
   if (isNavigateAction(actionId)) return { resolved: false };
 
   if (item.ref.kind === 'coord-escalation') {
@@ -132,6 +136,7 @@ export async function dispatchAttentionTerminalAction(input: {
         slug: refString(item, 'slug'),
         itemId: refString(item, 'itemId'),
         status,
+        ...(rationale ? { rationale } : {}),
       });
       if (status === 'done') {
         try {
