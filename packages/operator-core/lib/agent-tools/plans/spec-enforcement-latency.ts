@@ -133,6 +133,22 @@ export interface FirstClaimRow {
   firstWonAtMs: number;
   /** The LATEST won claim. Equal to `firstWonAtMs` when the item was claimed exactly once. */
   lastWonAtMs: number;
+  /**
+   * How many won claims this item accumulated — the ATTEMPT COUNT, and the substrate for the
+   * repeated-failed-approach measure (`spec-enforcement-repeated-approach.ts`). Always >= 1 for
+   * a row that exists at all, since a row is only produced by a won claim.
+   *
+   * Deliberately read from the ledger rather than from `work_items.attempts`: the ledger is
+   * append-only, so a reclaim ADDS a row instead of overwriting one, and the count survives the
+   * release/completion writes that null the row's own claim columns.
+   */
+  wonClaimCount: number;
+  /**
+   * Distinct claimants across those attempts. A re-attempt by the SAME agent is a materially
+   * different event from a handoff to a fresh one — the prior-attempt brief exists mainly to
+   * carry context ACROSS agents — so the two are counted separately rather than pooled.
+   */
+  distinctClaimants: number;
 }
 
 export interface LatencyDistribution {
@@ -334,10 +350,20 @@ async function defaultListFirstClaims(input: {
 
   const rows = await withWorkspace(
     scope.workspaceId,
-    async (tx) => tx<{ feature_id: string; first_won_ms: string; last_won_ms: string }[]>`
+    async (tx) => tx<
+      {
+        feature_id: string;
+        first_won_ms: string;
+        last_won_ms: string;
+        won_claims: string;
+        distinct_claimants: string;
+      }[]
+    >`
       SELECT c.feature_id,
              (extract(epoch FROM min(c.attempt_ts)) * 1000)::bigint AS first_won_ms,
-             (extract(epoch FROM max(c.attempt_ts)) * 1000)::bigint AS last_won_ms
+             (extract(epoch FROM max(c.attempt_ts)) * 1000)::bigint AS last_won_ms,
+             count(*)::bigint AS won_claims,
+             count(DISTINCT c.claimer_pubkey)::bigint AS distinct_claimants
         FROM harness_shared.claim_audit c
        WHERE c.workspace_id = ${scope.workspaceId}
          AND c.harness_slug = ${scope.harnessSlug}
@@ -351,6 +377,8 @@ async function defaultListFirstClaims(input: {
     workItemId: r.feature_id,
     firstWonAtMs: Number(r.first_won_ms),
     lastWonAtMs: Number(r.last_won_ms),
+    wonClaimCount: Number(r.won_claims),
+    distinctClaimants: Number(r.distinct_claimants),
   }));
 }
 
