@@ -19,6 +19,8 @@ export function applyPrettierRangeWrites(source: any, lineRanges: any, formatRan
 export function normalizeScopedPaths(args: any): any;
 export function buildPrettierCheckArgs(cli: any, repoPath: any, range: any): any[];
 export function buildPrettierArgs(cli: any, repoPath: any, range: any, mode?: string): any[];
+/** Build a whole-file Prettier invocation for an explicitly task-created file. */
+export function buildPrettierWholeFileArgs(cli: any, repoPath: any): any[];
 export function buildPrettierStdinArgs(cli: any, repoPath: any, range: any): any[];
 /**
  * Prettier's range check compares the formatter output for the whole file.
@@ -32,4 +34,4 @@ export function parseFormatCliArgs(args: any): {
     paths: any;
 };
 export const REPO_ROOT: string;
-export const FORMAT_USAGE: "Usage:\n  npm run format:check:scoped -- <file...>\n  npm run format:write:scoped -- <file...>\n\nCheck or write only the changed ranges of one or more explicit files in the repository.\n";
+export const FORMAT_USAGE: "Usage:\n  npm run format:check:scoped -- [--new-file <file>] <file...>\n  npm run format:write:scoped -- [--new-file <file>] <file...>\n\nCheck or write only the changed ranges of explicit files in the repository. Repeat\n--new-file for files created by the current task; those files are checked or written\nas complete files even if git-sync has already committed them.\n";
