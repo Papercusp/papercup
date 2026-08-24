@@ -5,6 +5,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { mockOrgSql } = vi.hoisted(() => ({ mockOrgSql: vi.fn() }));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: () => ({ sql: mockOrgSql }) };
+});
 vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
   harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
@@ -179,6 +185,22 @@ describe('plans:audit D-008 writer contract', () => {
 });
 
 describe('plans:audit phase:activation', () => {
+  it('uses callable org SQL when skipWorkspaceTx leaves ctx.tx absent', async () => {
+    const noTxCtx = {
+      ...(ctx as unknown as Record<string, unknown>),
+      tx: undefined,
+    } as never;
+
+    const result = ((await tool.handler(activationArgs() as never, noTxCtx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation' });
+    expect(mockResolveSourceRefs).toHaveBeenCalledWith(
+      mockOrgSql,
+      'test-workspace',
+      ['session_turn:codex:session-full-id:7'],
+    );
+  });
+
   it('publishes the complete activation workflow and runtime materiality taxonomy on the tool surface', () => {
     const guidance = [
       tool.description,

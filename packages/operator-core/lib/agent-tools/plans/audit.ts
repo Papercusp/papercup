@@ -20,6 +20,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 import { execFileSync } from 'node:child_process';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
@@ -264,8 +265,13 @@ export default defineTool({
       }
 
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
+      // This tool opts out of the ambient workspace transaction because the
+      // activation writer takes its own advisory-locked transaction below.
+      // Consequently ctx.tx is intentionally absent at runtime; resolve the
+      // canonical session refs through the same org SQL surface as the writer.
+      const { sql } = getOrgPg();
       const resolutions = await resolveSessionTurnRefs(
-        sctx.tx as Parameters<typeof resolveSessionTurnRefs>[0],
+        sql as Parameters<typeof resolveSessionTurnRefs>[0],
         workspaceId,
         sourceRefs,
       );
