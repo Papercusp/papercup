@@ -51,8 +51,17 @@ beforeEach(() => {
 describe('dev:pg_query — P-005 guard wiring', () => {
   it('publishes SQL and relation description as mutually exclusive input alternatives', () => {
     expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1' }).success).toBe(true);
+    expect(
+      pgQueryTool.args.safeParse({ sql: 'SELECT 1', positiveControlSql: 'SELECT 1 AS known' }).success,
+    ).toBe(true);
     expect(pgQueryTool.args.safeParse({ describe: 'harness_shared.tool_invocations' }).success).toBe(true);
     expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1', describe: 'harness_shared.tool_invocations' }).success).toBe(false);
+    expect(
+      pgQueryTool.args.safeParse({
+        describe: 'harness_shared.tool_invocations',
+        positiveControlSql: 'SELECT 1',
+      }).success,
+    ).toBe(false);
     expect(pgQueryTool.args.safeParse({}).success).toBe(false);
 
     const json = z.toJSONSchema(pgQueryTool.args as never) as {
@@ -91,8 +100,9 @@ describe('dev:pg_query — P-005 guard wiring', () => {
 
   it('documents the unwrapped root shape for code:run callers', () => {
     const returns = (pgQueryTool as unknown as { guidance?: { returns?: string } }).guidance?.returns;
-    expect(returns).toContain('{ rowCount, truncated, fields, elapsedMs, rows }');
-    expect(returns).toContain('there is no `result.content` MCP envelope');
+    expect(returns).toContain('{ rowCount, truncated, fields, elapsedMs, rows, positiveControl?, absence? }');
+    expect(returns).toContain('absence.status:"unverified"');
+    expect(returns).toContain('`code:run` returns this root directly');
   });
 
   it('returns a relation description as structured data for transport-safe shaping', async () => {
@@ -177,6 +187,102 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     advisoryMock.mockRejectedValue(new Error('schema read down'));
     const guarded = await pgQueryTool.handler({ sql: 'SELECT 1' } as never, {} as never);
     expect(payloadOf(guarded as never)).toMatchObject({ rowCount: 1 });
+  });
+
+  describe('positive-control evidence for empty results (WI-41165)', () => {
+    it('marks a bare zero-row result unverified instead of presenting silence as evidence', async () => {
+      pgReadQueryMock.mockResolvedValue({
+        rowCount: 0,
+        truncated: false,
+        fields: [],
+        elapsedMs: 2,
+        rows: [],
+      });
+
+      const res = await pgQueryTool.handler({ sql: 'SELECT 1 WHERE false' } as never, {} as never);
+      const payload = payloadOf(res as never);
+
+      expect(payload.absence).toEqual({
+        status: 'unverified',
+        code: 'positive-control-not-run',
+      });
+      expect(payload.advisory).toContain('no positiveControlSql was run');
+      expect(payload).not.toHaveProperty('positiveControl');
+    });
+
+    it('marks an empty result verified when its same-transaction positive control returns a row', async () => {
+      pgReadQueryMock.mockResolvedValue({
+        rowCount: 0,
+        truncated: false,
+        fields: [],
+        elapsedMs: 3,
+        rows: [],
+        positiveControl: {
+          rowCount: 1,
+          truncated: false,
+          fields: ['id'],
+          rows: [{ id: 'known-row' }],
+        },
+      });
+      const positiveControlSql = "SELECT id FROM t WHERE id = 'known-row'";
+
+      const res = await pgQueryTool.handler(
+        { sql: 'SELECT id FROM t WHERE false', positiveControlSql } as never,
+        {} as never,
+      );
+      const payload = payloadOf(res as never);
+
+      expect(payload.absence).toEqual({ status: 'verified', code: 'positive-control-passed' });
+      expect(payload.positiveControl).toEqual({
+        status: 'passed',
+        rowCount: 1,
+        truncated: false,
+        fields: ['id'],
+        rows: [{ id: 'known-row' }],
+      });
+      expect(String(payload.advisory ?? '')).not.toContain('absence unverified');
+      expect(pgReadQueryMock).toHaveBeenCalledWith('SELECT id FROM t WHERE false', {
+        maxRows: undefined,
+        timeoutMs: undefined,
+        positiveControlSql,
+      });
+    });
+
+    it('keeps absence unverified when the supplied positive control is also empty', async () => {
+      pgReadQueryMock.mockResolvedValue({
+        rowCount: 0,
+        truncated: false,
+        fields: [],
+        elapsedMs: 3,
+        rows: [],
+        positiveControl: { rowCount: 0, truncated: false, fields: [], rows: [] },
+      });
+
+      const res = await pgQueryTool.handler(
+        { sql: 'SELECT 1 WHERE false', positiveControlSql: 'SELECT 1 WHERE false' } as never,
+        {} as never,
+      );
+      const payload = payloadOf(res as never);
+
+      expect(payload.absence).toEqual({ status: 'unverified', code: 'positive-control-empty' });
+      expect(payload.positiveControl).toMatchObject({ status: 'failed', rowCount: 0 });
+      expect(payload.advisory).toContain('positiveControlSql also returned 0 rows');
+    });
+
+    it('tenant-checks positiveControlSql before executing either query', async () => {
+      advisoryMock.mockImplementation(async (sql: string) =>
+        sql.includes('unscoped_control') ? '⚠ tenant scope: control is unscoped' : null,
+      );
+
+      const res = await pgQueryTool.handler(
+        { sql: 'SELECT 1', positiveControlSql: 'SELECT * FROM unscoped_control' } as never,
+        { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
+      );
+
+      expect((res as { isError?: boolean }).isError).toBe(true);
+      expect(payloadOf(res as never)).toMatchObject({ reason: 'positive_control_tenant_scope_required' });
+      expect(pgReadQueryMock).not.toHaveBeenCalled();
+    });
   });
 
   // WI-6674. NOTE the mock factory spreads importOriginal() before overriding,
