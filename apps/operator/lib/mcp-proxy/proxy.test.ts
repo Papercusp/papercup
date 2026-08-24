@@ -271,6 +271,37 @@ describe('createMcpProxy — client-facing keep-alive policy (EI-212758910492988
   });
 });
 
+describe('WI-41257: inbound refusal and accept-pressure telemetry', () => {
+  it('records clientError/socket-reset and drop events, and exposes bounded counters locally', async () => {
+    const logs: string[] = [];
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: '127.0.0.1',
+        targetPort: 1,
+        retryWindowMs: 100,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const socket = new net.Socket();
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    proxy.emit('clientError', reset, socket);
+    proxy.emit('drop', {
+      remoteAddress: '127.0.0.1',
+      remotePort: 4567,
+      remoteFamily: 'IPv4',
+    });
+
+    const health = JSON.parse((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body);
+    expect(health.inbound).toMatchObject({ clientErrors: 1, socketResets: 1, drops: 1 });
+    expect(socket.destroyed).toBe(true);
+    expect(logs.some((line) => line.includes('inbound client error'))).toBe(true);
+    expect(logs.some((line) => line.includes('inbound connection dropped'))).toBe(true);
+  });
+});
+
 /**
  * WI-6743 regression. The watchdog's liveness probe used to poll `/api/health`, which this
  * proxy FORWARDS. That is unanswerable precisely when retry-on-refused is doing its job, so

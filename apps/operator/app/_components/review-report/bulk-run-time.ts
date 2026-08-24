@@ -8,7 +8,10 @@ export function formatRunElapsed(
   const start = Date.parse(startedAt);
   if (Number.isNaN(start)) return null;
   const end = finishedAt ? Date.parse(finishedAt) : now;
-  const secs = Math.max(0, Math.round(((Number.isNaN(end) ? now : end) - start) / 1000));
+  const secs = Math.max(
+    0,
+    Math.round(((Number.isNaN(end) ? now : end) - start) / 1000),
+  );
   if (secs < 60) return `${secs}s`;
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }

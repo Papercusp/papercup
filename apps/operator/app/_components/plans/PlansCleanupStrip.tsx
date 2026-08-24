@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * PlansCleanupStrip (cleanup-report-flows-2026-08-24 P-006) — one command
@@ -6,7 +6,7 @@
  * vocabulary exactly: idle → running → review. Review-at-volume itself belongs
  * to P-007; this strip carries the run into that surface through `?opcln=`.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useState } from "react";
 import {
   BrushCleaning,
   ChevronRight,
@@ -14,18 +14,18 @@ import {
   Sparkles,
   Square,
   X,
-} from 'lucide-react';
-import { formatRunElapsed } from '../review-report/bulk-run-time';
+} from "lucide-react";
+import { formatRunElapsed } from "../review-report/bulk-run-time";
 import {
   derivePlanCleanupCounts,
   usePlanCleanupOps,
   type PlanCleanupFinding,
   type PlanCleanupRun,
-} from './use-plan-cleanup-run';
+} from "./use-plan-cleanup-run";
 // Deliberate visual reuse: the approved mockup lifts this exact strip grammar
 // from Inbox bulk resolve. Sharing its CSS keeps both flows one learned control
 // instead of creating a near-identical style system that can drift.
-import '../inbox/inbox-bulk.css';
+import "../inbox/inbox-bulk.css";
 
 export interface PlansCleanupStripProps {
   /** Exact click-time set currently rendered by PlansPane. */
@@ -70,7 +70,7 @@ export default function PlansCleanupStrip({
     try {
       const result = await start(planSlugs, filterSnapshot);
       if (!result.ok) {
-        setNotice(result.error ?? 'could not start the clean-up run');
+        setNotice(result.error ?? "could not start the clean-up run");
         return;
       }
       if (result.runId) onRunStarted(result.runId);
@@ -79,7 +79,7 @@ export default function PlansCleanupStrip({
       // leaving a run that can never move looking live.
       if (!result.launched) {
         setNotice(
-          `resolver could not start${result.launchError ? `: ${result.launchError}` : ''}`,
+          `resolver could not start${result.launchError ? `: ${result.launchError}` : ""}`,
         );
       }
     } finally {
@@ -117,15 +117,18 @@ export default function PlansCleanupStrip({
   if (isRunning && run) {
     const scanOnly = counts.total === 0;
     return (
-      <div className="op-inbox__bulk op-inbox__bulk--running" data-testid="plans-cleanup-running">
+      <div
+        className="op-inbox__bulk op-inbox__bulk--running"
+        data-testid="plans-cleanup-running"
+      >
         <div className="op-inbox__bulk-head">
           <span className="op-inbox__bulk-spin" aria-hidden="true">
             <Loader2 size={15} />
           </span>
           <span className="op-inbox__bulk-title">
             {scanOnly
-              ? `Papercup is scanning ${run.totalItems} shown plan${run.totalItems === 1 ? '' : 's'}…`
-              : 'Papercup is cleaning up…'}
+              ? `Papercup is scanning ${run.totalItems} shown plan${run.totalItems === 1 ? "" : "s"}…`
+              : "Papercup is cleaning up…"}
           </span>
           <span className="op-inbox__bulk-spacer" />
           <button
@@ -154,10 +157,13 @@ export default function PlansCleanupStrip({
         >
           <div
             className="op-inbox__bulk-fill"
-            style={{ width: scanOnly ? '2%' : `${counts.percent}%` }}
+            style={{ width: scanOnly ? "2%" : `${counts.percent}%` }}
           />
         </div>
-        <div className="op-inbox__bulk-counts" data-testid="plans-cleanup-counts">
+        <div
+          className="op-inbox__bulk-counts"
+          data-testid="plans-cleanup-counts"
+        >
           {scanOnly ? (
             <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
               <i aria-hidden="true" />
@@ -180,7 +186,9 @@ export default function PlansCleanupStrip({
             </>
           )}
         </div>
-        {notice ? <Notice text={notice} onClose={() => setNotice(null)} /> : null}
+        {notice ? (
+          <Notice text={notice} onClose={() => setNotice(null)} />
+        ) : null}
       </div>
     );
   }
@@ -189,18 +197,30 @@ export default function PlansCleanupStrip({
     const elapsed = formatRunElapsed(run.startedAt, run.finishedAt);
     const awaiting = recommendations.length;
     return (
-      <div className="op-inbox__bulk op-inbox__bulk--review" data-testid="plans-cleanup-review">
+      <div
+        className="op-inbox__bulk op-inbox__bulk--review"
+        data-testid="plans-cleanup-review"
+      >
         <div className="op-inbox__bulk-head">
-          <span className="op-inbox__bulk-icon op-inbox__bulk-icon--review" aria-hidden="true">
+          <span
+            className="op-inbox__bulk-icon op-inbox__bulk-icon--review"
+            aria-hidden="true"
+          >
             <Sparkles size={16} />
           </span>
-          <span className="op-inbox__bulk-title" data-testid="plans-cleanup-review-headline">
-            {awaiting} fix{awaiting === 1 ? '' : 'es'} need your call · {counts.applied} auto-applied
-            {pending.length > 0 ? ` · ${pending.length} not reached` : ''}
-            {counts.failed > 0 ? ` · ${counts.failed} failed` : ''}
+          <span
+            className="op-inbox__bulk-title"
+            data-testid="plans-cleanup-review-headline"
+          >
+            {awaiting} fix{awaiting === 1 ? "" : "es"} need your call ·{" "}
+            {counts.applied} auto-applied
+            {pending.length > 0 ? ` · ${pending.length} not reached` : ""}
+            {counts.failed > 0 ? ` · ${counts.failed} failed` : ""}
           </span>
           <span className="op-inbox__bulk-spacer" />
-          {elapsed ? <span className="op-inbox__bulk-elapsed">run {elapsed}</span> : null}
+          {elapsed ? (
+            <span className="op-inbox__bulk-elapsed">run {elapsed}</span>
+          ) : null}
         </div>
         <div className="op-inbox__bulk-actions">
           <button
@@ -211,7 +231,7 @@ export default function PlansCleanupStrip({
             onClick={() => onReview(run.runId)}
           >
             <ChevronRight size={14} aria-hidden="true" />
-            Review {awaiting} fix{awaiting === 1 ? '' : 'es'}
+            Review {awaiting} fix{awaiting === 1 ? "" : "es"}
           </button>
           <button
             type="button"
@@ -224,14 +244,19 @@ export default function PlansCleanupStrip({
           </button>
         </div>
         <p className="op-inbox__bulk-hint">
-          Review the findings grouped by fix type, with recorded evidence beside every change.
+          Review the findings grouped by fix type, with recorded evidence beside
+          every change.
         </p>
-        {notice ? <Notice text={notice} onClose={() => setNotice(null)} /> : null}
+        {notice ? (
+          <Notice text={notice} onClose={() => setNotice(null)} />
+        ) : null}
       </div>
     );
   }
 
-  const failureNotice = notice ?? (run?.phase === 'failed' ? run.error ?? 'clean-up run failed' : null);
+  const failureNotice =
+    notice ??
+    (run?.phase === "failed" ? (run.error ?? "clean-up run failed") : null);
   const count = planSlugs.length;
   return (
     <div className="op-inbox__bulk-slot" data-testid="plans-cleanup-idle">
@@ -240,7 +265,7 @@ export default function PlansCleanupStrip({
         className="op-inbox__bulk-start"
         data-testid="plans-cleanup-start"
         disabled={count === 0 || starting}
-        aria-label={`Clean up ${count} shown plan${count === 1 ? '' : 's'}`}
+        aria-label={`Clean up ${count} shown plan${count === 1 ? "" : "s"}`}
         onClick={() => void onStart()}
       >
         <span className="op-inbox__bulk-icon" aria-hidden="true">
@@ -254,15 +279,18 @@ export default function PlansCleanupStrip({
         </span>
         <span className="op-inbox__bulk-start-copy">
           <span className="op-inbox__bulk-start-title">
-            Clean up {count} shown plan{count === 1 ? '' : 's'}
+            Clean up {count} shown plan{count === 1 ? "" : "s"}
           </span>
           <span className="op-inbox__bulk-start-sub">
-            Reconciles stale statuses, cleared blockers &amp; finished work · you review the rest
+            Reconciles stale statuses, cleared blockers &amp; finished work ·
+            you review the rest
           </span>
         </span>
         <ChevronRight size={16} aria-hidden="true" />
       </button>
-      {failureNotice ? <Notice text={failureNotice} onClose={() => setNotice(null)} /> : null}
+      {failureNotice ? (
+        <Notice text={failureNotice} onClose={() => setNotice(null)} />
+      ) : null}
     </div>
   );
 }

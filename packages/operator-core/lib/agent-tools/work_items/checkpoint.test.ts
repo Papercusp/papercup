@@ -1110,6 +1110,43 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.checks).toBe(3);
     });
 
+    it('EI-21311156936925867: accepts structured kind/command/result rows through the handler', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'structured verification compatibility',
+        checks: [
+          {
+            kind: 'the checkpoint handler regression passes',
+            command: 'npm run test:file -- packages/operator-core/lib/agent-tools/work_items/checkpoint.test.ts',
+            result: 'handler regression passed with the structured row intact',
+          },
+          {
+            kind: 'ignored kind',
+            command: 'ignored command',
+            result: 'ignored result',
+            claim: 'canonical claim wins',
+            recheck: 'canonical recheck wins',
+            verified: 'canonical evidence wins',
+          },
+        ],
+      });
+
+      expect(r).toMatchObject({ ok: true, checks: 2 });
+      const stored = await lastStored();
+      expect(stored).toContain('- ✓ the checkpoint handler regression passes');
+      expect(stored).toContain(
+        're-check: npm run test:file -- packages/operator-core/lib/agent-tools/work_items/checkpoint.test.ts',
+      );
+      expect(stored).toContain('evidence: handler regression passed with the structured row intact');
+      expect(stored).toContain('- ✓ canonical claim wins');
+      expect(stored).toContain('re-check: canonical recheck wins');
+      expect(stored).toContain('evidence: canonical evidence wins');
+      expect(stored).not.toContain('ignored kind');
+      expect(stored).not.toContain('ignored command');
+      expect(stored).not.toContain('ignored result');
+    });
+
     it('applies the same boolean compatibility repair inside items[]', async () => {
       withPrior(null);
       const out = await env({

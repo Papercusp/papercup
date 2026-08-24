@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * Client seam for one Plans clean-up run (cleanup-report-flows-2026-08-24
@@ -7,23 +7,28 @@
  * chooses a historical/current run without moving ownership into component
  * state.
  */
-import { useCallback, useMemo } from 'react';
-import { useSyncQuery } from '@papercusp/sync';
+import { useCallback, useMemo } from "react";
+import { useSyncQuery } from "@papercusp/sync";
 
-export type PlanCleanupPhase = 'pending' | 'running' | 'review' | 'complete' | 'failed';
+export type PlanCleanupPhase =
+  | "pending"
+  | "running"
+  | "review"
+  | "complete"
+  | "failed";
 export type PlanCleanupOutcome =
-  | 'pending'
-  | 'auto_applied'
-  | 'recommended'
-  | 'accepted'
-  | 'dismissed'
-  | 'skipped'
-  | 'failed';
+  | "pending"
+  | "auto_applied"
+  | "recommended"
+  | "accepted"
+  | "dismissed"
+  | "skipped"
+  | "failed";
 
 export interface PlanCleanupRun {
   runId: string;
   phase: PlanCleanupPhase;
-  runKind: 'plan-cleanup';
+  runKind: "plan-cleanup";
   seedRefs: string[];
   totalItems: number;
   autoResolved: number;
@@ -47,7 +52,7 @@ export interface PlanCleanupFinding {
   target: string;
   from: string;
   to: string;
-  confidence: 'provable' | 'recommended';
+  confidence: "provable" | "recommended";
   evidence: Array<{ kind?: string; ref?: string; note?: string }>;
   position: number;
   outcome: PlanCleanupOutcome;
@@ -84,7 +89,7 @@ export interface PlanCleanupCounts {
   percent: number;
 }
 
-const ENDPOINT = '/api/admin/plan-cleanup';
+const ENDPOINT = "/api/admin/plan-cleanup";
 
 /** The click-time membership snapshot. Keep the pane's order, trim once, and
  * dedupe before POSTing; the route repeats these guards as the trust boundary. */
@@ -113,10 +118,12 @@ export function derivePlanCleanupCounts(
   let failed = 0;
   let pending = 0;
   for (const finding of findings) {
-    if (finding.outcome === 'auto_applied' || finding.outcome === 'accepted') applied += 1;
-    else if (finding.outcome === 'recommended') forReview += 1;
-    else if (finding.outcome === 'dismissed' || finding.outcome === 'skipped') skipped += 1;
-    else if (finding.outcome === 'failed') failed += 1;
+    if (finding.outcome === "auto_applied" || finding.outcome === "accepted")
+      applied += 1;
+    else if (finding.outcome === "recommended") forReview += 1;
+    else if (finding.outcome === "dismissed" || finding.outcome === "skipped")
+      skipped += 1;
+    else if (finding.outcome === "failed") failed += 1;
     else pending += 1;
   }
   const total = findings.length;
@@ -133,16 +140,21 @@ export function derivePlanCleanupCounts(
   };
 }
 
-async function postOp(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function postOp(
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const res = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const err = json.error as { message?: string } | undefined;
-    throw new Error(err?.message ?? `plan clean-up ${String(body.op ?? 'start')} failed (${res.status})`);
+    throw new Error(
+      err?.message ??
+        `plan clean-up ${String(body.op ?? "start")} failed (${res.status})`,
+    );
   }
   return json;
 }
@@ -156,14 +168,16 @@ export function usePlanCleanupRun(
     run: PlanCleanupRun | null;
     findings: PlanCleanupFinding[];
   }>({
-    queryName: 'plans.cleanupRun',
+    queryName: "plans.cleanupRun",
     args: runId ? { runId } : {},
     enabled,
   });
 
   const row = Array.isArray(data)
     ? data[0]
-    : (data as { run?: PlanCleanupRun | null; findings?: PlanCleanupFinding[] } | undefined);
+    : (data as
+        | { run?: PlanCleanupRun | null; findings?: PlanCleanupFinding[] }
+        | undefined);
   const run = row?.run ?? null;
   const findings = useMemo(() => row?.findings ?? [], [row]);
 
@@ -171,10 +185,12 @@ export function usePlanCleanupRun(
     () => ({
       run,
       findings,
-      recommendations: findings.filter((finding) => finding.outcome === 'recommended'),
-      pending: findings.filter((finding) => finding.outcome === 'pending'),
-      isRunning: run?.phase === 'pending' || run?.phase === 'running',
-      isReview: run?.phase === 'review',
+      recommendations: findings.filter(
+        (finding) => finding.outcome === "recommended",
+      ),
+      pending: findings.filter((finding) => finding.outcome === "pending"),
+      isRunning: run?.phase === "pending" || run?.phase === "running",
+      isReview: run?.phase === "review",
       loading: Boolean(loading),
     }),
     [run, findings, loading],
@@ -199,30 +215,34 @@ export function usePlanCleanupOps(): {
       const planSlugs = snapshotPlanSlugs(rawPlanSlugs);
       try {
         const json = await postOp({
-          op: 'start',
+          op: "start",
           planSlugs,
           filter,
           ...(harness ? { harness } : {}),
         });
         return {
           ok: true,
-          runId: typeof json.runId === 'string' ? json.runId : undefined,
+          runId: typeof json.runId === "string" ? json.runId : undefined,
           launched: json.launched === true,
-          launchError: typeof json.launchError === 'string' ? json.launchError : undefined,
+          launchError:
+            typeof json.launchError === "string" ? json.launchError : undefined,
         };
       } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
     },
     [],
   );
 
   const stop = useCallback(async (runId: string) => {
-    await postOp({ op: 'stop', runId });
+    await postOp({ op: "stop", runId });
   }, []);
 
   const dismiss = useCallback(async (runId: string) => {
-    await postOp({ op: 'dismiss', runId });
+    await postOp({ op: "dismiss", runId });
   }, []);
 
   return { start, stop, dismiss };
