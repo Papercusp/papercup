@@ -152,6 +152,25 @@ the registry assertion stays accurate.
   > have**. Put those only in the world. (EI-18767396817867279 — cost a
   > scrapped 3-arm run on P-011; the `su/_S31-asymmetry-world.ts` header
   > is a worked example.)
+- **`simUserContext`** — the escape hatch for the above: it decouples the
+  sim-user channel from the judge channel, so leaking is an explicit act
+  rather than the default.
+
+  | value | the sim-user is told | the judge is told |
+  | --- | --- | --- |
+  | *(omitted)* | `description` | `description` |
+  | `'...'` | your string | `description` |
+  | `false` | *nothing* | `description` |
+
+  Set a **string** when the judge needs grading detail the agent must not be
+  handed — write the facts in `description`, and give the sim-user an abstract
+  version (*"You need help finishing a peer handoff."*). Set **`false`** for a
+  true negative-knowledge control: the sim-user gets no scenario context at
+  all and learns the world only from the conversation and `toolOverride`.
+
+  A matched A/B must set this on **every arm**, not just the control — arms
+  that share a `description` are otherwise handed the same facts regardless of
+  the manipulation, which is exactly how the P-011 run collapsed.
 - **`goal`** — the sim-user's success criterion:
   - `'user_satisfied'` — sim decides when to stop (most common)
   - `'tool_fired'` — sim succeeds as soon as the SUT calls `toolName`
@@ -331,7 +350,8 @@ the lineage is auditable.
   scenario context, and the sim-user is instructed to name concrete
   details from it — so a fact written there reaches the SUT just as
   surely as one written in the persona. See the ⚠ under `description`
-  in §4.
+  in §4 — and use `simUserContext` to close the channel instead of
+  writing around it.
 - **Don't N=1 a judge-heavy scenario.** With LLM variance, N=1
   pass/fail is noise. Either use N=3+ or rely entirely on
   deterministic asserts.
