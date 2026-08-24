@@ -57,6 +57,7 @@ import {
   fetchWakeability,
   deriveSessionState,
   isHardStale,
+  LIVE_TURN_WINDOW_MS,
   needsLivenessConfirmation,
   type SessionState,
   type WakeabilitySignals,
@@ -387,12 +388,21 @@ export async function resolveSessionStates(
  * `liveTurn` is derived from recent agent_activity, not from the host process
  * itself. A stale directed wake can therefore leave a dead owner looking
  * `live` after its psu host has exited. For a known non-cup cohort, the local
- * psu host is the stronger authority for both `live` and `parked`; `recorded`
- * remains exempt because it is the session-log authority for a session that has
- * not yet registered an inbox-wake await.
+ * psu host is the stronger authority for `live`/`parked` only when the canonical
+ * roster has no fresh genuine activity evidence. `lastActiveSecAgo` is optional
+ * because some legacy callers do not carry the tier-1 turn-parts join; when it
+ * is present and inside the same live-turn window, that positive evidence wins
+ * a transiently missing host. `recorded` remains exempt because it is the
+ * session-log authority for a session that has not yet registered an inbox-wake
+ * await.
  */
 export function applyPsuHostAuthority<
-  T extends { agentId: string; sessionState?: SessionState | null; alive?: boolean },
+  T extends {
+    agentId: string;
+    sessionState?: SessionState | null;
+    alive?: boolean;
+    lastActiveSecAgo?: number | null;
+  },
 >(
   agents: T[],
   agentRoles: ReadonlyMap<string, string | null>,
@@ -401,8 +411,15 @@ export function applyPsuHostAuthority<
   for (const agent of agents) {
     const role = agentRoles.get(agent.agentId);
     if (role == null || role === 'cup') continue;
+    const activityAgeSec = agent.lastActiveSecAgo;
+    const hasFreshGenuineActivity =
+      typeof activityAgeSec === 'number' &&
+      Number.isFinite(activityAgeSec) &&
+      activityAgeSec >= 0 &&
+      activityAgeSec < LIVE_TURN_WINDOW_MS / 1000;
     if (
       (agent.sessionState === 'live' || agent.sessionState === 'parked') &&
+      !hasFreshGenuineActivity &&
       findHostFn(agent.agentId) == null
     ) {
       agent.sessionState = 'ended';

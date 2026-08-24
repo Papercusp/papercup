@@ -341,6 +341,36 @@ describe('cross-surface liveness parity (P-001)', () => {
     expect(agents[2].alive).toBe(false);
   });
 
+  it('fresh genuine activity outranks a transiently missing visible psu host', () => {
+    const agents = [
+      {
+        agentId: 'su-active-nohost',
+        sessionState: 'live' as SessionState,
+        alive: true,
+        // This is the canonical turn-parts evidence that was 45s old in the
+        // reported false-ended presence alert.
+        lastActiveSecAgo: 45,
+      },
+      {
+        agentId: 'su-quiet-nohost',
+        sessionState: 'parked' as SessionState,
+        alive: true,
+        // Once the shared live-turn window has elapsed, host loss remains
+        // authoritative and the member is still ended as before.
+        lastActiveSecAgo: 601,
+      },
+    ];
+    const roles = new Map<string, string | null>([
+      ['su-active-nohost', 'su'],
+      ['su-quiet-nohost', 'su'],
+    ]);
+
+    applyPsuHostAuthority(agents, roles, () => null);
+
+    expect(agents[0]).toMatchObject({ sessionState: 'live', alive: true });
+    expect(agents[1]).toMatchObject({ sessionState: 'ended', alive: false });
+  });
+
   it('positive psu-host evidence rescues an ended non-wakeable su session', () => {
     const v = deriveVerdict(
       {
