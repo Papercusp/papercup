@@ -20,7 +20,7 @@
  * registry is mocked to control the harness/engineering routing.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { OutlinePayload } from '@papercusp/docs-engine';
 
@@ -78,26 +78,38 @@ vi.mock('@papercusp/docs-engine', () => ({
   },
 }));
 
+type RegistryProject = { slug: string; path: string };
+const registryState = vi.hoisted(() => ({ projects: [] as RegistryProject[] }));
+const loadHarnessRegistry = vi.hoisted(() => vi.fn(async () => ({ projects: registryState.projects })));
+
+// Keep one mutable registry mock for the whole file. The former per-test
+// vi.resetModules()+vi.doMock path put the cold docs handler module graph inside
+// each test's 5s timeout; that import now takes >5s even though the scope gate
+// itself returns immediately (EI-21311666639860118).
+vi.mock('../../../harness-registry', () => ({
+  loadHarnessRegistry,
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
+  resolveHarnessContentPath: (
+    reg: { projects: RegistryProject[] },
+    slug: string,
+  ) => reg.projects.find((p) => p.slug === slug)?.path,
+}));
+
 function mockRegistry(projects: Array<{ slug: string; path: string }>) {
-  vi.doMock('../../../harness-registry', () => ({
-    loadHarnessRegistry: vi.fn(async () => ({ projects })),
-    // The docs handlers import the p2p revocation path transitively. Keep the
-    // registry mock complete when that path grows a new named export.
-    deregisterEphemeralForeignHarness: vi.fn(async () => false),
-    // resolveAdapter's harness branch resolves the content path through this
-    // (hive → member repo, else the harness's own path). It is pure over the
-    // registry, so mirror it for the simple {slug,path} fixtures used here.
-    resolveHarnessContentPath: (
-      reg: { projects: Array<{ slug: string; path: string }> },
-      slug: string,
-    ) => reg.projects.find((p) => p.slug === slug)?.path,
-  }));
+  registryState.projects = projects;
 }
 
 const ORIGINAL_ENV = process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
 
+beforeAll(async () => {
+  // Warm the three handler modules outside per-test timeouts. This is not a
+  // timeout increase: every individual test still has the default 5s budget.
+  await Promise.all([import('../outline'), import('../get'), import('../search')]);
+}, 30_000);
+
 beforeEach(() => {
-  vi.resetModules();
+  registryState.projects = [];
+  loadHarnessRegistry.mockClear();
   buildOutline.mockClear();
   getDocs.mockClear();
   searchDocs.mockClear();
@@ -105,7 +117,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.doUnmock('../../../harness-registry');
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
   else process.env.PAPERCUSP_PROJECT_DOCS_ROOT = ORIGINAL_ENV;
 });
