@@ -26,6 +26,20 @@ export const AGENT_BACKENDS = ['claude-code', 'omp', 'codex'] as const;
 export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 
 /**
+ * Interactive client selected by the `psu` front door. `legacy` is the
+ * existing native Claude/OMP/Codex picker; `pui` is Papercusp's owned
+ * Ratatui client (`pui chat`). The persisted preference is intentionally
+ * separate from the agent backend above: the client is the UI, while the
+ * backend is the model/tool execution substrate behind a session.
+ *
+ * D-015/D-026: the setting may be stored and displayed before cutover, but
+ * callers must keep activation fail-closed until the deployed parity gate is
+ * explicitly green. P-013 prepares the seam; P-012 flips the default later.
+ */
+export const INTERACTIVE_CLIENTS = ['legacy', 'pui'] as const;
+export type InteractiveClient = (typeof INTERACTIVE_CLIENTS)[number];
+
+/**
  * The in-app brain surfaces that support a per-surface backend override. Keep in
  * sync with the call sites that pass `surfaceBackend('<key>')` and the
  * /settings/agent per-surface table.
