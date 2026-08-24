@@ -111,10 +111,7 @@ describe('reconcileTick — happy path', () => {
     const dir = `${OURS}/pc-aaa111.scope`;
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'aaa111' })],
-      scan: () =>
-        scanResult([
-          proc({ pid: 10, cgroupPath: dir, processIdentity: 'linux:b:10', cmdline: 'node x' }),
-        ]),
+      scan: () => scanResult([proc({ pid: 10, cgroupPath: dir, processIdentity: 'linux:b:10', cmdline: 'node x' })]),
       fs: memFs({
         [`/sys/fs/cgroup${dir}/memory.current`]: '5242880',
         [`/sys/fs/cgroup${dir}/cpu.stat`]: 'usage_usec 1234\n',
@@ -291,9 +288,7 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(out.strandedCount).toBe(0);
     expect(out.endedUnobservedCount).toBe(1);
     expect(store.stranded).toHaveLength(0);
-    expect(store.endedUnobserved).toEqual([
-      expect.objectContaining({ taskId: 'ttt111' }),
-    ]);
+    expect(store.endedUnobserved).toEqual([expect.objectContaining({ taskId: 'ttt111' })]);
   });
 
   it('still strands when checkScopesReleased confirms nothing', async () => {
@@ -445,10 +440,9 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'ggg777' }), row({ taskId: 'hhh888' })],
       scan: () =>
-        scanResult(
-          [proc({ pid: 7, cgroupPath: dir, processIdentity: 'linux:b:7', cmdline: 'x' })],
-          { ownedTruncated: true },
-        ),
+        scanResult([proc({ pid: 7, cgroupPath: dir, processIdentity: 'linux:b:7', cmdline: 'x' })], {
+          ownedTruncated: true,
+        }),
       fs: memFs({}),
     });
     expect(out.touched).toBe(1);
@@ -513,10 +507,7 @@ describe('reconcileTick — notification discipline', () => {
     });
     const args = {
       listLive: async () => [],
-      scan: () =>
-        scanResult([
-          proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' }),
-        ]),
+      scan: () => scanResult([proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' })]),
       fs: memFs({}),
       notify,
     };

@@ -39,12 +39,7 @@ import {
 import { taskManagerEnabledSync } from './enabled';
 import { scopeSupportKnown } from './managed-spawn';
 import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
-import {
-  bindAgentSessionTaskToLatestNativeSession,
-  closeTask,
-  markSpawned,
-  registerTask,
-} from './store';
+import { bindAgentSessionTaskToLatestNativeSession, closeTask, markSpawned, registerTask } from './store';
 import {
   deriveUserManagerRoot,
   newTaskId,
@@ -147,9 +142,7 @@ export function beginSyncEnrolment(
   const probe = scopeSupportKnown();
   const confined = enrolled && opts.confine !== false && probe?.ok === true;
   const unitKind: TaskUnitKind = spec.class === 'bash-job' ? 'service' : 'scope';
-  const scopeUnit = confined
-    ? (unitKind === 'service' ? serviceUnitForTask(taskId) : scopeUnitForTask(taskId))
-    : null;
+  const scopeUnit = confined ? (unitKind === 'service' ? serviceUnitForTask(taskId) : scopeUnitForTask(taskId)) : null;
 
   // D-014: report WHICH of the four causes produced an unconfined spawn. Ordered
   // to match the short-circuit above, so the reason names the condition that
@@ -320,10 +313,7 @@ export function finishSyncEnrolment(
         candidate && (candidate.serviceResult || candidate.invocationId || candidate.loadState === 'loaded')
           ? candidate
           : null;
-      await closeTask(
-        enrolment.taskId,
-        terminal ? { ...outcome, terminalProvenance: terminal } : outcome,
-      );
+      await closeTask(enrolment.taskId, terminal ? { ...outcome, terminalProvenance: terminal } : outcome);
       if (terminal) await (opts.resetFailedTaskUnit ?? resetFailedTaskUnit)(terminal);
     })().catch(() => {
       // A retained failed unit is deliberately left in systemd when persistence

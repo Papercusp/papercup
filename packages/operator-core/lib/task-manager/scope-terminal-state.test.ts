@@ -273,9 +273,7 @@ describe('P-012 terminal provenance', () => {
   });
 
   it('resets only a loaded failed task unit, after the caller has persisted it', async () => {
-    const terminal = parseTaskUnitTerminalSnapshots(`${OOM_SHOW}\n`, ['pc-oom123.service']).get(
-      'pc-oom123.service',
-    )!;
+    const terminal = parseTaskUnitTerminalSnapshots(`${OOM_SHOW}\n`, ['pc-oom123.service']).get('pc-oom123.service')!;
     const exec = vi.fn(async () => ({ stdout: '', stderr: '' }));
     expect(await resetFailedTaskUnit(terminal, exec as unknown as ExecFileFn)).toBe(true);
     expect(exec).toHaveBeenCalledWith(
@@ -284,12 +282,9 @@ describe('P-012 terminal provenance', () => {
       expect.objectContaining({ timeout: 10_000 }),
     );
 
-    expect(
-      await resetFailedTaskUnit(
-        { ...terminal, activeState: 'inactive' },
-        exec as unknown as ExecFileFn,
-      ),
-    ).toBe(false);
+    expect(await resetFailedTaskUnit({ ...terminal, activeState: 'inactive' }, exec as unknown as ExecFileFn)).toBe(
+      false,
+    );
     expect(exec).toHaveBeenCalledTimes(1);
   });
 });

@@ -29,10 +29,7 @@ import {
   type ScannedProcess,
 } from './reconcile';
 import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
-import {
-  inspectTaskUnitTerminals,
-  resetFailedTaskUnit,
-} from './scope-terminal-state';
+import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
 import {
   clearVanishedUnaccounted,
   listLiveTasks,
@@ -312,7 +309,12 @@ function confirmedResidueGroups(result: ReconcileResult): ResidueGroup[] {
 
 async function maybeNotify(
   deps: ReconcileTickDeps,
-  ctx: { summary: ReturnType<typeof summarizeReconcile>; result: ReconcileResult; degraded: boolean; degradedReason?: string },
+  ctx: {
+    summary: ReturnType<typeof summarizeReconcile>;
+    result: ReconcileResult;
+    degraded: boolean;
+    degradedReason?: string;
+  },
 ): Promise<void> {
   if (!deps.notify) return;
   const now = (deps.now ?? Date.now)();
@@ -370,8 +372,7 @@ async function maybeNotify(
         return `cgroup=${group.cgroupPath}${scope} pids=${pids}${morePids}`;
       })
       .join('; ');
-    const moreGroups =
-      confirmedUnaccounted.length > 8 ? `; +${confirmedUnaccounted.length - 8} more cgroup(s)` : '';
+    const moreGroups = confirmedUnaccounted.length > 8 ? `; +${confirmedUnaccounted.length - 8} more cgroup(s)` : '';
     parts.push(
       `${confirmedUnaccounted.length} unaccounted cgroup(s) holding ${confirmedUnaccountedPids} process(es) ` +
         `(confirmed across ${RESIDUE_CONFIRMATION_SCANS} consecutive healthy scans) — ` +

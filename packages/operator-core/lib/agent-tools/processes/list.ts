@@ -32,11 +32,7 @@ function ageSec(startedAt: string): number {
   return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
 }
 
-function safeDiagnosticText(
-  text: string,
-  maxChars?: number,
-  knownSecrets: readonly string[] = [],
-): string {
+function safeDiagnosticText(text: string, maxChars?: number, knownSecrets: readonly string[] = []): string {
   const redacted = redactSensitiveText(text, knownSecrets);
   return maxChars === undefined ? redacted : redacted.slice(0, maxChars);
 }
@@ -62,11 +58,7 @@ function pruneCpuSamples(nowMs: number): void {
   }
 }
 
-function currentCpuBusyPercent(
-  taskId: string,
-  cpuUsec: number | null | undefined,
-  sampledAtMs: number,
-): number | null {
+function currentCpuBusyPercent(taskId: string, cpuUsec: number | null | undefined, sampledAtMs: number): number | null {
   if (cpuUsec == null) return null;
   const next = { cpuUsecTotal: cpuUsec, sampledAtMs };
   const previous = cpuSamples.get(taskId);
@@ -145,7 +137,7 @@ export default defineTool({
   guidance: {
     when: 'You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is using CPU or memory right now, or whether anything bypassed the spawn chokepoint. Also the honest answer to "is my background job still alive" for anything started through managedSpawn.',
     notWhen:
-      'NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job\'s OUTPUT use `capability:bash_output`.',
+      "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
     chaining:
       'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
     returns:
@@ -305,9 +297,7 @@ export default defineTool({
                 deadlineAt: r.deadlineAt,
                 exitCode: r.exitCode,
                 exitReason:
-                  r.exitReason == null
-                    ? r.exitReason
-                    : safeDiagnosticText(r.exitReason, undefined, diagnosticSecrets),
+                  r.exitReason == null ? r.exitReason : safeDiagnosticText(r.exitReason, undefined, diagnosticSecrets),
                 termination: r.terminalProvenance
                   ? {
                       capturedAt: r.terminalProvenance.capturedAt,
@@ -321,10 +311,7 @@ export default defineTool({
                       peakMemorySource: r.terminalProvenance.peakMemorySource,
                     }
                   : null,
-                logPath:
-                  r.logPath == null
-                    ? r.logPath
-                    : safeDiagnosticText(r.logPath, undefined, diagnosticSecrets),
+                logPath: r.logPath == null ? r.logPath : safeDiagnosticText(r.logPath, undefined, diagnosticSecrets),
               })),
             },
             null,

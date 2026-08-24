@@ -143,12 +143,8 @@ describe('agent-session native-id binding (EI-21268871278252116)', () => {
     await insertAgentSessionTask({ taskId: 'other-owner-task', coordOwnerId: 'su-other' });
     await insertAgentSessionTask({ taskId: 'ended-late', coordOwnerId: 'su-owner', state: 'exited' });
 
-    await expect(
-      store.bindAgentSessionTaskToLatestNativeSession('late-enrolment'),
-    ).resolves.toBe('native-newest-open');
-    await expect(
-      store.bindAgentSessionTaskToLatestNativeSession('ended-late'),
-    ).resolves.toBeNull();
+    await expect(store.bindAgentSessionTaskToLatestNativeSession('late-enrolment')).resolves.toBe('native-newest-open');
+    await expect(store.bindAgentSessionTaskToLatestNativeSession('ended-late')).resolves.toBeNull();
 
     const rows = await db.sql`
       SELECT task_id, session_id FROM harness_shared.task_ledger ORDER BY task_id
@@ -189,10 +185,7 @@ describe('P-012 terminal provenance writer', () => {
     return (await store.getTask(taskId))!;
   }
 
-  function terminal(
-    scopeUnit: string,
-    over: Partial<TaskTerminalProvenance> = {},
-  ) {
+  function terminal(scopeUnit: string, over: Partial<TaskTerminalProvenance> = {}) {
     return {
       capturedAt: '2026-08-24T16:00:00.000Z',
       scopeUnit,
@@ -344,10 +337,7 @@ describe('upsertUnaccounted scope identity', () => {
     `;
     expect(row!.scope_unit).toBeNull();
 
-    await store.upsertUnaccounted(
-      [{ ...group, scopeUnit: 'pc-t-scope-unit.scope', pids: [12] }],
-      { workspaceId: WS },
-    );
+    await store.upsertUnaccounted([{ ...group, scopeUnit: 'pc-t-scope-unit.scope', pids: [12] }], { workspaceId: WS });
     [row] = await db.sql`
       SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
     `;
@@ -373,10 +363,9 @@ describe('upsertUnaccounted scope identity', () => {
     let [row] = await db.sql`SELECT title FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}`;
     expect(row!.title).toBe('DATABASE_URL=[redacted]');
 
-    await store.upsertUnaccounted(
-      [{ ...group, sampleCmdline: 'AWS_ACCESS_KEY_ID=opaque-aws-access-key' }],
-      { workspaceId: WS },
-    );
+    await store.upsertUnaccounted([{ ...group, sampleCmdline: 'AWS_ACCESS_KEY_ID=opaque-aws-access-key' }], {
+      workspaceId: WS,
+    });
     [row] = await db.sql`SELECT title FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}`;
     expect(row!.title).toBe('AWS_ACCESS_KEY_ID=[redacted]');
     expect(row!.title).not.toContain('opaque-');
@@ -566,7 +555,8 @@ describe('markSpawned detail merge (D-014)', () => {
 
     await store.markSpawned('t-merge', { pid: 123, confined: false, unconfinedReason: 'probe-pending' });
 
-    const [row] = await db.sql`SELECT detail, confined, state FROM harness_shared.task_ledger WHERE task_id = 't-merge'`;
+    const [row] =
+      await db.sql`SELECT detail, confined, state FROM harness_shared.task_ledger WHERE task_id = 't-merge'`;
     expect(row!.detail).toEqual({ bashJobId: 'bash-42', unconfinedReason: 'probe-pending' });
     expect(row!.confined).toBe(false);
     expect(row!.state).toBe('running');

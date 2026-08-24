@@ -412,11 +412,7 @@ export function sliceCgroupPath(slice: string): string {
  * and another inside a GNOME Terminal window. The path is fully determined by the
  * task id and class the moment they are minted, so derive it and skip the race.
  */
-export function scopeCgroupRelPath(
-  userManagerRoot: string | null,
-  taskClass: TaskClass,
-  scopeUnit: string,
-): string {
+export function scopeCgroupRelPath(userManagerRoot: string | null, taskClass: TaskClass, scopeUnit: string): string {
   const slicePath = sliceCgroupPath(sliceForClass(taskClass));
   const root = (userManagerRoot ?? '').replace(/\/+$/, '');
   return `${root}/${slicePath}/${scopeUnit}`;

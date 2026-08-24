@@ -119,8 +119,7 @@ function makeFs(scope: ScopeState): CgroupFs {
       return null;
     },
     readDir: () => [],
-    isDir: (path: string) =>
-      Boolean(scope.rel && path === `${CGROUP_ROOT}${scope.rel}` && scope.procs !== null),
+    isDir: (path: string) => Boolean(scope.rel && path === `${CGROUP_ROOT}${scope.rel}` && scope.procs !== null),
   };
 }
 

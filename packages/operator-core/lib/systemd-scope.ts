@@ -92,10 +92,18 @@ export function createSecretEnvironmentTransport(
     } catch (error) {
       lastError = error;
       if (fd != null) {
-        try { closeSync(fd); } catch { /* best effort */ }
+        try {
+          closeSync(fd);
+        } catch {
+          /* best effort */
+        }
         fd = null;
       }
-      try { unlinkSync(pathname); } catch { /* best effort */ }
+      try {
+        unlinkSync(pathname);
+      } catch {
+        /* best effort */
+      }
     }
   }
   if (fd == null) {
@@ -109,7 +117,11 @@ export function createSecretEnvironmentTransport(
       offset += written;
     }
   } catch (error) {
-    try { closeSync(fd); } catch { /* best effort */ }
+    try {
+      closeSync(fd);
+    } catch {
+      /* best effort */
+    }
     throw error;
   }
   let released = false;
@@ -118,7 +130,11 @@ export function createSecretEnvironmentTransport(
     if (released) return;
     released = true;
     if (releaseTimer) clearTimeout(releaseTimer);
-    try { closeSync(fd!); } catch { /* already closed */ }
+    try {
+      closeSync(fd!);
+    } catch {
+      /* already closed */
+    }
   };
   releaseTimer = setTimeout(release, SECRET_ENV_TRANSPORT_RELEASE_GRACE_MS);
   releaseTimer.unref?.();
@@ -128,7 +144,11 @@ export function createSecretEnvironmentTransport(
   };
 }
 
-export function environmentRunnerPayload(base: readonly string[], source: string, mode: 'fd-path' | 'credential'): string[] {
+export function environmentRunnerPayload(
+  base: readonly string[],
+  source: string,
+  mode: 'fd-path' | 'credential',
+): string[] {
   return [
     process.execPath,
     SYSTEMD_ENV_RUNNER_PATH,
@@ -249,11 +269,7 @@ export type ScopeSwapPolicy = 'allow' | 'deny';
  *  worker should page rather than be killed. A caller whose payload is a shared orchestrator —
  *  or a known leaker whose thrash would wedge the box — opts into 'deny' EXPLICITLY, so that
  *  choice is visible at the call site instead of silently inherited. */
-export function buildIsolatedScopeArgv(
-  base: string[],
-  memoryMaxG: number,
-  swap: ScopeSwapPolicy = 'allow',
-): string[] {
+export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number, swap: ScopeSwapPolicy = 'allow'): string[] {
   return [
     'systemd-run',
     '--user',

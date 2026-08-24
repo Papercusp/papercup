@@ -199,9 +199,15 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
   it('records the spawn-row correlation on the named agent-session task', async () => {
     spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
 
-    await spawnInvokeOnce(process.cwd(), 'release-fixer', [], {}, {
-      taskSpawnId: 's-frozen-repair-2',
-    });
+    await spawnInvokeOnce(
+      process.cwd(),
+      'release-fixer',
+      [],
+      {},
+      {
+        taskSpawnId: 's-frozen-repair-2',
+      },
+    );
 
     expect(E.completeCalls).toHaveLength(1);
     const spec = E.completeCalls[0]?.[1] as { detail?: Record<string, unknown> };
@@ -295,7 +301,9 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
   it('falls back to a DIRECT spawn once when the scope cannot launch (no user bus) — the turn never fails on infra', async () => {
     delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
     spawnMock
-      .mockImplementationOnce(() => fakeSpawn({ stderr: 'Failed to connect to bus: No such file or directory', code: 1 }))
+      .mockImplementationOnce(() =>
+        fakeSpawn({ stderr: 'Failed to connect to bus: No such file or directory', code: 1 }),
+      )
       .mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
     const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(0);
@@ -333,7 +341,9 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     // direct retry failing for a genuinely unrelated reason must NOT re-retry
     // (isScopeLaunchFailure requires useScope, which is false on the retry).
     spawnMock
-      .mockImplementationOnce(() => fakeSpawn({ stderr: 'Failed to connect to bus: No such file or directory', code: 1 }))
+      .mockImplementationOnce(() =>
+        fakeSpawn({ stderr: 'Failed to connect to bus: No such file or directory', code: 1 }),
+      )
       .mockImplementationOnce(() => fakeSpawn({ stderr: 'command not found', code: 127 }));
     const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
     expect(r.exitCode).toBe(127);

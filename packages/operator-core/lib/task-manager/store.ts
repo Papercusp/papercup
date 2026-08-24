@@ -48,8 +48,7 @@ function assertState(state: TaskState): void {
  *  to the table without a mapping here fails review rather than silently vanishing. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toRow(r: any): TaskRow {
-  const iso = (v: unknown): string | null =>
-    v == null ? null : v instanceof Date ? v.toISOString() : String(v);
+  const iso = (v: unknown): string | null => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
   const num = (v: unknown): number | null => (v == null ? null : Number(v));
   const detail = typeof r.detail === 'object' && r.detail ? r.detail : {};
   return {
@@ -108,17 +107,15 @@ export interface RegisterTaskOptions {
  * Insert the `pending` row. Returns the full row — callers need `taskId` to build
  * the scope name and to correlate the child's exit.
  */
-export async function registerTask(
-  spec: TaskSpec,
-  opts: RegisterTaskOptions = {},
-  inject?: Sql,
-): Promise<TaskRow> {
+export async function registerTask(spec: TaskSpec, opts: RegisterTaskOptions = {}, inject?: Sql): Promise<TaskRow> {
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const taskId = opts.taskId ?? newTaskId();
   const rootTaskId = spec.parentTaskId ? await resolveRoot(spec.parentTaskId, taskId, sql) : taskId;
   const scopeUnit = opts.reserveScope
-    ? (opts.unitKind === 'service' ? serviceUnitForTask(taskId) : scopeUnitForTask(taskId))
+    ? opts.unitKind === 'service'
+      ? serviceUnitForTask(taskId)
+      : scopeUnitForTask(taskId)
     : null;
   const deadlineAt =
     spec.runtimeMaxSec && spec.runtimeMaxSec > 0
@@ -286,11 +283,7 @@ function classifyTerminalClose(
     memoryMaxBytes,
     peakMemoryBytes,
     peakMemorySource:
-      captured.peakMemoryBytes != null
-        ? 'systemd'
-        : row?.peakMemoryBytes != null
-          ? 'cgroup-sample'
-          : 'unknown',
+      captured.peakMemoryBytes != null ? 'systemd' : row?.peakMemoryBytes != null ? 'cgroup-sample' : 'unknown',
   };
 
   let state = input.state;
@@ -337,11 +330,7 @@ export async function closeTask(taskId: string, input: CloseTaskInput, inject?: 
   const sql = sqlOf(inject);
   const existing = input.terminalProvenance ? await getTask(taskId, inject) : null;
   if (input.terminalProvenance && !existing) return false;
-  if (
-    input.terminalProvenance &&
-    existing?.scopeUnit &&
-    existing.scopeUnit !== input.terminalProvenance.scopeUnit
-  ) {
+  if (input.terminalProvenance && existing?.scopeUnit && existing.scopeUnit !== input.terminalProvenance.scopeUnit) {
     // A systemd snapshot is identity-bearing evidence. Refuse to attach it to a
     // different ledger scope even when a caller accidentally pairs the task ids.
     return false;
@@ -349,9 +338,7 @@ export async function closeTask(taskId: string, input: CloseTaskInput, inject?: 
   const classified = classifyTerminalClose(input, existing);
   assertState(classified.state);
   if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
-  const terminalJson = classified.terminalProvenance
-    ? JSON.stringify(classified.terminalProvenance)
-    : null;
+  const terminalJson = classified.terminalProvenance ? JSON.stringify(classified.terminalProvenance) : null;
   const rows = await sql`
     UPDATE harness_shared.task_ledger
        SET state = ${classified.state},
@@ -551,10 +538,7 @@ export async function bindLiveAgentSessionTasksToNativeSession(
  * coord owner. Bootstrap calls the owner-keyed bulk binder above, so whichever
  * database write lands second performs the link and no timing window remains.
  */
-export async function bindAgentSessionTaskToLatestNativeSession(
-  taskId: string,
-  inject?: Sql,
-): Promise<string | null> {
+export async function bindAgentSessionTaskToLatestNativeSession(taskId: string, inject?: Sql): Promise<string | null> {
   if (!taskId.trim()) return null;
   const sql = sqlOf(inject);
   const rows = await sql<Array<{ session_id: string }>>`
@@ -607,11 +591,7 @@ export interface TaskLimitUpdate {
   tasksMax?: number;
 }
 
-export async function updateTaskLimits(
-  taskId: string,
-  limits: TaskLimitUpdate,
-  inject?: Sql,
-): Promise<boolean> {
+export async function updateTaskLimits(taskId: string, limits: TaskLimitUpdate, inject?: Sql): Promise<boolean> {
   const sql = sqlOf(inject);
   const rows = await sql`
     UPDATE harness_shared.task_ledger
@@ -699,7 +679,13 @@ export async function getSubtree(rootTaskId: string, inject?: Sql): Promise<Task
  * rather than forking a phantom one.
  */
 export async function upsertUnaccounted(
-  groups: readonly { taskId: string; cgroupPath: string; scopeUnit: string | null; pids: number[]; sampleCmdline: string }[],
+  groups: readonly {
+    taskId: string;
+    cgroupPath: string;
+    scopeUnit: string | null;
+    pids: number[];
+    sampleCmdline: string;
+  }[],
   opts: { workspaceId?: string } = {},
   inject?: Sql,
 ): Promise<string[]> {
@@ -713,8 +699,7 @@ export async function upsertUnaccounted(
     // Residue samples originate in `/proc/<pid>/cmdline` and are persisted so the
     // reconciler can retain history. Redact before the durable boundary, and before
     // capping, so a credential-shaped assignment cannot survive in the ledger.
-    const title =
-      redactSensitiveText(g.sampleCmdline, diagnosticSecrets).slice(0, 200) || '(unknown)';
+    const title = redactSensitiveText(g.sampleCmdline, diagnosticSecrets).slice(0, 200) || '(unknown)';
     await sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,

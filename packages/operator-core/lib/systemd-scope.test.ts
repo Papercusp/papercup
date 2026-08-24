@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildTaskScopeArgv,
-  buildTaskServiceArgv,
-  escapeSystemdServiceArgument,
-} from './systemd-scope';
+import { buildTaskScopeArgv, buildTaskServiceArgv, escapeSystemdServiceArgument } from './systemd-scope';
 
 const PROPS = { unit: 'papercusp-bash-job-test.service', slice: 'papercusp-bash-job.slice' };
 

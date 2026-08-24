@@ -53,12 +53,7 @@ export {
   RESOURCE_TOTALS_FILTER,
   RESOURCE_TOTALS_LIMIT,
 } from './inventory-shared';
-export type {
-  ScheduleTaskRow,
-  ScheduleTaskSummary,
-  TaskInventoryRow,
-  TaskResourceTotals,
-} from './inventory-shared';
+export type { ScheduleTaskRow, ScheduleTaskSummary, TaskInventoryRow, TaskResourceTotals } from './inventory-shared';
 
 /**
  * A process the kernel scan SAW but the ledger does not own.
@@ -210,11 +205,7 @@ function scopeRank(scope: ProcessScope): number {
   return scope === 'abandoned-window' ? 2 : 3;
 }
 
-function safeDisplayText(
-  text: string,
-  maxChars: number,
-  knownSecrets: readonly string[] = [],
-): string {
+function safeDisplayText(text: string, maxChars: number, knownSecrets: readonly string[] = []): string {
   // Redact BEFORE capping so a secret crossing the boundary cannot be partially
   // preserved in a client payload.
   return redactSensitiveText(text, knownSecrets).slice(0, maxChars);
@@ -297,7 +288,9 @@ function scanSchedules(now: number): Promise<ScheduleScanResult> {
   if (scheduleMemo && now - scheduleMemo.at < SCHEDULE_INVENTORY_TTL_MS) return scheduleMemo.promise;
   const promise = runScheduleScan();
   scheduleMemo = { at: now, promise };
-  void promise.catch(() => { scheduleMemo = null; });
+  void promise.catch(() => {
+    scheduleMemo = null;
+  });
   return promise;
 }
 
@@ -407,7 +400,9 @@ function scanLive(now: number): Promise<LiveScanResult> {
   // A rejected scan must not be cached as the answer for the whole TTL — but
   // runLiveScan already converts a fault into a `{ error }` payload rather than
   // throwing, so this only guards a genuinely unexpected throw.
-  void promise.catch(() => { liveScanMemo = null; });
+  void promise.catch(() => {
+    liveScanMemo = null;
+  });
   return promise;
 }
 
@@ -425,9 +420,7 @@ async function runLiveScan(): Promise<LiveScanResult> {
       live: {
         ...tick.summary,
         degraded: tick.degraded,
-        degradedReason: tick.degradedReason
-          ? safeDisplayText(tick.degradedReason, 300, diagnosticSecrets)
-          : undefined,
+        degradedReason: tick.degradedReason ? safeDisplayText(tick.degradedReason, 300, diagnosticSecrets) : undefined,
         scan: tick.scan,
         unaccounted: tick.result.unaccounted.map((g) => ({
           cgroupPath: g.cgroupPath,
@@ -497,42 +490,42 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
   // what makes the wire shape total.
   const diagnosticSecrets = localDiagnosticSecrets();
   const mappedRows: TaskInventoryRow[] = rows.map((r) => ({
-      taskId: r.taskId,
-      parentTaskId: r.parentTaskId ?? null,
-      rootTaskId: r.rootTaskId,
-      class: r.class,
-      title: safeDisplayText(r.title, 300, diagnosticSecrets),
-      state: r.state,
-      launchedBy: r.launchedBy,
-      workItemId: r.workItemId ?? null,
-      planSlug: r.planSlug ?? null,
-      startedAt: r.startedAt,
-      endedAt: r.endedAt ?? null,
-      confined: r.confined,
-      scopeUnit: r.scopeUnit ?? null,
-      rssBytes: r.lastMemoryBytes ?? null,
-      peakRssBytes: r.peakMemoryBytes ?? null,
-      cpuUsec: r.cpuUsec ?? null,
-      pids: r.pidsCurrent ?? null,
-      memoryMaxBytes: r.memoryMaxBytes ?? null,
-      deadlineAt: r.deadlineAt ?? null,
-      exitCode: r.exitCode ?? null,
-      exitReason: r.exitReason ? safeDisplayText(r.exitReason, 500, diagnosticSecrets) : null,
-      termination: r.terminalProvenance
-        ? {
-            capturedAt: r.terminalProvenance.capturedAt,
-            reason: r.exitReason ? safeDisplayText(r.exitReason, 500, diagnosticSecrets) : null,
-            serviceResult: r.terminalProvenance.serviceResult,
-            scopeUnit: r.terminalProvenance.scopeUnit,
-            cgroupPath: r.terminalProvenance.cgroupPath,
-            invocationId: r.terminalProvenance.invocationId,
-            memoryMaxBytes: r.terminalProvenance.memoryMaxBytes,
-            peakMemoryBytes: r.terminalProvenance.peakMemoryBytes,
-            peakMemorySource: r.terminalProvenance.peakMemorySource,
-          }
-        : null,
-      logPath: r.logPath ? safeDisplayText(r.logPath, 500, diagnosticSecrets) : null,
-    }));
+    taskId: r.taskId,
+    parentTaskId: r.parentTaskId ?? null,
+    rootTaskId: r.rootTaskId,
+    class: r.class,
+    title: safeDisplayText(r.title, 300, diagnosticSecrets),
+    state: r.state,
+    launchedBy: r.launchedBy,
+    workItemId: r.workItemId ?? null,
+    planSlug: r.planSlug ?? null,
+    startedAt: r.startedAt,
+    endedAt: r.endedAt ?? null,
+    confined: r.confined,
+    scopeUnit: r.scopeUnit ?? null,
+    rssBytes: r.lastMemoryBytes ?? null,
+    peakRssBytes: r.peakMemoryBytes ?? null,
+    cpuUsec: r.cpuUsec ?? null,
+    pids: r.pidsCurrent ?? null,
+    memoryMaxBytes: r.memoryMaxBytes ?? null,
+    deadlineAt: r.deadlineAt ?? null,
+    exitCode: r.exitCode ?? null,
+    exitReason: r.exitReason ? safeDisplayText(r.exitReason, 500, diagnosticSecrets) : null,
+    termination: r.terminalProvenance
+      ? {
+          capturedAt: r.terminalProvenance.capturedAt,
+          reason: r.exitReason ? safeDisplayText(r.exitReason, 500, diagnosticSecrets) : null,
+          serviceResult: r.terminalProvenance.serviceResult,
+          scopeUnit: r.terminalProvenance.scopeUnit,
+          cgroupPath: r.terminalProvenance.cgroupPath,
+          invocationId: r.terminalProvenance.invocationId,
+          memoryMaxBytes: r.terminalProvenance.memoryMaxBytes,
+          peakMemoryBytes: r.terminalProvenance.peakMemoryBytes,
+          peakMemorySource: r.terminalProvenance.peakMemorySource,
+        }
+      : null,
+    logPath: r.logPath ? safeDisplayText(r.logPath, 500, diagnosticSecrets) : null,
+  }));
 
   // WI-7371: the totals run over their OWN unfiltered fetch, NOT `mappedRows`. `rows`
   // above already has the caller's state/class/includeEnded applied, so folding it would

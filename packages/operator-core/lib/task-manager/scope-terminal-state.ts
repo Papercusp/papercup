@@ -201,13 +201,7 @@ export async function inspectTaskUnitTerminals(
   try {
     const { stdout } = await execFn(
       'systemctl',
-      [
-        '--user',
-        'show',
-        '--no-pager',
-        `--property=${TERMINAL_SHOW_PROPERTIES.join(',')}`,
-        ...units,
-      ],
+      ['--user', 'show', '--no-pager', `--property=${TERMINAL_SHOW_PROPERTIES.join(',')}`, ...units],
       { timeout: 10_000, maxBuffer: 1024 * 1024 },
     );
     return parseTaskUnitTerminalSnapshots(stdout, units, now().toISOString());
