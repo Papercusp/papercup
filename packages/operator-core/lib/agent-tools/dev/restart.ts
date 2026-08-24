@@ -78,7 +78,7 @@ import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
-import { DESKTOP_DEV_RESOURCE, restartDesktopDev } from './desktop-dev-restart';
+import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { checkGateCollision, isGateSensitiveTarget } from '../../release/gate-collision-guard';
 
@@ -323,12 +323,26 @@ export default defineTool({
     // Dry run — ctx-free, takes no lock, drains nobody.
     if (!args.confirm) {
       if (target === 'desktop-dev') {
+        // EI-21365722353248238: use the exact same read-only identity resolver
+        // as the confirmed path. The old preview emitted a hard-coded
+        // "verified" command without checking the listener, so a preview could
+        // promise a restart that the immediately-following confirmed call would
+        // refuse as desktop_dev_identity_mismatch.
+        const listenerPreview = await resolveDesktopDevListener();
         return json({
           ok: true,
           dry_run: true,
           target,
-          would_run: restartCmd,
-          note: 'Pass confirm:true to acquire exclusive(desktop-dev-server), drain current users, verify the owner-visible :3270 listener is the desktop-dev hono-host under dev-operator-ifneeded.sh, then SIGKILL only that child so the wrapper respawns it. The wrapper and unrelated processes are never signaled. confirm:true alone is not enough — pass authorize:true + a short reason, or set PAPERCUSP_ALLOW_DEV_RESTART=1.',
+          would_run: listenerPreview.ok ? restartCmd : null,
+          listener_identity: {
+            checked: true,
+            verified: listenerPreview.ok,
+            would_block: !listenerPreview.ok,
+            ...(listenerPreview.pid === undefined ? {} : { pid: listenerPreview.pid }),
+            ...(listenerPreview.reason ? { reason: listenerPreview.reason } : {}),
+            note: listenerPreview.note,
+          },
+          note: `${listenerPreview.ok ? 'Read-only check verified' : 'Read-only check would refuse before draining/signaling'} the owner-visible :3270 listener. Pass confirm:true to acquire exclusive(desktop-dev-server), drain current users, and — only when the identity check passes — SIGKILL that child so the wrapper respawns it. The wrapper and unrelated processes are never signaled. confirm:true alone is not enough — pass authorize:true + a short reason, or set PAPERCUSP_ALLOW_DEV_RESTART=1.`,
         });
       }
       const cooldownNote = cfg.cooldownResource

@@ -37,6 +37,7 @@ vi.mock('./systemd-service-probe', () => ({ probeServiceStart: vi.fn() }));
 vi.mock('./restart-preflight', () => ({ preflightRestartTarget: vi.fn() }));
 vi.mock('./desktop-dev-restart', () => ({
   DESKTOP_DEV_RESOURCE: 'desktop-dev-server',
+  resolveDesktopDevListener: vi.fn(),
   restartDesktopDev: vi.fn(),
 }));
 // EI-18198340374286980: the audit_log writer — asserted directly in the new
@@ -55,7 +56,7 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
 import { preflightRestartTarget } from './restart-preflight';
-import { restartDesktopDev } from './desktop-dev-restart';
+import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
 
 const acquireM = vi.mocked(tryAcquireResource);
@@ -64,6 +65,7 @@ const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
 const preflightM = vi.mocked(preflightRestartTarget);
+const desktopResolveM = vi.mocked(resolveDesktopDevListener);
 const desktopRestartM = vi.mocked(restartDesktopDev);
 /** A boot-integrity verdict. Defaults to an inspected, clean tree. */
 const bootVerdict = (over: Record<string, unknown> = {}) =>
@@ -112,6 +114,7 @@ beforeEach(() => {
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never);
   preflightM.mockResolvedValue(bootVerdict());
+  desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   auditUnsafeM.mockClear();
   orgPgM.mockReturnValue({ sql: { unsafe: auditUnsafeM } } as never);
@@ -193,16 +196,46 @@ describe('dev:restart dry run', () => {
     }
   });
 
-  it('target:desktop-dev previews the wrapper-owned listener operation without invoking systemd preflight', async () => {
+  it('target:desktop-dev previews the wrapper-owned listener operation with the same identity check as confirmation', async () => {
     const b = body(await call({ target: 'desktop-dev' }));
     expect(b).toMatchObject({
       ok: true,
       dry_run: true,
       target: 'desktop-dev',
       would_run: 'SIGKILL verified desktop-dev listener on :3270 (wrapper respawns it)',
+      listener_identity: { checked: true, verified: true, would_block: false, pid: 327001 },
     });
     expect(b.note).toMatch(/exclusive\(desktop-dev-server\)/);
+    expect(desktopResolveM).toHaveBeenCalledTimes(1);
     expect(preflightM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+  });
+
+  it('target:desktop-dev dry run surfaces the same identity refusal that confirmation would return', async () => {
+    desktopResolveM.mockResolvedValue({
+      ok: false,
+      pid: 622453,
+      reason: 'desktop_dev_identity_mismatch',
+      note: 'Listener pid 622453 is not the expected desktop-dev hono-host process; refusing to signal it.',
+    });
+
+    const b = body(await call({ target: 'desktop-dev' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      target: 'desktop-dev',
+      would_run: null,
+      listener_identity: {
+        checked: true,
+        verified: false,
+        would_block: true,
+        pid: 622453,
+        reason: 'desktop_dev_identity_mismatch',
+      },
+    });
+    expect(b.note).toMatch(/would refuse before draining\/signaling/);
+    expect(desktopResolveM).toHaveBeenCalledTimes(1);
     expect(acquireM).not.toHaveBeenCalled();
   });
 

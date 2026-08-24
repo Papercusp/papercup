@@ -125,6 +125,20 @@ export function isIssueLocallyClaimable(origin: string | null | undefined): bool
  * whose failure mode is recoverable: a duplicate that slips through is merged later;
  * a starved queue stops all work and is invisible until someone notices.
  */
+export type WorkItemAdmission = 'pending' | 'admitted' | 'auto' | 'unreviewed';
+
+/**
+ * The `admission` value a NEW item is born with, or `null` for "don't stamp it"
+ * (legacy/pre-gate semantics — {@link isAdmitted} reads NULL as admitted).
+ *
+ * Deliberately NOT `WorkItemAdmission` at the create seam: a filing path may only
+ * ever mint 'pending' (gated) or 'auto' (a filing-time bypass it can justify on the
+ * spot). 'admitted' is the PROMOTER's verdict and 'unreviewed' is the fail-open
+ * watchdog's — neither is something a writer may claim about itself, so the type
+ * refuses it rather than relying on a convention nobody reads.
+ */
+export type BornAdmission = Extract<WorkItemAdmission, 'pending' | 'auto'>;
+
 export function isAdmitted(admission: string | null | undefined): boolean {
   return admission !== 'pending';
 }

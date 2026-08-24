@@ -20,6 +20,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from './work-items';
+import type { BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import { resolveWorkItemPot } from './pot-membership';
 import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
@@ -43,6 +44,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { boundedPgReadTxn } from './pg-read-query';
 import { getBuildInfo } from './build-info';
 import { createBugFreshnessEnvelope } from './work-item-claim-freshness';
 import { resolveProject } from './harness-core';
@@ -785,6 +787,29 @@ export interface CreateIssueInput {
    * created_at ≈ close time); only an UPDATE crossing the terminal boundary stamps one.
    */
   state?: 'open' | 'done';
+  /**
+   * Admission-gate state to be born with (plan work-queue-admission-and-bulk-dedup-2026-08-24,
+   * P-002). 'pending' = born-pending, invisible to claim/place until the promoter judges
+   * it; 'auto' = a filing-time bypass. Omit/null ⇒ the column stays NULL, which
+   * {@link isAdmitted} reads as admitted (pre-gate back-compat).
+   *
+   * MUST ride in THIS INSERT, never a post-create UPDATE: an item that lands admitted
+   * and is demoted a moment later is claimable in the gap, which is the entire failure
+   * born-pending exists to prevent.
+   *
+   * Reaches the base table via the engineer_issues INSTEAD OF trigger, which carries
+   * these three columns only as of migration 946 — before it, a named admission was
+   * silently dropped and every issue-family item was born admitted.
+   */
+  admission?: BornAdmission | null;
+  /**
+   * WHY this item was admitted at filing time — recorded on `admitted_by` so the stats
+   * ledger can tell the bypass classes apart (e.g. 'bypass:source-plan-slug',
+   * 'bypass:severity-critical'). Ignored when `admission` is 'pending' or absent:
+   * a pending item has not been admitted by anyone yet, so stamping an admitter would
+   * be a false provenance record.
+   */
+  admittedBy?: string | null;
 }
 
 /** Create an issue: insert, tag topics, auto-subscribe the author, fan out. */
@@ -836,19 +861,27 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   const safeTitle = sanitizePersistedText(neutralizeToolCallTags(input.title));
   const safeBody = sanitizePersistedText(neutralizeToolCallTags(input.body));
   const safeFoundDuring = sanitizePersistedText(input.foundDuring);
+  // Admission gate (P-002). Derived once, here, so the three columns can never
+  // disagree: an item is either born 'pending' with no admitter, or born admitted at
+  // creation-time by a named bypass. `admitted_at`/`admitted_by` are stamped ONLY for
+  // the non-pending case — a pending row that already carries an admitter reads, to
+  // every later consumer and to the stats ledger, as an item somebody has judged.
+  const bornAdmission: BornAdmission | null = input.admission ?? null;
+  const bornAdmittedAt = bornAdmission && bornAdmission !== 'pending' ? created : null;
+  const bornAdmittedBy = bornAdmission && bornAdmission !== 'pending' ? (input.admittedBy ?? null) : null;
   const issue = await boundedOrgTxn(async (tx) => {
     const id = input.id ?? (await nextIssueId(tx));
     const rows = await tx<IssueRowDb[]>`
       INSERT INTO harness_shared.engineer_issues
         (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
          assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at,
-         parent_id)
+         parent_id, admission, admitted_at, admitted_by)
       VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${safeTitle}, ${safeBody ?? ''},
               ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, ${input.state ?? 'open'}, ${input.assignee ?? null},
               ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
               ${Object.keys(inputPayload).length > 0 ? JSON.stringify(inputPayload) : null}::text::jsonb, ${safeFoundDuring ?? null},
               ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created},
-              ${input.parent ?? null})
+              ${input.parent ?? null}, ${bornAdmission}, ${bornAdmittedAt}, ${bornAdmittedBy})
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
     const inserted = toIssue(rows[0]);
     // WI-8848: the topic tags + the author subscription commit in the SAME txn as the
@@ -3173,14 +3206,13 @@ function dedupSearchQuery(title: string): string {
  * belongs here.
  */
 export async function searchIssuesForDedup(query: string, limit = 50): Promise<EngineerIssue[]> {
-  const { sql } = getOrgPg();
   const tsQuerySource = dedupSearchQuery(query);
-  const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
-       AND _search @@ websearch_to_tsquery('english', ${tsQuerySource})
-     ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${tsQuerySource})) DESC
-     LIMIT ${Math.min(limit, 200)}`;
+  const rows = await boundedPgReadTxn<IssueRowDb[]>((tx) => tx<IssueRowDb[]>`
+      SELECT ${tx.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+       WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
+         AND _search @@ websearch_to_tsquery('english', ${tsQuerySource})
+       ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${tsQuerySource})) DESC
+       LIMIT ${Math.min(limit, 200)}`);
   return rows.map(toIssue);
 }
 

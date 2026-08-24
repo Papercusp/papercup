@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   captureImprovement,
   validateScoutEvidenceCitations,
   storageKindOf,
   DUP_THRESHOLD,
   CONTAINMENT_THRESHOLD,
+  CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
   type CaptureDeps,
 } from './capture-core';
 import { FLAGS } from '@papercusp/flags';
@@ -1601,16 +1602,52 @@ describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
   });
 
   it('marks a failed lexical search unavailable instead of reporting a false all-clear', async () => {
-    const d = deps();
-    const res = await captureImprovement(
-      { title: 'novel direct drain blocker', kind: 'bug', checkDuplicatesOnly: true },
-      {
-        ...d,
-        searchIssues: async () => { throw new Error('search unavailable'); },
-        findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
-      },
-    );
-    expect(res.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'ok', degraded: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = deps();
+      const res = await captureImprovement(
+        { title: 'novel direct drain blocker', kind: 'bug', checkDuplicatesOnly: true },
+        {
+          ...d,
+          searchIssues: async () => { throw new Error('search unavailable'); },
+          findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+        },
+      );
+      expect(res.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'ok', degraded: true });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('search unavailable'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('bounds a hanging lexical search and keeps lexical coverage unavailable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const d = deps();
+      const hangingSearch = new Promise<EngineerIssue[]>(() => {});
+      const resultPromise = captureImprovement(
+        { title: 'hanging lexical dedup search', kind: 'bug', checkDuplicatesOnly: true },
+        {
+          ...d,
+          searchIssues: async () => hangingSearch,
+          findSemanticDupes: async () => ({
+            hard: [],
+            soft: [],
+            thresholds: { hard: 0.93, soft: 0.9 },
+          }),
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(CAPTURE_LEXICAL_SEARCH_BUDGET_MS + 1);
+      const res = await resultPromise;
+
+      expect(res.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'ok', degraded: true });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded 1500ms'));
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it('rejects a DRAIN bug before persistence when any dedup leg is unavailable, even with force', async () => {

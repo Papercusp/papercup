@@ -201,7 +201,7 @@ function daysAgo(days: number): string {
  * that GET distinct from the actual run POST so these tests assert the route
  * they mean instead of accidentally treating the hydration response as one. */
 function resolverAwareFetch(runId: string) {
-  return vi.fn(async (input: RequestInfo | URL) =>
+  return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
     String(input) === '/api/agent-config'
       ? {
           ok: true,

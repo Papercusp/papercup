@@ -47,6 +47,7 @@ import {
   type FoldClassification,
 } from './observation-fold';
 import { trackDetached } from '../../detached-imports';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
 import {
   validateObservationRatings,
@@ -85,6 +86,9 @@ import {
 export type ImprovementKind = 'bug' | 'change' | 'feature';
 
 export const DUP_THRESHOLD = 0.6;
+
+/** Keep the lexical dedup leg from holding the whole capture request hostage. */
+export const CAPTURE_LEXICAL_SEARCH_BUDGET_MS = 1_500;
 
 /**
  * Fraction of the SHORTER title that must be covered for a candidate to be SURFACED as a
@@ -1233,13 +1237,18 @@ export async function captureImprovement(
   let lexicalLeg: DedupCoverage['lexical'] = isObservation ? 'skipped' : 'unavailable';
   let searched: EngineerIssue[] = [];
   if (!isObservation) {
-    try {
-      searched = await deps.searchIssues(input.title, 20);
-      lexicalLeg = 'ok';
-    } catch {
-      // Preserve the empty candidate set, but never mislabel an unavailable search
-      // as a clean lexical verdict. DRAIN consumes this bit as a fail-closed gate.
-    }
+    const lexical = await withBoundedTimeout(
+      () => Promise.resolve().then(() => deps.searchIssues(input.title, 20)),
+      {
+        fallback: [] as EngineerIssue[],
+        timeoutMs: CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
+        label: 'captureImprovement:lexical-dedup',
+      },
+    );
+    searched = lexical.value;
+    if (!lexical.degraded) lexicalLeg = 'ok';
+    // Preserve an empty candidate set, but never mislabel a timed-out or failed
+    // search as a clean lexical verdict. DRAIN consumes this bit as a fail-closed gate.
   }
   const candidates = searched.filter((i) => effectiveOrigin(i.signalOrigin) === origin);
 

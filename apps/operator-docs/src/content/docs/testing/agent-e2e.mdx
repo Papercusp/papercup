@@ -11,6 +11,7 @@ discovered: 2026-08-24
 status: active
 documents:
   - "papercusp-desktop/src-tauri/src/dev_bridge.rs"
+  - "scripts/verify-tauri-headless.sh"
 plans:
   - "app-impersonation-e2e-round5-2026-06-18"
   - "app-impersonation-e2e-round3-2026-06-14"
@@ -2094,6 +2095,9 @@ PASS only if **all of**:
    the operator log.
 4. No console errors with severity ≥ `error` were emitted by the
    action (run `verdict console error`).
+5. Every NEGATIVE assertion in the run was paired with a positive
+   presence guard (§14.2) — an absence proves nothing about a DOM
+   that never loaded.
 
 Anything else → `FAIL` or `INCONCLUSIVE`. Don't report PASS without
 positive evidence — silence is not success.
@@ -2115,6 +2119,56 @@ loadavg 9.5–48.6):
 4. Chat TTFT: grade the app-side split only (under 50ms); provider
    first-token inside the accepted 6.5–12.2s band is infra, not an app
    regression.
+
+### 14.2 Guard every negative assertion (EI-18781011720418569)
+
+A NEGATIVE assertion — "the old copy is gone", "no `undefined` leaked", "no
+error banner" — is **trivially true of an empty document**. It therefore passes
+before the sync-backed rows have reached the DOM, and the run exits 0 having
+verified nothing:
+
+```text
+"$VERIFY_TAURI_POLL" --selector '[data-testid="automation-pane-system"]'   # PASSED
+T check --eval '!document.body.innerHTML.includes("paused from its own subsystem")'  # PASSED
+T check --eval '!rows.some(e => e.getAttribute("aria-label").includes("undefined"))'  # PASSED
+# -> "ALL ASSERTIONS PASSED", exit 0 — against ZERO rows
+```
+
+That needs no carelessness. Three things line up:
+
+1. **Pane-level readiness is not data-level readiness.** The container renders
+   immediately; the rows arrive over a sync query. Polling for the container
+   and then asserting is a race that usually loses on a loaded box.
+2. **UI regression checks are naturally phrased as negatives** — every one of
+   them passes against an empty DOM.
+3. **A negative assertion has nothing obvious to poll FOR**, so it silently
+   never gets a guard.
+
+**The convention: name the subject that must be PRESENT.** `VERIFY_TAURI_POLL`
+takes `--require <css>` (and `--require-min N`) and FUSES that guard into the
+*same* evaluation as your assertion, so nothing can slip between "rows present"
+and "string absent":
+
+```text
+"$VERIFY_TAURI_POLL" --require '[data-testid="schedule-row"]' \
+  --eval '!document.body.innerHTML.includes("paused from its own subsystem")'
+```
+
+An unguarded negative `--eval` is **refused** (exit 2), not run. The escape
+hatch `--allow-unguarded-negative` is only for a subject an earlier assertion in
+the same run already proved renders. When the guard never matches, the failure
+says so — *presence guard never matched ... the assertion never saw data* —
+instead of the generic timeout, because "the subject never rendered" and "the
+subject rendered and the claim was false" are different results.
+
+Driving `tauri-agent-tools check` directly bypasses that rail, so the same rule
+applies by hand: assert `document.querySelectorAll(sel).length >= N` before you
+assert an absence.
+
+**This generalizes past the DOM.** It is the UI form of the empty-set trap that
+makes `assertEquals(0, results.length)` pass when the query is broken. Anywhere
+you verify an ABSENCE, the presence of the thing being searched is part of the
+assertion — and in async UI it is the part most likely to be missing.
 
 ## 15. Common gotchas
 

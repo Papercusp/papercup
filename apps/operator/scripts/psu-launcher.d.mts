@@ -1890,17 +1890,22 @@ export function startSupervisorBeat(ownerId: any, { fetchImpl, intervalMs, opera
  * @param {number|string|null} advSessionId  the adv_sessions PK to stamp
  * @param {number|null|undefined} exitCode   the child's exit code (null when unknown)
  * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
- *           timeoutMs?: number, killedBySignal?: string|null }} [opts]
+ *           timeoutMs?: number, killedBySignal?: string|null,
+ *           launchFailed?: boolean }} [opts]
  *   `killedBySignal` is the signal NAME that killed the child, or null for a voluntary
  *   exit. The server derives `ended_by` from it (WI-38054); omitting it makes every kill
- *   record as a clean self-reported exit.
+ *   record as a clean self-reported exit. `launchFailed` is used when the launcher
+ *   claimed a tracked resume row but never got a child process running; the server
+ *   records that as cleanup so the row is immediately retryable rather than waiting
+ *   for stale-claim recovery.
  */
-export function reportSessionEnded(advSessionId: number | string | null, exitCode: number | null | undefined, { fetchImpl, operatorUrl, token, timeoutMs, killedBySignal, }?: {
+export function reportSessionEnded(advSessionId: number | string | null, exitCode: number | null | undefined, { fetchImpl, operatorUrl, token, timeoutMs, killedBySignal, launchFailed, }?: {
     fetchImpl?: typeof fetch;
     operatorUrl?: string;
     token?: string | null;
     timeoutMs?: number;
     killedBySignal?: string | null;
+    launchFailed?: boolean;
 }): Promise<void>;
 /**
  * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.

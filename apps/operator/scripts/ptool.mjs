@@ -882,6 +882,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // an ambiguous blank/transport failure. Keep the caller outside the MCP
   // transport cap so the server-side result remains observable.
   ['loop:checkpoint', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['loop:end', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['loop:status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['improvements:capture', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs

@@ -293,7 +293,7 @@ describe('PlanDashboard header', () => {
 
   it('starts a one-plan clean-up from the header and deep-links its run', async () => {
     seed();
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
       String(input) === '/api/agent-config'
         ? {
             ok: true,

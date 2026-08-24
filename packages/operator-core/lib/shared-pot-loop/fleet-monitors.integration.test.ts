@@ -17,7 +17,7 @@
  *  5. The aggregated monitor pass collects incidents through the injected
  *     fileIncident sink (the routine-body shape the scheduling home runs).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootCompositionRig, type CompositionRig } from './composition-rig';
 import {
   measureConvergenceLag,
@@ -43,6 +43,14 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 let rig: CompositionRig | undefined;
+
+beforeEach(() => {
+  // A release now reaches the real await-event delivery path in this faithful
+  // fixture. The engine deliberately narrates successful wake outcomes through
+  // console.warn; await-event integration suites suppress that expected noise
+  // under the global fail-on-console guard.
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
 
 afterEach(async () => {
   await rig?.close();
