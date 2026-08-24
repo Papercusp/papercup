@@ -93,7 +93,7 @@ export default defineTool({
       .record(z.string(), z.unknown())
       .optional()
       .describe(
-        'Composed THRESHOLD TREE (mutually exclusive with `event`): wake ONCE when a combination of event occurrences is satisfied. A leaf is { event, when? } (`when` = a payload_filter DataCondition on that event). Combinators: { all: [...] } = every child; { any: [...] } = ≥1 child; { some: { require: k, of: [...] } } = k-of-n. Nest ≤3 deep, ≤20 leaves total; event-level negation is not supported (absence is observed by the deadline). e.g. { any: [ { event: "deploy:done" }, { all: [ { event: "ci:green" }, { event: "review:approved" } ] } ] }. Deadline via timeout_sec/on_timeout as usual; a tree already satisfied at registration returns already_satisfied WITHOUT registering.',
+        'Composed THRESHOLD TREE (mutually exclusive with `event`): wake ONCE when a combination of event occurrences is satisfied. A leaf is { event, when? } (`when` = a payload_filter DataCondition on that event). Combinators: { all: [...] } = every child; { any: [...] } = ≥1 child; { some: { require: k, of: [...] } } = k-of-n. Nest ≤3 deep, ≤20 leaves total; event-level negation is not supported (absence is observed by the deadline). e.g. { any: [ { event: "deploy:done" }, { all: [ { event: "ci:green" }, { event: "review:approved" } ] } ] }. IMPORTANT: the root is whole-tree one-shot; an `any` match consumes and voids every sibling. Do not mix frequent/non-terminal events with rare/terminal events unless the first match is intentionally terminal; split those waits or use an explicit threshold that matches the lifecycle. Deadline via timeout_sec/on_timeout as usual; a tree already satisfied at registration returns already_satisfied WITHOUT registering.',
       ),
     note: softText(LIMITS.ANNOTATION)
       .optional()
@@ -214,7 +214,7 @@ export default defineTool({
                 on_timeout: args.on_timeout ?? 'wake',
                 wake_handle: handleNote,
                 advice:
-                  'Registered a composed threshold tree. End your turn now — you will be woken ONCE when the combination is satisfied (or at the deadline). One-shot: re-register for the next occurrence. Cancel the whole tree with events:cancel { root_id }.',
+                  'Registered a composed threshold tree. End your turn now — you will be woken ONCE when the combination is satisfied (or at the deadline). The wake reports consumed:true because the whole tree is one-shot: an `any` match consumes and voids every sibling. Do not mix frequent/non-terminal events with rare/terminal events unless the first match is intentionally terminal; split those waits or use an explicit threshold. Re-register for the next occurrence. Cancel the whole tree with events:cancel { root_id }.',
               }),
             },
           ],

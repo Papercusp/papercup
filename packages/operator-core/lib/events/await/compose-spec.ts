@@ -206,6 +206,6 @@ export function resolveLeafKey(event: string): string {
 export function composedWakeSummary(input: { satisfied: boolean; firedCount: number; leafCount: number }): string {
   const { satisfied, firedCount, leafCount } = input;
   return satisfied
-    ? `Composed await satisfied — ${firedCount}/${leafCount} event(s) fired`
-    : `Composed await timed out — only ${firedCount}/${leafCount} event(s) fired before the deadline`;
+    ? `Composed await consumed — satisfied — ${firedCount}/${leafCount} event(s) fired`
+    : `Composed await consumed — timed out — only ${firedCount}/${leafCount} event(s) fired before the deadline`;
 }

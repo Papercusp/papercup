@@ -140,6 +140,29 @@ describe('composed threshold-tree awaits — store+engine end-to-end (real PG)',
     expect(deliveries).toHaveLength(1); // only one emit claims the one-shot leaf
   });
 
+  it('an early frequent `any` member reports whole-tree consumption and disarms its rare sibling', async () => {
+    const r = await reg({ any: [{ event: 'mixed:frequent' }, { event: 'mixed:terminal' }] });
+    if (!r.registered) throw new Error('expected registration');
+
+    // The frequent/non-terminal event wins first. The explicit consumed marker makes the
+    // one-shot behavior visible instead of letting the caller mistake this for a detector
+    // that remains armed for the rarer terminal event.
+    await emit('mixed:frequent', { state: 'still-running' });
+
+    const deliveries = await anchorDeliveries(r.anchorAwaitId);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].payload).toMatchObject({ composed: true, consumed: true, satisfied: true, reason: 'event' });
+    expect(deliveries[0].payload.pending).toEqual(['mixed:terminal']);
+    const summaries = await sql`
+      SELECT summary FROM harness_shared.event_wake_deliveries WHERE await_id = ${r.anchorAwaitId} ORDER BY id
+    `;
+    expect(summaries[0].summary).toMatch(/consumed/i);
+
+    // The rare sibling was voided with the root; its later emit cannot produce another wake.
+    await emit('mixed:terminal', { state: 'done' });
+    expect(await anchorDeliveries(r.anchorAwaitId)).toHaveLength(1);
+  });
+
   // ── 2. thresholds: `all` on the last member, `some` on the k-th ──────────────
 
   it('`all` (k=n) stays silent until the LAST member, then trips once', async () => {

@@ -110,6 +110,7 @@ describe('events:await spec (composed threshold tree)', () => {
       on_timeout: 'wake',
       wake_handle: 'resumable',
     });
+    expect(out.advice).toMatch(/consumes and voids every sibling/i);
   });
 
   it('timeout_sec / on_timeout flow through to registerComposedAwait and the response', async () => {

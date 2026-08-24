@@ -626,6 +626,11 @@ async function fireComposedRoot(input: {
     if (anchor) {
       const payload = {
         composed: true,
+        // A composed root is whole-tree one-shot: the first satisfying event (or the
+        // timeout wake) consumes the root and voids every still-pending sibling.
+        // Keep this explicit so a frequent non-terminal `any` member cannot look like
+        // a healthy detector for a rarer terminal member after the wake is handled.
+        consumed: true,
         satisfied,
         reason: input.reason,
         fired: firedLeaves.map((l) => ({ event: l.eventKey, payload: l.memberPayload, at: l.memberFiredAt })),

@@ -122,7 +122,7 @@ describe('resolveLeafKey', () => {
 
 describe('composedWakeSummary', () => {
   it('distinguishes a satisfied trip from a timeout', () => {
-    expect(composedWakeSummary({ satisfied: true, firedCount: 2, leafCount: 3 })).toMatch(/satisfied — 2\/3/);
-    expect(composedWakeSummary({ satisfied: false, firedCount: 1, leafCount: 3 })).toMatch(/timed out — only 1\/3/);
+    expect(composedWakeSummary({ satisfied: true, firedCount: 2, leafCount: 3 })).toMatch(/consumed.*satisfied — 2\/3/);
+    expect(composedWakeSummary({ satisfied: false, firedCount: 1, leafCount: 3 })).toMatch(/consumed.*timed out — only 1\/3/);
   });
 });
