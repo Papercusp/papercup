@@ -39,6 +39,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
+import {
+  canonicalExecutableWidth,
+  exactPositiveSinglePlanSlugFromFilter,
+} from '../../fleet/executable-frontier';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
@@ -1073,28 +1077,7 @@ function positivePlanSlugsFromFilter(node: FilterNode | null | undefined): strin
  * `any: [plan=P, kind=bug]` mentions one plan but also admits work outside it,
  * so it cannot define the fleet's whole executable frontier.
  */
-export function exactPositiveSinglePlanSlugFromFilter(node: FilterNode | null | undefined): string | null {
-  const slugs = positivePlanSlugsFromFilter(node);
-  if (slugs.length !== 1) return null;
-  const target = slugs[0];
-  const requiresTarget = (candidate: FilterNode | null | undefined): boolean => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
-    if ('not' in candidate) return false;
-    if ('all' in candidate) return candidate.all.some((child) => requiresTarget(child));
-    if ('any' in candidate) {
-      return candidate.any.length > 0 && candidate.any.every((child) => requiresTarget(child));
-    }
-    const leaf = candidate as { field?: unknown; op?: unknown; value?: unknown };
-    if (leaf.field !== 'plan') return false;
-    if (leaf.op === '=') return leaf.value === target;
-    if (leaf.op === 'in' && Array.isArray(leaf.value)) {
-      const values = uniquePlanSlugs(leaf.value.filter((value): value is string => typeof value === 'string'));
-      return values.length === 1 && values[0] === target;
-    }
-    return false;
-  };
-  return requiresTarget(node) ? target : null;
-}
+export { exactPositiveSinglePlanSlugFromFilter };
 
 export interface FleetHeadcountVsExecutableFrontierEvaluation {
   alert: boolean;
@@ -1123,20 +1106,12 @@ export function computeFleetHeadcountVsExecutableFrontierAlert(input: {
   fleet?: string | null;
 }): FleetHeadcountVsExecutableFrontierEvaluation | undefined {
   if (input.fleetPaused || !input.planSlug) return undefined;
-  if (
-    !Number.isSafeInteger(input.liveNonLeaderWorkers) ||
-    input.liveNonLeaderWorkers < 0 ||
-    !Number.isSafeInteger(input.readyWidth) ||
-    (input.readyWidth ?? -1) < 0 ||
-    !Number.isSafeInteger(input.claimable) ||
-    (input.claimable ?? -1) < 0
-  )
-    return undefined;
+  if (!Number.isSafeInteger(input.liveNonLeaderWorkers) || input.liveNonLeaderWorkers < 0) return undefined;
 
+  const executableWidth = canonicalExecutableWidth(input);
+  if (executableWidth == null) return undefined;
   const readyWidth = input.readyWidth as number;
   const claimable = input.claimable as number;
-  // Identical to evaluateExactPlanAdmission / fleet:launch-on-plan.
-  const executableWidth = Math.min(readyWidth, claimable);
   const excessWorkers = Math.max(0, input.liveNonLeaderWorkers - executableWidth);
   const base = {
     planSlug: input.planSlug,
