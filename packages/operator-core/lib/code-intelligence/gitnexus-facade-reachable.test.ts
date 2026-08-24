@@ -30,6 +30,7 @@ import { describe, expect, it } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 
 import { GITNEXUS_FACADE_OPS, gitnexusFacade } from './gitnexus-facade.ts';
+import graphQuery from '../agent-tools/gitnexus/query.ts';
 
 // Exactly what operator boot imports. NOT '../agent-tools/gitnexus/query'.
 import '../agent-tools/index';
@@ -86,18 +87,65 @@ describe('the curated GitNexus facade is reachable by an agent', () => {
     const seen: string[] = [];
     const answer = await gitnexusFacade('symbol', { name: 'pinModuleState' }, (tool, args) => {
       seen.push(tool);
+      if (tool === 'list_repos') {
+        return Promise.resolve({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                repositories: [
+                  {
+                    name: 'papercusp',
+                    indexedAt: '2026-08-24T04:00:00.000Z',
+                    lastCommit: '0123456789abcdef0123456789abcdef01234567',
+                    staleness: { commitsBehind: 0 },
+                  },
+                ],
+              }),
+            },
+          ],
+        });
+      }
       return Promise.resolve({
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ symbols: [], relatedFiles: [], query: args.name ?? '' }),
+            text: JSON.stringify({
+              status: 'found',
+              symbol: {
+                name: args.name ?? '',
+                kind: 'Function',
+                filePath: 'pkg/target.ts',
+                startLine: 0,
+              },
+            }),
           },
         ],
       });
     });
 
     // Bare names: namespacing to `gitnexus.<tool>` is the tool handler's job.
-    expect(seen).toEqual(['context']);
+    expect(seen).toEqual(['list_repos', 'context']);
     expect(String(answer.error ?? '')).not.toMatch(/not configured|wiring fault/i);
+  });
+
+  it('accepts a refused intent as a typed op and returns its redirect before dispatch', async () => {
+    expect(graphQuery.args.safeParse({ op: 'references', name: 'target' }).success).toBe(true);
+
+    const dispatched: string[] = [];
+    const result = (await graphQuery.handler(
+      { op: 'references', name: 'target' } as never,
+      {
+        dispatchTool: async (tool: string) => {
+          dispatched.push(tool);
+          return { content: [] };
+        },
+      } as never,
+    )) as { data: { intent: string; freshness: { health: string }; error: string | null } };
+
+    expect(dispatched).toEqual([]);
+    expect(result.data.intent).toBe('references');
+    expect(result.data.freshness.health).toBe('unknown');
+    expect(result.data.error).toMatch(/Use instead:.*lsp:query/i);
   });
 });
