@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
+  computeDarkFleetAlert,
   computeStrandedFleetAlert,
   computeSpecStarvedFleetAlert,
   computeSpecAuthorshipAlert,
@@ -38,8 +39,22 @@ const __dirname_ = dirname(new URL(import.meta.url).pathname);
 const REPO = join(__dirname_, '../../../../../');
 const SOURCE = join(__dirname_, 'leader-brief.ts');
 
+const DARK_FLEET_FIRING = computeDarkFleetAlert({
+  fleet: 'my-fleet',
+  presenceDegraded: false,
+  roster: [
+    { lastActiveSecAgo: null },
+    { lastActiveSecAgo: 31 * 60 },
+    { lastActiveSecAgo: 45 * 60 },
+  ],
+});
+
 /** Each alert under a MINIMAL input that makes it fire. */
 const FIRING: { name: string; fired: { reason: string; falsifier: AlertFalsifier } | undefined }[] = [
+  {
+    name: 'darkFleet',
+    fired: DARK_FLEET_FIRING.alert === true ? DARK_FLEET_FIRING : undefined,
+  },
   {
     name: 'strandedFleet',
     fired: computeStrandedFleetAlert({
