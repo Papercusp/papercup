@@ -5,6 +5,8 @@ const h = vi.hoisted(() => ({
   getActiveRun: vi.fn(),
   getRun: vi.fn(),
   setRunPhase: vi.fn(),
+  failRunIfExecuting: vi.fn(),
+  recordRunHeartbeat: vi.fn(),
   settleRunPhase: vi.fn(),
   notifyPlanCleanupRunChanged: vi.fn(),
   gatherCleanupInputs: vi.fn(),
@@ -23,6 +25,8 @@ vi.mock('../../attention/bulk-run-store', () => ({
   getActiveRun: h.getActiveRun,
   getRun: h.getRun,
   setRunPhase: h.setRunPhase,
+  failRunIfExecuting: h.failRunIfExecuting,
+  recordRunHeartbeat: h.recordRunHeartbeat,
   settleRunPhase: h.settleRunPhase,
 }));
 vi.mock('../../attention/bulk-run-sync', () => ({
@@ -40,6 +44,9 @@ vi.mock('../../plan-cleanup/action-dispatch', () => ({
   dispatchCleanupFindingAction: h.dispatchCleanupFindingAction,
 }));
 vi.mock('../_compound-dispatch', () => ({ inProcessCall: h.inProcessCall }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-resolver' }),
+}));
 
 import { cleanupAct, cleanupManifest, cleanupReport } from './cleanup-run';
 import { buildCleanupResolverBrief } from '../../plan-cleanup/resolver-brief';
@@ -92,6 +99,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.getFlag.mockResolvedValue(true);
   h.getRun.mockResolvedValue(run);
+  h.recordRunHeartbeat.mockResolvedValue(run);
+  h.failRunIfExecuting.mockResolvedValue({ ...run, phase: 'failed' });
   h.getActiveRun.mockResolvedValue(run);
   h.gatherCleanupInputs.mockResolvedValue({ plans: [], linkedWorkItems: [], claims: [] });
   h.scanForCleanupFindings.mockReturnValue([finding]);
@@ -112,6 +121,7 @@ describe('plans:cleanup-manifest', () => {
     expect(h.seedFindings).toHaveBeenCalledWith({
       runId: run.runId,
       findings: [finding],
+      resolverOwner: 'su-resolver',
       workspaceId: run.workspaceId,
     });
     expect(result).toMatchObject({
