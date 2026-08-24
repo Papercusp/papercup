@@ -61,6 +61,9 @@ import readTool from './read';
 import subscribeTool from './subscribe';
 import { SU_ROLES } from '@papercusp/agent-mcp';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from '../../cell-registry';
+// The REAL comparator, so the P-005 semantic-transition property is proven against the
+// code that actually evaluates a watch rather than restated as a shape assertion.
+import { comparePredicate, valueAtPath } from '../../events/await/predicate-watch';
 
 const CTX = { role: 'su', harnessSlug: 'papercusp', workspaceId: 'default' };
 
@@ -86,6 +89,29 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
     shape: '{ positions, serving }',
     ...over,
   };
+}
+
+/**
+ * P-005 — the same spec with a DECLARED assessment.
+ *
+ * `assessment.path` is deliberately a THIRD field, distinct from both the headline
+ * (`positions.deployed`) and the materiality path used above: a target-resolution test
+ * can then only pass by resolving the right path, never by two paths happening to
+ * coincide. The codes are domain codes, not read-health codes — the registry rejects a
+ * `CellUnknownCode` here on purpose.
+ */
+function assessed(over: Partial<CellSpec> = {}): CellSpec {
+  return spec({
+    assessment: {
+      path: 'assessments.deploy',
+      codes: {
+        live: { meaning: 'the running process executes this commit', safeAction: 'read the deployed sha as authoritative' },
+        stale: { meaning: 'the process predates the code change', safeAction: 'redeploy before trusting anything it serves' },
+      },
+      evidence: ['positions.deployed', 'serving.startedSinceCodeChange'],
+    },
+    ...over,
+  });
 }
 
 type Out = { content: { type: 'text'; text: string }[]; isError?: boolean };
@@ -316,7 +342,7 @@ describe('P-021 — state:subscribe never applies materiality silently', () => {
     registerCell(withMateriality());
 
     await subscribeTool.handler(
-      { cell: 'test.cell', of: 'material', on: { op: 'eq', value: false } } as never,
+      { cell: 'test.cell', target: 'material', on: { op: 'eq', value: false } } as never,
       CTX as never,
     );
 
@@ -325,7 +351,7 @@ describe('P-021 — state:subscribe never applies materiality silently', () => {
     expect(sent.note).toContain('material');
   });
 
-  it('⚠ REFUSES `of:material` on a cell that declares none — never a silent fallback', async () => {
+  it('⚠ REFUSES `target:material` on a cell that declares none — never a silent fallback', async () => {
     // The failure this prevents is concrete and severe. Silently re-pointing a
     // caller's condition at a different path does not narrow it, it evaluates it
     // against a DIFFERENT DOMAIN: `{op:'ne', value:'<a sha>'}` aimed at a boolean
@@ -335,7 +361,7 @@ describe('P-021 — state:subscribe never applies materiality silently', () => {
     registerCell(spec());
 
     const b = body(
-      await subscribeTool.handler({ cell: 'test.cell', of: 'material', on: { op: 'exists' } } as never, CTX as never),
+      await subscribeTool.handler({ cell: 'test.cell', target: 'material', on: { op: 'exists' } } as never, CTX as never),
     );
 
     expect(b.ok).toBe(false);
@@ -345,6 +371,192 @@ describe('P-021 — state:subscribe never applies materiality silently', () => {
     expect(String(b.reason)).toContain('no materiality');
     expect(b.watchedPath).toBe('positions.deployed');
     expect(watchHandler).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * P-005 / D-014 §4 + D-007 — the explicit `target`.
+ *
+ * Three claims are under test here and each one fails SILENTLY if it regresses, which
+ * is why every case asserts the delegated path rather than a return code:
+ *
+ *   1. D-007's default. On a cell that declares an assessment, an operand-free
+ *      subscription watches the CODE — the whole point of P-005, since a semantic
+ *      transition can happen with the raw measurement unchanged.
+ *   2. The default is confined to operand-free conditions. Applying it to a valued one
+ *      would evaluate the caller's operand against a domain they never named, and
+ *      `comparePredicate` fails BOTH ways there: `ne` against a code enum is true on the
+ *      first poll (instant spurious wake), `gt` is `Number('live')` → NaN → false
+ *      forever (a watch that can never fire, reported by nothing).
+ *   3. `of` is refused, never translated — for exactly the same reason.
+ */
+describe('state:subscribe — the explicit `target` (P-005 / D-007 / D-014 §4)', () => {
+  it('an operand-free subscription on an ASSESSED cell watches the CODE (D-007 default)', async () => {
+    registerCell(assessed());
+
+    await subscribeTool.handler({ cell: 'test.cell' } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown>; note: string };
+    expect(sent.predicate.path).toBe('assessments.deploy');
+    expect(sent.predicate.op).toBe('changed');
+    // The note has to name the target, or a fleet reading `coord:inbox` cannot tell a
+    // semantic watch from a raw one.
+    expect(sent.note).toContain('(assessment)');
+  });
+
+  it('a cell with NO assessment still defaults to the measurement path — every existing subscription is unchanged', async () => {
+    registerCell(spec());
+
+    await subscribeTool.handler({ cell: 'test.cell' } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown>; note: string };
+    expect(sent.predicate.path).toBe('positions.deployed');
+    // `measurement` stays unannotated: relabelling the unqualified case would churn
+    // every note in the fleet for no information.
+    expect(sent.note).toBe('cell test.cell changed');
+  });
+
+  it('`exists` takes the default too — it names no domain, so it cannot misfire on either path', async () => {
+    registerCell(assessed());
+
+    await subscribeTool.handler({ cell: 'test.cell', on: { op: 'exists' } } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
+    expect(sent.predicate.path).toBe('assessments.deploy');
+  });
+
+  it('target:"measurement" keeps the RAW path and its numeric operator intact', async () => {
+    registerCell(assessed());
+
+    await subscribeTool.handler(
+      { cell: 'test.cell', target: 'measurement', on: { op: 'gt', value: 3 } } as never,
+      CTX as never,
+    );
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
+    expect(sent.predicate).toEqual({
+      tool: 'dev:pipeline_position',
+      args: {},
+      path: 'positions.deployed',
+      op: 'gt',
+      value: 3,
+    });
+  });
+
+  it('target:"assessment" is accepted WITH an operand — naming the domain is what the refusal wanted', async () => {
+    registerCell(assessed());
+
+    await subscribeTool.handler(
+      { cell: 'test.cell', target: 'assessment', on: { op: 'eq', value: 'stale' } } as never,
+      CTX as never,
+    );
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
+    expect(sent.predicate.path).toBe('assessments.deploy');
+    expect(sent.predicate.value).toBe('stale');
+  });
+
+  it('target:"material" still resolves on an assessed cell — materiality behaviour is unchanged', async () => {
+    registerCell(
+      assessed({
+        materiality: {
+          path: 'serving.startedSinceCodeChange',
+          why: 'the headline follows every commit; this is the question the caller actually has.',
+        },
+      }),
+    );
+
+    await subscribeTool.handler({ cell: 'test.cell', target: 'material' } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
+    expect(sent.predicate.path).toBe('serving.startedSinceCodeChange');
+  });
+
+  it('⚠ REFUSES a VALUED condition that names no target, and registers NOTHING', async () => {
+    registerCell(assessed());
+
+    const b = body(
+      await subscribeTool.handler({ cell: 'test.cell', on: { op: 'ne', value: 'deadbeef' } } as never, CTX as never),
+    );
+
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('target_required');
+    // The refusal is only actionable if it names BOTH candidate paths — a caller who
+    // has to go read the registry to answer it will guess instead.
+    expect(b.assessmentPath).toBe('assessments.deploy');
+    expect(b.measurementPath).toBe('positions.deployed');
+    expect(watchHandler).not.toHaveBeenCalled();
+  });
+
+  it('⚠ REFUSES `of` rather than translating it — and this call USED to work', async () => {
+    // Non-vacuous on purpose: before the rename this exact call registered a
+    // materiality watch. Translating it now would be the silent re-point D-014 §4
+    // forbids, so it must refuse even though the intent is unambiguous.
+    registerCell(
+      assessed({
+        materiality: { path: 'serving.startedSinceCodeChange', why: 'the headline churns; this is the real question.' },
+      }),
+    );
+
+    const b = body(
+      await subscribeTool.handler({ cell: 'test.cell', of: 'material', on: { op: 'eq', value: true } } as never, CTX as never),
+    );
+
+    expect(b.error).toBe('of_renamed');
+    expect(b.renamedTo).toBe('target');
+    expect(b.useTarget).toBe('material');
+    expect(watchHandler).not.toHaveBeenCalled();
+  });
+
+  it('maps the retired `of:"value"` to measurement in its refusal, not to the new default', async () => {
+    registerCell(assessed());
+
+    const b = body(await subscribeTool.handler({ cell: 'test.cell', of: 'value' } as never, CTX as never));
+
+    expect(b.error).toBe('of_renamed');
+    expect(b.useTarget).toBe('measurement');
+  });
+
+  it('refuses the half-migrated guess `of:"assessment"` with a POINTER, not a parser error', async () => {
+    // `of` is a plain string, not the old enum, precisely so this reaches the handler.
+    // As an enum it would die in the parser with a message naming neither `target` nor
+    // the value that would have worked.
+    expect(subscribeTool.args.safeParse({ cell: 'test.cell', of: 'assessment' }).success).toBe(true);
+    registerCell(assessed());
+
+    const b = body(await subscribeTool.handler({ cell: 'test.cell', of: 'assessment' } as never, CTX as never));
+
+    expect(b.error).toBe('of_renamed');
+    expect(String(b.reason)).toContain('target');
+    expect(b.useTarget).toBeUndefined();
+  });
+
+  /**
+   * THE PROPERTY P-005 EXISTS FOR, proven against the real comparator rather than
+   * asserted: a code flip with an UNCHANGED headline wakes the assessment watch and
+   * does not wake the measurement watch. The two paths come out of the two real
+   * registrations above — nothing here is a transcribed literal, so a target-resolution
+   * regression moves the paths and this test fails with them.
+   */
+  it('a SEMANTIC transition wakes an assessment watch that a measurement watch sleeps through', async () => {
+    registerCell(assessed());
+
+    await subscribeTool.handler({ cell: 'test.cell' } as never, CTX as never);
+    const semantic = (watchHandler.mock.calls[0][0] as { predicate: { path: string } }).predicate.path;
+    await subscribeTool.handler({ cell: 'test.cell', target: 'measurement' } as never, CTX as never);
+    const raw = (watchHandler.mock.calls[1][0] as { predicate: { path: string } }).predicate.path;
+
+    // The headline is IDENTICAL across these two payloads; only the meaning moved.
+    const before = { positions: { deployed: true }, assessments: { deploy: 'live' } };
+    const after = { positions: { deployed: true }, assessments: { deploy: 'stale' } };
+    const fires = (path: string) =>
+      comparePredicate(valueAtPath(after, path), 'changed', undefined, {
+        established: true,
+        value: valueAtPath(before, path),
+      });
+
+    expect(fires(semantic)).toBe(true);
+    expect(fires(raw)).toBe(false);
   });
 });
 
@@ -472,14 +684,38 @@ describe('state:subscribe — refusal codes are queryable (P-004)', () => {
     expect(b.missingParam).toBe('path');
   });
 
-  it('no_materiality — of:"material" on a cell that declares none', async () => {
-    const b = await codeFor({ cell: 'test.cell', of: 'material' }, spec());
+  it('no_materiality — target:"material" on a cell that declares none', async () => {
+    const b = await codeFor({ cell: 'test.cell', target: 'material' }, spec());
     expect(b.error).toBe('no_materiality');
     expect(b.reason).toMatch(/declares no materiality path/);
   });
 
+  it('no_assessment — target:"assessment" on a cell that declares none', async () => {
+    const b = await codeFor({ cell: 'test.cell', target: 'assessment' }, spec());
+    expect(b.error).toBe('no_assessment');
+    expect(b.reason).toMatch(/declares no assessment/);
+  });
+
+  it('target_required — a valued condition on an assessed cell with no target named', async () => {
+    const b = await codeFor({ cell: 'test.cell', on: { op: 'eq', value: true } }, assessed());
+    expect(b.error).toBe('target_required');
+  });
+
+  it('of_renamed — the retired `of` knob', async () => {
+    const b = await codeFor({ cell: 'test.cell', of: 'material' }, spec());
+    expect(b.error).toBe('of_renamed');
+  });
+
   it('every code is short, snake_case and stable — i.e. actually groupable in SQL', async () => {
-    const codes = ['cell_absent', 'cell_event_signalled', 'subject_required', 'no_materiality'];
+    const codes = [
+      'cell_absent',
+      'cell_event_signalled',
+      'subject_required',
+      'no_materiality',
+      'no_assessment',
+      'target_required',
+      'of_renamed',
+    ];
     for (const c of codes) {
       // 80 is REFUSAL_CODE_MAX in dispatch-stack.ts; a longer code arrives truncated,
       // which silently splits one class into several rows in the taxonomy query.

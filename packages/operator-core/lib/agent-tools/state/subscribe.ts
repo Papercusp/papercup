@@ -95,6 +95,48 @@ export default defineTool({
     note: z.string().max(2000).optional().describe('Why you are watching — echoed into the wake turn.'),
   }),
   async handler(args, ctx) {
+    /**
+     * P-005 / D-014 §4 — `of` IS REFUSED, NEVER TRANSLATED.
+     *
+     * `of: 'value'|'material'` became `target: 'assessment'|'measurement'|'material'`.
+     * Renaming rather than aliasing is the alpha default, but the DECISIVE argument is
+     * this tool's own P-021 restraint (see the target block below): re-pointing a
+     * caller's predicate does not narrow their condition, it evaluates it against a
+     * DIFFERENT DOMAIN.
+     *
+     * Zod strips an undeclared key silently, so dropping `of` from the schema would do
+     * exactly that: a caller who asked for `material` would fall through to the new
+     * assessment default and be watching a code enum, where `{op:'ne', value:<a sha>}`
+     * is true on the FIRST poll — an instant spurious wake. So `of` stays in the schema
+     * as a plain string PURELY so the handler can SEE it and refuse it by name. Widened
+     * from the old enum on purpose: `of:'assessment'` (the natural half-migrated guess)
+     * would otherwise die in the parser with no pointer to `target`.
+     */
+    if (args.of !== undefined) {
+      const replacement = args.of === 'material' ? 'material' : args.of === 'value' ? 'measurement' : null;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              cell: args.cell,
+              error: 'of_renamed',
+              reason:
+                `\`of\` was renamed to \`target\` and is deliberately NOT translated: silently re-pointing your operand would evaluate it against a different domain. ` +
+                (replacement
+                  ? `Re-send with target:"${replacement}".`
+                  : `Re-send with target:"assessment" | "measurement" | "material".`) +
+                ` "value" is now "measurement", and a cell that declares an assessment now defaults an operand-free subscription to that assessment.`,
+              renamedTo: 'target',
+              ...(replacement ? { useTarget: replacement } : {}),
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // P-004 — the default condition. 12 of 50 measured failures passed no `on` at
     // all, and 11 more invented an operator spelling for it; "wake me when this
     // moves" is simply what subscribing to a volatile cell usually means.
@@ -183,9 +225,10 @@ export default defineTool({
     const resolverArgs = rel.kind === 'parameter' ? { [rel.param]: asSubject as string } : {};
 
     /**
-     * P-021 — WHICH path the predicate watches.
+     * P-021, extended by P-005/D-014 §4 — WHICH path the predicate watches:
+     * the declared assessment CODE, the raw measurement, or the materiality path.
      *
-     * ⚠ A DECLARED MATERIALITY IS NEVER APPLIED SILENTLY, and that restraint is
+     * ⚠ NO DECLARED PATH IS EVER APPLIED SILENTLY, and that restraint is
      * the whole design of this knob. The caller's `on: {op, value}` is written
      * against a value they have in mind; quietly re-pointing it at a coarser
      * sibling path would not narrow their condition, it would evaluate it against
@@ -198,28 +241,82 @@ export default defineTool({
      * condition never established — exactly what `comparePredicate`'s absent-
      * evidence rule already refuses to do one layer down.
      *
-     * So materiality is OPT-IN per subscription, and asking for it on a cell that
-     * declares none is an ERROR rather than a silent fallback to the churny path.
+     * So materiality stays OPT-IN per subscription, and asking for ANY target the
+     * cell does not declare is an ERROR rather than a silent fallback to a path it
+     * does. The one default this tool applies — D-007's assessment default, below —
+     * is confined to conditions that name no domain at all.
      */
-    const wantsMaterial = args.of === 'material';
-    if (wantsMaterial && !spec.materiality) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              cell: args.cell,
-              error: 'no_materiality',
-              reason: `cell "${args.cell}" declares no materiality path, so there is no coarser answer to watch. Either its every change is material (the registry's default), or it should declare one. Re-subscribe without \`of\` to watch "${spec.changeSignal.path}" — and expect a wake on every change to it.`,
-              watchedPath: spec.changeSignal.path,
-            }),
-          },
-        ],
-        isError: true,
-      };
+    const assessmentPath = spec.assessment?.path;
+    const refuse = (error: string, extra: Record<string, unknown>) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, cell: args.cell, error, ...extra }) }],
+      isError: true,
+    });
+
+    if (args.target === 'assessment' && !assessmentPath) {
+      return refuse('no_assessment', {
+        reason: `cell "${args.cell}" declares no assessment, so there is no semantic code to watch — and the registry will not invent one from the raw value (D-004: an assessment is DECLARED meaning, never derived). Re-subscribe with target:"measurement" to watch "${spec.changeSignal.path}". A value-bearing cell without an assessment is unfinished, not exempt (D-008) — the durable fix is to declare one.`,
+        watchedPath: spec.changeSignal.path,
+      });
     }
-    const watchedPath = wantsMaterial ? (spec.materiality as { path: string }).path : spec.changeSignal.path;
+    if (args.target === 'material' && !spec.materiality) {
+      return refuse('no_materiality', {
+        reason: `cell "${args.cell}" declares no materiality path, so there is no coarser answer to watch. Either its every change is material (the registry's default), or it should declare one. Re-subscribe with target:"measurement" to watch "${spec.changeSignal.path}" — and expect a wake on every change to it.`,
+        watchedPath: spec.changeSignal.path,
+      });
+    }
+
+    /**
+     * ── D-007's assessment DEFAULT, narrowed to an operand-free condition ────────
+     *
+     * D-007 defaults a NEW subscription on an assessed cell to the assessment path.
+     * That default is the point of P-005: `changed` against the code wakes you when
+     * the MEANING moves even though the raw measurement did not.
+     *
+     * But applied to a condition that carries an OPERAND it commits the very defect
+     * the essay above refuses `of` to avoid — and it would do so to EVERY existing
+     * caller at once, because P-004 gave all ten built-in cells an assessment. Both
+     * failure directions are live in `comparePredicate`, and both are silent:
+     *   • `{op:'ne', value:'<a sha>'}` against a code enum is `!absent && !deepEq`,
+     *     i.e. TRUE on the first poll — an instant spurious wake reported as a real
+     *     transition.
+     *   • `{op:'gt', value:3}` against a code enum is `Number('healthy')` → NaN →
+     *     `false` FOREVER. The agent parks on a watch that can never fire, which no
+     *     error surface will ever tell it.
+     *
+     * An operand is a domain the caller has already named implicitly. `exists` and
+     * `changed` name none — they are the same question on either path and cannot
+     * misfire on either — so the default applies exactly there and is REFUSED, not
+     * guessed, everywhere else. Defaulting a valued condition to `measurement`
+     * instead would be just as silent in the other direction (a caller who meant
+     * `eq:'red'` on a gate-verdict CODE would be pointed at the raw value), which is
+     * why this is a refusal and not a smarter guess.
+     */
+    const carriesOperand = on.op !== 'exists' && on.op !== 'changed';
+    if (args.target === undefined && assessmentPath && carriesOperand) {
+      return refuse('target_required', {
+        reason: `cell "${args.cell}" declares an assessment, so an operand-free subscription now defaults to its semantic code at "${assessmentPath}". Your \`${on.op}\` carries an operand, and this tool never evaluates a caller's operand against a domain they did not name. Say target:"measurement" to compare "${spec.changeSignal.path}" (a threshold, a sha, a boolean), or target:"assessment" to compare the code enum. Or omit \`on\` entirely to mean "wake me when the MEANING moves".`,
+        assessmentPath,
+        measurementPath: spec.changeSignal.path,
+      });
+    }
+
+    const target: 'assessment' | 'measurement' | 'material' =
+      args.target ?? (assessmentPath ? 'assessment' : 'measurement');
+    /**
+     * ⚠ A predicate observes the RAW path. `readCell` DOWNGRADES an undeclared code to
+     * `unavailable` (the closed-vocabulary rule); a poller reading `assessment.path`
+     * does not get that projection and would compare the undeclared string verbatim.
+     * Left as-is deliberately: normalising here would be a second projection of the
+     * read contract, which D-008 forbids, and the divergence only exists when a
+     * resolver emits a code its own registration never declared — a registry defect.
+     * The safe direction holds meanwhile: `changed` still fires on that transition.
+     */
+    const watchedPath =
+      target === 'assessment'
+        ? (assessmentPath as string)
+        : target === 'material'
+          ? (spec.materiality as { path: string }).path
+          : spec.changeSignal.path;
 
     // DELEGATE. The cell contributes exactly the triple it already declares; every
     // other knob is watch:create's, unchanged. Parsing through watch:create's own
@@ -230,9 +327,11 @@ export default defineTool({
       wake: true,
       once: args.once ?? true,
       interval_sec: args.interval_sec,
+      // `measurement` stays unannotated: it is what an unqualified "cell X changed"
+      // has always meant, and re-labelling it would churn every existing note.
       note:
         args.note ??
-        `cell ${args.cell}${wantsMaterial ? ' (material)' : ''} ${on.op}${on.value === undefined ? '' : ` ${JSON.stringify(on.value)}`}`,
+        `cell ${args.cell}${target === 'measurement' ? '' : ` (${target})`} ${on.op}${on.value === undefined ? '' : ` ${JSON.stringify(on.value)}`}`,
       predicate: {
         tool: spec.changeSignal.tool,
         args: resolverArgs,

@@ -738,10 +738,16 @@ export interface PredicateEvalResult {
  * emitting a stale handle).
  *
  * Match: the poll-signalled cell whose changeSignal (tool, path) — or declared
- * materiality path (P-021: an `of:'material'` subscription watches that path) —
- * equals this row's. The registration-time dedupe in the stamp module treats
- * two cells declaring one path as a registry defect; first match is
- * deterministic here for the same reason.
+ * materiality path, or declared ASSESSMENT path — equals this row's. All three
+ * are subscribable targets (`state:subscribe`'s `target`), so all three must
+ * derive the handle: a watch is registered against ONE concrete path, and a
+ * target this function does not recognise silently loses its re-read handle at
+ * exactly the wake this function exists to make re-readable. The assessment arm
+ * matters most, because P-005 made assessment the DEFAULT target for an
+ * operand-free subscription on an assessed cell — so omitting it would have
+ * stripped the handle from the now-common case, not an exotic one. The
+ * registration-time dedupe in the stamp module treats two cells declaring one
+ * path as a registry defect; first match is deterministic here for the same reason.
  *
  * AUDIENCE (P-019): the handle is checked against the ROW'S OWN identity
  * (ownerId/role/harness) — a hand-rolled watch:create on the same (tool, path)
@@ -767,7 +773,9 @@ export function deriveCellReread(row: {
       (c) =>
         c.changeSignal.kind === 'poll' &&
         c.changeSignal.tool === row.tool &&
-        (c.changeSignal.path === row.path || c.materiality?.path === row.path),
+        (c.changeSignal.path === row.path ||
+          c.materiality?.path === row.path ||
+          c.assessment?.path === row.path),
     );
     if (!spec) return undefined;
     if (

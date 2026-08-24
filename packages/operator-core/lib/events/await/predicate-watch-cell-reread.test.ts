@@ -57,17 +57,43 @@ describe('deriveCellReread — the wake carries the handle that re-answers its o
     expect(deriveCellReread(ROW)).toEqual({ tool: 'state:read', args: { cell: 'test.headline' } });
   });
 
-  it('derives it for a MATERIALITY path too — an of:"material" subscription watches that path, not changeSignal.path', () => {
+  it('derives it for a MATERIALITY path too — a target:"material" subscription watches that path, not changeSignal.path', () => {
     registerCell(
       spec({
         cell: 'test.material',
         materiality: { path: 'value.coarse', why: 'the headline churns; this is the question the cell answers' },
       }),
     );
-    // A watch registered with of:'material' stores the materiality path.
+    // A watch registered with target:'material' stores the materiality path.
     expect(deriveCellReread({ ...ROW, path: 'value.coarse' })).toEqual({
       tool: 'state:read',
       args: { cell: 'test.material' },
+    });
+  });
+
+  /**
+   * P-005 — the ASSESSMENT path is a third subscribable target, and since D-007 made it
+   * the DEFAULT for an operand-free subscription on an assessed cell, a row storing it
+   * is the COMMON case, not an exotic one. Missing it here would strip the re-read
+   * handle from most wakes in the plane while every other case still passed.
+   */
+  it('derives it for an ASSESSMENT path — the default target for an operand-free subscription (D-007)', () => {
+    registerCell(
+      spec({
+        cell: 'test.assessed',
+        assessment: {
+          path: 'value.code',
+          codes: {
+            live: { meaning: 'the reading is current', safeAction: 'act on it' },
+            stale: { meaning: 'the reading predates the subject', safeAction: 're-measure before acting' },
+          },
+          evidence: ['value.headline'],
+        },
+      }),
+    );
+    expect(deriveCellReread({ ...ROW, path: 'value.code' })).toEqual({
+      tool: 'state:read',
+      args: { cell: 'test.assessed' },
     });
   });
 
