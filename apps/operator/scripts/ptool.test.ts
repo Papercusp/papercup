@@ -125,6 +125,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'work_items:get',
@@ -135,6 +136,10 @@ describe('ptool call deadlines', () => {
       name: 'plans:get',
       args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
     })).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:set-plan-status',
+      args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },
+    })).toBe(60_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:orient',
       args: {},

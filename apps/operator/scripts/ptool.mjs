@@ -867,6 +867,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['computer:provision_desktop', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
+  // EI-21360596114670049: the idempotent plan lifecycle writer evaluates the
+  // full completion/audit/spec/rubric gate before taking the plan lock. Under
+  // operator pressure that valid pre-write path can outlive the flat 30s
+  // client budget. Keep ptool outside the MCP transport cap so callers observe
+  // the typed verdict (or idempotent reconciliation) instead of an ambiguous
+  // may-have-executed timeout.
+  ['plans:set-plan-status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
   // EI-21269176538636068: these continuity/control-plane calls perform
   // multi-leg coordination reads or writes of their own. Under pool

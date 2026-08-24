@@ -616,6 +616,26 @@ describe('ptool timeoutForTool — capability:launch-agent resumes outlive the d
   });
 });
 
+describe('ptool timeoutForTool — plan lifecycle CAS outlives the flat client deadline (EI-21360596114670049)', () => {
+  it('keeps a direct plans:set-plan-status call alive beyond the MCP transport cap', () => {
+    const timeout = timeoutForTool('plans:set-plan-status', {
+      slug: 'some-plan',
+      status: 'shipped',
+      expectedCurrent: 'ready',
+    });
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the same lifecycle budget through tools:invoke', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:set-plan-status',
+      args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — scorecards:emit outlives its 180s tool budget (EI-21179169504957086)', () => {
   it('keeps the direct client request alive through criterion checks and ledger persistence', () => {
     expect(timeoutForTool('scorecards:emit', {})).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
