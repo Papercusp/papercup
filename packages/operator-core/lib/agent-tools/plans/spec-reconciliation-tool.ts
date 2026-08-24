@@ -25,6 +25,13 @@ const argsSchema = z.object({
     .optional()
     .describe('Return only rows carrying at least one action. Default true.'),
   limit: z.number().int().positive().max(200).optional().describe('Max ROWS returned (default 25).'),
+  includeLatency: z
+    .boolean()
+    .optional()
+    .describe(
+      'Include the work-item-axis claim-to-completion latency rollup, split by whether the ' +
+        "item's plan was enforcement-eligible. Default true.",
+    ),
 });
 
 export default defineTool({
