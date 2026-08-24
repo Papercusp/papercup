@@ -171,11 +171,17 @@ describe('plan-cleanup route policy', () => {
         }),
       }),
     }));
-    expect(h.setRunPhase).toHaveBeenCalledWith({
+    const pending = h.setRunPhase.mock.calls.find((call) => call[0]?.phase === 'pending')?.[0];
+    const running = h.setRunPhase.mock.calls.find((call) => call[0]?.phase === 'running')?.[0];
+    expect(pending).toMatchObject({ runId: run.runId, resolverOwner: expect.stringMatching(/^su-/) });
+    expect(running).toEqual({
       runId: run.runId,
       phase: 'running',
-      resolverOwner: 'su-resolver',
+      resolverOwner: pending.resolverOwner,
     });
+    expect(h.spawnHeadless).toHaveBeenCalledWith(
+      expect.objectContaining({ coordOwnerId: pending.resolverOwner }),
+    );
   });
 
   it('returns a visible failed run when launch fails instead of failing the request', async () => {
