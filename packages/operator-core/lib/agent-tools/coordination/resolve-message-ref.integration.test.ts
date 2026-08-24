@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import type { AgentIdentity } from './identity';
 import { sendMessage, resolveMessageRef, getMessageById } from './messages';
+import { openHandoff } from './handoffs';
 import { coordWorkspaceId } from './log';
 
 let fx: BaselineCoordFixture;
@@ -98,6 +99,38 @@ describe('resolveMessageRef (WI-6725)', () => {
     expect(res.msgId).toBe(fullId);
     expect(res.message.kind).toBe('escalation');
     expect(res.message.summary).toBe('projection-only open escalation');
+  });
+
+  it('EI-21220247792567011: resolves an exact handoff id returned by coord:feed', async () => {
+    const handoff = await openHandoff(ASKER, {
+      to: [READER.ownerId],
+      plan_slug: 'plan-x',
+      summary: 'take over this work',
+    });
+
+    const res = await resolveMessageRef(handoff.msg_id);
+    expect(res.status).toBe('found');
+    if (res.status !== 'found') return;
+    expect(res.resolvedFrom).toBe('exact');
+    expect(res.msgId).toBe(handoff.msg_id);
+    expect(res.message.kind).toBe('handoff');
+    expect(res.message.summary).toBe('take over this work');
+  });
+
+  it('resolves a unique truncated handoff id without confusing it with a miss', async () => {
+    const handoff = await openHandoff(ASKER, {
+      to: [READER.ownerId],
+      plan_slug: 'plan-x',
+      summary: 'take over this work',
+    });
+    const shortForm = handoff.msg_id.split('-')[0];
+
+    const res = await resolveMessageRef(shortForm);
+    expect(res.status).toBe('found');
+    if (res.status !== 'found') return;
+    expect(res.resolvedFrom).toBe('prefix');
+    expect(res.msgId).toBe(handoff.msg_id);
+    expect(res.message.kind).toBe('handoff');
   });
 
   it('a genuinely absent FULL id is not-found, and is NOT flagged as truncated', async () => {

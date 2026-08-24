@@ -1542,6 +1542,45 @@ async function findOpenEscalationsByPrefix(prefix: string, limit: number): Promi
 }
 
 /**
+ * Handoffs are an event surface, but coord:feed intentionally exposes them
+ * alongside messages. Keep coord:read's reference resolver aligned with that
+ * feed contract so an id copied from a handoff row is not reported missing.
+ * The PG path uses the same indexed prefix lookup as the message resolver;
+ * non-PG seams fall back to the event-log abstraction used by handoffs.ts.
+ */
+async function findHandoffsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
+  if (!prefix || limit <= 0) return [];
+
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'handoffs'
+           AND starts_with(msg_id, ${prefix})
+         ORDER BY msg_id
+         LIMIT ${limit}
+      `;
+      return rows.map((row) => (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope);
+    } catch {
+      // Fall through to the event-log seam for older/dev backends.
+    }
+  }
+
+  try {
+    const events = await coordLog.readEvents('handoffs');
+    return events
+      .filter((event) => typeof event.msg_id === 'string' && event.msg_id.startsWith(prefix))
+      .sort((a, b) => a.msg_id.localeCompare(b.msg_id))
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Resolve a msg_id REF (a full id, or a unique leading prefix) to its message.
  * See the WI-6725 note above for why this is three-valued rather than
  * `CoordEnvelope | null`.
@@ -1563,12 +1602,25 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
     return { status: 'found', msgId, message: exactEscalation, resolvedFrom: 'exact' };
   }
 
+  // coord:feed includes handoffs, whose immutable records live on their own
+  // event surface. Resolve them before treating a well-formed full id as a
+  // genuine miss, and retain the candidates for truncated-prefix resolution.
+  const handoffs = await findHandoffsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const exactHandoff = handoffs.find((event) => event.msg_id === msgId);
+  if (exactHandoff) {
+    return { status: 'found', msgId, message: exactHandoff, resolvedFrom: 'exact' };
+  }
+
   // A well-formed full id that missed is a genuine not-found — no prefix scan.
   if (FULL_MSG_ID_SHAPE.test(msgId)) return { status: 'not-found', msgId, looksTruncated: false };
 
   const messageCandidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
   const candidates = [
-    ...new Set([...messageCandidates, ...openEscalations.map((event) => event.msg_id)]),
+    ...new Set([
+      ...messageCandidates,
+      ...openEscalations.map((event) => event.msg_id),
+      ...handoffs.map((event) => event.msg_id),
+    ]),
   ];
   if (candidates.length === 0) return { status: 'not-found', msgId, looksTruncated: true };
   if (candidates.length > 1) {
@@ -1577,8 +1629,10 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   const resolved = await getMessageById(candidates[0]);
   if (resolved) return { status: 'found', msgId: candidates[0], message: resolved, resolvedFrom: 'prefix' };
   const escalation = openEscalations.find((event) => event.msg_id === candidates[0]);
-  if (!escalation) return { status: 'not-found', msgId, looksTruncated: true };
-  return { status: 'found', msgId: candidates[0], message: escalation, resolvedFrom: 'prefix' };
+  if (escalation) return { status: 'found', msgId: candidates[0], message: escalation, resolvedFrom: 'prefix' };
+  const handoff = handoffs.find((event) => event.msg_id === candidates[0]);
+  if (!handoff) return { status: 'not-found', msgId, looksTruncated: true };
+  return { status: 'found', msgId: candidates[0], message: handoff, resolvedFrom: 'prefix' };
 }
 
 /**
