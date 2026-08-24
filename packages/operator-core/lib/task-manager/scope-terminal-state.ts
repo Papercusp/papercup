@@ -24,6 +24,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { TaskTerminalProvenance } from './types';
 
 let execFileAsyncImpl: ((...args: any[]) => Promise<any>) | undefined;
 const execFileAsync = (...args: any[]) => (execFileAsyncImpl ??= promisify(execFile) as any)(...args);
@@ -116,4 +117,132 @@ export async function checkScopesReleased(
     // it only means D-018's split does not fire for this tick.
   }
   return released;
+}
+
+const TERMINAL_SHOW_PROPERTIES = [
+  'Id',
+  'LoadState',
+  'ActiveState',
+  'Result',
+  'ExecMainCode',
+  'ExecMainStatus',
+  'MemoryMax',
+  'MemoryPeak',
+  'ControlGroup',
+  'InvocationID',
+] as const;
+
+function terminalInteger(raw: string | undefined): number | null {
+  if (!raw || raw === 'infinity' || raw === '[not set]') return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function terminalText(raw: string | undefined): string | null {
+  return raw && raw.length > 0 && raw !== '[not set]' ? raw : null;
+}
+
+/**
+ * Parse `systemctl show` property blocks by their explicit `Id`, never by row
+ * position. systemd separates multiple units with blank lines and omits
+ * properties unsupported by a unit kind, so a positional N-properties-times-N
+ * parser silently shifts fields as soon as a `.scope` lacks ExecMainStatus.
+ */
+export function parseTaskUnitTerminalSnapshots(
+  stdout: string,
+  requestedUnits: readonly string[],
+  capturedAt = new Date().toISOString(),
+): ReadonlyMap<string, TaskTerminalProvenance> {
+  const requested = new Set(requestedUnits);
+  const found = new Map<string, TaskTerminalProvenance>();
+  for (const block of stdout.trim().split(/\n\s*\n/)) {
+    if (!block.trim()) continue;
+    const properties = new Map<string, string>();
+    for (const line of block.split('\n')) {
+      const equal = line.indexOf('=');
+      if (equal <= 0) continue;
+      properties.set(line.slice(0, equal), line.slice(equal + 1));
+    }
+    const scopeUnit = properties.get('Id');
+    if (!scopeUnit || !requested.has(scopeUnit)) continue;
+    const loadState = terminalText(properties.get('LoadState'));
+    const peakMemoryBytes = terminalInteger(properties.get('MemoryPeak'));
+    found.set(scopeUnit, {
+      capturedAt,
+      scopeUnit,
+      cgroupPath: terminalText(properties.get('ControlGroup')),
+      invocationId: terminalText(properties.get('InvocationID')),
+      loadState,
+      activeState: terminalText(properties.get('ActiveState')),
+      // `systemctl show` fabricates Result=success for an unknown/collected unit.
+      // A not-found unit proves release, but it carries NO terminal verdict.
+      serviceResult: loadState === 'not-found' ? null : terminalText(properties.get('Result')),
+      execMainCode: terminalInteger(properties.get('ExecMainCode')),
+      execMainStatus: terminalInteger(properties.get('ExecMainStatus')),
+      memoryMaxBytes: terminalInteger(properties.get('MemoryMax')),
+      peakMemoryBytes,
+      peakMemorySource: peakMemoryBytes == null ? 'unknown' : 'systemd',
+    });
+  }
+  return found;
+}
+
+/**
+ * Snapshot the terminal properties a failed transient unit loses at
+ * `reset-failed`. Fails soft to an empty map: absence of evidence must never be
+ * converted into an OOM/timeout verdict.
+ */
+export async function inspectTaskUnitTerminals(
+  units: readonly string[],
+  execFn: ExecFileFn = execFileAsync,
+  now: () => Date = () => new Date(),
+): Promise<ReadonlyMap<string, TaskTerminalProvenance>> {
+  if (units.length === 0 || process.platform !== 'linux') return new Map();
+  try {
+    const { stdout } = await execFn(
+      'systemctl',
+      [
+        '--user',
+        'show',
+        '--no-pager',
+        `--property=${TERMINAL_SHOW_PROPERTIES.join(',')}`,
+        ...units,
+      ],
+      { timeout: 10_000, maxBuffer: 1024 * 1024 },
+    );
+    return parseTaskUnitTerminalSnapshots(stdout, units, now().toISOString());
+  } catch {
+    return new Map();
+  }
+}
+
+const MANAGED_TASK_UNIT = /^pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]{1,60})?\.(?:scope|service)$/;
+
+/**
+ * Release one failed task unit only AFTER its terminal snapshot is durable.
+ * Successful/inactive units are garbage-collected by systemd without help.
+ */
+export async function resetFailedTaskUnit(
+  terminal: TaskTerminalProvenance,
+  execFn: ExecFileFn = execFileAsync,
+): Promise<boolean> {
+  if (
+    process.platform !== 'linux' ||
+    terminal.activeState !== 'failed' ||
+    terminal.loadState !== 'loaded' ||
+    !MANAGED_TASK_UNIT.test(terminal.scopeUnit)
+  ) {
+    return false;
+  }
+  try {
+    await execFn('systemctl', ['--user', 'reset-failed', terminal.scopeUnit], {
+      timeout: 10_000,
+      maxBuffer: 64 * 1024,
+    });
+    return true;
+  } catch {
+    // The reconciler will re-read and retry a still-loaded failed unit. Cleanup
+    // failure must never overwrite the task verdict we already persisted.
+    return false;
+  }
 }
