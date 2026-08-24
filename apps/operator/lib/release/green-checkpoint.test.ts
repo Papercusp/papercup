@@ -918,6 +918,85 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(result.candidate).not.toBe(youngStagingTip);
   });
 
+  it("keeps the transported quiet-cut candidate when staging moves during selective outcome proof", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "isolated repair");
+
+    await git(repo, ["reset", "--hard", ready]);
+    const transportedQuietCut = await commit(
+      "b",
+      "fixed independently",
+      "canonical quiet-cut target",
+    );
+    const proofTipBefore = await commit(
+      "c",
+      "proof-before",
+      "staging tip before selective proof",
+    );
+    const proofTipAfter = await commit(
+      "d",
+      "proof-after",
+      "staging tip after selective proof",
+    );
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lint:tsc"],
+    };
+    const { deps, calls } = stubDeps(true);
+    const resolvedTips = [proofTipBefore, proofTipAfter];
+    const gateRefs: string[] = [];
+    let cleanupCount = 0;
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => false;
+    deps.resolveTip = async () =>
+      resolvedTips.shift() ?? proofTipAfter;
+    deps.runGateAtRef = async (ref, gateIds) => {
+      gateRefs.push(ref);
+      expect(gateIds).toEqual(["lint:tsc"]);
+      return { pass: true, summary: "selective proof passed" };
+    };
+    deps.cleanupFrozenRepairWorktree = async () => {
+      cleanupCount += 1;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate: transportedQuietCut,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: transportedQuietCut,
+      from: ready,
+    });
+    expect(gateRefs).toEqual([proofTipBefore]);
+    expect(queue).toBeNull();
+    expect(cleanupCount).toBe(1);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(await revParse(repo, "ready")).toBe(transportedQuietCut);
+    expect(result.candidate).not.toBe(proofTipBefore);
+    expect(result.candidate).not.toBe(proofTipAfter);
+  });
+
   it("keeps EI-210831 alignment retry in charge when any queued failure still reproduces", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
