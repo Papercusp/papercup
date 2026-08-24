@@ -183,6 +183,9 @@ function statusBrief(s: DeployStatus) {
     // EI-20234052054064013: a live checkpoint (including an in-process auto-refire) is the
     // authoritative answer to "should I fire another checkpoint?" — carry it in every reply.
     checkpointRunInFlight: s.checkpointRunInFlight,
+    // P-009: the compact, current execution truth. This is intentionally separate from
+    // gate.green/red because running, paused, blocked, and idle are not code verdicts.
+    checkpoint: s.checkpoint,
     // EI-20512352412751871: every refusal/dry-run reply must carry the exact
     // release-trigger control that made an ordinary deploy safe or blocked.
     releaseTrigger: s.releaseTrigger,

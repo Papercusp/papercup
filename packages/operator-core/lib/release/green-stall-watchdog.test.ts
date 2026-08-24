@@ -69,6 +69,7 @@ vi.mock('../harness/routines/release-actions', () => ({
 import {
   evaluateGreenStall,
   evaluatePausedGreenCheckpoint,
+  decidePausedGreenCheckpointRecovery,
   greenCheckpointPausedEscalationBody,
   checkGreenStall,
   parseGreenCheckpointStallEscalation,
@@ -679,6 +680,32 @@ describe('evaluatePausedGreenCheckpoint (EI-21190903677660085)', () => {
     ).toEqual({ overdue: false, reason: null });
   });
 
+  it('auto-recovery is limited to an overdue structured serializer hold whose owner is non-live', () => {
+    const structured = {
+      ...overdue,
+      pauseReason: 'D-012/D-013 live quiescence hold under WI-40086: deliberate quiescence hold',
+      serializerItemId: 'WI-40086',
+      serializerClaimHold: true,
+      serializerOwner: 'su-dead-owner',
+      serializerHoldReason: 'D-016 sole serializer hold: observe the acceptance gate',
+      serializerOwnerLive: false,
+    } as const;
+    expect(decidePausedGreenCheckpointRecovery(structured, NOW)).toEqual({
+      action: 'rearm',
+      reason: 'serializer-owner-non-live',
+      itemId: 'WI-40086',
+      ownerId: 'su-dead-owner',
+      holdReason: 'D-016 sole serializer hold: observe the acceptance gate',
+    });
+    expect(
+      decidePausedGreenCheckpointRecovery({ ...structured, serializerOwnerLive: true }, NOW),
+    ).toEqual({ action: 'none', reason: 'not-overdue' });
+    expect(decidePausedGreenCheckpointRecovery(overdue, NOW)).toEqual({
+      action: 'none',
+      reason: 'not-structured-serializer-hold',
+    });
+  });
+
   it.each([
     [
       'pause marker names no item',
@@ -801,6 +828,7 @@ describe('checkGreenStall paused release green-checkpoint watchdog (EI-211909036
     pausedRows: Array<Record<string, unknown>>;
     activeRows?: Array<Record<string, unknown>>;
     existingPaused?: Array<{ escalation: unknown }>;
+    rearmSucceeded?: boolean;
   }) {
     const calls: unknown[][] = [];
     const activeRows = opts.activeRows ?? [];
@@ -820,7 +848,11 @@ describe('checkGreenStall paused release green-checkpoint watchdog (EI-211909036
         return Promise.resolve(Object.assign([], { count: 1 }));
       }
       if (text.includes('UPDATE harness_shared.routines')) {
-        return Promise.resolve(Object.assign([], { count: 0 }));
+        return Promise.resolve(
+          opts.rearmSucceeded
+            ? [{ install_slug: 'papercusp' }]
+            : Object.assign([], { count: 0 }),
+        );
       }
       return Promise.resolve(Object.assign([], { count: 0 }));
     }) as unknown as import('postgres').Sql;
@@ -911,6 +943,57 @@ describe('checkGreenStall paused release green-checkpoint watchdog (EI-211909036
     expect(broadcastSevereEventMock).not.toHaveBeenCalled();
     expect(calls.some((call) => String(call[0]).includes('harness_shared.work_items'))).toBe(true);
     expect(calls.some((call) => String(call[0]).includes('harness_shared.coord_presence'))).toBe(true);
+  });
+
+  it('atomically re-arms a structured stranded serializer pause without inventing a verdict', async () => {
+    const stranded = {
+      ...liveSerializerOverdueRow,
+      serializer_owner: 'su-dead-owner',
+      serializer_owner_live: false,
+    };
+    const { sql, calls } = makeFakeSql({ pausedRows: [stranded], rearmSucceeded: true });
+    const result = await checkGreenStall(sql);
+
+    expect(result).toEqual({ alarmed: ['papercusp'], recovered: [], suppressed: [] });
+    const rearm = calls.find((call) => String(call[0]).includes('UPDATE harness_shared.routines'));
+    expect(rearm).toBeDefined();
+    expect(String(rearm![0])).toContain('active = true');
+    expect(String(rearm![0])).toContain('next_fire_at = now()');
+    expect(String(rearm![0])).toContain('NOT EXISTS');
+    const lastPause = calls
+      .flat()
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => {
+        try {
+          return JSON.parse(value) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((value) => value?.autoRecoveredBy === 'green-stall-watchdog');
+    expect(lastPause).toMatchObject({
+      autoRecoveredAtMs: NOW,
+      autoRecoveredBy: 'green-stall-watchdog',
+      autoRecoveryReason: 'serializer-owner-non-live',
+    });
+
+    const insert = calls.find(
+      (call) =>
+        String(call[0]).includes('INSERT INTO harness_shared.harness_escalations') &&
+        call.includes('green-checkpoint-paused-watchdog'),
+    );
+    const body = JSON.parse(String(insert![3]));
+    expect(body.verdict).toBeNull();
+    expect(body.autoRecovery).toMatchObject({
+      state: 'rearmed',
+      itemId: 'WI-40086',
+      ownerId: 'su-dead-owner',
+      reason: 'serializer-owner-non-live',
+    });
+    expect(body.detail).toContain('fresh verdict is pending');
+    expect(notifyAttentionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('RECOVERING') }),
+    );
   });
 });
 

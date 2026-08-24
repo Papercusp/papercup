@@ -57,6 +57,7 @@ import { PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
 import {
   CHECKPOINT_SERIALIZER_HOLD_REASON_PREFIX,
   classifyCheckpointSerializerAuthority,
+  checkpointQuiescenceItemId,
 } from './checkpoint-serializer-authority';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
@@ -230,6 +231,16 @@ export interface PausedGreenCheckpointVerdict {
   reason: string | null;
 }
 
+export type PausedGreenCheckpointRecoveryDecision =
+  | { action: 'none'; reason: 'not-overdue' | 'not-structured-serializer-hold' | 'serializer-live' }
+  | {
+      action: 'rearm';
+      reason: 'serializer-owner-non-live';
+      itemId: string;
+      ownerId: string;
+      holdReason: string;
+    };
+
 /**
  * Pure: an explicitly paused release green-checkpoint is overdue only after
  * its next scheduled fire has passed. Unknown/missing pause evidence is not a
@@ -282,6 +293,46 @@ export function evaluatePausedGreenCheckpoint(
   };
 }
 
+/**
+ * P-009: only one paused shape is safe to auto-recover — the structured
+ * D-012/D-016 serializer hold whose durable item/owner/reason still match but
+ * whose owner is no longer live. Generic/manual pauses remain alarm-only: their
+ * external condition cannot be inferred from an old next_fire_at timestamp.
+ * Re-arming produces a fresh run; it never writes a green/red gate verdict.
+ */
+export function decidePausedGreenCheckpointRecovery(
+  s: PausedGreenCheckpointSnapshot,
+  nowMs: number,
+): PausedGreenCheckpointRecoveryDecision {
+  if (!evaluatePausedGreenCheckpoint(s, nowMs).overdue) {
+    return { action: 'none', reason: 'not-overdue' };
+  }
+  const itemId = checkpointQuiescenceItemId(s.pauseReason ?? null);
+  const authority = classifyCheckpointSerializerAuthority({
+    active: s.active,
+    groupSlug: s.groupSlug ?? null,
+    targetRole: s.targetRole ?? null,
+    pauseReason: s.pauseReason ?? null,
+    serializerItemId: s.serializerItemId ?? null,
+    serializerClaimHold: s.serializerClaimHold ?? null,
+    serializerOwner: s.serializerOwner ?? null,
+    serializerHoldReason: s.serializerHoldReason ?? null,
+  });
+  if (!itemId || authority.status !== 'held') {
+    return { action: 'none', reason: 'not-structured-serializer-hold' };
+  }
+  if (s.serializerOwnerLive === true) {
+    return { action: 'none', reason: 'serializer-live' };
+  }
+  return {
+    action: 'rearm',
+    reason: 'serializer-owner-non-live',
+    itemId,
+    ownerId: authority.ownerId,
+    holdReason: authority.holdReason,
+  };
+}
+
 /** Durable body for the paused-gate alarm; keep the raw pause evidence visible. */
 export function greenCheckpointPausedEscalationBody(opts: {
   installSlug: string;
@@ -291,6 +342,13 @@ export function greenCheckpointPausedEscalationBody(opts: {
   pausedAtMs: number | null;
   nextFireMs: number | null;
   nowMs: number;
+  autoRecovery?: {
+    state: 'rearmed';
+    itemId: string;
+    ownerId: string;
+    rearmedAtMs: number;
+    reason: string;
+  } | null;
 }): string {
   return JSON.stringify({
     kind: PAUSED_GREEN_CHECKPOINT_KIND,
@@ -303,10 +361,17 @@ export function greenCheckpointPausedEscalationBody(opts: {
     pausedAtMs: opts.pausedAtMs,
     nextFireAt: displayTimestamp(opts.nextFireMs),
     nextFireMs: opts.nextFireMs,
+    // A re-armed routine has not rendered a verdict. Keep that null explicit so
+    // recovery of the EXECUTOR can never be read as recovery of the CODE.
+    verdict: null,
+    autoRecovery: opts.autoRecovery ?? null,
     emitted_at: opts.nowMs,
     detail:
       `green-checkpoint paused-release watchdog: ${opts.verdict.reason ?? 'no overdue pause detected'}. ` +
-      `The release gate is inactive, so it cannot self-recover or advance deploys until the hold is reviewed.`,
+      (opts.autoRecovery
+        ? `The structured serializer owner is non-live, so the existing routine was atomically re-armed at ${new Date(opts.autoRecovery.rearmedAtMs).toISOString()}. ` +
+          `A fresh verdict is pending; no green/red result has been invented.`
+        : `The release gate is inactive, so it cannot self-recover or advance deploys until the hold is reviewed.`),
   });
 }
 
@@ -1048,21 +1113,17 @@ async function checkPausedGreenCheckpoint(
                  (wi.payload->>'_claimHold') = 'true' AS claim_hold,
                  wi.payload->>'held_open_by' AS held_open_by,
                  wi.payload->>'held_open_reason' AS held_open_reason,
-                 true AS owner_live
+                 EXISTS (
+                   SELECT 1
+                     FROM harness_shared.coord_presence cp
+                    WHERE cp.workspace_id = wi.workspace_id
+                      AND cp.owner_id = wi.payload->>'held_open_by'
+                      -- NO revoked_at predicate: harness_shared.coord_presence has no such
+                      -- column (EI-21291109975568717). Presence rows are deleted, not revoked.
+                      AND cp.heartbeat_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
+                      AND cp.last_active_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
+                 ) AS owner_live
             FROM harness_shared.work_items wi
-            JOIN harness_shared.coord_presence cp
-              ON cp.workspace_id = wi.workspace_id
-             AND cp.owner_id = wi.payload->>'held_open_by'
-             -- NO revoked_at predicate: harness_shared.coord_presence has no such
-             -- column (EI-21291109975568717). It was referenced here anyway, so this
-             -- whole statement threw every run and the caller swallowed it as
-             -- "non-fatal" -- meaning the stranded-pause guard never ran once, and a
-             -- gate paused under a dead serializer had to be found by hand. Liveness
-             -- is established by the two freshness predicates below; a presence row
-             -- is deleted, not revoked. Verify against the live schema before
-             -- re-adding any cp.* column here.
-             AND cp.heartbeat_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
-             AND cp.last_active_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
            WHERE wi.workspace_id = r.workspace_id
              AND wi.harness_slug = r.install_slug
              AND wi.feature_id = substring(
@@ -1095,6 +1156,21 @@ async function checkPausedGreenCheckpoint(
         },
         nowMs,
       );
+      const recovery = decidePausedGreenCheckpointRecovery(
+        {
+          active: row.active,
+          groupSlug: row.group_slug,
+          targetRole: row.target_role,
+          nextFireMs: Number.isFinite(nextFireMs) ? nextFireMs : null,
+          serializerItemId: row.serializer_item_id,
+          serializerClaimHold: row.serializer_claim_hold ?? undefined,
+          serializerOwner: row.serializer_owner,
+          serializerHoldReason: row.serializer_hold_reason,
+          serializerOwnerLive: row.serializer_owner_live ?? undefined,
+          ...pause,
+        },
+        nowMs,
+      );
 
       const existing = await sql<PausedGreenCheckpointEscalationRow[]>`
         SELECT escalation
@@ -1106,6 +1182,72 @@ async function checkPausedGreenCheckpoint(
       if (verdict.overdue) {
         if (alreadyAlarmed) continue; // one-shot until the pause clears or is no longer overdue
 
+        let autoRecovery: {
+          state: 'rearmed';
+          itemId: string;
+          ownerId: string;
+          rearmedAtMs: number;
+          reason: string;
+        } | null = null;
+        if (recovery.action === 'rearm') {
+          const pauseRecord = asRecord(row.pause) ?? {};
+          const lastPause = {
+            ...pauseRecord,
+            autoRecoveredAtMs: nowMs,
+            autoRecoveredBy: 'green-stall-watchdog',
+            autoRecoveryReason: recovery.reason,
+          };
+          const rearmed = await sql<{ install_slug: string }[]>`
+            UPDATE harness_shared.routines r
+               SET active = true,
+                   next_fire_at = now(),
+                   metadata = jsonb_set(
+                     r.metadata - 'pause',
+                     '{lastPause}',
+                     ${JSON.stringify(lastPause)}::text::jsonb,
+                     true
+                   ),
+                   updated_at = now()
+             WHERE r.workspace_id = ${row.workspace_id}
+               AND r.install_slug = ${row.install_slug}
+               AND r.name = 'green-checkpoint'
+               AND r.group_slug = 'release'
+               AND r.target_role = 'system:green-checkpoint'
+               AND r.active = false
+               AND r.metadata->'pause' = ${JSON.stringify(row.pause)}::text::jsonb
+               AND EXISTS (
+                 SELECT 1
+                   FROM harness_shared.work_items wi
+                  WHERE wi.workspace_id = r.workspace_id
+                    AND wi.harness_slug = r.install_slug
+                    AND wi.feature_id = ${recovery.itemId}
+                    AND (wi.payload->>'_claimHold') = 'true'
+                    AND wi.payload->>'held_open_by' = ${recovery.ownerId}
+                    AND wi.payload->>'held_open_reason' = ${recovery.holdReason}
+                    AND NOT EXISTS (
+                      SELECT 1
+                        FROM harness_shared.coord_presence cp
+                       WHERE cp.workspace_id = wi.workspace_id
+                         AND cp.owner_id = ${recovery.ownerId}
+                         AND cp.heartbeat_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
+                         AND cp.last_active_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
+                    )
+               )
+            RETURNING r.install_slug`;
+          if (!rearmed[0]) {
+            // The pause/claim/liveness changed between the read and the write. Do not
+            // alarm from the stale snapshot; the next pass will classify the new state.
+            continue;
+          }
+          autoRecovery = {
+            state: 'rearmed',
+            itemId: recovery.itemId,
+            ownerId: recovery.ownerId,
+            rearmedAtMs: nowMs,
+            reason: recovery.reason,
+          };
+        }
+
         const body = greenCheckpointPausedEscalationBody({
           installSlug: row.install_slug,
           verdict,
@@ -1114,13 +1256,18 @@ async function checkPausedGreenCheckpoint(
           pausedAtMs: pause.pausedAtMs,
           nextFireMs,
           nowMs,
+          autoRecovery,
         });
         try {
           const { notifyAttention } = await import('../attention-notify');
           await notifyAttention({
             kind: 'intervention',
-            title: 'Release pipeline PAUSED — green-checkpoint hold is overdue',
-            body: verdict.reason ?? '',
+            title: autoRecovery
+              ? 'Release pipeline RECOVERING — stranded green-checkpoint pause was re-armed'
+              : 'Release pipeline PAUSED — green-checkpoint hold is overdue',
+            body: autoRecovery
+              ? `${verdict.reason ?? ''} The structured owner is non-live; the existing routine was re-armed. A fresh verdict is pending.`
+              : (verdict.reason ?? ''),
             importance: 'urgent',
             workspaceId: row.workspace_id,
             data: {
@@ -1134,8 +1281,12 @@ async function checkPausedGreenCheckpoint(
           console.warn(`[green-stall-watchdog] paused green-checkpoint notify failed: ${e instanceof Error ? e.message : e}`);
         }
         await broadcastSevereEvent({
-          summary: `green-checkpoint PAUSED on ${row.install_slug} — scheduled fire is overdue; release deploys may be frozen.`,
-          body: verdict.reason ?? '',
+          summary: autoRecovery
+            ? `green-checkpoint RECOVERING on ${row.install_slug} — stranded serializer pause was re-armed; fresh verdict pending.`
+            : `green-checkpoint PAUSED on ${row.install_slug} — scheduled fire is overdue; release deploys may be frozen.`,
+          body: autoRecovery
+            ? `${verdict.reason ?? ''} The routine is re-armed, but no gate verdict exists yet.`
+            : (verdict.reason ?? ''),
           category: 'severe-event',
           conditionKey: `${PAUSED_GREEN_CHECKPOINT_CONDITION_PREFIX}${row.install_slug}`,
           oneShot: true,

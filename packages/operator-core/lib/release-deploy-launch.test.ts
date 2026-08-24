@@ -604,6 +604,117 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
     const s = computeDeployStatus(mkSnap({ failingTests: ['lib/a.test.ts', 'lib/b.test.ts'] }, {}, []));
     expect(s.gate.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
   });
+
+  it('P-009 suppresses a stale historical failing-test list at the shared status writer', () => {
+    const s = computeDeployStatus(
+      mkSnap({
+        consecutiveReds: 3,
+        verdictStale: true,
+        verdictStaleReason: 'the judged candidate was superseded',
+        failingTests: ['historical-red.test.ts'],
+      }, {}),
+    );
+    expect(s.state).toBe('gate-verdict-stale');
+    expect(s.gate.failingTests).toEqual([]);
+  });
+
+  it('P-009 distinguishes an externally-held run, preserves phase, and reports verdict pending', () => {
+    const snap = mkSnap(
+      { consecutiveReds: 2, failingTests: ['historical-red.test.ts'] },
+      { deployedBehindGreenPin: 0 },
+    );
+    snap.activeRun = {
+      active: true,
+      heldExternally: true,
+      probeFailed: true,
+      probeDetail: 'systemctl failed; the independent run lock is held',
+      candidate: 'abcdef12',
+      startedAtMs: 1,
+      progressAtMs: 2,
+      currentPhase: 'setup',
+      elapsedSec: 3,
+    };
+
+    const s = computeDeployStatus(snap);
+    expect(s.state).toBe('gate-red');
+    expect(s.checkpoint).toEqual({
+      state: 'running',
+      authority: 'shared-run-lock',
+      phase: 'setup',
+      blocker: null,
+      verdictPending: true,
+      probe: { status: 'failed', detail: 'systemctl failed; the independent run lock is held' },
+    });
+    expect(s.gate.failingTests).toEqual([]);
+    expect(s.recommendation).toMatch(/ACTIVE.*abcdef12.*phase: setup/s);
+    expect(s.recommendation).toMatch(/Do NOT run `release:checkpoint-run` again/);
+  });
+
+  it('P-009 distinguishes a measured idle probe from a deliberate routine pause', () => {
+    const idle = mkSnap({}, {});
+    idle.routines.greenCheckpoint = {
+      name: 'green-checkpoint',
+      active: true,
+      cron: '0 15 * * * *',
+      lastFiredAtMs: 1,
+      nextFireAtMs: 2,
+      pause: null,
+    };
+    idle.activeRun = {
+      active: false,
+      candidate: null,
+      startedAtMs: null,
+      progressAtMs: null,
+      elapsedSec: null,
+    };
+    expect(computeDeployStatus(idle).checkpoint).toMatchObject({
+      state: 'idle',
+      authority: 'live-probe',
+      blocker: null,
+      verdictPending: false,
+    });
+
+    const paused = mkSnap({}, {});
+    paused.routines.greenCheckpoint = {
+      ...idle.routines.greenCheckpoint,
+      active: false,
+      pause: {
+        reason: 'D-012/D-013 live quiescence hold under WI-40086: waiting for immutable deps',
+        pausedBy: 'su-owner',
+        pausedAtMs: 1,
+      },
+    };
+    paused.activeRun = idle.activeRun;
+    const status = computeDeployStatus(paused);
+    expect(status.checkpoint).toMatchObject({
+      state: 'paused',
+      authority: 'routine-control',
+      blocker: 'D-012/D-013 live quiescence hold under WI-40086: waiting for immutable deps',
+      verdictPending: false,
+    });
+  });
+
+  it('P-009 treats an uncorroborated failed liveness probe as unknown, never idle', () => {
+    const snap = mkSnap({}, {});
+    snap.activeRun = {
+      active: true,
+      probeFailed: true,
+      probeDetail: 'systemctl show timed out and no run lock was observed',
+      candidate: null,
+      startedAtMs: null,
+      progressAtMs: null,
+      elapsedSec: null,
+    };
+    const s = computeDeployStatus(snap);
+    expect(s.state).toBe('gate-wedged');
+    expect(s.checkpoint).toMatchObject({
+      state: 'unknown',
+      authority: 'unmeasured',
+      blocker: 'systemctl show timed out and no run lock was observed',
+      verdictPending: false,
+    });
+    expect(s.recommendation).toMatch(/unknown execution state, not an idle reading/i);
+  });
 });
 
 /**

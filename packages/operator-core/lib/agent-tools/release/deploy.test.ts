@@ -95,6 +95,14 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
     deployInFlight: null,
     deployTerminal: null,
     checkpointRunInFlight: null,
+    checkpoint: {
+      state: 'idle',
+      authority: 'live-probe',
+      phase: null,
+      blocker: null,
+      verdictPending: false,
+      probe: { status: 'ok', detail: null },
+    },
     releaseTrigger: {
       active: true,
       pause: null,
