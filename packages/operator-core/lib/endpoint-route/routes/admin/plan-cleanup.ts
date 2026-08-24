@@ -24,8 +24,10 @@ import { markCleanupFindingAccepted } from '../../../plan-cleanup/run-store';
 import { buildCleanupResolverBrief } from '../../../plan-cleanup/resolver-brief';
 import {
   buildResolverLaunchCommand,
+  preflightResolverLaunch,
   resolverSpawnOutcome,
 } from './attention-bulk-resolve';
+import type { EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
 
 export const MAX_RUN_PLANS = 200;
 
