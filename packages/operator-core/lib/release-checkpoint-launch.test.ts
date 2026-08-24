@@ -35,6 +35,7 @@ import {
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
+  CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS,
   MANUAL_CHECKPOINT_WATCHDOG_ENV,
   MANUAL_CHECKPOINT_WATCHDOG_MS,
   GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER,
@@ -803,6 +804,34 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
       const execFn = vi.fn(() => ({ status: null, stdout: '', stderr: '' }));
       const r = checkActiveCheckpointRun('/tree', execFn, () => null);
       expect(r).toMatchObject({ active: true, probe_failed: true });
+    });
+
+    it('bounds a slow systemctl probe and still fails closed through the run-lock fallback', () => {
+      const startedAt = new Date(Date.now() - 9 * 60_000).toISOString();
+      const execFn = vi.fn((_cmd: string, _args: string[], options?: { timeout?: number }) => {
+        expect(options).toEqual({ timeout: CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS });
+        return { status: null, stdout: '', stderr: '' };
+      });
+      const r = checkActiveCheckpointRun(
+        '/tree',
+        execFn,
+        () => null,
+        () => true,
+        () => ({ pid: 4242, startedAt }),
+        undefined,
+        undefined,
+        () => null, // readProcessStartMs: synthetic PID has no procfs identity
+      );
+
+      expect(r).toMatchObject({
+        active: true,
+        probe_failed: true,
+        held_externally: true,
+        started_at: startedAt,
+      });
+      expect(execFn).toHaveBeenCalledWith('systemctl', expect.any(Array), {
+        timeout: CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS,
+      });
     });
 
     it('fails CLOSED when the output parses but carries no ActiveState key', () => {

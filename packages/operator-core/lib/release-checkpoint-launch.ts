@@ -111,6 +111,14 @@ export function checkpointUnitForRoot(root: string): string {
  */
 export const CHECKPOINT_MAX_RUNTIME_SEC = 3 * 60 * 60;
 
+/**
+ * Bound the synchronous user-manager probe independently of the caller's larger status-read
+ * budget. A starved systemd manager must not monopolize `release:deploy {op:status}`; when this
+ * expires, `spawnSync` returns a null status and the existing probe-failure branch fails closed
+ * while consulting the file-based run-lock as an independent liveness oracle.
+ */
+export const CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS = 5_000;
+
 /** Internal env transport from the detached MANUAL launcher to green-checkpoint.ts.
  *
  * The scheduled path owns a parent-side suite timeout followed by a SIGKILL grace, while
@@ -351,12 +359,23 @@ export interface ActiveCheckpointCheck {
   probe_detail?: string;
 }
 
+/** Minimal options needed by the injected `child_process.spawnSync` seam. */
+export type ExecSyncOptions = { timeout?: number };
+
 /** Minimal shape of a `child_process.spawnSync` result — injectable so
  *  `checkActiveCheckpointRun` is unit-testable without a real systemctl call. */
-export type ExecSyncLike = (cmd: string, args: string[]) => { status: number | null; stdout: string; stderr: string };
+export type ExecSyncLike = (
+  cmd: string,
+  args: string[],
+  options?: ExecSyncOptions,
+) => { status: number | null; stdout: string; stderr: string };
 
-function defaultExecSync(cmd: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(cmd, args, { encoding: 'utf8' });
+function defaultExecSync(
+  cmd: string,
+  args: string[],
+  options?: ExecSyncOptions,
+): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(cmd, args, { encoding: 'utf8', ...options });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
@@ -1063,7 +1082,7 @@ export function checkActiveCheckpointRun(
     '--property=LoadState',
     '--property=InvocationID',
   ];
-  const r = execFn('systemctl', systemctlArgv);
+  const r = execFn('systemctl', systemctlArgv, { timeout: CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS });
   const props = parseSystemctlShow(r.stdout);
   const loadState = props.LoadState ?? null;
   const systemd: CheckpointSystemdProbe = {
