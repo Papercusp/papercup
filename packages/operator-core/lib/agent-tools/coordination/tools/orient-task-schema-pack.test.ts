@@ -156,4 +156,35 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     expect(args).toContain('record-only');
     expect(args).toContain('"none"');
   });
+
+  it('keeps loop:checkpoint recovery write keys in the bounded quick schema', () => {
+    const recoveryCatalog = catalog.map((tool) =>
+      tool.expose.mcp.name === 'loop:checkpoint'
+        ? {
+            ...tool,
+            inputSchema: {
+              type: 'object',
+              properties: {
+                note: { type: 'string', description: 'raw carry note' },
+                did: { type: 'string', description: 'what this wake accomplished' },
+                left: { type: 'string', description: 'what remains' },
+                insight: { type: 'string', description: 'non-obvious successor insight' },
+                next: { type: 'string', description: 'single next action' },
+                goal: { type: 'string', description: 'compatibility alias for next' },
+                walls: { type: 'array', description: 'open owner-gated walls '.repeat(40) },
+              },
+            },
+          }
+        : tool,
+    );
+
+    const pack = buildTaskToolSchemaPack({ intent: 'checkpoint loop recovery', modes: ['auto'] }, recoveryCatalog);
+    const detail = pack.tools.find((tool) => tool.name === 'loop:checkpoint')?.args ?? '';
+
+    expect(detail).not.toBe('');
+    expect(detail).toContain('did?');
+    expect(detail).toContain('left?');
+    expect(detail).toContain('insight?');
+    expect(detail).toContain('next?');
+  });
 });

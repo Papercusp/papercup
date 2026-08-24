@@ -19,7 +19,11 @@ export const TASK_SCHEMA_PACK_SCHEMA = 'orient-task-tool-schema-pack-v2' as cons
 export const TASK_SCHEMA_PACK_BUDGET_CHARS = 3_500;
 export const TASK_SCHEMA_PACK_MAX_TOOLS = 36;
 const ARG_SCHEMA_CAP = 180;
-const SCHEMA_DETAIL_MAX_TOOLS = 6;
+// Keep the lifecycle producer's write shape in the bounded recovery preview. The
+// base spine plus AUTO's loop:arm used all six old slots, leaving loop:checkpoint
+// advertised in toolNames but with no inline args for a cold successor to use.
+const SCHEMA_DETAIL_MAX_TOOLS = 7;
+const RECOVERY_DETAIL_TOOLS = ['loop:checkpoint'] as const;
 
 interface ProjectedToolLike {
   expose?: { mcp?: { name?: string } | null };
@@ -282,7 +286,14 @@ export function buildTaskToolSchemaPack(
     // low-priority tool must not evict a real schema the caller can use now.
     .slice(0, TASK_SCHEMA_PACK_MAX_TOOLS);
   const toolNames = allTools.map((tool) => tool.name);
-  const tools = allTools.slice(0, SCHEMA_DETAIL_MAX_TOOLS);
+  // Reserve the carry-note producer even when higher-priority mode tools fill the
+  // ordinary preview slots. `toolNames` activates the full surface, but a fresh
+  // recovery caller needs the write keys before it can rely on tools/list_changed.
+  const reservedDetails = allTools.filter((tool) => RECOVERY_DETAIL_TOOLS.includes(tool.name as (typeof RECOVERY_DETAIL_TOOLS)[number]));
+  const ordinaryDetails = allTools
+    .filter((tool) => !RECOVERY_DETAIL_TOOLS.includes(tool.name as (typeof RECOVERY_DETAIL_TOOLS)[number]))
+    .slice(0, Math.max(0, SCHEMA_DETAIL_MAX_TOOLS - reservedDetails.length));
+  const tools = [...ordinaryDetails, ...reservedDetails];
 
   // The char budget is an invariant, not guidance. `toolNames` is the exact
   // activation set; `tools` is only a small inline schema preview. The client
