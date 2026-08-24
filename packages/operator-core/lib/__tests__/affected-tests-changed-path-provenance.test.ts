@@ -101,12 +101,9 @@ describe('changed-path provenance: the marker (EI-20812741760514969)', () => {
     // Both run every workspace; only the second is a bug, and collapsing them is how the
     // EI-1989 degrade-to-everything hid in plain sight as a normal slow run.
     expect(markerField(formatDerivationMarker(summarizeDerivation({ source: 'all' }), {}), 'source')).toBe('all');
-    expect(
-      markerField(
-        formatDerivationMarker(summarizeDerivation({ source: 'git-fallback-all' }), {}),
-        'source',
-      ),
-    ).toBe('git-fallback-all');
+    expect(markerField(formatDerivationMarker(summarizeDerivation({ source: 'git-fallback-all' }), {}), 'source')).toBe(
+      'git-fallback-all',
+    );
   });
 });
 
@@ -121,16 +118,13 @@ describe('changed-path provenance: the banner', () => {
   });
 
   it('stays silent when the CALLER scoped the run', () => {
-    const scoped = derivationBannerLines(
-      summarizeDerivation({ source: 'explicit', total: LIVE_SHAPE.total }),
-      { workspaces: 71 },
-    );
+    const scoped = derivationBannerLines(summarizeDerivation({ source: 'explicit', total: LIVE_SHAPE.total }), {
+      workspaces: 71,
+    });
     expect(scoped).toEqual([]);
     // Control: the identical total DOES warn when it was derived rather than named, so the
     // silence above is the scoped rule — not a threshold that swallows everything.
-    expect(
-      derivationBannerLines(summarizeDerivation(LIVE_SHAPE), { workspaces: 71 }).length,
-    ).toBeGreaterThan(0);
+    expect(derivationBannerLines(summarizeDerivation(LIVE_SHAPE), { workspaces: 71 }).length).toBeGreaterThan(0);
   });
 
   it('stays silent for a handful of paths — that is the normal single-developer case', () => {
@@ -145,9 +139,7 @@ describe('changed-path provenance: the banner', () => {
     // that reader to go commit or revert dirty work sends them at the wrong lever. The filed
     // report assumed dirty work; the measurement was 2274 committed against 2 uncommitted.
     expect(dominantLeg(summarizeDerivation(LIVE_SHAPE))).toBe('committed');
-    expect(derivationBannerLines(summarizeDerivation(LIVE_SHAPE), {}).join('\n')).toMatch(
-      /base drift/i,
-    );
+    expect(derivationBannerLines(summarizeDerivation(LIVE_SHAPE), {}).join('\n')).toMatch(/base drift/i);
 
     const dirtyTree = summarizeDerivation({
       source: 'git-status',
@@ -162,6 +154,26 @@ describe('changed-path provenance: the banner', () => {
 });
 
 describe('changed-path provenance: through the real CLI', () => {
+  it('P-007: related enumeration emits positive workspace and forward-dependency closure evidence', () => {
+    const { stdout } = probe(['--changed-paths', 'apps/operator/lib/release/green-checkpoint.ts', '--related']);
+    const lines = stdout.split('\n').filter(Boolean);
+    const summary = lines.find((line) => line.startsWith('RELATED_MATERIALIZATION_SELECTION status=selected '));
+    const affected = lines
+      .filter((line) => line.startsWith('RELATED_AFFECTED_WORKSPACE_DIR\t'))
+      .map((line) => line.split('\t')[1]);
+    const closure = lines
+      .filter((line) => line.startsWith('RELATED_DEPENDENCY_WORKSPACE_DIR\t'))
+      .map((line) => line.split('\t')[1]);
+
+    expect(summary).toMatch(/relatedSelections=\d+ affected=\d+ closure=\d+/);
+    expect(affected).toContain('apps/operator');
+    expect(affected).toContain('packages/operator-core');
+    expect(closure.length).toBeGreaterThan(affected.length);
+    expect(new Set(closure).size).toBe(closure.length);
+    expect(affected.every((dir) => closure.includes(dir))).toBe(true);
+    expect(stdout).not.toContain('AFFECTED_TESTS_RESULT');
+  });
+
   it('emits exactly one marker for an explicit path set, and no banner', () => {
     const { stdout, stderr } = probe(['--changed-paths', 'scripts/lint-tsc.mjs']);
     const lines = markerLines(stdout);
