@@ -328,6 +328,7 @@ export interface DiscoveryResultHit {
   tool: string;
   description: string | null;
   argSchema: string | null;
+  returns: string | null;
   via: string;
 }
 
@@ -586,7 +587,7 @@ export default defineTool({
       source: PROJECTED_TOOL_REGISTRY_SOURCE,
       revision: projectedToolRegistryRevision(),
     };
-    const { corpus: fullCorpus, embedText, schemaByTool } = buildCorpus();
+    const { corpus: fullCorpus, embedText, returnsByTool, schemaByTool } = buildCorpus();
     const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const corpus = await filterCorpusForConfirmedHiveScope(
       fullCorpus,
@@ -636,6 +637,7 @@ export default defineTool({
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
       argSchema:
         compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
+      returns: returnsByTool.get(h.tool) ?? null,
       via: h.via,
     }));
     const howToCall = activated

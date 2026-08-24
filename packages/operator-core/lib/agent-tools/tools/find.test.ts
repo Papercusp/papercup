@@ -59,7 +59,13 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
     count: number;
     semantic: 'on' | 'warming' | 'lexical-only';
     registry: { source: string; revision: string };
-    hits: Array<{ tool: string; description: string | null; argSchema: string | null; via: string }>;
+    hits: Array<{
+      tool: string;
+      description: string | null;
+      argSchema: string | null;
+      returns: string | null;
+      via: string;
+    }>;
     howToCall: string;
   };
 }
@@ -267,11 +273,12 @@ describe('handler — graceful degrade + result shape', () => {
       revision: expect.stringMatching(/^projected-tool-registry-v1:/),
     });
     expect(out.count).toBeGreaterThan(0);
-    // every hit carries name + description + argSchema + via.
+    // every hit carries name + description + argSchema + returns + via.
     for (const h of out.hits) {
       expect(typeof h.tool).toBe('string');
       expect(h).toHaveProperty('description');
       expect(h).toHaveProperty('argSchema'); // null or a string, never missing
+      expect(h).toHaveProperty('returns'); // null or a string, never missing
       expect(h.via).toBe('lexical');
     }
     // howToCall must always name the never-fails dispatch path (tools:invoke) —
@@ -283,6 +290,18 @@ describe('handler — graceful degrade + result shape', () => {
     const out = await callHandler({ query: 'tools:find' });
     const self = out.hits.find((h) => h.tool === 'tools:find');
     expect(self?.argSchema).toContain('query');
+    expect(self?.returns).toContain('hits: [{ tool, description, argSchema, returns');
+  });
+
+  it('returns null when a matched tool has no declared response shape', async () => {
+    const { corpus, returnsByTool } = buildCorpus();
+    const undeclared = corpus.find((hit) => !returnsByTool.has(hit.tool));
+    expect(undeclared).toBeDefined();
+
+    const out = await callHandler({ query: undeclared!.tool });
+    const hit = out.hits.find((candidate) => candidate.tool === undeclared!.tool);
+    expect(hit).toBeDefined();
+    expect(hit?.returns).toBeNull();
   });
 });
 
@@ -475,6 +494,7 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
       tool: `tool:${i}`,
       description: 'd'.repeat(320),
       argSchema: 'field?:object' + 'x'.repeat(2_180),
+      returns: null,
       via: 'lexical',
     }));
     const bounded = boundDiscoveryHits(base, hits);
