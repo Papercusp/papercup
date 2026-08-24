@@ -16,6 +16,8 @@ function run(env: Record<string, string>): string {
   return execFileSync('node', [SCRIPT], {
     encoding: 'utf8',
     env: { ...process.env, EXTRAS_JSON: '["FEATURE_ID=F-GYM-AA"]', ...env },
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
   }).trim();
 }
 
@@ -37,14 +39,28 @@ describe('fake-agent worker', () => {
   it('makes a real git commit in PROJECT_DIR (a diff for the collector)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gym-fake-worker-'));
     try {
-      execFileSync('git', ['init', '-q'], { cwd: dir });
-      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir });
-      const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+      execFileSync('git', ['init', '-q'], { cwd: dir, timeout: 30_000, killSignal: 'SIGKILL' });
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-qm', 'init'], {
+        cwd: dir,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      const before = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).trim();
 
       const out = run({ ROLE: 'worker', PROJECT_DIR: dir });
       expect(out).toContain('WORKER committed');
 
-      const after = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+      const after = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).trim();
       expect(after).not.toBe(before); // a new commit was made
       expect(existsSync(join(dir, 'GYM_FAKE_WORK_F-GYM-AA.md'))).toBe(true);
     } finally {

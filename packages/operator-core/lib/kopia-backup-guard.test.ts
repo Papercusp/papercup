@@ -83,7 +83,7 @@ describe('Kopia global backup guard', () => {
   });
 
   it('is valid shell and executes scheduled work under safe pressure', () => {
-    expect(spawnSync('bash', ['-n', guard]).status).toBe(0);
+    expect(spawnSync('bash', ['-n', guard], { timeout: 10_000, killSignal: 'SIGKILL' }).status).toBe(0);
     const { dir, env } = fixture();
     const marker = join(dir, 'ran');
     const result = run(['--mode', 'scheduled', '--label', 'test', '--', 'touch', marker], env);
@@ -169,7 +169,7 @@ describe('Kopia global backup guard', () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain(`result=deferred reason=${reason}`);
-    expect(spawnSync('test', ['-e', marker]).status).not.toBe(0);
+    expect(spawnSync('test', ['-e', marker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
   });
 
   it('fails safe when scheduled pressure telemetry is unavailable', () => {
@@ -180,7 +180,7 @@ describe('Kopia global backup guard', () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('result=deferred reason=pressure-unavailable signal=memory');
-    expect(spawnSync('test', ['-e', marker]).status).not.toBe(0);
+    expect(spawnSync('test', ['-e', marker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
   });
 
   it('defers a scheduled contender while a backup holds the lock', () => {
@@ -245,7 +245,11 @@ describe('Kopia global backup guard', () => {
 
   const canRunMixedUid =
     typeof process.getuid === 'function' && process.getuid() !== 0
-      ? spawnSync('sudo', ['-n', '-u', 'root', 'true'], { stdio: 'ignore' }).status === 0
+      ? spawnSync('sudo', ['-n', '-u', 'root', 'true'], {
+          stdio: 'ignore',
+          timeout: 10_000,
+          killSignal: 'SIGKILL',
+        }).status === 0
       : false;
 
   it.skipIf(!canRunMixedUid)('serializes user and root guards in both directions', () => {
@@ -402,13 +406,23 @@ describe('Kopia managed entrypoint contract', () => {
     };
 
     writeFileSync(pidFile, `${exactPid}\n`);
-    const killed = spawnSync('bash', [hotScriptPath, '--cleanup'], { encoding: 'utf8', env });
+    const killed = spawnSync('bash', [hotScriptPath, '--cleanup'], {
+      encoding: 'utf8',
+      env,
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+    });
     expect(killed.status).toBe(0);
     expect(readFileSync(killLog, 'utf8')).toContain(`-KILL ${exactPid}`);
     expect(existsSync(pidFile)).toBe(false);
 
     writeFileSync(pidFile, `${reusedPid}\n`);
-    const refused = spawnSync('bash', [hotScriptPath, '--cleanup'], { encoding: 'utf8', env });
+    const refused = spawnSync('bash', [hotScriptPath, '--cleanup'], {
+      encoding: 'utf8',
+      env,
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+    });
     expect(refused.status).toBe(0);
     expect(readFileSync(killLog, 'utf8')).not.toContain(`-KILL ${reusedPid}`);
     expect(existsSync(pidFile)).toBe(false);

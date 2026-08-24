@@ -1,13 +1,13 @@
 /**
- * EI-20093985382484201 — a broken shared tree must not take the service DOWN.
+ * EI-20093985382484201 / WI-41242 — a broken shared tree must fail loudly
+ * without corrupting the last-known-good bundle.
  *
  * `papercup-{staging,bg-host,dev}-api` run `bundle-host.sh` in ExecStartPre
  * against the LIVE shared working tree. Many agents edit that tree
  * continuously, so it is INVALID for the seconds between two keystrokes of any
- * multi-part edit. Before the fallback this guard covers, that transient state
- * was a fleet-wide outage: ExecStartPre exited non-zero, systemd refused to
- * start the unit, and Restart=always + RestartSec=5 re-bundled the same broken
- * tree every 5s at ~14s CPU a go.
+ * multi-part edit. The fallback keeps the prior bytes intact, while WI-41242
+ * makes the caller fail loudly so deploy/systemd cannot report stale code as a
+ * successful release.
  *
  * Measured 2026-08-10: ONE unescaped apostrophe inside a tool `description:`
  * string took :3170 down fleet-wide for ~52s over 4 restarts — the SECOND such
@@ -85,7 +85,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
   });
 
   it(
-    'STARTS on the previous bundle when the tree is momentarily broken, and says so loudly',
+    'RETAINS the previous bundle when the tree is momentarily broken, but fails loudly',
     () => {
       // A service that was serving fine a moment ago.
       execFileSync('mkdir', ['-p', join(dir, 'dist-host')], { timeout: 10_000, killSignal: 'SIGKILL' });
@@ -93,8 +93,9 @@ describe('bundle-host.sh last-known-good fallback', () => {
 
       const { code, output } = runBundler(writeBrokenEntry());
 
-      // THE POINT: ExecStartPre succeeds, so systemd starts the unit.
-      expect(code).toBe(0);
+      // THE POINT: ExecStartPre fails, so systemd/deploy cannot report stale
+      // code as a successful release.
+      expect(code).not.toBe(0);
 
       // The bundle that was already on disk is untouched — this is what the
       // pre-existing atomic swap (EI-9413) buys us: esbuild writes a tmp file

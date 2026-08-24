@@ -165,7 +165,11 @@ describe('WI-40387 behavioral: drive the real block under bash', () => {
     blockPath = join(dir, 'lockblock.sh');
     writeFileSync(blockPath, lockBlock(), 'utf8');
     // A block that does not even parse would make every case below fail for the wrong reason.
-    const syntax = spawnSync('bash', ['-n', blockPath], { encoding: 'utf8' });
+    const syntax = spawnSync('bash', ['-n', blockPath], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
     expect(syntax.status, `extracted block is not valid bash: ${syntax.stderr}`).toBe(0);
   });
 
@@ -278,7 +282,7 @@ describe('WI-40387 behavioral: drive the real block under bash', () => {
   it('SELF-HEAL: an orphan-held lock with a DEAD recorded holder is broken and retaken', () => {
     const lockPath = join(dir, 'stale.lock');
     orphanHolder(lockPath);
-    spawnSync('sleep', ['1']);
+    spawnSync('sleep', ['1'], { timeout: 5_000, killSignal: 'SIGKILL' });
     // A pid that is guaranteed not to exist: /proc has no entry for it.
     let deadPid = 4_194_303;
     while (existsSync(`/proc/${deadPid}`)) deadPid--;
@@ -295,7 +299,7 @@ describe('WI-40387 behavioral: drive the real block under bash', () => {
   it('FAIL-CLOSED: a LIVE recorded holder is never broken', () => {
     const lockPath = join(dir, 'live-holder.lock');
     orphanHolder(lockPath);
-    spawnSync('sleep', ['1']);
+    spawnSync('sleep', ['1'], { timeout: 5_000, killSignal: 'SIGKILL' });
     writeFileSync(
       `${lockPath}.holder`,
       `2026-08-22T00:00:00-04:00 pid=${process.pid} probe-user:live-federation-gate\n`,
@@ -307,7 +311,7 @@ describe('WI-40387 behavioral: drive the real block under bash', () => {
   it('FAIL-CLOSED: no holder record at all is never treated as proof of staleness', () => {
     const lockPath = join(dir, 'no-holder.lock');
     orphanHolder(lockPath);
-    spawnSync('sleep', ['1']);
+    spawnSync('sleep', ['1'], { timeout: 5_000, killSignal: 'SIGKILL' });
     if (existsSync(`${lockPath}.holder`)) rmSync(`${lockPath}.holder`);
     expect(stateOf(take(lockPath))).toBe('busy');
   }, 60_000);
@@ -318,7 +322,7 @@ describe('WI-40387 behavioral: drive the real block under bash', () => {
     // assertion needs a control proving half 2 is what produced the difference.
     const lockPath = join(dir, 'noheal.lock');
     orphanHolder(lockPath);
-    spawnSync('sleep', ['1']);
+    spawnSync('sleep', ['1'], { timeout: 5_000, killSignal: 'SIGKILL' });
     let deadPid = 4_194_303;
     while (existsSync(`/proc/${deadPid}`)) deadPid--;
     writeFileSync(`${lockPath}.holder`, `x pid=${deadPid} y\n`, 'utf8');
