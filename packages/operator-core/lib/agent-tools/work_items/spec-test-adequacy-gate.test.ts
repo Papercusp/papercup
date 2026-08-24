@@ -181,8 +181,13 @@ describe('specTestAdequacyCompletionGate', () => {
     );
 
     expect(result).toEqual({ ok: true, applicable: false, checked: [] });
+    // P-016/D-012: the VERDICT is unchanged, but the reason it is reached moved. This
+    // used to assert `listEdges` was NOT called — the gate returned non-applicable from
+    // the missing plan stamp alone, before looking at behavior at all. Applicability is
+    // behavior-owned now, so the edges ARE consulted (unscoped); this item is
+    // non-applicable because it genuinely has no edges, not because it has no plan.
+    expect(deps.listEdges).toHaveBeenCalledWith({ harnessSlug: 'papercusp', workItemId: 'WI-legacy' });
     expect(deps.listClauses).not.toHaveBeenCalled();
-    expect(deps.listEdges).not.toHaveBeenCalled();
   });
 
   it('falls back to canonical sourcePlan columns when the payload stamp is absent', async () => {
@@ -202,9 +207,12 @@ describe('specTestAdequacyCompletionGate', () => {
     );
 
     expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    // P-016/D-013 design call (a): the edge read is UNSCOPED by plan. It used to pass
+    // `planSlug: 'reconnect-plan'`, which is precisely what made an edge into another
+    // plan's namespace invisible. The stamp is still what SCOPES enforcement below — it
+    // is just no longer what scopes discovery.
     expect(deps.listEdges).toHaveBeenCalledWith({
       harnessSlug: 'papercusp',
-      planSlug: 'reconnect-plan',
       workItemId: 'WI-101',
     });
     expect(deps.listClauses).toHaveBeenCalledWith({
