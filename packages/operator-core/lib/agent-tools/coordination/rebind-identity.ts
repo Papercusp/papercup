@@ -85,7 +85,13 @@ async function defaultResolveLiveness(
     hydratePerId: true,
   });
   const v = verdicts.get(from);
-  return v ? { sessionState: v.sessionState, heartbeatFresh: v.heartbeatFresh } : null;
+  // EI-18771777750306094: `null` is the oracle's in-band unknown, which folds
+  // into this function's EXISTING "no reading" return rather than being
+  // reported as a state. Rebinding an identity off an unmeasured verdict is
+  // exactly the confident-false-verdict this must not make.
+  return v && v.sessionState != null
+    ? { sessionState: v.sessionState, heartbeatFresh: v.heartbeatFresh }
+    : null;
 }
 
 /**

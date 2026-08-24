@@ -379,7 +379,7 @@ export async function routeConsult(
     }
 
     const owners = [...byOwner.keys()];
-    let livenessByOwner: Record<string, string> = {};
+    let livenessByOwner: Record<string, string | null> = {};
     if (deps.getLiveness && owners.length > 0) {
       livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
     }
@@ -520,7 +520,7 @@ export async function routeConsult(
   }
 
   // 5) Liveness annotation (never a gate here — D-008 §5).
-  let livenessByOwner: Record<string, string> = {};
+  let livenessByOwner: Record<string, string | null> = {};
   if (deps.getLiveness) {
     livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
   }

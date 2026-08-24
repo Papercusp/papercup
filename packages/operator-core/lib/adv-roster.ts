@@ -651,7 +651,10 @@ export function mergeRosterEntries(
      *  missing an owner) degrades to sessionState null, which every reader
      *  must treat as "unknown", never as "not live". */
     verdictByOwner?: Map<string, {
-      sessionState: SessionState;
+      /** `null` = the oracle could not measure this owner and says so IN BAND
+       *  (EI-18771777750306094). The projection below already lands it on
+       *  `?? null`, so this widening is type-level only. */
+      sessionState: SessionState | null;
       liveTurn: boolean;
       heartbeatFresh: boolean;
     }>;

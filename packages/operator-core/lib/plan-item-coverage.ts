@@ -420,7 +420,15 @@ async function coverageSessionStates(
   if (subjects.size === 0) return new Map();
   try {
     const verdicts = await resolveSessionStates([...subjects.values()], { hydratePerId: true });
-    return new Map([...verdicts].map(([ownerId, verdict]) => [ownerId, verdict.sessionState]));
+    // EI-18771777750306094: drop the in-band `null` (unmeasured) verdicts —
+    // consumers already treat a missing owner as "no session-state evidence"
+    // and pass `undefined` through to normalizeCoverageActivity, which is the
+    // honest reading for an owner the oracle could not measure.
+    return new Map(
+      [...verdicts].flatMap(([ownerId, verdict]) =>
+        verdict.sessionState == null ? [] : [[ownerId, verdict.sessionState] as const],
+      ),
+    );
   } catch {
     return new Map();
   }

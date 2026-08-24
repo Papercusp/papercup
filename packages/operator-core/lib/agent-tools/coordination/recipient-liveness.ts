@@ -99,7 +99,16 @@ export async function describeMissedRecipients(
     const localResults = localIds.map((ownerId) => {
       const v = verdicts.get(ownerId);
       if (!v) return { ownerId, sessionState: 'unknown' as const, wakeable: false };
-      return { ownerId, sessionState: v.sessionState, wakeable: v.wakeable };
+      // EI-18771777750306094: a null sessionState is the oracle's IN-BAND
+      // unknown. It lands on the same 'unknown' this function already had a
+      // word for — an unmeasurable recipient must never read as a definite
+      // state on the send-MISS path, which exists to decide whether a transfer
+      // black-holed.
+      return {
+        ownerId,
+        sessionState: v.sessionState ?? ('unknown' as const),
+        wakeable: v.wakeable,
+      };
     });
     return [...localResults, ...remoteResults];
   } catch {

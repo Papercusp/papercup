@@ -249,7 +249,12 @@ export function deriveVerdict(
   /** Positive session-log evidence that the owner's most-recent session ended.
    *  A current recorded-live successor wins over this set. */
   recordedEnded: ReadonlySet<string> = new Set<string>(),
-): LivenessVerdict {
+  // EI-18771777750306094: NARROWER than LivenessVerdict on purpose. This is the
+  // pure path and it is only ever called WITH a wakeability signal, so it can
+  // never produce the in-band unknown — only `resolveSessionStates` can. Saying
+  // so in the type keeps every direct deriveVerdict caller (e.g. plans/
+  // liveness-decoration) free of a null it cannot actually receive.
+): LivenessVerdict & { sessionState: SessionState } {
   const psuHostKnownRole = subject.agentRole != null && subject.agentRole !== 'cup';
   const psuHostLive =
     psuHost?.enabled === true && psuHostKnownRole && psuHost.findHostFn(subject.ownerId) != null;

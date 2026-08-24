@@ -687,7 +687,13 @@ async function oracleSessionStates(subjects: LivenessSubject[]): Promise<Map<str
   try {
     const verdicts = await resolveSessionStates(subjects);
     const states = new Map<string, string>();
-    for (const [id, v] of verdicts) states.set(id, v.sessionState);
+    // EI-18771777750306094: an unmeasured subject (in-band `null`) is LEFT OUT
+    // deliberately, not accidentally. Unlike the oracle's own Map — where an
+    // absent key was ambiguous between "unknown" and "not asked" — absence here
+    // has ONE documented meaning, stated in the catch below: no oracle reading,
+    // so the caller degrades to the legacy heartbeat-only path. That is the
+    // correct handling for an owner we could not measure.
+    for (const [id, v] of verdicts) if (v.sessionState != null) states.set(id, v.sessionState);
     return states;
   } catch {
     // Fail-soft to the EMPTY map: a degraded oracle read degrades every caller to the
