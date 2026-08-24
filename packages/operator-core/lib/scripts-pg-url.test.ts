@@ -408,6 +408,8 @@ describe('scripts/pg-url.mjs (the shell door)', () => {
       const secret = `p'w$(id)\`x\` ;#`;
       const out = execFileSync('/bin/sh', ['-c', `printf %s ${shellSingleQuote(secret)}`], {
         encoding: 'utf8',
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
       });
       expect(out).toBe(secret);
     });
@@ -446,7 +448,13 @@ describe('scripts/pg-url.mjs (the shell door)', () => {
 
     it('the emitted block is evaluable and sets exactly the five variables', () => {
       const probe = `${formatExportLines(URL_WITH_NASTY_PW)}\nprintf '%s|%s|%s|%s|%s' "$PGHOST" "$PGPORT" "$PGUSER" "$PGPASSWORD" "$PGDATABASE"`;
-      expect(execFileSync('/bin/sh', ['-c', probe], { encoding: 'utf8' })).toBe(
+      expect(
+        execFileSync('/bin/sh', ['-c', probe], {
+          encoding: 'utf8',
+          timeout: 10_000,
+          killSignal: 'SIGKILL',
+        }),
+      ).toBe(
         "localhost|19838|harness_admin|p'w$x|papercusp",
       );
     });

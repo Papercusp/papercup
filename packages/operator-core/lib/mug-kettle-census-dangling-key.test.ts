@@ -59,6 +59,8 @@ function trackedBasenames(): string[] {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       maxBuffer: 1e8,
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
     });
     cachedBases = out
       .split('\0')

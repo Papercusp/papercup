@@ -40,7 +40,13 @@ function affectedFor(paths: string[]): string[] {
   const r = spawnSync(
     'node',
     [AFFECTED_TESTS, '--changed-paths', paths.join(','), '--print-affected'],
-    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+    {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+    },
   );
   expect(r.status, `affected-tests --print-affected failed:\n${r.stderr}`).toBe(0);
   return (r.stdout ?? '')
@@ -113,7 +119,7 @@ describe('affected-tests: non-workspace path routes (EI-19346163916263067)', () 
         '-c',
         `grep -rl "scripts/" --include=*.test.ts --include=*.test.tsx packages/operator-core | wc -l`,
       ],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000, killSignal: 'SIGKILL' },
     );
     expect(r.status, r.stderr).toBe(0);
     expect(
@@ -254,6 +260,8 @@ describe('affected-tests: templates/ reaches every workspace that tests it (EI-2
       cwd: REPO_ROOT,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
     });
     expect(ls.status, `git ls-files failed:\n${ls.stderr}`).toBe(0);
 

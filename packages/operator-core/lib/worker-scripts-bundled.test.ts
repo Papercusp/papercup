@@ -62,6 +62,25 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
   },
 ];
 
+/**
+ * Required sibling runtime assets that do not use the `*.script.mjs` worker
+ * naming convention and therefore cannot be discovered by findWorkerScripts.
+ *
+ * EI-21306004866205635: systemd-scope.ts resolves this file with
+ * `new URL('./systemd-scope-env-runner.mjs', import.meta.url)`.  That works in
+ * the source tree and fails only after esbuild collapses operator-core into a
+ * different directory.  The release host then accepted systemd units whose
+ * payloads immediately failed MODULE_NOT_FOUND; every cluster worker retried
+ * its spawner sidecar and the MCP proxy repeatedly exhausted its 8s upstream
+ * header budget.  Both bundlers must publish the asset beside their entry.
+ */
+const REQUIRED_RUNTIME_SIBLING_ASSETS: { source: string; output: string }[] = [
+  {
+    source: 'packages/operator-core/lib/systemd-scope-env-runner.mjs',
+    output: 'systemd-scope-env-runner.mjs',
+  },
+];
+
 /** Directories holding BUILD OUTPUT or vendored code, where a `*.script.mjs` is
  *  a COPY produced by the very step under test — counting those would let this
  *  guard pass by observing its own output. */
@@ -124,6 +143,17 @@ function executableText(source: string): string {
 describe('worker scripts are staged beside every bundled entry', () => {
   const scripts = findWorkerScripts(REPO_ROOT);
 
+  it('found every explicitly required sibling runtime asset', () => {
+    const missingSources = REQUIRED_RUNTIME_SIBLING_ASSETS.filter(
+      ({ source }) => !existsSync(resolve(REPO_ROOT, source)),
+    );
+
+    expect(
+      missingSources,
+      'The sibling-asset guard must not go green because a required source disappeared.',
+    ).toEqual([]);
+  });
+
   it('found the known esbuild-worker population', () => {
     const missingSources = ESBUILD_WORKERS.filter(({ source }) => !existsSync(resolve(REPO_ROOT, source)));
 
@@ -167,6 +197,19 @@ describe('worker scripts are staged beside every bundled entry', () => {
         missing.map(({ source, output }) => `${source} → ${output}`),
         `These TypeScript workers are not esbuild-staged by ${bundler.label}. ` +
           'They cannot load in the packaged plain-node runtime when copied as .ts.',
+      ).toEqual([]);
+    });
+
+    it(`stages every required sibling runtime asset — ${bundler.label}`, () => {
+      const executable = executableText(readFileSync(bundler.path, 'utf8'));
+      const missing = REQUIRED_RUNTIME_SIBLING_ASSETS.filter(
+        ({ output }) => !executable.includes(output),
+      );
+
+      expect(
+        missing.map(({ source, output }) => `${source} → ${output}`),
+        `These runtime assets resolve beside the executing module and therefore must be ` +
+          `staged beside ${bundler.label}'s bundled entry.`,
       ).toEqual([]);
     });
   }

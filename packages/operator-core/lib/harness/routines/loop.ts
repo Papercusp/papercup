@@ -1096,6 +1096,77 @@ export function computeLoopStall(input: {
   return { stalled: false, stalledSinceMs: null };
 }
 
+/** Minimum arm-relative opportunities that must pass without a fire before the
+ *  fire-starvation signal can say anything. A freshly armed loop may be parked
+ *  while its first turn is legitimately settling; requiring several missed
+ *  opportunities keeps that normal startup path quiet. */
+export const LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES = 3;
+
+/**
+ * Pure verdict for the scheduler-wedge shape where an active loop is still
+ * parked, several configured fire opportunities have elapsed, and no fire has
+ * landed since the current arm. This is intentionally narrower than
+ * `computeLoopStall`: the latter reasons from the most recent fire, while this
+ * signal covers a re-arm whose schedule was orphaned before it produced one.
+ *
+ * Missing or contradictory timestamps fail quiet. A recent presence beat also
+ * suppresses the signal because a live owner may simply be in a legitimately
+ * long first turn; the stalled-loop actor can use its reachability evidence for
+ * any stronger action. This function only contributes to the read-only
+ * `loop:status` stalled verdict.
+ */
+export function computeLoopFireStarvation(input: {
+  active: boolean;
+  parked: boolean;
+  firesSinceArm: number;
+  expectedFiresSinceArm: number | null;
+  armedAtMs: number | null;
+  lastFiredAtMs: number | null;
+  lastActiveAtMs?: number | null;
+  intervalSec: number | null;
+  nowMs?: number;
+}): boolean {
+  if (!input.active || !input.parked) return false;
+
+  const expected = input.expectedFiresSinceArm;
+  if (
+    expected == null ||
+    !Number.isFinite(expected) ||
+    expected < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES
+  ) {
+    return false;
+  }
+
+  const firesSinceArm = Number.isFinite(input.firesSinceArm)
+    ? Math.max(0, input.firesSinceArm)
+    : 0;
+  if (
+    expected - firesSinceArm < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES ||
+    firesSinceArm !== 0
+  ) {
+    return false;
+  }
+
+  const armedAtMs = input.armedAtMs;
+  if (armedAtMs == null || !Number.isFinite(armedAtMs)) return false;
+  const nowMs = input.nowMs ?? Date.now();
+  if (!Number.isFinite(nowMs) || nowMs < armedAtMs) return false;
+
+  // A valid fire at or after this arm disproves the "no post-arm fire" shape.
+  // An invalid non-null timestamp is not evidence either way, so fail quiet;
+  // null means the loop has never recorded a fire and is strong evidence here.
+  if (input.lastFiredAtMs != null) {
+    if (!Number.isFinite(input.lastFiredAtMs) || input.lastFiredAtMs >= armedAtMs) return false;
+  }
+
+  const lastActiveAtMs = input.lastActiveAtMs;
+  const activeRecently =
+    lastActiveAtMs != null &&
+    Number.isFinite(lastActiveAtMs) &&
+    nowMs - lastActiveAtMs < turnsStalledFloorMs(input.intervalSec);
+  return !activeRecently;
+}
+
 /** Minimum fires before `computeTurnsStalled` will ever flag a loop — a freshly-armed loop
  *  (fire 1 or 2, still mid-flight) has no meaningful "fires vs turns" trend yet; flagging it
  *  would just be noise on ordinary startup latency. */
@@ -1657,6 +1728,16 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     parked,
     nextFireAt: nextFireAtIso,
   });
+  const fireStarved = computeLoopFireStarvation({
+    active: Boolean(r.active),
+    parked,
+    firesSinceArm,
+    expectedFiresSinceArm: cadence.expectedFiresSinceArm,
+    armedAtMs,
+    lastFiredAtMs: lastFiredMs,
+    lastActiveAtMs: presenceMs,
+    intervalSec,
+  });
   return {
     name: r.name,
     ownerId: r.target_owner_id ?? fallbackOwnerId,
@@ -1680,7 +1761,11 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     costCapCents: typeof costCap === 'number' ? costCap : null,
     maxFires: typeof pt?.maxFires === 'number' ? pt.maxFires : null,
     maxDurationSec: typeof pt?.maxDurationSec === 'number' ? pt.maxDurationSec : null,
-    stalled: stall.stalled,
+    // `computeLoopStall` covers a parked turn after a delivered fire; the
+    // starvation signal covers an active parked loop whose current arm has
+    // delivered no fire at all. Keep the public field unified so callers do not
+    // need to know which scheduler failure produced the verdict.
+    stalled: stall.stalled || fireStarved,
     stalledSinceMs: stall.stalledSinceMs,
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),

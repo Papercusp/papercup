@@ -305,7 +305,12 @@ describe('the tree is currently aligned (ratchet)', () => {
   it('the lint exits 0 on the repo as it stands', () => {
     // If this fails, a NEW misaligned query landed. Read the lint output: it names the
     // file, the missing clause and the index that becomes unusable without it.
-    const out = execFileSync('node', [SCRIPT], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const out = execFileSync('node', [SCRIPT], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+    });
     expect(out).toContain('[partial-index-alignment] OK');
   });
 });

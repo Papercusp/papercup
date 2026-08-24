@@ -99,7 +99,7 @@ describe('telemetry-tagging audit (plan §5.4)', () => {
       try {
         hits = execSync(
           `grep -rn "uiClientId" "${repoRoot}/apps/operator/lib/agent-tools/" "${repoRoot}/packages/agent-mcp/src/" --include='*.ts' | grep -v test | grep -E "metadata.*uiClientId.*:" || true`,
-          { encoding: 'utf8' },
+          { encoding: 'utf8', timeout: 120_000, killSignal: 'SIGKILL' },
         );
       } catch {
         hits = '';

@@ -30,7 +30,11 @@ describe('recoverAppliedMigrationText', () => {
     const sqlDir = path.join(root, 'libs/db/sql');
     fs.mkdirSync(sqlDir, { recursive: true });
     const git = (...args: string[]) =>
-      execFileSync('git', ['-C', root, ...args], { stdio: ['ignore', 'ignore', 'ignore'] });
+      execFileSync('git', ['-C', root, ...args], {
+        stdio: ['ignore', 'ignore', 'ignore'],
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      });
     git('init', '-q');
     git('config', 'user.email', 'test@example.com');
     git('config', 'user.name', 'Test');

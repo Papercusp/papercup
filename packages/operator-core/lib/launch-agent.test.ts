@@ -45,6 +45,7 @@ describe('launchAgent', () => {
       model: 'opus',
       resume_session_id: 's-42',
       kickoff: { kind: 'new-plan' },
+      kickoff_prompt: null,
       defer_spawn: false,
       context_size: null,
       // The launch body always carries the fleet/account keys, explicitly null when

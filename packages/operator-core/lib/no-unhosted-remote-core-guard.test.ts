@@ -101,6 +101,8 @@ describe('the script (exit status, end to end)', () => {
       const output = execFileSync(process.execPath, [join(root, GUARD_REL)], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
       });
       return { status: 0, output };
     } catch (e) {
@@ -172,6 +174,8 @@ describe('the ratchet (the real tree, which is what the registry skip is trading
           output: execFileSync(process.execPath, [join(REPO_ROOT, GUARD_REL)], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 60_000,
+            killSignal: 'SIGKILL',
           }),
         };
       } catch (e) {

@@ -104,6 +104,8 @@ function runDetector(state: Record<string, number>, env: Record<string, string> 
   const out = execFileSync('bash', ['-c', script], {
     encoding: 'utf8',
     env: { PATH: process.env.PATH ?? '', ...env },
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
   });
   const [first, second = ''] = out.split('---SECOND---');
   return { first, second, all: out, dir };
@@ -155,7 +157,13 @@ describe('EI-18657324526667507: local-matrix leg staleness is visible regardless
     });
 
     it('the script still parses (bash -n) after the edit', () => {
-      expect(() => execFileSync('bash', ['-n', GATE_PATH], { encoding: 'utf8' })).not.toThrow();
+      expect(() =>
+        execFileSync('bash', ['-n', GATE_PATH], {
+          encoding: 'utf8',
+          timeout: 10_000,
+          killSignal: 'SIGKILL',
+        }),
+      ).not.toThrow();
     });
   });
 
@@ -166,6 +174,8 @@ describe('EI-18657324526667507: local-matrix leg staleness is visible regardless
         execFileSync('bash', ['-c', `${line}; echo "$MATRIX_STALE_H"`], {
           encoding: 'utf8',
           env: { PATH: process.env.PATH ?? '', ...env },
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
         }).trim();
       expect(read({})).toBe('192'); // 144 + 48
       expect(read({ MATRIX_TTL_H: '300' })).toBe('348'); // detector moves WITH the cadence

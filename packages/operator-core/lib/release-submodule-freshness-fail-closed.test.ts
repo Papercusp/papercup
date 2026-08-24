@@ -132,13 +132,17 @@ function runHelper(opts: { channel: string; override?: string }): { status: numb
       '_wi3047_unverified "could not fetch libs/papercusp origin/main (offline / network / auth?)"',
       'echo REACHED_END',
     ].join('\n');
-    const res = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+    const res = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
     const out = res.stdout + res.stderr;
     last = { status: res.status, out };
     if (!TORN_READ_SIGNATURE.test(out)) return last;
     // Torn read detected — sleep briefly (synchronously; this is a test helper) so a
     // concurrent checkout has a moment to finish, then retry with a fresh read.
-    spawnSync('sleep', ['0.2']);
+    spawnSync('sleep', ['0.2'], { timeout: 5_000, killSignal: 'SIGKILL' });
   }
   // Every retry reproduced the same "command not found" signature — this is no longer
   // explicable as a torn read; surface it plainly instead of the bare status mismatch.

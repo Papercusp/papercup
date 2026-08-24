@@ -57,7 +57,12 @@ describe('a failing guard keeps its report (the regression this helper exists fo
   it('CONTROL: execFileSync loses it — the thrown MESSAGE, which is all a runner shows, names only the command', () => {
     let thrown: unknown;
     try {
-      execFileSync('node', ['-e', REPORTING_GUARD], { cwd: CWD, encoding: 'utf8' });
+      execFileSync('node', ['-e', REPORTING_GUARD], {
+        cwd: CWD,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
     } catch (error) {
       thrown = error;
     }

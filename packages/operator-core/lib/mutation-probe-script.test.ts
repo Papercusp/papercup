@@ -68,7 +68,11 @@ const read = () => readFileSync(subject, 'utf8');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function git(repo: string, args: string[]): string {
-  const r = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  const r = spawnSync('git', ['-C', repo, ...args], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
   if (r.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${r.stderr ?? ''}`);
   }
@@ -397,7 +401,11 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     const slowBin = join(dir, 'slow-bin');
     const slowPs = join(slowBin, 'ps');
     const slowPsMarker = join(dir, 'slow-ps-ran');
-    const realPs = spawnSync('sh', ['-c', 'command -v ps'], { encoding: 'utf8' }).stdout.trim();
+    const realPs = spawnSync('sh', ['-c', 'command -v ps'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    }).stdout.trim();
     expect(realPs).not.toBe('');
     mkdirSync(slowBin);
     writeFileSync(
@@ -505,7 +513,7 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(out).toMatch(/--i-know-this-deletes/);
     expect(out).toMatch(/--sandbox-root/);
     // NOTHING executed: neither the baseline nor the mutant guard ever ran.
-    expect(spawnSync('test', ['-e', ranMarker]).status).not.toBe(0);
+    expect(spawnSync('test', ['-e', ranMarker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
     expect(read()).toBe(DESTRUCTIVE_SUBJECT);
   });
 

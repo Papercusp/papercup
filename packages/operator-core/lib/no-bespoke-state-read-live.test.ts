@@ -120,7 +120,12 @@ describe('the live gate is actually scanning', () => {
         `SCAN_DIRS = ${JSON.stringify(SCAN_DIRS)}`,
     ).not.toHaveLength(0);
 
-    const files = execSync(`git ls-files ${dir}`, { cwd: REPO_ROOT, encoding: 'utf8' })
+    const files = execSync(`git ls-files ${dir}`, {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    })
       .split('\n')
       .filter((f) => /\.ts$/.test(f) && !/\.(test|spec)\./.test(f));
 

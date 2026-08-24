@@ -37,6 +37,22 @@ describe('ptool bootstrap dependencies', () => {
 
     expect(packageJson.dependencies?.['@modelcontextprotocol/sdk']).toBe('^1.29.0');
   });
+
+  it('keeps the standalone shim free of the install-safe reader guard', () => {
+    const installer = readFileSync(
+      new URL('./install-standalone-mcp.sh', import.meta.url),
+      'utf8',
+    );
+    const shimStart = installer.indexOf('PTOOL_LAUNCHER=');
+    const shimEnd = installer.indexOf('\n# 5. Verify the endpoint', shimStart);
+    const ptoolInstallBlock = installer.slice(shimStart, shimEnd);
+
+    expect(shimStart).toBeGreaterThan(-1);
+    expect(shimEnd).toBeGreaterThan(shimStart);
+    expect(ptoolInstallBlock).toContain('exec node "${PTOOL_LAUNCHER}" "\\$@"');
+    expect(ptoolInstallBlock).not.toContain('--exec-under-lock');
+    expect(ptoolInstallBlock).not.toContain('npm-install-safe.mjs');
+  });
 });
 
 describe('ptool MCP identity binding', () => {

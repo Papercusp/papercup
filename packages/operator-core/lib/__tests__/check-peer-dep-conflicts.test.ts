@@ -96,6 +96,8 @@ function runGuard(root: string): number {
   const r = spawnSync(process.execPath, [GUARD], {
     env: { ...process.env, PEER_DEP_CONFLICTS_ROOT: root },
     encoding: 'utf8',
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
   });
   return r.status ?? -1;
 }
@@ -371,6 +373,8 @@ describe('check-peer-dep-conflicts — calibration against the real repo', () =>
       cwd: join(REPO_ROOT, 'packages/operator-core'),
       env: { ...process.env, PEER_DEP_CONFLICTS_ROOT: '' },
       encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
     });
     expect(fromWorkspaceDir.status).toBe(EXIT_OK);
     expect(fromWorkspaceDir.stdout).toContain('OK');

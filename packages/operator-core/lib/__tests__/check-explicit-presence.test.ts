@@ -187,32 +187,34 @@ describe('explicit-presence is ENFORCED, not merely available (WI-5977)', () => 
     const out = execFileSync('node', [join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), '--self-test'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
     });
     expect(out).toMatch(/self-test: analyzer correct on all fixtures/);
-  });
+  }, 60_000);
 
   it('runs an end-to-end positive control that forces the real ratchet red even when the corpus has zero candidates', () => {
     const run = spawnSync(
       'node',
       [join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), '--ratchet', '--positive-control'],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
     );
     const output = `${run.stdout}\n${run.stderr}`;
     expect(run.status, output).toBe(1);
     expect(output).toMatch(/POSITIVE CONTROL: evaluating \d+ analyzer-produced known violation/);
     expect(output).toMatch(/count ROSE above baseline/);
     expect(output).toMatch(/\(\+1\)/);
-  });
+  }, 60_000);
 
   it('refuses to combine the synthetic positive control with --update', () => {
     const run = spawnSync(
       'node',
       [join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), '--ratchet', '--positive-control', '--update'],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
     );
     expect(run.status).toBe(2);
     expect(run.stderr).toMatch(/synthetic violation must never rewrite the baseline/);
-  });
+  }, 60_000);
 
   it('operator-core DECLARES lint:explicit-presence, and it runs the whole-tree ratchet', () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'));

@@ -1817,12 +1817,11 @@ if [ -f "$PTOOL_LAUNCHER" ]; then
 # ptool <group:verb> --json-file payload.json; ptool --list. Avoid single-quoted
 # inline JSON when text can contain apostrophes (for example loop:checkpoint
 # recheck strings), because the shell splits the payload before ptool runs.
-# ptool imports the MCP SDK from this checkout's node_modules. Enter the same
-# repo-keyed install mutex used by npm-install-safe before loading that graph so
-# an in-flight npm reify cannot expose a half-extracted SDK to the CLI.
-exec node "${REPO_ROOT}/scripts/npm-install-safe.mjs" \
-  --repo-root "${REPO_ROOT}" --exec-under-lock -- \
-  node "${PTOOL_LAUNCHER}" "\$@"
+# Dispatch directly. ptool is also the recovery transport used to repair or
+# coordinate dependency/install failures, so putting it behind install-safe's
+# reader guard can make a completed write invocation exit after printing only
+# the guard banner, without ever reaching MCP (EI-21267836337650976).
+exec node "${PTOOL_LAUNCHER}" "\$@"
 WRAPEOF
   chmod 755 "$PTOOL_PATH"
   echo "✓ Installed $PTOOL_PATH (defineTool CLI)"

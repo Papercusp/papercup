@@ -140,6 +140,8 @@ function runSection3b(opts: {
       PATH: process.env.PATH ?? '',
       ...(opts.runLocalMatrix !== undefined ? { RUN_LOCAL_MATRIX: opts.runLocalMatrix } : {}),
     },
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
   });
   const field = (k: string) => out.match(new RegExp(`^${k}:(.*)$`, 'm'))?.[1] ?? '';
   return { out, res: field('RES'), reason: field('REASON'), suffix: field('SUFFIX'), isSkip: field('IS_SKIP') };
@@ -240,7 +242,13 @@ describe('EI-18715623477356990: a skipped local-matrix leg always says WHY, this
     });
 
     it('the script still parses (bash -n) after the edit', () => {
-      expect(() => execFileSync('bash', ['-n', GATE_PATH], { encoding: 'utf8' })).not.toThrow();
+      expect(() =>
+        execFileSync('bash', ['-n', GATE_PATH], {
+          encoding: 'utf8',
+          timeout: 10_000,
+          killSignal: 'SIGKILL',
+        }),
+      ).not.toThrow();
     });
   });
 });

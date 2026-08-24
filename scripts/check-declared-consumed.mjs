@@ -226,10 +226,12 @@ export function isTestFile(rel) {
 // ── THE TARGETS ─────────────────────────────────────────────────────────────
 
 /**
- * Every OPTIONAL field on `CellSpec`. Optional is the whole risk surface: a
- * required field cannot be silently unwritten, because omitting it fails to
- * compile. An optional one is exactly the field that can be declared, validated,
- * documented and never touched — which is what WI-6444 was.
+ * Every OPTIONAL field on `CellSpec`, plus a deliberately retained row for
+ * `assessment`. Optional fields are the original risk surface: a required field
+ * cannot be silently unwritten, because omitting it fails to compile. A required
+ * field can still be silently UNREAD, though. `assessment` became required after
+ * this census shipped, and remains here because dropping its consumer would hand
+ * callers an un-interpreted value while the registration still typechecks.
  */
 export const DECLARED_FIELDS = [
   {

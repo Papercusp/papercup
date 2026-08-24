@@ -78,6 +78,13 @@ beforeAll(async () => {
       CONSTRAINT autoloop_state_pkey PRIMARY KEY (workspace_id, harness_slug, role)
     )
   `);
+  // Migration 939 makes loop-su-* identity role-only so a harness re-home cannot
+  // split the gate's read row from the writer's update row.
+  await rootSql.unsafe(`
+    CREATE UNIQUE INDEX autoloop_state_owner_role_uidx
+      ON harness_shared.autoloop_state (role)
+      WHERE role LIKE 'loop-su-%'
+  `);
   // Minimal harness_shared.routines shape (EI-7009): only the columns pruneStaleFireState's
   // second (EI-7009) prune class JOINs against — id/install_slug/name/active/workspace_id.
   await rootSql.unsafe(`
@@ -144,6 +151,40 @@ describe('recordFire outcome semantics (P-009)', () => {
   it('an unknown (slug, role) has no row ⇒ the gate allows', async () => {
     expect(await readFireState('nope', 'nobody')).toBeNull();
     expect((await checkFireGate('nope', 'nobody')).allow).toBe(true);
+  });
+});
+
+describe('owner-loop fire-state identity (EI-21300443060693634 / P-001)', () => {
+  const OWNER_ROLE = 'loop-su-rehome-regression';
+
+  it('keeps recordFire and recordWithheld on one row when the loop re-homes', async () => {
+    await recordFire('old-harness', OWNER_ROLE, 'error: first', 'error');
+    expect((await readFireState('old-harness', OWNER_ROLE))?.consecutiveErrors).toBe(1);
+
+    // The role-only unique index rejects a fresh insert under the new harness;
+    // the writer must instead update the row read by checkFireGate.
+    await recordFire('new-harness', OWNER_ROLE, 'ok', 'ok');
+    await recordWithheld('new-harness', OWNER_ROLE, 'fire-gate', 're-home proof');
+
+    const rows = await rootSql<{
+      harness_slug: string;
+      consecutive_errors: number;
+      last_status: string | null;
+      last_withheld_reason: string | null;
+      last_withheld_detail: string | null;
+    }[]>`
+      SELECT harness_slug, consecutive_errors, last_status, last_withheld_reason, last_withheld_detail
+        FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${WS} AND role = ${OWNER_ROLE}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      harness_slug: 'new-harness',
+      consecutive_errors: 0,
+      last_status: 'ok',
+      last_withheld_reason: 'fire-gate',
+      last_withheld_detail: 're-home proof',
+    });
+    expect((await checkFireGate('new-harness', OWNER_ROLE)).allow).toBe(true);
   });
 });
 

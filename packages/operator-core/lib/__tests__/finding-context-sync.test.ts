@@ -102,7 +102,7 @@ describe('finding-context.mdx drift', () => {
         'packages/operator-core/lib/agent-tools',
         'packages/agent-mcp/src/tools',
       ],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000, killSignal: 'SIGKILL' },
     );
     const found = new Set<string>();
     for (const line of (res.stdout || '').split('\n')) {
@@ -112,7 +112,7 @@ describe('finding-context.mdx drift', () => {
     const pluginRes = spawnSync(
       'sh',
       ['-c', `find libs/papercusp/plugins -name papercusp.json -exec cat {} +`],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
     );
     for (const m of (pluginRes.stdout || '').matchAll(/"name":\s*"([^"]+)"/g)) {
       found.add(m[1]);

@@ -259,6 +259,26 @@ describe('loop:arm — EI-20034001963934568: reject unverified owner tags in rep
 describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm time', () => {
   const claimedRow = { id: 'X', assignee: 'su-caller-own-id' };
 
+  it('EI-21302411209364135: infers an explicit item\'s harness before workspace-home fallback', async () => {
+    // A workspace-scoped SU session carries the wildcard harness sentinel. Its home
+    // pot is deliberately unrelated; the unscoped item lookup is the only valid scope
+    // hint for this explicit cross-harness pin.
+    homePotM.mockResolvedValue('sb-devboard-hive');
+    potHomeM.mockImplementation((value) => (value === 'papercusp' ? 'papercusp' : null));
+    getWiM.mockResolvedValue({ id: 'WI-41214', state: 'open', harness: 'papercusp', assignee: 'su-caller-own-id' } as never);
+    claimM.mockResolvedValue(claimedRow as never);
+
+    const out = await tool.handler(
+      { intervalSec: 120, goal: 'g', workItem: 'wi-41214' } as never,
+      { harnessSlug: '*', workspaceId: 'ws-1' } as never,
+    ) as Out;
+    const b = body(out);
+
+    expect(getWiM).toHaveBeenCalledWith('WI-41214');
+    expect(claimM).toHaveBeenCalledWith('WI-41214', 'su-caller-own-id', { harness: 'papercusp' });
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp', workItem: 'WI-41214' } });
+  });
+
   it('EI-20123870155538062: refuses an out-of-spec auto-claim before mutation, but still arms the loop', async () => {
     mockResolvedTyped(admitM, {
       allowed: false,

@@ -93,7 +93,13 @@ describe('Papercusp TypeScript toolchain contract', () => {
 
   it('resolves tsc to 7.0.2 while preserving the TypeScript 6 compiler API', () => {
     const tsc = join(REPO_ROOT, 'node_modules/.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
-    expect(execFileSync(tsc, ['--version'], { encoding: 'utf8' }).trim()).toBe(
+    expect(
+      execFileSync(tsc, ['--version'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      }).trim(),
+    ).toBe(
       'Version 7.0.2',
     );
 

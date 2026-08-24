@@ -14,6 +14,10 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-auditor' }),
 }));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
+vi.mock('../sessions/_shared', async (orig) => {
+  const actual = await orig<typeof import('../sessions/_shared')>();
+  return { ...actual, resolveSessionTurnRefs: vi.fn() };
+});
 vi.mock('../../plan-audits', async (orig) => {
   const actual = await orig<typeof import('../../plan-audits')>();
   return {
@@ -22,27 +26,34 @@ vi.mock('../../plan-audits', async (orig) => {
     getEffectiveItemAudits: vi.fn(),
     repoCitationContextForHarness: vi.fn(),
     recordPlanAudit: vi.fn(),
+    recordCurrentActivationAudit: vi.fn(),
   };
 });
 
 import {
   getEffectiveItemAudits,
   getPlanItemStatuses,
+  recordCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
 } from '../../plan-audits';
+import { resolveSessionTurnRefs } from '../sessions/_shared';
 import tool from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
 const mockPrevious = vi.mocked(getEffectiveItemAudits);
 const mockContext = vi.mocked(repoCitationContextForHarness);
 const mockRecord = vi.mocked(recordPlanAudit);
+const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
+const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
 
 const ctx = {
   log: vi.fn(),
   signal: new AbortController().signal,
   progress: vi.fn(),
   role: 'operator',
+  workspaceId: 'test-workspace',
+  tx: vi.fn(),
 } as never;
 
 const body = async (items: Array<Record<string, unknown>>) =>
@@ -61,6 +72,32 @@ beforeEach(() => {
     },
   });
   mockRecord.mockResolvedValue({ auditSeq: 1, auditedSha: 'head-1' } as never);
+  mockResolveSourceRefs.mockResolvedValue([
+    { ref: 'session_turn:codex:session-full-id:7', ok: true, source: 'index' },
+  ]);
+  mockRecordActivation.mockResolvedValue({
+    ok: true,
+    audit: { auditSeq: 2 } as never,
+    auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+  });
+});
+
+const activationArgs = (over: Record<string, unknown> = {}) => ({
+  slug: 'plan-a',
+  harness: 'papercusp',
+  phase: 'activation',
+  sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 20 }],
+  mappings: [{
+    id: 'M-001',
+    sourceRefs: ['session_turn:codex:session-full-id:7'],
+    requirement: 'activation requires a complete source audit',
+    planTargets: ['P-001'],
+    disposition: 'covered',
+  }],
+  repairedOmissions: [],
+  rejectedOrSuperseded: [],
+  unresolvedBlockers: [],
+  ...over,
 });
 
 describe('plans:audit D-008 writer contract', () => {
@@ -115,5 +152,65 @@ describe('plans:audit D-008 writer contract', () => {
         ],
       }),
     );
+  });
+});
+
+describe('plans:audit phase:activation', () => {
+  it('resolves every source ref and returns the exact server-captured revision', async () => {
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      auditSeq: 2,
+      sourceRefsResolved: 1,
+      auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+    });
+    expect(mockResolveSourceRefs).toHaveBeenCalledWith(
+      expect.anything(),
+      'test-workspace',
+      ['session_turn:codex:session-full-id:7'],
+    );
+    expect(mockRecordActivation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'test-workspace',
+        planSlug: 'plan-a',
+        activation: expect.objectContaining({ mappings: [expect.objectContaining({ id: 'M-001' })] }),
+      }),
+    );
+    expect(mockItems).not.toHaveBeenCalled();
+  });
+
+  it('refuses a source ref that sessions:read cannot resolve', async () => {
+    mockResolveSourceRefs.mockResolvedValue([
+      { ref: 'session_turn:codex:session-full-id:7', ok: false, reason: 'not_found' },
+    ]);
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, phase: 'activation', error: 'source_refs_unresolved' });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('refuses open mappings or unresolved blockers before touching either store', async () => {
+    const result = ((await tool.handler(activationArgs({
+      unresolvedBlockers: ['The owner constraint has no plan target.'],
+    }) as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, phase: 'activation', error: 'activation_blocked' });
+    expect(mockResolveSourceRefs).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('refuses a canonical ref outside every declared source range', async () => {
+    const result = ((await tool.handler(activationArgs({
+      sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 8, toTurn: 20 }],
+    }) as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, phase: 'activation', error: 'activation_audit_invalid' });
+    expect(result.problems).toEqual([
+      expect.objectContaining({ itemId: 'M-001', code: 'source_ref_outside_range' }),
+    ]);
+    expect(mockResolveSourceRefs).not.toHaveBeenCalled();
   });
 });

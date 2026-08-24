@@ -1728,7 +1728,7 @@ export default defineTool({
   guidance: {
     when: 'Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. SHAPES often got wrong: `premises` is an array of ref strings, not objects — `premises: ["WI-1234#completion"]`; `youMayNotKnow` takes `{ ref, provenance }` and `couldNotDetermine` takes `{ what, note? }` — `youMayNotKnow: [{ ref: "WI-1", provenance: "authored" }]`, `couldNotDetermine: [{ what: "the gap" }]`, not a string or array of strings. wake:\'required\' reports misses; wake:\'optimistic\' needs `backstop`.',
     returns:
-      'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. Read the per-message results, not the envelope.',
+      'Per-message {ok, to, msg_id|error} counts. When any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch RAN — not that every message was delivered. When a body exceeds the default inbox cap, top-level `bodyDeliveryWarning` calls out that persistence succeeded but the recipient view is incomplete; read the per-message body diagnostics and `bodyReadRef`.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Work transfer: coord:handoff.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',
@@ -2215,6 +2215,32 @@ export default defineTool({
     // timeout) becomes a nested `{ ok:false }` and otherwise looks like success.
     // Keep the generic contract unchanged, but make this delivery-specific tool
     // failure impossible to mistake for a clean send.
+    const bodyTruncated = env.results.filter(
+      (result) =>
+        result.ok &&
+        typeof result.bodyAuthoredChars === 'number' &&
+        typeof result.bodyDeliveredChars === 'number' &&
+        result.bodyDeliveredChars < result.bodyAuthoredChars,
+    );
+    const bodyDeliveryWarning =
+      bodyTruncated.length > 0
+        ? (() => {
+            const details = bodyTruncated
+              .map((result) => {
+                const msgId = typeof result.msg_id === 'string' ? result.msg_id : 'unknown message';
+                return `${msgId} (${result.bodyDeliveredChars}/${result.bodyAuthoredChars} chars visible)`;
+              })
+              .slice(0, 3)
+              .join(', ');
+            return (
+              `coord:send persisted ${bodyTruncated.length} message${bodyTruncated.length === 1 ? '' : 's'} ` +
+              `whose default inbox body is incomplete (${details}). ` +
+              `bodyDeliveredChars < bodyAuthoredChars: top-level ok:true confirms batch execution, not full-body ` +
+              `visibility. Read results[].bodyReadRef with coord:read or shorten the load-bearing ask.`
+            );
+          })()
+        : undefined;
+    const warnedEnv = bodyDeliveryWarning ? { ...env, bodyDeliveryWarning } : env;
     const failed = env.results.filter((result) => !result.ok);
     if (failed.length > 0) {
       const errors = failed
@@ -2229,11 +2255,11 @@ export default defineTool({
         `message${failed.length === 1 ? '' : 's'} as appropriate.` +
         (errors ? ` Failure detail: ${errors}` : '');
       return bulkContent({
-        ...env,
+        ...warnedEnv,
         partial: true,
         deliveryFailureWarning: warning,
       });
     }
-    return bulkContent(env);
+    return bulkContent(warnedEnv);
   },
 });

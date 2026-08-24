@@ -498,7 +498,8 @@ describe('invalid base revisions — never reinterpret a bad revision as a clean
       const file = join(tmp, 'packages/operator-core/lib/a.ts');
       writeFileSync(file, 'export interface A { id: string; }\n');
 
-      const git = (...args: string[]) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: tmp, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       git('init', '-q', '.');
       git('config', 'user.email', 'required-field-strands@test.invalid');
       git('config', 'user.name', 'required-field-strands');
@@ -509,6 +510,8 @@ describe('invalid base revisions — never reinterpret a bad revision as a clean
       const result = spawnSync('node', ['scripts/check-required-field-strands.mjs', '--base', 'not-a-real-revision'], {
         cwd: tmp,
         encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
       });
       const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
 

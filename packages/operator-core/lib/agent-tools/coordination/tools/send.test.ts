@@ -248,6 +248,9 @@ describe('coord:send handler (bulk keyed-array)', () => {
       bodyCrowdedPageCap: 300,
       bodyReadRef: { msg_id: 'm1' },
     });
+    expect(b.bodyDeliveryWarning).toMatch(/bodyDeliveredChars < bodyAuthoredChars/i);
+    expect(b.bodyDeliveryWarning).toMatch(/m1 \(600\/2260 chars visible\)/i);
+    expect(b.bodyDeliveryWarning).toMatch(/coord:read/i);
   });
 
   it('WI-37972: keeps short bodies explicitly intact', async () => {
@@ -267,6 +270,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
       bodyCrowdedPageCap: 300,
     });
     expect(b.results[0].bodyReadRef).toBeUndefined();
+    expect(b.bodyDeliveryWarning).toBeUndefined();
   });
 
   it('one message to MANY recipients stays the single form (to:[…])', async () => {

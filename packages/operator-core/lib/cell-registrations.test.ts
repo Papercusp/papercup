@@ -371,13 +371,16 @@ describe('P-007: the four verdict cells', () => {
   /**
    * EI-11012 / why-chain.ts: a nonzero staging buffer is the NORMAL steady state, and
    * the naive "behind = broken" reading made the deploy stage report degraded
-   * essentially always, shadowing every real cause. The `kills` text is the only place
-   * that correction is carried to a cell author, so pin its direction.
+   * essentially always, shadowing every real cause. The assessment carries that
+   * distinction as a positive code with an explicit safe action.
    */
-  it('kills the "lag means stalled" misreading, not the naive inverse', () => {
-    const kills = MAIN_BEHIND_STAGING_CELL.falsifier.kills.toLowerCase();
-    expect(kills).toContain('normal steady state');
-    expect(MAIN_BEHIND_STAGING_CELL.falsifier.measurement).toContain('SCHEDULER-LIVENESS');
+  it('classifies normal lag without the naive "lag means stalled" misreading', () => {
+    const assessment = MAIN_BEHIND_STAGING_CELL.assessment;
+    expect(assessment).not.toBeNull();
+    expect(assessment!.evidence).toContain('gate.fireStale');
+    expect(assessment!.codes['normal-buffer'].meaning).toContain('ordinary steady state');
+    expect(assessment!.codes['normal-buffer'].safeAction).toContain('Do NOT report this as a stalled pipeline');
+    expect(assessment!.codes['gate-stalled'].meaning).toContain('gate is not firing');
   });
 
   /** Axis 4 admits no fixture-only registration, and every one of these four carries a
@@ -413,12 +416,12 @@ describe('EI-20449419111876508: host.memoryPressure is a readable shared-writer 
     expect(HOST_MEMORY_PRESSURE_CELL.unknownHoist).toBe('memory.unknown');
   });
 
-  it('declares the in-process free-memory measurement as an independent falsifier', () => {
-    expect(HOST_MEMORY_PRESSURE_CELL.falsifier.field).toBe('host.memFreePct');
-    expect(HOST_MEMORY_PRESSURE_CELL.falsifier.field).not.toBe(
-      HOST_MEMORY_PRESSURE_CELL.headline,
-    );
-    expect(HOST_MEMORY_PRESSURE_CELL.falsifier.measurement).toMatch(/freemem\(\)\/totalmem\(\)/);
+  it('declares the in-process free-memory measurement as independent assessment evidence', () => {
+    const assessment = HOST_MEMORY_PRESSURE_CELL.assessment;
+    expect(assessment).not.toBeNull();
+    expect(assessment!.evidence).toContain('host.memFreePct');
+    expect(assessment!.evidence).not.toContain(HOST_MEMORY_PRESSURE_CELL.headline);
+    expect(assessment!.codes['stable-low-free'].meaning).toMatch(/free memory is below the declared capacity warning threshold/);
   });
 });
 
@@ -427,8 +430,8 @@ describe('EI-20449419111876508: host.memoryPressure is a readable shared-writer 
  *
  * The assertions worth making here are the ones that would go red if someone
  * "simplified" the cell back to the plan item's literal wording. The precedence
- * sentence is under-determined on the live fleet, and the falsifier is what
- * carries that finding to the next author.
+ * sentence is under-determined on the live fleet, and the assessment is what
+ * carries that distinction to the next author.
  */
 describe('P-016: agent.goal registers under the D-038 contract', () => {
   beforeEach(() => __resetCellRegistryForTests());
@@ -452,15 +455,17 @@ describe('P-016: agent.goal registers under the D-038 contract', () => {
   });
 
   /**
-   * Axis 1. The falsifier must be the LINK GRAPH, not staleness: staleness is
+   * The assessment must be supported by the LINK GRAPH, not staleness: staleness is
    * already carried by HolderContext rule (e), so reusing it would add
-   * interpretation with no new information — which is what axis 1 rejects.
+   * interpretation with no new information.
    */
-  it('falsifies via the coord_links edge, and cites the measurement that earned it', () => {
-    expect(AGENT_GOAL_CELL.falsifier.measurement).toContain('coord_links');
-    expect(AGENT_GOAL_CELL.falsifier.measurement).not.toMatch(/stale/i);
-    // The count is the load-bearing part: it is why precedence alone is not enough.
-    expect(AGENT_GOAL_CELL.falsifier.kills).toContain('3 of 19');
+  it('assesses goal support via the coord_links edge, not staleness', () => {
+    const assessment = AGENT_GOAL_CELL.assessment;
+    expect(assessment).not.toBeNull();
+    expect(assessment!.evidence).toContain('goalAgreement');
+    expect(assessment!.evidence).not.toContain('stale');
+    // Competing claims are the load-bearing distinction: precedence alone is not enough.
+    expect(assessment!.codes.divergent.safeAction).toContain('goalCompeting');
   });
 
   /** Axis 2. A held-nothing agent has no goal, and the competing claims must be

@@ -75,6 +75,24 @@ const DETACHED_INSPECT_TEST_HINT =
   "For one test file, re-run it detached with capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output. " +
   'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only).';
 
+const DETACHED_ROUTER_TEST_HINT =
+  "For integration test files, re-run detached with capability:bash { command: 'npm run test:file -- <test path>', run_in_background: true }, then poll capability:bash_output. " +
+  'The test:file router selects the owning Vitest config; run one file per detached call when needed.';
+
+/**
+ * Choose the timeout recovery that can actually run the timed-out file.
+ *
+ * `capability:inspect check:"test"` intentionally launches the package's default
+ * `npx vitest` config. That config excludes `*.integration.test.*`, so prescribing
+ * it for an integration timeout deterministically fails before the suite starts.
+ * The repository's `npm run test:file` router is the owning-config surface for
+ * integration files and must be the recovery path instead.
+ */
+export function detachedTestTimeoutHint(files: string[]): string {
+  const hasIntegrationFile = files.some((file) => /\.integration\.test\.[cm]?[jt]sx?$/i.test(file));
+  return hasIntegrationFile ? DETACHED_ROUTER_TEST_HINT : DETACHED_INSPECT_TEST_HINT;
+}
+
 type TestFilePathResolution =
   | { ok: true; files: string[] }
   | { ok: false; path: string; matches: string[] };
@@ -527,7 +545,7 @@ export async function runTestFilesCore(opts: {
         timeoutMs,
         hint:
           `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
-          DETACHED_INSPECT_TEST_HINT,
+          detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
       };
     }
@@ -631,7 +649,7 @@ export default defineTool({
       .describe("Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`), never reported as a pass — vitest merely skips them all and exits 0."),
     timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
       .describe(
-        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so a slow suite returns an actionable timeout instead of an opaque transport error. For a longer suite run it detached via capability:inspect { run_in_background: true }.`,
+        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so a slow suite returns an actionable timeout instead of an opaque transport error. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
       ),
     maxFailures: z.number().int().min(1).max(100).optional()
       .describe(
@@ -672,7 +690,7 @@ export default defineTool({
           ...result,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
-            DETACHED_INSPECT_TEST_HINT,
+            detachedTestTimeoutHint(args.files),
         },
       };
     }

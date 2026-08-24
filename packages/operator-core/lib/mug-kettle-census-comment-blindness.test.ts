@@ -65,6 +65,8 @@ function census(): Finding[] {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       maxBuffer: 1e8,
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
     cached = (JSON.parse(raw).findings ?? []) as Finding[];
   }

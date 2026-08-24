@@ -25,7 +25,13 @@ type Offender = { repo: string; paths: string[] };
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 
 const git = (cwd: string, args: string[]): string =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  }).trim();
 
 /** A lister backed by a plain map, so no real repo is needed. */
 const listerFor =

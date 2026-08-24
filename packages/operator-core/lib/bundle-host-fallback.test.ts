@@ -88,7 +88,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
     'STARTS on the previous bundle when the tree is momentarily broken, and says so loudly',
     () => {
       // A service that was serving fine a moment ago.
-      execFileSync('mkdir', ['-p', join(dir, 'dist-host')]);
+      execFileSync('mkdir', ['-p', join(dir, 'dist-host')], { timeout: 10_000, killSignal: 'SIGKILL' });
       writeFileSync(outfile, GOOD_BUNDLE);
 
       const { code, output } = runBundler(writeBrokenEntry());
@@ -137,7 +137,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
       // Without this the marker would latch: /api/health would keep reporting a
       // long-fixed staleness, which trains readers to ignore it — the failure
       // mode that makes a warning worse than no warning at all.
-      execFileSync('mkdir', ['-p', join(dir, 'dist-host')]);
+      execFileSync('mkdir', ['-p', join(dir, 'dist-host')], { timeout: 10_000, killSignal: 'SIGKILL' });
       writeFileSync(outfile, GOOD_BUNDLE);
       writeFileSync(marker, JSON.stringify({ schema: 'bundle-stale-v1', outfile }));
 

@@ -40,6 +40,8 @@ function runGuard(distDir: string): { status: number; output: string } {
       encoding: 'utf8',
       cwd: REPO_ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
     return { status: 0, output };
   } catch (err) {

@@ -58,7 +58,13 @@ function gateSource(): string {
 }
 
 function have(bin: string): boolean {
-  return spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status === 0;
+  return (
+    spawnSync('sh', ['-c', `command -v ${bin}`], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    }).status === 0
+  );
 }
 
 /**
@@ -117,6 +123,8 @@ function identityRows(): { literal: string; low: boolean }[] {
   const run = spawnSync('python3', [GATE, '--identity-literals'], {
     encoding: 'utf8',
     env: GATE_ENV,
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
   });
   if (run.status !== 0) throw new Error(`--identity-literals failed: ${run.stderr}`);
   return run.stdout
@@ -145,6 +153,8 @@ function scan(files: Record<string, string>): { status: number; out: string } {
     const run = spawnSync('python3', [GATE, '--scan-dir', dir], {
       encoding: 'utf8',
       env: GATE_ENV,
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
     });
     return { status: run.status ?? -1, out: `${run.stdout}${run.stderr}` };
   } finally {

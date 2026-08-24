@@ -656,7 +656,11 @@ function runGate(input: { fail: number; skipped: number; requireZeroSkips?: bool
     `REQUIRE_ZERO_SKIPS=${input.requireZeroSkips ? 1 : 0}`,
     gateMatch![1],
   ].join('\n');
-  const result = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+  const result = spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
   return { status: result.status, output: result.stdout + result.stderr };
 }
 
@@ -707,6 +711,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       ].join('\n');
       return spawnSync('bash', ['-c', script, 'diagnostic-cleanup-test', runRoot, diagnosticsRoot], {
         encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
       });
     };
 
@@ -890,6 +896,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       const result = spawnSync(process.execPath, ['-', runRoot, installedRoot], {
         input: sourceOverlayMatch![1],
         encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
       });
       expect(result.status, result.stdout + result.stderr).toBe(0);
       expect(realpathSync(join(runRoot, 'node_modules', '@papercusp', 'root-package'))).toBe(
@@ -904,7 +912,11 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   });
 
   it('installs the ready fixed A-G scenario but refuses physical mutation without the explicit execution grant', () => {
-    const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
+    const contract = spawnSync(physicalScenarioPath, ['--contract-check'], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+    });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
@@ -937,6 +949,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
 
     const attempted = spawnSync(physicalScenarioPath, [output, towerIdentity, vmIdentity], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
@@ -971,6 +985,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'A'], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PHASE_A_CMD: 'printf synthetic-pass',
@@ -1112,6 +1128,8 @@ esac
       [output, towerIdentity, vmIdentity],
       {
         encoding: 'utf8',
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
         env: {
           ...process.env,
           PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
@@ -1136,6 +1154,8 @@ esac
   it('pins a bidirectional Phase B ref-announcement adapter with no direct-fetch or command override seam', () => {
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'B'], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PHASE_B_CMD: 'git fetch synthetic bundle',
@@ -1212,6 +1232,8 @@ esac
   it('pins two-host Phase C trust controls to the production sigrefs and scope-serve primitives', () => {
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'C'], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PHASE_C_CMD: 'printf synthetic-pass',
@@ -1271,6 +1293,8 @@ esac
   it('pins Phase D to the production request, ratification, staging-event, and worktree-bridge spine', () => {
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'D'], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PHASE_D_CMD: 'git fetch synthetic && git update-ref synthetic',
@@ -1346,6 +1370,8 @@ esac
   it('pins Phase E to commit-only members, the sole bridge writer, watchdog sweeps, and fail-closed recovery', () => {
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'E'], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PHASE_E_CMD: 'git push synthetic refs/heads/staging',
@@ -1429,6 +1455,8 @@ esac
   it('pins Phase F to two-host production GC and publish guards over private temporary repositories', () => {
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'F'], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PHASE_F_CMD: 'git update-ref refs/heads/synthetic deadbeef',
@@ -1490,6 +1518,8 @@ esac
   it('pins Phase G to the truthful physical-attester versus ephemeral-protocol boundary', () => {
     const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'G'], {
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
       env: {
         ...process.env,
         HIVE_GIT_PHYSICAL_PHASE_G_CMD: 'git push --force synthetic',
@@ -1529,7 +1559,11 @@ esac
   });
 
   it('reports the fixed scenario ready without performing a physical run', () => {
-    const readiness = spawnSync(physicalScenarioPath, ['--require-ready'], { encoding: 'utf8' });
+    const readiness = spawnSync(physicalScenarioPath, ['--require-ready'], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+    });
     expect(readiness.status).toBe(0);
     expect(readiness.stdout).toBe('');
     expect(readiness.stderr).toBe('');
@@ -1567,6 +1601,8 @@ esac
       [validatorPath, evidencePath, trustPath],
       {
         encoding: 'utf8',
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
       },
     );
     expect(result.status, result.stderr).toBe(0);
@@ -1574,7 +1610,7 @@ esac
       ok: true,
       schemaVersion: 'hive-git-physical-evidence/v1',
     });
-  });
+  }, 30_000);
 
   it('rejects a manifest changed after either physical device attested it', () => {
     const fixture = physicalFixture();

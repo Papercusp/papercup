@@ -72,6 +72,8 @@ function resolveSkipFromRepo(env: NodeJS.ProcessEnv): string {
   return execFileSync('bash', ['-c', `${line}\necho "$SKIP_FROMREPO"`], {
     encoding: 'utf8',
     env: { PATH: process.env.PATH ?? '', ...env },
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   }).trim();
 }
 
@@ -98,6 +100,8 @@ describe('D-016: live-federation-gate.sh SKIP_FROMREPO defaults to 0 (run the le
     const semicolonJoined = execFileSync('bash', ['-c', `${line}; echo "$SKIP_FROMREPO"`], {
       encoding: 'utf8',
       env: { PATH: process.env.PATH ?? '' },
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
     }).trim();
     expect(semicolonJoined).toBe(''); // …and would silently swallow the probe
     expect(resolveSkipFromRepo({})).not.toBe(''); // the newline form does not

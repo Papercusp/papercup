@@ -62,7 +62,8 @@ function makeCleanRepo(): string {
   // guards skip them outright (no base version to diff against) and the run is vacuous for
   // an entirely different reason than the one under test.
   writeFileSync(join(tmp, FILE_B), 'export interface B { id: string }\n');
-  const git = (...args: string[]) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
+  const git = (...args: string[]) =>
+    execFileSync('git', args, { cwd: tmp, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
   git('init', '-q', '.');
   git('config', 'user.email', 't@t.t');
   git('config', 'user.name', 't');
@@ -75,6 +76,8 @@ function run(tmp: string, guard: string, extraArgs: string[] = []) {
   const r = spawnSync('node', [join('scripts', guard), '--base', 'HEAD', ...extraArgs], {
     cwd: tmp,
     encoding: 'utf8',
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
   });
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
   // A guard that failed to LOAD tells us nothing about the contract, and its non-zero exit

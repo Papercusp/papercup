@@ -125,7 +125,12 @@ describe('no-retired-imports guard — live verdict over the real tree', () => {
     // per check-lint-guard-reachability.mjs's taxonomy (a logic-test of the predicate
     // alone is classified ADVISORY there, because a green logic test and a rotting
     // guard are perfectly compatible states).
-    const out = execFileSync('node', [GUARD], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const out = execFileSync('node', [GUARD], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
     expect(out).toMatch(/✓ no live imports of _retired\/ modules/);
   });
 });

@@ -151,7 +151,7 @@ raw_plan_nodes AS (
    WHERE pi.workspace_id = $1 AND pi.harness_slug = $2
   UNION ALL
   SELECT 1 AS source_rank,
-         'plan_item:' || hp.plan_slug || '#' || item ->> 'id' AS node_key,
+         'plan_item:' || hp.plan_slug || '#' || (item ->> 'id') AS node_key,
          hp.plan_slug,
          item ->> 'id' AS item_id,
          COALESCE(NULLIF(item ->> 'status', ''), 'todo') AS status,
@@ -483,4 +483,3 @@ export async function traverseDependencies(
     maxDepth,
   };
 }
-

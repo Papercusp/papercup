@@ -244,7 +244,37 @@ export async function recordWithheld(slug: string, role: string, reason: string,
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   try {
-    await db
+    if (isOwnerLoopRole(role)) {
+      // Owner-loop identity is role-only (WI-41224/P-001). A target-free insert
+      // handles either the legacy three-column primary key or migration 939's
+      // role-only partial unique index; on a re-home conflict, update the row
+      // that readFireState/checkFireGate uses.
+      const inserted = await db
+        .insert(at)
+        .values({
+          harnessSlug: slug,
+          role,
+          workspaceId: ws,
+          lastWithheldAt: dsql`now()` as any,
+          lastWithheldReason: reason,
+          lastWithheldDetail: detail ?? null,
+        })
+        .onConflictDoNothing({ target: at.role, where: dsql`${at.role} LIKE 'loop-su-%'` })
+        .returning({ role: at.role });
+      if (inserted.length === 0) {
+        await db
+          .update(at)
+          .set({
+            harnessSlug: slug,
+            workspaceId: ws,
+            lastWithheldAt: dsql`now()`,
+            lastWithheldReason: reason,
+            lastWithheldDetail: detail ?? null,
+          })
+          .where(fireStateWhere(ws, slug, role));
+      }
+    } else {
+      await db
       .insert(at)
       .values({
         harnessSlug: slug,
@@ -262,6 +292,7 @@ export async function recordWithheld(slug: string, role: string, reason: string,
           lastWithheldDetail: dsql`EXCLUDED.last_withheld_detail`,
         },
       });
+    }
   } catch (e) {
     console.warn(`[autoloop] recordWithheld failed (${slug}/${role}/${reason}):`, e instanceof Error ? e.message : e);
   }
@@ -294,7 +325,36 @@ export async function recordFire(
       : outcome === 'ok'
         ? dsql`0`
         : dsql`${at.consecutiveErrors}`; // attempt / infra-error (WI-669): preserve
-  await db
+  if (isOwnerLoopRole(role)) {
+    // Owner-loop identity is role-only (WI-41224/P-001). A target-free insert
+    // handles migration 939's role-only partial unique index; a re-home conflict
+    // falls through to the same workspace+role row that the gate reads.
+    const inserted = await db
+      .insert(at)
+      .values({
+        harnessSlug: slug,
+        role,
+        lastFiredAt: dsql`now()` as any,
+        lastStatus: status,
+        consecutiveErrors: insertErrors,
+        workspaceId: ws,
+      })
+      .onConflictDoNothing({ target: at.role, where: dsql`${at.role} LIKE 'loop-su-%'` })
+      .returning({ role: at.role });
+    if (inserted.length === 0) {
+      await db
+        .update(at)
+        .set({
+          harnessSlug: slug,
+          lastFiredAt: dsql`now()`,
+          lastStatus: status,
+          consecutiveErrors: onUpdateErrors,
+          workspaceId: ws,
+        })
+        .where(fireStateWhere(ws, slug, role));
+    }
+  } else {
+    await db
     .insert(at)
     .values({
       harnessSlug: slug,
@@ -313,6 +373,7 @@ export async function recordFire(
         workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
+  }
   // Health-signal hygiene (autonomous-loop-hardening F6): piggyback a throttled prune of
   // long-dead fire-state rows on the existing fire path, so the table self-maintains without a
   // new scheduler. Fire-and-forget + time-gated, so it adds no per-fire cost in the common case
@@ -456,6 +517,9 @@ export async function claimFire(
 ): Promise<boolean> {
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
+  const identityWhere = isOwnerLoopRole(role)
+    ? fireStateWhere(ws, slug, role)
+    : and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug), eq(at.role, role));
   if (expectedLastFiredAtMs == null) {
     const ins = await db
       .insert(at)
@@ -467,16 +531,18 @@ export async function claimFire(
         consecutiveErrors: 0,
         workspaceId: ws,
       })
-      .onConflictDoNothing({ target: [at.workspaceId, at.harnessSlug, at.role] });
+      .onConflictDoNothing(
+        isOwnerLoopRole(role)
+          ? { target: at.role, where: dsql`${at.role} LIKE 'loop-su-%'` }
+          : { target: [at.workspaceId, at.harnessSlug, at.role] },
+      );
     if (Number((ins as unknown as { count?: number }).count ?? 0) > 0) return true;
     const upd = await db
       .update(at)
-      .set({ lastFiredAt: dsql`now()`, lastStatus: status })
+      .set({ harnessSlug: slug, workspaceId: ws, lastFiredAt: dsql`now()`, lastStatus: status })
       .where(
         and(
-          eq(at.workspaceId, ws),
-          eq(at.harnessSlug, slug),
-          eq(at.role, role),
+          identityWhere,
           dsql`${at.lastFiredAt} IS NULL`,
         ),
       );
@@ -484,12 +550,10 @@ export async function claimFire(
   }
   const upd = await db
     .update(at)
-    .set({ lastFiredAt: dsql`now()`, lastStatus: status })
+    .set({ harnessSlug: slug, workspaceId: ws, lastFiredAt: dsql`now()`, lastStatus: status })
     .where(
       and(
-        eq(at.workspaceId, ws),
-        eq(at.harnessSlug, slug),
-        eq(at.role, role),
+        identityWhere,
         dsql`date_trunc('milliseconds', ${at.lastFiredAt}) = to_timestamp(${expectedLastFiredAtMs}::double precision / 1000.0)`,
       ),
     );
@@ -502,7 +566,7 @@ export async function resetFireErrors(slug: string, role?: string): Promise<numb
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const where = role
-    ? and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug), eq(at.role, role))
+    ? fireStateWhere(ws, slug, role)
     : and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug));
   const res = await db
     .update(at)

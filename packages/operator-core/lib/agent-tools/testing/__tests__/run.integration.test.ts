@@ -28,7 +28,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
-import runTool, { discoverKnownHiveCheckoutRoots, normalizeTestFilePaths } from '../run';
+import runTool, { detachedTestTimeoutHint, discoverKnownHiveCheckoutRoots, normalizeTestFilePaths } from '../run';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -306,6 +306,18 @@ describe('testing:run (integration)', () => {
     expect(out.ok).toBe(false);
     expect(['route_error', 'no_report']).toContain(out.error);
   }, 180_000);
+
+  it('routes integration timeout recovery through the owning test:file router', () => {
+    const hint = detachedTestTimeoutHint(['packages/operator-core/lib/example.integration.test.ts']);
+
+    expect(hint).toContain('capability:bash');
+    expect(hint).toContain('npm run test:file -- <test path>');
+    expect(hint).toContain('owning Vitest config');
+    expect(hint).not.toContain('capability:inspect');
+    expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain(
+      'capability:inspect',
+    );
+  });
 
   // EI-19324351741370770: the foreground timeout used to kill only the router
   // process (`scripts/test-files.mjs`'s own pid) — but the router launches the REAL

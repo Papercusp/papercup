@@ -139,15 +139,16 @@ describe('WI-38266: a truncated payload makes an absence UNATTRIBUTABLE, not the
     expect(r.status).toBe('value');
     if (r.status !== 'value') return;
     expect(r.assessment?.status).toBe('unavailable');
-    expect(r.assessment?.truncatedByDoor).toBe(true);
+    if (r.assessment?.status !== 'unavailable') return;
+    expect(r.assessment.truncatedByDoor).toBe(true);
     // The whole point, one field over: `not-measured` sends the reader to RE-READ.
     // `insufficient-data` is the branch that accuses the resolver of drift, and must
     // not also be reachable from a truncated payload.
-    expect(r.assessment?.unknown?.code).toBe('not-measured');
+    expect(r.assessment.unknown.code).toBe('not-measured');
     // A safe action must survive: a reader who lost the interpretation still has to be
     // told what they may safely do — which is the conservative thing, not nothing.
-    expect(r.assessment?.safeAction).toBeTruthy();
-    expect(r.assessment?.code).toBeNull();
+    expect(r.assessment.safeAction).toBeTruthy();
+    expect(r.assessment.code).toBeNull();
     // The evidence entry carries the SAME split, per-path: the field the door dropped
     // is unattributable, never blamed on the resolver.
     const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
@@ -190,7 +191,8 @@ describe('WI-38266: a truncated payload makes an absence UNATTRIBUTABLE, not the
     const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
     expect(ev?.truncatedByDoor).toBe(true);
     expect(ev?.drifted).toBeUndefined();
-    expect(r.assessment?.truncatedByDoor).toBe(true);
+    if (r.assessment?.status !== 'unavailable') return;
+    expect(r.assessment.truncatedByDoor).toBe(true);
   });
 });
 
@@ -209,8 +211,9 @@ describe('WI-38266 CONTROLS — real drift must still be reported as drift', () 
     // The assessment's own split, untruncated: a genuinely absent path IS the
     // resolver's drift, and must still be reported as such rather than softened.
     expect(r.assessment?.status).toBe('unavailable');
-    expect(r.assessment?.unknown?.code).toBe('insufficient-data');
-    expect(r.assessment?.truncatedByDoor).toBeUndefined();
+    if (r.assessment?.status !== 'unavailable') return;
+    expect(r.assessment.unknown.code).toBe('insufficient-data');
+    expect(r.assessment.truncatedByDoor).toBeUndefined();
     const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
     expect(ev?.drifted).toBe(true);
     expect(ev?.truncatedByDoor).toBeUndefined();
@@ -252,8 +255,9 @@ describe('WI-38266 CONTROLS — real drift must still be reported as drift', () 
     // Same rule for the assessment: everything it declares ARRIVED, so a self-declared
     // truncation elsewhere in the payload must not downgrade a fully-substantiated code.
     expect(r.assessment?.status).toBe('resolved');
-    expect(r.assessment?.code).toBe('executing');
-    expect(r.assessment?.truncatedByDoor).toBeUndefined();
+    if (r.assessment?.status !== 'resolved') return;
+    expect(r.assessment.code).toBe('executing');
+    expect('truncatedByDoor' in r.assessment).toBe(false);
     const ev = r.assessment?.evidence.find((e) => e.path === 'serving.startedSinceCodeChange');
     expect(ev?.value).toBe(true);
     expect(ev?.truncatedByDoor).toBeUndefined();

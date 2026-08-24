@@ -580,6 +580,7 @@ export default defineTool({
       const trimmed = value?.trim().toLowerCase();
       return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
     };
+    const explicitWorkItem = args.workItem?.trim();
     const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
     // EI-20245033088778955: an ACTIVE routine's install scope is authoritative
@@ -588,6 +589,25 @@ export default defineTool({
     // across harness namespaces.
     if (onlyWorkspaceScope && isConcreteHarness(prior?.harnessSlug)) {
       harness = resolvePotHomeSlug(prior!.harnessSlug!, undefined);
+    }
+    // EI-21302411209364135: an explicit work-item pin is also a durable scope hint.
+    // A workspace-scoped SU session has no concrete ctx.harnessSlug, so resolving its
+    // loop through the workspace home can point the optional auto-claim at the wrong
+    // harness. Numeric WI ids are harness-scoped on the feature-family path; resolve the
+    // item without a harness before falling back to the home pot, then use its canonical
+    // harness for both fleet admission and the compare-and-claim. An active loop's
+    // existing install scope remains authoritative above, so a re-arm cannot silently
+    // migrate an already-installed routine.
+    if (onlyWorkspaceScope && !harness && explicitWorkItem) {
+      try {
+        const item = await getWorkItem(explicitWorkItem.toUpperCase());
+        if (isConcreteHarness(item?.harness)) {
+          harness = resolvePotHomeSlug(item!.harness!, undefined);
+        }
+      } catch {
+        // Scope inference is a convenience for an otherwise-valid arm. Preserve the
+        // existing home-harness fallback when the unscoped lookup cannot complete.
+      }
     }
     // A wildcard operator session means "this workspace", not "whatever harness
     // the last session brief happened to retain". Resolve the formal workspace
@@ -790,7 +810,7 @@ export default defineTool({
     // NEVER steals a live peer's item (claimWorkItem's compare-and-claim only takes an
     // unheld/self-held row), so a conflict/not-found is a non-fatal NOTE, never a failed
     // arm — arming already succeeded; this is best-effort on top.
-    const explicit = args.workItem?.trim();
+    const explicit = explicitWorkItem;
     const drivenCandidate =
       (explicit ? explicit.toUpperCase() : undefined) ??
       (carry === 'cold' ? detectDrivenWorkItemId(goal) ?? undefined : undefined);

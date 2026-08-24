@@ -363,8 +363,18 @@ describe('end-to-end — submodule content is materialised, not silently empty (
     // `git show <ref>:<path>` from repoRoot cannot do this in one step: git does not
     // recurse a pathspec across a submodule boundary, which is exactly why this whole
     // fix (and this test) has to treat the submodule as a second repository.
-    const pin = execFileSync('git', ['rev-parse', `HEAD:${subRoot}`], { cwd: repoRoot, encoding: 'utf8' }).trim();
-    const committed = execFileSync('git', ['show', `${pin}:${subRelFile}`], { cwd: join(repoRoot, subRoot), encoding: 'utf8' });
+    const pin = execFileSync('git', ['rev-parse', `HEAD:${subRoot}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    }).trim();
+    const committed = execFileSync('git', ['show', `${pin}:${subRelFile}`], {
+      cwd: join(repoRoot, subRoot),
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    });
 
     // NOTE: no leading `--` here. `npm run lint:as-committed -- lint:x` works because
     // NPM's own `--` is consumed by npm itself before the script sees argv; invoking
@@ -379,6 +389,8 @@ describe('end-to-end — submodule content is materialised, not silently empty (
     const run = spawnSync('node', [scriptPath, 'lint:no-owner-name-tags', '--keep'], {
       cwd: repoRoot,
       encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
     });
     expect(run.status).not.toBe(2);
     // Proof the new step actually engaged, not just that nothing crashed — a future

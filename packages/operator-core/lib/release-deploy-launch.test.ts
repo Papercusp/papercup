@@ -331,7 +331,11 @@ describe('detached deploy terminal marker', () => {
     try {
       writeFileSync(marker, '{"exitCode":0,"finishedAt":"2000-01-01T00:00:00Z"}\n');
       const shell = buildDeployTerminalShell('test ! -e "$marker"; exit 7', marker);
-      const result = spawnSync('bash', ['-c', shell], { encoding: 'utf8' });
+      const result = spawnSync('bash', ['-c', shell], {
+        encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
 
       expect(result.status).toBe(7);
       expect(readDeployTerminalMarker(marker)).toMatchObject({

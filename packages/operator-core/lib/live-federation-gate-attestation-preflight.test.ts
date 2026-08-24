@@ -380,7 +380,7 @@ function runDuePredicate(opts: {
   const stateDir = join(dir, 'state');
   const desktopDir = join(dir, 'papercusp-desktop');
   const binDir = join(desktopDir, 'bin');
-  spawnSync('mkdir', ['-p', stateDir, binDir]);
+  spawnSync('mkdir', ['-p', stateDir, binDir], { timeout: 10_000, killSignal: 'SIGKILL' });
   if (opts.wrapperPresent !== false) writeFileSync(join(binDir, 'local-matrix.sh'), '#!/bin/bash\n');
   // age_h() reads an epoch-seconds stamp; a MISSING file is 999999h (never green => due).
   if (opts.matrixGreenAgeH !== undefined) {
@@ -484,7 +484,7 @@ function runLocalMatrixHostPreflight(opts: {
   const node = join(desktopDir, 'src-tauri', 'sidecar', 'bin', 'node');
   const deb = join(dir, 'Papercusp.deb');
   const gh = join(dir, 'gh');
-  spawnSync('mkdir', ['-p', dirname(node)]);
+  spawnSync('mkdir', ['-p', dirname(node)], { timeout: 10_000, killSignal: 'SIGKILL' });
   writeFileSync(node, '#!/usr/bin/env bash\\nexit 0\\n');
   chmodSync(node, 0o755);
   writeFileSync(deb, 'test-deb');

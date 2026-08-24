@@ -771,7 +771,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(urlSyncAttempts).toBe(2);
     expect(existsSync(lockPath)).toBe(false);
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
-  });
+  }, 30_000);
 
   it('isIndexLockFailure matches the git fatal (and only it)', () => {
     expect(

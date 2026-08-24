@@ -32,6 +32,7 @@ import type { LivenessVerdict } from '../coordination/liveness-oracle';
 export type ForceReleaseBasis =
   | 'holder-not-live'
   | 'holder-warm-idle'
+  | 'critical-claim-progress-expired'
   | 'holder-shutdown-accepted'
   | 'holder-session-ended'
   | 'holder-wake-missed'
@@ -56,6 +57,46 @@ export type ForceTransition = 'release' | 'claim';
  * activity bumps itemLastProgressAt at least as often as its own turn cadence.
  */
 export const WARM_IDLE_ACTIVITY_STALE_MS = 3 * PRESENCE_STALE_MS;
+
+/**
+ * P-008 critical claims are leased by ITEM progress independently of process
+ * activity. A live agent doing unrelated work must not keep a release-critical
+ * claim forever merely because lastActiveAt is fresh. The lease starts at the
+ * newest genuine item progress stamp, falling back to takenAt for a newly
+ * claimed item. Missing/unparseable evidence fails closed (not expired).
+ */
+export const CRITICAL_CLAIM_PROGRESS_LEASE_MS = WARM_IDLE_ACTIVITY_STALE_MS;
+
+export interface CriticalClaimProgressLeaseVerdict {
+  expired: boolean;
+  anchorMs: number | null;
+  ageMs: number | null;
+  leaseMs: number;
+}
+
+export function assessCriticalClaimProgressLease(input: {
+  takenAt: string | Date | null;
+  lastProgressAt: string | Date | null;
+  nowMs?: number;
+  leaseMs?: number;
+}): CriticalClaimProgressLeaseVerdict {
+  const nowMs = input.nowMs ?? Date.now();
+  const leaseMs = input.leaseMs ?? CRITICAL_CLAIM_PROGRESS_LEASE_MS;
+  const progressMs = parseTs(input.lastProgressAt);
+  const takenMs = parseTs(input.takenAt);
+  const anchorMs = Number.isFinite(progressMs)
+    ? progressMs
+    : Number.isFinite(takenMs)
+      ? takenMs
+      : null;
+  const ageMs = anchorMs == null ? null : Math.max(0, nowMs - anchorMs);
+  return {
+    expired: ageMs != null && ageMs >= leaseMs,
+    anchorMs,
+    ageMs,
+    leaseMs,
+  };
+}
 
 /**
  * EI-18907586326157984: this guard's own heartbeat/lastActiveAt/itemLastProgressAt

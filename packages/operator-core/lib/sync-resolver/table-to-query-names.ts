@@ -465,6 +465,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // so a re-stamp or a kind change moves which clauses resolve. Same on-demand
     // mounting as priorAttempts.
     'workItems.behaviorContract',
+    // P-011: adequacy SCORECARDS are stored as work-item rows, so this is the only table
+    // a new grading touches. The adequacy leg is advisory-only (D-018), but a census that
+    // silently under-reports a gap it claims to measure is the defect this plan exists to
+    // end. Same on-demand mounting, so the bust costs nothing while the section is closed.
+    'plans.specCoverage',
     // Goal surfaces count OPEN and needs-human items per goal, so a state flip
     // or a new goal-stamped item moves both the rail glance and the detail page.
     'goals.list',
@@ -569,9 +574,15 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // is the exact failure the plan exists to end. Full-bust — none of these is keyed by a
   // surrogate PK the bridge could scope on, and the query is only ever mounted while a
   // human has the section open (useSyncQuery `enabled`), so the bust costs nothing otherwise.
-  'harness_shared.plan_spec_clauses': ['workItems.behaviorContract'],
-  'harness_shared.plan_spec_clause_revisions': ['workItems.behaviorContract'],
+  // `plans.specCoverage` (the plan-surface census) shares the clause tables for the same
+  // reason: a clause revised after its evidence was recorded is exactly the transition
+  // that flips its verdict from satisfied to spec_proof_stale.
+  'harness_shared.plan_spec_clauses': ['workItems.behaviorContract', 'plans.specCoverage'],
+  'harness_shared.plan_spec_clause_revisions': ['workItems.behaviorContract', 'plans.specCoverage'],
   'harness_shared.work_item_spec_revision_edges': ['workItems.behaviorContract'],
+  // The OTHER half of the freshness verdict: recording evidence at the current revision is
+  // what CLEARS a stale-proof refusal, so an open census panel must not miss it either.
+  'harness_shared.spec_evidence_bindings': ['plans.specCoverage'],
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',

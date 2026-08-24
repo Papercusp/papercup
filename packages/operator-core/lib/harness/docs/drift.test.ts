@@ -9,7 +9,13 @@ import type { GitRunner } from './subject-ref';
 /** Real git runner over a fixture repo — exactly the shape run-git-sync injects. */
 const runGit: GitRunner = (args, cwd) => {
   try {
-    const stdout = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout = execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    });
     return Promise.resolve({ code: 0, stdout, stderr: '' });
   } catch (e: unknown) {
     const err = e as { status?: number; stdout?: Buffer | string; stderr?: Buffer | string };
@@ -25,7 +31,12 @@ let repo: string;
 const shas: Record<string, string> = {};
 
 function git(args: string[]): string {
-  return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, {
+    cwd: repo,
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  }).trim();
 }
 function commitAll(msg: string): string {
   git(['add', '-A']);
@@ -240,7 +251,7 @@ describe('submodule drift routing (#3): superproject log is blind; routed log se
   let sub: string;
   const s: Record<string, string> = {};
   const g = (cwd: string, args: string[]): string =>
-    execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim();
   const initRepo = (dir: string) => {
     g(dir, ['init', '-q']);
     g(dir, ['config', 'user.email', 't@p.dev']);

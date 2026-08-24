@@ -512,6 +512,8 @@ describe('no-bespoke-state-read guard:where it looks (EI-19444550724173505)', ()
         cwd: REPO_ROOT,
         encoding: 'utf8',
         maxBuffer: 256 * 1024 * 1024,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
       })
         .split('\n')
         .filter((f) => /\.ts$/.test(f) && !/\.(test|spec)\./.test(f));

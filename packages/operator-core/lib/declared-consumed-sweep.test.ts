@@ -388,19 +388,22 @@ describe('the census rows themselves', () => {
    * WATCHES; none of them stop it from watching the wrong set. A new optional
    * field added to `CellSpec` tomorrow is exactly the WI-6444 risk surface, and
    * with no row here it is unwatched — the gate stays green while the defect
-   * class it exists for walks straight past it. So the field list is checked
-   * against the real interface rather than maintained by hope.
+   * class it exists for walks straight past it. `assessment` is the one retained
+   * required-field row: requiring its producer prevents an unwritten value, but
+   * does not prevent its consumer from being deleted. So the field list is
+   * checked against the real interface rather than maintained by hope.
    */
-  it('watches EVERY optional field on the real CellSpec, not a snapshot of them', () => {
+  it('watches EVERY optional field plus the required assessment consumer, not a snapshot of them', () => {
     const source = readFileSync(new URL('./cell-registry.ts', import.meta.url), 'utf8');
     const body = stripComments(source).split('export interface CellSpec {')[1]?.split('\n}')[0];
     expect(body, 'CellSpec interface not found — this test is watching nothing').toBeTruthy();
 
     const optional = [...body.matchAll(/^\s{2}([a-zA-Z_][\w]*)\?\s*:/gm)].map((m) => m[1]).sort();
     const watched = DECLARED_FIELDS.map((f: { name: string }) => f.name).sort();
+    const requiredConsumerGuards = ['assessment'];
 
     expect(optional.length).toBeGreaterThan(0);
-    expect(watched).toEqual(optional);
+    expect(watched).toEqual([...optional, ...requiredConsumerGuards].sort());
   });
 
   it('covers all three migrations this plane shipped', () => {
