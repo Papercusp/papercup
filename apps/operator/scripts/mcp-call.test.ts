@@ -62,6 +62,40 @@ describe('mcp-call argument parsing', () => {
   it('rejects an accidental value on the boolean raw flag', () => {
     expect(() => parseArgs(['coord:whoami', '--raw=true'])).toThrow('--raw does not take a value');
   });
+
+  // WI-41249. The reader-only tests below pass `flags: { jsonFile }` by hand, so
+  // they proved readJsonArgs worked while the parser was emitting `flags['json-file']`
+  // and `--json-file` silently sent EMPTY args. Only an end-to-end assertion over the
+  // parser/reader SEAM can catch that, so these drive the real CLI spelling.
+  it('routes the kebab-cased --json-file through to the reader (space form)', () => {
+    const parsed = parseArgs(['work_items:get', '--json-file', 'payload.json']);
+    expect(parsed.flags.jsonFile).toBe('payload.json');
+    expect(jsonSourceKind(parsed)).toBe('file');
+
+    const seen: Array<[unknown, unknown]> = [];
+    const readFile = (path: unknown, encoding: unknown) => {
+      seen.push([path, encoding]);
+      return '{"id":"EI-1750"}';
+    };
+    expect(readJsonArgs(parsed, { readFile })).toEqual({ id: 'EI-1750' });
+    expect(seen).toEqual([['payload.json', 'utf8']]);
+  });
+
+  it('routes the kebab-cased --json-file through to the reader (equals form)', () => {
+    const parsed = parseArgs(['work_items:get', '--json-file=payload.json']);
+    expect(parsed.flags.jsonFile).toBe('payload.json');
+    expect(jsonSourceKind(parsed)).toBe('file');
+  });
+
+  it('never degrades an explicit flag into empty args: unknown flags throw', () => {
+    expect(() => parseArgs(['coord:whoami', '--jsonfile', 'payload.json']))
+      .toThrow('unknown flag --jsonfile');
+    expect(() => parseArgs(['coord:whoami', '--nope=1'])).toThrow(/accepted flags/);
+  });
+
+  it('rejects a value flag with no value instead of storing undefined', () => {
+    expect(() => parseArgs(['work_items:get', '--json-file'])).toThrow('--json-file requires a value');
+  });
 });
 
 describe('mcp-call result-format contract', () => {
