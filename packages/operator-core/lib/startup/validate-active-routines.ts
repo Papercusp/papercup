@@ -85,6 +85,40 @@ export interface RoutineValidationResult {
    * them.
    */
   systemActionCheckApplicable: boolean;
+  /**
+   * Registered `standing` system actions with NO `harness_shared.routines` row at all in
+   * this workspace (EI-18752496371939475) — the THIRD direction of the handler/registration
+   * cross-check, and the mirror image of `unregisteredSystemActions` above.
+   *
+   * There are three independent ways a scheduled routine can be dead:
+   *   1. row ACTIVE, no registered handler  → `unregisteredSystemActions` (above).
+   *   2. handler defined, never registered  → `automation/routine-classification.registry.test.ts`.
+   *   3. handler registered, NO ROW EXISTS  → THIS field. It never fires, and because the
+   *      code is green and its tests pass, nothing in the tree could see it.
+   *
+   * That is not hypothetical: `gc-dead-loops` shipped fully built and unit+integration
+   * tested, its handler correctly imported, and sat dead because the seed script that
+   * creates its row was never run — while the leak it existed to stop kept leaking.
+   *
+   * NOT the same check as `harness/routines/bespoke-active-seeds-check.ts`, and neither
+   * subsumes the other — they ask different questions over different populations:
+   *   - that one asks "is this SEEDED routine ACTIVE as intended?" over the seed scripts
+   *     whose writer defaults `active=true`, and owns the pause/reviewBy/escalation logic;
+   *   - this one asks "does a row EXIST at all?" over the REGISTRY. It is the only one that
+   *     can see an action with no seed script, or one whose seed script makes `--active`
+   *     opt-in (both real: `doc-anchor-reconcile`, `test-webview-reaper`).
+   * Deliberately EXISTENCE-only: an existing row that is merely inactive is a different
+   * condition with a different remedy, and is also what `enforceActiveRoutines` produces
+   * when it auto-pauses — flagging that here would make the two guards fight.
+   */
+  unscheduledSystemActions: string[];
+  /**
+   * Whether the unscheduled check ACTUALLY RAN on this host — same three-case discipline as
+   * `systemActionCheckApplicable` (WI-39810). Empty + applicable means "no offenders"; empty
+   * + NOT applicable means "we did not look", and a caller must never read the second as the
+   * first.
+   */
+  unscheduledCheckApplicable: boolean;
 }
 
 /**
@@ -185,10 +219,20 @@ export async function validateActiveRoutines(
   const { applicable: systemActionCheckApplicable, missing: unregisteredSystemActions } =
     await findUnregisteredSystemActions(activeRoutines);
 
-  const ok = problematicRoutines.length === 0 && unregisteredSystemActions.length === 0;
+  const { applicable: unscheduledCheckApplicable, unscheduled: unscheduledSystemActions } =
+    await findUnscheduledSystemActions(ws);
+
+  const ok =
+    problematicRoutines.length === 0 &&
+    unregisteredSystemActions.length === 0 &&
+    unscheduledSystemActions.length === 0;
 
   if (unregisteredSystemActions.length > 0 && !opts?.silent) {
     console.error(formatUnregisteredSystemActions(unregisteredSystemActions));
+  }
+
+  if (unscheduledSystemActions.length > 0 && !opts?.silent) {
+    console.error(formatUnscheduledSystemActions(unscheduledSystemActions));
   }
 
   if (problematicRoutines.length > 0 && !opts?.silent) {
@@ -209,7 +253,98 @@ export async function validateActiveRoutines(
     problematicRoutines,
     unregisteredSystemActions,
     systemActionCheckApplicable,
+    unscheduledSystemActions,
+    unscheduledCheckApplicable,
   };
+}
+
+/**
+ * Direction 3 (EI-18752496371939475): registered `standing` actions with NO routine row.
+ *
+ * Reads the LIVE registry, never a grep for `registerSystemAction(` — a grep also matches
+ * handlers registered inside test files (the `dogfood-*` fixtures in
+ * `dbos/ephemeral-cadence-dogfood.integration.test.ts`), which are not production actions and
+ * would be permanent false positives that teach everyone to ignore this report.
+ *
+ * The row query is deliberately UNFILTERED by `active`: this asks whether a row EXISTS, not
+ * whether it is enabled. An inactive row is a different condition with a different remedy, and
+ * is exactly what `enforceActiveRoutines` writes when it auto-pauses — treating that as
+ * "unscheduled" would make this guard fight its own sibling in a loop.
+ */
+async function findUnscheduledSystemActions(
+  workspaceId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ applicable: boolean; unscheduled: string[] }> {
+  // Same WI-39810 rule as the unregistered-handler check: a host that does not dispatch
+  // routines is reading a different process's registry, so it may neither raise nor clear.
+  if (!hostExecutesRoutines(env)) {
+    return { applicable: false, unscheduled: [] };
+  }
+
+  let standing: string[];
+  try {
+    // Side-effect import populates the registry; idempotent and module-cached.
+    await import('../harness/routines/register-system-actions');
+    const { listStandingSystemActions } = await import('../harness/routines/system-actions');
+    standing = listStandingSystemActions();
+  } catch (e) {
+    console.warn(
+      '[routine-validation] system-action registry import failed — skipping the ' +
+        `unscheduled-action check (reporting none): ${e instanceof Error ? e.message : e}`,
+    );
+    return { applicable: false, unscheduled: [] };
+  }
+
+  // An EMPTY registry is not evidence that nothing is registered — it is evidence that the
+  // import did not populate it (a module-record split, a partially-mocked module). Reporting
+  // every action as unscheduled off an empty registry would be a spectacular false positive,
+  // so treat it as "did not look" instead.
+  if (standing.length === 0) {
+    return { applicable: false, unscheduled: [] };
+  }
+
+  let rows: readonly unknown[];
+  try {
+    const { sql } = getOrgPg();
+    rows = await sql`
+      SELECT DISTINCT target_role
+      FROM harness_shared.routines
+      WHERE workspace_id = ${workspaceId} AND target_role LIKE 'system:%'
+    `;
+  } catch (e) {
+    console.warn(
+      '[routine-validation] could not read routine target_roles — skipping the ' +
+        `unscheduled-action check (reporting none): ${e instanceof Error ? e.message : e}`,
+    );
+    return { applicable: false, unscheduled: [] };
+  }
+
+  const SYSTEM_PREFIX = 'system:';
+  const scheduled = new Set<string>();
+  for (const raw of rows) {
+    const targetRole = (raw as { target_role?: string | null }).target_role ?? '';
+    if (targetRole.startsWith(SYSTEM_PREFIX)) {
+      scheduled.add(targetRole.slice(SYSTEM_PREFIX.length));
+    }
+  }
+
+  return { applicable: true, unscheduled: standing.filter((a) => !scheduled.has(a)).sort() };
+}
+
+function formatUnscheduledSystemActions(
+  unscheduled: readonly string[],
+  severity: 'fatal' | 'chronic' = 'fatal',
+): string {
+  return (
+    `[routine-validation] ${severity === 'fatal' ? 'FATAL' : 'CHRONIC'}: ${unscheduled.length} ` +
+    `registered system action(s) have NO routine row in this workspace, so they have never ` +
+    `fired and never will: ${unscheduled.join(', ')}. Each is built, imported and green — and ` +
+    `dead. Fix by running that action's seed script (usually ` +
+    `packages/operator-core/lib/harness/routines/seed-<action>-routine.ts, most of which need ` +
+    `an explicit --active), or, if the row is meant to be materialized per object at runtime ` +
+    `rather than seeded, declare it at its registerSystemAction() call as ` +
+    `{ scheduling: 'on-demand' }. See EI-18752496371939475.`
+  );
 }
 
 /**
