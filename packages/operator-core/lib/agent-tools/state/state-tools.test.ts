@@ -74,10 +74,19 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
     cell: 'test.cell',
     owner: 'test',
     headline: 'positions.deployed',
-    falsifier: {
-      field: 'serving.startedSinceCodeChange',
-      measurement: 'process start time vs code mtime',
-      kills: '"deployed ✓" read as "the running process executes my code"',
+    assessment: {
+      path: 'assessments.deploy',
+      codes: {
+        serving: {
+          meaning: 'the running process is executing this sha.',
+          safeAction: 'Treat the deploy as live.',
+        },
+        'checked-out-not-running': {
+          meaning: 'the sha is on disk but the process was never restarted onto it.',
+          safeAction: 'Restart the serving unit before concluding the deploy took effect.',
+        },
+      },
+      evidence: ['serving.startedSinceCodeChange'],
     },
     nullable: false,
     callerRelativity: { kind: 'global' },
