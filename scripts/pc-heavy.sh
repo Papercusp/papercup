@@ -843,7 +843,12 @@ _exclusive_describe_holders() {
 _exclusive_report_undrained() {
   local _i='' _desc='' _listed=0
   for _i in $(seq 0 $(( _exclusive_slot_count - 1 ))); do
-    [ "${_exclusive_locked[$_i]:-0}" = 1 ] && continue
+    # The drain is all-or-nothing: partial acquisitions are released between
+    # polls so a live holder on one slot cannot squat every other slot until
+    # the full materialization timeout. Report only slots that actually failed
+    # in the most recent probe; a slot that was acquired and then released is
+    # available to ordinary queued work, not an undrained blocker.
+    [ "${_exclusive_unavailable[$_i]:-0}" = 1 ] || continue
     if [ "$_listed" -ge 8 ]; then
       echo "[pc-heavy]   (further undrained slots not listed)" >&2
       break
@@ -947,24 +952,48 @@ if [ "$_exclusive_all_slots" = 1 ]; then
   _exclusive_last_heartbeat="$_exclusive_started"
   declare -a _exclusive_fds=()
   declare -a _exclusive_locked=()
+  declare -a _exclusive_unavailable=()
   _exclusive_held=0
   _exclusive_holders_reported=0
+
+  # Never retain a partial drain across polls. Holding N-1 free slots while
+  # waiting for one live holder starves ordinary writers that could use those
+  # slots. A probe may briefly acquire several slots, but it must either claim
+  # the whole domain or release every partial acquisition before sleeping.
+  _exclusive_release_partial() {
+    local _fd=''
+    for _fd in "${_exclusive_fds[@]:-}"; do
+      case "$_fd" in
+        ''|*[!0-9]*) continue ;;
+        *) eval "exec ${_fd}>&-" 2>/dev/null || true ;;
+      esac
+    done
+    _exclusive_fds=()
+    _exclusive_locked=()
+    _exclusive_held=0
+  }
+
   echo "[pc-heavy] exclusive materialization barrier waiting to drain $_exclusive_slot_count heavy slot(s)" >&2
 
   while [ "$_exclusive_held" -lt "$_exclusive_slot_count" ]; do
     for _i in $(seq 0 $(( _exclusive_slot_count - 1 ))); do
       [ "${_exclusive_locked[$_i]:-0}" = 1 ] && continue
+      _exclusive_unavailable[$_i]=0
       if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
         if flock -n "$_fd"; then
           _exclusive_fds+=("$_fd")
           _exclusive_locked[$_i]=1
           _exclusive_held=$(( _exclusive_held + 1 ))
         else
+          _exclusive_unavailable[$_i]=1
           eval "exec ${_fd}>&-" 2>/dev/null || true
         fi
+      else
+        _exclusive_unavailable[$_i]=1
       fi
     done
     [ "$_exclusive_held" -ge "$_exclusive_slot_count" ] && break
+    _exclusive_release_partial
     _exclusive_now=$(date +%s)
     if [ $(( _exclusive_now - _exclusive_last_heartbeat )) -ge "$_exclusive_heartbeat_every" ]; then
       echo "[pc-heavy] exclusive materialization barrier still draining ($((_exclusive_now - _exclusive_started))s elapsed, $_exclusive_held/$_exclusive_slot_count slots held)" >&2
@@ -980,7 +1009,9 @@ if [ "$_exclusive_all_slots" = 1 ]; then
       _exclusive_last_heartbeat="$_exclusive_now"
     fi
     if [ "$_exclusive_now" -ge "$_exclusive_deadline" ]; then
-      echo "[pc-heavy] REFUSED materialization after ${_timeout}s: only $_exclusive_held/$_exclusive_slot_count heavy slots drained; refusing to overlap dependency copy with live heavy work" >&2
+      _exclusive_drained="$_exclusive_held"
+      _exclusive_release_partial
+      echo "[pc-heavy] REFUSED materialization after ${_timeout}s: only $_exclusive_drained/$_exclusive_slot_count heavy slots drained; refusing to overlap dependency copy with live heavy work" >&2
       _exclusive_report_undrained
       echo "[pc-heavy]   check those pids before assuming a stale slot — a live heavy job is not orphaned." >&2
       exit 75

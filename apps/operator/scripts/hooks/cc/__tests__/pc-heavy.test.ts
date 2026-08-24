@@ -362,6 +362,62 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('does not squat free slots while an exclusive drain waits on a live holder', async () => {
+    const env = {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '8',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+    };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let barrier: ReturnType<typeof spawn> | undefined;
+    let waiter: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing slot holder');
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      await untilStderr(
+        barrier,
+        barrierErr,
+        (t) => t.includes('exclusive materialization barrier waiting'),
+        'the exclusive barrier beginning its drain',
+      );
+
+      // Slot 0 remains occupied by the live holder. The barrier must release
+      // its failed all-or-nothing probes of slot 1 so this ordinary waiter can
+      // run immediately instead of waiting for the barrier's eight-second
+      // refusal deadline.
+      waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo ordinary-writer-ran'], {
+        env: baseEnv(env), cwd: dir,
+      });
+      const waiterOut = createTextCollector(waiter.stdout);
+      const waiterErr = createTextCollector(waiter.stderr);
+      await untilStderr(
+        waiter,
+        waiterErr,
+        (t) => t.includes('slot acquired'),
+        'ordinary writer acquiring the free slot',
+        3_000,
+      );
+      const waiterExit = await new Promise<number>((resolve) => waiter?.on('exit', (c) => resolve(c ?? -1)));
+      expect(waiterExit).toBe(0);
+      expect(waiterOut.text().trim()).toBe('ordinary-writer-ran');
+      expect(barrier.exitCode).toBeNull();
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+      if (waiter) killGroup(waiter);
+    }
+  });
+
   it('lets scoped verification use the bounded focused lane while exclusive materialization owns ordinary slots', async () => {
     const env = {
       PC_HEAVY_SLOTS: '2',
