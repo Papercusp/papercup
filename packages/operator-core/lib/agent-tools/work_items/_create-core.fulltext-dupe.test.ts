@@ -1,13 +1,29 @@
 /**
  * _create-core.fulltext-dupe.test — EI-19298062354262754's fulltext-lexical-dupe-guard
  * wire-in contract on createOneWorkItem: NEVER blocks (advisory-only, like the
- * recent-lexical guard); merges into `similarOpen` alongside anything the other
+ * recent-lexical guard); merges into the candidate set alongside anything the other
  * guards already found, deduped by id; skipped entirely under force:true; skipped
  * for feature-family kinds (feature/chunk — engineer_issues has no rows for
- * them); a null verdict (fail-open) leaves similarOpen untouched. The guard's own
+ * them); a null verdict (fail-open) leaves the set untouched. The guard's own
  * scoring logic is covered by fulltext-lexical-dupe-guard.test.ts.
+ *
+ * The merged set is observed at `persistDedupEdges` — where a SUCCESSFUL create now
+ * sends it (work-queue-admission-and-bulk-dedup P-002, item d) instead of returning
+ * `similarOpen` to the filing agent. That writer is mocked here, so this file sees the
+ * full merged set; its own cosine-only filter is dedup-edges.ts's contract.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const dedupEdgeMocks = vi.hoisted(() => ({
+  persist: vi.fn(async (input: { candidates?: readonly { id: string }[] }) => input.candidates?.length ?? 0),
+}));
+vi.mock('./dedup-edges', () => ({ persistDedupEdges: dedupEdgeMocks.persist }));
+
+/** The candidate set the last successful create handed to the promoter's substrate. */
+const persistedCandidates = (): readonly { id: string; source?: string }[] | undefined =>
+  dedupEdgeMocks.persist.mock.calls.at(-1)?.[0].candidates as
+    | readonly { id: string; source?: string }[]
+    | undefined;
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 vi.mock('../../work-items', () => ({
@@ -57,6 +73,7 @@ const fulltextCand = (id: string, similarity = 0.7): SemanticDupeCandidate => ({
 beforeEach(() => {
   semanticM.mockReset();
   fulltextM.mockReset();
+  dedupEdgeMocks.persist.mockClear();
   semanticM.mockResolvedValue(null);
   fulltextM.mockResolvedValue([]);
 });
@@ -68,8 +85,9 @@ describe('createOneWorkItem × fulltext-lexical dupe guard (EI-19298062354262754
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect(r.workItem.id).toBe('WI-NEW');
-    expect(r.similarOpen?.map((c) => c.id)).toEqual(['EI-100']);
-    expect(r.similarOpen?.[0].source).toBe('lexical-fulltext');
+    expect('similarOpen' in r).toBe(false);
+    expect(persistedCandidates()?.map((c) => c.id)).toEqual(['EI-100']);
+    expect(persistedCandidates()?.[0].source).toBe('lexical-fulltext');
   });
 
   it("merges with the semantic guard's soft matches, deduped by id", async () => {
@@ -84,8 +102,8 @@ describe('createOneWorkItem × fulltext-lexical dupe guard (EI-19298062354262754
     const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
-    expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-10', 'EI-11']);
-    expect(r.similarOpen?.[0].source).toBeUndefined();
+    expect(persistedCandidates()?.map((c) => c.id)).toEqual(['WI-10', 'EI-11']);
+    expect(persistedCandidates()?.[0].source).toBeUndefined();
   });
 
   it('force:true skips the fulltext prescreen entirely too', async () => {
@@ -95,12 +113,13 @@ describe('createOneWorkItem × fulltext-lexical dupe guard (EI-19298062354262754
     expect(fulltextM).not.toHaveBeenCalled();
   });
 
-  it('null verdict (fail-open) leaves similarOpen untouched (no advisory key)', async () => {
+  it('null verdict (fail-open) leaves the candidate set untouched — nothing to persist', async () => {
     fulltextM.mockResolvedValue(null);
     const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect('similarOpen' in r).toBe(false);
+    expect(persistedCandidates()).toBeUndefined();
   });
 
   it('runs for every issue-family kind (bug, change, task)', async () => {

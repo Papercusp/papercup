@@ -1,12 +1,29 @@
 /**
  * _create-core.recent-dupe.test — EI-9940's recent-lexical-dupe-guard wire-in
  * contract on createOneWorkItem: NEVER blocks (advisory-only, unlike the P-008
- * hard band); merges into `similarOpen` alongside anything the semantic guard
+ * hard band); merges into the candidate set alongside anything the semantic guard
  * already found, deduped by id; skipped entirely under force:true; a null
- * verdict (fail-open) leaves similarOpen untouched. The guard's own scoring
+ * verdict (fail-open) leaves the set untouched. The guard's own scoring
  * logic is covered by recent-lexical-dupe-guard.test.ts.
+ *
+ * The merged set is observed where it now GOES (work-queue-admission-and-bulk-dedup
+ * P-002, item d): a successful create persists it for the promoter via
+ * `persistDedupEdges` rather than returning it to the filing agent as `similarOpen`.
+ * Which candidates that writer keeps (cosine-only) is dedup-edges.ts's own contract,
+ * tested there — mocked here, so this file still sees the FULL merged set.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const dedupEdgeMocks = vi.hoisted(() => ({
+  persist: vi.fn(async (input: { candidates?: readonly { id: string }[] }) => input.candidates?.length ?? 0),
+}));
+vi.mock('./dedup-edges', () => ({ persistDedupEdges: dedupEdgeMocks.persist }));
+
+/** The candidate set the last successful create handed to the promoter's substrate. */
+const persistedCandidates = (): readonly { id: string; source?: string }[] | undefined =>
+  dedupEdgeMocks.persist.mock.calls.at(-1)?.[0].candidates as
+    | readonly { id: string; source?: string }[]
+    | undefined;
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 vi.mock('../../work-items', () => ({
@@ -56,6 +73,7 @@ const recentCand = (id: string, similarity = 0.6): SemanticDupeCandidate => ({
 beforeEach(() => {
   semanticM.mockReset();
   recentM.mockReset();
+  dedupEdgeMocks.persist.mockClear();
   semanticM.mockResolvedValue(null);
   recentM.mockResolvedValue([]);
 });
@@ -67,8 +85,9 @@ describe('createOneWorkItem × recent-lexical dupe guard (EI-9940)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect(r.workItem.id).toBe('WI-NEW');
-    expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-4241']);
-    expect(r.similarOpen?.[0].source).toBe('lexical-recent');
+    expect('similarOpen' in r).toBe(false);
+    expect(persistedCandidates()?.map((c) => c.id)).toEqual(['WI-4241']);
+    expect(persistedCandidates()?.[0].source).toBe('lexical-recent');
   });
 
   it('merges with the semantic guard\'s soft matches, deduped by id', async () => {
@@ -83,9 +102,9 @@ describe('createOneWorkItem × recent-lexical dupe guard (EI-9940)', () => {
     const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
-    expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-10', 'WI-11']);
+    expect(persistedCandidates()?.map((c) => c.id)).toEqual(['WI-10', 'WI-11']);
     // The original semantic candidate (no `source` tag) must survive un-clobbered.
-    expect(r.similarOpen?.[0].source).toBeUndefined();
+    expect(persistedCandidates()?.[0].source).toBeUndefined();
   });
 
   it('force:true skips the recent-lexical prescreen entirely too', async () => {
@@ -95,12 +114,14 @@ describe('createOneWorkItem × recent-lexical dupe guard (EI-9940)', () => {
     expect(recentM).not.toHaveBeenCalled();
   });
 
-  it('null verdict (fail-open) leaves similarOpen untouched (no advisory key)', async () => {
+  it('null verdict (fail-open) leaves the candidate set untouched — nothing to persist', async () => {
     recentM.mockResolvedValue(null);
     const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect('similarOpen' in r).toBe(false);
+    expect(persistedCandidates()).toBeUndefined();
+    expect('dedupEdges' in r).toBe(false);
   });
 
   it('passes the resolved harness through (args.harness ?? ctx.harnessSlug)', async () => {

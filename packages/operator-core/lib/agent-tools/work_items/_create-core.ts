@@ -971,7 +971,7 @@ export async function createOneWorkItem(
         const adoptedId = settled.winnerId ?? workItem.id;
         const winnerEdges = await persistDedupEdges({
           itemId: adoptedId,
-          harness: winner?.harness ?? harnessForItem,
+          harness: winner?.harness ?? harnessForItem ?? ctx.harnessSlug,
           workspaceId,
           candidates: similarOpen,
         }).catch(() => 0);
@@ -1105,7 +1105,7 @@ export async function createOneWorkItem(
     // and non-fatal — see dedup-edges.ts for why the lexical legs are excluded.
     const dedupEdges = await persistDedupEdges({
       itemId: workItem.id,
-      harness: workItem.harness ?? harnessForItem,
+      harness: workItem.harness ?? harnessForItem ?? ctx.harnessSlug,
       workspaceId,
       candidates: similarOpen,
     }).catch(() => 0);

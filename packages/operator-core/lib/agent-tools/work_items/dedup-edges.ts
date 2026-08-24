@@ -63,8 +63,12 @@ interface EdgeRow {
  */
 export function buildDedupEdgeRows(input: {
   itemId: string;
-  harness: string;
-  workspaceId: string | undefined;
+  /** The created row's harness. Nullable on purpose: `args.harness` is optional and
+   *  a create can resolve its harness only from the written row / session context —
+   *  an edge with no harness has no honest row in a harness-scoped table, so it is
+   *  skipped rather than guessed. */
+  harness: string | null | undefined;
+  workspaceId: string | null | undefined;
   candidates: readonly DedupEdgeCandidate[] | undefined;
   runId?: string;
 }): EdgeRow[] {
@@ -111,8 +115,12 @@ export function buildDedupEdgeRows(input: {
  */
 export async function persistDedupEdges(input: {
   itemId: string;
-  harness: string;
-  workspaceId: string | undefined;
+  /** The created row's harness. Nullable on purpose: `args.harness` is optional and
+   *  a create can resolve its harness only from the written row / session context —
+   *  an edge with no harness has no honest row in a harness-scoped table, so it is
+   *  skipped rather than guessed. */
+  harness: string | null | undefined;
+  workspaceId: string | null | undefined;
   candidates: readonly DedupEdgeCandidate[] | undefined;
   runId?: string;
 }): Promise<number> {

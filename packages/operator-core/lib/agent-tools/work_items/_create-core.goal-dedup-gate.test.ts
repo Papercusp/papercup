@@ -16,6 +16,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** P-002 item d: candidates leave a SUCCESSFUL create through this writer, not
+ *  through `similarOpen`. Mocked so the gate's own contract stays the subject. */
+const dedupEdgeMocks = vi.hoisted(() => ({
+  persist: vi.fn(async (input: { candidates?: readonly { id: string }[] }) => input.candidates?.length ?? 0),
+}));
+vi.mock('./dedup-edges', () => ({ persistDedupEdges: dedupEdgeMocks.persist }));
+
 const occurrenceMocks = vi.hoisted(() => ({
   record: vi.fn(async () => null),
   readPressure: vi.fn(async (): Promise<
@@ -82,6 +89,7 @@ beforeEach(() => {
   fulltextM.mockReset();
   fulltextM.mockResolvedValue([]);
   createM.mockClear();
+  dedupEdgeMocks.persist.mockClear();
   occurrenceMocks.record.mockClear();
   occurrenceMocks.readPressure.mockReset();
   occurrenceMocks.readPressure.mockResolvedValue(null);
@@ -135,7 +143,7 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     );
   });
 
-  it('gate + force + healthy probe with soft siblings → proceeds WITH candidates + coverage in the result', async () => {
+  it('gate + force + healthy probe with soft siblings → proceeds, PERSISTING the candidates, coverage in the result', async () => {
     guardM.mockResolvedValue(verdict([], [0.88, 0.86]));
     const r = await createOneWorkItem(
       { kind: 'bug', title: 'genuinely distinct', force: true, goalDedupGate: true },
@@ -143,7 +151,14 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
-    expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-10', 'WI-11']);
+    // P-002 item d: the informed pass is still informed — but the candidates go to
+    // the promoter's substrate, not back to the forcing caller.
+    expect(dedupEdgeMocks.persist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidates: [expect.objectContaining({ id: 'WI-10' }), expect.objectContaining({ id: 'WI-11' })],
+      }),
+    );
+    expect(r.dedupEdges).toBe(2);
     expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
   });
 

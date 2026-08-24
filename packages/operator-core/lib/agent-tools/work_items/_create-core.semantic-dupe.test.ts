@@ -122,13 +122,24 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(guardM).not.toHaveBeenCalled();
   });
 
-  it('soft match creates WITH the similarOpen advisory', async () => {
+  it('soft match creates and PERSISTS the candidates — the filing agent gets a count, not a to-do list', async () => {
     guardM.mockResolvedValue(verdict([], [0.88, 0.86]));
     const r = await createOneWorkItem({ kind: 'bug', title: 't', summary: 's' }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect(r.workItem.id).toBe('WI-NEW');
-    expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-10', 'WI-11']);
+    // P-002 item d: the soft band no longer comes back as an advisory the caller
+    // must triage — it goes to the promoter's substrate.
+    expect('similarOpen' in r).toBe(false);
+    expect(dedupEdgeMocks.persist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        itemId: 'WI-NEW',
+        harness: 'papercusp',
+        workspaceId: 'default',
+        candidates: [expect.objectContaining({ id: 'WI-10' }), expect.objectContaining({ id: 'WI-11' })],
+      }),
+    );
+    expect(r.dedupEdges).toBe(2);
     // The guard saw the item's own harness fallback (args.harness ?? ctx.harnessSlug).
     expect(guardM).toHaveBeenCalledWith({ title: 't', summary: 's', harness: 'papercusp' });
   });
