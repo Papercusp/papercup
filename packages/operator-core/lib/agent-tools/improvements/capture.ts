@@ -36,6 +36,7 @@ import { readRunningGeneration } from '../../scout/generation-watermark';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
+import { toolFailureStalenessHint } from '../../tool-schema-staleness';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveCaptureScope } from './capture-scope';
 import { coerceCaptureArgs } from './capture-coerce';
@@ -804,6 +805,19 @@ export default defineTool({
     const normalizedToolFailure = args.toolFailure
       ? normalizeSuspectedToolFailure(args.toolFailure as SuspectedToolFailure)
       : undefined;
+    // EI-21351815194031529: a tool's SCHEMA is rendered by the running operator, but
+    // the tree runs ahead of it — so a constraint the reporter genuinely hit may
+    // already be fixed and merely undeployed. That reads exactly like an open defect
+    // from inside the failing session, and the cost lands on whoever triages this row
+    // later. Resolve the failing verb to its defining file and say so at FILE time.
+    // Null unless the file actually differs between the serving build and the tree,
+    // so the common case adds nothing. Never throws; never blocks the filing.
+    const stalenessHint = args.toolFailure
+      ? await toolFailureStalenessHint(args.toolFailure.toolName)
+      : null;
+    const bodyWithStaleness = stalenessHint
+      ? [captureText.body, stalenessHint].filter(Boolean).join('\n\n')
+      : captureText.body;
     const toolFailureKind: 'bug' | 'change' | undefined = normalizedToolFailure
       ? args.toolFailure?.clearServerMismatch || args.toolFailure?.hardInternal
         ? 'bug'
@@ -843,7 +857,7 @@ export default defineTool({
       const persist = () => captureImprovement({
         title: captureText.title,
         kind: effectiveKind,
-        body: captureText.body,
+        body: bodyWithStaleness,
         severity: args.severity as IssueSeverity | undefined,
         subTopic: args.subTopic,
         scope: captureScope,
@@ -1092,6 +1106,9 @@ export default defineTool({
               ...(agentReview ? { agentReview } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
+              // The filer sees the skew warning too, not just the later triager —
+              // they are the one still holding the repro and can settle it now.
+              ...(stalenessHint ? { possiblyStaleSchema: stalenessHint } : {}),
               ...(warnings.length > 0 ? { warnings } : {}),
             }),
           },
