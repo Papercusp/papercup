@@ -619,6 +619,7 @@ export function WorkItemDetail({
           <WorkItemDiscussionSection slug={slug} workItem={workItem} />
         ) : null}
         <PriorAttemptsSection slug={slug} workItem={workItem} />
+        <BehaviorContractSection slug={slug} workItem={workItem} />
       </div>
       {/* WorkItemDetail historically omitted this — every WI-* detail rendered
           with ZERO panel CSS (run-together label/value spans). */}
@@ -829,6 +830,203 @@ function PriorAttemptsSection({
               <div className="det-label">
                 ~{brief.estimatedTokens} tokens · fingerprint {brief.fingerprint.slice(0, 12)}
               </div>
+            </>
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** nuqs, not useState — same agent-readability rule as the two sections above. */
+const WORK_ITEM_BEHAVIOR_CONTRACT_PARAM = 'wibc';
+
+type BehaviorContractClauseRow = {
+  specId: string;
+  revision: number;
+  planItemId: string;
+  behavior: string;
+  behaviorClass: string;
+  lifecycleStatus: string;
+  enforceable: boolean;
+  falsifier: { observation: string; probeMethod?: string } | null;
+  mutationRequired: boolean;
+};
+
+type BehaviorContractRow = {
+  workItemId: string;
+  groups: Array<{
+    planSlug: string;
+    via: 'edge' | 'plan-stamp' | 'edge+plan-stamp';
+    clauses: BehaviorContractClauseRow[];
+    staleEdges: Array<{ specId: string; edgeRevision: number; currentRevision: number }>;
+  }>;
+  enforceableCount: number;
+  stampedPlanSlug: string | null;
+  impact: {
+    required: boolean;
+    resolved: boolean;
+    report: string | null;
+    reason: 'observation-lane' | 'non-behavior-changing' | 'resolved' | 'unresolved';
+  } | null;
+  unavailableReason: 'work-item-not-found' | 'resolver-unavailable' | null;
+};
+
+/**
+ * P-011 — "Behavior contract": WHICH promises this item is on the hook for, and at
+ * WHICH revision.
+ *
+ * P-016 made applicability behavior-owned rather than plan-owned, so a standalone bug
+ * resolves clauses and an edge into another plan's namespace is visible — but all of
+ * that was legible only to the completion gate. A human could see THAT a completion was
+ * refused, never WHICH clause or which revision.
+ *
+ * ⚠ EVERYTHING HERE IS ADVISORY (plan D-017/D-018). The resolver REPORTS; P-013 owns
+ * turning any of it into a refusal. So `impact.report`, cross-namespace groups and
+ * stale edges are rendered as NOTICES — never as errors — because showing a human a
+ * blocking-looking failure for a clause no gate blocks on is precisely the mistake
+ * D-017 was written to prevent.
+ *
+ * Collapsed by default and `enabled`-gated: resolution reads edges, then clauses per
+ * namespace.
+ */
+function BehaviorContractSection({
+  slug,
+  workItem,
+}: {
+  slug: string;
+  workItem: WorkItemRow;
+}) {
+  const [openRef, setOpenRef] = useQueryState(
+    WORK_ITEM_BEHAVIOR_CONTRACT_PARAM,
+    parseAsString,
+  );
+  const target = useMemo(() => decodeScopedRef(openRef), [openRef]);
+  const open =
+    target.id === workItem.id && (!target.harness || target.harness === slug);
+
+  const query = useSyncQuery<BehaviorContractRow>({
+    queryName: 'workItems.behaviorContract',
+    args: { harnessSlug: slug, workItemId: workItem.id },
+    enabled: open && Boolean(slug) && Boolean(workItem.id),
+  });
+  const row = query.loading ? null : (query.data?.[0] ?? null);
+  const staleEdgeCount =
+    row?.groups.reduce((n, g) => n + g.staleEdges.length, 0) ?? 0;
+
+  return (
+    <>
+      <div className="pc-adv-detail__section">
+        <div className="pc-adv-detail__actions">
+          <button
+            type="button"
+            data-testid="wi-detail-behavior-contract"
+            aria-expanded={open}
+            aria-controls={`work-item-behavior-contract-${workItem.id}`}
+            onClick={() =>
+              void setOpenRef(open ? null : encodeScopedRef(slug, workItem.id))
+            }
+          >
+            Behavior contract
+            {row ? ` (${row.enforceableCount})` : ''}
+          </button>
+        </div>
+      </div>
+      {open ? (
+        <div
+          id={`work-item-behavior-contract-${workItem.id}`}
+          className="pc-adv-detail__section"
+        >
+          {query.loading ? (
+            <div className="det-label">Resolving behavior contract…</div>
+          ) : !row || row.unavailableReason ? (
+            /* An empty contract and a FAILED resolve are different facts. Never let a
+               resolver error render as "this item promises nothing". */
+            <div className="det-label" data-testid="wi-behavior-contract-unavailable">
+              {row?.unavailableReason === 'work-item-not-found'
+                ? 'Work item not found in this harness.'
+                : 'Behavior contract unavailable (the resolver errored). This is NOT evidence that the item resolves no clauses.'}
+            </div>
+          ) : (
+            <>
+              {staleEdgeCount > 0 ? (
+                <div data-testid="wi-behavior-contract-stale">
+                  <div className="det-label">
+                    ⚠ {staleEdgeCount} coverage claim(s) pinned to a SUPERSEDED revision —
+                    advisory, nothing enforces this yet
+                  </div>
+                  {row.groups.flatMap((g) =>
+                    g.staleEdges.map((e) => (
+                      <div key={`${g.planSlug}:${e.specId}`}>
+                        • {g.planSlug} / {e.specId}: proof at r{e.edgeRevision}, clause now
+                        r{e.currentRevision}
+                      </div>
+                    )),
+                  )}
+                </div>
+              ) : null}
+
+              {row.groups.length === 0 ? (
+                <div className="det-label">
+                  This item resolves no behavior clauses.
+                  {row.stampedPlanSlug
+                    ? ` Its plan lane (${row.stampedPlanSlug}) has none linked.`
+                    : ' It is standalone — link one with plans:set-spec-evidence.'}
+                </div>
+              ) : (
+                row.groups.map((group) => (
+                  <div key={group.planSlug}>
+                    <div className="det-label">
+                      {group.planSlug}
+                      {group.planSlug === row.stampedPlanSlug ? ' (own plan)' : ''} · via{' '}
+                      {group.via}
+                    </div>
+                    {group.clauses.map((c) => (
+                      <div key={`${group.planSlug}:${c.specId}`}>
+                        {/* The REVISION never leaves the specId's side: a coverage claim
+                            without the revision it was earned against is the thing this
+                            plan exists to end. */}
+                        <div>
+                          <strong>
+                            {c.specId}@r{c.revision}
+                          </strong>{' '}
+                          · {c.lifecycleStatus}
+                          {c.enforceable ? '' : ' (not enforceable)'} · {c.behaviorClass}
+                          {c.mutationRequired ? ' · mutation-required' : ''}
+                        </div>
+                        <div>{c.behavior}</div>
+                        {/* D-016: an undeclared falsifier is an honest gap, shown as one
+                            — never blank, which would read as "declared". */}
+                        <div className="det-label">
+                          {c.falsifier
+                            ? `Falsified by: ${c.falsifier.observation}${
+                                c.falsifier.probeMethod
+                                  ? ` (probe: ${c.falsifier.probeMethod})`
+                                  : ''
+                              }`
+                            : 'No falsifier declared (D-016 gap — not a passing clause)'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))
+              )}
+
+              {/* ADVISORY, and labelled as such in the copy itself. D-017 is explicit:
+                  a populated report is NOT a refusal. */}
+              {row.impact?.report ? (
+                <div data-testid="wi-behavior-contract-impact">
+                  <div className="det-label">Advisory — reported, not enforced</div>
+                  <div>{row.impact.report}</div>
+                </div>
+              ) : null}
+              {row.impact && !row.impact.required ? (
+                <div className="det-label">
+                  {row.impact.reason === 'observation-lane'
+                    ? 'Observation-lane item — a candidate input, never enforceable (D-012).'
+                    : 'Not a behavior-changing kind, so no clause resolution is required.'}
+                </div>
+              ) : null}
             </>
           )}
         </div>
