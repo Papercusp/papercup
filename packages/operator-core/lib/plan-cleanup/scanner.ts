@@ -141,14 +141,20 @@ export interface LinkedWorkItemInput {
   /** P-NNN the work-item covers. */
   itemId: string;
   workItemId: string;
-  /** work-item state (open/wip/blocked/passed/resolved/done/deprecated/closed/dropped/…). */
-  state: string;
+  /** Resolved work-item state (passed/resolved/done/deprecated/closed/dropped/
+   *  open/wip/…), or null when the base-table row could not be resolved (a
+   *  cross-workspace feature ref) — an unresolved row can never be provable
+   *  done-evidence, but its `terminal` flag still counts for coverage. */
+  state: string | null;
+  /** Family-aware terminal flag from the coverage plane (plan-item-coverage.ts
+   *  classify truth) — authoritative even when `state` is unresolved. */
+  terminal: boolean;
   /** A completion record exists (work_items.completion_ref) — the "with
    *  evidence" half of the provable flip-to-done rule. */
   hasCompletion: boolean;
-  /** Which link plane produced the row: the `implements` conversion edge, the
-   *  `relates` coverage edge, or the payload.plan_item / source_plan stamp. */
-  link: 'implements' | 'relates' | 'stamp';
+  /** Which link plane produced the row: a coord_links rel ('fixes' | 'relates'
+   *  | 'duplicates' | 'implements') or 'plan_item_stamp' (STAMP_ONLY_REL). */
+  link: string;
 }
 
 export interface PlanItemClaimInput {
