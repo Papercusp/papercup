@@ -697,6 +697,24 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     const checkpointChars =
       carrying === 0 ? 0 : Math.max(caps.checkpointMin, Math.floor(checkpointTotal / carrying));
 
+
+    // Divided across the rows that actually HAVE a summary, so one row's read is
+    // not rationed against 99 rows that would not have spent it. Deliberately NO
+    // `Math.max(min, …)` floor: unlike the checkpoint — whose floor is what keeps
+    // the tool's payload readable at all — a summary below the useful floor is
+    // worth less than the bytes it costs, so the share is taken to zero and the
+    // drop is disclosed instead.
+    const carryingSummaries = rows
+      .slice(0, fullRows)
+      .filter((r) => {
+        const s = (r.workItem as Row | undefined)?.summary;
+        return typeof s === "string" && s.length > 0;
+      }).length;
+    const summaryShare =
+      !withSummary || carryingSummaries === 0
+        ? 0
+        : Math.floor(summaryTotal / carryingSummaries);
+    const summaryChars = summaryShare >= SUMMARY_USEFUL_MIN_CHARS ? summaryShare : 0;
     // Divided across the rows that actually HAVE a summary, so one row's read is
     // not rationed against 99 rows that would not have spent it. Deliberately NO
     // `Math.max(min, …)` floor: unlike the checkpoint — whose floor is what keeps
