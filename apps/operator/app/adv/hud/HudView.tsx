@@ -46,6 +46,7 @@ import HudEntityColumns from './HudEntityColumns';
 import GoalComposer from './GoalComposer';
 import GoalDetailPanel from './GoalDetailPanel';
 import GoalStatusControl from './GoalStatusControl';
+import GoalPackagesRail, { type GoalPackageRailEntry } from './GoalPackagesRail';
 import {
   goalsTruncationNotice,
   hudHarnessScopeArgs,
@@ -745,6 +746,12 @@ export default function HudView({
     /** UNBOUNDED count from the resolver — NOT goals.length, which is capped. */
     totalGoals?: number;
     truncatedByLimit?: boolean;
+    /** Installed/bundled goal packages × their instances (P-009,
+     *  work-on-everything-goal-2026-08-23). Optional so an older resolver
+     *  payload still renders the board — rail absent, never a crash. The shape
+     *  is INLINED client-side in GoalPackagesRail (endpoint JSON is the
+     *  contract), same rule as RosterPayload above. */
+    goalPackages?: GoalPackageRailEntry[];
     portfolioSpendUsd: number;
     portfolioPots: number;
   }>({
@@ -963,6 +970,16 @@ export default function HudView({
     },
     [setGoalFilter, setGoalComposerOpen],
   );
+
+  /* P-009: the packages rail opens its instance goal exactly the way clicking
+     that goal's own card does — toggle the board selection — so the rail adds
+     no second navigation pattern to the tab. */
+  const onOpenPackageGoal = useCallback(
+    (goalId: string) => {
+      void setGoalFilter((prev) => (prev === goalId ? null : goalId));
+    },
+    [setGoalFilter],
+  );
   /* WI-6742 [owner-reported]: clicking a "Needs you" card did nothing, while
      every other column opened a popup.
 
@@ -1056,30 +1073,41 @@ export default function HudView({
 
   const entityView =
     tab === 'goals' ? (
-      <HudEntityColumns
-        board={goalBoard}
-        focusColumn={(entityColumn as HudEntityColumnId | null) ?? null}
-        onFocusColumn={(id) => void setEntityColumn(id)}
-        query={entityQuery}
-        onQuery={(q) => void setEntityQuery(q)}
-        loading={goalsQuery.loading}
-        error={goalsQuery.error ? String(goalsQuery.error) : null}
-        /* P-015 made this near-unreachable: the "+ Start a goal" card is always
-           in the leftmost lane when no query is active, so the board is never
-           card-less for the no-query case this text serves — the CARD is the
-           empty state now, and says so in its own reason line. Kept accurate
-           rather than deleted (the prop is required, and the loading/error
-           branches can still fall through here). */
-        emptyLabel="No goals yet."
-        /* Name the selected goal on screen. A selection the owner cannot see
-           is a selection they cannot clear — and since clicking the same card
-           toggles it off, the notice is also the only thing that explains why
-           a second click appears to "do nothing". */
-        notice={goalNotice}
-        noun="goals"
-        onOpenCard={onOpenGoalCard}
-        renderCardAction={renderGoalCardAction}
-      />
+      <>
+        {/* P-009 (work-on-everything-goal-2026-08-23): installed goal packages,
+            "Work on everything" featured — one-click start when no live
+            instance; status + windowed-spend readout when one exists. Above
+            the columns: the rail is the tab's entry point, not another lane. */}
+        <GoalPackagesRail
+          entries={goalsQuery.data?.[0]?.goalPackages ?? []}
+          goals={goalsQuery.data?.[0]?.goals ?? []}
+          onOpenGoal={onOpenPackageGoal}
+        />
+        <HudEntityColumns
+          board={goalBoard}
+          focusColumn={(entityColumn as HudEntityColumnId | null) ?? null}
+          onFocusColumn={(id) => void setEntityColumn(id)}
+          query={entityQuery}
+          onQuery={(q) => void setEntityQuery(q)}
+          loading={goalsQuery.loading}
+          error={goalsQuery.error ? String(goalsQuery.error) : null}
+          /* P-015 made this near-unreachable: the "+ Start a goal" card is
+             always in the leftmost lane when no query is active, so the board
+             is never card-less for the no-query case this text serves — the
+             CARD is the empty state now, and says so in its own reason line.
+             Kept accurate rather than deleted (the prop is required, and the
+             loading/error branches can still fall through here). */
+          emptyLabel="No goals yet."
+          /* Name the selected goal on screen. A selection the owner cannot see
+             is a selection they cannot clear — and since clicking the same card
+             toggles it off, the notice is also the only thing that explains why
+             a second click appears to "do nothing". */
+          notice={goalNotice}
+          noun="goals"
+          onOpenCard={onOpenGoalCard}
+          renderCardAction={renderGoalCardAction}
+        />
+      </>
     ) : tab === 'plans' ? (
       <HudEntityColumns
         board={planBoard}

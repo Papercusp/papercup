@@ -1337,6 +1337,86 @@
   .hud__cols { grid-template-columns: repeat(5, minmax(170px, 1fr)); }
 }
 
+/* ── P-009: the goal-packages rail (work-on-everything-goal-2026-08-23) ─────
+   A slim strip above the Goals board's columns: one card per installed/bundled
+   goal package, "Work on everything" featured. Borrows the surface's existing
+   vocabulary — .hud__chip for the badges, the raised-card border/background
+   tokens — so the rail reads as part of the board, not a new widget family.
+   Only tokens already in use on this surface (the css-tokens lint reads raw
+   source text, comments included). */
+.hud__pkgrail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+/* display:block ON PURPOSE — one variant of this card IS a <button>, and the
+   design-primitives lint enforces no display:flex/grid on a button selector in
+   the HUD (the board's own cards just migrated off it, flex living on the inner
+   .hud__card-row). Same treatment: the column flex lives on .hud__pkgcard-in. */
+.hud__pkgcard {
+  display: block;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+}
+
+.hud__pkgcard-in {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+/* Only the live-instance card is the clickable form (it opens its goal); the
+   start-case card is an <article> whose one control is the Start button — a
+   card that looks clickable and is not is the WI-6742 dead-button shape. */
+button.hud__pkgcard {
+  cursor: pointer;
+}
+button.hud__pkgcard:hover,
+button.hud__pkgcard:focus-visible {
+  border-color: var(--accent);
+}
+
+/* The featured package — an accent rail on the left: form + colour, the same
+   left-marker idiom .hud__chip--mode-owner already uses on this surface. */
+.hud__pkgcard[data-featured] {
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+}
+
+.hud__pkgcard-title {
+  font-weight: 600;
+}
+
+.hud__pkgcard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hud__pkgcard-read {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud__pkgcard-fig {
+  font-size: 11px;
+  color: var(--fg-mute);
+  white-space: nowrap;
+}
+
 /* ── Goal detail panel (goal-mode-2026-08-07 P-021) ────────────────────────
    The catch-up view opened from a goal card. Only tokens already in use on this
    surface — the css-tokens lint fails on an undefined one, and it reads raw
