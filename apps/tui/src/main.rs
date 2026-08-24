@@ -2051,148 +2051,26 @@ async fn execute_workbench_command(
     }
 }
 
-/// The `:share <slug>` sequence (D-010), mirroring the desktop ShareWizard's
-/// calls: resolve the GitHub remote (explicit arg, else the pot repo's
-/// `origin`), resolve the canonical repo binding, generate a fresh 32-byte
-/// topic, POST share/finalize (writes shared.json + boots the swarm + publishes
-/// the binding), and — for `public` — publish the harness listing to the
-/// Cupboard. Failures surface in the status bar; progress lands as toasts.
+/// The `:share <slug>` command — RETIRED surface, fail-fast. The per-harness
+/// ShareWizard API generation this used to mirror (`binding/resolve` →
+/// `:slug/share/finalize` → `harness/cupboard/publish`) was retired server-side
+/// (comb-retire-per-harness-sharing-2026-06-11 — routes/index.ts names the
+/// retirement), so the old multi-step flow could only 404 mid-wizard. Surface
+/// the retirement in one clear error instead; re-pointing `:share` at the
+/// modern sharing surface (binding claim + typed cupboard publish) is a
+/// tracked follow-up (P-003 own-tui-full-divorce-2026-08-24).
 async fn share_pot(
-    client: &OperatorClient,
+    _client: &OperatorClient,
     slug: &str,
-    remote: Option<String>,
-    public: bool,
+    _remote: Option<String>,
+    _public: bool,
     tx: &UnboundedSender<Event>,
 ) {
-    let toast = |msg: String| {
-        Event::Notify(models::Notif {
-            level: "info".to_string(),
-            message: msg,
-            harness: Some(slug.to_string()),
-            ts: None,
-        })
-    };
-    // 1. The GitHub remote: explicit arg wins, else read the repo's `origin`.
-    let remote = match remote {
-        Some(r) => r,
-        None => {
-            let path = match client.harnesses().await {
-                Ok(hs) => hs.into_iter().find(|h| h.slug == slug).and_then(|h| h.path),
-                Err(e) => {
-                    let _ = tx.send(Event::Error(format!("share: list pots: {e}")));
-                    return;
-                }
-            };
-            let Some(path) = path else {
-                let _ = tx.send(Event::Error(format!(
-                    "share: pot '{slug}' not found (or has no local path)"
-                )));
-                return;
-            };
-            match tokio::process::Command::new("git")
-                .args(["-C", &path, "remote", "get-url", "origin"])
-                .output()
-                .await
-            {
-                Ok(o) if o.status.success() => {
-                    String::from_utf8_lossy(&o.stdout).trim().to_string()
-                }
-                _ => {
-                    let _ = tx.send(Event::Error(format!(
-                        "share: no `origin` remote in {path} — pass one: :share {slug} <github-url>"
-                    )));
-                    return;
-                }
-            }
-        }
-    };
-    // 2. Resolve the binding (canonical repo id/owner/name + visibility).
-    let binding = match client.resolve_binding(&remote).await {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("share: resolve binding: {e}")));
-            return;
-        }
-    };
-    if let Some(e) = binding.error {
-        let _ = tx.send(Event::Error(format!("share: resolve binding: {e}")));
-        return;
-    }
-    if public && binding.private {
-        let _ = tx.send(Event::Error(
-            "share: repo is private — the Cupboard refuses private repos (drop `public`)".into(),
-        ));
-        return;
-    }
-    // 3. A fresh 32-byte topic (the shared.json human-link topic; the swarm
-    //    topic is derived server-side from the repo id).
-    let topic = match random_topic_hex() {
-        Ok(t) => t,
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("share: topic gen: {e}")));
-            return;
-        }
-    };
-    // 4. Finalize — writes shared.json, boots the swarm, publishes the binding.
-    let privacy = if public {
-        "shared-public"
-    } else {
-        "shared-private"
-    };
-    let state = serde_json::json!({
-        "topic": topic,
-        "github_remote": remote,
-        "github_repository_id": binding.github_repository_id,
-        "privacy": privacy,
-    });
-    match client.share_finalize(slug, state).await {
-        Ok(v) => {
-            if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
-                let _ = tx.send(Event::Error(format!("share finalize: {e}")));
-                return;
-            }
-            let _ = tx.send(toast(format!("shared '{slug}' ({privacy})")));
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("share finalize: {e}")));
-            return;
-        }
-    }
-    // 5. Cupboard publish (public shares only).
-    if public {
-        let body = serde_json::json!({
-            "listing_kind": "harness",
-            "github_repository_id": binding.github_repository_id,
-            "github_owner": binding.github_owner,
-            "github_name": binding.github_repo,
-            "github_url": format!(
-                "https://github.com/{}/{}",
-                binding.github_owner, binding.github_repo
-            ),
-            "topic_hex": topic,
-        });
-        match client.cupboard_publish_harness(body).await {
-            Ok(v) => {
-                if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
-                    let _ = tx.send(Event::Error(format!("cupboard publish: {e}")));
-                } else {
-                    let _ = tx.send(toast(format!("published '{slug}' to the Cupboard")));
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(Event::Error(format!("cupboard publish: {e}")));
-            }
-        }
-    }
-}
-
-/// 32 random bytes as lowercase hex — the shared.json topic. Reads
-/// `/dev/urandom` directly (this TUI is Unix-targeted; zero new deps).
-fn random_topic_hex() -> Result<String> {
-    use std::io::Read;
-    let mut buf = [0u8; 32];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
-    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+    let _ = tx.send(Event::Error(format!(
+        "share: the per-pot share flow was retired server-side (2026-06-11) — \
+         share '{slug}' via the desktop's current sharing surface (binding \
+         claim + cupboard publish); re-pointing :share is a tracked follow-up"
+    )));
 }
 
 /// Fetch Cupboard listings for the active (kind, query) filter (D-011) and emit
@@ -3001,26 +2879,8 @@ async fn bee_dossier_fetch(owner_id: String, tx: UnboundedSender<Event>) {
     });
 }
 
-/// Publish the swarm pane's bee selection to the ephemeral relay
-/// (pui-bee-dossier-pane-2026-06-06): POST `fleet:selected_bee { select }`.
-/// Best-effort — a failed publish just means the bee pane keeps its last
-/// selection until the next cursor move; a transient error toasts so the
-/// keypress never silently no-ops on a persistent failure.
-async fn publish_bee_selection(
-    owner_id: Option<String>,
-    name: Option<String>,
-    tx: UnboundedSender<Event>,
-) {
-    let Ok(client) = OperatorClient::from_discovery().await else {
-        return;
-    };
-    if let Err(e) = client
-        .selected_bee_set(owner_id.as_deref(), name.as_deref())
-        .await
-    {
-        let _ = tx.send(Event::Error(format!("select cup: {e}")));
-    }
-}
+// (`publish_bee_selection` was removed with the retired `fleet:selected_bee`
+// relay — selection is purely in-process now; P-003 2026-08-24.)
 
 /// Fetch the next older page of operator turns (load-earlier / scroll-back) and
 /// emit `Event::ChatEarlier` to prepend them. Best-effort — a fetch error just

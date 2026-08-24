@@ -11,8 +11,9 @@ use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models;
 use crate::models::{
     ActivityRecentPayload, ActivityRow, AgentConfigResponse, AttentionItem, AttentionResponse,
-    BeeAssignment, BeeMailPayload, ConvDetail, ConvListResponse, ConvSummary, ConversationLoad,
-    CoordInboxResponse, CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, DocsResponse,
+    BeeAssignment, BeeMailEntry, BeeMailPayload, BeeMailSide, ConvDetail, ConvListResponse,
+    ConvSummary, ConversationLoad, CoordFeedPayload, CoordInboxResponse, CoordMsg, CrewMember,
+    CrewRow, CrewSummary, CrewsResponse, DocsResponse,
     FeaturesPayload, FlagsResponse, FleetAssignmentsPayload, HarnessFeature, HarnessIssue,
     HarnessRef, IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, LexiconPackPayload,
     Notif, OperatorConfig, PlanItemStates, PlanSummary, PlansResponse, ProjectsResponse,
