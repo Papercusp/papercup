@@ -557,6 +557,18 @@ export default defineTool({
       return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
     };
     const explicitWorkItem = args.workItem?.trim();
+    // Resolve the effective carry before choosing the harness so a COLD loop's
+    // goal-detected work-item can contribute its canonical harness scope. Without
+    // this, a workspace-scoped caller falls through to the workspace home first
+    // (which may be an unrelated pot), then attempts the by-id claim in that wrong
+    // namespace and reports not_found even though coord:orient reconciled a held
+    // item in another harness (EI-21358731971685285).
+    const goal = clampText(args.goal, 4000);
+    const carryForScope: 'warm' | 'cold' | undefined =
+      args.carry ?? (prior?.active ? prior.carry : !explicitWorkItem ? await resolveDefaultCarry(ownerId) : undefined);
+    const autoDetectedWorkItemForScope =
+      !explicitWorkItem && carryForScope === 'cold' ? detectDrivenWorkItemId(goal) ?? undefined : undefined;
+    const scopeWorkItem = explicitWorkItem ?? autoDetectedWorkItemForScope;
     const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
     // EI-20245033088778955: an ACTIVE routine's install scope is authoritative
@@ -566,17 +578,18 @@ export default defineTool({
     if (onlyWorkspaceScope && isConcreteHarness(prior?.harnessSlug)) {
       harness = resolvePotHomeSlug(prior!.harnessSlug!, undefined);
     }
-    // EI-21302411209364135: an explicit work-item pin is also a durable scope hint.
-    // A workspace-scoped SU session has no concrete ctx.harnessSlug, so resolving its
-    // loop through the workspace home can point the optional auto-claim at the wrong
-    // harness. Numeric WI ids are harness-scoped on the feature-family path; resolve the
-    // item without a harness before falling back to the home pot, then use its canonical
-    // harness for both fleet admission and the compare-and-claim. An active loop's
-    // existing install scope remains authoritative above, so a re-arm cannot silently
-    // migrate an already-installed routine.
-    if (onlyWorkspaceScope && !harness && explicitWorkItem) {
+    // EI-21302411209364135 / EI-21358731971685285: a pinned or COLD goal-detected
+    // work-item is also a durable scope hint. A workspace-scoped SU session has no
+    // concrete ctx.harnessSlug, so resolving its loop through the workspace home can
+    // point the optional auto-claim at the wrong harness. Numeric WI ids are
+    // harness-scoped on the feature-family path; resolve the item without a harness
+    // before falling back to the home pot, then use its canonical harness for both
+    // fleet admission and the compare-and-claim. An active loop's existing install
+    // scope remains authoritative above, so a re-arm cannot silently migrate an
+    // already-installed routine.
+    if (onlyWorkspaceScope && !harness && scopeWorkItem) {
       try {
-        const item = await getWorkItem(explicitWorkItem.toUpperCase());
+        const item = await getWorkItem(scopeWorkItem.toUpperCase());
         if (isConcreteHarness(item?.harness)) {
           harness = resolvePotHomeSlug(item!.harness!, undefined);
         }
@@ -688,7 +701,6 @@ export default defineTool({
     }
 
     // softText fields (P-002): never bounced on length — clamp to cap here.
-    const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
 
     // EI-20034001963934568: the loop goal is replayed as machine-injected `user`
@@ -758,7 +770,7 @@ export default defineTool({
     // explicit args.carry always wins either way. `carry` from here on is the
     // RESOLVED value, threaded into materializeLoop + the kickoff + response.
     const carryPreservedFromPrior = args.carry == null && Boolean(prior?.active);
-    const carry = args.carry ?? (prior?.active ? prior.carry : await resolveDefaultCarry(ownerId));
+    const carry = args.carry ?? (prior?.active ? prior.carry : carryForScope ?? await resolveDefaultCarry(ownerId));
     const resolvedMode = args.mode ?? 'work';
 
     // WI-5557 TIER 1 — an unattended warm-carry WORK loop with neither dead-man guard set
@@ -787,9 +799,11 @@ export default defineTool({
     // unheld/self-held row), so a conflict/not-found is a non-fatal NOTE, never a failed
     // arm — arming already succeeded; this is best-effort on top.
     const explicit = explicitWorkItem;
-    const drivenCandidate =
-      (explicit ? explicit.toUpperCase() : undefined) ??
-      (carry === 'cold' ? detectDrivenWorkItemId(goal) ?? undefined : undefined);
+    const drivenCandidate = explicit
+      ? explicit.toUpperCase()
+      : carry === 'cold'
+        ? autoDetectedWorkItemForScope
+        : undefined;
     let claimedWorkItem: string | null = null;
     let workItemClaim:
       | { id: string; claimed: true }

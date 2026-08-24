@@ -279,6 +279,37 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp', workItem: 'WI-41214' } });
   });
 
+  it('EI-21358731971685285: infers an auto-detected cold goal item\'s harness before workspace-home fallback', async () => {
+    const id = 'EI-21358731971685285';
+    homePotM.mockResolvedValue('sb-devboard-hive');
+    potHomeM.mockImplementation((value) => value);
+    detectM.mockReturnValue(id as never);
+    getWiM.mockImplementation(async (_id, harness) =>
+      (harness === 'sb-devboard-hive'
+        ? null
+        : { id, state: 'open', harness: 'papercusp', assignee: null }) as never,
+    );
+    claimM.mockImplementation(async (_id, _owner, options) =>
+      ((options as { harness?: string }).harness === 'papercusp' ? claimedRow : null) as never,
+    );
+    classifyM.mockReturnValue({ reason: 'not_found', holder: null } as never);
+
+    const b = body(
+      await tool.handler(
+        { intervalSec: 120, goal: `continue ${id}`, carry: 'cold' } as never,
+        { harnessSlug: '*', workspaceId: 'ws-1' } as never,
+      ) as Out,
+    );
+
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { harness: 'papercusp', workItem: id },
+      workItemClaim: { id, claimed: true },
+    });
+    expect(claimM).toHaveBeenCalledWith('EI-21358731971685285', 'su-caller-own-id', { harness: 'papercusp' });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp', workItem: id }));
+  });
+
   it('EI-20123870155538062: refuses an out-of-spec auto-claim before mutation, but still arms the loop', async () => {
     mockResolvedTyped(admitM, {
       allowed: false,
