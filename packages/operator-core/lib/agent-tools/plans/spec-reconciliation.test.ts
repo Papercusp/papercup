@@ -20,12 +20,47 @@ import type { PlanSpecCoverageAggregate } from './plan-spec-coverage-gate';
 
 type Aggregate = PlanSpecCoverageAggregate;
 
+/**
+ * ⚠ NO `as Aggregate` CAST HERE, DELIBERATELY, AND IT MUST NOT COME BACK.
+ *
+ * This helper used to end `} as Aggregate`, which made it compile no matter what the
+ * real type required. That is not a style nit: when `PlanSpecCoverageAggregate` grew
+ * its P-013 partitions, the cast let this fixture keep omitting them, so every test
+ * below would have exercised the rollup against a shape production can never produce
+ * — `byBehaviorClass: undefined` — and the summation would have been "verified" by
+ * tests that never saw a partition at all. The cast converts a compile error that
+ * names the missing field into a runtime shape mismatch nobody is looking for.
+ *
+ * Returning a plain typed literal means adding a required field to the aggregate
+ * BREAKS THIS FILE loudly, which is exactly the reminder that the fixture has to
+ * grow with it. Keep it that way.
+ *
+ * The default is also deliberately CONSISTENT rather than minimal: the partitions
+ * below reconcile with the flat counts (3 total / 2 enforceable / 2 proven / 2
+ * falsifiers). A fixture whose partition disagreed with its own totals would make
+ * the reconciliation assertions pass or fail for reasons unrelated to the code.
+ */
 function aggregate(over: Partial<Aggregate> = {}): Aggregate {
   return {
     planSlug: 'p',
     clauses: { total: 3, enforceable: 2, exempt: 1, draft: 0, inactive: 0, falsifierDeclared: 2 },
     coverage: { proven: 2, staleProof: 0, unproven: 0, staleProofClauses: [], unprovenSpecIds: [] },
     adequacy: { graded: 2, ungraded: 0, ungradedSpecIds: [] },
+    byBehaviorClass: {
+      'happy-path': { total: 2, enforceable: 2, proven: 2, staleProof: 0, unproven: 0, falsifierDeclared: 2 },
+      // The exempt clause: present in `total`, never enforceable. Keeps the fixture
+      // honest about the one case where total and enforceable legitimately differ.
+      boundary: { total: 1, enforceable: 0, proven: 0, staleProof: 0, unproven: 0, falsifierDeclared: 0 },
+    },
+    evidence: {
+      byKind: { test: 5 },
+      currentByKind: { test: 5 },
+      staleness: {
+        maxRevisionLag: 0,
+        oldestCurrentProofAt: '2026-08-01T00:00:00.000Z',
+        newestProofAt: '2026-08-02T00:00:00.000Z',
+      },
+    },
     bounded: {
       evidenceCensusLimit: 2000,
       evidenceRowsRead: 5,
@@ -34,7 +69,7 @@ function aggregate(over: Partial<Aggregate> = {}): Aggregate {
       adequacyTruncatedByLimit: false,
     },
     ...over,
-  } as Aggregate;
+  };
 }
 
 const plan = (over: Partial<PlanAdoptionRow> = {}): PlanAdoptionRow => ({
