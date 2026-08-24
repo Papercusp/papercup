@@ -15,6 +15,8 @@ import {
   isFirstOutputStalled,
   FIRST_OUTPUT_STALL_MS,
   classifyCeilingJamRow,
+  isInProcessLaunchIdentity,
+  spawnRowKind,
 } from './spawn-reclaim';
 
 const NOW = Date.parse('2026-06-14T02:00:00.000Z');
@@ -245,5 +247,95 @@ describe('classifyCeilingJamRow — never-streamed proc-dead verdict (EI-8839) +
     const asDate = classifyCeilingJamRow(row({ startedAt: new Date(started20mAgo) }), base);
     expect(asString).toBe(asDate);
     expect(asDate).toBe('proc-dead');
+  });
+});
+
+/**
+ * WI-6113 — the in-process-launch class must stay OUT of the first-output-stall
+ * reaper's kill list, and `isSupervisedBeeRow` alone does not keep it out.
+ *
+ * `spawnRowKind` short-circuits to 'spawn' on an `invoke-*` run_id BEFORE its
+ * `durable-spawn:` test. Measured 2026-08-24 over a 14-day window of
+ * `harness_shared.spawned_agents`: 56 of 79 `durable-spawn:*` rows carry exactly that
+ * prefix, so a supervised-bee-only filter passed 71% of the population it was added to
+ * protect. Those rows hold a fresh heartbeat (an unconditional 60s keepalive in
+ * dbos/durable-spawn.ts, decoupled from progress) and a permanently NULL
+ * `last_output_at` (0-of-5,457 in-process-launch rows have ever populated it), so they
+ * satisfy every predicate of the reaper's SELECT within 5 minutes of starting a run that
+ * normally takes 20-45.
+ *
+ * These cases are the REAL measured id shapes, not invented ones.
+ */
+describe('WI-6113 — in-process-launch identity is excluded independently of run_id (kill-list guard)', () => {
+  // The two run_id families actually observed on durable-spawn rows, plus the legacy
+  // launch-blueprint shape and a genuine supervised bee as the negative control.
+  const cases: { name: string; spawn_id: string; run_id: string | null; inProcess: boolean }[] = [
+    {
+      name: 'durable-spawn with an invoke-* run_id (50 of 79 measured — the shape the old filter missed)',
+      spawn_id: 'durable-spawn:implement:EI-21177555351818650:de1401107-62fe-400d-a1c3-b0b8f9b1da2d',
+      run_id: 'invoke-implement-1787500000000',
+      inProcess: true,
+    },
+    {
+      name: 'durable-spawn with an invoke-invoke-* run_id (6 of 79 measured)',
+      spawn_id: 'durable-spawn:implement:EI-21177555351818650:aa11',
+      run_id: 'invoke-invoke-1787500000001',
+      inProcess: true,
+    },
+    {
+      name: 'durable-spawn with the pre-2026-08-21 run_id shape (23 of 79 measured)',
+      spawn_id: 'durable-spawn:implement:EI-21177555351818650:bb22',
+      run_id: 'implement:EI-21177555351818650',
+      inProcess: true,
+    },
+    {
+      name: 'legacy launch-blueprint row',
+      spawn_id: 's-1783719895216-6dcaad66',
+      run_id: 'launch-blueprint-1787500000002',
+      inProcess: true,
+    },
+    {
+      name: 'NEGATIVE CONTROL — a genuine supervised invoke-once bee is NOT in-process and stays reapable',
+      spawn_id: 's-1783719895216-6dcaad66',
+      run_id: 'invoke-1787500000003',
+      inProcess: false,
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.name, () => {
+      expect(isInProcessLaunchIdentity({ spawn_id: c.spawn_id, run_id: c.run_id })).toBe(c.inProcess);
+    });
+  }
+
+  it('FALSIFIABILITY CONTROL — the pre-fix supervised-bee-only filter genuinely ADMITS the invoke-* durable-spawn shape', () => {
+    // If this ever stops being true, `spawnRowKind`'s ordering changed and the
+    // intersection below may no longer be load-bearing — re-derive before simplifying it.
+    const row = {
+      spawn_id: 'durable-spawn:implement:EI-21177555351818650:de1401107',
+      run_id: 'invoke-implement-1787500000000',
+      pid: 936400,
+    };
+    // The OLD filter classified this as a supervised bee — i.e. reap-eligible.
+    expect(spawnRowKind({ spawnId: row.spawn_id, runId: row.run_id, pid: row.pid })).toBe('spawn');
+    // The identity test is what actually excludes it...
+    expect(isInProcessLaunchIdentity(row)).toBe(true);
+    // ...so only the INTERSECTION keeps it off the kill list.
+    const oldFilterAdmits = spawnRowKind({ spawnId: row.spawn_id, runId: row.run_id, pid: row.pid }) === 'spawn';
+    const newFilterAdmits = oldFilterAdmits && !isInProcessLaunchIdentity(row);
+    expect(oldFilterAdmits).toBe(true);
+    expect(newFilterAdmits).toBe(false);
+  });
+
+  it('a first-output-stalled durable-spawn LOOKS reapable on every other predicate — the identity test is the only thing stopping it', () => {
+    // Fresh heartbeat (the unconditional 60s keepalive), never any output, started
+    // longer ago than the 5-minute stall threshold: the full reap signature.
+    const startedAt = new Date(NOW - (FIRST_OUTPUT_STALL_MS + 60_000)).toISOString();
+    expect(
+      isFirstOutputStalled(
+        { status: 'running', heartbeatAt: fresh, lastOutputAt: null, startedAt },
+        { now: NOW, staleMs: 60 * 60_000 },
+      ),
+    ).toBe(true);
   });
 });

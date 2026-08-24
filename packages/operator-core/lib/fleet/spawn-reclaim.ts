@@ -860,6 +860,40 @@ function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null; pid?
 }
 
 /**
+ * Does this row carry an IN-PROCESS-LAUNCH IDENTITY, by its ids alone?
+ *
+ * This is deliberately NOT `!isSupervisedBeeRow(row)`, and the difference is
+ * load-bearing for any reaper that KILLS. {@link spawnRowKind} short-circuits to
+ * `'spawn'` the moment `run_id` starts with `invoke-` — the documented "the /invoke
+ * route recorded a real child pid, so treat it as a supervised child from here"
+ * handoff — and that check runs BEFORE the `durable-spawn:` test. So a
+ * `durable-spawn:*` row whose run_id is `invoke-*` classifies as a supervised bee
+ * and is NOT excluded by `isSupervisedBeeRow`.
+ *
+ * MEASURED, 2026-08-24 (WI-6113), `harness_shared.spawned_agents`, 14-day window:
+ * of 79 `durable-spawn:*` rows, 56 (71%) carry an `invoke-*` run_id — so
+ * `isSupervisedBeeRow` excludes only 23 of them. The `invoke-` prefix first appears
+ * on 2026-08-21; before that the whole class read as `'launch'`. A run_id naming
+ * change silently moved most of this population across the class boundary that two
+ * killing reapers rely on, and nothing failed.
+ *
+ * WHY THE HANDOFF'S PREMISE DOES NOT HOLD HERE: the handoff means "a real child is
+ * being stdout-supervised". If that were true of these rows some of them would have
+ * streamed. NONE have — `last_output_at` is NULL on 79/79 of the class, and on
+ * 0-of-5,457 in-process-launch rows table-wide, against 184 supervised rows that do
+ * populate it. Whether the defect is in the handoff (no supervisor attached) or in
+ * the classification, the consequence for a reaper is identical: the row is treated
+ * as a supervised child that has "never emitted output", which is exactly the
+ * signature these reapers kill on.
+ *
+ * Use this ALONGSIDE `isSupervisedBeeRow` — never instead of it — so the filter is
+ * the INTERSECTION of both, and can only ever remove rows from a kill list.
+ */
+export function isInProcessLaunchIdentity(row: { spawn_id: string; run_id: string | null }): boolean {
+  return (row.run_id ?? '').startsWith('launch-') || row.spawn_id.startsWith('durable-spawn:');
+}
+
+/**
  * The ceiling-jam verdict for ONE candidate row — pure, so {@link
  * reclaimCeilingJamDebits}'s decision logic (and its EI-8528/EI-8839 guards) is
  * unit-testable without a live PG:
@@ -1448,7 +1482,20 @@ export async function reclaimFirstOutputStalledSpawns(
   // on without this filter, this reaper would SIGTERM essentially every non-opspawn spawn in
   // the fleet within minutes of it starting. Filter to the supervised-bee population BEFORE
   // classifying, exactly as the sibling reclaimers already do.
-  const candidates = rawCandidates.filter((c) => isSupervisedBeeRow(c));
+  //
+  // WI-6113 (2026-08-24): `isSupervisedBeeRow` ALONE does not deliver the exclusion the
+  // comment above claims. `spawnRowKind` short-circuits to 'spawn' on an `invoke-*` run_id
+  // BEFORE its `durable-spawn:` test, and 56 of 79 durable-spawn rows measured in a 14-day
+  // window carry exactly that prefix — so 71% of the population this filter is meant to
+  // protect passed straight through it. Those rows have a FRESH heartbeat (an unconditional
+  // 60s keepalive timer in dbos/durable-spawn.ts, decoupled from progress), a permanently
+  // NULL `last_output_at` (0-of-5,457 in-process-launch rows have ever populated it), and a
+  // `started_at` older than FIRST_OUTPUT_STALL_MS (5 min) within minutes of launching a run
+  // that normally takes 20-45 — i.e. they satisfy EVERY predicate of the SELECT above. With
+  // RECLAIM_STALLED on, this reaper would SIGTERM them, which is the precise outcome
+  // EI-18729995135827661 added the class filter to prevent. Intersect with an ids-only
+  // identity test so the exclusion cannot be undone by a run_id rename.
+  const candidates = rawCandidates.filter((c) => isSupervisedBeeRow(c) && !isInProcessLaunchIdentity(c));
   if (candidates.length === 0) {
     return { reclaimed: 0, spawnIds: [], workspaces: [] };
   }

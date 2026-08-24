@@ -7,12 +7,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
-const deadSessionRouting = vi.hoisted(() => ({
-  lookupEndedSessions: vi.fn(async (ids: readonly string[]) =>
-    new Map(ids.map((id) => [id, '2026-08-21T02:22:14.866Z'] as const)),
-  ),
-  resolvePresenceFleet: vi.fn(async () => ({ fleetSlug: 'drain-fleet', fleetRole: 'member' })),
-}));
 const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   notify: vi.fn(),
@@ -25,19 +19,7 @@ vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
-  deriveFleetMembership: () => ({ fleetSlug: 'launch-fleet', fleetRole: 'member' }),
 }));
-vi.mock('../coordination/dead-session-recipient-guidance', async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  lookupEndedSessions: deadSessionRouting.lookupEndedSessions,
-}));
-vi.mock('../coordination/presence-fleet', () => ({
-  resolvePresenceFleet: deadSessionRouting.resolvePresenceFleet,
-}));
-// WI-5946: readWorkItemClaimHoldProvenance/looksLikePolicyGate are real dependencies of BOTH
-// claim.ts (the pre-read guard) and claim-hold-guard.ts's assessClaimHoldGuard (mocked at the
-// SAME module path, so both importers see this one mock) — default "nothing held" so every
-// pre-existing test in this file is unaffected; the claim-hold-specific tests below override it.
 //
 // PARTIAL mock (importOriginal), deliberately — NOT a hand-listed factory. A hand-listed factory
 // returns `undefined` for any export claim.ts imports but the list forgot, and the tool then
@@ -53,21 +35,7 @@ vi.mock('../../work-items', async (importOriginal) => ({
   claimWorkItem: vi.fn(),
   classifyClaimFailure: vi.fn(),
   getWorkItem: vi.fn(),
-  readWorkItemClaimHoldProvenance: vi.fn(() => ({ heldOpen: null, parked: null, attributed: false })),
-  looksLikePolicyGate: vi.fn(() => false),
 }));
-// Keep assessClaimHoldGuard REAL (it composes the two mocked work-items reads above — an
-// integration test of the guard's own logic, not a re-mock of it); stub only the
-// side-effecting audit/notify calls so a claim-hold-bypass test never touches a real
-// DB/coord/attention backend.
-vi.mock('./claim-hold-guard', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./claim-hold-guard')>();
-  return {
-    ...actual,
-    recordClaimHoldBypassAudit: vi.fn(async () => {}),
-    notifyClaimHoldBypass: vi.fn(async () => {}),
-  };
-});
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
@@ -88,16 +56,12 @@ vi.mock('./release-force-guard', () => ({
   recordForceTransitionAudit: vi.fn(async () => {}),
 }));
 
-import { claimWorkItem, classifyClaimFailure, getWorkItem, readWorkItemClaimHoldProvenance } from '../../work-items';
-import { recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
+import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { assessForceRelease, notifyForceTransition, recordForceTransitionAudit } from './release-force-guard';
 import { mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getM = vi.mocked(getWorkItem);
-const provenanceM = vi.mocked(readWorkItemClaimHoldProvenance);
-const auditM = vi.mocked(recordClaimHoldBypassAudit);
-const notifyM = vi.mocked(notifyClaimHoldBypass);
 const assessForceM = vi.mocked(assessForceRelease);
 const forceNotifyM = vi.mocked(notifyForceTransition);
 const forceAuditM = vi.mocked(recordForceTransitionAudit);
@@ -113,13 +77,9 @@ beforeEach(() => {
   forceGuard.verdict = { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } };
   fleetAdmission.decision = { allowed: true, scoped: false };
   claimM.mockImplementation(async (id: string) => ({ id, assignee: 'me' }) as never);
-  // WI-5946: claim.ts now pre-reads the item (getWorkItem) BEFORE every claim, purely to check
-  // payload._claimHold — default it to "not found" (a real getWorkItem miss simply means the
-  // guard sees no hold, same as an unclaimed item; claimWorkItem's own compare-and-claim, not
-  // this pre-read, is what actually resolves not_found for the claim itself) so every
-  // pre-existing test below — none of which cares about claim-hold — is unaffected.
+  // claim.ts pre-reads the item for the checked cross-holder CAS path; ordinary tests use a
+  // zero-row read so the claimWorkItem mock remains the source of the result.
   getM.mockResolvedValue(null as never);
-  provenanceM.mockReturnValue({ heldOpen: null, parked: null, attributed: false });
   premisePort.get.mockReset().mockResolvedValue(null);
 });
 

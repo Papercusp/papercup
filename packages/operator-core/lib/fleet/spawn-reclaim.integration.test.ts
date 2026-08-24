@@ -1266,6 +1266,35 @@ describe('reclaimFirstOutputStalledSpawns (EI-7345 — first-output stall reclai
     expect(seen).toHaveLength(0);
   });
 
+  /**
+   * WI-6113 (2026-08-24) — the case the test directly above MISSES, and why it passed
+   * anyway. That test omits `runId`, so `insertSpawn` defaults it to `r-durable-spawn:...`,
+   * which does not start with `invoke-`; `spawnRowKind` therefore returned 'launch' and the
+   * supervised-bee filter excluded the row. But a REAL durable-spawn row does not look like
+   * that. Measured over a 14-day window of `harness_shared.spawned_agents`: 56 of 79
+   * `durable-spawn:*` rows carry an `invoke-*` run_id (`invoke-implement-*`,
+   * `invoke-invoke-*`), a shape that first appears 2026-08-21. `spawnRowKind` short-circuits
+   * to 'spawn' on that prefix BEFORE its `durable-spawn:` test, so 71% of the real
+   * population classified as supervised bees and passed straight through the filter.
+   *
+   * Every other predicate of this reaper is satisfied by such a row: the 60s keepalive in
+   * dbos/durable-spawn.ts is unconditional (decoupled from progress) so the heartbeat is
+   * always fresh, `last_output_at` is NULL on 79/79 of the class, and `started_at` crosses
+   * the 5-minute threshold within minutes of a run that normally takes 20-45. With
+   * RECLAIM_STALLED on, this reaper would have SIGTERMed healthy durable spawns.
+   *
+   * This test FAILS against the pre-fix filter — that is the point of it.
+   */
+  it('does NOT reap a durable-spawn carrying the REAL `invoke-*` run_id (56 of 79 measured rows — passed the old supervised-bee filter)', async () => {
+    await insertFirstOutputStall('durable-spawn:implement:EI-21177555351818650:de1401107', {
+      runId: 'invoke-implement-1787500000000',
+    });
+    const { fn, seen } = recordingReap();
+    const r = await reclaimFirstOutputStalledSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
   it('STILL reaps a genuinely supervised-bee spawn_id (e.g. `opspawn-...`) with a plain run_id', async () => {
     await insertFirstOutputStall('opspawn-1785179384123-x9y8z7', { runId: 'r-opspawn-test' });
     const { fn, seen } = recordingReap();
