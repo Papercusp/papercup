@@ -50,6 +50,7 @@ import {
   renderFactsStalenessWarning,
   type FactStalenessResult,
 } from './carry-fact-staleness';
+import { transientExecHandleWarning } from './su-cold-loop';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -842,6 +843,26 @@ export function renderCarryBriefColdExtras(
 ): string {
   const sessionActivityMs = opts.sessionActivityMs ?? null;
   const sections: string[] = [];
+  // A held checkpoint can preserve a native exec/write_stdin session id. That
+  // handle belongs to the predecessor process and is not addressable after a
+  // carry-respawn, including the warm session:request-compaction path. Surface
+  // the same warning used by cold-loop notes before the checkpoint excerpt so
+  // the successor reconciles durable evidence instead of blindly polling or
+  // launching a duplicate command.
+  const transientExecHandleItems = brief.heldItems.filter(
+    (item) => item.checkpoint != null && transientExecHandleWarning(item.checkpoint) != null,
+  );
+  if (transientExecHandleItems.length > 0) {
+    const ids = transientExecHandleItems.map((item) => item.id).join(', ');
+    sections.push(
+      `⚠ CARRIED TRANSIENT EXEC HANDLE(S) — held-item checkpoint(s) ${ids} contain a numeric ` +
+        '`exec_command`/`write_stdin` session or process handle from the predecessor. ' +
+        'Do NOT call `write_stdin` with that carried id. First reconcile durable spill/log/work-item ' +
+        'evidence and the actual process; do not treat Unknown process id as command failure or ' +
+        'blindly relaunch. If no live/completed process or durable result remains, rerun the bounded ' +
+        'command with a fresh exec.',
+    );
+  }
   if (brief.directives.length > 0) {
     // EI-11484: open owner directives render FIRST — above walls, above the
     // agenda. Budgeted by the shared renderer (whole ≤300 chars, else substr

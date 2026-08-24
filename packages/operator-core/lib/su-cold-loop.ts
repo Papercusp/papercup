@@ -181,7 +181,12 @@ const NUMERIC_EXEC_HANDLE_RE =
  * Cold carry deliberately preserves the note verbatim, but must frame this handle before
  * the note can prompt the successor to call write_stdin on an id from the dead process.
  */
-function transientExecHandleWarning(note: string): string | null {
+/**
+ * Detect a numeric native exec handle in carried text. The same warning is
+ * used by the cold-loop note renderer and the shared carry-brief renderer so
+ * warm carry-respawns cannot hand a successor a stale write_stdin id silently.
+ */
+export function transientExecHandleWarning(note: string): string | null {
   if (!TRANSIENT_EXEC_TOOL_RE.test(note) || !NUMERIC_EXEC_HANDLE_RE.test(note)) return null;
   return (
     '⚠ CARRIED TRANSIENT EXEC HANDLE: this note names a numeric session/process handle for ' +

@@ -476,6 +476,56 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
 });
 
 describe('renderCarryBriefColdExtras — the cold-anchor sections after the note', () => {
+  it('warns when a held checkpoint carries a predecessor exec handle across a carry-respawn', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{
+        id: 'EI-21309858082119709',
+        title: 'queued lint verification',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: 'run npm run lint:tsc; poll write_stdin(session_id=59998) for the verdict',
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).toContain('CARRIED TRANSIENT EXEC HANDLE(S)');
+    expect(out).toContain('EI-21309858082119709');
+    expect(out).toContain('Do NOT call `write_stdin` with that carried id');
+    expect(out).toContain('durable spill/log/work-item evidence');
+    expect(out).toContain('fresh exec');
+    expect(out.indexOf('CARRIED TRANSIENT EXEC HANDLE')).toBeLessThan(out.indexOf('You HELD'));
+  });
+
+  it('does not warn for a checkpoint that only names a stable native session', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{
+        id: 'WI-1',
+        title: null,
+        body: null,
+        harness: 'papercusp',
+        checkpoint: 'resume native agent session 59998 after the carry-respawn; no transient exec handle is carried',
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    expect(renderCarryBriefColdExtras(brief)).not.toContain('CARRIED TRANSIENT EXEC HANDLE');
+  });
+
   it('renders held items with capped checkpoints, facts, awaits, and the fleet pointer', async () => {
     const out = renderCarryBriefColdExtras(await buildCarryBrief('su-abc', fullOpts()));
     expect(out).toContain('You HELD these work-items');
