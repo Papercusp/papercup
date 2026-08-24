@@ -184,14 +184,14 @@ function nestedObjectProperties(
   return null;
 }
 
-function nestedFieldNames(node: JsonSchemaNode, depth: number): string {
+function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptions = true): string {
   if (depth >= MAX_NESTED_SCHEMA_DEPTH) return '';
   const nested = nestedObjectProperties(node);
   if (!nested) return '';
   const names = Object.entries(nested.properties).map(([name, raw]) => {
     const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
-    const shape = schemaShape(child, depth);
-    const description = nestedDescription(child, depth);
+    const shape = schemaShape(child, depth, includeDescriptions);
+    const description = includeDescriptions ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
   });
   return names.length > 0 ? `{${names.join(',')}}` : '';
@@ -215,7 +215,7 @@ function nestedDescription(node: JsonSchemaNode, depth: number): string {
   return ` ${bounded}`;
 }
 
-function schemaShape(node: JsonSchemaNode, depth: number): string {
+function schemaShape(node: JsonSchemaNode, depth: number, includeNestedDescriptions = true): string {
   const type = schemaType(node);
   const bound = schemaBound(node);
   // Keep regex constraints in the returned schema just as bounds and array
@@ -227,8 +227,72 @@ function schemaShape(node: JsonSchemaNode, depth: number): string {
     [node, ...schemaNodes(node)]
       .map((candidate) => arrayItemConstraintText(candidate))
       .find((text): text is string => text.length > 0) ?? '';
-  const nested = nestedFieldNames(node, depth + 1);
+  const nested = nestedFieldNames(node, depth + 1, includeNestedDescriptions);
   return `${type}${bound}${pattern}${itemConstraint}${nested}`;
+}
+
+type TopLevelSchemaProjection = {
+  entries: Array<[string, unknown]>;
+  required: Set<string>;
+  /** Required keys that distinguish the root union's branches, if any. */
+  unionHint: string;
+};
+
+function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjection | null {
+  const directProps = root.properties;
+  if (directProps && typeof directProps === 'object' && !Array.isArray(directProps)) {
+    return {
+      entries: Object.entries(directProps as Record<string, unknown>),
+      required: new Set<string>(
+        Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : [],
+      ),
+      unionHint: '',
+    };
+  }
+
+  const branches = schemaNodes(root);
+  if (branches.length === 0) return null;
+
+  // A root union is how Zod publishes dual-arity tools such as
+  // work_items:complete. Merge the branch properties for a callable compact
+  // shape, but retain the branch-required keys as an explicit one-of hint so
+  // the merged optional view cannot be mistaken for the whole contract.
+  const merged = new Map<string, { raw: unknown; presentIn: number; requiredInAll: boolean }>();
+  for (const branch of branches) {
+    const props = branch.properties;
+    if (!props || typeof props !== 'object' || Array.isArray(props)) continue;
+    const required = new Set<string>(
+      Array.isArray(branch.required) ? branch.required.filter((v): v is string => typeof v === 'string') : [],
+    );
+    for (const [name, raw] of Object.entries(props as Record<string, unknown>)) {
+      const prior = merged.get(name);
+      if (prior) {
+        prior.presentIn += 1;
+        prior.requiredInAll = prior.requiredInAll && required.has(name);
+      } else {
+        merged.set(name, { raw, presentIn: 1, requiredInAll: required.has(name) });
+      }
+    }
+  }
+  if (merged.size === 0) return null;
+
+  const unionHint =
+    branches.length > 1
+      ? branches
+          .map((branch) =>
+            Array.isArray(branch.required)
+              ? branch.required.filter((v): v is string => typeof v === 'string')
+              : [],
+          )
+          .filter((names) => names.length > 0)
+          .map((names) => names.join('&'))
+          .join('|')
+      : '';
+  const required = new Set<string>();
+  for (const [name, entry] of merged) {
+    if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);
+  }
+  return { entries: [...merged].map(([name, entry]) => [name, entry.raw]), required, unionHint };
 }
 
 /**
@@ -239,18 +303,19 @@ function schemaShape(node: JsonSchemaNode, depth: number): string {
 export function compactSchemaForResult(inputSchema: unknown): string | null {
   if (!inputSchema || typeof inputSchema !== 'object') return null;
   const root = inputSchema as JsonSchemaNode;
-  const props = root.properties;
-  if (!props || typeof props !== 'object' || Array.isArray(props)) return null;
-  const required = new Set<string>(
-    Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : [],
-  );
-  const parts = Object.entries(props as Record<string, unknown>).map(([name, raw]) => {
+  const projection = topLevelSchemaProjection(root);
+  if (!projection) return null;
+  const parts = projection.entries.map(([name, raw]) => {
     const node = raw && typeof raw === 'object' ? (raw as JsonSchemaNode) : {};
-    const shape = schemaShape(node, 0);
-    return `${name}${required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+    // Root unions commonly carry verbose branch descriptions (the completion
+    // contract is one such schema). Keep their projection structural so a
+    // late top-level contract field such as `assumptions` cannot be clipped
+    // behind a nested prose description before the result budget is reached.
+    const shape = schemaShape(node, 0, !projection.unionHint);
+    return `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
   });
   if (parts.length === 0) return null;
-  const text = parts.join('; ');
+  const text = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${parts.join('; ')}`;
   return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
 }
 
