@@ -192,7 +192,7 @@ describe('harnessCitationRepoRoot — canonical registry precedence (WI-38854)',
         [code('apps/web/src/BuyerProductRail.css')],
         [fallback],
       ),
-    ).toBe(fallback);
+    ).toEqual({ root: fallback, source: 'hive-checkout' });
   });
 
   it('refuses an ambiguous tie between two real Hive checkouts', () => {
@@ -234,7 +234,71 @@ describe('harnessCitationRepoRoot — canonical registry precedence (WI-38854)',
         [code('apps/web/src/BuyerProductRail.css')],
         [real, worktree],
       ),
-    ).toBe(real);
+    ).toEqual({ root: real, source: 'hive-checkout' });
+  });
+
+  it('keeps a resolving registry root labeled as the registry source', () => {
+    const canonical = path.join(workspaceRoot, 'registry-live');
+    fs.mkdirSync(path.join(canonical, 'apps', 'web', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(canonical, 'apps', 'web', 'src', 'BuyerProductRail.css'), '.rail {}\n');
+
+    expect(
+      selectHarnessCitationRepoRoot(
+        { projects: [{ slug: 'sb-devboard-hive', path: canonical, harness_kind: 'hive' }] },
+        'sb-devboard-hive',
+        [code('apps/web/src/BuyerProductRail.css')],
+        [],
+      ),
+    ).toEqual({ root: canonical, source: 'registry' });
+  });
+
+  it('falls back to the canonical repo when no hive checkout resolves the citations (WI-41365)', () => {
+    const stale = path.join(workspaceRoot, 'missing-devboard-canonical');
+    const nonResolving = path.join(workspaceRoot, 'hive-unrelated');
+    fs.mkdirSync(path.join(nonResolving, '.git'), { recursive: true });
+    const canonicalRepo = path.join(workspaceRoot, 'canonical-papercusp');
+    fs.mkdirSync(path.join(canonicalRepo, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(canonicalRepo, 'packages', 'operator-core', 'lib'), { recursive: true });
+    fs.writeFileSync(
+      path.join(canonicalRepo, 'packages', 'operator-core', 'lib', 'orient-task-schema-pack.ts'),
+      'export const packed = 1;\n',
+    );
+
+    expect(
+      selectHarnessCitationRepoRoot(
+        { projects: [{ slug: 'sb-devboard-hive', path: stale, harness_kind: 'hive' }] },
+        'sb-devboard-hive',
+        [code('packages/operator-core/lib/orient-task-schema-pack.ts')],
+        [nonResolving],
+        canonicalRepo,
+      ),
+    ).toEqual({ root: canonicalRepo, source: 'canonical-repo' });
+  });
+
+  it('prefers a sole resolving hive checkout over the canonical repo, and never tie-breaks with it', () => {
+    const stale = path.join(workspaceRoot, 'missing-devboard-precedence');
+    const canonicalRepo = path.join(workspaceRoot, 'canonical-papercusp-precedence');
+    const hiveA = path.join(workspaceRoot, 'hive-a');
+    const hiveB = path.join(workspaceRoot, 'hive-b');
+    for (const root of [canonicalRepo, hiveA, hiveB]) {
+      fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'src', 'shared.ts'), 'export const shared = 1;\n');
+    }
+    const reg = { projects: [{ slug: 'sb-devboard-hive', path: stale, harness_kind: 'hive' as const }] };
+
+    // One resolving hive checkout wins even though the canonical repo also resolves.
+    expect(
+      selectHarnessCitationRepoRoot(reg, 'sb-devboard-hive', [code('src/shared.ts')], [hiveA], canonicalRepo),
+    ).toEqual({ root: hiveA, source: 'hive-checkout' });
+    // Two resolving hive checkouts stay an ambiguous refusal — the canonical repo must not tie-break.
+    expect(
+      selectHarnessCitationRepoRoot(reg, 'sb-devboard-hive', [code('src/shared.ts')], [hiveA, hiveB], canonicalRepo),
+    ).toBeNull();
+    // And a citation resolving NOWHERE still fails closed.
+    expect(
+      selectHarnessCitationRepoRoot(reg, 'sb-devboard-hive', [code('src/nowhere.ts')], [hiveA], canonicalRepo),
+    ).toBeNull();
   });
 });
 

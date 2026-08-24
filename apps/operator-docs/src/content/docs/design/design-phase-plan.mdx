@@ -4,17 +4,19 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Design phase — plan
-description: Add Design as a first-class phase in the feature lifecycle, with a separate Design tab, a generic ecosystem-agnostic engine, and per-ecosystem adapters (React/Tailwind ships first). Designer agents produce JSON-IR specs that implementer agents consume.
-plans:
-  - design-tokens-implementation-plan-2026-05-13
-  - design-migration-deferred-2026-05-13
+title: "Design phase — plan"
+description: "Add Design as a first-class phase in the feature lifecycle, with a separate Design tab, a generic ecosystem-agnostic engine, and per-ecosystem adapters (React/Tailwind ships first). Designer agents produce JSON-IR specs that implementer agents consume."
+type: Insight
+discovered: 2026-08-24
+status: active
 documents:
-  - packages/operator-core/lib/design-phase.ts
-  - packages/operator-core/lib/design-ir/schema.ts
-  - packages/operator-core/lib/design-spec
-  - packages/operator-core/lib/design-adapter-react-tailwind
-  - apps/operator/app/design/[slug]/DesignDashboard.tsx
+  - "packages/operator-core/lib/design-phase.ts"
+  - "packages/operator-core/lib/design-ir/schema.ts"
+  - "packages/operator-core/lib/design-spec"
+  - "apps/operator/app/design/[slug]/DesignDashboard.tsx"
+plans:
+  - "design-tokens-implementation-plan-2026-05-13"
+  - "design-migration-deferred-2026-05-13"
 ---
 
 This plan turns Design into a first-class phase in the same way

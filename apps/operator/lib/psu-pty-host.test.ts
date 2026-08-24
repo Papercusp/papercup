@@ -16,6 +16,7 @@ import {
   controlWritesForAgent,
   contextClearCommandForAgent,
   coldResetModeForAgent,
+  respawnTerminalHandoffBytes,
   clearSettleMs,
   resetWritesForAgent,
   submitVerifyQuietMs,
@@ -684,6 +685,90 @@ describe('contextClearCommandForAgent (RESET-CONTEXT clear command)', () => {
   it('Codex starts a fresh conversation with /new', () => {
     expect(contextClearCommandForAgent('codex')).toBe('/new');
     expect(contextClearCommandForAgent(' CODEX ')).toBe('/new');
+  });
+});
+
+// WI-41386. A recycle puts two CLI processes in ONE terminal back to back.
+// claude and codex both render into the PRIMARY buffer and both start drawing
+// at whatever cursor position they inherit (measured: a claude successor's
+// first bytes carry no newline, no CUP and no ED; codex additionally asks with
+// ESC[6n). A predecessor killed inside claude's `\r ESC[<N>A` rewind window
+// leaves that cursor a whole frame HIGH, so the successor's banner overwrote
+// the last screenful of the owner's scrollback on every restart. These assert
+// the handoff bytes that make an overwrite structurally impossible.
+describe('respawnTerminalHandoffBytes (WI-41386 respawn terminal handoff)', () => {
+  it('anchors past the predecessor: parks on the last row, then CRLF, so the terminal SCROLLS instead of overwriting', () => {
+    const bytes = respawnTerminalHandoffBytes({ rows: 40, separator: false });
+    // absolute park at the bottom row — everything the predecessor drew is then
+    // strictly ABOVE the cursor and can only move up into scrollback.
+    expect(bytes).toContain('\x1b[40;1H');
+    expect(bytes.endsWith('\r\n')).toBe(true);
+    expect(bytes.indexOf('\x1b[40;1H')).toBeLessThan(bytes.lastIndexOf('\r\n'));
+  });
+
+  it('still guarantees a fresh line when the terminal height is unknown', () => {
+    // No rows ⇒ no absolute park, but a CRLF still lands the successor on a
+    // virgin line rather than on top of the predecessor's last row.
+    const bytes = respawnTerminalHandoffBytes({ rows: undefined, separator: false });
+    expect(bytes).not.toMatch(/\x1b\[\d+;1H/);
+    expect(bytes.endsWith('\r\n')).toBe(true);
+    for (const bogus of [0, 1, NaN, Infinity]) {
+      expect(respawnTerminalHandoffBytes({ rows: bogus, separator: false })).not.toMatch(
+        /\x1b\[\d+;1H/,
+      );
+    }
+  });
+
+  it('NEVER emits RIS (ESC c) or an erase-display — those would destroy the scrollback it exists to save', () => {
+    const bytes = respawnTerminalHandoffBytes({ rows: 40 });
+    expect(bytes).not.toContain('\x1bc'); // RIS — full reset, erases scrollback
+    expect(bytes).not.toMatch(/\x1b\[[0-3]?J/); // ED in any form
+  });
+
+  it('rescues a terminal a SIGKILLed omp stranded on the alternate screen', () => {
+    // omp is the one backend that runs on the alt screen (?1049h). Killed hard
+    // it never emits ?1049l, and the successor then paints invisibly.
+    expect(respawnTerminalHandoffBytes({ rows: 40 })).toContain('\x1b[?1049l');
+  });
+
+  it('undoes the modes a child killed mid-frame never reset', () => {
+    const bytes = respawnTerminalHandoffBytes({ rows: 40 });
+    expect(bytes).toContain('\x1b[?25h'); // cursor visible again
+    expect(bytes).toContain('\x1b[0m'); // no inherited colour/bold
+    expect(bytes).toContain('\x1b[r'); // full-height scroll region
+    expect(bytes).toContain('\x1b[?7h'); // autowrap back on
+    expect(bytes).toContain('\x1b[?2004l'); // bracketed paste off
+    // mouse reporting off — otherwise the terminal spews on every mouse move
+    for (const mode of ['1000', '1002', '1003', '1006']) {
+      expect(bytes).toContain(`\x1b[?${mode}l`);
+    }
+  });
+
+  it('restores BEFORE it anchors, so leaving the alt screen cannot undo the park', () => {
+    const bytes = respawnTerminalHandoffBytes({ rows: 40, separator: false });
+    expect(bytes.indexOf('\x1b[?1049l')).toBeLessThan(bytes.indexOf('\x1b[40;1H'));
+  });
+
+  it('emits the restart separator by default and omits it on request', () => {
+    expect(respawnTerminalHandoffBytes({ rows: 40 })).toContain('session restarted');
+    expect(respawnTerminalHandoffBytes({ rows: 40, separator: false })).not.toContain(
+      'session restarted',
+    );
+    // the marker must land AFTER the anchoring CRLF, on its own fresh line
+    const withMarker = respawnTerminalHandoffBytes({ rows: 40 });
+    expect(withMarker.indexOf('\x1b[40;1H')).toBeLessThan(withMarker.indexOf('session restarted'));
+  });
+
+  it('is backend-agnostic: it takes no agent, so claude/codex/omp cannot drift apart', () => {
+    // The bug is a property of the TERMINAL handoff, not of any one CLI, and
+    // codex routes EVERY cold reset through this recycle path
+    // (coldResetModeForAgent), so a per-backend branch here would be a
+    // regression waiting to happen.
+    expect(respawnTerminalHandoffBytes.length).toBeLessThanOrEqual(1);
+    const a = respawnTerminalHandoffBytes({ rows: 40 });
+    const b = respawnTerminalHandoffBytes({ rows: 40 });
+    expect(a).toBe(b);
+    expect(a.length).toBeGreaterThan(0);
   });
 });
 

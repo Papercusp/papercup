@@ -39,7 +39,7 @@ function stripMeta(sql: string): string {
 /** Pre-147 coord_event_log + the real federation migration + fed_ts + watermarks. */
 export async function coordCellSetup(sql: postgres.Sql): Promise<void> {
   await sql.unsafe(`
-    CREATE TABLE harness_shared.coord_event_log (
+    CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
       id           bigserial   PRIMARY KEY,
       -- A test-rig reproduction of the HISTORICAL pre-147 coord_event_log, whose whole
       -- purpose is to replay the real federation migration on top of the shape that

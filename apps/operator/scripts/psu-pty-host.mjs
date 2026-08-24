@@ -2767,6 +2767,67 @@ export function controlWritesForAgent(decoded, agent, env = process.env) {
   ];
 }
 
+/** WI-41386 — the RESPAWN TERMINAL HANDOFF: bytes the HOST writes to its own
+ *  stdout (the real terminal) between a dying child and its successor.
+ *
+ *  WHY. Every recycle puts two CLI processes in one terminal back to back, and
+ *  nothing re-anchored the cursor between them. Both primary-buffer backends
+ *  draw wherever the cursor happens to be:
+ *    - claude renders with the rewind idiom `\r ESC[<N>A` + rewrite, where N is
+ *      the live frame height. Killed INSIDE that window — which a mid-turn
+ *      SIGHUP usually is — the cursor is left up to a whole frame above the last
+ *      drawn row. Its successor's first bytes carry NO newline, NO CUP and NO
+ *      ED (measured on a captured stream), so the boot banner lands there and
+ *      overwrites the predecessor's final frame: the owner loses the last
+ *      screenful of history at every restart (measured ~40-50 lines on
+ *      su-4b48f, 2026-08-24).
+ *    - codex is the same class and asks the terminal where it is (`ESC[6n`),
+ *      so it anchors to exactly the position we leave it at.
+ *    - omp is the exception: it runs on the ALTERNATE screen (`?1049h`), so it
+ *      never writes the primary scrollback at all and cannot lose it this way.
+ *
+ *  So the anchor below is written for every backend rather than branching on
+ *  one: it is a no-op for a well-behaved child, and it is the only thing that
+ *  helps a badly-behaved one. Two parts:
+ *
+ *  1. RESTORE — undo terminal modes a killed child never got to reset. A
+ *     SIGKILLed omp never emits `?1049l`, stranding the terminal on the
+ *     alternate screen where the successor then paints invisibly; a child
+ *     killed mid-frame can leave the cursor hidden, SGR mid-colour, mouse
+ *     reporting on (which makes the terminal spew on every mouse move), or a
+ *     scroll region set. Each reset is idempotent, so this costs nothing when
+ *     the predecessor exited cleanly.
+ *  2. ANCHOR — park on the LAST screen row and emit CRLF. That forces a scroll
+ *     rather than an overwrite: whatever the predecessor drew moves up into
+ *     scrollback intact, and the successor is guaranteed a virgin line. This is
+ *     the half that fixes the history loss, and it is deliberately expressed in
+ *     terminal primitives rather than in anything the CLIs do, so it cannot rot
+ *     against a backend version bump.
+ *
+ *  NEVER use `ESC c` (RIS) here — a full reset ERASES scrollback, which is the
+ *  very thing this exists to preserve.
+ *
+ *  Pure — exported for tests.
+ *  @param {{ rows?: number, separator?: boolean }} [opts]
+ *  @returns {string} the bytes to write, or '' when disabled
+ */
+export function respawnTerminalHandoffBytes({ rows, separator = true } = {}) {
+  const lastRow = Number.isFinite(rows) && rows >= 2 ? Math.floor(rows) : null;
+  const restore =
+    '\x1b[?1049l' + // leave the alternate screen if a dead child stranded us there
+    '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l' + // mouse reporting off
+    '\x1b[?2004l' + // bracketed paste off
+    '\x1b[?7h' + // autowrap back on
+    '\x1b[r' + // full-height scroll region
+    '\x1b[0m' + // SGR reset — no inherited colour/bold
+    '\x1b[?25h'; // cursor visible
+  // Without a known height, a bare CRLF still guarantees a fresh line; the
+  // absolute park is what additionally protects rows BELOW a mid-frame cursor.
+  const anchor = (lastRow ? `\x1b[${lastRow};1H` : '') + '\r\n';
+  const marker = separator ? '\x1b[2m── session restarted ──\x1b[0m\r\n' : '';
+  return restore + anchor + marker;
+}
+
 /** The in-place context-clear command for a backend (su-cold-auto-mode P-004a).
  *  RESET-CONTEXT drops the grown transcript while keeping the process + MCP
  *  connections warm — the cheap per-wake cold path. Each interactive CLI exposes
@@ -5179,6 +5240,24 @@ export function hostThroughPty(o) {
         if (systemPromptAddendum) {
           env.DISABLE_AUTO_COMPACT = '1';
           env.DISABLE_COMPACT = '1';
+        }
+        // WI-41386: the predecessor is dead but the TERMINAL still carries its
+        // state — a cursor parked mid-frame, and whatever modes a killed child
+        // never reset. Hand the terminal over cleanly BEFORE the successor gets
+        // to write a byte, or its boot render lands on top of the predecessor's
+        // final frame and the owner loses the last screenful of scrollback at
+        // every restart. Backend-agnostic on purpose (see
+        // respawnTerminalHandoffBytes): a no-op for a clean exit, the only
+        // rescue for a dirty one. Best-effort — a handoff write must never be
+        // what breaks a respawn.
+        try {
+          const handoff = respawnTerminalHandoffBytes({
+            rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
+            separator: env.PAPERCUSP_PSU_PTY_RESPAWN_SEPARATOR !== '0',
+          });
+          if (handoff) stdout.write(handoff);
+        } catch {
+          /* the terminal bridge is advisory — never let it break the respawn */
         }
         child = spawnChild(recycleArgs);
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked

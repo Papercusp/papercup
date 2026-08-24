@@ -43,7 +43,7 @@ function result(over: Partial<GetFeedbackResult>): GetFeedbackResult {
     origin_task_ref: 'scout-goal:cycle-1:proposal-1',
     latency_contract: 'proceed',
     expires_at: '2026-08-22T08:00:00.000Z',
-    wake: { attempted: true, woke: 1 },
+    wake: { attempted: true, queued: 1, woke: 1, pickupConfirmed: false },
     park_key: null,
     hint: 'routed',
     ...over,
@@ -86,7 +86,7 @@ describe('buildGoalFeedbackConsultPort', () => {
         state: 'served_from_archive',
         responder: null,
         responder_via: null,
-        wake: { attempted: false, woke: 0 },
+        wake: { attempted: false, queued: 0, woke: 0, pickupConfirmed: false },
         archive: {
           source_conversation_id: 'conv-old',
           responder_id: 'reviewer-old',
@@ -113,7 +113,7 @@ describe('buildGoalFeedbackConsultPort', () => {
         responder: null,
         responder_via: null,
         reason: 'no_live_responder',
-        wake: { attempted: false, woke: 0 },
+        wake: { attempted: false, queued: 0, woke: 0, pickupConfirmed: false },
       }),
     )({ proposal: proposal() });
     expect(noRoute.consultation).toMatchObject({ status: 'unavailable', verdict: 'no_qualified_responder' });

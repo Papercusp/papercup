@@ -54,10 +54,18 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
 vi.mock('../mcp-base-url', () => ({
   resolveSpawnHostOperatorBaseUrl: h.resolveSpawnHostOperatorBaseUrl,
 }));
-vi.mock('../endpoint-route/routes/admin/attention-bulk-resolve', () => ({
-  buildResolverLaunchCommand: h.buildResolverLaunchCommand,
-  resolverSpawnOutcome: h.resolverSpawnOutcome,
-}));
+// Only the two SPAWNING helpers are stubbed. `preflightResolverLaunch` is a pure
+// validator with no process side-effects, so it stays REAL via importOriginal —
+// stubbing it would make this suite pass while the shared start-route gate the
+// plan-cleanup route depends on went untested here.
+vi.mock('../endpoint-route/routes/admin/attention-bulk-resolve', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../endpoint-route/routes/admin/attention-bulk-resolve')>();
+  return {
+    ...actual,
+    buildResolverLaunchCommand: h.buildResolverLaunchCommand,
+    resolverSpawnOutcome: h.resolverSpawnOutcome,
+  };
+});
 
 import {
   MAX_RUN_PLANS,

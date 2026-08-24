@@ -138,6 +138,9 @@ export interface WakeRecipientsResult {
   /** Legacy queue-count alias retained for callers that predate `queued`. Despite its
    *  name, this is NOT execution-confirmed turn count; it mirrors EmitResult.woken. */
   woken: number;
+  /** The await-event enqueue response does not confirm that a recipient started
+   * a turn; later activity/checkpoint observation must establish pickup. */
+  pickupConfirmed?: boolean;
   /** Recipients whose wake was STAGED (wake-mode `manual` — the hive Pause
    *  primitive) instead of fired — always 0 when everything resolves `auto`
    *  (the default). Graduated off the POT_AGENT_TABS flag (start-hive P-007). */
@@ -338,7 +341,17 @@ export async function wakeRecipients(
         break;
     }
   }
-  return { targets, keys, queued: woken, woken, staged, stagedTargets, fanoutCapped, timedOutTargets };
+  return {
+    targets,
+    keys,
+    queued: woken,
+    woken,
+    pickupConfirmed: false,
+    staged,
+    stagedTargets,
+    fanoutCapped,
+    timedOutTargets,
+  };
 }
 
 /**

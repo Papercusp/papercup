@@ -1,0 +1,66 @@
+/**
+ * Admission-gate predicate guard — plan work-queue-admission-and-bulk-dedup-2026-08-24.
+ *
+ * Falsifiability discipline (repo: "Proving a guard is falsifiable"): this file keeps
+ * DELIBERATELY-WRONG implementations permanently in-tree as controls, plus a
+ * calibration case the real subject must pass. Without the calibration, the controls
+ * would also "pass" if the property under test were itself broken — which is how a
+ * guard silently stops guarding.
+ */
+import { describe, expect, it } from 'vitest';
+
+import { isAdmitted } from './work-items-admission';
+
+/** CONTROL A — the naive `=== 'admitted'` reading. Quarantines every legacy row. */
+const wrongStrictEquals = (a: string | null | undefined): boolean => a === 'admitted';
+
+/** CONTROL B — the three-valued-logic trap: treats NULL as pending. */
+const wrongNullIsPending = (a: string | null | undefined): boolean =>
+  a != null && a !== 'pending';
+
+describe('isAdmitted — the admission-gate predicate', () => {
+  it('admits legacy NULL rows (every row predating migration 944)', () => {
+    // The load-bearing case: treating NULL as pending would quarantine the entire
+    // live backlog the moment the column lands.
+    expect(isAdmitted(null)).toBe(true);
+    expect(isAdmitted(undefined)).toBe(true);
+  });
+
+  it('refuses exactly one state: pending', () => {
+    expect(isAdmitted('pending')).toBe(false);
+  });
+
+  it('admits every non-pending state, including fail-open unreviewed', () => {
+    expect(isAdmitted('admitted')).toBe(true);
+    expect(isAdmitted('auto')).toBe(true);
+    // Fail-open is claimable BY DESIGN — a dead promoter must not starve the queue.
+    expect(isAdmitted('unreviewed')).toBe(true);
+  });
+
+  it('admits an unrecognised future state (fail-open direction)', () => {
+    // Deliberate: this gate's unknown-case must ADMIT, opposite to the G2 legs.
+    expect(isAdmitted('some-state-added-later')).toBe(true);
+  });
+
+  describe('falsifiability controls — these MUST disagree with the subject', () => {
+    it('CALIBRATION: the subject itself passes the cases the controls are judged on', () => {
+      // If this fails, the controls below prove nothing.
+      expect(isAdmitted(null)).toBe(true);
+      expect(isAdmitted('pending')).toBe(false);
+    });
+
+    it('control A (=== admitted) wrongly quarantines legacy and fail-open rows', () => {
+      expect(wrongStrictEquals(null)).toBe(false); // subject says true
+      expect(wrongStrictEquals('unreviewed')).toBe(false); // subject says true
+      expect(wrongStrictEquals(null)).not.toBe(isAdmitted(null));
+    });
+
+    it('control B (NULL is pending) wrongly quarantines the whole legacy backlog', () => {
+      expect(wrongNullIsPending(null)).toBe(false); // subject says true
+      expect(wrongNullIsPending(null)).not.toBe(isAdmitted(null));
+      // …but agrees everywhere else, which is why only the NULL case catches it.
+      expect(wrongNullIsPending('pending')).toBe(isAdmitted('pending'));
+      expect(wrongNullIsPending('admitted')).toBe(isAdmitted('admitted'));
+    });
+  });
+});

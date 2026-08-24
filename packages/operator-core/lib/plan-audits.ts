@@ -500,6 +500,15 @@ export function harnessCitationRepoRoot(
   return resolveHarnessContentPath(reg, harnessSlug) ?? null;
 }
 
+/** Where a selected citation root came from — derivable at any later read by re-running
+ *  the same selection, so it is exposed on results rather than stored as a second copy. */
+export type CitationRootSource = 'registry' | 'hive-checkout' | 'canonical-repo';
+
+export interface SelectedCitationRoot {
+  root: string;
+  source: CitationRootSource;
+}
+
 /**
  * Select a citation root for a repo-less Hive when its registry-selected member path is stale.
  *
@@ -507,13 +516,22 @@ export function harnessCitationRepoRoot(
  * repo-less Hive may fall back to discovered Hive checkouts, and only when exactly one candidate
  * resolves every verifying citation. Pointer-file worktrees (checkpoint/release artifacts) are
  * excluded; a tie is refused rather than turning a citation into evidence from an arbitrary tree.
+ *
+ * WI-41365: a hive plan whose implementation landed in the CANONICAL repo (papercusp-core
+ * changes commissioned by a hive) was previously unauditable from every session — the registry
+ * root was stale and no discovered hive checkout carried the evidence, so the resolver failed
+ * closed on exactly the plans whose fixes live here. The canonical repo is now the LAST rung:
+ * accepted only when NO discovered hive checkout resolves the citations (zero ambiguity) and
+ * the canonical tree resolves them ALL, and labeled `source: 'canonical-repo'` so a reader can
+ * tell hive-tree evidence from canonical-repo evidence. Ambiguity still refuses.
  */
 export function selectHarnessCitationRepoRoot(
   reg: Pick<HarnessRegistry, 'projects'>,
   harnessSlug: string,
   citations: readonly AuditCitation[],
   discoveredRoots: readonly string[] = [],
-): string | null {
+  canonicalRepoRoot: string = REPO_ROOT,
+): SelectedCitationRoot | null {
   const canonical = harnessCitationRepoRoot(reg, harnessSlug);
   if (!canonical) return null;
 
@@ -524,7 +542,9 @@ export function selectHarnessCitationRepoRoot(
   };
 
   // Preserve the registry's canonical precedence whenever it contains the cited evidence.
-  if (verifying.length === 0 || resolvesEveryCitation(canonical)) return canonical;
+  if (verifying.length === 0 || resolvesEveryCitation(canonical)) {
+    return { root: canonical, source: 'registry' };
+  }
 
   const project = reg.projects.find((entry) => entry.slug === harnessSlug);
   if (!project || project.harness_kind !== 'hive' || project.self_repo) return null;
@@ -538,7 +558,13 @@ export function selectHarnessCitationRepoRoot(
     }
   });
   const matches = candidates.filter((root) => resolvesEveryCitation(root));
-  return matches.length === 1 ? matches[0]! : null;
+  if (matches.length === 1) return { root: matches[0]!, source: 'hive-checkout' };
+  // Two resolving hive checkouts remain an ambiguous tie — the canonical repo must never
+  // break that tie, or a citation becomes evidence from an arbitrary tree.
+  if (matches.length > 1) return null;
+  return resolvesEveryCitation(canonicalRepoRoot)
+    ? { root: canonicalRepoRoot, source: 'canonical-repo' }
+    : null;
 }
 
 /** Citation context shared by audit-write and ship-time revalidation.
@@ -547,9 +573,9 @@ export function selectHarnessCitationRepoRoot(
 export async function repoCitationContextForHarness(
   harnessSlug: string | null | undefined,
   citations: readonly AuditCitation[] = [],
-): Promise<{ repoRoot: string; deps: CitationDeps } | null> {
+): Promise<{ repoRoot: string; deps: CitationDeps; rootSource: CitationRootSource } | null> {
   if (!harnessSlug || harnessSlug === '*') {
-    return { repoRoot: REPO_ROOT, deps: repoCitationDeps(REPO_ROOT) };
+    return { repoRoot: REPO_ROOT, deps: repoCitationDeps(REPO_ROOT), rootSource: 'canonical-repo' };
   }
   try {
     const reg = await loadHarnessRegistry();
@@ -557,8 +583,10 @@ export async function repoCitationContextForHarness(
     const fallbackRoots = project?.harness_kind === 'hive' && !project.self_repo
       ? discoverKnownHiveCheckoutRoots()
       : [];
-    const repoRoot = selectHarnessCitationRepoRoot(reg, harnessSlug, citations, fallbackRoots);
-    return repoRoot ? { repoRoot, deps: repoCitationDeps(repoRoot) } : null;
+    const selected = selectHarnessCitationRepoRoot(reg, harnessSlug, citations, fallbackRoots);
+    return selected
+      ? { repoRoot: selected.root, deps: repoCitationDeps(selected.root), rootSource: selected.source }
+      : null;
   } catch {
     return null;
   }

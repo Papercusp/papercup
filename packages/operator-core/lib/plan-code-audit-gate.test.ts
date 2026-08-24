@@ -115,6 +115,7 @@ beforeEach(() => {
   mockPlanItems.mockResolvedValue([]);
   mockCitationContext.mockImplementation(async () => ({
     repoRoot: '/repo',
+    rootSource: 'registry' as const,
     deps: {
       statFile: (rel) => (files.has(rel) ? { isFile: true } : null),
       readFile: (rel) => files.get(rel) ?? null,

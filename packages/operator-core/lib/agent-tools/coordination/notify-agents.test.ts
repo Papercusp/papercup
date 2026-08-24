@@ -57,12 +57,12 @@ describe('notifyAgents (reach-core)', () => {
     expect((h.send.mock.calls[0][1] as { to: string[] }).to).toEqual(['su-full-xyz']);
   });
 
-  it('wake:true fires wakeRecipients over the pinged set and returns the woke count', async () => {
-    h.wake.mockImplementation(async () => ({ woken: 2 }));
+  it('wake:true propagates queued delivery without claiming turn pickup', async () => {
+    h.wake.mockImplementation(async () => ({ queued: 2, woken: 2 }));
     const r = await notifyAgents(identity, { addressees: ['a', 'b'], objectRef, summary: 's', body: 'bod', wake: true });
     expect(h.wake).toHaveBeenCalledTimes(1);
     expect(h.wake.mock.calls[0][0]).toEqual(['a', 'b']);
-    expect(r.woke).toBe(2);
+    expect(r).toMatchObject({ queued: 2, woke: 2, pickupConfirmed: false });
   });
 
   it('does NOT wake when wake is unset', async () => {

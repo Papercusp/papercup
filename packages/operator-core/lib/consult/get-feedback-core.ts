@@ -152,13 +152,21 @@ export interface GetFeedbackDeps {
     harness_slug?: string;
     direct_to: string[];
   }) => Promise<{ conversation_id: string; thread_id: string; delivered: number }>;
-  /** Directed ping + wake on the conversation (bound to notifyAgents in prod). */
+  /** Directed ping + wake on the conversation (bound to notifyAgents in prod).
+   * `queued` is durable wake delivery, not proof of turn pickup. */
   reach: (opts: {
     responder: string;
     conversationId: string;
     summary: string;
     body: string;
-  }) => Promise<{ woke: number }>;
+  }) => Promise<{
+    /** Durable wake deliveries queued; not execution-confirmed. */
+    queued?: number;
+    /** Legacy queue-count alias retained by older reach bindings. */
+    woke?: number;
+    /** True only after a later execution-confirming handshake. */
+    pickupConfirmed?: boolean;
+  }>;
   /** WI-39852 revival leg [owner 2026-08-18: respawn-and-consult beats
    * retrieval-only]: carry-respawn a DEAD expert's session (headless resume —
    * the resumed session re-attaches its ORIGINAL coord identity) with `brief`
@@ -211,7 +219,12 @@ export interface GetFeedbackResult {
   expires_at: string | null;
   wake: {
     attempted: boolean;
+    /** Durable wake deliveries queued; this does not prove a turn started. */
+    queued: number;
+    /** Legacy queue-count alias; use `pickupConfirmed` for turn execution. */
     woke: number;
+    /** Whether a later execution-confirming handshake proved turn pickup. */
+    pickupConfirmed: boolean;
   };
   /** Latched park key for a hard-blocked requester (P-004 reply verbs emit). */
   park_key: string | null;
@@ -619,7 +632,9 @@ export async function getFeedbackCore(
       expires_at: null,
       wake: {
         attempted: false,
+        queued: 0,
         woke: 0,
+        pickupConfirmed: false,
       },
       park_key: null,
       archive: {
@@ -802,7 +817,9 @@ export async function getFeedbackCore(
   //    pretence their transcript covers it, and no reflexive lack-of-context
   //    decline (that protocol line would otherwise make every minimum consult
   //    a designed decline — a burned wake).
+  let queued = 0;
   let woke = 0;
+  let pickupConfirmed = false;
   if (willWake && finalChosen) {
     const r = await deps.reach({
       responder: finalChosen.ownerId,
@@ -825,7 +842,11 @@ export async function getFeedbackCore(
             `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
             `consult:decline { reason } if it's not your area; consult:close { outcome } when settled. Untyped conversations:post is refused.`,
     });
-    woke = r.woke;
+    queued = r.queued ?? r.woke ?? 0;
+    // `woke` is retained as the legacy queue-count alias. It must never be
+    // read as proof that the recipient's turn actually started.
+    woke = r.woke ?? queued;
+    pickupConfirmed = r.pickupConfirmed ?? false;
 
     // 7b) WI-39852 wake-failed leg: a LIVE-read chosen responder whose wake
     //     reached NOBODY is a false-parked zombie — treat as dead and revive
@@ -838,7 +859,7 @@ export async function getFeedbackCore(
     //     and this leg may still make the consult's one revival attempt.)
     //     The row is already persisted; on spawn, stamp the revival marker
     //     onto the persisted selection provenance (selected[0] IS the chosen).
-    if (woke === 0 && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
+    if (queued === 0 && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
       const rr = await deps.revive({
         ownerId: finalChosen.ownerId,
         conversationId: opened.conversation_id,
@@ -885,10 +906,13 @@ export async function getFeedbackCore(
       ? ` 🧭 REVIVED ${revival.ownerId} (${revival.trigger}: carry-respawn ${revival.verified === true ? 'verified live' : revival.verified === null ? 'still booting — the cascade expiry guards the reply' : 'spawned'}); the consult brief is their first turn.`
       : ` ⚠ Revival of ${revival.ownerId} was attempted (${revival.trigger}) but FAILED to spawn — fell back to the pre-revival selection. Detail: ${revival.detail}`
     : '';
+  const wakeNote = pickupConfirmed
+    ? `wake pickup confirmed for ${finalChosen?.ownerId}`
+    : `wake queued for ${finalChosen?.ownerId}; turn pickup is not confirmed — verify a fresh activity/checkpoint before treating it as started`;
   const hint = finalChosen
     ? latency === 'hard-blocked'
-      ? `Routed + woke ${finalChosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${revivalNote}`
-      : `Routed + woke ${finalChosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${revivalNote}`
+      ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${revivalNote}`
+      : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${revivalNote}`
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.${revivalNote}`
       : reason === 'no_live_responder'
@@ -919,7 +943,9 @@ export async function getFeedbackCore(
     expires_at: expiresAt,
     wake: {
       attempted: willWake,
+      queued,
       woke,
+      pickupConfirmed,
     },
     park_key: parkKey,
     ...(revival ? { revival } : {}),

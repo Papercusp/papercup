@@ -165,7 +165,8 @@ function makeDeps(route: RouteResult) {
     },
     reach: async (o) => {
       reached.push(o);
-      return { woke: 1 };
+      // The inbox wake pump reports durable queueing, not turn execution.
+      return { queued: 1, woke: 1, pickupConfirmed: false };
     },
     now: () => NOW,
   };
@@ -209,7 +210,8 @@ describe('getFeedbackCore — routed', () => {
     expect(r.responder?.ownerId).toBe('agent-a');
     expect(r.remaining_candidates).toEqual([{ ownerId: 'agent-b', score: 0.6, liveness: 'live', via: 'floor' }]);
     expect(r.park_key).toBeNull(); // proceed contract
-    expect(r.wake).toEqual({ attempted: true, woke: 1 });
+    expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 1, pickupConfirmed: false });
+    expect(r.hint).toContain('turn pickup is not confirmed');
 
     // Conversation: kind consult, addressed to the chosen responder, body carries the sections.
     expect(opened).toHaveLength(1);
@@ -356,7 +358,7 @@ describe('getFeedbackCore — wake budget REMOVED (consult-min-max-and-rubric-ve
     const r = asOk(await getFeedbackCore({ ...baseReq, originTaskRef: ref }, deps));
     expect(r.verdict).toBe('routed');
     expect(r.state).toBe('awaiting_responder');
-    expect(r.wake).toEqual({ attempted: true, woke: 1 }); // no budget surfaces at all
+    expect(r.wake).toEqual({ attempted: true, queued: 1, woke: 1, pickupConfirmed: false }); // no budget surfaces at all
     expect(r.hint).not.toContain('budget');
     expect(reached).toHaveLength(1);
     const row = await stateRow(r.conversation_id);
@@ -874,7 +876,7 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
       const woke = opts.wokeOnReach;
       base.deps.reach = async (o) => {
         base.reached.push(o);
-        return { woke };
+        return { queued: woke, woke, pickupConfirmed: false };
       };
     }
     return { ...base, revived };
@@ -968,7 +970,7 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     const res = asOk(await getFeedbackCore(baseReq, deps));
     expect(res.verdict).toBe('routed');
     expect(res.responder?.ownerId).toBe('zombie-a');
-    expect(res.wake).toEqual({ attempted: true, woke: 0 });
+    expect(res.wake).toEqual({ attempted: true, queued: 0, woke: 0, pickupConfirmed: false });
     expect(revived).toHaveLength(1);
     expect(res.revival).toMatchObject({ ownerId: 'zombie-a', trigger: 'wake-failed', spawned: true });
     // The row was persisted BEFORE reach — the marker lands via targeted update.

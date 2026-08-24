@@ -52,8 +52,14 @@ export interface NotifyAgentsResult {
   notified: string[];
   /** Addressees subscribed to the object (durable; superset-ish of notified). */
   subscribed: string[];
-  /** Count of addressees actively re-invoked (only when `wake` was set). */
+  /** Durable wake deliveries queued (only when `wake` was set). This does not
+   * prove that a recipient started a turn; pickup is confirmed separately. */
+  queued?: number;
+  /** Legacy queue-count alias retained for callers that predate `queued`. */
   woke: number;
+  /** Whether a later execution-confirming handshake proved turn pickup. The
+   * shared wake fan has no such handshake yet, so active wakes report false. */
+  pickupConfirmed?: boolean;
 }
 
 /** @see module docstring. Reach a LIST of named agents on a created object. */
@@ -117,8 +123,16 @@ export async function notifyAgents(
       summary: opts.summary,
       source: identity.ownerId,
       ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
-    }).catch(() => ({ woken: 0 }));
-    woke = fan.woken ?? 0;
+    }).catch(() => ({ woken: 0, queued: 0, pickupConfirmed: false }));
+    const queued = fan.queued ?? fan.woken ?? 0;
+    woke = fan.woken ?? queued;
+    return {
+      notified,
+      subscribed,
+      queued,
+      woke,
+      pickupConfirmed: fan.pickupConfirmed ?? false,
+    };
   }
   return { notified, subscribed, woke };
 }

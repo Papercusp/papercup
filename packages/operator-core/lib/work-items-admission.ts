@@ -92,6 +92,64 @@ export function isIssueLocallyClaimable(origin: string | null | undefined): bool
 }
 
 /**
+ * ADMISSION-GATE state — the second, orthogonal admission axis (plan
+ * work-queue-admission-and-bulk-dedup-2026-08-24, owner-directed 2026-08-24).
+ *
+ * WHY IT LIVES HERE rather than in a new module: this file is already "the SINGLE
+ * source of truth for is-this-claimable", and the predecessor's whole lesson (see
+ * the header) is that an admission rule defined next to ONE consumer silently fails
+ * to reach the others. A parallel gate would repeat that exact mistake.
+ *
+ * ORTHOGONAL, NOT a replacement: the G2 legs above answer "may we run work authored
+ * ELSEWHERE?"; this answers "has this item cleared DUPLICATE screening?". A claim
+ * chokepoint must satisfy both.
+ *
+ * The states, and why NULL means admitted:
+ *   NULL         legacy / pre-gate row ⇒ ADMITTED (back-compat, exactly as origin
+ *                NULL = local above). Every row predating migration 944 is NULL, and
+ *                treating those as pending would quarantine the entire live backlog.
+ *   'pending'    born-pending; invisible to claim/place until the promoter judges it.
+ *   'admitted'   promoter judged it — duplicate screening only, NEVER merit
+ *                (redundancy kappa 0.679 vs merit kappa 0.289; plan charter).
+ *   'auto'       filing-time bypass: plan-promoted (already passed plan review) or
+ *                critical/security severity (post-hoc review instead).
+ *   'unreviewed' FAIL-OPEN auto-promotion — the promoter was dead or lagging past its
+ *                deadline. Claimable BY DESIGN: the measured system bottleneck is
+ *                distribution (greenlit plans sat six days unclaimed), so a dead
+ *                promoter must never silently starve the queue. Tagged so the stats
+ *                ledger can alarm on a non-zero steady-state count.
+ *
+ * FAIL-SAFE DIRECTION IS DELIBERATELY INVERTED relative to the G2 legs. There, an
+ * unwired auditor must not admit foreign code, so unknown ⇒ refuse. Here, an unwired
+ * promoter must not freeze the queue, so unknown ⇒ admit. Both choose the direction
+ * whose failure mode is recoverable: a duplicate that slips through is merged later;
+ * a starved queue stops all work and is invisible until someone notices.
+ */
+export function isAdmitted(admission: string | null | undefined): boolean {
+  return admission !== 'pending';
+}
+
+/**
+ * SQL form of {@link isAdmitted} — UNQUALIFIED columns, for single-table queries over
+ * `harness_features_consolidated` / `work_items`, matching {@link autoPickableWhereSql}.
+ *
+ * `IS DISTINCT FROM` rather than `<> 'pending' OR IS NULL`: plain `<>` is NULL-false in
+ * three-valued logic, which would silently exclude every legacy row — the exact
+ * negated-predicate trap the own-author leg's comment warns about.
+ */
+export function admittedWhereSql(sql: OrgSql) {
+  return sql`(admission IS DISTINCT FROM 'pending')`;
+}
+
+/**
+ * `wi.`-qualified form — compose ONLY into the issue claim/diagnose queries that alias
+ * the base table as `wi` (same contract as {@link isIssueLocallyClaimableWhereSql}).
+ */
+export function admittedWhereSqlWi(sql: OrgSql) {
+  return sql`(wi.admission IS DISTINCT FROM 'pending')`;
+}
+
+/**
  * SQL form — a composable WHERE fragment for the porsager `sql` instance the caller
  * already holds (so it composes into that query). Columns are UNQUALIFIED — use only
  * in single-table queries over `harness_features_consolidated` (every claim/place

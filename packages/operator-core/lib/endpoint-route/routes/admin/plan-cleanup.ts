@@ -53,6 +53,7 @@ async function launchCleanupResolver(
   runId: string,
   planSlugs: string[],
   harness: string,
+  launch: EffectiveBulkResolverLaunch | null = null,
 ): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
   try {
     const [{ buildConsoleEnvelope }, { spawnHeadless }, { activeWorkspaceId }, { resolveSpawnHostOperatorBaseUrl }] =
@@ -78,6 +79,7 @@ async function launchCleanupResolver(
           workspaceId,
           harness,
           ownerId: resolverOwner,
+          launch,
         }),
         env: {
           ...envelope.env,
@@ -215,16 +217,22 @@ export async function planCleanupHandler(req: Request, _ctx: RouteContext): Prom
     ? (body.filter as Record<string, unknown>)
     : {};
 
+  // P-004 — PREFLIGHT BEFORE createRun, via the SAME validator the Inbox route
+  // uses, so the two panes cannot drift into judging one profile differently.
+  const preflight = preflightResolverLaunch(body.launch);
+  if (!preflight.ok) return preflight.response;
+
   try {
     const run = await createRun({
       items: [],
       runKind: 'plan-cleanup',
       seedRefs: planSlugs,
       filterSnapshot: filter,
+      launchSnapshot: preflight.launch,
       requestedBy: 'owner',
       harnessSlug: harness,
     });
-    const launched = await launchCleanupResolver(run.runId, planSlugs, harness);
+    const launched = await launchCleanupResolver(run.runId, planSlugs, harness, preflight.launch);
     if (launched.ok) {
       await setRunPhase({
         runId: run.runId,

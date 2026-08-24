@@ -359,8 +359,11 @@ export default defineTool({
         error: 'harness_repo_unresolved',
         message:
           `The canonical source root for harness '${harnessSlug ?? '(none)'}' could not be resolved. ` +
-          `No audit was recorded; register/fix the harness path rather than validating citations ` +
-          `against a different checkout.`,
+          `No audit was recorded. The resolver tried the registry root, every discovered hive ` +
+          `checkout, and (for a repo-less hive with zero resolving checkouts) the canonical repo — ` +
+          `so either the citations resolve nowhere, or more than one hive checkout resolves them ` +
+          `(an ambiguous tie is refused). Register/fix the harness path rather than validating ` +
+          `citations against a different checkout.`,
       } };
     }
     const deps = citationContext.deps;
@@ -542,6 +545,11 @@ export default defineTool({
       auditSeq: audit.auditSeq,
       auditedSha: audit.auditedSha,
       auditedAt,
+      // WI-41365: which tree the citations were verified against, and why. Derivable
+      // later by re-running the same selection, so it is disclosed here rather than
+      // stored as a second copy the tree could drift from.
+      citationRepoRoot: citationContext.repoRoot,
+      citationRootSource: citationContext.rootSource,
       citationsChecked,
       itemsAuditedThisPass: entries.length,
       itemsCarriedForward: carriedItemIds.length,

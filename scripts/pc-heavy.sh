@@ -91,6 +91,9 @@
 #                         (default 900). Running-anyway (never blocking forever)
 #                         keeps a wedged holder from deadlocking the fleet; the
 #                         kernel also frees a slot the instant its holder dies.
+#                         If the caller TERM/HUPs this wrapper while it is still
+#                         queued, it exits 75 (EX_TEMPFAIL) with retry context
+#                         instead of surfacing an ambiguous signal exit.
 #   PC_HEAVY_PREEMPTIBLE  "auto"(default)/"1"/"0" — on hosts with `setsid`,
 #                         every ordinary holder cooperatively yields its whole
 #                         child process group when an exclusive materializer
@@ -102,6 +105,15 @@
 #   PC_HEAVY_PREEMPT_GRACE_SEC / PC_HEAVY_PREEMPT_TERM_GRACE_SEC /
 #   PC_HEAVY_PREEMPT_POLL_SEC  finish-before-TERM grace, TERM-before-KILL
 #                         grace, and writer-poll cadence (defaults 30/30/0.1).
+#   PC_HEAVY_PREEMPT_AFTER_READY "1" — opt in to an after-ready barrier for a
+#                         command that publishes PC_HEAVY_PREEMPT_READY_FILE
+#                         after its irreversible setup/derivation. While that
+#                         marker exists, an exclusive materializer waits for
+#                         the command to finish instead of preempting it.
+#                         The wrapper creates a unique marker path and exports
+#                         it to the child; the child owns publication/cleanup.
+#   PC_HEAVY_PREEMPT_READY_DIR  directory for those per-run marker paths
+#                         (default ${TMPDIR:-/tmp}/pc-heavy-ready).
 #   PC_HEAVY_SCOPED_TIMEOUT_SEC  bounded wait for `test:file`'s
 #                         `scripts/test-files.mjs` command (default 30). Exact-file
 #                         verification is deliberately narrow and must not inherit
@@ -216,7 +228,7 @@ _pc_heavy_internal_preempt_run() {
   # instant of noise rather than restart from zero.
   local _preempt_clear_after="${PC_HEAVY_PREEMPT_CLEAR_SEC:-5}"
   case "$_preempt_clear_after" in ''|*[!0-9]*) _preempt_clear_after=5 ;; esac
-  local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}"
+  local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}" 
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
   local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at='' _preempt_free_since=''
@@ -1184,6 +1196,48 @@ _exclusive_describe_holders() {
   printf '%s' "$_out"
 }
 
+# A caller-side deadline can terminate an arbitrary command while this wrapper
+# is still in the semaphore queue. Letting Bash report the raw signal (usually
+# 143) makes that indistinguishable from a compiler that started and was then
+# terminated. The queue is a retryable admission outcome, not a validation
+# result, so make it explicit and include the live holder/event evidence needed
+# to retry intelligently. This handler is installed only around the ordinary
+# slot wait; once the slot-acquired marker is emitted, the real command owns the
+# normal signal/exit contract again.
+_pc_heavy_queue_abort() {
+  local _signal="$1"
+  local _exit_code="${2:-75}"
+  local _queue_slots="${_slots:-1}"
+  local _queue_i='' _queue_desc='' _queue_event=''
+  local _queue_limit=''
+
+  # Avoid a second signal re-entering the diagnostic path, and release any
+  # coalescing leader marker before the retryable exit. The slot fd (if a race
+  # won one just before the signal) is released by this shell's exit.
+  trap - TERM HUP INT
+  _queue_event="gate-phase=${_gate_phase:-none};gate-active=${_gate_active:-0};exclusive=${_exclusive_materialization_active:-0}"
+  echo "[pc-heavy] QUEUE_ABORTED status=retryable reason=caller-signal signal=$_signal exit=$_exit_code — no heavy slot acquired; $_queue_event" >&2
+  echo "[pc-heavy] queue retry context: $_queue_event" >&2
+
+  case "$_queue_slots" in ''|*[!0-9]*) _queue_slots=1 ;; esac
+  _queue_limit="$_queue_slots"
+  [ "$_queue_limit" -ge 1 ] || _queue_limit=1
+  [ "$_queue_limit" -le 8 ] || _queue_limit=8
+  for _queue_i in $(seq 0 $(( _queue_limit - 1 ))); do
+    _queue_desc="$(_exclusive_describe_holders "${_slot_dir:-}/slot.$_queue_i")"
+    if [ -n "$_queue_desc" ]; then
+      echo "[pc-heavy] queued slot.$_queue_i held by:$_queue_desc" >&2
+    else
+      echo "[pc-heavy] queued slot.$_queue_i holder unavailable" >&2
+    fi
+  done
+  echo "[pc-heavy] PC_HEAVY_RESULT status=retryable reason=queue-signal signal=$_signal exit=$_exit_code" >&2
+  if [ -n "${_c_lockdir:-}" ]; then
+    rm -rf "$_c_lockdir" 2>/dev/null || true
+  fi
+  exit "$_exit_code"
+}
+
 # True only while an exclusive materializer OWNS the writer flock. Merely
 # seeing the path is not enough: the file deliberately outlives its holder.
 # Ordinary preemptible jobs poll this while running so an exclusive drain can
@@ -1805,6 +1859,12 @@ done
 # frees first is grabbed by whichever waiter next polls it — no single slot
 # becomes a convoy point while siblings sit unused.
 if [ -z "$_held" ]; then
+  # A caller deadline is allowed to end a queued wrapper, but it must not erase
+  # the distinction between "never got a slot" and "real work was terminated."
+  # TERM/HUP are the common caller/session signals; both become EX_TEMPFAIL so
+  # the caller can retry after the reported holder/event clears.
+  trap '_pc_heavy_queue_abort TERM 75' TERM
+  trap '_pc_heavy_queue_abort HUP 75' HUP
   # EI-19343041616234869 — the ONLY output pc-heavy printed before this fell
   # out entirely if a caller hit the fallback wait with the release gate NOT
   # active (the "release gate is JUDGING..." line above is gated on that, so
@@ -1862,6 +1922,7 @@ if [ -z "$_held" ]; then
     [ "$_now" -ge "$_fallback_deadline" ] && break
     sleep 0.5
   done
+  trap - TERM HUP
 fi
 
 # EI-19315037905600226 — a machine-readable landmark for "the wait is over, the
