@@ -27,19 +27,22 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its analyzer only.
 import {
   analyzeForExplicitPresence,
   applyAllowlist,
   decideRatchet,
   readBaseline,
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore — pure JS guard script, no .d.ts; imported for its analyzer only.
 } from '../../../../scripts/check-explicit-presence.mjs';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS meta-guard, no .d.ts; imported for its registration parser + allowlist. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import {
   ACKNOWLEDGED_UNREACHABLE,
   parseRepoWideRegistrationPairs,
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore — pure JS meta-guard, no .d.ts; imported for its registration parser + allowlist.
+  // The directive sits immediately above the `} from` line, NOT above the `import` keyword:
+  // @ts-ignore suppresses only the line that FOLLOWS it, and tsc lands TS7016 on the module
+  // specifier line. Placing it above `import {` leaves a multi-line specifier unguarded.
 } from '../../../../scripts/check-lint-guard-reachability.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
