@@ -29,11 +29,11 @@ export default defineTool({
   name: 'processes:kill',
   profile: 'engineer',
   description:
-    'Send SIGTERM (or SIGKILL) in ONE call, addressed three ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. An explicitly supplied `scopeUnit`/`scopeUnits` is only for a live unaccounted Papercusp scope surfaced by `processes:list { live:true }`; systemd resolves and the handler re-probes its cgroup before reporting success. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling.',
+    'Send SIGTERM (or SIGKILL) in ONE call, addressed three ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. An explicitly supplied `scopeUnit`/`scopeUnits` is only for a live unaccounted Papercusp scope surfaced by `processes:list { live:true }`; systemd resolves and the handler re-probes its cgroup before reporting success. `pid`/`pids` is the legacy path only for the three killable agent kinds (`run.sh | omp | claude`) and re-verifies kernel identity before signalling; host services such as `hono-host.ts` are refused and have dedicated guarded controls.',
   guidance: {
     when: 'End a task you can name. `taskId` is the right handle for anything this operator launched through the task manager — it takes the whole subtree. `pid` remains for an AGENT process (`run.sh | omp | claude`) you only have a pid for.',
     notWhen:
-      'NEVER pattern-match a name to build a kill list (`pkill -f <binary>` has twice killed the owner\'s live desktop window and peers\' test instances — both addressing modes here exist to make that impossible). For a runaway BUILD/TEST job started outside the chokepoint, `pid` returns `unsupported_kind` — start such jobs via `capability:bash { run_in_background: true }` so you hold a real handle. To PAUSE rather than end, use `processes:freeze`.',
+      'NEVER pattern-match a name to build a kill list (`pkill -f <binary>` has twice killed the owner\'s live desktop window and peers\' test instances — both addressing modes here exist to make that impossible). For a runaway BUILD/TEST job started outside the chokepoint, `pid` returns `unsupported_kind` — start such jobs via `capability:bash { run_in_background: true }` so you hold a real handle. A host service such as `hono-host.ts` (including the desktop :3270 listener) is also not a bare-PID target; use the identity-guarded `dev:restart { target: "desktop-dev" }` control (or its matching server target). To PAUSE rather than end, use `processes:freeze`.',
     chaining:
       '`processes:list` -> `taskId` or `live.unaccountedGroups[].scopeUnit` -> here. Add `includeSubtree:true` to taskId mode to also signal logically-nested tasks that got their own scopes (an agent and everything it spawned).',
     returns:
@@ -42,8 +42,18 @@ export default defineTool({
   capability: 'processes:kill',
   args: z
     .object({
-      pid: z.number().int().positive().optional().describe('a single host pid (n=1 shorthand for pids:[pid])'),
-      pids: z.array(z.number().int().positive()).min(1).max(100).optional().describe('host pids to signal (1–100)'),
+      pid: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('a host pid for a killable run.sh, omp, or claude agent (n=1 shorthand for pids:[pid])'),
+      pids: z
+        .array(z.number().int().positive())
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('host pids for killable run.sh, omp, or claude agents (1–100)'),
       taskId: z.string().max(64).optional().describe('a single task-ledger id (n=1 shorthand for taskIds)'),
       taskIds: z
         .array(z.string().max(64))

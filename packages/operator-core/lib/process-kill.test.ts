@@ -104,6 +104,17 @@ describe('killProcess — kind allowlist', () => {
     expect(killSpy).not.toHaveBeenCalled();
   });
 
+  it('keeps the canonical Hono host outside the bare-PID kill allowlist', async () => {
+    // The desktop :3270 hono-host has a dedicated identity-guarded dev:restart
+    // path. A raw PID must remain refused so an unrelated node host cannot be
+    // signalled through the legacy agent-only address mode.
+    withProcs(proc(1, 'run.sh'));
+    withProbeHit('other', '/usr/bin/node --import tsx bin/hono-host.ts');
+    const r = await killProcess({ pid: 327001, signal: 'SIGKILL', ...BASE });
+    expect(r).toMatchObject({ ok: false, pid: 327001, kind: 'other', error: 'unsupported_kind' });
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
   it('reports signal_failed (with detail) when process.kill throws — does not swallow it', async () => {
     withProcs(proc(55, 'claude'));
     killSpy.mockImplementation(() => {

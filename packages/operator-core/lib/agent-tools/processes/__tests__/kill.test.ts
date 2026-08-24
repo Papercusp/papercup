@@ -70,6 +70,17 @@ describe('processes:kill guidance matches what it can actually do', () => {
     expect(notWhen).toContain('capability:bash');
   });
 
+  it('routes canonical Hono hosts to the guarded restart control, not bare PID kill', async () => {
+    const { default: tool } = await import('../kill');
+    const description = tool.description ?? '';
+    const notWhen = tool.guidance?.notWhen ?? '';
+    expect(description).toContain('run.sh | omp | claude');
+    expect(description).toContain('hono-host.ts');
+    expect(notWhen).toContain('hono-host.ts');
+    expect(notWhen).toContain('dev:restart');
+    expect(notWhen).toContain('desktop-dev');
+  });
+
   it('distinguishes the three failure modes in its returns doc', async () => {
     const { default: tool } = await import('../kill');
     const returns = tool.guidance?.returns ?? '';
