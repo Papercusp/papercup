@@ -781,7 +781,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Completion evidence is mandatory',
-    body: 'Every terminal transition carries a completion_ref stating (a) files / root-cause, (b) the exact test or verification you ran AND its result, (c) any tests you added. Auditors mark you CLEAN on stated evidence — thin evidence on solid work still gets dinged.',
+    body: 'Terminal closes require `work_items:complete { id,state,assumptions: "none",completion:{summary,testsRun,testResult,verifiedHow,filesChanged} }`; use fact keys instead of `"none"` when applicable. Include root-cause, verification/result, and added tests.',
   },
   {
     head: '"Not available" means DEFERRED, not missing',
