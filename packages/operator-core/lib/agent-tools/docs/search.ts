@@ -192,7 +192,7 @@ const argsSchema = z.preprocess(
 export default defineTool({
   name: 'docs:search',
   description:
-    "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Pass `query` (or legacy alias `q`; `query` wins when both are supplied). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'`/`harness:'engineering'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\". A workspace-scoped session gets `harness_forbidden` for `harness:'all'` — pass `harness:'engineering'` instead to reach the same corpus.",
+    "Keyword search over the current harness/project docs, or the Papercusp framework for su callers. `query` wins over legacy `q`; returns ranked slug/title/description/excerpt hits. Harness/project scope excludes agent-insights and framework docs, so weak results include `scopeNote`; do not read them as absence. Workspace sessions cannot use `harness:'all'`; use `harness:'engineering'` for that corpus.",
   guidance: {
     when: 'You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.',
     notWhen:

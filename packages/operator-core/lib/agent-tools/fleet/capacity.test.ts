@@ -6,6 +6,20 @@ import { DEFAULT_CAPACITY_DISPATCH_CONFIG as CAPACITY_CONFIG } from '../../fleet
 import type { GatewayHeadroom } from '../../inference-gateway/observability';
 import type { AccountStatusRow } from '../../deployment/account-pool-store';
 import type { AccountSessionOverride } from '../../deployment/account-session-override';
+import type { FleetMembership } from '../coordination/identity';
+
+type MockRosterEntry = {
+  agentId: string;
+  model: string | null;
+  alive: boolean;
+  fleetRole: string;
+  sessionState: 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded' | null;
+};
+
+type MockRosterResult = {
+  entries: MockRosterEntry[];
+  degradedLegs: string[];
+};
 
 const { mockAccountStatus, mockGetAccountOverride } = vi.hoisted(() => ({
   mockAccountStatus: vi.fn(),
@@ -20,8 +34,14 @@ const {
   mockAdvSessionsByCoordOwner,
 } = vi.hoisted(() => ({
   mockResolveAgentIdentity: vi.fn(() => ({ ownerId: 'caller', workspaceId: 'test-ws' })),
-  mockResolvePresenceFleet: vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
-  mockListFleetRosterDiagnosed: vi.fn(async () => ({ entries: [], degradedLegs: [] })),
+  mockResolvePresenceFleet: vi.fn<() => Promise<FleetMembership>>(async () => ({
+    fleetSlug: null,
+    fleetRole: null,
+  })),
+  mockListFleetRosterDiagnosed: vi.fn<() => Promise<MockRosterResult>>(async () => ({
+    entries: [],
+    degradedLegs: [],
+  })),
   mockAdvSessionsByCoordOwner: vi.fn(async () => new Map()),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));

@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  canaryReadinessIsStable,
+  certifyCanaryAnswer,
   ensureOpen,
   healthForAnswer,
   readinessStrategyFor,
@@ -27,6 +29,7 @@ import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
 type Client = {
   health: BackendHealth;
   certifiedReadiness?: ReadonlySet<LspReadinessIntent>;
+  unprovenReadiness?: ReadonlySet<LspReadinessIntent>;
 };
 
 const rust = (over: Partial<Client> = {}): Client => ({
@@ -88,6 +91,109 @@ describe('healthForAnswer — an empty answer must earn the right to be believed
       'degraded',
     );
     expect(healthForAnswer(rust({ health: 'unknown' }), 'references', 5)).toBe('unknown');
+  });
+});
+
+describe('canary readiness — a first positive answer is not proof of completeness', () => {
+  type CanaryClient = {
+    language: 'typescript';
+    health: BackendHealth;
+    progressGeneration: number;
+    certifiedReadiness: Set<LspReadinessIntent>;
+    canaryReadiness: Map<LspReadinessIntent, {
+      siteCount: number;
+      progressGeneration: number;
+      sawProgressBoundary: boolean;
+      sawAnswerChange: boolean;
+    }>;
+    unprovenReadiness: Set<LspReadinessIntent>;
+  };
+
+  const canaryClient = (): CanaryClient => ({
+    language: 'typescript',
+    health: 'healthy',
+    progressGeneration: 0,
+    certifiedReadiness: new Set(),
+    canaryReadiness: new Map(),
+    unprovenReadiness: new Set(),
+  });
+
+  it('rejects a first positive sample and a stable early partial plateau', () => {
+    const client = canaryClient();
+    const adapterClient = client as unknown as Parameters<typeof certifyCanaryAnswer>[0];
+
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 2)).toBe(false);
+    expect(healthForAnswer(client, 'references', 2)).toBe('degraded');
+
+    // A progress boundary alone must not bless the same early partial answer.
+    client.progressGeneration = 1;
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 2)).toBe(false);
+    expect(healthForAnswer(client, 'references', 2)).toBe('degraded');
+    expect(client.certifiedReadiness.has('references')).toBe(false);
+  });
+
+  it('requires a changed answer followed by a stable post-progress sample', () => {
+    const client = canaryClient();
+    const adapterClient = client as unknown as Parameters<typeof certifyCanaryAnswer>[0];
+
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 2)).toBe(false);
+    client.progressGeneration = 1;
+    // The index has advanced, but this first larger answer is still only a
+    // candidate; it has not yet demonstrated stability after the transition.
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 198)).toBe(false);
+    expect(healthForAnswer(client, 'references', 198)).toBe('degraded');
+
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 198)).toBe(true);
+    expect(healthForAnswer(client, 'references', 198)).toBe('healthy');
+    expect(client.certifiedReadiness.has('references')).toBe(true);
+  });
+
+  it('keeps the proof ledger per intent', () => {
+    const client = canaryClient();
+    const adapterClient = client as unknown as Parameters<typeof certifyCanaryAnswer>[0];
+
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 2)).toBe(false);
+    client.progressGeneration = 1;
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 198)).toBe(false);
+    expect(certifyCanaryAnswer(adapterClient, 'references', 'canary', 198)).toBe(true);
+
+    expect(client.certifiedReadiness.has('references')).toBe(true);
+    expect(healthForAnswer(client, 'definition', 0)).toBe('degraded');
+    expect(healthForAnswer(client, 'definition', 1)).toBe('healthy');
+  });
+
+  it('defines stable as same answer only after both required transitions', () => {
+    const first = {
+      siteCount: 2,
+      progressGeneration: 0,
+      sawProgressBoundary: false,
+      sawAnswerChange: false,
+    };
+    expect(canaryReadinessIsStable(undefined, first)).toBe(false);
+    expect(
+      canaryReadinessIsStable(first, {
+        ...first,
+        progressGeneration: 1,
+        sawProgressBoundary: true,
+      }),
+    ).toBe(false);
+    expect(
+      canaryReadinessIsStable(
+        { ...first, sawProgressBoundary: true, sawAnswerChange: true },
+        {
+          siteCount: 198,
+          progressGeneration: 1,
+          sawProgressBoundary: true,
+          sawAnswerChange: true,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      canaryReadinessIsStable(
+        { siteCount: 198, progressGeneration: 1, sawProgressBoundary: true, sawAnswerChange: true },
+        { siteCount: 198, progressGeneration: 1, sawProgressBoundary: true, sawAnswerChange: true },
+      ),
+    ).toBe(true);
   });
 });
 

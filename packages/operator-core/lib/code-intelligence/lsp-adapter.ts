@@ -158,6 +158,49 @@ export type LspReadinessStrategy =
       readonly minimumSites: number;
     };
 
+/**
+ * Evidence retained while a positive canary is still unproven.
+ *
+ * A single positive response proves only that the server can answer the
+ * request. It does not prove that the answer is complete: tsserver returned
+ * the two sites in the open file while its cross-file reference index was
+ * still being built. The answer must therefore survive a progress boundary
+ * and remain stable before it can certify this intent.
+ */
+export interface LspCanaryReadinessSample {
+  readonly siteCount: number;
+  /** Stable representation of the returned sites, when the caller has one. */
+  readonly answerFingerprint?: string;
+  readonly progressGeneration: number;
+  /** A completed progress cycle occurred after the first candidate sample. */
+  readonly sawProgressBoundary: boolean;
+  /** The candidate answer changed after the first sample. */
+  readonly sawAnswerChange: boolean;
+}
+
+/**
+ * Whether a canary answer is stable enough to become an intent proof.
+ *
+ * The answer must be the same as the previous sample, but only after we have
+ * observed both a server progress boundary and an answer transition. This
+ * deliberately rejects the cold-open shape `2, 2, 2, ...`: a partial answer
+ * that is stable only because indexing has not started is not readiness.
+ */
+export function canaryReadinessIsStable(
+  previous: LspCanaryReadinessSample | undefined,
+  current: LspCanaryReadinessSample,
+): boolean {
+  const previousFingerprint = previous?.answerFingerprint ?? String(previous?.siteCount);
+  const currentFingerprint = current.answerFingerprint ?? String(current.siteCount);
+  return Boolean(
+    previous &&
+      current.siteCount === previous.siteCount &&
+      currentFingerprint === previousFingerprint &&
+      current.sawProgressBoundary &&
+      current.sawAnswerChange,
+  );
+}
+
 const LSP_READINESS_INTENTS: readonly LspReadinessIntent[] = [
   'definition',
   'references',
@@ -178,9 +221,9 @@ const settleWindow = (intent: LspReadinessIntent): LspReadinessStrategy => ({
 const canaryQuery = (intent: LspReadinessIntent): LspReadinessStrategy => ({
   kind: 'canary-query',
   intent,
-  // A positive site is evidence that this intent's index exists. An empty is
-  // never allowed to prove itself — it remains degraded until another canary
-  // for the SAME intent succeeds.
+  // A positive site is only a candidate: the same intent must produce a
+  // stable post-progress answer before it earns a proof. An empty is never
+  // allowed to prove itself.
   minimumSites: 1,
 });
 
@@ -324,6 +367,12 @@ interface LspClient {
   quiescent: boolean | null;
   /** Intents that have independently earned a readiness proof (WI-41090). */
   certifiedReadiness: Set<LspReadinessIntent>;
+  /** Latest positive canary evidence, kept independently for each intent. */
+  canaryReadiness: Map<LspReadinessIntent, LspCanaryReadinessSample>;
+  /** Intents with positive evidence that has not earned a stable proof yet. */
+  unprovenReadiness: Set<LspReadinessIntent>;
+  /** Monotonic count of completed progress cycles observed from this server. */
+  progressGeneration: number;
   /**
    * Latest `textDocument/publishDiagnostics` payload per document URI.
    *
@@ -523,6 +572,9 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     everSettled: false,
     quiescent: null,
     certifiedReadiness: new Set(),
+    canaryReadiness: new Map(),
+    unprovenReadiness: new Set(),
+    progressGeneration: 0,
     diagnostics: new Map(),
   };
 
@@ -542,8 +594,14 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     '$/progress',
     (params: { token: string | number; value?: { kind?: string } }) => {
       if (params?.value?.kind === 'end') {
-        client.pendingProgress.delete(params.token);
-        if (client.pendingProgress.size === 0) client.everSettled = true;
+        const ended = client.pendingProgress.delete(params.token);
+        if (client.pendingProgress.size === 0) {
+          client.everSettled = true;
+          // A progress boundary is stronger evidence than an instantaneous
+          // idle read. Keep this counter for canary answers too; older pinned
+          // clients may not have the field, so initialize defensively.
+          if (ended) client.progressGeneration = (client.progressGeneration ?? 0) + 1;
+        }
       }
     },
   );
@@ -665,12 +723,34 @@ function readinessProofs(client: LspClient): Set<LspReadinessIntent> {
   return (compatible.certifiedReadiness ??= new Set());
 }
 
+/** Pinned module state may contain a pre-stability-guard client. */
+function canaryReadiness(client: LspClient): Map<LspReadinessIntent, LspCanaryReadinessSample> {
+  const compatible = client as LspClient & {
+    canaryReadiness?: Map<LspReadinessIntent, LspCanaryReadinessSample>;
+  };
+  return (compatible.canaryReadiness ??= new Map());
+}
+
+/** Pinned module state may contain a pre-stability-guard client. */
+function unprovenReadiness(client: LspClient): Set<LspReadinessIntent> {
+  const compatible = client as LspClient & {
+    unprovenReadiness?: Set<LspReadinessIntent>;
+  };
+  return (compatible.unprovenReadiness ??= new Set());
+}
+
+/** Pinned module state may contain a pre-stability-guard client. */
+function progressGeneration(client: LspClient): number {
+  const compatible = client as LspClient & { progressGeneration?: number };
+  return (compatible.progressGeneration ??= 0);
+}
+
 /**
  * Prepare one intent without ever promoting server-wide readiness.
  *
  * `certified` means the configured strategy earned a proof for THIS intent.
- * `canary` means the query may run, but an empty result remains unproven. A
- * positive canary can certify only the same intent after the response arrives.
+ * `canary` means the query may run, but its result remains unproven until the
+ * per-intent stable-readiness guard observes a complete answer transition.
  */
 async function prepareIntentReadiness(
   client: LspClient,
@@ -726,16 +806,45 @@ async function prepareIntentReadiness(
   }
 }
 
-function certifyCanaryAnswer(
+export function certifyCanaryAnswer(
   client: LspClient,
   intent: LspReadinessIntent,
   preparation: IntentReadinessPreparation,
   siteCount: number,
-): void {
-  if (preparation !== 'canary') return;
+  answerFingerprint?: string,
+): boolean {
+  if (preparation !== 'canary') return false;
   const strategy = readinessStrategyFor(client.language, intent);
   const minimumSites = strategy.kind === 'canary-query' ? strategy.minimumSites : 1;
-  if (siteCount >= minimumSites) readinessProofs(client).add(intent);
+  if (siteCount < minimumSites) return false;
+
+  const samples = canaryReadiness(client);
+  const previous = samples.get(intent);
+  const currentGeneration = progressGeneration(client);
+  const currentFingerprint = answerFingerprint ?? String(siteCount);
+  const previousFingerprint = previous?.answerFingerprint ?? String(previous?.siteCount);
+  const current: LspCanaryReadinessSample = {
+    siteCount,
+    answerFingerprint: currentFingerprint,
+    progressGeneration: currentGeneration,
+    sawProgressBoundary:
+      previous?.sawProgressBoundary === true ||
+      (previous !== undefined && currentGeneration > previous.progressGeneration),
+    sawAnswerChange:
+      previous?.sawAnswerChange === true ||
+      (previous !== undefined &&
+        (siteCount !== previous.siteCount || currentFingerprint !== previousFingerprint)),
+  };
+
+  samples.set(intent, current);
+  if (!canaryReadinessIsStable(previous, current)) {
+    unprovenReadiness(client).add(intent);
+    return false;
+  }
+
+  readinessProofs(client).add(intent);
+  unprovenReadiness(client).delete(intent);
+  return true;
 }
 
 /**
@@ -754,18 +863,28 @@ function certifyCanaryAnswer(
  * strictly weaker evidence than the server's own verdict — good enough to
  * answer on, not good enough to certify an absence.
  *
- * Deliberately asymmetric: a NON-EMPTY answer keeps the client's health. Sites
- * are positive evidence and cannot be a false-empty, so withholding trust
- * there would suppress good answers for no safety gain.
+ * A certified NON-EMPTY answer keeps the client's health. An unproven positive
+ * canary is different: the measured cold-open failure returned two real sites
+ * while hundreds of cross-file sites were still missing. Until the canary has
+ * crossed the stable-readiness guard, its sites remain useful but DEGRADED.
  */
 export function healthForAnswer(
   client: Pick<LspClient, 'health'> & {
     readonly certifiedReadiness?: ReadonlySet<LspReadinessIntent>;
+    readonly unprovenReadiness?: ReadonlySet<LspReadinessIntent>;
   },
   intent: LspReadinessIntent,
   siteCount: number,
 ): BackendHealth {
-  if (siteCount > 0) return client.health;
+  if (siteCount > 0) {
+    if (
+      client.unprovenReadiness?.has(intent) &&
+      !client.certifiedReadiness?.has(intent)
+    ) {
+      return client.health === 'healthy' ? 'degraded' : client.health;
+    }
+    return client.health;
+  }
   if (client.certifiedReadiness?.has(intent)) return client.health;
   return client.health === 'healthy' ? 'degraded' : client.health;
 }
@@ -969,7 +1088,13 @@ export async function lspQuery(
     const sites = list
       .map((r) => toSite(r, query.rootPath))
       .filter((s): s is SymbolSite => s !== null);
-    certifyCanaryAnswer(client, readinessIntent, readiness, sites.length);
+    certifyCanaryAnswer(
+      client,
+      readinessIntent,
+      readiness,
+      sites.length,
+      JSON.stringify(sites),
+    );
 
     return {
       backend: 'lsp-adapter',
@@ -1085,7 +1210,7 @@ export async function lspDiagnostics(query: {
       kind: SEVERITY_NAME[d.severity ?? 0] ?? null,
       detail: [d.source, d.code, d.message].filter(Boolean).join(' ') || null,
     }));
-    certifyCanaryAnswer(client, intent, readiness, sites.length);
+    certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
 
     return {
       backend: 'lsp-adapter',
@@ -1163,7 +1288,7 @@ export async function lspWorkspaceSymbols(query: {
       .filter((s): s is SymbolSite => s !== null);
 
     const sites = all.slice(0, limit);
-    certifyCanaryAnswer(client, intent, readiness, sites.length);
+    certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
     return {
       backend: 'lsp-adapter',
       intent,
@@ -1250,7 +1375,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
         if (site) sites.push({ ...site, detail: edit.newText ?? null });
       }
     }
-    certifyCanaryAnswer(client, intent, readiness, sites.length);
+    certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
 
     return {
       backend: 'lsp-adapter',

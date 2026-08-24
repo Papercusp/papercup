@@ -32,8 +32,8 @@
  *
  * State lives in the URL (nuqs) so the pane is deep-linkable and
  * agent-driveable: `?plq` search, `?plf` show-finished, `?plTrigger` trigger
- * facet, `?plSort` sort order, `?pplan` popup plan, `?ppv` popup tab (see
- * PlanPopupModal).
+ * facet, `?plSort` sort order, `?opcln` clean-up run, `?pplan` popup plan, and
+ * `?ppv` popup tab (see PlanPopupModal).
  *
  * The filter row is ALWAYS OPEN (owner ask 2026-08-23, WI-40982). The old
  * `?plFilters` disclosure and its "Filters" toggle button are GONE: a two-facet
@@ -78,8 +78,12 @@ import {
 import { comparePlans, type PlanSort } from '@/app/admin/plans/plan-sorting';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 import PlanPopupModal from './PlanPopupModal';
 import { PLAN_DASHBOARD_PARAM } from './PlanDashboardHost';
+import PlansCleanupStrip from './PlansCleanupStrip';
+import { usePlanCleanupRun } from './use-plan-cleanup-run';
 import { encodeScopedRef } from '../chat/chat-ref-popup-params';
 import './plans-pane.css';
 import { advRosterArgs } from '@/lib/adv-roster-args';
@@ -338,6 +342,9 @@ export default function PlansPane() {
     parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
   );
   const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
+  // P-006: the selected clean-up RUN is URL-owned. A reload or copied link
+  // resumes against the persisted phase instead of resetting to local idle.
+  const [cleanupRunId, setCleanupRunId] = useQueryState('opcln', parseAsString);
   // P-005 (D-002): a row click opens the app-pane dashboard takeover — the
   // param PlanDashboardHost renders. `pplan` (the popup) remains for its other
   // writers; this pane no longer writes it from rows.
@@ -428,6 +435,24 @@ export default function PlansPane() {
     [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan, triggerFilter, sort],
   );
 
+  // Plans clean-up acts on the EXACT rows above — after every pane filter and
+  // before no server-side re-derivation. Sorting is retained as provenance but
+  // does not change membership. Flag OFF holds no sync subscription and mounts
+  // no additive strip.
+  const cleanupEnabled = useFlag(FLAGS.PLAN_CLEANUP);
+  const cleanup = usePlanCleanupRun(cleanupRunId, { enabled: cleanupEnabled });
+  const cleanupPlanSlugs = useMemo(() => rows.map((row) => row.plan.slug), [rows]);
+  const cleanupFilterSnapshot = useMemo(
+    () => ({
+      query: debouncedQuery.trim() || null,
+      showFinished,
+      trigger: triggerFilter,
+      sort,
+      shownCount: cleanupPlanSlugs.length,
+    }),
+    [debouncedQuery, showFinished, triggerFilter, sort, cleanupPlanSlugs.length],
+  );
+
   const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
 
   // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
@@ -497,6 +522,22 @@ export default function PlansPane() {
           {rows.length}
         </span>
       </header>
+
+      {cleanupEnabled ? (
+        <PlansCleanupStrip
+          planSlugs={cleanupPlanSlugs}
+          filterSnapshot={cleanupFilterSnapshot}
+          run={cleanup.run}
+          findings={cleanup.findings}
+          recommendations={cleanup.recommendations}
+          pending={cleanup.pending}
+          isRunning={cleanup.isRunning}
+          isReview={cleanup.isReview}
+          onRunStarted={(runId) => void setCleanupRunId(runId)}
+          onReview={(runId) => void setCleanupRunId(runId)}
+          onRunCleared={() => void setCleanupRunId(null)}
+        />
+      ) : null}
 
       <div className="plans-pane__toolbar">
         <label className="plans-pane__search-shell">

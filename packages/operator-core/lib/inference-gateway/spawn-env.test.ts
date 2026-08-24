@@ -8,6 +8,10 @@ import {
   GATEWAY_BASE_URL_ENV,
   GATEWAY_SDK_URL_ENV,
   GATEWAY_CLIENT_AUTH_TOKEN,
+  ACCOUNT_ROUTING_MODE_ENV,
+  accountRoutingMode,
+  sanitizeInheritedWakeEnv,
+  wakeAccountRouteFromArgv,
 } from './spawn-env';
 
 const orig = process.env.PAPERCUSP_GATEWAY_PORT;
@@ -126,4 +130,54 @@ test('gatewayLlmEnv — honors PAPERCUSP_GATEWAY_PORT for BOTH the CLI and SDK b
     [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:9100',
     [GATEWAY_SDK_URL_ENV]: 'http://127.0.0.1:9100',
   });
+});
+
+test('wake account route — persisted default reconstructs a direct Claude route and settings purge', () => {
+  const route = wakeAccountRouteFromArgv(['psu', '--account=default'], 'owner-default');
+  assert.equal(route?.mode, 'default');
+  assert.equal(route?.accountId, null);
+  assert.deepEqual(route?.env, { [ACCOUNT_ROUTING_MODE_ENV]: 'default' });
+  assert.equal(route?.claudeArgs[0], '--settings');
+  const settings = JSON.parse(route?.claudeArgs[1] ?? '{}');
+  assert.equal(settings.apiKeyHelper, '');
+  assert.equal(settings.env.ANTHROPIC_BASE_URL, '');
+  assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, '');
+  assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, '');
+});
+
+test('wake account route — auto and pin reuse gatewaySpawnEnv with owner attribution', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  const auto = wakeAccountRouteFromArgv(['psu', '--account=auto'], 'owner-auto');
+  assert.equal(auto?.mode, 'auto');
+  assert.equal(auto?.accountId, null);
+  assert.equal(auto?.env[ACCOUNT_ROUTING_MODE_ENV], 'auto');
+  assert.equal(auto?.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:8788');
+  assert.equal(auto?.env.ANTHROPIC_AUTH_TOKEN, GATEWAY_CLIENT_AUTH_TOKEN);
+  assert.equal(auto?.env.ANTHROPIC_CUSTOM_HEADERS, 'x-papercusp-owner: owner-auto');
+
+  const pin = wakeAccountRouteFromArgv(['psu', '--account=acct-pin'], 'owner-pin');
+  assert.equal(pin?.mode, 'pin');
+  assert.equal(pin?.accountId, 'acct-pin');
+  assert.equal(pin?.env[ACCOUNT_ROUTING_MODE_ENV], 'pin');
+  assert.equal(pin?.env.PAPERCUSP_ACCOUNT_ID, 'acct-pin');
+  assert.equal(
+    pin?.env.ANTHROPIC_CUSTOM_HEADERS,
+    'x-papercusp-account: acct-pin\nx-papercusp-account-pin: hard\nx-papercusp-owner: owner-pin',
+  );
+});
+
+test('sanitizeInheritedWakeEnv — removes the operator gateway route but preserves unrelated env', () => {
+  assert.deepEqual(
+    sanitizeInheritedWakeEnv({
+      PATH: '/usr/bin',
+      PAPERCUSP_WORKSPACE: 'ws',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788',
+      PAPERCUSP_ANTHROPIC_URL: 'http://127.0.0.1:8788',
+      ANTHROPIC_AUTH_TOKEN: GATEWAY_CLIENT_AUTH_TOKEN,
+      ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-owner: inherited',
+      PAPERCUSP_ACCOUNT_ID: 'inherited-account',
+      [ACCOUNT_ROUTING_MODE_ENV]: 'auto',
+    }),
+    { PATH: '/usr/bin', PAPERCUSP_WORKSPACE: 'ws' },
+  );
 });

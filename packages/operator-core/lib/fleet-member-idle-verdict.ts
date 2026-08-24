@@ -164,7 +164,23 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 3. Holding a claim that is not advancing. ABOVE the fleet block on purpose: a stranded
+  // 3. Intentionally parked on a live event await. This is a real self-wake mechanism even
+  //    without an engine loop; waking it would only re-arm the same await unless the dispatch
+  //    is for the event it is waiting on. A parked member may still hold a claim and look
+  //    stalled in the claim snapshot, but the park is deliberate — reclaiming would destroy
+  //    validated work that is correctly waiting on its declared gate.
+  if ((member.parkedOn?.length ?? 0) > 0) {
+    return {
+      cause: 'parked-awaiting-event',
+      reason:
+        `Parked on ${member.parkedOn?.length} live event await(s) — the event will wake this ` +
+        'member; it is intentionally waiting rather than permanently dormant.',
+      remedy: 'None — wait for the parked event; waking it would re-arm the same await.',
+      ...ownSpec,
+    };
+  }
+
+  // 4. Holding a claim that is not advancing. ABOVE the fleet block on purpose: a stranded
   //    claim is a member-level fact the fleet-level state does not create — the work was taken
   //    BEFORE the block and is now stuck on a member that stopped. Found by running this
   //    oracle over this fleet's real rows: two members held work-items with load 1 + stalled
@@ -181,7 +197,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 4. A fleet-level block dominates every member-level explanation below it. Reported as the
+  // 5. A fleet-level block dominates every member-level explanation below it. Reported as the
   //    CONSEQUENCE it is, naming the layer, so the leader acts once on the fleet rather than
   //    N times on members.
   //
@@ -215,7 +231,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 4. This member specifically backed off a provider wall. Below the fleet block on purpose:
+  // 6. This member specifically backed off a provider wall. Below the fleet block on purpose:
   //    when the whole pool is congested that is the fleet's story, not N separate ones.
   if (member.throttled != null) {
     return {
@@ -228,7 +244,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 5. The session is gone or going. Checked after the blocks above because a draining member
+  // 7. The session is gone or going. Checked after the blocks above because a draining member
   //    inside a paused fleet is complying, not failing.
   if (ENDING_STATES.has(member.sessionState ?? '')) {
     return {
@@ -239,21 +255,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 6. Intentionally parked on a live event await. This is a real self-wake mechanism even
-  //    without an engine loop; waking it would only re-arm the same await unless the dispatch
-  //    is for the event it is waiting on.
-  if ((member.parkedOn?.length ?? 0) > 0) {
-    return {
-      cause: 'parked-awaiting-event',
-      reason:
-        `Parked on ${member.parkedOn?.length} live event await(s) — the event will wake this ` +
-        'member; it is intentionally waiting rather than permanently dormant.',
-      remedy: 'None — wait for the parked event; waking it would re-arm the same await.',
-      ...ownSpec,
-    };
-  }
-
-  // 7. Alive, but nothing is ever going to wake it. This is the one that looks identical to
+  // 8. Alive, but nothing is ever going to wake it. This is the one that looks identical to
   //    'genuinely-idle' in a flat brief and has the opposite remedy: an idle member with an
   //    armed loop will pick work up by itself, one without a loop never will.
   if (member.loopMode == null && !member.nextFireAt) {
@@ -268,7 +270,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 8. About to compact — it will not pick work up before it does.
+  // 9. About to compact — it will not pick work up before it does.
   if (member.contextPressure === 'critical') {
     return {
       cause: 'context-exhausted',
@@ -278,7 +280,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 9. The residual, and the ONLY case where waking is the right act — the same place
+  // 10. The residual, and the ONLY case where waking is the right act — the same place
   //    `computeFleetBlockVerdict` puts its 'members' layer, for the same reason.
   return {
     cause: 'genuinely-idle',

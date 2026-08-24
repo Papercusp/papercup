@@ -195,6 +195,20 @@ describe('computeMemberIdleVerdict — dominance (the P-002 inversion)', () => {
     expect(v.remedy).toContain('Reclaim');
   });
 
+  // EI-21282834431697166: a deliberately gate-parked member may still hold its claim while
+  // waiting. The active park is the authoritative intent; reclaiming the claim would destroy
+  // validated work that is correctly waiting on the declared event.
+  it('a stalled holder parked on a live gate event is parked, not reclaimable', () => {
+    const v = computeMemberIdleVerdict(
+      idle({ load: 1, stalled: true, parkedOn: ['green-checkpoint:red:papercusp'] }),
+      ctx(),
+    );
+    expect(v.cause).toBe('parked-awaiting-event');
+    expect(v.reason).toContain('live event await');
+    expect(v.remedy).toContain('wait for the parked event');
+    expect(v.remedy).not.toContain('Reclaim');
+  });
+
   // Found by running this oracle over the fleet's REAL rows: two members held stranded claims
   // during a pause, and 'fleet-blocked' hid the only thing the leader had to act on.
   it('a stranded claim beats a fleet block — reclaiming is needed whatever the fleet is doing', () => {

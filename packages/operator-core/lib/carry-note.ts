@@ -308,9 +308,11 @@ const CARRY_ID_ALIASES = ['key'] as const;
  *
  * Handles the common wrong shapes agents reach for: `{label/name/text/body/summary,
  * status, evidence}` or `{claim, recheck, status, evidence}` instead of `{claim,
- * recheck, verified}`, the documented-looking `{claim, probe, verified}`
- * alias where `probe` is intended to mean `recheck`, `key` for `id`, and a row
- * that carries an identity + evidence but no claim text at all.
+ * recheck, verified}`, the structured verification `{kind, command, result}`
+ * shape (mapped to `{claim, recheck, verified}`), the documented-looking
+ * `{claim, probe, verified}` alias where `probe` is intended to mean `recheck`,
+ * `key` for `id`, and a row that carries an identity + evidence but no claim text
+ * at all.
  * Measured across 6 days of transcripts, `evidence` (57×) and `status` (40×) were
  * by far the top rejected undeclared keys; the probe alias is handled here too so
  * a caller's concrete falsification command is not discarded at the schema boundary.
@@ -323,6 +325,17 @@ const CARRY_ID_ALIASES = ['key'] as const;
 export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryArgRepair[]): unknown {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const r = { ...(row as Record<string, unknown>) };
+  // EI-21311156936925867: callers also send a structured verification row as
+  // `{kind, command, result}`. That shape is semantically the same as this
+  // carry surface's `{claim, recheck, verified}` contract: `kind` identifies
+  // the asserted check, `command` is the falsification probe, and `result` is
+  // the evidence string. Restrict this repair to checks rows; `kind` is not a
+  // claim alias for owner-gated walls, and a wall's `result` must not become a
+  // checks-only `verified` field by accident.
+  const isChecksRow = path.startsWith('checks[');
+  const hasKind = isChecksRow && 'kind' in r;
+  const hasCommand = isChecksRow && 'command' in r;
+  const hasResult = isChecksRow && 'result' in r;
   const claimAliases = CARRY_CLAIM_ALIASES.filter((k) => k in r);
   const idAliases = CARRY_ID_ALIASES.filter((k) => k in r);
   const hasStatus = 'status' in r;
@@ -337,10 +350,42 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     !hasStatus &&
     !hasEvidence &&
     !hasProbe &&
+    !hasKind &&
+    !hasCommand &&
+    !hasResult &&
     !claimlessWithIdentity &&
     typeof r.verified !== 'boolean'
   ) {
     return row;
+  }
+
+  if (hasKind || hasCommand || hasResult) {
+    // Canonical fields always win when a caller sends both shapes. Remove the
+    // aliases either way so strict Zod validation cannot reject the otherwise
+    // recoverable row over undeclared keys.
+    const hadClaim = 'claim' in r;
+    const hadRecheck = 'recheck' in r;
+    const hadVerified = 'verified' in r;
+    const kind = r.kind;
+    const command = r.command;
+    const result = r.result;
+    if (hasKind) delete r.kind;
+    if (hasCommand) delete r.command;
+    if (hasResult) delete r.result;
+    if (hasKind && !hadClaim) r.claim = kind;
+    if (hasCommand && !hadRecheck) r.recheck = command;
+    if (hasResult && !hadVerified) r.verified = result;
+    for (const field of ['kind', 'command', 'result'] as const) {
+      if (!(field in row)) continue;
+      const canonical = field === 'kind' ? 'claim' : field === 'command' ? 'recheck' : 'verified';
+      const kept = field === 'kind' ? hadClaim : field === 'command' ? hadRecheck : hadVerified;
+      repairs.push({
+        field: `${path}.${field}`,
+        kind: 'renamed',
+        detail: `the structured \`${field}\` key is accepted as an alias for \`${canonical}\`; ` +
+          (kept ? `the canonical \`${canonical}\` value was kept` : `the value was mapped to \`${canonical}\``),
+      });
+    }
   }
 
   if (claimAliases.length) {

@@ -82,6 +82,11 @@ describe('flag registry invariants', () => {
       FLAGS.FLEET_LEADER_PROFILE_AUTO_ARM
     ]).toBe(false);
   });
+
+  it('plan clean-up ships ON and still honours the explicit kill switch', () => {
+    expect(FLAG_DEFAULTS[FLAGS.PLAN_CLEANUP]).toBe(true);
+    expect(resolveWithDefaults({ [FLAGS.PLAN_CLEANUP]: false })[FLAGS.PLAN_CLEANUP]).toBe(false);
+  });
 });
 
 describe('resolveWithDefaults', () => {

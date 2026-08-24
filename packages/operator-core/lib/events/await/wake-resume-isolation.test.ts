@@ -122,6 +122,52 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
     expect(c.args).not.toContain('--continue');
   });
 
+  it('WI-41266: a wake resume reconstructs the persisted default account route', async () => {
+    const prior = Object.fromEntries(
+      ['ANTHROPIC_BASE_URL', 'PAPERCUSP_ANTHROPIC_URL', 'ANTHROPIC_AUTH_TOKEN'].map((key) => [key, process.env[key]]),
+    );
+    process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:8788';
+    process.env.PAPERCUSP_ANTHROPIC_URL = 'http://127.0.0.1:8788';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'papercusp-gateway';
+    try {
+      const a = tb.session('A');
+      pointConfigRootAt(a);
+      const d = makeDelivery({ subscriberId: a.ownerId, wakeHandle: advSessionHandle(a) });
+      const out = await executeWake(
+        d,
+        resumeDeps(a, {
+          getSession: async () =>
+            ({
+              pid: null,
+              endedAt: new Date().toISOString(),
+              agent: 'claude',
+              sessionId: `native-${a.ownerId}`,
+              ompThreadId: null,
+              coordOwnerId: a.ownerId,
+              cwd: a.cwd,
+              launchArgv: ['psu', '--account=default'],
+            }) as never,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      const c = captured[0];
+      expect(c.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+      expect(c.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+      expect(c.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+      const settingsIndex = c.args.indexOf('--settings');
+      expect(settingsIndex).toBeGreaterThan(-1);
+      const settings = JSON.parse(c.args[settingsIndex + 1]);
+      expect(settings.apiKeyHelper).toBe('');
+      expect(settings.env.ANTHROPIC_BASE_URL).toBe('');
+      expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toBe('');
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('EI-153: two same-cwd claude sessions — A\'s resume references ONLY A, B\'s ONLY B', async () => {
     const a = tb.session('A');
     const b = tb.session('B');

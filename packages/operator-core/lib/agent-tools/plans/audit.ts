@@ -167,15 +167,15 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record one of TWO typed audit phases on the existing plan-audit ledger. `phase:'completion'` (default) is the CODE-TRUTH audit: audit only changed items; prior entries carry with original provenance; code/test citations resolve against the tree. `phase:'activation'` is the pre-ready conversation audit: map canonical session_turn refs to current P-NNN/D-NNN/section targets; every ref resolves through sessions:read's index/archive stores; open gaps refuse; the server atomically records the exact current revision. No parallel review tool exists.",
+    "Record one of two plan-audit phases. `completion` (default) checks changed items against resolving code/test citations; prior entries retain provenance. `activation` maps canonical session_turn refs to current P-NNN/D-NNN/sections, resolves every ref, refuses open gaps, and records the exact current revision. No parallel review tool exists.",
   guidance: {
-    when: "Before ready/active, use `phase:'activation'` after reading the COMPLETE source conversation (never memory/summary). Map every requirement, scope boundary, constraint, correction, rejected alternative, decision, dependency, sequence, acceptance condition, open question, and promised follow-up to current P-NNN/D-NNN/sections; repair omissions first. Before shipped, use the default completion phase and compare every item to the ACTUAL CODE — not work-item records or memory.",
+    when: "Before ready/active, read the COMPLETE source conversation (never memory/summary), map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions, then use `activation`. Before shipped, use `completion` and compare items to ACTUAL CODE.",
     returns:
       "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved }. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }.",
     notWhen:
       "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
     chaining:
-      "sessions:search/read (complete source) → repair omissions → plans:audit { phase:'activation' } → plans:set-plan-status { status:'ready' }. Later edits preserve the audit and return activationAudit audited/current revision metadata: re-audit only when meaning changes; cosmetic-only edits do not require it. Completion: plans:audit → rubric/scorecard → shipped.",
+      "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revisions: re-audit only for meaning changes, not cosmetic edits. Completion: plans:audit → rubric/scorecard → shipped.",
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',

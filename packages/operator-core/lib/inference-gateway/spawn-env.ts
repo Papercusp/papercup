@@ -11,6 +11,7 @@
  */
 import { DEFAULT_GATEWAY_PORT } from './launch';
 import { ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, OWNER_HEADER, PRIORITY_HEADER } from './gateway';
+import { accountFromArgv } from '../agent-config-constants';
 import {
   accountProviderForInteractiveBackend,
   interactiveBackendFromSpawnBackend,
@@ -32,6 +33,139 @@ export const GATEWAY_SDK_URL_ENV = 'PAPERCUSP_ANTHROPIC_URL';
  *  itself out; 2026-07-06 owner report #5). Verified live on the Mac VM: fresh config dir +
  *  this env + gateway → real completions. */
 export const GATEWAY_CLIENT_AUTH_TOKEN = 'papercusp-gateway';
+
+/** Explicit account-route marker carried by a launch envelope. Keep this name
+ * in lockstep with psu-launcher.mjs: unlike the gateway URL, the marker is the
+ * selector that tells the child whether an empty gateway env means "direct".
+ */
+export const ACCOUNT_ROUTING_MODE_ENV = 'PAPERCUSP_ACCOUNT_ROUTING_MODE';
+
+export type AccountRoutingMode = 'default' | 'auto' | 'pin';
+
+/** Claude auth selectors that a `--settings` overlay must clear or restore.
+ * This is intentionally the same family enforced by the psu launcher. A wake
+ * is a new CLI process, so inherited operator credentials must not outrank the
+ * persisted account choice. */
+const CLAUDE_ACCOUNT_ROUTE_ENV_KEYS = [
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_OAUTH_TOKEN',
+  'ANTHROPIC_IDENTITY_TOKEN',
+  'ANTHROPIC_IDENTITY_TOKEN_FILE',
+  'ANTHROPIC_AWS_API_KEY',
+  'ANTHROPIC_AWS_BASE_URL',
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'ANTHROPIC_BEDROCK_MANTLE_BASE_URL',
+  'ANTHROPIC_FOUNDRY_API_KEY',
+  'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+  'ANTHROPIC_FOUNDRY_BASE_URL',
+  'ANTHROPIC_FOUNDRY_RESOURCE',
+  'ANTHROPIC_UNIX_SOCKET',
+  'ANTHROPIC_VERTEX_BASE_URL',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLAUDE_CODE_API_BASE_URL',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_HOST_AUTH_ENV_VAR',
+  'CLAUDE_CODE_HOST_CREDS_FILE',
+  'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH',
+  'CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH',
+  'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_MANTLE',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+  'CLAUDE_CODE_USE_GATEWAY',
+  'PAPERCUSP_ANTHROPIC_URL',
+] as const;
+
+/** Environment keys that can carry an inference-gateway route between the
+ * operator and a detached wake child. The parent operator itself legitimately
+ * has these keys for in-process LLM calls; a resumed session must receive only
+ * its persisted route, never that ambient operator route. */
+const INHERITED_WAKE_ROUTE_ENV_KEYS = [
+  ...CLAUDE_ACCOUNT_ROUTE_ENV_KEYS,
+  'PAPERCUSP_ACCOUNT_ID',
+  'PAPERCUSP_CODEX_GATEWAY',
+  ACCOUNT_ROUTING_MODE_ENV,
+] as const;
+
+/** Mirror the launcher's three account-route buckets. */
+export function accountRoutingMode(value: unknown): AccountRoutingMode {
+  const v = (value == null ? '' : String(value)).trim().toLowerCase();
+  if (v === '' || v === 'default' || v === 'none' || v === 'system') return 'default';
+  if (v === 'auto' || v === 'gateway') return 'auto';
+  return 'pin';
+}
+
+export interface WakeAccountRoute {
+  mode: AccountRoutingMode;
+  /** null for direct/default and unpinned auto routing. */
+  accountId: string | null;
+  /** Explicit env overlay for the resumed child. */
+  env: Record<string, string>;
+  /** High-precedence Claude settings args; empty when no persisted route exists. */
+  claudeArgs: string[];
+}
+
+/** Remove account/gateway state inherited from the operator before applying a
+ * wake's explicit route. Non-route environment is preserved byte-for-byte. */
+export function sanitizeInheritedWakeEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') out[key] = value;
+  }
+  for (const key of INHERITED_WAKE_ROUTE_ENV_KEYS) delete out[key];
+  return out;
+}
+
+/** Build the settings overlay used by the launcher for an explicit Claude
+ * account route. `--settings` outranks project/user settings, which is needed
+ * because `claude --resume` starts a new CLI process and does not retain the
+ * original launch flags. */
+function claudeAccountRouteArgs(env: Record<string, string>): string[] {
+  const mode = env[ACCOUNT_ROUTING_MODE_ENV] ?? 'default';
+  const routedEnv: Record<string, string> = Object.fromEntries(
+    CLAUDE_ACCOUNT_ROUTE_ENV_KEYS.map((key) => [key, '']),
+  );
+  if (mode === 'auto' || mode === 'pin') {
+    for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']) {
+      if (env[key]) routedEnv[key] = env[key];
+    }
+  }
+  return ['--settings', JSON.stringify({ apiKeyHelper: '', env: routedEnv })];
+}
+
+/** Reconstruct a persisted `--account` choice for a wake resume. A missing
+ * launch argv is deliberately `null`: old rows have no trustworthy route and
+ * callers must not invent an explicit settings overlay for them. */
+export function wakeAccountRouteFromArgv(argv: unknown, ownerId?: string | null): WakeAccountRoute | null {
+  if (!Array.isArray(argv)) return null;
+  const raw = accountFromArgv(argv);
+  if (raw == null) return null;
+  const mode = accountRoutingMode(raw);
+  const accountId = mode === 'pin' ? raw.trim() : null;
+  const env =
+    mode === 'default'
+      ? { [ACCOUNT_ROUTING_MODE_ENV]: 'default' }
+      : {
+          ...gatewaySpawnEnv(true, {
+            accountId: accountId ?? undefined,
+            ownerId: ownerId ?? undefined,
+            hardPin: mode === 'pin',
+          }),
+          [ACCOUNT_ROUTING_MODE_ENV]: mode,
+          ...(accountId ? { PAPERCUSP_ACCOUNT_ID: accountId } : {}),
+        };
+  return { mode, accountId, env, claudeArgs: claudeAccountRouteArgs(env) };
+}
 
 /** The localhost gateway port (env override → default 8788). */
 export function gatewayPort(): number {

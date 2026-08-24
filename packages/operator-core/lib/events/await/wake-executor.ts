@@ -66,6 +66,11 @@ import {
 } from '../../adv-sessions';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
+  sanitizeInheritedWakeEnv,
+  wakeAccountRouteFromArgv,
+  type WakeAccountRoute,
+} from '../../inference-gateway/spawn-env';
+import {
   collectSessionFiles as defaultCollectSessionFiles,
   findArchivedSessionIdForAdv as defaultFindArchivedSessionIdForAdv,
   rematerializeSession as defaultRematerializeSession,
@@ -241,7 +246,10 @@ export function defaultSpawnDetached(
   const spawnBin = resolveResumeSpawnBin(bin);
   const child = childSpawn(spawnBin, args, {
     cwd: o.cwd,
-    env: { ...process.env, ...o.env },
+    // The operator itself may use the inference gateway for in-process calls.
+    // Never leak that ambient route into a resumed child; executeWake overlays
+    // the route reconstructed from this session's persisted launch argv.
+    env: { ...sanitizeInheritedWakeEnv(process.env), ...o.env },
     detached: true,
     stdio: onExit ? ['ignore', 'pipe', 'pipe'] : 'ignore',
   });
@@ -1053,7 +1061,7 @@ export function resumeCommandFor(handle: {
   /** adv_sessions.coord_owner_id — for tracked hive launches this is the spawn
    *  id that keys the persistent signed MCP config dir (D-010 resume leg). */
   coordOwnerId?: string | null;
-}, wakeText: string): { bin: string; args: string[]; promptViaPty: boolean } | null {
+}, wakeText: string, accountRoute?: WakeAccountRoute | null): { bin: string; args: string[]; promptViaPty: boolean } | null {
   if (handle.agent === 'claude') {
     // Exact-session resume only (see header). Prompt rides as the positional
     // arg — claude submits it as the first user message of the resumed turn.
@@ -1070,6 +1078,7 @@ export function resumeCommandFor(handle: {
     return {
       bin: 'claude',
       args: [
+        ...(accountRoute?.claudeArgs ?? []),
         '--resume', handle.sessionId,
         // Headless one-turn (`-p`): a wake IS one turn — run the resumed turn to
         // completion and exit, leaving the session file updated for the NEXT
@@ -2277,6 +2286,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       };
     }
     const resumeAgent = fresh?.agent ?? handle.agent;
+    // `--account` is a launch-time choice and Claude does not retain launch
+    // flags across `--resume`. Rebuild it from the persisted argv for Claude
+    // wakes; the helper also emits the high-precedence settings overlay and
+    // strips operator-only gateway state before the detached child starts.
+    const accountRoute =
+      resumeAgent === 'claude' ? wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId) : null;
     // codex resumes from its per-session CODEX_HOME (keyed by the adv-session
     // id, exactly as bootstrap-su/psu minted it) and needs the conversation
     // UUID recovered from that home's rollout — codex carries no native id on
@@ -2368,6 +2383,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         coordOwnerId: fresh?.coordOwnerId ?? null,
       },
       text,
+      accountRoute,
     );
     const cwd = fresh?.cwd ?? handle.cwd;
     if (!resume || !cwd) {
@@ -2399,6 +2415,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     const env: Record<string, string> = {
+      ...(accountRoute?.env ?? {}),
       PAPERCUSP_SID: d.subscriberId,
       // Scope the resumed agent's user-level MCP to the bee's workspace. omp's
       // ~/.omp/agent/mcp.json sends x-papercusp-workspace via

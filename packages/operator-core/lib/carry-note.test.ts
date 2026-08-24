@@ -396,6 +396,47 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(bothRepairs.some((r) => r.detail.includes('canonical id was kept'))).toBe(true);
   });
 
+  it('maps structured verification kind/command/result rows to claim/recheck/verified', () => {
+    const repairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        {
+          kind: 'the focused checkpoint test passes',
+          command: 'npm run test:file -- checkpoint.test.ts',
+          result: '8/8 tests passed',
+        },
+        'checks[0]',
+        repairs,
+      ),
+    ).toEqual({
+      claim: 'the focused checkpoint test passes',
+      recheck: 'npm run test:file -- checkpoint.test.ts',
+      verified: '8/8 tests passed',
+    });
+    expect(repairs.map((repair) => repair.field)).toEqual([
+      'checks[0].kind',
+      'checks[0].command',
+      'checks[0].result',
+    ]);
+
+    const canonicalRepairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        {
+          kind: 'ignored kind',
+          command: 'ignored command',
+          result: 'ignored result',
+          claim: 'canonical claim',
+          recheck: 'canonical recheck',
+          verified: 'canonical evidence',
+        },
+        'checks[1]',
+        canonicalRepairs,
+      ),
+    ).toEqual({ claim: 'canonical claim', recheck: 'canonical recheck', verified: 'canonical evidence' });
+    expect(canonicalRepairs).toHaveLength(3);
+  });
+
   /**
    * The failure this whole coercion exists to prevent, at its sharpest: `claim`
    * is the ONE required field, so a single under-specified row used to reject the

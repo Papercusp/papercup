@@ -109,8 +109,8 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
     expect(complete.description).toContain('`closed`/`deprecated` discard work');
     expect(complete.guidance?.when).toContain('Use `dropped`/`closed`/`deprecated` only for discard/wontfix');
     expect(complete.guidance?.when).toContain('exactly once in checked/notChecked/notApplicable');
-    expect(complete.guidance?.when).toContain('residue is non-empty');
-    expect(complete.guidance?.when).toContain('residue is separate');
+    expect(complete.guidance?.when).toContain('residue is a separate explicit array');
+    expect(complete.guidance?.when).toContain('residue is a separate');
     expect(complete.guidance?.when).toContain('terminal closes cannot omit');
   });
 });
@@ -1927,7 +1927,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
-    it('accepts a universal verification close when every population entry has a status and residue', async () => {
+    it('accepts a universal verification close when every population entry has a status and explicit empty residue', async () => {
       getWorkItem.mockResolvedValue(verificationItem);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...verificationItem, state: 'resolved' }));
       const completion = {
@@ -1935,7 +1935,7 @@ describe('work_items:complete (keyed-array)', () => {
         coverage: {
           population: ['index pages', 'species pages'],
           checked: ['index pages', 'species pages'],
-          residue: ['none'],
+          residue: [],
         },
       };
       const r = await one({ id: 'WI-verify', state: 'resolved', completion });
@@ -1974,7 +1974,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.verificationCoverageError).toBeUndefined();
     });
 
-    it('publishes and enforces a non-empty residue array even without universal-claim wording', async () => {
+    it('accepts an explicit empty residue array for an ordinary close without universal-claim wording', async () => {
       const ordinaryVerification = {
         ...item,
         id: 'WI-ordinary-residue',
@@ -2008,21 +2008,24 @@ describe('work_items:complete (keyed-array)', () => {
         };
       };
       const schemaResult = schema.safeParse(input);
-      expect(schemaResult.success).toBe(false);
-      expect(schemaResult.error?.issues).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ path: ['completion', 'coverage', 'residue'] }),
-        ]),
-      );
+      expect(schemaResult.success).toBe(true);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...ordinaryVerification, state: 'resolved' }));
 
       // Keep the handler-level guard covered independently of the public schema.
       const response = (await complete.handler(input as never, ctx)) as Out;
       const r = response.data.results[0];
 
-      expect(r.ok).toBe(false);
-      expect(r.verificationCoverageError).toContain('empty array');
-      expect(r.verificationCoverageError).toContain("residue:['none']");
-      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-ordinary-residue',
+        'resolved',
+        expect.objectContaining({
+          completionEvidence: expect.objectContaining({
+            coverage: expect.objectContaining({ residue: [] }),
+          }),
+        }),
+      );
     });
 
     it('keeps the helper contract explicit for verification markers and coverage accounting', () => {
@@ -2033,7 +2036,7 @@ describe('work_items:complete (keyed-array)', () => {
           population: ['a', 'b'],
           checked: ['a'],
           notApplicable: ['b'],
-          residue: ['none'],
+          residue: [],
         }),
       ).toBe(true);
       expect(hasEnumeratedVerificationCoverage({ population: ['a', 'b'], checked: ['a'], residue: ['none'] })).toBe(

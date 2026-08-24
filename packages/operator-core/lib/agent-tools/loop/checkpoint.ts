@@ -157,29 +157,25 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    "Read or write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass " +
-    '{ read:true, ownerId?, harness? } to read, or { did, left, insight, next } (goal aliases next) or { note }; ' +
-    'blank/null clears. Keyed by ownerId. ' +
-    "{ walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, " +
-    'then supplied win and ? PREDICTED yields before ✓ VERIFIED); ' +
-    "rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns " +
-    "{ ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. " +
-    "PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
+    "Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with " +
+    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal aliases next), { note }, ' +
+    'or compatibility alias { checkpoint }; note wins and blank/null clears. Keyed by ownerId. walls/checks default ' +
+    "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
+    'retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL ' +
+    'contention returns retryable timeout data, not a transport hang.',
   guidance: {
     when:
-      "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. " +
-      'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; ' +
-      'never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Use ' +
-      "rowsMode:'replace' only when retiring rows; default merge mode preserves them. Pair with " +
-      'work_items:checkpoint because a loop note can be lost if the session dies.',
+      "At a COLD loop turn's end, store compressed facts, not a transcript. Add a real same-line " +
+      '[turn:<session>@<iso-ts>] ref for owner directives/completed coordination; never invent a ref. Mark other sources ' +
+      "[self-imposed], [peer:<sid>], or [inferred]. Use rowsMode:'replace' only when retiring rows; default merge " +
+      'mode preserves them. Pair with work_items:checkpoint.',
     notWhen:
       "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +
       'Use work_items:checkpoint for work-item state.',
     chaining:
-      'Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor ' +
-      'recovery and facts:assert for durable conclusions. When retuning carry, re-arm with every required field: ' +
-      'loop:arm { intervalSec: <number>, goal: <string>, carry: \'cold\'|\'warm\' }; intervalSec and goal are ' +
-      'required even when only carry changes.',
+      'Write last before a cold turn ends; also refresh work_items:checkpoint and facts:assert durable conclusions. ' +
+      "To retune, call loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal " +
+      'are required even when only carry changes.',
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
@@ -205,6 +201,11 @@ export default defineTool({
         .max(32000)
         .nullish()
         .describe('Raw carry-note text; blank/null ⇒ clear. Ignored when any of did/left/insight/next is set.'),
+      checkpoint: z
+        .string()
+        .max(32000)
+        .nullish()
+        .describe('Compatibility alias for `note`; prefer `note`. Blank/null ⇒ clear, and `note` wins when both are supplied.'),
       // WI-7264: the `.max()` here is a SANITY BACKSTOP, not the real limit. The real
       // limit is CARRY_TEXT_SOFT_CAP, applied by TRUNCATION in the handler and reported
       // back as `repairs`. A hard reject discards the whole multi-KB note over one long
@@ -375,6 +376,7 @@ export default defineTool({
       (a) =>
         a.read === true ||
         a.note !== undefined ||
+        a.checkpoint !== undefined ||
         a.did !== undefined ||
         a.left !== undefined ||
         a.insight !== undefined ||
@@ -384,7 +386,7 @@ export default defineTool({
         a.checks !== undefined,
       {
         message:
-          'pass { did, left, insight, next } (any; goal aliases next), { note }, { walls }, or { checks } — nothing to write',
+          'pass { did, left, insight, next } (any; goal aliases next), { note } (or compatibility alias { checkpoint }), { walls }, or { checks } — nothing to write',
       },
     ),
   async handler(args, ctx) {
@@ -577,7 +579,13 @@ export default defineTool({
       fields.did !== undefined || fields.left !== undefined || fields.insight !== undefined || fields.next !== undefined;
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
     // all-blank structured write renders '' ⇒ a clear). Otherwise the raw note verbatim.
-    const baseNote = hasStructured ? renderCarryNote(fields) : args.note;
+    // `checkpoint` is the historical generic carry-note spelling used by
+    // work_items:checkpoint callers. Normalize it at the boundary so every
+    // downstream path (row merge, provenance lint, verify-read, and clear) keeps
+    // the canonical loop:checkpoint semantics. An explicitly supplied `note`
+    // wins even when it is null, preserving the canonical field's precedence.
+    const rawNote = args.note !== undefined ? args.note : args.checkpoint;
+    const baseNote = hasStructured ? renderCarryNote(fields) : rawNote;
 
     // P-006 walls merge — commitments are cleared EXPLICITLY, never incidentally:
     //   explicit `walls` wins (its [] is the only true clear); a raw note's own
@@ -588,7 +596,7 @@ export default defineTool({
     // EXPLICIT `walls`/`checks` arg still wins outright (including its `[]` clear).
     const effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
     const effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
-    const hasNoteWrite = hasStructured || args.note !== undefined;
+    const hasNoteWrite = hasStructured || rawNote !== undefined;
     // P-014: lint only what this call supplied as current provenance. Rows and
     // narrative inherited by mergeCarryRows remain in the stored note, but are
     // reported separately as retainedProvenance rather than as fresh activity.

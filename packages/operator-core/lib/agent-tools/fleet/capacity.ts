@@ -87,6 +87,7 @@ interface CapacityScopeArgs {
   model?: string;
   account?: string;
   fleet?: string;
+  headroom?: number;
 }
 
 interface ResolvedCapacityScope {

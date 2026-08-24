@@ -1370,10 +1370,12 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
         port_source_adv_session_id?: number | string | null;
         port_status?: string | null;
         port_metadata?: Record<string, unknown> | null;
+        launch_argv?: string[] | null;
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -1584,6 +1586,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
         port_source_adv_session_id?: number | string | null;
         port_status?: string | null;
         port_metadata?: Record<string, unknown> | null;
+        launch_argv?: string[] | null;
       }>
     >`
       SELECT id, workspace_id,
@@ -1593,6 +1596,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
              plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -1619,6 +1623,7 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+             to_jsonb(a)->'launch_argv' AS launch_argv,
              started_at, ended_at, exit_code, ended_by, ended_signal,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
