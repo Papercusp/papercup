@@ -24,34 +24,24 @@
  * bookkeeping write failed is a stale counter, while a recorded acceptance whose
  * resolve failed is a LIE about something done on the owner's behalf.
  */
-import { useCallback, useMemo } from "react";
-import { useSyncQuery } from "@papercusp/sync";
-import type { AttentionItem } from "@/app/admin/plans/plans-api";
+import { useCallback, useMemo } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
+import type { AttentionItem } from '@/app/admin/plans/plans-api';
 import {
   isNavigateAction,
   replyToAttentionItem,
   resolveAttentionAction,
-} from "@/app/admin/plans/attention-card";
+} from '@/app/admin/plans/attention-card';
 
 /** Mirrors `BulkRunPhase` in packages/operator-core/lib/attention/bulk-run-store.ts. */
-export type BulkRunPhase =
-  | "pending"
-  | "running"
-  | "review"
-  | "complete"
-  | "failed";
+export type BulkRunPhase = 'pending' | 'running' | 'review' | 'complete' | 'failed';
 
 /** URL-owned run reference. It is the running-strip deep link first, then the
  * grouped report takeover key when the persisted phase reaches `review`. */
-export const INBOX_BULK_RUN_PARAM = "opcbr";
+export const INBOX_BULK_RUN_PARAM = 'opcbr';
 
 /** Mirrors `BulkItemOutcome` in the same store. */
-export type BulkItemOutcome =
-  | "pending"
-  | "auto_resolved"
-  | "recommended"
-  | "skipped"
-  | "failed";
+export type BulkItemOutcome = 'pending' | 'auto_resolved' | 'recommended' | 'skipped' | 'failed';
 
 /** The run row as the sync query returns it (`BulkRunRow` on the wire). */
 export interface BulkRun {
@@ -85,7 +75,7 @@ export interface BulkRunItem {
   actionId: string | null;
   rationale: string | null;
   draftAnswer: string | null;
-  confidence: "low" | "high" | null;
+  confidence: 'low' | 'high' | null;
   consulted: boolean;
   consultReply: string | null;
   error: string | null;
@@ -132,11 +122,11 @@ export interface BulkSeedItem {
   ownerAgentId: string | null;
 }
 
-const ENDPOINT = "/api/admin/attention-bulk-resolve";
+const ENDPOINT = '/api/admin/attention-bulk-resolve';
 
 /** Phases in which the strip is showing a live run rather than its idle button. */
 export function isActivePhase(phase: BulkRunPhase | null | undefined): boolean {
-  return phase === "pending" || phase === "running" || phase === "review";
+  return phase === 'pending' || phase === 'running' || phase === 'review';
 }
 
 /**
@@ -146,10 +136,7 @@ export function isActivePhase(phase: BulkRunPhase | null | undefined): boolean {
  * and a progress bar that disagrees with the list beneath it reads as a bug in
  * the resolver rather than in the arithmetic.
  */
-export function deriveRunCounts(
-  items: BulkRunItem[],
-  run: BulkRun | null,
-): {
+export function deriveRunCounts(items: BulkRunItem[], run: BulkRun | null): {
   total: number;
   resolved: number;
   forReview: number;
@@ -164,10 +151,10 @@ export function deriveRunCounts(
   let skipped = 0;
   let failed = 0;
   for (const i of items) {
-    if (i.outcome === "auto_resolved") resolved += 1;
-    else if (i.outcome === "recommended") forReview += 1;
-    else if (i.outcome === "skipped") skipped += 1;
-    else if (i.outcome === "failed") failed += 1;
+    if (i.outcome === 'auto_resolved') resolved += 1;
+    else if (i.outcome === 'recommended') forReview += 1;
+    else if (i.outcome === 'skipped') skipped += 1;
+    else if (i.outcome === 'failed') failed += 1;
   }
   // `totalItems` is authoritative for the DENOMINATOR even when rows are still
   // arriving: the run knows how many items it was handed, and dividing by the
@@ -187,21 +174,16 @@ export function deriveRunCounts(
   };
 }
 
-async function postOp(
-  body: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+async function postOp(body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const res = await fetch(ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const err = json?.error as { message?: string } | undefined;
-    throw new Error(
-      err?.message ??
-        `bulk-resolve ${String(body.op ?? "start")} failed (${res.status})`,
-    );
+    throw new Error(err?.message ?? `bulk-resolve ${String(body.op ?? 'start')} failed (${res.status})`);
   }
   return json;
 }
@@ -222,23 +204,16 @@ export function useInboxBulkRun(
   // unconditionally (hooks cannot be branched), so the gate belongs here rather
   // than at the call site.
   const enabled = opts?.enabled !== false;
-  const { data, loading } = useSyncQuery<{
-    run: BulkRun | null;
-    items: BulkRunItem[];
-  }>({
-    queryName: "plans.attentionBulkRun",
+  const { data, loading } = useSyncQuery<{ run: BulkRun | null; items: BulkRunItem[] }>({
+    queryName: 'plans.attentionBulkRun',
     args: runId ? { runId } : {},
     enabled,
   });
 
-  const row = Array.isArray(data)
-    ? data[0]
-    : (data as { run?: BulkRun | null } | undefined);
+  const row = Array.isArray(data) ? data[0] : (data as { run?: BulkRun | null } | undefined);
   const run = (row?.run ?? null) as BulkRun | null;
   const items = useMemo(
-    () =>
-      ((row as { items?: BulkRunItem[] } | undefined)?.items ??
-        []) as BulkRunItem[],
+    () => ((row as { items?: BulkRunItem[] } | undefined)?.items ?? []) as BulkRunItem[],
     [row],
   );
 
@@ -249,10 +224,10 @@ export function useInboxBulkRun(
       run,
       items,
       byItemId,
-      recommendations: items.filter((i) => i.outcome === "recommended"),
-      unreached: items.filter((i) => i.outcome === "pending"),
-      isRunning: run?.phase === "running" || run?.phase === "pending",
-      isReview: run?.phase === "review",
+      recommendations: items.filter((i) => i.outcome === 'recommended'),
+      unreached: items.filter((i) => i.outcome === 'pending'),
+      isRunning: run?.phase === 'running' || run?.phase === 'pending',
+      isReview: run?.phase === 'review',
       loading: Boolean(loading),
     };
   }, [run, items, loading]);
@@ -260,11 +235,7 @@ export function useInboxBulkRun(
 
 /** The owner-side ops, as stable callbacks. */
 export function useBulkRunOps(): {
-  start: (
-    items: BulkSeedItem[],
-    filter: Record<string, unknown>,
-    harness?: string | null,
-  ) => Promise<StartResult>;
+  start: (items: BulkSeedItem[], filter: Record<string, unknown>, harness?: string | null) => Promise<StartResult>;
   stop: (runId: string) => Promise<void>;
   dismiss: (runId: string) => Promise<void>;
   acceptRecommendation: (
@@ -287,10 +258,9 @@ export function useBulkRunOps(): {
         });
         return {
           ok: true,
-          runId: typeof json.runId === "string" ? json.runId : undefined,
+          runId: typeof json.runId === 'string' ? json.runId : undefined,
           launched: json.launched === true,
-          launchError:
-            typeof json.launchError === "string" ? json.launchError : undefined,
+          launchError: typeof json.launchError === 'string' ? json.launchError : undefined,
         };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -300,28 +270,24 @@ export function useBulkRunOps(): {
   );
 
   const stop = useCallback(async (runId: string) => {
-    await postOp({ op: "stop", runId });
+    await postOp({ op: 'stop', runId });
   }, []);
 
   const dismiss = useCallback(async (runId: string) => {
-    await postOp({ op: "dismiss", runId });
+    await postOp({ op: 'dismiss', runId });
   }, []);
 
   const acceptRecommendation = useCallback(
     async (runId: string, item: AttentionItem, rec: BulkRunItem) => {
       const actionId = rec.actionId;
-      if (!actionId)
-        return { ok: false, error: "recommendation names no action" };
+      if (!actionId) return { ok: false, error: 'recommendation names no action' };
 
       // A navigate-only option opens a sub-surface and resolves NOTHING. Accepting
       // one would record a resolution that never happened — the exact defect that
       // once let Discuss silently close real owner gates (EI-13037). The resolver
       // is told never to recommend one; this is the client-side backstop.
       if (isNavigateAction(actionId)) {
-        return {
-          ok: false,
-          error: `"${actionId}" only opens a view — it resolves nothing`,
-        };
+        return { ok: false, error: `"${actionId}" only opens a view — it resolves nothing` };
       }
 
       try {
@@ -333,11 +299,11 @@ export function useBulkRunOps(): {
           ? await replyToAttentionItem(item, draft)
           : await resolveAttentionAction(item, actionId);
         if (!outcome.resolved) {
-          return { ok: false, error: "the item did not accept that action" };
+          return { ok: false, error: 'the item did not accept that action' };
         }
 
         const recorded = await postOp({
-          op: "accept",
+          op: 'accept',
           runId,
           itemId: rec.itemId,
           actionId,
@@ -347,10 +313,8 @@ export function useBulkRunOps(): {
         return {
           ok: true,
           phase:
-            typeof phase === "string" &&
-            ["pending", "running", "review", "complete", "failed"].includes(
-              phase,
-            )
+            typeof phase === 'string' &&
+            ['pending', 'running', 'review', 'complete', 'failed'].includes(phase)
               ? (phase as BulkRunPhase)
               : null,
         };
