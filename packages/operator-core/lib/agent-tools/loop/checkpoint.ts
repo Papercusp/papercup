@@ -157,8 +157,9 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    "Write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass " +
-    '{ did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. ' +
+    "Read or write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass " +
+    '{ read:true, ownerId?, harness? } to read, or { did, left, insight, next } (goal aliases next) or { note }; ' +
+    'blank/null clears. Keyed by ownerId. ' +
     "{ walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, " +
     'then supplied win and ? PREDICTED yields before ✓ VERIFIED); ' +
     "rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns " +
@@ -176,7 +177,9 @@ export default defineTool({
       'Use work_items:checkpoint for work-item state.',
     chaining:
       'Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor ' +
-      'recovery and facts:assert for durable conclusions.',
+      'recovery and facts:assert for durable conclusions. When retuning carry, re-arm with every required field: ' +
+      'loop:arm { intervalSec: <number>, goal: <string>, carry: \'cold\'|\'warm\' }; intervalSec and goal are ' +
+      'required even when only carry changes.',
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
@@ -193,6 +196,10 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
+      read: z
+        .boolean()
+        .optional()
+        .describe('Read the current carry-note and metadata without writing; use with ownerId?/harness? only.'),
       note: z
         .string()
         .max(32000)
@@ -366,6 +373,7 @@ export default defineTool({
     })
     .refine(
       (a) =>
+        a.read === true ||
         a.note !== undefined ||
         a.did !== undefined ||
         a.left !== undefined ||
@@ -449,6 +457,29 @@ export default defineTool({
           },
         ],
         isError: true,
+      };
+    }
+
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
+    if (args.read === true) {
+      const current = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId });
+      const note = current.note;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              read: true,
+              harness,
+              ownerId,
+              note,
+              contentHash: note === null ? null : shortCarryHash(note),
+              updatedAtMs: current.updatedAtMs,
+              length: note?.length ?? 0,
+            }),
+          },
+        ],
       };
     }
 
@@ -586,7 +617,6 @@ export default defineTool({
     // lint and the reported counts then describe EXACTLY what was stored, instead of
     // a second merge against a staler prior that could disagree with it.
     const captured: { merged?: ReturnType<typeof mergeCarryRows> } = {};
-    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
     let stored: string | null;
     try {
       const writeResult = await setLoopCarryNoteWithPrior(

@@ -183,6 +183,7 @@ const {
   CARRY_NOTE_MAX_WALLS,
   CARRY_ROW_SOFT_CAPS,
   CARRY_ROW_ID_MAX,
+  shortCarryHash,
 } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
@@ -247,6 +248,12 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(guidance?.when).toMatch(/same-line/i);
     expect(guidance?.when).toMatch(/never invent a ref/i);
     expect(guidance?.when).toContain('[self-imposed]');
+  });
+
+  it('guides carry retunes to pass loop:arm\'s required intervalSec and goal', () => {
+    const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
+    expect(chaining).toContain('loop:arm { intervalSec: <number>, goal: <string>, carry: \'cold\'|\'warm\' }');
+    expect(chaining).toMatch(/intervalSec and goal are required even when only carry changes/i);
   });
 
   it('structured fields → renderCarryNote, keyed by caller ownerId + ctx harness (the loopScope the wake executor reads)', async () => {
@@ -550,6 +557,48 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(out.isError).toBe(true);
     expect(body(out)).toMatchObject({ ok: false, error: 'no_harness' });
     expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  it('read:true returns the current note metadata without entering the write path', async () => {
+    const note = '## Next action\nresume the focused test';
+    const updatedAtMs = 1_787_546_123_000;
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note, updatedAtMs });
+
+    const b = body(await call({ read: true, ownerId: 'su-caller', harness: 'papercusp' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      read: true,
+      harness: 'papercusp',
+      ownerId: 'su-caller',
+      note,
+      contentHash: shortCarryHash(note),
+      updatedAtMs,
+      length: note.length,
+    });
+    expect(getLoopCarryNoteWithMeta).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      ownerId: 'su-caller',
+      workspaceId: 'ws-1',
+    });
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  it('read:true reports an absent note with null metadata', async () => {
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: null, updatedAtMs: null });
+
+    const b = body(await call({ read: true }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      read: true,
+      note: null,
+      contentHash: null,
+      updatedAtMs: null,
+      length: 0,
+    });
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
   });
 
   it('rejects an empty call (nothing to write) at the args boundary', () => {
