@@ -657,6 +657,16 @@ export interface StalledLoopsSweepResult {
    */
   vetoedByToolActivity: string[];
   /**
+   * P-008: tool-live owners whose turn-stalled loop was still parked at the in-flight sentinel.
+   *
+   * A plain liveness veto prevents the destructive mistake (disarming a working owner), but it
+   * leaves this population parked forever: no completion rebase moves `next_fire_at` off
+   * infinity. These loops are made due immediately with the existing self-correcting re-arm
+   * write. They are deliberately separate from `vetoedByToolActivity`, because "left alone" and
+   * "repaired" are different outcomes and operators need to see which one occurred.
+   */
+  reArmedToolLiveParked: string[];
+  /**
    * WI-37546: loops this module had ALREADY disarmed as turn-stalled and has now RE-ARMED,
    * because the owner made progressing tool calls after the disarm — i.e. the verdict was wrong
    * and the agent came back.
@@ -1022,6 +1032,8 @@ export async function sweepStalledLoops(
   const vetoedByRecentTurn: string[] = [];
   /** WI-37546: owners still making PROGRESSING tool calls since their last fire. */
   const vetoedByToolActivity: string[] = [];
+  /** P-008: progressing owners whose active loop was still parked at infinity. */
+  const reArmedToolLiveParked: string[] = [];
   const reArmedFireStarved: string[] = [];
   const vetoedByProviderWall: string[] = [];
   /** EI-19899301656065801: disarmed owners the reachability probe still finds PRESENT. */
@@ -1418,6 +1430,42 @@ export async function sweepStalledLoops(
     // owner's last COMPLETED turn, "still calling tools" stops counting as evidence and the loop
     // falls through to the disarm — which is now revivable, so even that is no longer terminal.
     if (isProgressingToolActivity(activity)) {
+      // P-008 — THIRD OUTCOME: LIVE AND PARKED, SO REPAIR INSTEAD OF ONLY VETOING.
+      //
+      // The ordinary veto below is correct for an unparked loop: refusing the destructive disarm
+      // is all that is needed, because its schedule can still advance. It is incomplete for the
+      // in-flight sentinel. A parked loop has `next_fire_at = infinity`; if the completion rebase
+      // never lands, `continue` leaves a demonstrably-working owner there forever. The guard then
+      // observes the fault on every sweep and deliberately does nothing to clear it.
+      //
+      // Reuse `rearmFireStarvedLoop`, the existing system-actor write that moves an ACTIVE loop to
+      // `next_fire_at = now()` without clearing history. This is the same self-correcting experiment
+      // as the fire-starved branch: if the owner really is healthy, the next fire completes and the
+      // stale turn verdict clears; if not, the new fire advances the activity boundary and the next
+      // sweep can disarm normally. The ceiling still bounds the plain veto below. It does not turn
+      // a repairable parked loop into a disarm merely because the completion rebase has been missing
+      // for longer — the park itself is the condition this third outcome repairs.
+      if (status.parked) {
+        reArmedToolLiveParked.push(ownerId);
+        console.warn(
+          `[stalled-loops-guard] TOOL-LIVE PARK REPAIR ${ownerId}: turnsStalled:true and still ` +
+            `parked at the in-flight sentinel, but the owner has made ${activity?.calls} progressing ` +
+            `tool call(s) since its last fire (${activity?.distinctTools} distinct, ${activity?.okCalls} ` +
+            `ok, last ${activity?.lastCallAt ?? 'unknown'}). Making the active loop due immediately ` +
+            `instead of only vetoing its disarm (P-008 / WI-41231).`,
+        );
+        if (!dryRun) {
+          await rearm(
+            sql,
+            routineId,
+            `stalled-loops-guard (WI-41231): tool-live parked repair — ${activity?.calls} ` +
+              `progressing tool call(s) since ${status.lastFiredAt ?? 'the last fire'}, but ` +
+              `next_fire_at remained at the in-flight sentinel`,
+          );
+        }
+        continue;
+      }
+
       // The ceiling anchors on the last time this owner FINISHED something. Unknown (a loop whose
       // owner has no turn history at all) is not old — it takes the veto, per this module's
       // governing asymmetry.
@@ -1561,6 +1609,13 @@ export async function sweepStalledLoops(
             `were re-armed instead. Both symptoms appearing in the same sweep points at the scheduler ` +
             `itself (EI-19406534159939583).`
           : '') +
+        (reArmedToolLiveParked.length > 0
+          ? `\n\nALSO NOT disarmed: ${reArmedToolLiveParked.length} loop(s) were TOOL-LIVE BUT ` +
+            `PARKED (${reArmedToolLiveParked.join(', ')}) — their owners were making progressing ` +
+            `tool calls while next_fire_at remained at the in-flight sentinel. A liveness veto ` +
+            `would only preserve that stuck park, so the active loops were made due immediately ` +
+            `(P-008 / WI-41231).`
+          : '') +
         (repairedWakeStarved.length > 0
           ? `\n\nALSO NOT disarmed: ${repairedWakeStarved.length} loop(s) were WAKE-STARVED ` +
             `(${repairedWakeStarved.join(', ')}) — their fires kept arriving but reached nobody, because no ` +
@@ -1682,21 +1737,24 @@ export async function sweepStalledLoops(
   // not these agents" — and a sweep that produces revivals alongside starvation is emphatically
   // one event. When revivals are the ONLY finding, the summary says so plainly rather than
   // reporting them under a starvation headline.
-  const starved = [...reArmedFireStarved, ...repairedWakeStarved];
+  const starved = [...reArmedFireStarved, ...repairedWakeStarved, ...reArmedToolLiveParked];
   if ((starved.length > 0 || revivedAfterDisarm.length > 0) && stalledOwners.length === 0 && !dryRun) {
     await broadcast({
       summary:
         starved.length === 0
           ? `${revivedAfterDisarm.length} engine loop(s) on ${ws} were RE-ARMED after a wrong ` +
             `turn-stalled disarm — their owners were working all along (WI-37546).`
-          : repairedWakeStarved.length === 0
+          : repairedWakeStarved.length === 0 && reArmedToolLiveParked.length === 0
             ? `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
               `answering them — re-armed, not disarmed (EI-19406534159939583).`
-            : reArmedFireStarved.length === 0
+            : reArmedFireStarved.length === 0 && reArmedToolLiveParked.length === 0
               ? `${repairedWakeStarved.length} armed engine loop(s) on ${ws} had every fire reach NOBODY — no ` +
                 `standing inbox-wake await, so nothing was ever delivered; repaired, not disarmed (WI-36685).`
-              : `${starved.length} armed engine loop(s) on ${ws} were being STARVED of turns while still alive — ` +
-                `repaired, not disarmed (EI-19406534159939583 / WI-36685).`,
+              : reArmedFireStarved.length === 0 && repairedWakeStarved.length === 0
+                ? `${reArmedToolLiveParked.length} armed engine loop(s) on ${ws} were TOOL-LIVE but stuck ` +
+                  `parked at the in-flight sentinel — made due immediately, not disarmed (WI-41231).`
+                : `${starved.length} armed engine loop(s) on ${ws} were being STARVED of turns while still alive — ` +
+                  `repaired, not disarmed (EI-19406534159939583 / WI-36685 / WI-41231).`,
       body:
         (reArmedFireStarved.length > 0
           ? `FIRE-STARVED (no fire emitted): ${reArmedFireStarved.join(', ')}. Each one's most recent turn ` +
@@ -1712,6 +1770,13 @@ export async function sweepStalledLoops(
             `never actually spoken to. Their watch has been re-armed and the loops made due. A cluster ` +
             `here means awaits are being cancelled or never armed — start at the SessionEnd hook's ` +
             `cancel path and loop-fire's ensureInboxWakeArmedForActiveSession self-heal.\n\n`
+          : '') +
+        (reArmedToolLiveParked.length > 0
+          ? `TOOL-LIVE PARKED (working owner, completion rebase missing): ` +
+            `${reArmedToolLiveParked.join(', ')}. Each owner made progressing tool calls after its ` +
+            `last fire while the active routine remained parked at next_fire_at = infinity. A plain ` +
+            `liveness veto would leave that schedule stuck, so the loops were made due immediately ` +
+            `with the existing self-correcting re-arm write (WI-41231).\n\n`
           : '') +
         (revivedAfterDisarm.length > 0
           ? `REVIVED (wrongly disarmed earlier, owner demonstrably working): ` +
@@ -1818,6 +1883,7 @@ export async function sweepStalledLoops(
     vetoedByWithheldFire,
     disarmedUnaddressableHarness,
     vetoedByToolActivity,
+    reArmedToolLiveParked,
     revivedAfterDisarm,
     cadenceDrift,
     population,

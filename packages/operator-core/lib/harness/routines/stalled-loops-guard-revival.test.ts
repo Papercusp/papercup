@@ -33,6 +33,7 @@ import { deactivateLoop, reviveDisarmedLoop, LOOP_END_PAUSE_PREFIX, type LoopSta
 // `vi.fn(async () => {})` records a ZERO-arg call tuple, so every `.mock.calls[0][1]` read below
 // is a lint:tsc error that a green vitest run cannot see.
 type AutoPauseFn = NonNullable<StalledLoopsSweepDeps['autoPause']>;
+type RearmFn = NonNullable<StalledLoopsSweepDeps['rearm']>;
 type ReviveFn = NonNullable<StalledLoopsSweepDeps['revive']>;
 type BroadcastFn = NonNullable<StalledLoopsSweepDeps['broadcast']>;
 type NotifyFn = NonNullable<StalledLoopsSweepDeps['notify']>;
@@ -320,6 +321,68 @@ describe('sweepStalledLoops — liveness veto (WI-37546: 18 of 19 disarms on 202
 
     expect(res.vetoedByToolActivity).toEqual(['su-live']);
     expect(res.paused).toBe(0);
+    expect(autoPause).not.toHaveBeenCalled();
+  });
+
+  it('P-008 repairs a progressing owner whose turn-stalled loop is still parked instead of only vetoing', async () => {
+    const sql = fakeSql([{ id: 'rt1', target_owner_id: 'su-live-parked' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-live-parked', status({ turnsStalled: true, parked: true })]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => new Map([['su-live-parked', WORKING]]));
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      deps({ getStatuses, autoPause, rearm, broadcast, readOwnerToolActivity }),
+    );
+
+    expect(res.reArmedToolLiveParked).toEqual(['su-live-parked']);
+    expect(res.vetoedByToolActivity).toEqual([]);
+    expect(res.paused).toBe(0);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(rearm).toHaveBeenCalledTimes(1);
+    expect(rearm).toHaveBeenCalledWith(sql, 'rt1', expect.stringContaining('tool-live parked repair'));
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast.mock.calls[0]?.[0]).toMatchObject({
+      summary: expect.stringContaining('TOOL-LIVE'),
+      body: expect.stringContaining('su-live-parked'),
+    });
+  });
+
+  it('P-008 keeps a parked repair eligible past the plain-veto ceiling — the sentinel is the repair gate', async () => {
+    const sql = fakeSql([{ id: 'rt1', target_owner_id: 'su-old-parked' }]);
+    const longAgo = new Date(Date.now() - TOOL_LIVENESS_VETO_CEILING_MS - 60_000).toISOString();
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-old-parked',
+            status({
+              turnsStalled: true,
+              parked: true,
+              lastTurnAt: longAgo,
+              lastRealTurnAt: longAgo,
+              armedAt: longAgo,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(
+      async () => new Map([['su-old-parked', WORKING]]),
+    );
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      deps({ getStatuses, autoPause, rearm, readOwnerToolActivity }),
+    );
+
+    expect(res.reArmedToolLiveParked).toEqual(['su-old-parked']);
+    expect(res.vetoedByToolActivity).toEqual([]);
+    expect(res.paused).toBe(0);
+    expect(rearm).toHaveBeenCalledTimes(1);
     expect(autoPause).not.toHaveBeenCalled();
   });
 

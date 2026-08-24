@@ -155,6 +155,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       vetoedByWithheldFire: [],
       disarmedUnaddressableHarness: [],
       vetoedByToolActivity: [],
+      reArmedToolLiveParked: [],
       revivedAfterDisarm: [],
       cadenceDrift: [],
       population: {
