@@ -15,10 +15,12 @@ import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
-const SCRIPT = join(
-  REPO_ROOT,
-  'apps/operator/bin/release/dependency-generation.sh',
-);
+// Overridable so a mutation probe can point the suite at a COPY of the script
+// outside the tree; mutating the tracked file in place would race git-sync's
+// whole-tree sweep and can commit the mutant.
+const SCRIPT =
+  process.env.DEPENDENCY_GENERATION_SCRIPT ??
+  join(REPO_ROOT, 'apps/operator/bin/release/dependency-generation.sh');
 
 const roots: string[] = [];
 
@@ -377,5 +379,83 @@ describe('immutable dependency generation', () => {
       statSync(join(source, 'pkg/index.js')).ino,
     );
     expect(readFileSync(join(copied, 'pkg/index.js'), 'utf8')).toBe('root-v1\n');
+  });
+
+  // The manifest walk fingerprints each node_modules tree independently and
+  // sorts globally, so it runs in parallel. Parallelism must remain an
+  // invisible scheduling detail: if a walker ever emitted a partial or
+  // out-of-order record, the manifest — and therefore the generation IDENTITY
+  // derived from it — would differ run to run, and exact-id consumers would be
+  // pinned against a tree that never existed. (EI-21322804786723906)
+  function manifest(root: string, jobs: string): ShellResult {
+    const wrapper = [
+      // The publisher main runs under `set -euo pipefail`, and the serial walk
+      // reports a failed tree through its pipeline status, so the walk must be
+      // exercised in that same mode to be measuring the real contract.
+      'set -o pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_set_manifest "$ROOT"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SCRIPT,
+        ROOT: root,
+        DEPENDENCY_GENERATION_WALK_JOBS: jobs,
+      },
+    });
+    return {
+      status: result.status,
+      stdout: String(result.stdout ?? ''),
+      stderr: String(result.stderr ?? ''),
+    };
+  }
+
+  it('produces a byte-identical manifest whether the walk is serial or parallel', () => {
+    const integration = makeIntegration();
+    // Names that punish naive word-splitting, plus enough trees that a
+    // parallel pool genuinely overlaps rather than running one at a time.
+    mkdirSync(join(integration, 'has space/node_modules/pkg'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(integration, 'has space/node_modules/pkg/index.js'),
+      'spaced\n',
+    );
+    for (let i = 0; i < 24; i += 1) {
+      mkdirSync(join(integration, `gen${i}/node_modules/p${i}`), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(integration, `gen${i}/node_modules/p${i}/index.js`),
+        `v${i}\n`,
+      );
+    }
+
+    const serial = manifest(integration, '1');
+    const parallel = manifest(integration, '8');
+
+    expect(serial.status, serial.stderr).toBe(0);
+    expect(parallel.status, parallel.stderr).toBe(0);
+    // Calibration: without this the assertion below would also hold for two
+    // empty manifests, i.e. for a walk that silently measured nothing.
+    expect(serial.stdout.trimEnd().split('\n').length).toBeGreaterThan(20);
+    expect(parallel.stdout).toBe(serial.stdout);
+  });
+
+  it('fails the manifest in both walk modes when a tree cannot be read', () => {
+    const integration = makeIntegration();
+    const unreadable = join(integration, 'blocked/node_modules');
+    mkdirSync(unreadable, { recursive: true });
+    chmodSync(unreadable, 0o000);
+    try {
+      // A truncated manifest must never reach the caller as a valid identity,
+      // so a failed walker fails the whole walk under either scheduler.
+      expect(manifest(integration, '1').status).not.toBe(0);
+      expect(manifest(integration, '8').status).not.toBe(0);
+    } finally {
+      chmodSync(unreadable, 0o755);
+    }
   });
 });
