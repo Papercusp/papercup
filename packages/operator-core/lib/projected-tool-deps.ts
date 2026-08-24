@@ -210,6 +210,16 @@ interface TelemetryRow {
   params: unknown[];
 }
 
+/**
+ * A shell variable that reached this sink without being expanded is never a
+ * valid tenant key.  Keep this check deliberately broader than the two known
+ * PAPERCUSP_* names: a future launcher variable must fail closed too, while
+ * the legitimate workspace-global scope (`*`) remains unaffected.
+ */
+export function isUnresolvedTelemetryScopePlaceholder(value: unknown): boolean {
+  return typeof value === 'string' && value.trimStart().startsWith('$');
+}
+
 /* invoked_at is stamped EXPLICITLY (EI-7040): the writer is deferred + batched,
  * and Postgres `now()` is transaction-stable — leaving the column to its
  * DEFAULT gave every row in a flush batch ONE identical microsecond timestamp
@@ -241,6 +251,7 @@ let telemetryDropped = 0;
 let telemetryInsertErrorCount = 0;
 let telemetryLastInsertErrorAt: string | null = null;
 let telemetryInsertErrorToastSent = false;
+let telemetryScopeRejectionWarned = false;
 
 export interface TelemetryHealth {
   droppedRows: number;
@@ -262,6 +273,7 @@ export function __resetTelemetryHealthForTests(): void {
   telemetryInsertErrorCount = 0;
   telemetryLastInsertErrorAt = null;
   telemetryInsertErrorToastSent = false;
+  telemetryScopeRejectionWarned = false;
 }
 
 async function emitTelemetryInsertErrorToast(err: unknown): Promise<void> {
@@ -462,6 +474,22 @@ export async function backfillResultDoorOutputRef(input: {
  */
 function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   if (!input.ctx.workspaceId) return null;
+  const harnessSlug = input.ctx.harnessSlug ?? '';
+  if (
+    isUnresolvedTelemetryScopePlaceholder(input.ctx.workspaceId) ||
+    isUnresolvedTelemetryScopePlaceholder(harnessSlug)
+  ) {
+    // There is no safe normalization: guessing a tenant would be worse than
+    // dropping best-effort telemetry. Warn once so the producing boundary is
+    // diagnosable without turning a bad launcher into a log storm.
+    if (!telemetryScopeRejectionWarned) {
+      telemetryScopeRejectionWarned = true;
+      console.warn(
+        '[projected-tool-deps] refusing telemetry row with an unresolved workspace or harness scope placeholder',
+      );
+    }
+    return null;
+  }
   const p = (input.ctx.principal ?? null) as null | {
     kind?: string;
     authMethod?: string;
@@ -521,7 +549,7 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     workspaceId: input.ctx.workspaceId,
     params: [
       input.ctx.workspaceId,
-      input.ctx.harnessSlug ?? '',
+      harnessSlug,
       input.pluginName,
       input.toolName,
       input.ctx.role ?? '',

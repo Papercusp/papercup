@@ -41,8 +41,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   }),
 }));
 
-import { PROJECTED_DEPS } from './projected-tool-deps';
-import { flushPendingTelemetry } from './projected-tool-deps';
+import {
+  PROJECTED_DEPS,
+  flushPendingTelemetry,
+  isUnresolvedTelemetryScopePlaceholder,
+  __resetTelemetryHealthForTests,
+} from './projected-tool-deps';
 
 const ctx = (over: Record<string, unknown> = {}) =>
   ({
@@ -69,9 +73,11 @@ function record(toolName: string, over: Record<string, unknown> = {}): Promise<v
 describe('telemetry invoked_at stamping (EI-7040)', () => {
   beforeEach(() => {
     captured.length = 0;
+    __resetTelemetryHealthForTests();
   });
   afterEach(async () => {
     await flushPendingTelemetry();
+    __resetTelemetryHealthForTests();
     captured.length = 0;
   });
 
@@ -139,5 +145,34 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
         rootRunId: 'run-root',
       },
     });
+  });
+
+  it('rejects unresolved shell scope placeholders before they reach the INSERT (EI-21334973614275969)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(isUnresolvedTelemetryScopePlaceholder('${PAPERCUSP_WORKSPACE}')).toBe(true);
+    expect(isUnresolvedTelemetryScopePlaceholder('$PAPERCUSP_WORKSPACE')).toBe(true);
+    expect(isUnresolvedTelemetryScopePlaceholder('*')).toBe(false);
+    expect(isUnresolvedTelemetryScopePlaceholder('papercusp-workspace')).toBe(false);
+
+    await record('x:placeholder', { workspaceId: '${PAPERCUSP_WORKSPACE}' });
+    await flushPendingTelemetry();
+
+    expect(captured.filter((c) => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('unresolved workspace or harness scope placeholder'),
+    );
+    warn.mockRestore();
+  });
+
+  it('rejects an unresolved harness scope even when the workspace is concrete', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await record('x:placeholder', { harnessSlug: '${PAPERCUSP_HARNESS_SLUG}' });
+    await flushPendingTelemetry();
+
+    expect(captured.filter((c) => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
