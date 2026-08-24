@@ -620,6 +620,7 @@ export function WorkItemDetail({
         ) : null}
         <PriorAttemptsSection slug={slug} workItem={workItem} />
         <BehaviorContractSection slug={slug} workItem={workItem} />
+        <SpecAdequacySection slug={slug} workItem={workItem} />
       </div>
       {/* WorkItemDetail historically omitted this — every WI-* detail rendered
           with ZERO panel CSS (run-together label/value spans). */}
@@ -1025,6 +1026,190 @@ function BehaviorContractSection({
                   {row.impact.reason === 'observation-lane'
                     ? 'Observation-lane item — a candidate input, never enforceable (D-012).'
                     : 'Not a behavior-changing kind, so no clause resolution is required.'}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** nuqs, not useState — same agent-readability rule as the sections above. */
+const WORK_ITEM_SPEC_ADEQUACY_PARAM = 'wisa';
+
+type SpecAdequacyClauseRow = {
+  specId: string;
+  revision: number;
+  behaviorClass: string;
+  mutationRequired: boolean;
+  requiredTestLayers: string[];
+  requiredProofFloor: 'none' | 'l3' | 'l4' | null;
+};
+
+type SpecAdequacyRow = {
+  workItemId: string;
+  rubricRef: string;
+  classRef: string | null;
+  attestationSupplied: boolean;
+  verdict: {
+    ok: boolean;
+    applicable: boolean;
+    checked: string[];
+    blockerReason: string | null;
+    impactReport: string | null;
+  };
+  verdictIsLowerBound: boolean;
+  clauses: SpecAdequacyClauseRow[];
+  unavailableReason: 'work-item-not-found' | 'resolver-unavailable' | null;
+};
+
+/**
+ * P-011 — "Close gate": which RUBRIC governs this item's completion, what that rubric's
+ * gate currently decides, and the EXACT blocker it would emit.
+ *
+ * `specTestAdequacyCompletionGate` is a HARD gate on work_items:complete (P-007), but its
+ * verdict was reachable only by ATTEMPTING the close — a write with side effects — and the
+ * refusal names a rubric there was no read for. This runs the same gate, read-only.
+ *
+ * ⚠⚠ THE VERDICT IS A LOWER BOUND, NEVER A FAILURE (D-020). The gate grades `freshness`
+ * against fingerprints the CALLER attests at close time about its own working tree; a read
+ * cannot have them and must not invent them, so currentness comes back `unknown` —
+ * deliberately not `stale`. An `unknown` here means "a read cannot establish this", never
+ * "this clause FAILS".
+ *
+ * That is why the blocker below is rendered as a NOTICE and never as an error, and why the
+ * lower-bound caveat is stated in the copy rather than left to a reader to infer: showing a
+ * hard failure for evidence that may be perfectly current is exactly the mistake D-020 was
+ * written to prevent — the same rule D-017 applies to advisory reports, one level deeper.
+ *
+ * Collapsed by default and `enabled`-gated: the gate resolves the contract, then reads
+ * evidence, then scorecards.
+ */
+function SpecAdequacySection({
+  slug,
+  workItem,
+}: {
+  slug: string;
+  workItem: WorkItemRow;
+}) {
+  const [openRef, setOpenRef] = useQueryState(WORK_ITEM_SPEC_ADEQUACY_PARAM, parseAsString);
+  const target = useMemo(() => decodeScopedRef(openRef), [openRef]);
+  const open =
+    target.id === workItem.id && (!target.harness || target.harness === slug);
+
+  const query = useSyncQuery<SpecAdequacyRow>({
+    queryName: 'workItems.specAdequacy',
+    // classRef is deliberately NOT sent: with it absent the gate returns its real first
+    // refusal, which names the clauses needing attestation — the answer a reader opening
+    // this section actually wants, and one they would otherwise get only by being refused.
+    args: { harnessSlug: slug, workItemId: workItem.id },
+    enabled: open && Boolean(slug) && Boolean(workItem.id),
+  });
+  const row = query.loading ? null : (query.data?.[0] ?? null);
+
+  return (
+    <>
+      <div className="pc-adv-detail__section">
+        <div className="pc-adv-detail__actions">
+          <button
+            type="button"
+            data-testid="wi-detail-spec-adequacy"
+            aria-expanded={open}
+            aria-controls={`work-item-spec-adequacy-${workItem.id}`}
+            onClick={() =>
+              void setOpenRef(open ? null : encodeScopedRef(slug, workItem.id))
+            }
+          >
+            Close gate
+            {row?.verdict.applicable ? ` (${row.clauses.length})` : ''}
+          </button>
+        </div>
+      </div>
+      {open ? (
+        <div
+          id={`work-item-spec-adequacy-${workItem.id}`}
+          className="pc-adv-detail__section"
+        >
+          {query.loading ? (
+            <div className="det-label">Running the close gate…</div>
+          ) : !row || row.unavailableReason ? (
+            /* "The gate does not judge this item" and "the gate could not be run" are
+               different facts, and both render as no blockers. Never let the second read
+               as a clean bill of health on a HARD gate. */
+            <div className="det-label" data-testid="wi-spec-adequacy-unavailable">
+              {row?.unavailableReason === 'work-item-not-found'
+                ? 'Work item not found in this harness.'
+                : 'Close gate unavailable (the gate errored). This is NOT evidence that the close is clear.'}
+            </div>
+          ) : !row.verdict.applicable ? (
+            <div className="det-label" data-testid="wi-spec-adequacy-inapplicable">
+              The spec-test-adequacy gate does not apply to this item — it resolves no
+              enforceable clause that requires proof.
+            </div>
+          ) : (
+            <>
+              <div className="det-label">
+                Rubric: <strong>{row.rubricRef}</strong>
+                {row.classRef ? ` · graded as ${row.classRef}` : ' · no plan class supplied'}
+              </div>
+
+              {/* D-020, stated in the copy — not left for a reader to infer from a field
+                  name. This is the whole reason the section is safe to show. */}
+              {row.verdictIsLowerBound ? (
+                <div className="det-label" data-testid="wi-spec-adequacy-lower-bound">
+                  ⓘ Lower bound: a read cannot attest working-tree fingerprints, so
+                  freshness reads as UNESTABLISHED rather than failed. Supplying the
+                  attestation at close time can only move a clause toward passing.
+                </div>
+              ) : null}
+
+              {row.verdict.blockerReason ? (
+                <div data-testid="wi-spec-adequacy-blocker">
+                  <div className="det-label">
+                    Would block the close — exact gate text, verbatim:
+                  </div>
+                  <div>{row.verdict.blockerReason}</div>
+                </div>
+              ) : (
+                <div className="det-label" data-testid="wi-spec-adequacy-clear">
+                  No blocker at this reading
+                  {row.verdict.checked.length
+                    ? ` · accepted: ${row.verdict.checked.join(', ')}`
+                    : ''}
+                </div>
+              )}
+
+              {row.clauses.length ? (
+                <div>
+                  <div className="det-label">Enforced clauses and their proof floor</div>
+                  {row.clauses.map((c) => (
+                    <div key={c.specId}>
+                      {/* The revision never leaves the specId's side — same rule as the
+                          behavior-contract section above. */}
+                      <strong>
+                        {c.specId}@r{c.revision}
+                      </strong>{' '}
+                      · {c.behaviorClass}
+                      {c.mutationRequired ? ' · mutation-required' : ''} ·{' '}
+                      {c.requiredProofFloor
+                        ? `floor ${c.requiredProofFloor.toUpperCase()}`
+                        : 'floor depends on the plan class (none supplied)'}
+                      {c.requiredTestLayers.length
+                        ? ` · layers ${c.requiredTestLayers.join(', ')}`
+                        : ''}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {/* ADVISORY (D-017) and populated independently of the verdict, so it is
+                  labelled as a notice even when the gate is otherwise satisfied. */}
+              {row.verdict.impactReport ? (
+                <div data-testid="wi-spec-adequacy-impact">
+                  <div className="det-label">Advisory — reported, not enforced</div>
+                  <div>{row.verdict.impactReport}</div>
                 </div>
               ) : null}
             </>
