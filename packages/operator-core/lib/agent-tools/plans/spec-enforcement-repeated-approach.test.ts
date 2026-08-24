@@ -135,6 +135,15 @@ describe('the denominator is the instrument’s REACH, not the corpus', () => {
     expect(Math.round(diluted)).toBe(111);
   });
 
+  /**
+   * CORRECTED 2026-08-24 (P-014). This test asserted 41 — the READER's SQL-side count alone —
+   * while the fixture also hands the module an observation row it drops defensively, so 42 rows
+   * actually left the denominator. The test's own name states the right contract ("how many IT
+   * excluded"); its expected value had been copied from what the code did instead of derived
+   * from that contract, so it pinned the under-report in place. The latency rollup has always
+   * summed both terms, so the payload's three blocks disagreed under any reader that failed to
+   * pre-filter. `coverage.observationsExcluded` now means the same thing in all three.
+   */
   it('excludes observation-lane rows and reports how many it excluded', async () => {
     const ledger = await computeSpecEnforcementRepeatedApproach(
       deps({
@@ -146,6 +155,22 @@ describe('the denominator is the instrument’s REACH, not the corpus', () => {
 
     expect(ledger.rollup.detectableItems).toBe(1);
     expect(ledger.rollup.deepestChain).toBe(3);
+    // 41 dropped in SQL + 1 dropped here. Asserting 41 would be asserting the reader's number
+    // under this module's name.
+    expect(ledger.rollup.coverage.observationsExcluded).toBe(42);
+  });
+
+  it('CONTROL: with nothing left to drop defensively, the count is the reader’s own', async () => {
+    // The calibration for the assertion above — without it, a module that blindly added 1 would
+    // also pass, and the corrected expectation would prove nothing about where the terms come from.
+    const ledger = await computeSpecEnforcementRepeatedApproach(
+      deps({
+        items: [item({ workItemId: 'WI-1' })],
+        claims: [claim({ workItemId: 'WI-1', wonClaimCount: 3 })],
+        observationsExcluded: 41,
+      }),
+    );
+
     expect(ledger.rollup.coverage.observationsExcluded).toBe(41);
   });
 });
