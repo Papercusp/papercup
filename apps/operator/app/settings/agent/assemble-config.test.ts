@@ -30,6 +30,7 @@ function lastValid(partial: Partial<LastValidSections> = {}): LastValidSections 
 
 function input(partial: Partial<AssembleInput> = {}): AssembleInput {
   return {
+    interactiveClient: 'legacy',
     backend: 'omp',
     cmd: '',
     modelsJson: '',
@@ -84,6 +85,12 @@ describe('modelsJsonError', () => {
 });
 
 describe('assembleAgentConfig — happy path', () => {
+  it('persists the prepared interactive-client preference independently of the agent backend', () => {
+    const res = assembleAgentConfig(input({ interactiveClient: 'pui', backend: 'codex' }));
+    expect(res.persistable.interactiveClient).toBe('pui');
+    expect(res.persistable.backend).toBe('codex');
+  });
+
   it('persists a customized tier menu and advances lastValid', () => {
     // P-020 (autonomous-loop-prod-audit-2026-07-02) inserted a 5th default tier
     // (`luna`, gpt-5.6-luna:high) between `deep` and `max` — `max` is now index 4.

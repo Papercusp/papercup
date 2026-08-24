@@ -143,6 +143,8 @@ import {
   usePtyHost,
   PTY_DEFAULT_ON,
   AGENTS,
+  INTERACTIVE_CLIENTS,
+  puiClientCommand,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
@@ -2156,6 +2158,7 @@ describe("psu-launcher arg parsing", () => {
       resume: false,
       resumeId: null,
       fork: false,
+      client: null,
       agent: null,
       role: null,
       feature: null,
@@ -2203,6 +2206,24 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
+  it("prepares the owned PUI route without changing the bare/legacy default", () => {
+    expect(INTERACTIVE_CLIENTS).toEqual(["legacy", "pui"]);
+    expect(puiClientCommand(parseArgs([]))).toBeNull();
+    expect(puiClientCommand(parseArgs(["--client=legacy"]))).toBeNull();
+    expect(puiClientCommand(parseArgs(["--client=pui"]))).toEqual({
+      command: "pui",
+      args: ["chat"],
+    });
+    expect(parseArgs(["--client", "pui"]).client).toBe("pui");
+    expect(() => parseArgs(["--client=unknown"])).toThrow(/legacy\|pui/);
+  });
+
+  it("fails loud when an owned-PUI launch carries legacy session flags", () => {
+    expect(() =>
+      puiClientCommand(parseArgs(["--client=pui", "--agent=omp", "--plan=p"])),
+    ).toThrow(/--client=legacy/);
+  });
+
   it("parses --allow-subagents / --no-subagents (owner mandate 2026-07-02); defaults null (⇒ deny)", () => {
     expect(parseArgs([]).allowSubagents).toBeNull();
     expect(parseArgs(["--allow-subagents"]).allowSubagents).toBe(true);
@@ -2248,6 +2269,7 @@ describe("psu-launcher arg parsing", () => {
       resume: false,
       resumeId: null,
       fork: false,
+      client: null,
       agent: "claude",
       role: null,
       feature: null,

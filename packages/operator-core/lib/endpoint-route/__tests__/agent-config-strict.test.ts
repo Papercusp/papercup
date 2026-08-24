@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { writeMock, readMock, listResumableSessionsMock, readCodexHomeDiagnosticsMock } = vi.hoisted(() => ({
   writeMock: vi.fn(async (cfg: unknown) => cfg),
   readMock: vi.fn(async () => ({
+    interactiveClient: 'legacy',
     backend: 'claude-code',
     cmd: '',
     models: {},
@@ -86,6 +87,7 @@ async function callPost(body: unknown): Promise<Response> {
 }
 
 const VALID_BODY = {
+  interactiveClient: 'legacy',
   backend: 'claude-code',
   cmd: 'claude -p',
   models: { worker: 'haiku' },
@@ -105,6 +107,7 @@ const VALID_BODY = {
 beforeEach(() => {
   vi.clearAllMocks();
   readMock.mockResolvedValue({
+    interactiveClient: 'legacy',
     backend: 'claude-code',
     cmd: '',
     models: {},
@@ -149,6 +152,19 @@ describe('GET /agent-config diagnostics', () => {
 });
 
 describe('POST /agent-config strict save', () => {
+  it('persists a valid interactive-client preference', async () => {
+    const res = await callPost({ ...VALID_BODY, interactiveClient: 'pui' });
+    expect(res.status).toBe(200);
+    expect((writeMock.mock.calls[0][0] as { interactiveClient: string }).interactiveClient).toBe('pui');
+  });
+
+  it('rejects an unknown interactive client instead of silently falling back', async () => {
+    const res = await callPost({ ...VALID_BODY, interactiveClient: 'other' });
+    expect(res.status).toBe(422);
+    expect(writeMock).not.toHaveBeenCalled();
+    expect((await res.json()).error).toMatch(/interactiveClient/);
+  });
+
   it('persists a fully valid body verbatim', async () => {
     const res = await callPost(VALID_BODY);
     expect(res.status).toBe(200);
@@ -201,6 +217,18 @@ describe('POST /agent-config strict save', () => {
       'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
       'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
     });
+  });
+
+  it('preserves the interactive-client preference when an older full-body client omits it', async () => {
+    readMock.mockResolvedValueOnce({
+      ...VALID_BODY,
+      interactiveClient: 'pui',
+      resolverProfiles: VALID_BODY.resolverProfiles,
+    });
+    const { interactiveClient: _omitted, ...legacyBody } = VALID_BODY;
+    const res = await callPost(legacyBody);
+    expect(res.status).toBe(200);
+    expect((writeMock.mock.calls[0][0] as { interactiveClient: string }).interactiveClient).toBe('pui');
   });
 
   it('rejects invalid resolver settings instead of normalizing them away', async () => {

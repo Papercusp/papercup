@@ -36,6 +36,7 @@ import {
   DEFAULT_MODEL_TIERS,
   defaultCompactionLimitForSpec,
   type AgentBackend,
+  type InteractiveClient,
   type ModelTier,
   type SurfaceKey,
   SURFACE_KEYS,
@@ -57,6 +58,7 @@ const BACKEND_CHOICE_OPTIONS = [
 ];
 
 interface AgentConfig {
+  interactiveClient?: InteractiveClient;
   backend: GlobalBackend;
   cmd: string;
   models: Record<string, string>;
@@ -154,6 +156,7 @@ export default function AgentSettingsPage() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [interactiveClient, setInteractiveClient] = useState<InteractiveClient>('legacy');
   const [backend, setBackend] = useState<GlobalBackend>('omp');
   const [cmd, setCmd] = useState('');
   const [roleModels, setRoleModels] = useState<Record<string, string>>({});
@@ -199,6 +202,7 @@ export default function AgentSettingsPage() {
       if (hydrationAppliedRef.current) return;
       hydrationAppliedRef.current = true;
       setSnapshot(d);
+      setInteractiveClient(d.config.interactiveClient ?? 'legacy');
       setBackend(d.config.backend);
       setCmd(d.config.cmd);
       const nextRoleModels = filteredRoleModels(d.config.models);
@@ -243,6 +247,7 @@ export default function AgentSettingsPage() {
   const modelsJson = useMemo(() => roleModelsJson(roleModels), [roleModels]);
   const { persistable, problems } = useMemo(() => {
     const result = assembleAgentConfig({
+      interactiveClient,
       backend,
       cmd,
       modelsJson,
@@ -255,7 +260,7 @@ export default function AgentSettingsPage() {
     });
     lastValidRef.current = result.lastValid;
     return result;
-  }, [backend, cmd, modelsJson, roleBackends, surfaceBackends, surfaceModels, tierRows, tierCeilings]);
+  }, [interactiveClient, backend, cmd, modelsJson, roleBackends, surfaceBackends, surfaceModels, tierRows, tierCeilings]);
 
   const hydrated = !loading && snapshot != null;
   const { saving, lastSavedAt } = useDebouncedSave(
@@ -342,6 +347,29 @@ export default function AgentSettingsPage() {
         saves automatically: text fields validate and commit when you leave
         them (Enter also commits), toggles and menus save immediately.
       </p>
+
+      <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
+        <h2>Interactive client</h2>
+        <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginTop: 4 }}>
+          The terminal UI opened by the <code>psu</code> front door. The owned PUI route is
+          available explicitly as <code>psu --client=pui</code>; changing the bare-command
+          default stays locked until the deployed worker-parity gate is green.
+        </p>
+        <Select
+          value={interactiveClient}
+          onChange={(value) => setInteractiveClient(value as InteractiveClient)}
+          ariaLabel="Interactive client"
+          options={[
+            { value: 'legacy', label: 'Legacy native clients (current default)' },
+            { value: 'pui', label: 'Owned PUI (activation waits for parity)', disabled: true },
+          ]}
+        />
+        <p style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 8, marginBottom: 0 }}>
+          Escape hatch: <code>psu --client=legacy</code> keeps the Claude, OMP, and Codex
+          picker reachable after the eventual cutover. D-015 remains fail-closed; this
+          preparation does not flip the default.
+        </p>
+      </section>
 
       {problems.length > 0 && (
         <section className="pc-card" style={{ padding: 12, marginTop: 12, borderColor: 'var(--bad)' }}>

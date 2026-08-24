@@ -9,6 +9,7 @@ import {
   parseTiers,
   parseTierCeilings,
   parseTerminalEmulator,
+  parseInteractiveClient,
   bulkResolverLaunchProfilesProblem,
   agentCmdBootWarning,
   type AgentConfig,
@@ -36,6 +37,7 @@ describe('readAgentConfig default backend (no stored row)', () => {
     readOperatorStateMock.mockResolvedValueOnce(null);
     const c = await readAgentConfig();
     expect(c.backend).toBe('claude-code');
+    expect(c.interactiveClient).toBe('legacy');
     expect(effectiveBackend(c)).toBe('claude-code');
     expect(c.resolverProfiles).toEqual({
       'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
@@ -46,6 +48,15 @@ describe('readAgentConfig default backend (no stored row)', () => {
   it('an invalid stored backend falls back to the claude-code default', async () => {
     readOperatorStateMock.mockResolvedValueOnce({ backend: 'gemini' });
     expect((await readAgentConfig()).backend).toBe('claude-code');
+  });
+});
+
+describe('parseInteractiveClient', () => {
+  it('accepts the owned PUI preference and otherwise fails closed to legacy', () => {
+    expect(parseInteractiveClient('pui')).toBe('pui');
+    expect(parseInteractiveClient('legacy')).toBe('legacy');
+    expect(parseInteractiveClient('unknown')).toBe('legacy');
+    expect(parseInteractiveClient(null)).toBe('legacy');
   });
 });
 

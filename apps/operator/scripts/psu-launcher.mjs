@@ -105,6 +105,7 @@ import {
 } from "@papercusp/orchestrator/omp-gateway-config";
 
 export const AGENTS = ["claude", "omp", "codex"];
+export const INTERACTIVE_CLIENTS = ["legacy", "pui"];
 
 /**
  * The side-effect-free CLI reference shown by `psu --help`.
@@ -120,6 +121,7 @@ scripted launch.
 
 Session selection:
   -h, --help                         Show this help and exit
+  --client=<legacy|pui>              UI to open (bare psu remains legacy until parity is green)
   --resume[=<id>] [id]               Resume a tracked or native session
   --fork, --fork-session             Fork the selected session (with --resume)
   --brain                            Show the retired brain-session message
@@ -570,6 +572,7 @@ export function parseArgs(argv) {
     resume: false,
     resumeId: null,
     fork: false,
+    client: null,
     agent: null,
     role: null,
     feature: null,
@@ -626,6 +629,7 @@ export function parseArgs(argv) {
   // pattern below: the flag token arms a `pending*` latch, the NEXT token
   // (verbatim, even if it happens to start with `--`) is taken as the value.
   let pendingRole = false;
+  let pendingClient = false;
   let pendingAgent = false;
   let pendingWorkspace = false;
   let pendingFeature = false;
@@ -648,6 +652,11 @@ export function parseArgs(argv) {
     if (pendingRole) {
       pendingRole = false;
       out.role = a;
+      continue;
+    }
+    if (pendingClient) {
+      pendingClient = false;
+      out.client = a;
       continue;
     }
     if (pendingAgent) {
@@ -788,6 +797,9 @@ export function parseArgs(argv) {
     // Default ON for scripted plan launches; this flag restores the old open-at-an-
     // empty-prompt behavior. (Interactive picker launches never auto-kickoff.)
     else if (a === "--no-kickoff") out.kickoff = false;
+    else if (a === "--client") pendingClient = true;
+    else if (a.startsWith("--client="))
+      out.client = a.slice("--client=".length);
     else if (a === "--agent") pendingAgent = true;
     else if (a.startsWith("--agent=")) out.agent = a.slice("--agent=".length);
     else if (a === "--role") pendingRole = true;
@@ -968,6 +980,11 @@ export function parseArgs(argv) {
       );
     }
   }
+  if (out.client != null && !INTERACTIVE_CLIENTS.includes(out.client)) {
+    throw new Error(
+      `--client must be one of ${INTERACTIVE_CLIENTS.join("|")} (got ${out.client || "empty"})`,
+    );
+  }
   // Model-family/backend coupling: a supplied native cloud model selects its
   // backend when --agent is omitted, and an explicit mismatch fails before any
   // wrapper/terminal opens. OMP stays exempt because it is multi-provider.
@@ -977,6 +994,41 @@ export function parseArgs(argv) {
   if (!pairing.ok) throw new Error(pairing.message);
   out.model = normalizeModelSpecForAgent(out.agent, out.model);
   return out;
+}
+
+/**
+ * Resolve the dependency-safe owned-client preview route prepared by P-013.
+ * Bare `psu` and `--client=legacy` both return null and continue through the
+ * existing launcher byte-for-byte. Only the explicit PUI choice launches the
+ * owned chat dock; P-012 will consult the persisted default after D-015 is
+ * GREEN. Reject legacy-session flags instead of silently ignoring them.
+ */
+export function puiClientCommand(args) {
+  if (args.client !== "pui") return null;
+  const conflicts = [
+    args.resume ? "--resume" : null,
+    args.fork ? "--fork" : null,
+    args.brain ? "--brain" : null,
+    args.agent ? "--agent" : null,
+    args.role ? "--role" : null,
+    args.feature ? "--feature" : null,
+    args.workspace ? "--workspace" : null,
+    args.harness ? "--harness" : null,
+    args.plan || args.noPlan ? "--plan/--no-plan" : null,
+    args.model ? "--model" : null,
+    args.account ? "--account" : null,
+    args.fleet ? "--fleet" : null,
+    args.headless ? "--headless" : null,
+    args.launchContext ? "--launch-context" : null,
+    args.kickoffPromptText ? "--kickoff" : null,
+    args.passthrough?.length ? "-- passthrough" : null,
+  ].filter(Boolean);
+  if (conflicts.length > 0) {
+    throw new Error(
+      `--client=pui opens the owned interactive client and cannot combine with legacy session flags: ${conflicts.join(", ")}. Use --client=legacy for those flags.`,
+    );
+  }
+  return { command: "pui", args: ["chat"] };
 }
 
 /**
@@ -10459,6 +10511,16 @@ async function main() {
   }
   if (args.clearClaudeToken) {
     clearClaudeTokenFlow();
+    return;
+  }
+  // P-013 / D-026: explicit owned-client preview. This deliberately runs
+  // before the legacy brain/resume/fresh-session branches. Bare psu and an
+  // explicit `--client=legacy` still flow through those branches unchanged;
+  // the persisted default is not consulted until P-012 clears D-015.
+  const puiClient = puiClientCommand(args);
+  if (puiClient) {
+    const code = await runInstallerInherit(puiClient);
+    process.exitCode = code;
     return;
   }
   // --fork only has meaning when resuming an existing session — warn (don't fail)

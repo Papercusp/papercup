@@ -22,6 +22,7 @@ import {
   defaultCompactionLimitForTier,
   isValidModelSpec,
   type AgentBackend,
+  type InteractiveClient,
   type ModelTier,
   type SurfaceKey,
 } from '@papercusp/operator-core/lib/agent-config-constants';
@@ -111,6 +112,7 @@ export type SurfaceChoice = 'inherit' | AgentBackend;
 
 /** The wire shape POSTed to /api/agent-config. */
 export interface PersistableAgentConfig {
+  interactiveClient: InteractiveClient;
   backend: GlobalBackend;
   cmd: string;
   models: Record<string, string>;
@@ -132,6 +134,7 @@ export interface LastValidSections {
 }
 
 export interface AssembleInput {
+  interactiveClient: InteractiveClient;
   backend: GlobalBackend;
   cmd: string;
   /** Committed (blur-validated) per-role models JSON text. */
@@ -300,6 +303,7 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
 
   return {
     persistable: {
+      interactiveClient: input.interactiveClient,
       backend: input.backend,
       cmd: input.cmd,
       models,
