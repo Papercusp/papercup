@@ -1,0 +1,10 @@
+{
+  "ref": "papercusp-app",
+  "id": "papercusp-app",
+  "title": "Papercusp Official: App",
+  "description": "Whole-app template: a complete app on the papercusp data layer + operator-style UI closure, with a `target` decision point that selects the chassis — desktop (Tauri), web (Next.js standalone), or both from one codebase. The data and UI closure is identical either way. Add papercusp-ops-pots to the composition for an agent plane. Docs: /internal/docs on your install.",
+  "category": "app",
+  "scope": "app",
+  "version": "0.1.0",
+  "source": "first-party"
+}

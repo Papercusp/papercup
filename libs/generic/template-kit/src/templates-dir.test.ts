@@ -28,7 +28,27 @@ function normalized(m: TemplateManifest) {
   return {
     ...m,
     summary: ws(m.summary),
-    decisionPoints: m.decisionPoints.map((d) => ({ id: d.id, prompt: ws(d.prompt) })),
+    // `selects` (D-001) is carried DELIBERATELY: it names the templates an
+    // answer pulls into the composition, so a yaml/TS divergence here would
+    // silently change what a materialized app is built from. A projection that
+    // dropped it would leave the whole selection mechanism unpinned — see the
+    // "the pin actually covers selects" guard at the bottom of this file.
+    decisionPoints: m.decisionPoints.map((d) => ({
+      id: d.id,
+      prompt: ws(d.prompt),
+      ...(d.selects !== undefined
+        ? {
+            selects: {
+              ...(d.selects.arity !== undefined ? { arity: d.selects.arity } : {}),
+              options: d.selects.options.map((o) => ({
+                value: o.value,
+                ...(o.summary !== undefined ? { summary: ws(o.summary) } : {}),
+                templates: o.templates,
+              })),
+            },
+          }
+        : {}),
+    })),
     checks: m.checks.map((c) => ({ id: c.id, run: c.run, ...(c.summary !== undefined ? { summary: ws(c.summary) } : {}) })),
     ...(m.musts !== undefined
       ? { musts: m.musts.map((x) => ({ id: x.id, rule: ws(x.rule), enforcedBy: x.enforcedBy })) }
@@ -76,6 +96,80 @@ describe("templates/ dir ⇄ reference manifests (P-006 anti-drift pin)", () => 
         expect(existsSync(p), `${ref.id}: declared contract '${c}' missing at ${p}`).toBe(true);
       }
     }
+  });
+});
+
+/**
+ * Falsifiability guard for the projection above (plan
+ * unified-app-template-2026-08-23, D-001).
+ *
+ * `normalized()` is a PROJECTION, and a projection silently under-reports: the
+ * yaml⇄TS pin can only catch drift in fields it actually carries. Before D-001
+ * it carried decision points as `{id, prompt}`, which was complete — decision
+ * points had no other fields. `selects` changed that, and a `selects` block is
+ * the highest-stakes thing in the file: it names the templates an answer pulls
+ * into a materialized app. Drift there is a DIFFERENT APP, silently.
+ *
+ * So this asserts the projection is SENSITIVE to selects, using controls that
+ * live here permanently rather than a one-off mutation of the shared tree
+ * (which git-sync can commit mid-probe). The calibration case is not optional:
+ * without it, a `normalized()` that returned a constant would pass the
+ * sensitivity test by failing everything.
+ */
+describe("the anti-drift pin actually covers `selects` (D-001 guard)", () => {
+  const manifest = (selects?: TemplateManifest["decisionPoints"][number]["selects"]): TemplateManifest => ({
+    id: "control-template",
+    version: "0.1.0",
+    scope: "app",
+    category: "app",
+    summary: "a control manifest that exists only to prove this pin is falsifiable",
+    components: [],
+    contracts: [],
+    decisionPoints: [{ id: "target", prompt: "which chassis?", ...(selects ? { selects } : {}) }],
+    composesWith: ["papercusp-ui"],
+    checks: [{ id: "composition-integrity", run: "checks/composition-integrity.test.ts" }],
+    musts: [{ id: "thin-app-template", rule: "no own components", enforcedBy: "composition-integrity" }],
+  });
+
+  const web = manifest({
+    options: [
+      { value: "web", templates: [{ id: "papercusp-web-host", version: "0.1.0" }] },
+      { value: "desktop", templates: [{ id: "papercusp-tauri-desktop-shell", version: "0.1.0" }] },
+    ],
+  });
+
+  it("CALIBRATION: two identical manifests compare equal (the pin is not simply always-unequal)", () => {
+    expect(normalized(web)).toEqual(normalized(manifest(web.decisionPoints[0]!.selects)));
+  });
+
+  it("catches a drifted option TEMPLATE — the field that decides what the app is built from", () => {
+    const drifted = manifest({
+      options: [
+        // web now pulls the DESKTOP chassis: the exact silent-wrong-app drift.
+        { value: "web", templates: [{ id: "papercusp-tauri-desktop-shell", version: "0.1.0" }] },
+        { value: "desktop", templates: [{ id: "papercusp-tauri-desktop-shell", version: "0.1.0" }] },
+      ],
+    });
+    expect(normalized(web)).not.toEqual(normalized(drifted));
+  });
+
+  it("catches a drifted option VERSION PIN", () => {
+    const drifted = manifest({
+      options: [
+        { value: "web", templates: [{ id: "papercusp-web-host", version: "0.2.0" }] },
+        { value: "desktop", templates: [{ id: "papercusp-tauri-desktop-shell", version: "0.1.0" }] },
+      ],
+    });
+    expect(normalized(web)).not.toEqual(normalized(drifted));
+  });
+
+  it("catches a drifted ARITY — 'one' vs 'one-or-more' is the dual-target switch", () => {
+    const drifted = manifest({ arity: "one-or-more", options: web.decisionPoints[0]!.selects!.options });
+    expect(normalized(web)).not.toEqual(normalized(drifted));
+  });
+
+  it("catches selects APPEARING or DISAPPEARING entirely", () => {
+    expect(normalized(web)).not.toEqual(normalized(manifest()));
   });
 });
 

@@ -185,6 +185,128 @@ export function resolveRequiresClosure(
   return { ok: errors.length === 0, errors, templates: errors.length === 0 ? ordered : [] };
 }
 
+/** What one selecting decision point was answered with (D-001). */
+export interface ResolvedSelection {
+  /** The selecting decision point's id (`target`). */
+  decisionPointId: string;
+  /** The template that declared it — the same tagging the composition uses. */
+  templateId: string;
+  /** The chosen option values, in declaration order. */
+  values: string[];
+}
+
+/**
+ * Expand a ROOT plus its ANSWERS into the full template list (D-001).
+ *
+ * `resolveRequiresClosure` answers "what does this root always pull in";
+ * this answers "what does this root pull in GIVEN these choices" — the
+ * selecting decision points (`target`, `agents`) are resolved against
+ * `answers`, their chosen options' templates join the roots, and the whole set
+ * is re-expanded through the same requires closure. Nested selects are
+ * followed to a fixpoint: a template pulled in by one answer may itself select.
+ *
+ * Pure + deterministic, and it never guesses: an unanswered required axis, an
+ * unknown option value, or several values on an `arity: 'one'` axis are all
+ * errors, because silently defaulting a chassis is exactly the failure the
+ * selection mechanism exists to prevent.
+ */
+export function resolveSelection(
+  root: TemplateManifest,
+  answers: Record<string, string | readonly string[]>,
+  registry: TemplateManifest[],
+): { ok: boolean; errors: string[]; templates: TemplateManifest[]; selections: ResolvedSelection[] } {
+  const errors: string[] = [];
+  const selections: ResolvedSelection[] = [];
+  const byId = new Map(registry.map((m) => [m.id, m]));
+  if (!byId.has(root.id)) byId.set(root.id, root);
+
+  const roots: TemplateManifest[] = [root];
+  const answered = new Set<string>();
+
+  // Fixpoint: each pass expands the closure, resolves any NEWLY visible
+  // selecting decision point, and adds what it chose. Bounded by the registry
+  // size — every pass that does no work exits.
+  for (let pass = 0; pass <= registry.length + 1; pass += 1) {
+    const closure = resolveRequiresClosure(roots, [...byId.values()]);
+    if (!closure.ok) return { ok: false, errors: [...errors, ...closure.errors], templates: [], selections };
+
+    let grew = false;
+    for (const t of closure.templates) {
+      for (const dp of selectingDecisionPoints(t)) {
+        const key = `${t.id}#${dp.id}`;
+        if (answered.has(key)) continue;
+        answered.add(key);
+
+        const rawAnswer = answers[dp.id];
+        const values = rawAnswer === undefined ? [] : Array.isArray(rawAnswer) ? [...rawAnswer] : [rawAnswer as string];
+        const optional = isOptionalSelect(dp.selects);
+        const valid = dp.selects.options.map((o) => o.value);
+
+        if (values.length === 0) {
+          if (!optional) {
+            errors.push(
+              `'${t.id}' decision point '${dp.id}' is unanswered — answer one of ${valid.map((v) => `'${v}'`).join(", ")}`,
+            );
+          }
+          continue;
+        }
+        if ((dp.selects.arity ?? "one") === "one" && values.length > 1) {
+          errors.push(
+            `'${t.id}' decision point '${dp.id}' has arity 'one' but was answered ${values.map((v) => `'${v}'`).join(", ")}`,
+          );
+          continue;
+        }
+        if (new Set(values).size !== values.length) {
+          errors.push(`'${t.id}' decision point '${dp.id}': repeated answer in ${values.map((v) => `'${v}'`).join(", ")}`);
+          continue;
+        }
+
+        const picked: string[] = [];
+        for (const value of values) {
+          const option = dp.selects.options.find((o) => o.value === value);
+          if (!option) {
+            errors.push(
+              `'${t.id}' decision point '${dp.id}': unknown answer '${value}' — expected one of ${valid.map((v) => `'${v}'`).join(", ")}`,
+            );
+            continue;
+          }
+          picked.push(value);
+          for (const ref of option.templates) {
+            const target = byId.get(ref.id);
+            if (!target) {
+              errors.push(
+                `'${t.id}' decision point '${dp.id}' option '${value}' selects unknown template '${ref.id}' (not in the registry)`,
+              );
+              continue;
+            }
+            if (target.version !== ref.version) {
+              errors.push(
+                `'${t.id}' decision point '${dp.id}' option '${value}' selects '${ref.id}@${ref.version}' but the registry has ${target.version} (stale pin)`,
+              );
+              continue;
+            }
+            if (!roots.some((r) => r.id === target.id)) {
+              roots.push(target);
+              grew = true;
+            }
+          }
+        }
+        if (picked.length > 0) selections.push({ decisionPointId: dp.id, templateId: t.id, values: picked });
+      }
+    }
+    if (!grew) break;
+  }
+
+  if (errors.length > 0) return { ok: false, errors, templates: [], selections };
+  const final = resolveRequiresClosure(roots, [...byId.values()]);
+  return {
+    ok: final.ok,
+    errors: final.errors,
+    templates: final.templates,
+    selections,
+  };
+}
+
 /**
  * Resolve one app's template selection into a TemplateComposition.
  * Returns EVERY problem; `composition` is null unless ok.
