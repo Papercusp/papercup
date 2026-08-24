@@ -45,6 +45,7 @@ import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { applyServerTimeouts } from '../../bin/host-request-deadline';
 
 /**
  * Dedicated upstream agent with keep-alive DISABLED — backend-reliability-100pct-2026-07-03 W1.3.
@@ -1193,6 +1194,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       })();
     });
   });
+  // EI-21275891049298859: the proxy is the MCP client's inbound HTTP server, so it
+  // needs the same WI-1711 keep-alive policy as the operator it fronts. Leaving this
+  // raw `http.createServer` on Node's 5s default let ptool finish tools/list, pause
+  // briefly under install/CPU pressure, then race the server FIN on tools/call — two
+  // concurrent calls surfaced ECONNRESET/UND_ERR_SOCKET without ever reaching the
+  // proxy's upstream-failure ledger. Reuse the canonical 61s policy (including the
+  // headersTimeout > keepAliveTimeout invariant and existing kill-switch) instead of
+  // inventing a proxy-specific timeout surface.
+  applyServerTimeouts(server);
   server.on('close', () => {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();

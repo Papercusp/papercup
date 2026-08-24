@@ -31,6 +31,7 @@ import {
   type McpProxyTarget,
 } from './proxy';
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
+import { DEFAULT_KEEPALIVE_TIMEOUT_MS } from '../../bin/host-request-deadline';
 
 describe('shouldRetry — refused-only + in-window (no double-execution)', () => {
   it('retries when NOT connected and within the window', () => {
@@ -238,6 +239,36 @@ function get(p: number, path: string): Promise<{ status: number; body: string }>
     r.end();
   });
 }
+
+describe('createMcpProxy — client-facing keep-alive policy (EI-21275891049298859)', () => {
+  it('applies the shared WI-1711 timeout instead of Node\'s racy 5s default', async () => {
+    const previousKeepAlive = process.env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
+    const previousHeaders = process.env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;
+    delete process.env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
+    delete process.env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;
+    try {
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: '127.0.0.1',
+          targetPort: 1,
+          retryWindowMs: 100,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      expect(proxy.keepAliveTimeout).toBe(DEFAULT_KEEPALIVE_TIMEOUT_MS);
+      expect(proxy.keepAliveTimeout).toBeGreaterThan(5_000);
+      expect(proxy.headersTimeout).toBeGreaterThan(proxy.keepAliveTimeout);
+    } finally {
+      if (previousKeepAlive === undefined) delete process.env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS = previousKeepAlive;
+      if (previousHeaders === undefined) delete process.env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;
+      else process.env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS = previousHeaders;
+    }
+  });
+});
 
 /**
  * WI-6743 regression. The watchdog's liveness probe used to poll `/api/health`, which this
