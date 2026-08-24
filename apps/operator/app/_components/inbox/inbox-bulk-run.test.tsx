@@ -291,6 +291,19 @@ describe('acceptRecommendation — resolve FIRST, record SECOND', () => {
     expect(H.calls).toEqual(['resolve']);
   });
 
+  it('returns the resulting run phase so the grouped report can close on the last accept', async () => {
+    H.resolveAttentionAction.mockResolvedValue({ resolved: true });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, phase: 'complete' }),
+    });
+    const ops = useOps();
+
+    await expect(
+      ops().acceptRecommendation('run-1', mkItem('a'), mkRec()),
+    ).resolves.toMatchObject({ ok: true, phase: 'complete' });
+  });
+
   it('DELIVERS the drafted reply when the item’s path takes free text', async () => {
     H.replyToAttentionItem.mockResolvedValue({ resolved: true, live: true, woken: 1 });
     const ops = useOps();
