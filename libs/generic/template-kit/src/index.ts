@@ -70,8 +70,6 @@ export {
   type TemplateChecksConfig,
 } from "./checks-config.js";
 export {
-  AGENTIC_DESKTOP_APP_TEMPLATE,
-  DESKTOP_APP_TEMPLATE,
   PAPERCUSP_APP_TEMPLATE,
   PAPERCUSP_DATA_LAYER_TEMPLATE,
   PAPERCUSP_DATA_SYNC_TEMPLATE,

@@ -6,5 +6,11 @@
   "category": "app",
   "scope": "app",
   "version": "0.1.0",
-  "source": "first-party"
+  "source": "first-party",
+  "aliases": [
+    "papercusp-webapp",
+    "papercusp-desktop-app",
+    "papercusp-agentic-webapp",
+    "papercusp-agentic-desktop-app"
+  ]
 }

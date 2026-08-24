@@ -46,7 +46,7 @@ decisionPoints:
       app-plane read model over them?
 composesWith:
   - papercusp-tauri-desktop-shell
-  - papercusp-agentic-desktop-app
+  - papercusp-app
 docs:
   - agent-insights/templates-system-design
   - agent-insights/templates-template-yaml

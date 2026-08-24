@@ -76,10 +76,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
         "Which app tables does ingested contract output land in, and what is the app-plane read model over them?",
     },
   ],
-  composesWith: [
-    "papercusp-tauri-desktop-shell",
-    "papercusp-agentic-desktop-app",
-  ],
+  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-app"],
   docs: [
     "agent-insights/templates-system-design",
     "agent-insights/templates-template-yaml",
@@ -159,7 +156,7 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
         "App name, bundle identifier, app-home directory, and release channels (feeds tauri.conf + tauri-release-kit config).",
     },
   ],
-  composesWith: ["papercusp-ops-pots", "papercusp-agentic-desktop-app"],
+  composesWith: ["papercusp-ops-pots", "papercusp-app"],
   docs: [
     "agent-insights/templates-system-design",
     "agent-insights/templates-template-yaml",
@@ -198,73 +195,6 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
       id: "env-gated-planes",
       rule: "Booting with no optional-plane config changes nothing — an unset operator URL means the plane is off, never a crash",
       enforcedBy: "boot-e2e",
-    },
-  ],
-};
-
-/**
- * App: template #1 — a THIN pure composition (no own components; P-014 allows
- * this exactly for non-empty composesWith). P-022 (owner #5): the agentic app
- * is a LAYER — it requires the non-agentic 'papercusp-desktop-app' as its BASE app
- * (whose closure brings papercusp-tauri-desktop-shell + papercusp-data-layer +
- * papercusp-ui) and adds papercusp-ops-pots, the judgment plane, on top.
- */
-export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
-  id: "papercusp-agentic-desktop-app",
-  version: "0.1.0",
-  scope: "app",
-  category: "app",
-  summary:
-    "The proven two-plane agentic desktop app shape: papercusp-ops-pots " +
-    "(judgment plane + the ONE seam) layered onto the non-agentic papercusp-desktop-app BASE template — whose " +
-    "requires-closure brings the papercusp-tauri-desktop-shell chassis, papercusp-data-layer, and papercusp-ui — " +
-    "plus glue guidance. An app built from this composition must pass the UNION of the full closure's " +
-    "checks — that additive rule is what keeps free-form composition safe without a deterministic composer.",
-  components: [],
-  contracts: [],
-  decisionPoints: [
-    {
-      id: "domain",
-      prompt:
-        "What is the app's domain — the noun the deterministic plane ledgers and the judgment plane reasons about? Drives every aspect-level decision point.",
-    },
-  ],
-  composesWith: ["papercusp-desktop-app", "papercusp-ops-pots"],
-  // P-015: requires is the HARD pinned edge. P-022 re-layered it: papercusp-desktop-app
-  // is the required BASE app (a base app joins the composition without owning
-  // it — composeTemplates' root-app rule) and pulls the whole chassis + data
-  // + UI closure; papercusp-ops-pots adds the judgment plane.
-  requires: [
-    { id: "papercusp-desktop-app", version: "0.1.0" },
-    { id: "papercusp-ops-pots", version: "0.1.0" },
-  ],
-  docs: [
-    "agent-insights/templates-system-design",
-    "agent-insights/templates-template-yaml",
-  ],
-  checks: [
-    {
-      id: "composition-integrity",
-      run: "checks/composition-integrity.test.ts",
-      summary:
-        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs",
-    },
-  ],
-  musts: [
-    {
-      id: "walk-decision-points",
-      rule: "Answer EVERY decision point of the closure — the answers are the ship disclosure that makes free composition reviewable (domain is answered once)",
-      enforcedBy: "prose-only",
-    },
-    {
-      id: "honor-closure-musts",
-      rule: "Honor every closure member MUST tiers in full — the seam discipline is Tier B, the chassis invariants keep it bootable",
-      enforcedBy: "prose-only",
-    },
-    {
-      id: "mechanical-validation",
-      rule: "Expand through resolveRequiresClosure, compose through composeTemplates, and run the union of checks as the CI gate",
-      enforcedBy: "composition-integrity",
     },
   ],
 };
@@ -621,83 +551,6 @@ export const PAPERCUSP_UI_TEMPLATE: TemplateManifest = {
 };
 
 /**
- * App: the non-agentic whole-app template (owner directive 2026-07-04 #4 /
- * P-021 — 'Papercusp Official: Desktop App'). A THIN pure composition
- * pulling the chassis + data + UI closure via hard requires; the agentic app
- * template re-layers onto this (owner #5 / P-022).
- */
-export const DESKTOP_APP_TEMPLATE: TemplateManifest = {
-  id: "papercusp-desktop-app",
-  version: "0.1.0",
-  scope: "app",
-  category: "app",
-  summary:
-    "A whole papercusp-style desktop app with NO agent orchestration: the papercusp-tauri-desktop-shell chassis (thin " +
-    "Tauri host → Node/Hono sidecar → release pipeline) + papercusp-data-layer (app-owned embedded Postgres, " +
-    "connection discovery, typed-contract write gates) + papercusp-ui (headless primitives, data grids, dock " +
-    "workbench, brand lexicon), pulled in as hard requires. A thin pure composition — no own components; an " +
-    "app built from it must pass the UNION of the closure's checks. Need agents? Use papercusp-agentic-desktop-app, " +
-    "which layers the judgment plane on top of this.",
-  components: [],
-  contracts: [],
-  decisionPoints: [
-    {
-      id: "domain",
-      prompt:
-        "What is the app's domain — the noun its data layer ledgers and its UI surfaces? Drives every aspect-level decision point (schema, searchable surfaces, panels, lexicon terms).",
-    },
-    {
-      id: "optional-planes",
-      prompt:
-        "Beyond the required closure, does the app need live UI state sync (compose papercusp-data-sync) or search over its data (compose papercusp-search)? Add them to the composition now if so — both are designed to drop onto this chassis.",
-    },
-  ],
-  composesWith: [
-    "papercusp-tauri-desktop-shell",
-    "papercusp-data-layer",
-    "papercusp-ui",
-    "papercusp-data-sync",
-    "papercusp-search",
-  ],
-  // P-015: HARD pinned deps — composing/installing this app template pulls
-  // the whole chassis+data+ui closure in; the checks union covers the closure.
-  requires: [
-    { id: "papercusp-tauri-desktop-shell", version: "0.1.0" },
-    { id: "papercusp-data-layer", version: "0.1.0" },
-    { id: "papercusp-ui", version: "0.1.0" },
-  ],
-  docs: [
-    "agent-insights/templates-system-design",
-    "agent-insights/templates-template-yaml",
-  ],
-  checks: [
-    {
-      id: "composition-integrity",
-      run: "checks/composition-integrity.test.ts",
-      summary:
-        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs",
-    },
-  ],
-  musts: [
-    {
-      id: "thin-app-template",
-      rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects",
-      enforcedBy: "composition-integrity",
-    },
-    {
-      id: "full-union-green",
-      rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity",
-      enforcedBy: "prose-only",
-    },
-    {
-      id: "no-agent-surfaces",
-      rule: "No hives and no seam in an app built from this template — if agents appear mid-build, switch the composition root to papercusp-agentic-desktop-app",
-      enforcedBy: "prose-only",
-    },
-  ],
-};
-
-/**
  * Aspect: the desktop release plane (owner directive 2026-07-04 / P-023 —
  * 'Papercusp Official: Release Pipeline'). tauri-release-kit as a composable
  * aspect: the kit owns the release DANCE; the app injects ONLY buildSidecar()
@@ -740,11 +593,7 @@ export const RELEASE_PIPELINE_TEMPLATE: TemplateManifest = {
         "What does buildSidecar(ctx) do for THIS app — the ONE injected seam (worked instances range from ~42 lines of esbuild to a ~1,070-line bundler)? Keep it a pure function of the repo tree; everything else is the kit's.",
     },
   ],
-  composesWith: [
-    "papercusp-tauri-desktop-shell",
-    "papercusp-desktop-app",
-    "papercusp-agentic-desktop-app",
-  ],
+  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-app"],
   docs: [
     "agent-insights/templates-system-design",
     "agent-insights/templates-template-yaml",
@@ -817,12 +666,7 @@ export const PROJECT_HISTORY_TEMPLATE: TemplateManifest = {
         "Which build/test command regenerates the artifact, and where does --check fail stale committed output?",
     },
   ],
-  composesWith: [
-    "papercusp-webapp",
-    "papercusp-desktop-app",
-    "papercusp-agentic-desktop-app",
-    "papercusp-ui",
-  ],
+  composesWith: ["papercusp-app", "papercusp-ui"],
   docs: [
     "build-system/project-history",
     "agent-insights/templates-system-design",
@@ -928,7 +772,7 @@ export const PAPERCUSP_WEB_HOST_TEMPLATE: TemplateManifest = {
     "papercusp-ui",
     "papercusp-data-sync",
     "papercusp-search",
-    "papercusp-webapp",
+    "papercusp-app",
   ],
   docs: [
     "agent-insights/templates-system-design",
@@ -974,161 +818,6 @@ export const PAPERCUSP_WEB_HOST_TEMPLATE: TemplateManifest = {
       id: "native-deps-copy",
       rule: "A post-build native-deps copy step for every spawn-based dependency (WI-2875) — the standalone tracer will not carry them",
       enforcedBy: "prose-only",
-    },
-  ],
-};
-
-/**
- * App: the non-agentic whole-WEB-app template (owner directive 2026-07-05 /
- * P-030 — 'Papercusp Official: Web App'). What papercusp-desktop-app is to the desktop
- * this is to the browser: a THIN pure composition swapping the tauri chassis
- * for papercusp-web-host; data + UI closure identical.
- */
-export const PAPERCUSP_WEBAPP_TEMPLATE: TemplateManifest = {
-  id: "papercusp-webapp",
-  version: "0.1.0",
-  scope: "app",
-  category: "app",
-  summary:
-    "A whole papercusp-style WEB app — what papercusp-desktop-app is to the desktop, this is to the browser (extracted " +
-    "from the first papercusp webapp): the papercusp-web-host chassis (Next.js " +
-    "standalone host, auth seam, deploy skeleton) + papercusp-data-layer (app-owned Postgres, connection " +
-    "discovery, typed-contract write gates) + papercusp-ui (headless primitives, data grids, dock workbench, " +
-    "brand lexicon), pulled in as hard requires. A thin pure composition — no own components; an app built " +
-    "from it must pass the UNION of the closure's checks. No agent plane here; an agentic web app layers " +
-    "papercusp-ops-pots onto this the way papercusp-agentic-desktop-app layers onto papercusp-desktop-app.",
-  components: [],
-  contracts: [],
-  decisionPoints: [
-    {
-      id: "domain",
-      prompt:
-        "What is the app's domain — the noun its data layer ledgers and its UI surfaces? Drives every " +
-        "aspect-level decision point (schema, searchable surfaces, panels, lexicon terms).",
-    },
-    // `tenancy` is NOT declared here: it is a web-CHASSIS concern and lives on
-    // papercusp-web-host, which this template hard-requires — so it still
-    // reaches every builder through the closure.
-    {
-      id: "optional-planes",
-      prompt:
-        "Beyond the required closure, does the app need live UI state sync (compose papercusp-data-sync) or " +
-        "search over its data (compose papercusp-search)? Add them to the composition now if so — both are " +
-        "designed to drop onto this chassis.",
-    },
-  ],
-  composesWith: [
-    "papercusp-web-host",
-    "papercusp-data-layer",
-    "papercusp-ui",
-    "papercusp-data-sync",
-    "papercusp-search",
-  ],
-  // P-015: HARD pinned deps — composing/installing this app template pulls
-  // the web chassis + data + UI closure in; the checks union covers the closure.
-  requires: [
-    { id: "papercusp-web-host", version: "0.1.0" },
-    { id: "papercusp-data-layer", version: "0.1.0" },
-    { id: "papercusp-ui", version: "0.1.0" },
-  ],
-  docs: [
-    "agent-insights/templates-system-design",
-    "agent-insights/templates-template-yaml",
-    "agent-insights/restart-webapp-audit-papercusp-webapp-template",
-  ],
-  checks: [
-    {
-      id: "composition-integrity",
-      run: "checks/composition-integrity.test.ts",
-      summary:
-        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs",
-    },
-  ],
-  musts: [
-    {
-      id: "thin-app-template",
-      rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects",
-      enforcedBy: "composition-integrity",
-    },
-    {
-      id: "full-union-green",
-      rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity",
-      enforcedBy: "prose-only",
-    },
-    {
-      id: "no-agent-surfaces",
-      rule: "No hives and no seam in an app built from this template — if agents appear mid-build, add papercusp-ops-pots to the composition explicitly",
-      enforcedBy: "prose-only",
-    },
-    // `auth-before-exposure` is NOT restated here: papercusp-web-host declares
-    // it (in its stronger "BOTH placeholders" form) and this template
-    // hard-requires that chassis, so it reaches the app through the closure.
-  ],
-};
-
-/**
- * App-scope: the agentic WEB app — the browser twin of
- * papercusp-agentic-desktop-app (plan papercusp-agentic-webapp-template-2026-08-23):
- * papercusp-ops-pots layered onto the non-agentic papercusp-webapp BASE app,
- * exactly as the agentic desktop root layers onto papercusp-desktop-app.
- */
-export const AGENTIC_WEBAPP_TEMPLATE: TemplateManifest = {
-  id: "papercusp-agentic-webapp",
-  version: "0.1.0",
-  scope: "app",
-  category: "app",
-  summary:
-    "The two-plane agentic WEB app shape — the browser twin of papercusp-agentic-desktop-app: " +
-    "papercusp-ops-pots (judgment plane + the ONE seam) layered onto the non-agentic papercusp-webapp " +
-    "BASE template — whose requires-closure brings the papercusp-web-host chassis, papercusp-data-layer, " +
-    "and papercusp-ui — plus glue guidance. An app built from this composition must pass the UNION of " +
-    "the full closure's checks — that additive rule is what keeps free-form composition safe without a " +
-    "deterministic composer.",
-  components: [],
-  contracts: [],
-  decisionPoints: [
-    {
-      id: "domain",
-      prompt:
-        "What is the app's domain — the noun the deterministic plane ledgers and the judgment plane reasons about? Drives every aspect-level decision point.",
-    },
-  ],
-  composesWith: ["papercusp-webapp", "papercusp-ops-pots"],
-  // The HARD pinned edge, mirroring papercusp-agentic-desktop-app (P-022 layering):
-  // papercusp-webapp is the required BASE app (a base app joins the composition
-  // without owning it — composeTemplates' root-app rule) and pulls the whole
-  // web chassis + data + UI closure; papercusp-ops-pots adds the judgment plane.
-  requires: [
-    { id: "papercusp-webapp", version: "0.1.0" },
-    { id: "papercusp-ops-pots", version: "0.1.0" },
-  ],
-  docs: [
-    "agent-insights/templates-system-design",
-    "agent-insights/templates-template-yaml",
-  ],
-  checks: [
-    {
-      id: "composition-integrity",
-      run: "checks/composition-integrity.test.ts",
-      summary:
-        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs",
-    },
-  ],
-  musts: [
-    {
-      id: "walk-decision-points",
-      rule: "Answer EVERY decision point of the closure — the answers are the ship disclosure that makes free composition reviewable (domain is answered once; the base's tenancy fork comes FIRST)",
-      enforcedBy: "prose-only",
-    },
-    {
-      id: "honor-closure-musts",
-      rule: "Honor every closure member MUST tiers in full — the seam discipline is Tier B, the web-host auth placeholders are replaced before any non-local exposure",
-      enforcedBy: "prose-only",
-    },
-    {
-      id: "mechanical-validation",
-      rule: "Expand through resolveRequiresClosure, compose through composeTemplates, and run the union of checks as the CI gate",
-      enforcedBy: "composition-integrity",
     },
   ],
 };
@@ -1723,17 +1412,13 @@ export const REFERENCE_TEMPLATES: TemplateManifest[] = [
   PAPERCUSP_APP_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   TAURI_DESKTOP_SHELL_TEMPLATE,
-  AGENTIC_DESKTOP_APP_TEMPLATE,
   PAPERCUSP_DATA_SYNC_TEMPLATE,
   PAPERCUSP_SEARCH_TEMPLATE,
   PAPERCUSP_DATA_LAYER_TEMPLATE,
   PAPERCUSP_UI_TEMPLATE,
-  DESKTOP_APP_TEMPLATE,
   RELEASE_PIPELINE_TEMPLATE,
   PROJECT_HISTORY_TEMPLATE,
   PAPERCUSP_WEB_HOST_TEMPLATE,
-  PAPERCUSP_WEBAPP_TEMPLATE,
-  AGENTIC_WEBAPP_TEMPLATE,
   PAPERCUSP_MOBILE_BASE_TEMPLATE,
   PAPERCUSP_ANDROID_SHELL_TEMPLATE,
   PAPERCUSP_IPHONE_SHELL_TEMPLATE,

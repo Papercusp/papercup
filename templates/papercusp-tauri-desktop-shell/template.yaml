@@ -33,7 +33,7 @@ decisionPoints:
       (feeds tauri.conf + tauri-release-kit config).
 composesWith:
   - papercusp-ops-pots
-  - papercusp-agentic-desktop-app
+  - papercusp-app
 docs:
   - agent-insights/templates-system-design
   - agent-insights/templates-template-yaml

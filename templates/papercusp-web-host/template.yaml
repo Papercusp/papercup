@@ -60,7 +60,7 @@ composesWith:
   - papercusp-ui
   - papercusp-data-sync
   - papercusp-search
-  - papercusp-webapp
+  - papercusp-app
 docs:
   - agent-insights/templates-system-design
   - agent-insights/templates-template-yaml
