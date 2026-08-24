@@ -205,6 +205,15 @@ apps/operator/dist-host/
 **/*.flakeproof.test.ts
 **/*.flakeproof.test.tsx
 
+# Vitest junit reporter output (2026-08-24, WI-41047 triage): stray in-tree
+# junit.xml files get swept in by git-sync's blanket `git add -A`, and their
+# embedded test names red-pinned the envelope-grammar-cross-language recurrence
+# guard (apps/operator/junit.xml, 556KB, committed ad43f56d27). Six were tracked
+# (root, apps/operator, apps/operator-vite, packages/operator-core, libs/flags,
+# packages/plugin-loader) — all removed; this keeps the class out everywhere.
+junit.xml
+**/junit.xml
+
 # Whisper voice-service scratch recordings. The local whisper service writes an
 # 8-byte probe .wav into its runtime CWD (packages/operator-core) on each
 # invocation and never cleans them up; git-sync's blanket `git add -A` was
