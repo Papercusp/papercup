@@ -7,13 +7,14 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { resolveCapabilityBaseDir } from './base-dir';
+import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './base-dir';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
 import {
   authorizeScratchReference,
@@ -220,12 +221,12 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: readArgs,
   async handler(args, ctx) {
-    const baseDir = resolveCapabilityBaseDir(ctx);
     const filePath = args.file_path ?? args.uri;
     if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');
 
     let abs: string;
     try {
+      const baseDir = selectCapabilityReadBaseDir(filePath, resolveCapabilityBaseDir(ctx));
       abs = resolveReadPath(filePath, baseDir);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -474,6 +475,42 @@ export function resolveReadPath(filePath: string, baseDir: string): string {
   if (filePath === '~') return homedir();
   if (filePath.startsWith('~/')) return resolve(homedir(), filePath.slice(2));
   return isAbsolute(filePath) ? filePath : resolve(baseDir, filePath);
+}
+
+type CapabilityReadRootSource = 'project-dir' | 'integration-root';
+
+/**
+ * Recover a project-relative read from a phantom harness root without weakening
+ * the loud `read_failed` contract.
+ *
+ * The caller's project dir remains authoritative whenever the requested path
+ * exists there. Only a path that is absent from that tree may use the explicitly
+ * published canonical integration checkout, and only when the same relative path
+ * exists there. Absolute, home-relative, and URI paths bypass this lattice because
+ * their own addressing contract is already unambiguous.
+ */
+export function selectCapabilityReadBaseDir(
+  filePath: string,
+  preferredBaseDir: string,
+  integrationRoot = resolveCapabilityIntegrationRoot(),
+): string {
+  if (!isProjectRelativeReadPath(filePath) || !integrationRoot) return preferredBaseDir;
+
+  const selected = selectUnambiguousEvidenceRoot<CapabilityReadRootSource>({
+    preferred: { root: preferredBaseDir, source: 'project-dir' },
+    fallback: { root: integrationRoot, source: 'integration-root' },
+    resolvesEvery: (root) => existsSync(resolve(root, filePath)),
+  });
+  return selected?.root ?? preferredBaseDir;
+}
+
+function isProjectRelativeReadPath(filePath: string): boolean {
+  return (
+    !isAbsolute(filePath) &&
+    filePath !== '~' &&
+    !filePath.startsWith('~/') &&
+    !filePath.includes('://')
+  );
 }
 
 function err(reason: string, message: string) {
