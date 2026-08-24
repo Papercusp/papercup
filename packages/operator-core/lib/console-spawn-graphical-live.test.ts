@@ -72,10 +72,12 @@ async function startPrivateXvfb(): Promise<{ child: ChildProcess; display: strin
     });
     const ready = await eventually(() => {
       if (child.exitCode !== null || child.signalCode !== null) return false;
-      return spawnSync('xdpyinfo', ['-display', display], {
-        stdio: 'ignore',
-        timeout: 2_000,
-      }).status === 0;
+      return (
+        spawnSync('xdpyinfo', ['-display', display], {
+          stdio: 'ignore',
+          timeout: 2_000,
+        }).status === 0
+      );
     }, 2_500);
     if (ready) return { child, display };
     await stopChild(child);
@@ -89,10 +91,7 @@ function xdotool(display: string, args: string[]): string {
     env: { ...process.env, DISPLAY: display },
     timeout: 10_000,
   });
-  expect(
-    result.status,
-    `xdotool ${args.join(' ')} failed: ${result.stderr || result.stdout}`,
-  ).toBe(0);
+  expect(result.status, `xdotool ${args.join(' ')} failed: ${result.stderr || result.stdout}`).toBe(0);
   return result.stdout.trim();
 }
 
@@ -136,14 +135,10 @@ describe.skipIf(!liveEnabled)('console spawn — LIVE graphical Ctrl+C survival'
       appearance,
     );
 
-    terminal = spawn(
-      'xterm',
-      ['-T', expectedTitle, '-e', 'bash', '--noprofile', '--norc', '-lc', oneLiner],
-      {
-        env: { ...process.env, DISPLAY: display },
-        stdio: 'ignore',
-      },
-    );
+    terminal = spawn('xterm', ['-T', expectedTitle, '-e', 'bash', '--noprofile', '--norc', '-lc', oneLiner], {
+      env: { ...process.env, DISPLAY: display },
+      stdio: 'ignore',
+    });
 
     let windowId = '';
     const greetingRunning = await eventually(() => {
@@ -152,7 +147,7 @@ describe.skipIf(!liveEnabled)('console spawn — LIVE graphical Ctrl+C survival'
         env: { ...process.env, DISPLAY: display },
         timeout: 2_000,
       });
-      windowId = found.status === 0 ? found.stdout.trim().split(/\s+/)[0] ?? '' : '';
+      windowId = found.status === 0 ? (found.stdout.trim().split(/\s+/)[0] ?? '') : '';
       return Boolean(windowId) && existsSync(greetingMarker);
     }, 10_000);
     expect(greetingRunning, 'the isolated terminal never mapped or started its greeting').toBe(true);
