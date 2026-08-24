@@ -23,8 +23,10 @@
  * The legs, all optional-but-uniform:
  *   1. wakeability + liveTurn — fetchWakeability (event_awaits + agent_activity).
  *   2. recorded — adv_sessions session-log authority: a NOT-wakeable owner whose
- *      recorded session is live (ended_at IS NULL) is `recorded` (alive, not
- *      inbox-wake-dispatchable), never `ended`. Unifies the two prior spellings
+ *      recorded session is live (ended_at IS NULL) and has no active turn is
+ *      `recorded` (alive, not inbox-wake-dispatchable), never `ended`. An
+ *      actively tool-calling successor is `live` even before its inbox wake is
+ *      armed. Unifies the two prior spellings
  *      (snapshot's source === RECORDED_SESSION_SOURCE; assignments'
  *      recordedLiveOwnerIds set) by accepting EITHER signal.
  *   3. hardStale — the PRESENCE_DEAD_MS (30m) zombie-await ceiling, from the
@@ -93,8 +95,8 @@ export interface LivenessSubject {
   host?: string | null;
   pid?: number | null;
   /** Presence-row source — RECORDED_SESSION_SOURCE rows short-circuit to
-   *  `recorded` when not wakeable (session-log-authoritative; never
-   *  force-ended by heartbeat). */
+   *  `recorded` when not wakeable and no turn is in flight
+   *  (session-log-authoritative; never force-ended by heartbeat). */
   source?: string | null;
   /** Cohort hint for the psu-host authority leg (P-005): only non-'cup' rows
    *  with a KNOWN role may consult findLiveHost; bees stay nursery-governed. */
@@ -224,10 +226,14 @@ export function deriveVerdict(
     subject.stale ??
     (hbMs != null && Number.isFinite(hbMs) ? nowMs - hbMs > PRESENCE_STALE_MS : false);
   // Session-log authority: a not-wakeable owner whose recorded session is live
-  // is `recorded` — classified BEFORE the heartbeat/pid path so it is never
-  // force-ended (presence-derive-from-session-log P-001; PRESENCE_DEAD_MS note).
+  // and has no turn in flight is `recorded` — classified BEFORE the
+  // heartbeat/pid path so it is never force-ended (presence-derive-from-
+  // session-log P-001; PRESENCE_DEAD_MS note). A fresh turn is stronger
+  // evidence than the launch-window fallback: an actively tool-calling
+  // successor must remain `live` even before it arms an inbox wake.
   const recordedLiveOnly =
     !w.wakeable &&
+    !w.liveTurn &&
     (subject.source === RECORDED_SESSION_SOURCE ||
       recordedLive.has(subject.ownerId) ||
       (psuHostLive && psuHost?.positive === true));
