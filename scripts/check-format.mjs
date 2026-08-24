@@ -220,6 +220,13 @@ const RANGE_CHECK_EXTENSIONS = new Set([
   ".tsx",
 ]);
 
+export const FORMAT_USAGE = `Usage:
+  npm run format:check:scoped -- <file...>
+  npm run format:write:scoped -- <file...>
+
+Check or write only the changed ranges of one or more explicit files in the repository.
+`;
+
 /** Validate and normalize explicit in-repository file paths. */
 export function normalizeScopedPaths(args) {
   const rawPaths = args[0] === "--" ? args.slice(1) : args;
@@ -335,6 +342,9 @@ export function rangeFormattingDiffers(source, formatted, range) {
 
 export function parseFormatCliArgs(args) {
   const raw = args[0] === "--" ? args.slice(1) : [...args];
+  if (raw.includes("--help") || raw.includes("-h")) {
+    return { mode: "help", paths: [] };
+  }
   const write = raw[0] === "--write";
   return {
     mode: write ? "write" : "check",
@@ -344,6 +354,10 @@ export function parseFormatCliArgs(args) {
 
 function main() {
   const { mode, paths } = parseFormatCliArgs(process.argv.slice(2));
+  if (mode === "help") {
+    console.log(FORMAT_USAGE);
+    return;
+  }
   const label =
     mode === "write" ? "format:write:scoped" : "format:check:scoped";
   let checkedRanges = 0;

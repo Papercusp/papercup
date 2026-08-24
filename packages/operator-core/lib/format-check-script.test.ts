@@ -3,6 +3,7 @@
  * check changed-line whitespace without imposing a whole-file Prettier baseline
  * on packages that intentionally retain legacy formatting.
  */
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -17,6 +18,7 @@ import {
   parseAddedLineRanges,
   parseFormatCliArgs,
   rangeFormattingDiffers,
+  FORMAT_USAGE,
 } from '../../../scripts/check-format.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -82,5 +84,18 @@ describe('scoped repository format check', () => {
       mode: 'write',
       paths: ['package.json'],
     });
+  });
+
+  it.each(['--help', '-h'])('prints usage and exits successfully for %s', (flag) => {
+    expect(parseFormatCliArgs([flag])).toEqual({ mode: 'help', paths: [] });
+
+    const result = spawnSync(process.execPath, [resolve(REPO_ROOT, 'scripts/check-format.mjs'), flag], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain(FORMAT_USAGE.trim());
   });
 });
