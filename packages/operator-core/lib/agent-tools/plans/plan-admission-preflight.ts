@@ -155,7 +155,8 @@ export function evaluateExactPlanAdmission(args: {
     ? null
     : Math.max(0, requestedSeats - executableWidth);
   const readyItemIds = new Set(parallelism.readyItemIds);
-  const blockingRows = executableWidth != null && parallelism.readyWidth > executableWidth
+  const hasExecutableGap = executableWidth != null && parallelism.readyWidth > executableWidth;
+  const blockingRows = hasExecutableGap
     ? promotedRows.flatMap((row) => {
         if (!row.assignee) return [];
         return provenanceIds(row)
@@ -236,7 +237,7 @@ export function evaluateExactPlanAdmission(args: {
       `Requested ${requestedSeats} seat(s), but the exact plan exposes executableWidth=${executableWidth} ` +
         `(readyWidth=${parallelism.readyWidth}, laneClaimable=${args.laneHealth.effective.claimable}); ` +
         `shortfall=${seatShortfall}. Ready items: ${parallelism.readyItemIds.join(', ') || 'none'}. ` +
-        `${parallelism.readyWidth > executableWidth ? `Held ready rows: ${heldReadyRows.join(', ') || 'none identified'}. ` : ''}` +
+        `${hasExecutableGap ? `Held ready rows: ${heldReadyRows.join(', ') || 'none identified'}. ` : ''}` +
         `Blocking edges: ${edges.join(', ') || 'none'}${edgeSuffix}. ` +
         `Other non-ready items: ${nonReady.join(', ') || 'none'}${nonReadySuffix}.`,
     );
