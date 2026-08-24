@@ -40,7 +40,9 @@ vi.mock('../../gateway-control/control-harness', () => ({
 import { computeNextFireAt } from '../../harness/routines/cron';
 const cronM = vi.mocked(computeNextFireAt);
 
-const listTool = (await import('./list')).default;
+const listModule = await import('./list');
+const listTool = listModule.default;
+const { attestGateHealth } = listModule;
 const setTool = (await import('./set')).default;
 
 type Out = { content?: { text: string }[]; data?: unknown };
@@ -138,7 +140,14 @@ describe('routines:list', () => {
         next_fire_at: new Date('2026-08-12T17:00:00Z'),
         last_fired_at: new Date('2026-08-12T16:00:00Z'),
         metadata: {
-          gate_health: { inFlightRetriage: null, observedCandidate: 'abc123', consecutiveReds: 3 },
+          gate_health: {
+            inFlightRetriage: null,
+            observedAt: Date.parse('2026-08-12T16:00:00.000Z'),
+            observedCandidate: 'abc123',
+            candidateCommittedAt: Date.parse('2026-08-12T15:30:00.000Z'),
+            commitsBehindTip: 4,
+            consecutiveReds: 3,
+          },
           git_sync_activity: {
             active: true,
             phase: 'post-legs',
@@ -161,6 +170,56 @@ describe('routines:list', () => {
       last_status: 'red',
       consecutive_error_ticks: 2,
       fire_count: 411,
+    });
+    expect(b.routines[0].health.gate_health.readAttestation).toMatchObject({
+      snapshotObservedAt: '2026-08-12T16:00:00.000Z',
+      observedCandidate: 'abc123',
+      candidateCommittedAt: '2026-08-12T15:30:00.000Z',
+      candidateAgeAtObservationMs: 30 * 60_000,
+      commitsBehindTip: 4,
+    });
+    expect(b.routines[0].health.gate_health.readAttestation.snapshotAgeMs).toEqual(expect.any(Number));
+    expect(b.routines[0].health.gate_health.readAttestation.snapshotAge).toMatch(/ ago$/);
+  });
+
+  it('renders a deterministic read-time age and candidate attestation without rewriting raw fields', () => {
+    const observedAt = Date.parse('2026-08-12T16:00:00.000Z');
+    const candidateCommittedAt = Date.parse('2026-08-12T15:30:00.000Z');
+    const raw = {
+      observedAt,
+      observedCandidate: 'abc123',
+      candidateCommittedAt,
+      commitsBehindTip: 4,
+      failingTests: ['a.test.ts'],
+    };
+
+    const result = attestGateHealth(raw, Date.parse('2026-08-12T17:30:00.000Z')) as Record<string, unknown>;
+    expect(result).toMatchObject({ ...raw, failingTests: ['a.test.ts'] });
+    expect(result.readAttestation).toEqual({
+      snapshotObservedAt: '2026-08-12T16:00:00.000Z',
+      snapshotAgeMs: 90 * 60_000,
+      snapshotAge: '1h30m ago',
+      observedCandidate: 'abc123',
+      candidateCommittedAt: '2026-08-12T15:30:00.000Z',
+      candidateAgeAtObservationMs: 30 * 60_000,
+      commitsBehindTip: 4,
+    });
+  });
+
+  it('does not invent provenance for a legacy or malformed gate-health blob', () => {
+    const result = attestGateHealth(
+      { observedAt: 'not-a-timestamp', failingTests: ['a.test.ts'] },
+      Date.parse('2026-08-12T17:30:00.000Z'),
+    ) as Record<string, unknown>;
+    expect(result.failingTests).toEqual(['a.test.ts']);
+    expect(result.readAttestation).toEqual({
+      snapshotObservedAt: null,
+      snapshotAgeMs: null,
+      snapshotAge: null,
+      observedCandidate: null,
+      candidateCommittedAt: null,
+      candidateAgeAtObservationMs: null,
+      commitsBehindTip: null,
     });
   });
 

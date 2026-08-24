@@ -11,6 +11,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { statePlaneForDoor } from '../state-plane-door';
+import { formatIdleAge } from '../../format/relative-time';
 // Pure, import-free module (see its header) — safe to pull into a tool without dragging the
 // validator's pg/system-action-registry dependencies along.
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
@@ -80,6 +81,63 @@ function pauseOf(
  * Returns null when the row carries none of them, so an ordinary routine's
  * payload is unchanged and the field stays cheap on the trimmed projection.
  */
+function epochMs(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function isoAt(value: number | null): string | null {
+  if (value === null) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/**
+ * Add read-time provenance to the cached gate verdict without pretending that the
+ * current checkout is the candidate the gate judged. The writer already persists
+ * these fields, but the raw metadata blob leaves a reader to subtract epoch-ms values
+ * by hand and offers no visible age beside `failingTests`.
+ *
+ * Pure and injectable for a deterministic regression test. Unknown or malformed
+ * gate-health values pass through unchanged: an attestation must never erase the
+ * underlying evidence it failed to understand.
+ */
+export function attestGateHealth(value: unknown, nowMs: number = Date.now()): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const gateHealth = value as Record<string, unknown>;
+  const observedAtMs = epochMs(gateHealth.observedAt);
+  const candidateCommittedAtMs = epochMs(gateHealth.candidateCommittedAt);
+  const snapshotAgeMs = observedAtMs === null ? null : Math.max(0, nowMs - observedAtMs);
+  const candidateAgeAtObservationMs =
+    observedAtMs !== null && candidateCommittedAtMs !== null && observedAtMs >= candidateCommittedAtMs
+      ? observedAtMs - candidateCommittedAtMs
+      : null;
+  const commitsBehindTip =
+    typeof gateHealth.commitsBehindTip === 'number' && Number.isFinite(gateHealth.commitsBehindTip)
+      ? gateHealth.commitsBehindTip
+      : null;
+
+  return {
+    ...gateHealth,
+    readAttestation: {
+      // `snapshotAge` is deliberately alongside the cached failing-test list, so a
+      // reader cannot mistake an old red for a current one without seeing its age.
+      snapshotObservedAt: isoAt(observedAtMs),
+      snapshotAgeMs,
+      snapshotAge: snapshotAgeMs === null ? null : `${formatIdleAge(snapshotAgeMs / 1000)} ago`,
+      observedCandidate:
+        typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
+      candidateCommittedAt: isoAt(candidateCommittedAtMs),
+      candidateAgeAtObservationMs,
+      commitsBehindTip,
+    },
+  };
+}
+
 function healthOf(metadata: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!metadata) return null;
   const OPERATIONAL_KEYS = [
@@ -120,7 +178,9 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
   ] as const;
   const out: Record<string, unknown> = {};
   for (const k of OPERATIONAL_KEYS) {
-    if (metadata[k] !== undefined && metadata[k] !== null) out[k] = metadata[k];
+    if (metadata[k] !== undefined && metadata[k] !== null) {
+      out[k] = k === 'gate_health' ? attestGateHealth(metadata[k]) : metadata[k];
+    }
   }
   return Object.keys(out).length ? out : null;
 }
@@ -142,6 +202,7 @@ export default defineTool({
       'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, health }.',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
+      '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
       '⚠ `health.validation[\'unregistered-system-action\']` means that routine is SILENTLY DEAD: its `system:` handler is registered nowhere, so it fires on cadence and does nothing. active/nextFireAt still read healthy — this key is the only tell. Fix is a missing side-effect import in register-system-actions.ts.',
     ].join(' '),
