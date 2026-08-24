@@ -77,6 +77,7 @@ async function seedTriggerRun(over: {
   attempts?: number;
   startedAt?: string;
   args?: Record<string, unknown>;
+  outcome?: Record<string, unknown>;
   bindingId?: string;
 } = {}): Promise<string> {
   const args = over.args ?? {
@@ -89,9 +90,9 @@ async function seedTriggerRun(over: {
   };
   const rows = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_runs
-      (workspace_id, binding_id, delivery_id, dedupe_key, status, args, attempts, started_at)
+      (workspace_id, binding_id, delivery_id, dedupe_key, status, args, outcome, attempts, started_at)
     VALUES (${WS}, ${over.bindingId ?? bindingId}, ${deliveryId}, ${(args.trigger as { dedupeKey?: string })?.dedupeKey ?? 'gmail:dispatch-1'}, ${over.status ?? 'pending'},
-            ${JSON.stringify(args)}::text::jsonb,
+            ${JSON.stringify(args)}::text::jsonb, ${JSON.stringify(over.outcome ?? {})}::text::jsonb,
             ${over.attempts ?? 0}, ${over.startedAt ?? null}::timestamptz)
     RETURNING id`;
   return rows[0].id;
@@ -99,7 +100,15 @@ async function seedTriggerRun(over: {
 
 describe('external trigger durable dispatch', () => {
   it('launches the canonical plan run with trigger inputs and announces its work', async () => {
-    const triggerRunId = await seedTriggerRun();
+    const audit = {
+      runWithLastEvent: {
+        sourceTriggerRunId: 'source-run-1',
+        sourceDeliveryId: deliveryId,
+        providerDedupeKey: 'gmail:dispatch-1',
+        requestedBy: 'owner:test',
+      },
+    };
+    const triggerRunId = await seedTriggerRun({ outcome: audit });
     const announceRunWork = vi.fn(async () => undefined);
     const result = await dispatchPendingTriggerRuns(sql, { announceRunWork });
 
@@ -109,13 +118,18 @@ describe('external trigger durable dispatch', () => {
       status: string;
       attempts: number;
       plan_run_ref: string;
-      outcome: { instancePlanSlug: string; planRunId: number };
+      outcome: {
+        instancePlanSlug: string;
+        planRunId: number;
+        runWithLastEvent: typeof audit.runWithLastEvent;
+      };
     }>>`
       SELECT status, attempts, plan_run_ref, outcome FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
     expect(triggerRuns[0].status).toBe('succeeded');
     expect(triggerRuns[0].attempts).toBe(1);
     expect(triggerRuns[0].outcome.instancePlanSlug).toBe(`${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`);
+    expect(triggerRuns[0].outcome.runWithLastEvent).toEqual(audit.runWithLastEvent);
     expect(triggerRuns[0].plan_run_ref).toBe(String(triggerRuns[0].outcome.planRunId));
 
     const planRuns = await sql<Array<{ trigger: string; inputs: Record<string, unknown> }>>`

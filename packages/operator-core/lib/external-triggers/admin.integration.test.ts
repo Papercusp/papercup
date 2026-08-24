@@ -8,6 +8,7 @@ import {
   ensureExternalTriggerBinding,
   loadExternalTriggerAdminSnapshot,
   loadExternalTriggerPlanAdminSnapshot,
+  queueExternalTriggerLastEventTestRun,
   setExternalTriggerBindingArmed,
   updateExternalTriggerBindingStormPolicy,
 } from './admin';
@@ -18,6 +19,7 @@ const PLAN = 'trigger-admin-fixture';
 
 let org: OrgTestDb;
 let sql: Sql;
+let sourceId: string;
 let bindingId: string;
 
 beforeAll(async () => {
@@ -61,6 +63,7 @@ beforeEach(async () => {
       (workspace_id, kind, status, credential_ref, last_connected_at)
     VALUES (${WS}, 'gmail', 'connected', 'google-oauth:fixture', now())
     RETURNING id`;
+  sourceId = sources[0].id;
   const bindings = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_bindings
       (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
@@ -75,6 +78,43 @@ beforeEach(async () => {
       (workspace_id, binding_id, dedupe_key, status, args, attempts, completed_at)
     VALUES (${WS}, ${bindingId}, 'gmail:admin-fixture', 'failed', '{}'::jsonb, 2, now())`;
 });
+
+async function seedSettledProviderRun(): Promise<{ deliveryId: string; triggerRunId: string }> {
+  const deliveries = await sql<Array<{ id: string }>>`
+    INSERT INTO harness_shared.trigger_deliveries
+      (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
+       sink_kind, sink_ref, outcome, attempts, completed_at)
+    VALUES (${WS}, ${sourceId}, 'gmail:admin-fixture', 'email-message',
+            'ext:gmail:message.received',
+            '{"messageId":"m-1","subject":"Support request"}'::jsonb,
+            'event-bus', 'workspace', 'delivered', 1, now())
+    RETURNING id::text`;
+  const args = {
+    trigger: {
+      key: 'ext:gmail:message.received',
+      source: 'gmail',
+      event: 'message.received',
+      sourceId,
+      externalId: 'm-1',
+      occurredAt: '2026-08-24T12:00:00.000Z',
+      datatypeId: 'email-message',
+      dedupeKey: 'gmail:admin-fixture',
+      payload: { messageId: 'm-1', subject: 'Support request' },
+    },
+  };
+  const runs = await sql<Array<{ id: string }>>`
+    UPDATE harness_shared.trigger_runs
+       SET delivery_id = ${deliveries[0].id}::uuid,
+           status = 'succeeded',
+           args = ${JSON.stringify(args)}::text::jsonb,
+           outcome = '{}'::jsonb,
+           error = NULL,
+           completed_at = now(),
+           updated_at = now()
+     WHERE workspace_id = ${WS} AND binding_id = ${bindingId}
+     RETURNING id::text`;
+  return { deliveryId: deliveries[0].id, triggerRunId: runs[0].id };
+}
 
 describe('external-trigger admin shared seam', () => {
   it('reports source/binding/run truth from the canonical tables', async () => {
@@ -176,6 +216,79 @@ describe('external-trigger admin shared seam', () => {
     const rows = await sql<Array<{ armed: boolean }>>`
       SELECT armed FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS} AND id = ${bindingId}`;
     expect(rows[0].armed).toBe(false);
+  });
+
+  it('queues distinct audited tests from the same canonical last event without re-ingesting it', async () => {
+    const seeded = await seedSettledProviderRun();
+    const first = await queueExternalTriggerLastEventTestRun(sql, WS, {
+      bindingId,
+      requestedBy: 'owner:test',
+    });
+    const second = await queueExternalTriggerLastEventTestRun(sql, WS, {
+      bindingId,
+      requestedBy: 'owner:test',
+    });
+    expect(first).toMatchObject({
+      ok: true,
+      run: {
+        bindingId,
+        sourceTriggerRunId: seeded.triggerRunId,
+        sourceDeliveryId: seeded.deliveryId,
+        providerDedupeKey: 'gmail:admin-fixture',
+        status: 'pending',
+        requestedBy: 'owner:test',
+        providerWritePossible: true,
+      },
+    });
+    expect(second).toMatchObject({ ok: true, run: { sourceTriggerRunId: seeded.triggerRunId } });
+    if (!first.ok || !second.ok) throw new Error('expected queued test runs');
+    expect(second.run.id).not.toBe(first.run.id);
+
+    const rows = await sql<
+      Array<{
+        id: string;
+        deliveryId: string;
+        dedupeKey: string;
+        args: { trigger: { dedupeKey: string } };
+        outcome: { runWithLastEvent: { sourceTriggerRunId: string; requestedBy: string } };
+      }>
+    >`
+      SELECT id::text,
+             delivery_id::text AS "deliveryId",
+             dedupe_key AS "dedupeKey",
+             args,
+             outcome
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS}
+         AND id IN (${first.run.id}::uuid, ${second.run.id}::uuid)
+       ORDER BY id`;
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.dedupeKey)).size).toBe(2);
+    for (const row of rows) {
+      expect(row.deliveryId).toBe(seeded.deliveryId);
+      expect(row.dedupeKey).toMatch(/^test:/);
+      expect(row.args.trigger.dedupeKey).toBe('gmail:admin-fixture');
+      expect(row.outcome.runWithLastEvent).toMatchObject({
+        sourceTriggerRunId: seeded.triggerRunId,
+        requestedBy: 'owner:test',
+      });
+    }
+    const deliveries = await sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.trigger_deliveries
+       WHERE workspace_id = ${WS} AND source_id = ${sourceId}`;
+    expect(deliveries[0].count).toBe(1);
+  });
+
+  it('truthfully refuses missing history and cannot cross workspace scope', async () => {
+    expect(await queueExternalTriggerLastEventTestRun(sql, WS, {
+      bindingId,
+      requestedBy: 'owner:test',
+    })).toMatchObject({ ok: false, error: 'no_last_event', bindingId });
+    expect(await queueExternalTriggerLastEventTestRun(sql, 'another-workspace', {
+      bindingId,
+      requestedBy: 'owner:test',
+    })).toMatchObject({ ok: false, error: 'binding_not_found', bindingId });
   });
 
   it('reads schedule fire state and the manual source for one plan', async () => {

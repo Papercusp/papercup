@@ -203,6 +203,8 @@ export function deriveInitialForm(opts: {
 export interface RunScheduleToolResult {
   ok: boolean;
   message?: string;
+  /** Parsed successful tool payload, when the caller needs the created run/ref. */
+  data?: Record<string, unknown>;
 }
 
 /**
@@ -260,7 +262,7 @@ function parseRunScheduleToolPayload(payload: unknown): RunScheduleToolResult {
       return { ok: false, message: `${failed} tool item${failed === 1 ? '' : 's'} failed` };
     }
   }
-  return { ok: true };
+  return { ok: true, data: value };
 }
 
 export async function runScheduleTool(name: string, args: Record<string, unknown>): Promise<RunScheduleToolResult> {
