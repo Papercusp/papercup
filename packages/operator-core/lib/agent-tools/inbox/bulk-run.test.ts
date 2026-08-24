@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   getActiveRun: vi.fn(),
   getRunItems: vi.fn(),
   executeBulkRunAction: vi.fn(),
+  failRunIfExecuting: vi.fn(),
+  recordRunHeartbeat: vi.fn(),
   reportOutcomes: vi.fn(),
   setRunPhase: vi.fn(),
   settleRunPhase: vi.fn(),
@@ -32,6 +34,8 @@ vi.mock('../../attention/bulk-run-store', () => ({
   getActiveRun: h.getActiveRun,
   getRunItems: h.getRunItems,
   executeBulkRunAction: h.executeBulkRunAction,
+  failRunIfExecuting: h.failRunIfExecuting,
+  recordRunHeartbeat: h.recordRunHeartbeat,
   reportOutcomes: h.reportOutcomes,
   setRunPhase: h.setRunPhase,
   settleRunPhase: h.settleRunPhase,
@@ -93,6 +97,8 @@ beforeEach(() => {
   h.getFlag.mockResolvedValue(true);
   h.getRun.mockResolvedValue(run);
   h.getRunItems.mockResolvedValue([item]);
+  h.recordRunHeartbeat.mockResolvedValue(run);
+  h.failRunIfExecuting.mockResolvedValue({ ...run, phase: 'failed' });
   h.reportOutcomes.mockResolvedValue({ unknown: [], refused: null });
   h.callPlansRead.mockResolvedValue({
     groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
