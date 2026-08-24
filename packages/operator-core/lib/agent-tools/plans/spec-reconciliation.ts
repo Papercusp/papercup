@@ -493,7 +493,13 @@ export async function computeSpecReconciliationLedger(
  * Default population read: one query for every plan plus its adoption inputs. Kept in one
  * place so the ledger never fans out a per-plan probe across ~570 plans.
  */
-async function defaultListPlanAdoption(input: {
+/**
+ * Exported so the work-item-axis latency census (`spec-enforcement-latency.ts`) partitions over
+ * the SAME plan population this ledger censuses. A second copy of this query would be free to
+ * drift on the archived filter or the legacy-VAL signal, and the two surfaces would then
+ * disagree about which plans are enforcing while both looked authoritative.
+ */
+export async function defaultListPlanAdoption(input: {
   harnessSlug?: string;
   limit: number;
 }): Promise<PlanAdoptionRow[]> {
