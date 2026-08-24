@@ -239,6 +239,22 @@ describe('coord:roster', () => {
       expect(active[0]!.ownerId).toBe('agent-1');
     });
 
+    it('should report plan as unsupported instead of silently returning an unfiltered roster', async () => {
+      const { output } = await call(
+        { view: 'live', plan: 'test-plan' },
+        { workspaceId: 'test-ws' },
+      );
+
+      expect(output).toMatchObject({
+        ok: false,
+        error: 'unsupported_filter',
+        filter: 'plan',
+        view: 'live',
+        supportedViews: ['claims'],
+      });
+      expect(output.detail).toContain('view:"claims"');
+    });
+
     it('should include self marker', async () => {
       const { output } = await call(
         { view: 'live' },

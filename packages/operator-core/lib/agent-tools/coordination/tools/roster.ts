@@ -185,6 +185,29 @@ export default defineTool({
     const view = args.view ?? 'live';
     const scope = args.scope ?? 'hive';
 
+    // `plan` is a claims-lens filter.  The shared argument schema keeps the
+    // field available for every view so callers can discover one stable
+    // surface, but silently ignoring it on live/members/history would return
+    // an unfiltered roster while making the request look successful (EI-21360300825984576).
+    if (args.plan !== undefined && view !== 'claims') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'unsupported_filter',
+              filter: 'plan',
+              view,
+              supportedViews: ['claims'],
+              detail: 'The plan filter is supported only for view:"claims"; use view:"claims" or omit plan.',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // Shared identity context for both presence and claims views
     const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null; isSuperuser?: boolean };
     const effScope = args.scope === 'all' && !c.isSuperuser ? 'workspace' : scope;
