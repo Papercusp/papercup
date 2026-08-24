@@ -22,7 +22,10 @@ vi.mock('./_shared', async (importOriginal) => ({
 }));
 
 const readModule = await import('./read');
-const readArgsSchema = readModule.default.args as { safeParse: (value: unknown) => { success: boolean } };
+type ReadArgsParseResult =
+  | { success: true; data: unknown }
+  | { success: false; error: { issues: unknown[] } };
+const readArgsSchema = readModule.default.args as { safeParse: (value: unknown) => ReadArgsParseResult };
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
 
@@ -115,6 +118,21 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', session: 'sess' }).success).toBe(false);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', around: 4 }).success).toBe(false);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3 }).success).toBe(true);
+  });
+
+  it('rejects stale search-only mode/query arguments instead of silently accepting them', () => {
+    const parsed = readArgsSchema.safeParse({
+      session: 'sess-known',
+      mode: 'verbatim',
+      query: 'a phrase from the transcript',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'unrecognized_keys', keys: expect.arrayContaining(['mode', 'query']) }),
+      ]));
+    }
   });
 
   it('refreshes a named target before querying its indexed turns', async () => {
