@@ -151,6 +151,12 @@
 #                               Default: resolve it from PATH, then fall back to
 #                               the managed ~/.local/node*/bin installs. Resolution
 #                               happens before any X/display/build resources start.
+#   VERIFY_TAURI_CARGO_BIN
+#                              absolute cargo executable override. Default:
+#                              resolve cargo from PATH, then fall back to
+#                              ~/.cargo/bin/cargo. Resolution happens before any
+#                              X/display/build resources start, and the resolved
+#                              cargo directory is prepended to PATH.
 #   VERIFY_TAURI_SKIP_GL_CHECK  1 = skip the VirtualGL real-GPU sanity check
 #                                (screenshots will be blank white — DOM/eval
 #                                via the bridge still work; agent-e2e.mdx §15.4)
@@ -352,6 +358,50 @@ case ":${PATH:-}:" in
   *) PATH="$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}" ;;
 esac
 export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
+
+# EI-21281971092880743: capability:bash sessions do not always inherit
+# ~/.cargo/bin. Warm target slots hide that omission because they reuse a built
+# desktop binary, while a cold slot invokes cargo metadata and dies much later
+# with ENOENT. Resolve cargo before WORK/Xvfb/Tauri resources exist, preserve an
+# explicit override for nonstandard Rust installs, and make the resolved
+# directory part of the command surface inherited by assertions and boot-only
+# shells.
+resolve_cargo() {
+  local candidate resolved
+
+  if [ -n "${VERIFY_TAURI_CARGO_BIN:-}" ]; then
+    if [ ! -x "$VERIFY_TAURI_CARGO_BIN" ]; then
+      echo "FATAL: VERIFY_TAURI_CARGO_BIN is not executable: $VERIFY_TAURI_CARGO_BIN" >&2
+      echo "       Install Rust/cargo or set VERIFY_TAURI_CARGO_BIN to an executable cargo path." >&2
+      return 127
+    fi
+    printf '%s\n' "$VERIFY_TAURI_CARGO_BIN"
+    return 0
+  fi
+
+  if resolved="$(command -v cargo 2>/dev/null)" && [ -x "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+
+  candidate="${HOME:-}/.cargo/bin/cargo"
+  if [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  echo "FATAL: cargo not found before verifier boot." >&2
+  echo "       Install Rust with rustup so ~/.cargo/bin/cargo exists, or set VERIFY_TAURI_CARGO_BIN to an executable cargo path." >&2
+  return 127
+}
+
+VERIFY_TAURI_CARGO_BIN="$(resolve_cargo)" || exit $?
+VERIFY_TAURI_CARGO_BIN_DIR="$(cd "$(dirname "$VERIFY_TAURI_CARGO_BIN")" && pwd)"
+case ":${PATH:-}:" in
+  *":$VERIFY_TAURI_CARGO_BIN_DIR:"*) ;;
+  *) PATH="$VERIFY_TAURI_CARGO_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}" ;;
+esac
+export PATH VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-20229366113827667: cargo compilation and bridge readiness are separate
@@ -957,6 +1007,8 @@ write_boot_only_env_script() {
       printf 'VERIFY_TAURI_ENV_FILE=%q\n' "$BOOT_ONLY_ENV"
       printf 'VERIFY_TAURI_AGENT_TOOLS_BIN=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN"
       printf 'VERIFY_TAURI_AGENT_TOOLS_BIN_DIR=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR"
+      printf 'VERIFY_TAURI_CARGO_BIN=%q\n' "$VERIFY_TAURI_CARGO_BIN"
+      printf 'VERIFY_TAURI_CARGO_BIN_DIR=%q\n' "$VERIFY_TAURI_CARGO_BIN_DIR"
       cat <<'BOOT_ONLY_ENV_SCRIPT'
 
 # This file is source-only. It deliberately does not use `set -e` so sourcing
@@ -973,6 +1025,10 @@ verify_tauri_assert_owned() {
   fi
   if [ ! -x "$VERIFY_TAURI_AGENT_TOOLS_BIN" ]; then
     echo "FATAL: verifier CLI disappeared or is no longer executable: $VERIFY_TAURI_AGENT_TOOLS_BIN" >&2
+    return 1
+  fi
+  if [ ! -x "$VERIFY_TAURI_CARGO_BIN" ]; then
+    echo "FATAL: cargo disappeared or is no longer executable: $VERIFY_TAURI_CARGO_BIN" >&2
     return 1
   fi
 
@@ -1001,7 +1057,12 @@ case ":${PATH:-}:" in
   *":$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:"*) ;;
   *) PATH="$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}" ;;
 esac
+case ":${PATH:-}:" in
+  *":$VERIFY_TAURI_CARGO_BIN_DIR:"*) ;;
+  *) PATH="$VERIFY_TAURI_CARGO_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}" ;;
+esac
 export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
+export VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
 export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_OWNER_SID VERIFY_TAURI_LAUNCH_PROVENANCE VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
