@@ -296,6 +296,13 @@ export async function spawnSubstrateSidecar(
       argv: [cmd, ...args],
       launchedBy: 'system:substrate-sidecar',
       memoryMaxBytes: substrateSidecarScopeMemoryMaxG() * 1024 ** 3,
+      // WI-41206: EXPLICIT 'deny'. The scope builders now default to 'allow' so that ordinary
+      // worker scopes page instead of being OOM-killed — but this sidecar is the exact payload
+      // that earned the swap-0 policy in the first place. Its leak drove the bg-host cgroup to
+      // 46.7 GB and a 68 GB swap-thrash that froze the event loop (WI-1086), and the WI-1504
+      // guarantee below ("synthetic 10G allocation -> sidecar killed, bg-host untouched")
+      // depends on it dying rather than paging. Do NOT relax this to inherit the default.
+      swap: 'deny',
       detail: { socketPath: resolvedSocket },
     };
     const enrolment = beginSyncEnrolment(taskSpec, { confine: useScope });
@@ -304,7 +311,9 @@ export async function spawnSubstrateSidecar(
     const [spawnCommand, ...spawnArgs] = wrapped
       ? [wrapped.binary, ...wrapped.argv]
       : useScope
-        ? buildIsolatedScopeArgv([cmd, ...args], substrateSidecarScopeMemoryMaxG())
+        ? // WI-41206: 'deny' here too — the unnamed-scope fallback must match the named path
+          // above, or the WI-1504 guarantee would hold only when the task manager is enabled.
+          buildIsolatedScopeArgv([cmd, ...args], substrateSidecarScopeMemoryMaxG(), 'deny')
         : [cmd, ...args];
     let stderr = '';
     let settled = false;
