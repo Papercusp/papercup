@@ -321,13 +321,18 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
         'file_path',
         'limit',
         'offset',
+        // raw:true is an explicit exact-text mode for callers that will pass a
+        // read result to a write; it does not change the existing framed
+        // inspection expressions in this answer-equivalent family.
+        'raw',
         'tail',
         'uri',
       ],
       'the four text-output pairs map directly onto file_path/offset/limit/tail. `uri` is the result-door ' +
         '`papercusp://scratch` alias for file_path and does not widen that text operation family. ' +
         '`content_indexes` and `evidence_class` select structured values from a stable scratch reference and are ' +
-        'mutually exclusive with the text windows, so neither changes this family. `tail` in particular was ADDED ' +
+        'mutually exclusive with the text windows, so neither changes this family. `raw` is an explicit exact-text ' +
+        'mode for safe read-to-write handoffs; the existing framed expressions remain inspection-oriented. `tail` in particular was ADDED ' +
         'to close the family\'s real gap (1,752 `tail -n N FILE` atoms across 63 sessions had no tool form); losing ' +
         'it would silently restore that gap while the pair still records `equivalent`. The byte args are accounted ' +
         'for but deliberately remain outside this family because their structured base64 answer is not raw-byte ' +

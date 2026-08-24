@@ -46,6 +46,39 @@ describe('capability:read', () => {
     expect(text).toMatch(/\s+3\tcharlie/);
   });
 
+  it('returns exact undecorated text for a write-safe whole-file read', async () => {
+    const f = join(DIR, 'r-raw.txt');
+    const original = 'alpha\n     2\tbravo\ncharlie (3 lines)\n';
+    writeFileSync(f, original);
+    const r = (await readTool.handler!({ file_path: f, raw: true }, ctx)) as { content: Array<{ text: string }> };
+
+    expect(r.content[0].text).toBe(original);
+    expect(r.content[0].text).not.toContain(`${f} (`);
+  });
+
+  it('preserves exact delimiters for raw line windows', async () => {
+    const f = join(DIR, 'r-raw-window.txt');
+    writeFileSync(f, 'first\nsecond\nthird');
+
+    const r = (await readTool.handler!({ file_path: f, offset: 2, limit: 2, raw: true }, ctx)) as {
+      content: Array<{ text: string }>;
+    };
+
+    expect(r.content[0].text).toBe('second\nthird');
+  });
+
+  it('rejects raw text mode mixed with exact byte pages', async () => {
+    const f = join(DIR, 'r-raw-mixed.txt');
+    writeFileSync(f, 'alpha\n');
+    const r = (await readTool.handler!({ file_path: f, raw: true, byte_offset: 0, byte_limit: 32 }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+
+    expect(r.isError).toBe(true);
+    expect(parse(r).reason).toBe('mixed_window_modes');
+  });
+
   it('honors offset + limit', async () => {
     const f = join(DIR, 'r2.txt');
     writeFileSync(f, Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n'));

@@ -1,6 +1,8 @@
 /**
  * capability:read — read a file, mirroring the native Read tool's ergonomics
  * (offset/limit line windowing, cat -n line numbers, long-line truncation).
+ * `raw:true` opts into exact undecorated text for a line window, for callers
+ * that will pass the result to a write rather than only inspect it.
  * Read-only, so it takes no file lock. Part of P-010
  * (`agent-capability-confinement-2026-06-13`).
  */
@@ -107,9 +109,9 @@ export function doorSafePageBytes(
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file with line-numbered text windows, or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
+    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
   guidance: {
-    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
+    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
     chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
     seeAlso: [
@@ -134,6 +136,10 @@ export default defineTool({
       .positive()
       .optional()
       .describe('Read the LAST N lines instead of reading forward — the `tail -n N` equivalent. Ignores offset.'),
+    raw: z
+      .boolean()
+      .optional()
+      .describe('Return the selected text window without the path header, line-number prefixes, or paging footer. Use when the result will be written back.'),
     byte_offset: z
       .number()
       .int()
@@ -283,6 +289,9 @@ export default defineTool({
       if (args.offset !== undefined || args.limit !== undefined || args.tail !== undefined) {
         return err('mixed_window_modes', 'byte_offset/byte_limit cannot be combined with offset/limit/tail.');
       }
+      if (args.raw) {
+        return err('mixed_window_modes', 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.');
+      }
       const start = Math.min(args.byte_offset, bytes.length);
       // WI-39670: clamp to what survives the resultEach door. Requesting the
       // schema's max would otherwise return base64 the door truncates mid-string.
@@ -334,9 +343,9 @@ export default defineTool({
       };
     }
 
-    const raw = bytes.toString('utf8');
+    const text = bytes.toString('utf8');
 
-    const allLines = raw.split('\n');
+    const allLines = text.split('\n');
     // A trailing newline yields a final empty element; drop it so line counts match the file.
     if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
 
@@ -351,6 +360,28 @@ export default defineTool({
         ? args.offset - 1
         : 0;
     const slice = allLines.slice(start, start + (args.tail ? Math.min(args.tail, limit) : limit));
+
+    if (args.raw) {
+      if (slice.length === 0) {
+        return { content: [{ type: 'text' as const, text: '' }] };
+      }
+
+      // Reconstruct the exact source span rather than joining a normalized
+      // array. This preserves the source's trailing newline (or lack of one)
+      // while still honoring offset/limit/tail line windows.
+      const startOffset = allLines
+        .slice(0, start)
+        .reduce((offset, line) => offset + line.length + 1, 0);
+      const selected = slice.join('\n');
+      const endOffset = startOffset + selected.length;
+      const hasSourceNewline = text[endOffset] === '\n';
+      return {
+        content: [{
+          type: 'text' as const,
+          text: text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0)),
+        }],
+      };
+    }
 
     const numbered = slice
       .map((line, i) => {
