@@ -366,6 +366,10 @@ export default defineTool({
                     options: Array.isArray(e.options) ? e.options : [],
                     // The escalating agent — drives the "Message owner" action (D-005).
                     from: typeof e.from === "string" ? e.from : null,
+                    goalRef:
+                      typeof (e as { goalRef?: unknown }).goalRef === "string"
+                        ? (e as { goalRef: string }).goalRef
+                        : null,
                   }),
                   occurredAt: toIsoOrNull(tsOf((e as { ts?: unknown }).ts)),
                 });

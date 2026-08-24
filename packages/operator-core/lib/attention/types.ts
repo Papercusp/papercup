@@ -327,7 +327,14 @@ export interface AttentionAction {
  *  discriminated by kind so resolution dispatches to the right place. */
 export type AttentionRef =
   | { kind: 'plan-item'; slug: string; itemId: string }
-  | { kind: 'coord-escalation'; msgId: string; options: { id: string; label: string }[] }
+  | {
+      kind: 'coord-escalation';
+      msgId: string;
+      options: { id: string; label: string }[];
+      /** Unambiguous agent-state-plane goal inherited when the escalation was
+       * opened. Drives source-terminal reconciliation; null means fail closed. */
+      goalRef?: string | null;
+    }
   | { kind: 'coord-message'; msgId: string }
   | { kind: 'smoke-fail'; harnessSlug: string }
   | { kind: 'operator-report'; turnId: string; conversationId: string }

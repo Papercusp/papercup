@@ -19,6 +19,8 @@ import { armEscalationRequesterInterest, openEscalation } from '../escalations';
 import { EVIDENCE_BANDS } from '../relay-provenance';
 import { COORD_ROLES } from '../roles';
 import { softText, clampText, LIMITS } from '../../limits';
+import { isAgentSessionSender } from '../machine-authored';
+import { fetchHolderGoalRecord } from '../agent-goal-sources';
 
 const SEVERITY = ['blocker', 'question', 'advisory'] as const;
 
@@ -105,9 +107,29 @@ export default defineTool({
     // Same flood class as EI-1490 (placement-watchdog) and EI-6789 (steering-lease),
     // whose senders were excluded wholesale; a stable key fixes it at the source instead,
     // keeping a genuinely-live condition visible (and countable) as exactly one row.
+    // owner-inbox-single-pane D-015: attach the authoritative goal the agent is
+    // actually holding, rather than asking every caller to remember another
+    // correlation argument. The shared state-plane resolver already reconciles
+    // work-item, plan-item, fleet and explicit-override legs. Only an unambiguous
+    // WI-/EI-/F- or <plan>#P-NNN goal is lifecycle-linkable; a divergent/fleet/
+    // unknown goal stays unlinked and therefore can never be auto-resolved.
+    let goalRef: string | null = null;
+    if (isAgentSessionSender(identity.ownerId)) {
+      const goal = await fetchHolderGoalRecord(identity.ownerId).catch(() => null);
+      const candidate = goal?.itemId?.trim() ?? '';
+      if (
+        goal &&
+        goal.agreement !== 'divergent' &&
+        goal.competing.length === 0 &&
+        (/^(?:WI|EI|F)-\d+$/i.test(candidate) || /#P-\d+$/i.test(candidate))
+      ) {
+        goalRef = candidate;
+      }
+    }
     const meta = {
       ...(harnessSlug ? { harnessSlug } : {}),
       ...(args.conditionKey ? { subjectSignature: args.conditionKey.trim() } : {}),
+      ...(goalRef ? { goalRef } : {}),
     };
     const rec = await openEscalation(identity, {
       severity: args.severity,
