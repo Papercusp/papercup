@@ -2894,7 +2894,7 @@
           "POST"
         ]
       },
-      "description": "Run a READ-ONLY code verification (typecheck or test) to confirm a claim about the code before diagnosing. Fixed safe commands only (npx tsc --noEmit, npm run test:affected, npx vitest run); never an arbitrary shell command. Use this — not capability:bash — to verify.",
+      "description": "Run a READ-ONLY code verification (typecheck or test) to confirm a claim about the code before diagnosing. Fixed safe commands only (npx tsc --noEmit, npm run test:affected, package-local npx vitest run, or the repository test:file router for layered tests); never an arbitrary shell command. Use this — not capability:bash — to verify.",
       "capabilities": [
         "capability:code-inspect"
       ],
@@ -18862,7 +18862,7 @@
       "guidance": {
         "when": "Before ready/active, read the COMPLETE source conversation (never memory/summary), map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions, then use `activation`. Before shipped, use `completion` and compare items to ACTUAL CODE.",
         "notWhen": "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
-        "chaining": "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revisions: re-audit only for meaning changes, not cosmetic edits. Completion: plans:audit → rubric/scorecard → shipped."
+        "chaining": "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash. Re-audit when an edit changes requirements, scope, constraints, decisions, dependencies, sequencing, acceptance criteria, open questions, promised follow-ups; spelling, formatting, cosmetic-only wording do not require it. Completion: plans:audit → rubric/scorecard → shipped."
       }
     },
     {
