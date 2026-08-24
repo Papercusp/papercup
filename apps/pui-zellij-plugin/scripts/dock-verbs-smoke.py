@@ -94,6 +94,17 @@ def dump():
                        env=ENV, capture_output=True, text=True)
     return r.stdout
 
+def wait_dump(pred, timeout, what):
+    """Poll the real layout until a mutation converges or a bounded deadline expires."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        layout = dump()
+        if pred(layout):
+            return layout
+        time.sleep(0.25)
+    log(f"timeout waiting for {what}")
+    return None
+
 def cleanup():
     subprocess.run([ZELLIJ, "--session", SESSION, "kill-session", SESSION], env=ENV, capture_output=True)
     subprocess.run([ZELLIJ, "delete-session", SESSION, "-f"], env=ENV, capture_output=True)
@@ -169,21 +180,22 @@ check(topo is not None, "baseline topology (tabs + panes) received over the wire
 # 2. stack-on-open: two stacked launches → both land in the work STACK.
 send({"cmd": "open_command_pane", "command": "bash", "args": ["-c", "echo A1; sleep 300"],
       "title": "a1", "stack": True})
-time.sleep(1.5)
 send({"cmd": "open_command_pane", "command": "bash", "args": ["-c", "echo A2; sleep 300"],
       "title": "a2", "stack": True})
 appeared = wait_for(lambda e: e.get("ev") == "topology"
                     and sum("sleep 300" in (p.get("command") or "") for p in e["panes"]) >= 2,
                     15, "two launched panes in topology")
 check(appeared is not None, "two stack:true launches opened panes (seen in topology)")
-time.sleep(1.0)
-d = dump()
 # Both agent panes sit inside a `stacked=true` group — the HUD was NOT split.
-check("stacked=true" in d and d.count("echo A") >= 2,
+d = wait_dump(lambda layout: "stacked=true" in layout and layout.count("echo A") >= 2,
+              15, "both launched agents in a stacked group")
+check(d is not None,
       "stack-on-open: launched agents are in a stacked group (dump-layout)")
 # The HUD pane (`name="pui"`, from the workbench KDL) keeps its OWN sized slot
 # beside the stack — it wasn't absorbed (an absorbed pane loses its `size=`).
-check(re.search(r'name="pui" size="\d+%"', d) is not None,
+hud_layout = wait_dump(lambda layout: re.search(r'name="pui" size="\d+%"', layout) is not None,
+                       15, "HUD in its own sized slot")
+check(hud_layout is not None,
       "HUD pane survived in its own sized slot beside the stack")
 
 # 3. select_swap_layout drives the active preset to a named target (the
@@ -217,8 +229,9 @@ agent_ids = [p["id"] for p in (gtopo["panes"] if gtopo else [])
              if "sleep 300" in (p.get("command") or "")]
 if len(agent_ids) >= 2:
     send({"cmd": "stack_panes", "pane_ids": agent_ids})
-    time.sleep(1.5)
-    check("stacked=true" in dump(), "stack_panes [ids] gathered the panes into a stack")
+    stacked_layout = wait_dump(lambda layout: "stacked=true" in layout,
+                               15, "explicit stack_panes layout convergence")
+    check(stacked_layout is not None, "stack_panes [ids] gathered the panes into a stack")
 else:
     check(False, "stack_panes: could not resolve >=2 agent pane ids")
 
@@ -226,12 +239,14 @@ else:
 # the AGENT pane — zellij's own about/tip pane also lives in floating_panes.)
 if agent_ids:
     send({"cmd": "toggle_pane_float", "pane_id": agent_ids[0]})
-    time.sleep(1.5)
-    check("sleep 300" in floating_section(dump()),
+    floated_layout = wait_dump(lambda layout: "sleep 300" in floating_section(layout),
+                               15, "agent pane to enter floating_panes")
+    check(floated_layout is not None,
           "toggle_pane_float floated the agent pane (in floating_panes)")
     send({"cmd": "toggle_pane_float", "pane_id": agent_ids[0]})
-    time.sleep(1.5)
-    check("sleep 300" not in floating_section(dump()),
+    embedded_layout = wait_dump(lambda layout: "sleep 300" not in floating_section(layout),
+                                15, "agent pane to leave floating_panes")
+    check(embedded_layout is not None,
           "toggle_pane_float re-embedded the agent pane")
 
 # ── teardown ─────────────────────────────────────────────────────────────────
