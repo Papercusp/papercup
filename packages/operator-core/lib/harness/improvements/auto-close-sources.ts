@@ -31,7 +31,7 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // cannot distinguish a test that was fixed from one that was dropped from its suite,
   // renamed, left un-owned by any vitest config, or whose checkout disappeared.
   //
-  // Measured case (EI-11141, templates/papercusp-desktop-app/checks/composition-integrity
+  // Measured case (EI-11141, templates/papercusp-app/checks/composition-integrity
   // .test.ts): last run 2026-07-27, `resolved` 2026-08-02, and ZERO 'pass' rows in ALL of
   // test_runs history — the named import (@papercusp/template-kit) was still unresolvable
   // when the item was closed, and stayed broken for another 8 days. Its runs stopped
