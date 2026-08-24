@@ -14,6 +14,7 @@ import {
   isLoopPressureShed,
   isTransportFailure,
   printResult,
+  stdoutDeliveryError,
   PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
@@ -430,6 +431,43 @@ describe('ptool scripted JSON output', () => {
     expect(shouldPrintRawResult('stdin', false)).toBe(true);
     expect(shouldPrintRawResult(null, false)).toBe(false);
     expect(shouldPrintRawResult(null, true)).toBe(true);
+  });
+});
+
+describe('stdout delivery failure (EI-21250765620092599)', () => {
+  // Node swallows EPIPE on process.stdout: when the consumer of a piped/captured
+  // stdout dies, later writes are dropped silently and the process exits 0 — the
+  // "completed successfully but emitted no JSON or text" wake-harness shape.
+  // printResult must convert a detected delivery failure into stderr + exit 1.
+  it('fails loudly when stdout delivery errored after the write (swallowed EPIPE)', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const code = printResult(
+        { structuredContent: { ok: true } },
+        { raw: true, deliveryProbe: () => Object.assign(new Error('broken pipe'), { code: 'EPIPE' }) },
+      );
+      expect(code).toBe(1);
+      expect(log).toHaveBeenCalled();
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(String(error.mock.calls[0][0])).toContain('stdout delivery FAILED (EPIPE)');
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('reports success with no stderr on a healthy stream, and the live probe is quiet', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(printResult({ structuredContent: { ok: true } }, { raw: true })).toBe(0);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+    expect(stdoutDeliveryError()).toBeNull();
   });
 });
 
