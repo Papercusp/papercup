@@ -17,9 +17,11 @@
  *
  * Sibling to `psu` (psu-launcher.mjs) — same conventions: lives in the repo
  * so it resolves `@inquirer/prompts` + the MCP SDK from the operator's
- * node_modules; the on-PATH `ptool` shim (install-standalone-mcp.sh) enters
- * the repo-keyed install:safe mutex before exec'ing this file by absolute
- * path; `PAPERCUSP_OPERATOR_URL`
+ * node_modules; the on-PATH `ptool` shim (install-standalone-mcp.sh) is a
+ * plain `exec node <this file>` — deliberately NOT behind the install:safe
+ * mutex, whose reader guard could swallow a completed invocation into an
+ * exit-0/near-zero-output no-op (EI-21267836337650976 /
+ * EI-21250765620092599); `PAPERCUSP_OPERATOR_URL`
  * overrides the host; the token is read from `--token-file`, then
  * `PAPERCUSP_MCP_TOKEN_FILE`, then `PAPERCUSP_HOME/superuser-token`, then
  * `~/.papercusp/superuser-token`.
@@ -1335,8 +1337,20 @@ async function collectArgs(inputSchema) {
   return args;
 }
 
+/** The live stdout delivery-failure probe (injectable in printResult for tests).
+ *  Node SWALLOWS EPIPE on process.stdout by design: when the consumer of a
+ *  captured/piped stdout dies mid-invocation (a wake-harness capture, `| head`),
+ *  every later write is silently dropped and the process still exits 0 — which
+ *  is exactly the "completed successfully but emitted no JSON or text" shape
+ *  filed as EI-21250765620092599. `stream.errored` exposes the swallowed error. */
+export function stdoutDeliveryError() {
+  if (process.stdout.errored) return process.stdout.errored;
+  if (process.stdout.destroyed) return new Error('stdout destroyed before the result was delivered');
+  return null;
+}
+
 /** Print the result of a tools/call, or its error. Returns the exit code. */
-export function printResult(result, { raw }) {
+export function printResult(result, { raw, deliveryProbe = stdoutDeliveryError } = {}) {
   const text = resultToText(result, { raw });
   if (!text.trim()) {
     console.error('ptool: operator returned an empty MCP result; no content or structuredContent was received');
