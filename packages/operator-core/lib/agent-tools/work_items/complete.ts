@@ -771,8 +771,26 @@ export interface CompletionPathVintageHit {
 }
 
 const PATH_VINTAGE_MAX_PATHS = 60;
+/**
+ * WI-41246: this branch returns payload.paths WHOLESALE, so it must fire only on prose that
+ * positively claims a CHANGE to those paths. Audit verbs ("verified", "covered", "correct")
+ * describe INSPECTING a path, not changing it — and this tool's own schema asks callers for an
+ * enumerated `verification.coverage` census, so counting them here made every well-evidenced
+ * audit completion trip a false "verify each named path was actually remediated" advisory.
+ * Measured carrier: "All 17 uncast sites pass STRING arrays — verified by DECLARED TYPE"
+ * matched on `verified` alone, with no change claimed anywhere in the span.
+ *
+ * A completion that both audits AND changes still matches, because its change verb remains in
+ * the set ("all files verified fixed" matches on "fixed"). Narrowing only the WHOLESALE branch
+ * is safe: a path named explicitly in `filesChanged` or in the prose is still caught by the
+ * per-path fallback in completionClaimsTargetPaths.
+ *
+ * `corrected` is listed because the previous `correct` alternative could only match the bare
+ * adjective — \bcorrect\b does not match "corrected" — so a genuine "all files corrected"
+ * claim was silently missed.
+ */
 const PATH_CLAIM_ALL_RE =
-  /\b(?:all|every|each|both|named)\b[\s\S]{0,100}\b(?:path|paths|file|files|site|sites|target|targets)\b[\s\S]{0,100}\b(?:changed|fixed|updated|remediated|correct|verified|covered|replaced|removed)\b/i;
+  /\b(?:all|every|each|both|named)\b[\s\S]{0,100}\b(?:path|paths|file|files|site|sites|target|targets)\b[\s\S]{0,100}\b(?:changed|fixed|corrected|updated|remediated|replaced|removed)\b/i;
 
 /**
  * Resolve a completion path to the repository that owns its history. The superproject stores
