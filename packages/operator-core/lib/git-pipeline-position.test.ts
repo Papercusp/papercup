@@ -37,6 +37,7 @@ import {
   evaluateSweepExposure,
   parsePorcelainPaths,
   deriveBlocker,
+  staleVerdictSafeLever,
   mainBufferIsStale,
   mainBufferStallReason,
   mapCheckpointRunInFlight,
@@ -4380,6 +4381,31 @@ describe('stage levers (P-005)', () => {
       },
     });
     expect(l).toMatch(/fix the reds/);
+  });
+
+  it.each([
+    'pin-advance',
+    'pin-advance-unordered',
+    'writer-starved',
+    'run-in-flight',
+    'retriage-proven',
+    'refire-in-flight',
+    'candidate-fossil',
+  ] as const)('EI-21347137633438058: stale reason %s never dispatches stale-red repair advice', (reasonCode) => {
+    const l = lever('gate', {
+      positions: NOT_IN_MAIN,
+      gate: { ...RED_GATE, verdictStale: true, verdictStaleReasonCode: reasonCode },
+      changeInCandidate: COVERED,
+    });
+
+    expect(l).toMatch(/Verify the CURRENT candidate before fixing anything/);
+    expect(l).not.toMatch(/fix the reds|release:checkpoint-run/i);
+  });
+
+  it('EI-21347137633438058: leaves null and unrelated levers untouched', () => {
+    expect(staleVerdictSafeLever('candidate-fossil', null)).toBeNull();
+    expect(staleVerdictSafeLever('candidate-fossil', 'db:migrate')).toBe('db:migrate');
+    expect(staleVerdictSafeLever(null, 'fix the reds')).toBe('fix the reds');
   });
 
   /**
