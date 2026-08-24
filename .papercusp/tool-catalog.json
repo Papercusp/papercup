@@ -28828,7 +28828,7 @@
           "POST"
         ]
       },
-      "description": "Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way. `force:true` on another agent's claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.",
+      "description": "Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available. `force:true` on another agent's claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.",
       "capabilities": [
         "work_items:write"
       ],
@@ -28852,7 +28852,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.",
-        "notWhen": "`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.",
+        "notWhen": "`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `work_item_unreadable` = the pre-claim read failed; retry or inspect database health.",
         "chaining": "work_items:list → claim → set_state → release/close. No heartbeat verb exists — any platform call refreshes liveness; during a long LOCAL-ONLY stretch call work_items:checkpoint as a liveness pulse (EI-6772)."
       }
     },
