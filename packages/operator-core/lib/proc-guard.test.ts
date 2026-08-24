@@ -37,6 +37,7 @@ import {
   sampleCgroupBusy,
   sampleBusyMatches,
   formatBusy,
+  formatProcessCmdline,
 } from '../../../scripts/proc-guard.mjs';
 
 let fixtureRoot: string | null = null;
@@ -104,6 +105,41 @@ describe('parseArgv and getOperationalArgv', () => {
       '--json',
     ];
     expect(getOperationalArgv(argv)).toEqual(['node', '/repo/scripts/ptool.mjs', 'work_items:checkpoint', '--json']);
+  });
+
+  it('removes psu kickoff and label values as prose payloads', () => {
+    const argv = [
+      'node',
+      '/repo/.papercusp/bin/psu',
+      '--kickoff=the green-checkpoint gate is only mentioned in this brief',
+      '--label=green-checkpoint-follow-up',
+      '--model=sonnet:high',
+    ];
+    expect(getOperationalArgv(argv)).toEqual([
+      'node',
+      '/repo/.papercusp/bin/psu',
+      '--model=sonnet:high',
+    ]);
+  });
+});
+
+describe('formatProcessCmdline', () => {
+  it('caps the default display at 200 characters and marks truncation', () => {
+    const cmdline = `node ${'x'.repeat(240)}`;
+    const formatted = formatProcessCmdline(cmdline);
+    expect(formatted).toHaveLength(200);
+    expect(formatted).toBe(`${cmdline.slice(0, 199)}…`);
+  });
+
+  it('returns the complete command line in verbose mode', () => {
+    const cmdline = `node ${'x'.repeat(240)}`;
+    expect(formatProcessCmdline(cmdline, { verbose: true })).toBe(cmdline);
+  });
+
+  it('leaves short command lines unchanged', () => {
+    expect(formatProcessCmdline('node scripts/proc-guard.mjs check green-checkpoint')).toBe(
+      'node scripts/proc-guard.mjs check green-checkpoint',
+    );
   });
 });
 
@@ -309,11 +345,21 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
       '-lc',
       "export PAPERCUSP_KICKOFF_PROMPT='The green-checkpoint gate is red.'; exec $SHELL",
     ]);
+    fixtureProc(fixtureRoot, 780, 1, [
+      'node',
+      '/home/dev/.papercusp/bin/psu',
+      '--kickoff=The green-checkpoint gate is red.',
+    ]);
+    fixtureProc(fixtureRoot, 781, 1, [
+      'node',
+      '/home/dev/.papercusp/bin/psu',
+      '--label=green-checkpoint-follow-up',
+    ]);
 
     const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
     expect(report.matches.map((m) => m.pid)).toEqual([777]);
-    expect(report.fullMatches.map((m) => m.pid)).toEqual([777, 778, 779]);
-    expect(report.argvTextOnly.map((m) => m.pid)).toEqual([778, 779]);
+    expect(report.fullMatches.map((m) => m.pid)).toEqual([777, 778, 779, 780, 781]);
+    expect(report.argvTextOnly.map((m) => m.pid)).toEqual([778, 779, 780, 781]);
     expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
   });
 

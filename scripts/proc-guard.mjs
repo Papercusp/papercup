@@ -64,11 +64,12 @@
  *
  * CLI:
  *   node scripts/proc-guard.mjs check <pattern>
- *     Exit 0 + print every operationally matching row (pid + full cmdline) when
+ *     Exit 0 + print every operationally matching row (pid + bounded cmdline) when
  *     at least one EXTERNAL (non-self, non-ancestor) process matches. Exit 1 + a
  *     "no match" line otherwise. The output includes the full-argv count and
  *     argv-text-only count so prompt collisions are visible but cannot turn a
- *     liveness check into a permanent YES.
+ *     liveness check into a permanent YES. Pass --verbose to print the full
+ *     command line instead of the bounded display form.
  *
  * Library (unit-tested against a fixture /proc — see proc-guard.test.ts;
  * `procRoot` / `selfPid` are both injectable for that reason):
@@ -127,7 +128,9 @@ const GREEN_CHECKPOINT_CGROUP = /(?:^|\/)(?:papercup|papercusp)-green-checkpoint
 /** @typedef {CgroupBusyOk | CgroupBusyUnknown} CgroupBusySample */
 
 const PROMPT_ARG_MARKERS = ['PAPERCUSP_KICKOFF_PROMPT=', '⟦turn-origin:'];
+const PROMPT_ARG_PREFIXES = ['--kickoff=', '--label='];
 const DEFAULT_INTERPRETER_BASENAMES = new Set(['node', 'nodejs', 'npx', 'npm', 'gitnexus', 'gitnexus.js']);
+const DEFAULT_PROCESS_CMDLINE_MAX_CHARS = 200;
 
 /**
  * Parse a NUL-separated /proc/<pid>/cmdline buffer into a display string (space-joined args).
@@ -150,6 +153,20 @@ export function parseArgv(raw) {
     .toString('utf8')
     .split('\0')
     .filter((s) => s.length > 0);
+}
+
+/**
+ * Format a process command line for human-facing output without flooding a
+ * terminal with a launcher's embedded work-item brief.
+ *
+ * @param {string} cmdline
+ * @param {{ verbose?: boolean }} [opts]
+ * @returns {string}
+ */
+export function formatProcessCmdline(cmdline, opts = {}) {
+  const text = String(cmdline);
+  if (opts.verbose || text.length <= DEFAULT_PROCESS_CMDLINE_MAX_CHARS) return text;
+  return `${text.slice(0, DEFAULT_PROCESS_CMDLINE_MAX_CHARS - 1)}…`;
 }
 
 /**
@@ -182,6 +199,13 @@ export function isStructuredPayloadArg(arg) {
   }
 }
 
+function isPromptPayloadArg(arg) {
+  return (
+    PROMPT_ARG_MARKERS.some((marker) => arg.includes(marker)) ||
+    PROMPT_ARG_PREFIXES.some((prefix) => arg.startsWith(prefix))
+  );
+}
+
 /**
  * Remove agent prompt payloads and peers' structured (JSON) payloads from argv
  * before process matching. The executable and every real argument remain
@@ -197,7 +221,7 @@ export function isStructuredPayloadArg(arg) {
 export function getOperationalArgv(argv) {
   return argv.filter(
     (arg, index) =>
-      index === 0 || (!PROMPT_ARG_MARKERS.some((marker) => arg.includes(marker)) && !isStructuredPayloadArg(arg)),
+      index === 0 || (!isPromptPayloadArg(arg) && !isStructuredPayloadArg(arg)),
   );
 }
 
@@ -650,6 +674,7 @@ async function main(argv) {
         .filter(Boolean)
     : undefined;
   const busy = flags.includes('--busy');
+  const verbose = flags.includes('--verbose');
   const sampleMsFlag = flags.find((f) => f.startsWith('--sample-ms='));
   const sampleMs = sampleMsFlag ? Number(sampleMsFlag.slice('--sample-ms='.length)) : DEFAULT_SAMPLE_MS;
   const budgetMsFlag = flags.find((f) => f.startsWith('--budget-ms='));
@@ -664,10 +689,11 @@ async function main(argv) {
     !Number.isFinite(budgetMs)
   ) {
     console.error(
-      'usage: node scripts/proc-guard.mjs check <pattern> [--argv-sequence=<first,second>] [--busy] [--sample-ms=<n>] [--budget-ms=<n>]\n' +
+      'usage: node scripts/proc-guard.mjs check <pattern> [--argv-sequence=<first,second>] [--busy] [--verbose] [--sample-ms=<n>] [--budget-ms=<n>]\n' +
         '  --argv-sequence=<csv>  require literal adjacent argv tokens; the first token is matched by basename\n' +
         '  --busy  also answer "is it WORKING" — a two-sample cgroup CPU rate per match,\n' +
         '          which sees every descendant at any depth (a /proc tree walk does not).\n' +
+        '  --verbose  print each matching process\'s full command line (default: first 200 chars)\n' +
         '  --budget-ms=<n>  shared wall-clock budget for all --busy samples (default 15s).',
     );
     process.exit(2);
@@ -693,7 +719,7 @@ async function main(argv) {
   console.log(`proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`);
   const samples = busy ? await sampleBusyMatches(matches, { sampleMs, budgetMs }) : [];
   for (const [index, m] of matches.entries()) {
-    console.log(`  ${m.pid}  ${m.cmdline}`);
+    console.log(`  ${m.pid}  ${formatProcessCmdline(m.cmdline, { verbose })}`);
     if (identityMatches.some((identityMatch) => identityMatch.pid === m.pid)) {
       console.log('         identity: green-checkpoint gate markers or checkpoint cgroup');
     }
