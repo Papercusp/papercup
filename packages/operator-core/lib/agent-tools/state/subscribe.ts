@@ -80,12 +80,16 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('SUBJECT for a caller-relative cell (see state:read `as`). Where the cell\'s parameter is an agent identity, the literal "self" means you. Not an identity override — your audience is always what is checked.'),
-    of: z
-      .enum(['value', 'material'])
+    target: z
+      .enum(['assessment', 'measurement', 'material'])
       .optional()
       .describe(
-        'WHICH of the cell\'s paths your condition is about. "value" (DEFAULT) = the headline value. "material" = the cell\'s declared MATERIALITY path, so a high-churn cell wakes you only on a change that matters (P-021). Refused when the cell declares no materiality — you are told the cell has none rather than silently watching the churny path.',
+        'WHICH of the cell\'s paths your condition is about. "assessment" = the declared semantic CODE, and the DEFAULT on a cell that declares one: wake me when the MEANING moves, even if the raw number did not. "measurement" = the headline value — say it for a threshold or a sha. "material" = the declared materiality path (P-021). A target the cell does not declare is refused, never silently swapped for one it does.',
       ),
+    of: z
+      .string()
+      .optional()
+      .describe('RENAMED to `target` ("value" is now "measurement"). Refused, never translated — see the refusal.'),
     once: z.boolean().optional().describe('true (DEFAULT) = fire once then clear. false = standing; re-fires on each false→true cross.'),
     interval_sec: z.number().int().min(15).max(3600).optional().describe('Poll cadence (default 60).'),
     note: z.string().max(2000).optional().describe('Why you are watching — echoed into the wake turn.'),

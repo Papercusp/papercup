@@ -27,8 +27,9 @@
  *  - `skipped: 'read-failed'` is NOT `'no-fleet'`. "This agent leads nothing"
  *    and "we could not read its fleet" look identical on screen unless the pane
  *    is told which, and the second is the case where a leader is flying blind.
- *  - `claimable_now: null` means the lane read FAILED, not that the lane is
- *    drained. It is never rendered as 0.
+ *  - `claimable_now.value: null` means the lane read FAILED, not that the lane
+ *    is drained. Its `population` and in-band `unknown` reason travel with the
+ *    value; it is never rendered as 0.
  *  - a custom invariant with `status:'error'` is a check that could not run. It
  *    protects the leader from nothing, so it fires as an alert rather than
  *    counting toward "all satisfied".

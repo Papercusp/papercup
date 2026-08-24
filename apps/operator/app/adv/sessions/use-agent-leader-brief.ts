@@ -169,9 +169,30 @@ export interface LeaderBriefSummary {
   spinning?: number;
   throttled?: number;
   coord_deaf?: number;
-  /** null ⇒ could not be read on this brief — NOT zero, and never to be read as
-   *  a drained lane. */
-  claimable_now?: number | null;
+  /**
+   * The fleet claim-lane count and the exact population it measured. The scope
+   * is deliberately inside the aggregate: callers must not be able to pluck a
+   * number while silently dropping the claim-spec/harness that gives it meaning.
+   * `value:null` is UNKNOWN, never a drained lane, and carries an in-band reason.
+   */
+  claimable_now?: {
+    value: number | null;
+    population: {
+      kind: 'fleet-claim-spec';
+      fleet?: string;
+      harness?: string | null;
+      spec?: {
+        ref?: string;
+        revision?: number | null;
+        matchedBy?: string;
+        assigneeScoped?: string | null;
+      } | null;
+      basis?: 'issue-family' | 'feature-family' | 'issue+feature-family' | 'no-family' | null;
+      matchedByFilter?: number | null;
+      note?: string;
+    };
+    unknown?: { code: 'not-measured'; detail?: string };
+  };
   /** The live shared-inference-pool verdict. null means unread this call, never
    *  "healthy". */
   pool_capacity?: {
