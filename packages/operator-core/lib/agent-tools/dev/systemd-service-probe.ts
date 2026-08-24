@@ -118,7 +118,7 @@ export interface ServiceStartInfo {
  *  — a unit that does not exist, so systemctl silently reported MainPID=0 for a healthy,
  *  `active`/`waiting` timer, and nobody could see it because that same 0 was previously
  *  indistinguishable from a probe failure (the exact defect this file's other fix kills). */
-const KNOWN_UNIT_SUFFIXES = /\.(service|timer|socket|target|mount|path|slice)$/;
+const KNOWN_UNIT_SUFFIXES = /\.(service|socket|device|mount|automount|swap|target|path|timer|slice|scope)$/;
 
 /**
  * PURE — the unit-type-suffix decision, split out so the exact `.timer`

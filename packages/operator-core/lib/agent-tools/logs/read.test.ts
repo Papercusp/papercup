@@ -61,6 +61,11 @@ describe('logs:read — unit resolution', () => {
     expect(readJournalMock.mock.calls[0][0].units).toEqual(['papercup-live-federation-gate.timer']);
   });
 
+  it('leaves an explicit transient .scope unit alone', async () => {
+    await call({ unit: 'run-u294390.scope' });
+    expect(readJournalMock.mock.calls[0][0].units).toEqual(['run-u294390.scope']);
+  });
+
   it('accepts several units as one merged stream', async () => {
     await call({ unit: ['papercup-dev-api', 'papercup-staging-api.service'] });
     expect(readJournalMock.mock.calls[0][0].units).toEqual([

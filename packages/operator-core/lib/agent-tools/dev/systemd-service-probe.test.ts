@@ -45,7 +45,7 @@ describe('resolveUnitName (EI-18700974567040702: the .timer mangling bug)', () =
   });
 
   it('leaves every other recognized systemd unit-type suffix untouched too', () => {
-    for (const suffix of ['socket', 'target', 'mount', 'path', 'slice']) {
+    for (const suffix of ['socket', 'device', 'mount', 'automount', 'swap', 'target', 'path', 'slice', 'scope']) {
       expect(resolveUnitName(`some-unit.${suffix}`)).toBe(`some-unit.${suffix}`);
     }
   });
