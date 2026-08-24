@@ -98,6 +98,17 @@ import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spaw
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
+import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
+
+// WI-41422: this entrypoint is also launched directly by desktop-dev/background
+// task supervision, bypassing serve.ts (and its stdio guard). If that supervisor
+// disappears, stdout/stderr become peer-gone sockets: an unguarded write emits an
+// `error`, the process-level uncaughtException handler below diagnoses it through
+// console.warn, and the failing diagnostic write recursively re-enters the same
+// handler until the main thread and HTTP accept backlog saturate. Reuse the shared
+// absorber before ANY sidecar divert or process-level fault handler can write.
+// Idempotence makes this safe for the gateway divert, which installs it too.
+installStdioPeerGuard();
 
 // WI-3849: arm Node's diagnostic-report-on-SIGABRT as early as possible (before
 // the sidecar divert, so every process type this entry can become — main host,

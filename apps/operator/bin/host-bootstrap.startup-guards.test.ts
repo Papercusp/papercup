@@ -150,6 +150,30 @@ describe('hono-host wires request-worker allocation sampling', () => {
   });
 });
 
+describe('hono-host absorbs a dead stdio peer before process-level fault handling', () => {
+  it('installs the shared stdio guard at module scope before diagnostics and exception handlers', () => {
+    // WI-41422: desktop-dev/background task supervision enters hono-host.ts
+    // directly, so serve.ts's otherwise-correct guard never runs. When the
+    // supervisor-side stdout/stderr socket disappears, console.warn inside the
+    // uncaughtException handler recursively raises another EPIPE and burns the
+    // main thread. The guard's behavioural tests prove that it absorbs the
+    // stream error; this assertion proves THIS entrypoint actually installs it.
+    const guardImport = honoHostSrc.indexOf(
+      "@papercusp/operator-core/lib/process-supervision/stdio-peer-guard",
+    );
+    const guardCall = honoHostSrc.indexOf('\ninstallStdioPeerGuard();');
+    const fatalDiagnostics = honoHostSrc.indexOf('\ninstallFatalDiagnostics();');
+    const unhandledRejection = honoHostSrc.indexOf("process.on('unhandledRejection'");
+    const uncaughtException = honoHostSrc.indexOf("process.on('uncaughtException'");
+
+    expect(guardImport).toBeGreaterThan(-1);
+    expect(guardCall).toBeGreaterThan(guardImport);
+    expect(guardCall).toBeLessThan(fatalDiagnostics);
+    expect(guardCall).toBeLessThan(unhandledRejection);
+    expect(guardCall).toBeLessThan(uncaughtException);
+  });
+});
+
 describe('hono-host arms remote authorization before listening', () => {
   it('calls assertRemoteAuthReady(hostname) before any request server can bind', () => {
     const guard = honoHostSrc.indexOf(
