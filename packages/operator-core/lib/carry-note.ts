@@ -34,6 +34,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { Sql, TransactionSql } from 'postgres';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { boundedPgReadTxn } from './pg-read-query';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 import {
   PROBE_SCOPE_MARKER_RE,
@@ -1828,10 +1829,9 @@ export async function getCarryNote(ref: CarryNoteRef | string): Promise<string |
   } catch {
     return null;
   }
-  const { sql } = getOrgPg();
-  const rows = await sql<{ note: string | null }[]>`
+  const rows = await boundedPgReadTxn<{ note: string | null }[]>((tx) => tx`
     SELECT note FROM harness_shared.carry_notes
-     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
+     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`);
   const note = (rows[0]?.note ?? '').trim();
   return note.length > 0 ? note : null;
 }
@@ -1845,10 +1845,9 @@ export async function getCarryJournal(ref: CarryNoteRef | string): Promise<Carry
   } catch {
     return [];
   }
-  const { sql } = getOrgPg();
-  const rows = await sql<{ journal: unknown }[]>`
+  const rows = await boundedPgReadTxn<{ journal: unknown }[]>((tx) => tx`
     SELECT journal FROM harness_shared.carry_notes
-     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
+     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`);
   return [...normalizeJournal(rows[0]?.journal)].reverse();
 }
 
@@ -1942,11 +1941,10 @@ export async function setLoopCarryNoteWithPrior(
 export async function getLoopCarryNote(ref: LoopCarryNoteRef): Promise<string | null> {
   const scope = loopScope(ref.harness, ref.ownerId);
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ note: string | null }[]>`
+    const rows = await boundedPgReadTxn<{ note: string | null }[]>((tx) => tx`
       SELECT note FROM harness_shared.carry_notes
        WHERE scope = ${scope} AND note IS NOT NULL
-       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`;
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`);
     const note = (rows[0]?.note ?? '').trim();
     return note.length > 0 ? note : null;
   } catch {
@@ -1971,11 +1969,10 @@ export interface LoopCarryNoteWithMeta {
 export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<LoopCarryNoteWithMeta> {
   const scope = loopScope(ref.harness, ref.ownerId);
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ note: string | null; updated_ts: string | number | null }[]>`
+    const rows = await boundedPgReadTxn<{ note: string | null; updated_ts: string | number | null }[]>((tx) => tx`
       SELECT note, updated_ts FROM harness_shared.carry_notes
        WHERE scope = ${scope} AND note IS NOT NULL
-       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`;
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`);
     const note = (rows[0]?.note ?? '').trim();
     if (note.length === 0) return { note: null, updatedAtMs: null };
     const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
@@ -1991,11 +1988,10 @@ export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<L
 export async function getLoopCarryJournal(ref: LoopCarryNoteRef): Promise<CarryJournalEntry[]> {
   const scope = loopScope(ref.harness, ref.ownerId);
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ journal: unknown }[]>`
+    const rows = await boundedPgReadTxn<{ journal: unknown }[]>((tx) => tx`
       SELECT journal FROM harness_shared.carry_notes
        WHERE scope = ${scope}
-       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`;
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`);
     return [...normalizeJournal(rows[0]?.journal)].reverse();
   } catch {
     return [];

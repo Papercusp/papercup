@@ -16,7 +16,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { pgReadQuery, explainReadQuery, PgReadQueryError, describeRelation, listRelations } from './pg-read-query';
+import {
+  boundedPgReadTxn,
+  pgReadQuery,
+  explainReadQuery,
+  PgReadQueryError,
+  describeRelation,
+  listRelations,
+} from './pg-read-query';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -108,6 +115,35 @@ describe('pgReadQuery (real PG)', () => {
     await expect(
       pgReadQuery('SELECT 1; SELECT 2', { client: db.adminSql }),
     ).rejects.toThrow(PgReadQueryError);
+  });
+});
+
+describe('boundedPgReadTxn (real PG)', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('uses a READ ONLY transaction and lets PostgreSQL cancel a slow statement', async () => {
+    const readOnly = await boundedPgReadTxn(
+      async (tx) => tx`SELECT current_setting('transaction_read_only') AS read_only`,
+      { client: db.adminSql, timeoutMs: 1000 },
+    );
+    expect(readOnly[0]?.read_only).toBe('on');
+
+    const startedAt = Date.now();
+    await expect(
+      boundedPgReadTxn(
+        async (tx) => tx`SELECT pg_sleep(1)`,
+        { client: db.adminSql, timeoutMs: 150, acquireTimeoutMs: 1000 },
+      ),
+    ).rejects.toMatchObject({ code: '57014' });
+    expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 });
 

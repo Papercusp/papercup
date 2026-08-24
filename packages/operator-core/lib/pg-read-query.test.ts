@@ -31,6 +31,7 @@ import {
   classifyTenantPrescription,
   refutedTenantAdvisory,
   pgReadQuery,
+  boundedPgReadTxn,
   PgReadQueryError,
   PgReadQueryTimeoutError,
   PG_READ_QUERY_CALL_OVERHEAD_MS,
@@ -254,6 +255,65 @@ describe('pgReadQuery — whole-call deadline (EI-19415142351884573)', () => {
     await expect(
       pgReadQuery('SELECT 1', { client: failingClient, timeoutMs: 5000 }),
     ).rejects.toThrow('connection refused');
+  });
+});
+
+describe('boundedPgReadTxn — bounded internal loop reads', () => {
+  it('sets READ ONLY, statement_timeout, and UTC before invoking the callback', async () => {
+    const unsafeCalls: string[] = [];
+    let taggedCalls = 0;
+    const tx = Object.assign(
+      async (..._args: unknown[]) => {
+        taggedCalls += 1;
+        return [];
+      },
+      {
+        unsafe: async (query: string) => {
+          unsafeCalls.push(query);
+          return [];
+        },
+      },
+    );
+    const client = {
+      begin: async (fn: (tx: unknown) => Promise<unknown>) => fn(tx),
+    };
+
+    const result = await boundedPgReadTxn(
+      async (transaction) => {
+        await transaction`SELECT 1`;
+        return 'ok';
+      },
+      { client: client as never, timeoutMs: 1234 },
+    );
+
+    expect(result).toBe('ok');
+    expect(unsafeCalls).toEqual(['SET TRANSACTION READ ONLY', "SET LOCAL TIME ZONE 'UTC'"]);
+    // One tagged query installs statement_timeout; the second is the callback's query.
+    expect(taggedCalls).toBe(2);
+  });
+
+  it('fails a hung connection acquisition before invoking the callback', async () => {
+    vi.useFakeTimers();
+    try {
+      let callbackCalled = false;
+      const promise = boundedPgReadTxn(
+        async () => {
+          callbackCalled = true;
+          return 'late';
+        },
+        {
+          client: { begin: () => new Promise(() => {}) } as never,
+          timeoutMs: 100,
+          acquireTimeoutMs: 100,
+        },
+      );
+      const assertion = expect(promise).rejects.toThrow(/db-call-deadline/i);
+      await vi.advanceTimersByTimeAsync(101);
+      await assertion;
+      expect(callbackCalled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
