@@ -97,11 +97,13 @@ describe('reconcileWakeability (EI-6077)', () => {
     expect(out.alive).toBe(false);
   });
 
-  it('EI-8106: not wakeable but positively recorded live → sessionState recorded, not ended', async () => {
-    const agent = baseAgent({ alive: false });
+  it('EI-8106: actively tool-calling recorded successor is live before inbox wake is armed', async () => {
+    // A live turn is stronger than the recorded-session fallback: the
+    // successor is already doing work even though its inbox wake is not armed.
+    const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: true } });
     const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']));
-    expect(out.sessionState).toBe('recorded');
+    expect(out.sessionState).toBe('live');
     expect(out.alive).toBe(true);
   });
 
