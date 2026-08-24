@@ -197,19 +197,49 @@ function emptyLane(): RepeatedApproachLane {
   };
 }
 
+const WORKITEM_SCOPE_PREFIX = 'workitem:';
+
+/**
+ * Recover the work-item id from a carry-note scope, IGNORING the harness component.
+ *
+ * A checkpoint keys under `workitem:<harness>:<id>`, where `<harness>` is whatever the WRITING
+ * session resolved — the harness slug, or the `*` wildcard when it had none. Measured here:
+ * 3,370 notes under `papercusp`, 427 under `*`, and a long tail under other slugs. Matching only
+ * the harness-qualified key misses the rest and reports those items as un-briefed, which
+ * INFLATES the paired failure — measured at 1 re-attempted item, small but wrong in the
+ * direction that makes the system look worse than it is.
+ *
+ * Ignoring the harness component is safe for exactly the reason `work-item-checkpoint.ts` gives
+ * for collapsing it onto a sentinel in the first place: "The work-item id is unique within the
+ * workspace, so collapsing the harness component onto a single sentinel never collides." This is
+ * that same invariant, read rather than written. {@link checkpointScopeRoundTripsToItemId} pins
+ * the two together so a change to the scope FORMAT cannot silently strand this parser.
+ */
+export function itemIdFromCheckpointScope(scope: string): string | null {
+  if (!scope.startsWith(WORKITEM_SCOPE_PREFIX)) return null;
+  const rest = scope.slice(WORKITEM_SCOPE_PREFIX.length);
+  const separator = rest.indexOf(':');
+  if (separator < 0) return null;
+  const id = rest.slice(separator + 1);
+  return id.length > 0 ? id : null;
+}
+
+/**
+ * Falsifiability seam, exported for the test rather than asserted in prose: the canonical scope
+ * BUILDER and this parser must agree. If `workItemCheckpointScope` ever changes shape, this
+ * returns false and the test fails, instead of the parser silently returning null for every row
+ * and reporting a comfortable "nothing is briefable".
+ */
+export function checkpointScopeRoundTripsToItemId(harness: string | null, workItemId: string): boolean {
+  return itemIdFromCheckpointScope(workItemCheckpointScope(harness, workItemId)) === workItemId;
+}
+
 /**
  * Which items carry a durable carry-note.
  *
  * Reads the workspace's work-item notes ONCE (a few thousand rows) and intersects in memory,
  * rather than sending one key per candidate item — the candidate set is the whole corpus here,
  * and the note population is three orders of magnitude smaller.
- *
- * ⚠ Both scope namespaces are checked. A checkpoint keys under `workitem:<harness>:<id>` OR
- * under the `workitem:*:<id>` wildcard depending on whether the WRITING session resolved a
- * harness — 3,370 vs 427 rows here. Matching only the harness-qualified key would silently miss
- * the wildcard population and report those items as un-briefed, inflating the paired failure.
- * That is the EI-8805 namespace-drift class, which is exactly why `workItemCheckpointScope` is
- * exported for other readers instead of each one re-deriving the string.
  */
 async function defaultListCheckpointedItems(input: {
   harnessSlug?: string;
@@ -231,12 +261,12 @@ async function defaultListCheckpointedItems(input: {
     `,
   );
 
-  const present = new Set(rows.map((r) => r.scope));
-  return input.workItemIds.filter(
-    (id) =>
-      present.has(workItemCheckpointScope(scope.harnessSlug, id)) ||
-      present.has(workItemCheckpointScope(null, id)),
-  );
+  const noted = new Set<string>();
+  for (const r of rows) {
+    const id = itemIdFromCheckpointScope(r.scope);
+    if (id) noted.add(id);
+  }
+  return input.workItemIds.filter((id) => noted.has(id));
 }
 
 export { defaultListCheckpointedItems as listCheckpointedItems };

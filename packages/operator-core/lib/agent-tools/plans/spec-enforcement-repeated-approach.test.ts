@@ -170,27 +170,23 @@ describe('the D-003 pairing — the metric must not be readable alone', () => {
     // The SAME two re-attempted items, differing only in whether a durable note exists. The
     // favourable metric is identical in both worlds; only the paired failure moves. That is the
     // whole point of the pairing — a scorer that reads `metric` alone cannot tell these apart.
-    const withNotes = await computeSpecEnforcementRepeatedApproach(
-      deps({
-        items: [item({ workItemId: 'WI-1' }), item({ workItemId: 'WI-2' })],
-        claims: [
-          claim({ workItemId: 'WI-1', wonClaimCount: 2 }),
-          claim({ workItemId: 'WI-2', wonClaimCount: 2 }),
-        ],
-        checkpointed: ['WI-1', 'WI-2'],
-      }),
-    );
-    const withoutNotes = await computeSpecEnforcementRepeatedApproach(
-      deps({
-        items: [item({ workItemId: 'WI-1' }), item({ workItemId: 'WI-2' })],
-        claims: [
-          claim({ workItemId: 'WI-1', wonClaimCount: 2 }),
-          claim({ workItemId: 'WI-2', wonClaimCount: 2 }),
-        ],
-        checkpointed: [],
-      }),
-    );
+    const world = (checkpointed: string[]) =>
+      computeSpecEnforcementRepeatedApproach(
+        deps({
+          items: [item({ workItemId: 'WI-1' }), item({ workItemId: 'WI-2' })],
+          claims: [
+            claim({ workItemId: 'WI-1', wonClaimCount: 3 }),
+            claim({ workItemId: 'WI-2', wonClaimCount: 3 }),
+          ],
+          checkpointed,
+        }),
+      );
+    const withNotes = await world(['WI-1', 'WI-2']);
+    const withoutNotes = await world([]);
 
+    // A NON-ZERO metric, identical in both worlds — so the assertion cannot pass merely because
+    // both happen to be zero.
+    expect(withNotes.rollup.pairing.metric).toBe(500);
     expect(withoutNotes.rollup.pairing.metric).toBe(withNotes.rollup.pairing.metric);
     expect(withNotes.rollup.pairing.pairedFailure).toBe(0);
     expect(withoutNotes.rollup.pairing.pairedFailure).toBe(1000);

@@ -10,6 +10,7 @@ import {
 } from './spec-reconciliation';
 import { computeSpecEnforcementLatency } from './spec-enforcement-latency';
 import { computeSpecEnforcementEscape } from './spec-enforcement-escape';
+import { computeSpecEnforcementRepeatedApproach } from './spec-enforcement-repeated-approach';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -31,8 +32,9 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Include the work-item-axis outcome rollups — claim-to-completion latency and defect ' +
-        "escape — each split by whether the item's plan was enforcement-eligible. Default true.",
+      'Include the work-item-axis outcome rollups — claim-to-completion latency, defect escape, ' +
+        "and repeated failed work — each split by whether the item's plan was enforcement-" +
+        'eligible. Default true.',
     ),
 });
 
@@ -68,12 +70,13 @@ export default defineTool({
     // living on a per-plan row is how a plan census quietly starts reporting an item statistic.
     // Its own `rows` (one per measured item) are deliberately NOT shipped — this tool's rows are
     // plans, and the latency question is answered by the distribution, not by 7,000 durations.
-    const [latency, escape] =
+    const [latency, escape, repeatedWork] =
       args.includeLatency === false
-        ? [undefined, undefined]
+        ? [undefined, undefined, undefined]
         : await Promise.all([
             computeSpecEnforcementLatency({}, { harnessSlug }).then((l) => l.rollup),
             computeSpecEnforcementEscape({}, { harnessSlug }).then((e) => e.rollup),
+            computeSpecEnforcementRepeatedApproach({}, { harnessSlug }).then((r) => r.rollup),
           ]);
 
     const wanted = new Set<AdoptionState>(args.adoption ?? ['adopted', 'legacy-val-only', 'no-behavior-declared']);
@@ -92,6 +95,9 @@ export default defineTool({
         rollup,
         latency,
         escape,
+        // Measure 4. Its `pairing` is the load-bearing field: the repeated-failure rate improves
+        // if agents leave LESS behind, so it must never be read without `unbriefablePerThousand`.
+        repeatedWork,
         rows: shown.map(compactRow),
         rowsMatched: matching.length,
         rowsShown: shown.length,
