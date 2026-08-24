@@ -6104,7 +6104,7 @@
           "POST"
         ]
       },
-      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`; free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for query matching or a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`. Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
       "capabilities": [
         "coord:read"
       ],
@@ -15671,7 +15671,7 @@
           "POST"
         ]
       },
-      "description": "Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active classic locks across every coordination domain, or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. Fires the classic file-lock grant cascade for waiting agents.",
+      "description": "Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. Fires the classic file-lock grant cascade for waiting agents.",
       "capabilities": [
         "locks:write"
       ],
