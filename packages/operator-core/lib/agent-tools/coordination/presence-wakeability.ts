@@ -94,6 +94,14 @@ export interface WakeabilitySignals {
    * parked, or still-delivering rows are not a confirmed miss.
    */
   wakeAttemptMiss?: boolean;
+  /**
+   * Epoch-ms of this owner's most recent agent_activity, or null when it has
+   * none inside WAKE_MISS_EVIDENCE_WINDOW_MS. Distinct from `liveTurn`, which
+   * is a 10-minute boolean: this is the raw age the ACTIVITY-clock ceilings
+   * below need (EI-21356812816484561). Free to emit — the widened activity
+   * query already selects it.
+   */
+  lastActivityMs?: number | null;
 }
 
 /**
