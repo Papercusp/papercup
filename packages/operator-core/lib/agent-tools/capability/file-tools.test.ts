@@ -37,6 +37,75 @@ function parse(r: { content: Array<{ text: string }> }): Record<string, unknown>
 }
 
 describe('capability:read', () => {
+  it('recovers a project-relative read from a phantom root through the canonical integration checkout', async () => {
+    const phantom = mkNonRepoTmpDir('cap-read-phantom-');
+    const canonical = mkNonRepoTmpDir('cap-read-canonical-');
+    const relativePath = join('packages', 'operator-core', 'canonical-only.ts');
+    const canonicalFile = join(canonical, relativePath);
+    mkdirSync(dirname(canonicalFile), { recursive: true });
+    writeFileSync(canonicalFile, 'export const canonical = true;\n');
+
+    const previousIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = canonical;
+    try {
+      const r = (await readTool.handler!(
+        { file_path: relativePath, offset: 1, limit: 1 },
+        { ...baseCtx, projectDir: phantom } as never,
+      )) as { content: Array<{ text: string }>; isError?: boolean };
+
+      expect(r.isError).not.toBe(true);
+      expect(r.content[0].text).toContain(canonicalFile);
+      expect(r.content[0].text).toContain('export const canonical = true;');
+    } finally {
+      if (previousIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = previousIntegrationRoot;
+    }
+  });
+
+  it('keeps the requested project tree authoritative when both trees contain the relative path', async () => {
+    const requested = mkNonRepoTmpDir('cap-read-requested-');
+    const canonical = mkNonRepoTmpDir('cap-read-canonical-');
+    const relativePath = 'shared.txt';
+    writeFileSync(join(requested, relativePath), 'requested\n');
+    writeFileSync(join(canonical, relativePath), 'canonical\n');
+
+    const previousIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = canonical;
+    try {
+      const r = (await readTool.handler!(
+        { file_path: relativePath, raw: true },
+        { ...baseCtx, projectDir: requested } as never,
+      )) as { content: Array<{ text: string }>; isError?: boolean };
+
+      expect(r.isError).not.toBe(true);
+      expect(r.content[0].text).toBe('requested\n');
+    } finally {
+      if (previousIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = previousIntegrationRoot;
+    }
+  });
+
+  it('keeps a missing relative path loud at the requested root when no canonical match exists', async () => {
+    const requested = mkNonRepoTmpDir('cap-read-missing-requested-');
+    const canonical = mkNonRepoTmpDir('cap-read-missing-canonical-');
+
+    const previousIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = canonical;
+    try {
+      const r = (await readTool.handler!(
+        { file_path: 'still-missing.ts' },
+        { ...baseCtx, projectDir: requested } as never,
+      )) as { content: Array<{ text: string }>; isError?: boolean };
+
+      expect(r.isError).toBe(true);
+      expect(parse(r)).toMatchObject({ reason: 'read_failed' });
+      expect(String(parse(r).message)).toContain(join(requested, 'still-missing.ts'));
+    } finally {
+      if (previousIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = previousIntegrationRoot;
+    }
+  });
+
   it('returns numbered lines', async () => {
     const f = join(DIR, 'r.txt');
     writeFileSync(f, 'alpha\nbravo\ncharlie\n');
