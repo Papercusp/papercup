@@ -138,8 +138,9 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'transient',
+    errorCodes: ['sidecar_required_unavailable'],
     messagePattern: INFRA_TRANSIENT_MESSAGE_PATTERN,
-    why: 'shared-infra exhaustion (PG max_connections / DB unavailable) — load, not a per-tool bug',
+    why: 'shared-infra exhaustion (PG max_connections / DB unavailable / embedding sidecar unavailable) — load, not a per-tool bug',
   },
 ];
 

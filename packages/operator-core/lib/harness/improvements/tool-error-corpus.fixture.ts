@@ -87,6 +87,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: 'operator shutdown-window response — transient lifecycle state, not a structural coord:glance bug (EI-20257122293248893)',
   },
+  {
+    n: 1, errorCode: 'sidecar_required_unavailable', status: 'degraded',
+    message: 'sidecar_required_unavailable: semantic search sidecar at http://127.0.0.1:3384 aborted; lexical-only fallback returned',
+    expectedClass: 'transient',
+    note: 'shared embedding sidecar outage — degraded lexical fallback is infrastructure availability, not a per-tool structural bug',
+  },
 
   // ── rate-limit: external provider 429 (capacity, not a code bug) ────────────
   {
