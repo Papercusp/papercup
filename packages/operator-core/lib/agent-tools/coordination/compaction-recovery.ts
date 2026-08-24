@@ -2,6 +2,7 @@ import {
   capPreservingOperativeDetailed,
   type CapPreservingOperativeTruncation,
 } from '../../operative-clause';
+import { workItemFetchHint } from '../../work-item-fetch-hint';
 
 /**
  * Post-compaction recovery fold for coord:orient
@@ -50,6 +51,18 @@ export interface CompactionRecovery {
    *  (compaction-fold-audit-2026-07-06). */
   checkpoints?: Array<{
     id: string;
+    /** EI-20451119672468393: the item's CANONICAL harness — may DIFFER from the
+     *  harness your session is scoped to (this fold re-delivers held items
+     *  ACROSS harnesses). A same-scope `work_items:*` / `plans:*` read can then
+     *  report the item or its plan missing; pass THIS value explicitly when
+     *  re-fetching. Absent ⇒ an operator/global-scoped item (no harness —
+     *  never a guessed slug, per EI-8813). */
+    harness?: string;
+    /** Present ONLY when `harness` contradicts the session harness this
+     *  recovery was built under — the exact shape where a cold successor
+     *  concludes a carried item is gone (EI-20451119672468393: a
+     *  sb-devboard-hive session holding papercusp-harness WI-3496). */
+    crossHarnessNote?: string;
     title?: string;
     body?: string;
     checkpoint: string | null;
@@ -87,6 +100,10 @@ const BODY_CAP = 600;
 export async function buildCompactionRecovery(
   ownerId: string,
   workspaceId: string,
+  /** EI-20451119672468393: `sessionHarness` is the harness the CALLER's session
+   *  is scoped to (null/omitted ⇒ unscoped). Used ONLY to flag held items whose
+   *  canonical harness contradicts it — never to filter them out. */
+  opts: { sessionHarness?: string | null } = {},
 ): Promise<CompactionRecovery> {
   const recovery: CompactionRecovery = {
     selfRecall:
@@ -173,15 +190,29 @@ export async function buildCompactionRecovery(
         // bodiesTruncated); these two fields were the holdout, on the one path
         // where the reader is a cold successor whose whole resume state is what
         // it can see here. Hence the `*Truncated` siblings below.
-        const fetch = `work_items:get { id: '${h.id}' }`;
+        // EI-20451119672468393: the re-fetch hint names the item's CANONICAL
+        // harness — readHeldWorkItems spans harnesses, and WI-<n> ids are not
+        // globally unique (work-items-harness-scope.ts), so an unqualified
+        // re-read from a differently-scoped session can miss or mis-resolve.
+        // workItemFetchHint is the shared builder so every carry surface emits
+        // the same qualified form.
+        const fetch = workItemFetchHint(h.id, h.harness);
         const ckpt = h.checkpoint
           ? capPreservingOperativeDetailed(h.checkpoint, CHECKPOINT_CAP, { more: fetch })
           : null;
         const body = h.body
           ? capPreservingOperativeDetailed(h.body, BODY_CAP, { more: fetch })
           : null;
+        const crossHarness =
+          h.harness && opts.sessionHarness && h.harness !== opts.sessionHarness
+            ? `⚠ this item's canonical harness is '${h.harness}', NOT your session's ` +
+              `'${opts.sessionHarness}' — pass harness explicitly on work_items:* / plans:* ` +
+              `reads for it, or they can report it missing (it is NOT gone)`
+            : null;
         return {
           id: h.id,
+          ...(h.harness ? { harness: h.harness } : {}),
+          ...(crossHarness ? { crossHarnessNote: crossHarness } : {}),
           ...(h.title ? { title: h.title.slice(0, 120) } : {}),
           ...(body ? { body: body.text } : {}),
           ...(body?.truncation ? { bodyTruncated: body.truncation } : {}),

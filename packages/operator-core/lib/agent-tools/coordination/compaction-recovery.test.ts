@@ -67,4 +67,36 @@ describe('buildCompactionRecovery — held-item checkpoint fold', () => {
     expect(ckpt.length).toBeLessThan(CHECKPOINT.length);
     expect(ckpt).toContain('…');
   });
+
+  // EI-20451119672468393: the fold re-delivers held items ACROSS harnesses, so
+  // each row must name its CANONICAL harness and the re-fetch hint must be
+  // harness-qualified — an unqualified `work_items:get { id }` from a
+  // differently-scoped successor session made a real carried item (WI-3496,
+  // harness papercusp, read from a sb-devboard-hive session) look GONE.
+  it('folds the canonical harness + a harness-qualified re-fetch hint (EI-20451119672468393)', async () => {
+    const { buildCompactionRecovery } = await import('./compaction-recovery');
+    const recovery = await buildCompactionRecovery('owner-x', 'ws-1');
+    const row = recovery.checkpoints?.[0];
+    expect(row?.harness).toBe('h');
+    expect(row?.checkpointTruncated?.more).toBe("work_items:get { id: 'WI-37110', harness: 'h' }");
+    // No session harness supplied ⇒ no cross-harness verdict either way.
+    expect(row?.crossHarnessNote).toBeUndefined();
+  });
+
+  it('flags a held item whose canonical harness contradicts the session harness', async () => {
+    const { buildCompactionRecovery } = await import('./compaction-recovery');
+    const recovery = await buildCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'sb-devboard-hive',
+    });
+    const note = recovery.checkpoints?.[0]?.crossHarnessNote ?? '';
+    expect(note).toContain("'h'");
+    expect(note).toContain("'sb-devboard-hive'");
+    expect(note).toContain('NOT gone');
+  });
+
+  it('emits no cross-harness note when the session harness matches', async () => {
+    const { buildCompactionRecovery } = await import('./compaction-recovery');
+    const recovery = await buildCompactionRecovery('owner-x', 'ws-1', { sessionHarness: 'h' });
+    expect(recovery.checkpoints?.[0]?.crossHarnessNote).toBeUndefined();
+  });
 });

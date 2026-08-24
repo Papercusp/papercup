@@ -45,6 +45,7 @@ import { DEAD_END_KEY_PREFIX, type FactSourceProvenance } from './agent-facts/st
 // call site below, matching how this module already defers `foldFacts`.
 import type { FactContestMark } from './agent-tools/facts/contested-fold';
 import { capPreservingOperative } from './operative-clause';
+import { workItemFetchHint } from './work-item-fetch-hint';
 import {
   checkCarriedFactsStaleness,
   renderFactsStalenessWarning,
@@ -188,11 +189,12 @@ function renderCheckpointChecksDisclosure(
   checkpoint: string,
   excerpt: string,
   id: string,
+  harness: string | null,
 ): string {
   const stored = splitCarryNoteChecks(checkpoint).checks;
   if (stored.length === 0 || excerpt.trim() === checkpoint.trim()) return '';
   const shown = stored.filter((check) => excerpt.includes(renderCheckLine(check))).length;
-  return `\n    checks: showing ${shown} of ${stored.length} stored rows in this excerpt — full set: work_items:get { id: '${id}' }`;
+  return `\n    checks: showing ${shown} of ${stored.length} stored rows in this excerpt — full set: ${workItemFetchHint(id, harness)}`;
 }
 /** An INACTIVE loop's carry-note older than this renders as a labeled STALE
  *  pointer instead of verbatim — a dead lane's "Next action" is history, not the
@@ -895,12 +897,15 @@ export function renderCarryBriefColdExtras(
     // resume state, rendered as prose with no sibling field to carry a structured
     // marker — so the withheld-chars notice goes inline, naming the call that
     // returns the rest. A bare `…` here reads as a complete checkpoint.
-    const excerptCheckpoint = (h: { id: string; checkpoint: string | null }): string => {
+    const excerptCheckpoint = (h: { id: string; harness: string | null; checkpoint: string | null }): string => {
+      // EI-20451119672468393: harness-qualified — a cold successor's session may
+      // be scoped to a different pot than the held item's canonical harness, and
+      // WI-<n> ids are not globally unique.
       const excerpt = capPreservingOperative(h.checkpoint!, COLD_CHECKPOINT_CAP, {
         inlineNotice: true,
-        more: `work_items:get { id: '${h.id}' }`,
+        more: workItemFetchHint(h.id, h.harness),
       });
-      return excerpt + renderCheckpointChecksDisclosure(h.checkpoint!, excerpt, h.id);
+      return excerpt + renderCheckpointChecksDisclosure(h.checkpoint!, excerpt, h.id, h.harness);
     };
     const lines = brief.heldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';

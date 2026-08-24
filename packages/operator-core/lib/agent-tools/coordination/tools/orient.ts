@@ -3059,7 +3059,13 @@ export default defineTool({
               // `undefined` (recovery omitted, same as the pre-existing catch contract)
               // within ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS — the WI-3818 bounded-leg
               // contract every other orient fold already gets.
-              const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws), {
+              // EI-20451119672468393: hand the recovery build the SESSION harness so
+              // each held-item row can flag a canonical-harness mismatch — the fold
+              // spans harnesses, and a cold successor scoped to one pot must not
+              // conclude another pot's carried item is gone.
+              const sessionHarness =
+                args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null;
+              const recoveryResult = await withBoundedTimeout(buildCompactionRecovery(ownerId, ws, { sessionHarness }), {
                 fallback: undefined,
                 timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
                 label: 'orient:buildCompactionRecovery',

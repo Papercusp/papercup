@@ -610,7 +610,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     // that matters most. Strictly more disclosure, paid for inside the budget
     // asserted on the line above.
     expect(ckptLine).toContain('…');
-    expect(ckptLine).toMatch(/chars withheld — full text: work_items:get \{ id: 'WI-1' \}⟩$/);
+    expect(ckptLine).toMatch(/chars withheld — full text: work_items:get \{ id: 'WI-1', harness: 'h' \}⟩$/);
     expect(out).toContain('(no checkpoint written — read the item via work_items:get before acting)');
   });
 
@@ -636,7 +636,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     const disclosure = /checks: showing (\d+) of 23 stored rows in this excerpt/.exec(out);
     expect(disclosure).not.toBeNull();
     expect(Number(disclosure?.[1])).toBeLessThan(23);
-    expect(out).toContain("full set: work_items:get { id: 'WI-3496' }");
+    expect(out).toContain("full set: work_items:get { id: 'WI-3496', harness: 'h' }");
   });
 
   it('labels checkpoint paths with the held harness root after a cold resume', () => {

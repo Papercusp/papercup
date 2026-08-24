@@ -52,10 +52,15 @@
 import type { CursorState } from './agent-tools/coordination/read-cursors';
 import type { ScoredItem } from './harness/improvements/digest';
 import { capPreservingOperativeDetailed } from './operative-clause';
+import { workItemFetchHint } from './work-item-fetch-hint';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
   id: string;
+  /** EI-20451119672468393: the item's CANONICAL harness (may differ from the
+   *  session's scope); null/absent ⇒ operator-scoped. Qualifies the re-fetch
+   *  hint so a cross-harness held item resolves on the first try. */
+  harness?: string | null;
   status?: string | null;
   /** In-flight state written through work_items:checkpoint. */
   checkpoint?: string | null;
@@ -478,7 +483,7 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
   if (!raw) return null;
   const excerpt = capPreservingOperativeDetailed(raw, CHECKPOINT_EXCERPT_CHARS, {
     inlineNotice: true,
-    more: `work_items:get { id: '${item.id}' }`,
+    more: workItemFetchHint(item.id, item.harness),
     maxChars: 40,
     maxClauses: 1,
   }).text;
@@ -761,6 +766,7 @@ export function defaultOrientationDeps(): OrientationDeps {
       return rows
         .map((r) => ({
           id: r.id,
+          harness: r.harness,
           checkpoint: r.checkpoint,
           checkpointUpdatedAtMs: r.checkpointUpdatedAtMs,
           checkpointStale: Boolean(r.checkpoint?.trim()) && isStaleHeldCheckpoint(r, nowMs),
