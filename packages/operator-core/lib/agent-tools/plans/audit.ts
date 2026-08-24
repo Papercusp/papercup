@@ -27,6 +27,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import {
   AUDIT_VERDICTS,
+  ACTIVATION_REAUDIT_COSMETIC_CHANGES,
+  ACTIVATION_REAUDIT_MATERIAL_CHANGES,
   CITATION_KINDS,
   citationBlobSha,
   getEffectiveItemAudits,
@@ -175,7 +177,7 @@ export default defineTool({
     notWhen:
       "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
     chaining:
-      "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revisions: re-audit only for meaning changes, not cosmetic edits. Completion: plans:audit → rubric/scorecard → shipped.",
+      `sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash. Re-audit when an edit changes ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} do not require it. Completion: plans:audit → rubric/scorecard → shipped.`,
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',

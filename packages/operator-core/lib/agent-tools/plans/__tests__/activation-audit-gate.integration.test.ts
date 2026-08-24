@@ -103,6 +103,24 @@ updated: 2026-08-24
 
 const activate = (body: string) => body.replace('status: draft', 'status: active');
 
+const MATERIAL_CHANGE_TAXONOMY = [
+  'requirements',
+  'scope',
+  'constraints',
+  'decisions',
+  'dependencies',
+  'sequencing',
+  'acceptance criteria',
+  'open questions',
+  'promised follow-ups',
+] as const;
+
+const COSMETIC_CHANGE_TAXONOMY = [
+  'spelling',
+  'formatting',
+  'cosmetic-only wording',
+] as const;
+
 describe('conversation activation audit gate', () => {
   it('blocks a raw draft→ready content transition and leaves the row unchanged', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
@@ -225,12 +243,18 @@ describe('conversation activation audit gate', () => {
       activationAudit: {
         status: 'preserved',
         auditedPlanRevision: { id: audited.id, seq: 1, contentHash: audited.contentHash },
-        currentPlanRevision: { seq: 2, recorded: true },
+        currentPlanRevision: {
+          id: expect.any(Number),
+          seq: 2,
+          contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          recorded: true,
+        },
         changedSinceAudit: true,
         revisionGap: 1,
         reAudit: {
           decision: 'editing_agent',
-          notRequiredWhen: expect.arrayContaining(['spelling', 'formatting', 'cosmetic-only wording']),
+          requiredWhen: MATERIAL_CHANGE_TAXONOMY,
+          notRequiredWhen: COSMETIC_CHANGE_TAXONOMY,
         },
       },
       value: { ok: true, activationAudit: { status: 'preserved' } },
@@ -254,11 +278,19 @@ describe('conversation activation audit gate', () => {
     expect(substantive).toMatchObject({
       kind: 'applied',
       activationAudit: {
-        auditedPlanRevision: { id: audited.id, seq: 1 },
-        currentPlanRevision: { seq: 3, recorded: true },
+        status: 'preserved',
+        auditedPlanRevision: { id: audited.id, seq: 1, contentHash: audited.contentHash },
+        currentPlanRevision: {
+          id: expect.any(Number),
+          seq: 3,
+          contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          recorded: true,
+        },
         revisionGap: 2,
         reAudit: {
-          requiredWhen: expect.arrayContaining(['requirements', 'constraints', 'acceptance criteria']),
+          decision: 'editing_agent',
+          requiredWhen: MATERIAL_CHANGE_TAXONOMY,
+          notRequiredWhen: COSMETIC_CHANGE_TAXONOMY,
           instruction: expect.stringContaining("Re-run plans:audit { phase:'activation' }"),
         },
       },

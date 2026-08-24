@@ -100,6 +100,29 @@ const activationArgs = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+const COMPLETE_CONVERSATION_OBLIGATION_IDS = [
+  'M-001', // requirement
+  'M-002', // scope boundary
+  'M-003', // constraint
+  'M-004', // correction
+  'M-005', // rejected alternative
+  'M-006', // decision
+  'M-007', // dependency
+  'M-008', // sequencing
+  'M-009', // acceptance condition
+  'M-010', // open question
+  'M-011', // promised follow-up
+] as const;
+
+function missingConversationObligations(mappings: Array<{ id: string; disposition: string }>): string[] {
+  const explicitlyAccountedFor = new Set(
+    mappings
+      .filter((mapping) => mapping.disposition !== 'open')
+      .map((mapping) => mapping.id),
+  );
+  return COMPLETE_CONVERSATION_OBLIGATION_IDS.filter((id) => !explicitlyAccountedFor.has(id));
+}
+
 describe('plans:audit D-008 writer contract', () => {
   it.each([
     ['doc', { kind: 'doc', ref: '/internal/docs/gate', reason: 'the document describes it' }],
@@ -156,6 +179,33 @@ describe('plans:audit D-008 writer contract', () => {
 });
 
 describe('plans:audit phase:activation', () => {
+  it('publishes the complete activation workflow and runtime materiality taxonomy on the tool surface', () => {
+    const guidance = [
+      tool.description,
+      tool.guidance?.when,
+      tool.guidance?.returns,
+      tool.guidance?.chaining,
+    ].join('\n');
+
+    expect(guidance).toContain('COMPLETE source conversation');
+    expect(guidance).toContain('audited/current revision id/seq/contentHash');
+    for (const obligation of [
+      'requirement', 'boundary', 'constraint', 'correction', 'rejection', 'decision',
+      'dependency', 'sequence', 'acceptance condition', 'open question', 'follow-up',
+    ]) {
+      expect(guidance).toContain(obligation);
+    }
+    for (const material of [
+      'requirements', 'scope', 'constraints', 'decisions', 'dependencies', 'sequencing',
+      'acceptance criteria', 'open questions', 'promised follow-ups',
+    ]) {
+      expect(guidance).toContain(material);
+    }
+    for (const cosmetic of ['spelling', 'formatting', 'cosmetic-only wording']) {
+      expect(guidance).toContain(cosmetic);
+    }
+  });
+
   it('resolves every source ref and returns the exact server-captured revision', async () => {
     const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
 
@@ -192,10 +242,21 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 
-  it('refuses open mappings or unresolved blockers before touching either store', async () => {
-    const result = ((await tool.handler(activationArgs({
+  it.each([
+    ['an open mapping', {
+      mappings: [{
+        id: 'M-001',
+        sourceRefs: ['session_turn:codex:session-full-id:7'],
+        requirement: 'The owner constraint has no plan target.',
+        planTargets: ['section:Open questions'],
+        disposition: 'open',
+      }],
+    }],
+    ['an unresolved blocker', {
       unresolvedBlockers: ['The owner constraint has no plan target.'],
-    }) as never, ctx)) as { data: any }).data;
+    }],
+  ])('refuses %s before touching either store', async (_label, over) => {
+    const result = ((await tool.handler(activationArgs(over) as never, ctx)) as { data: any }).data;
 
     expect(result).toMatchObject({ ok: false, phase: 'activation', error: 'activation_blocked' });
     expect(mockResolveSourceRefs).not.toHaveBeenCalled();
@@ -214,31 +275,80 @@ describe('plans:audit phase:activation', () => {
     expect(mockResolveSourceRefs).not.toHaveBeenCalled();
   });
 
-  it('persists a long scattered conversation map including corrections and negative constraints before activation', async () => {
+  it('persists an externally-censused scattered conversation map with no missing obligation', async () => {
     const mappings = [
       {
         id: 'M-001',
         sourceRefs: ['session_turn:codex:session-full-id:4'],
-        requirement: 'The export must remain backward compatible.',
+        requirement: 'Requirement: the export must remain backward compatible.',
         planTargets: ['P-001'],
         disposition: 'covered',
       },
       {
         id: 'M-002',
+        sourceRefs: ['session_turn:codex:session-full-id:18'],
+        requirement: 'Scope boundary: completion audit behavior remains backward compatible.',
+        planTargets: ['section:Requirements'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-003',
+        sourceRefs: ['session_turn:codex:session-full-id:34'],
+        requirement: 'Constraint: audit references must be directly retrievable.',
+        planTargets: ['P-001'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-004',
         sourceRefs: ['session_turn:codex:session-full-id:57', 'session_turn:codex:session-full-id:61'],
         requirement: 'Correction: use the canonical reader rather than the earlier proposed copy.',
         planTargets: ['D-001'],
         disposition: 'repaired',
       },
       {
-        id: 'M-003',
+        id: 'M-005',
+        sourceRefs: ['session_turn:codex:session-full-id:82'],
+        requirement: 'Rejected alternative: never add a parallel plan-review verb.',
+        planTargets: ['D-004'],
+        disposition: 'rejected',
+      },
+      {
+        id: 'M-006',
+        sourceRefs: ['session_turn:codex:session-full-id:101'],
+        requirement: 'Decision: the audit remains after later edits.',
+        planTargets: ['D-002'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-007',
+        sourceRefs: ['session_turn:codex:session-full-id:119'],
+        requirement: 'Dependency: canonical session refs land before activation audit writes.',
+        planTargets: ['P-003'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-008',
+        sourceRefs: ['session_turn:codex:session-full-id:132'],
+        requirement: 'Sequencing: repair omissions before recording the activation audit.',
+        planTargets: ['section:Phase 2 — Audit and activation behavior'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-009',
         sourceRefs: ['session_turn:codex:session-full-id:143'],
-        requirement: 'Do not invalidate an audit for spelling or formatting changes.',
+        requirement: 'Acceptance condition: cosmetic edits preserve the audit.',
         planTargets: ['section:Requirements'],
         disposition: 'covered',
       },
       {
-        id: 'M-004',
+        id: 'M-010',
+        sourceRefs: ['session_turn:codex:session-full-id:167'],
+        requirement: 'Open question resolved: the editing agent judges semantic materiality.',
+        planTargets: ['D-002'],
+        disposition: 'covered',
+      },
+      {
+        id: 'M-011',
         sourceRefs: ['session_turn:codex:session-full-id:198'],
         requirement: 'A promised follow-up must remain represented in the execution plan.',
         planTargets: ['P-006'],
@@ -257,6 +367,7 @@ describe('plans:audit phase:activation', () => {
       rejectedOrSuperseded: ['Rejected automatic invalidation after cosmetic edits.'],
     }) as never, ctx)) as { data: any }).data;
 
+    expect(missingConversationObligations(mappings)).toEqual([]);
     expect(result).toMatchObject({ ok: true, phase: 'activation', sourceRefsResolved: refs.length });
     expect(mockResolveSourceRefs).toHaveBeenCalledWith(expect.anything(), 'test-workspace', refs);
     expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({
@@ -267,5 +378,14 @@ describe('plans:audit phase:activation', () => {
         unresolvedBlockers: [],
       }),
     }));
+  });
+
+  it('the external completeness oracle catches one omitted obligation before writer acceptance', () => {
+    const mappings = COMPLETE_CONVERSATION_OBLIGATION_IDS.slice(0, -1).map((id) => ({
+      id,
+      disposition: 'covered',
+    }));
+
+    expect(missingConversationObligations(mappings)).toEqual(['M-011']);
   });
 });

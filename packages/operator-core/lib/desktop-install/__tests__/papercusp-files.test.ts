@@ -1093,6 +1093,34 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     expect(text).not.toContain('PAPERCUSP-SU:SHARED-BASE-NOTES');
   });
 
+  it('renders the complete activation-audit workflow with runtime materiality parity', async () => {
+    const { text } = await renderSuPlaybook({
+      agent: 'claude',
+      baseSource: fileURLToPath(blueprintBase),
+    });
+
+    expect(text).toContain('Audit the complete source conversation before activating a draft plan');
+    expect(text).toContain("plans:audit { phase:'activation', ... }");
+    expect(text).toContain('map each to a plan section, D-NNN, or P-NNN');
+    expect(text).toContain('`activationAudit` metadata');
+    expect(text).toContain('audited/current revisions');
+    for (const obligation of [
+      'requirement', 'scope boundary', 'constraint', 'correction', 'rejected', 'decision',
+      'dependency', 'sequence', 'acceptance condition', 'unresolved question', 'promised follow-up',
+    ]) {
+      expect(text).toMatch(new RegExp(obligation.replaceAll(' ', '\\s+')));
+    }
+    for (const material of [
+      'requirements', 'scope', 'constraints', 'decisions', 'dependencies', 'sequencing',
+      'acceptance criteria', 'open questions', 'promised follow-ups',
+    ]) {
+      expect(text).toContain(material);
+    }
+    for (const cosmetic of ['Spelling', 'formatting', 'cosmetic-only']) {
+      expect(text).toContain(cosmetic);
+    }
+  });
+
   /**
    * THE CONTROL. Without it this suite passes even if `injectSharedBaseNotes` were changed to
    * append unconditionally — which would push the notes into minimal/test bases that are
