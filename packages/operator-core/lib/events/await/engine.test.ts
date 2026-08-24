@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   store: {
     fireAwaitsForKey: vi.fn(async (): Promise<unknown[]> => []),
     insertDeliveries: vi.fn(async () => 0),
+    compactSupersededLoopDeliveries: vi.fn(async () => 0),
     claimDueDeliveries: vi.fn(async (): Promise<unknown[]> => []),
     settleCancelledInboxWakeDeliveries: vi.fn(async (): Promise<number[]> => []),
     markDeliveryDelivered: vi.fn(async () => {}),
@@ -162,6 +163,7 @@ function workRow(over: Partial<DeliveryWork> = {}): DeliveryWork {
 beforeEach(() => {
   vi.clearAllMocks();
   h.store.claimDueVerifiedAwaits.mockResolvedValue([]);
+  h.store.compactSupersededLoopDeliveries.mockResolvedValue(0);
   h.store.settleVerifiedAwaitTimeout.mockResolvedValue(null);
   h.store.fireTimedOutAwaits.mockResolvedValue([]);
   h.store.claimDueDeliveries.mockResolvedValue([]);
@@ -1467,7 +1469,7 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
 });
 
 describe('pump guard is keyed per workspace (audit P-033)', () => {
-  it("workspace B pumps while A's pump is in flight; same-workspace reentry stays blocked", async () => {
+  it("workspace B pumps while A's pump is in flight; same-workspace reentry latches one trailing rerun", async () => {
     // WI-3575: claimDueDeliveries no longer takes a workspaceId (events:await is
     // single-workspace by design — see store.ts) — so this can no longer observe
     // the `pumpsInFlight` per-workspace guard by inspecting the store call's
@@ -1495,7 +1497,8 @@ describe('pump guard is keyed per workspace (audit P-033)', () => {
     await Promise.resolve(); // let A reach its claim call
     expect(claimCalls).toBe(1);
 
-    // Same-workspace reentry: still guarded — returns empty WITHOUT ever claiming.
+    // Same-workspace reentry: still guarded synchronously — returns empty without
+    // claiming in parallel, but latches one trailing rerun for after A releases.
     const reentry = await pumpWakeDeliveries('ws-a');
     expect(reentry.claimed).toBe(0);
     expect(claimCalls).toBe(1);
@@ -1508,8 +1511,10 @@ describe('pump guard is keyed per workspace (audit P-033)', () => {
     releaseA([]);
     await pumpA;
 
-    // A's guard entry cleared with its pump — it can pump again.
+    await vi.waitFor(() => expect(claimCalls).toBe(3)); // the latched A rerun
+
+    // A's guard entry cleared after the rerun — a later explicit pump proceeds.
     await pumpWakeDeliveries('ws-a');
-    expect(claimCalls).toBe(3);
+    expect(claimCalls).toBe(4);
   });
 });

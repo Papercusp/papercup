@@ -32,6 +32,7 @@ import {
   claimDueDeliveries,
   claimDueVerifiedAwaits,
   claimSpecificOnceAwaits,
+  compactSupersededLoopDeliveries,
   expireLapsedAwaits,
   fireAwaitsForKey,
   listActiveAwaitsForKey,
@@ -661,6 +662,11 @@ async function fireComposedRoot(input: {
 // SKIP LOCKED and workspace-scoped); the guard only exists to stop one workspace
 // from pumping itself reentrantly.
 const pumpsInFlight = new Set<string>();
+// A same-workspace kick that arrives while the singleton pump is busy is not
+// re-entrant work, but it is still information: durable rows arrived after this
+// batch was chosen. Latch one trailing-edge rerun instead of dropping that signal
+// and waiting up to the 30-second sweep (EI-21303383797798186).
+const pumpRerunRequested = new Map<string, ExecuteWakeDeps>();
 
 export interface PumpStats {
   claimed: number;
@@ -829,7 +835,10 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     suppressed: 0,
   };
   const ws = workspaceId ?? activeWorkspaceId();
-  if (pumpsInFlight.has(ws)) return stats;
+  if (pumpsInFlight.has(ws)) {
+    pumpRerunRequested.set(ws, deps);
+    return stats;
+  }
   pumpsInFlight.add(ws);
   try {
     const claimed = await claimDueDeliveries({ limit: 25 });
@@ -1085,6 +1094,15 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     return stats;
   } finally {
     pumpsInFlight.delete(ws);
+    const rerunDeps = pumpRerunRequested.get(ws);
+    if (rerunDeps) {
+      pumpRerunRequested.delete(ws);
+      setImmediate(() => {
+        void pumpWakeDeliveries(ws, rerunDeps).catch((e) =>
+          log(`trailing wake-pump rerun failed (ws=${ws}): ${e instanceof Error ? e.message : e}`),
+        );
+      });
+    }
   }
 }
 
@@ -1216,6 +1234,9 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
       log(`reconciler failed: ${e instanceof Error ? e.message : e}`);
     }
   }
+
+  const superseded = await compactSupersededLoopDeliveries();
+  if (superseded > 0) log(`compacted ${superseded} superseded loop wake deliveries`);
 
   const recovered = await recoverStuckDeliveries({ olderThanMs: STUCK_DELIVERING_MS });
   if (recovered > 0) log(`recovered ${recovered} stuck deliveries`);

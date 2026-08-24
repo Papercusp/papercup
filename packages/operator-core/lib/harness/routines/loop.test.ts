@@ -281,6 +281,32 @@ describe('computeTurnsStalled (EI-18712914572668391 — fires attempted vs turns
     ).toBe(false);
   });
 
+  it('EI-21303383797798186: recent manual turns cannot mask a missing loop-origin completion', () => {
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: TURNS_STALLED_MIN_FIRE_COUNT,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: NOW - 10_000, // owner-prompted assistant output is fresh
+        lastLoopTurnAtMs: null, // but no autonomous loop turn completed
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+
+    expect(
+      computeTurnsStalled({
+        active: true,
+        fireCount: TURNS_STALLED_MIN_FIRE_COUNT,
+        lastFiredAtMs: NOW,
+        lastTurnAtMs: NOW - 10_000,
+        lastLoopTurnAtMs: NOW - 5_000,
+        intervalSec,
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
   // ── WI-6639 regression: the frozen-gap blind spot ───────────────────────────
   it('WI-6639: fires STOPPED too, so the fired-vs-turn gap froze small → still flagged', () => {
     // The measured population: last turn landed 4min after the last fire, then the whole

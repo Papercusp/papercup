@@ -319,14 +319,22 @@ describe('loop surface round-trip (real PG)', () => {
     await sql`
       UPDATE harness_shared.routines
          SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
-             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('fire_count', 209)
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', 209,
+               'armed_at', ${new Date(recentTurn.getTime() - 60_000).toISOString()}::text
+             )
        WHERE name = ${loopRoutineName(OWNER)}
     `;
     await sql`
       INSERT INTO harness_shared.session_turns
-        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text)
-      VALUES (${WS}, 'claude', 'sess-1', 1, ${recentTurn.toISOString()}::timestamptz,
-              ${OWNER}, ${HARNESS}, 'assistant', 'ordinary turn, no journal note')`;
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'claude', 'sess-1', 0, ${new Date(recentTurn.getTime() - 1000).toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', '⟦turn-origin:loop-fire nonce:fedcba9876543210⟧ wake',
+         'loop-fire', 'agent-injected', 1),
+        (${WS}, 'claude', 'sess-1', 1, ${recentTurn.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'ordinary turn, no journal note', NULL, 'not-user-turn', 1)`;
 
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.fireCount).toBe(209);
@@ -338,6 +346,58 @@ describe('loop surface round-trip (real PG)', () => {
     // (WI-6639) before this fix landed.
     expect(status!.lastTurnAt).toBe(recentTurn.toISOString());
     expect(status!.turnsStalled).toBe(false);
+  });
+
+  it('EI-21303383797798186: only a completed loop-origin turn clears turnsStalled; manual assistant output does not', async () => {
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k', sql });
+
+    const lastFired = new Date(Date.now() - 2 * 60_000);
+    const manualTurn = new Date(lastFired.getTime() + 30_000);
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', 5,
+               'armed_at', ${new Date(lastFired.getTime() - 10 * 60_000).toISOString()}::text
+             )
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', 'manual-session', 0, ${new Date(manualTurn.getTime() - 1000).toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', 'owner asks for status', NULL, 'owner-typed', 1),
+        (${WS}, 'codex', 'manual-session', 1, ${manualTurn.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'status response', NULL, 'not-user-turn', 1)
+    `;
+
+    const maskedBefore = await getLoopStatus(OWNER, { sql });
+    expect(maskedBefore!.lastTurnAt).toBe(manualTurn.toISOString());
+    expect(maskedBefore!.lastLoopTurnAt).toBeNull();
+    expect(maskedBefore!.turnsStalled).toBe(true);
+
+    const loopPrompt = new Date(manualTurn.getTime() + 10_000);
+    const loopAssistant = new Date(loopPrompt.getTime() + 20_000);
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', 'loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', '⟦turn-origin:loop-fire nonce:0123456789abcdef⟧ wake',
+         'loop-fire', 'agent-injected', 1),
+        (${WS}, 'codex', 'loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'autonomous loop work completed', NULL, 'not-user-turn', 1)
+    `;
+
+    const recovered = await getLoopStatus(OWNER, { sql });
+    expect(recovered!.lastLoopTurnAt).toBe(loopAssistant.toISOString());
+    expect(recovered!.turnsStalled).toBe(false);
   });
 
   it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {

@@ -1311,15 +1311,73 @@ export async function insertDeliveries(input: {
     const urgent = (input.urgent ?? false) || a.urgency;
     const deliveryPayload = withLifecycleBindingProvenance(input.payload, a.boundTo);
     const payloadJson = deliveryPayload === undefined ? null : JSON.stringify(deliveryPayload);
-    await sql`
+    const inserted = await sql<Array<{ id: number }>>`
       INSERT INTO harness_shared.event_wake_deliveries
         (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
       VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::text::jsonb,
               ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null})
+      RETURNING id
     `;
+    const deliveryId = Number(inserted[0]?.id);
+
+    // EI-21303383797798186: a loop fire supersedes every older undelivered fire
+    // from the SAME loop instance. Keeping all of them live is actively harmful:
+    // an uninjectable cold loop can accumulate hundreds of parked retries, and
+    // claimDueDeliveries' bounded batches then spend every slot re-reading stale
+    // checkpoints while fresh wakes stay at attempts=0. Do not call these rows
+    // delivered/coalesced before the replacement itself lands — `dropped` with an
+    // explicit supersession reason is the honest state.
+    if (input.source?.startsWith('loop:') && Number.isFinite(deliveryId)) {
+      await sql`
+        UPDATE harness_shared.event_wake_deliveries
+           SET status = 'dropped',
+               last_error = ${`superseded by newer loop wake #${deliveryId}`}
+         WHERE workspace_id = ${ws}
+           AND subscriber_id = ${a.subscriberId}
+           AND source = ${input.source}
+           AND id < ${deliveryId}
+           AND status IN ('pending', 'parked')
+      `;
+    }
     n++;
   }
   return n;
+}
+
+/**
+ * Collapse historical residue left by pre-EI-21303383797798186 writers (and the
+ * narrow race where an older row was already `delivering` when its replacement
+ * was inserted). At most the newest pending/parked delivery for one
+ * subscriber+loop-instance remains live; ordinary event wakes are untouched.
+ *
+ * Run by the 30-second sweeper, so deployment repairs the existing queue without
+ * an operator data migration and a crashed mid-delivery row is compacted after
+ * recoverStuckDeliveries makes it pending again on the next sweep.
+ */
+export async function compactSupersededLoopDeliveries(): Promise<number> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    WITH ranked AS (
+      SELECT id,
+             row_number() OVER (
+               PARTITION BY subscriber_id, source
+               ORDER BY created_at DESC, id DESC
+             ) AS keep_rank
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${ws}
+         AND status IN ('pending', 'parked')
+         AND source LIKE 'loop:%'
+    )
+    UPDATE harness_shared.event_wake_deliveries d
+       SET status = 'dropped',
+           last_error = 'superseded by a newer loop wake before delivery'
+      FROM ranked r
+     WHERE d.id = r.id
+       AND r.keep_rank > 1
+    RETURNING d.id
+  `;
+  return rows.length;
 }
 
 /**
@@ -1336,7 +1394,16 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
        WHERE workspace_id = ${ws}
          AND status IN ('pending', 'parked')
          AND next_attempt_at <= now()
-       ORDER BY created_at ASC
+       -- A permanently uninjectable subscriber can legitimately PARK for a long
+       -- time, but its retries must never monopolize this bounded batch. Give an
+       -- untouched/no-error row its first delivery attempt before retrying old
+       -- failures, then preserve FIFO within each attempt tier. Loop-source
+       -- compaction above keeps repeated fires from becoming an unbounded fresh
+       -- tier of their own (EI-21303383797798186).
+       ORDER BY (attempts = 0 AND last_error IS NULL) DESC,
+                attempts ASC,
+                next_attempt_at ASC,
+                created_at ASC
        LIMIT ${input.limit ?? 10}
        FOR UPDATE SKIP LOCKED
     )

@@ -151,6 +151,46 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(recent[0]).toMatchObject({ status: 'delivered', channel: 'plan-run-resume' });
   });
 
+  it('a newer loop fire drops older pending/parked wakes from the same loop instance', async () => {
+    const awaited = await store.registerAwait({
+      subscriberId: 'su-loop-supersession',
+      eventKey: 'coord:inbox-wake:su-loop-supersession',
+      once: false,
+    });
+
+    await store.insertDeliveries({ awaits: [awaited], summary: 'fire 1', source: 'loop:rt-loop-supersession' });
+    await store.insertDeliveries({ awaits: [awaited], summary: 'fire 2', source: 'loop:rt-loop-supersession' });
+    await store.insertDeliveries({ awaits: [awaited], summary: 'fire 3', source: 'loop:rt-loop-supersession' });
+
+    const recent = await store.listRecentDeliveries('su-loop-supersession', 10);
+    expect(recent.find((d) => d.summary === 'fire 3')).toMatchObject({ status: 'pending' });
+    expect(recent.find((d) => d.summary === 'fire 2')).toMatchObject({
+      status: 'dropped',
+      lastError: expect.stringContaining('superseded by newer loop wake'),
+    });
+    expect(recent.find((d) => d.summary === 'fire 1')).toMatchObject({ status: 'dropped' });
+
+    // Do not leave a live row behind for the shared-fixture tests below.
+    await store.markDeliveryDropped(recent.find((d) => d.summary === 'fire 3')!.id, 'test cleanup');
+  });
+
+  it('a fresh delivery gets its first attempt before an old repeatedly-failed row', async () => {
+    const oldAwait = await store.registerAwait({ subscriberId: 'su-fair-old', eventKey: 'fair:old' });
+    await store.insertDeliveries({ awaits: [oldAwait], summary: 'old retry' });
+    const old = (await store.claimDueDeliveries({ limit: 10 })).find((d) => d.subscriberId === 'su-fair-old')!;
+    await store.markDeliveryFailed({ id: old.id, error: 'still unreachable', attempts: old.attempts, maxAttempts: 8, backoffMs: 0 });
+
+    const freshAwait = await store.registerAwait({ subscriberId: 'su-fair-fresh', eventKey: 'fair:fresh' });
+    await store.insertDeliveries({ awaits: [freshAwait], summary: 'fresh first attempt' });
+
+    const [claimed] = await store.claimDueDeliveries({ limit: 1 });
+    expect(claimed.subscriberId).toBe('su-fair-fresh');
+    expect(claimed.attempts).toBe(1);
+
+    await store.markDeliveryDropped(claimed.id, 'test cleanup');
+    await store.markDeliveryDropped(old.id, 'test cleanup');
+  });
+
   it('settles only claimed deliveries for a cancelled standing inbox-wake await (EI-21183631307094531)', async () => {
     const key = `${store.INBOX_WAKE_KEY_PREFIX}su-cancelled-wake`;
     await store.upsertInboxWakeAwait({ subscriberId: 'su-cancelled-wake', eventKey: key, note: 'standing wake' });

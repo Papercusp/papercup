@@ -994,6 +994,12 @@ export interface LoopStatus {
    *  completed a turn (or the row predates lifecycle tracking). Compare against
    *  `lastFiredAt` to see whether fires are outpacing genuine turn production. */
   lastTurnAt: string | null;
+  /** ISO of the most recent assistant output whose immediately preceding user
+   *  prompt carried the authored `turn-origin:loop-fire` envelope. Unlike
+   *  lastTurnAt/lastRealTurnAt, owner-prompted work cannot advance this clock;
+   *  it is the completion signal used by turnsStalled. Optional for legacy
+   *  fixture compatibility; production status rows always populate it. */
+  lastLoopTurnAt?: string | null;
   /** WI-6951: ISO of the most recent GENUINE turn completion — the lifecycle session-end
    *  marker deliberately EXCLUDED (EI-19316779460752535 widened the SOURCE from the
    *  journal alone to journal ∪ session_turns assistant turns, because the journal covers
@@ -1196,6 +1202,10 @@ export function computeTurnsStalled(input: {
   fireCount: number;
   lastFiredAtMs: number | null;
   lastTurnAtMs: number | null;
+  /** Strict loop-origin completion clock. When this property is present (even
+   *  as null), manual/owner-prompted assistant turns in lastTurnAtMs do not
+   *  count as progress. Omitted only by legacy pure callers. */
+  lastLoopTurnAtMs?: number | null;
   /** WI-6639: presence beat, used ONLY to exempt a session that is demonstrably still
    *  alive right now. Without it the gap below is two frozen past instants (see the
    *  blind-spot note in the body). */
@@ -1208,10 +1218,13 @@ export function computeTurnsStalled(input: {
   if (input.lastFiredAtMs == null) return false;
   const floorMs = turnsStalledFloorMs(input.intervalSec);
   const now = input.nowMs ?? Date.now();
+  const lastLoopTurnAtMs = Object.prototype.hasOwnProperty.call(input, 'lastLoopTurnAtMs')
+    ? (input.lastLoopTurnAtMs ?? null)
+    : input.lastTurnAtMs;
   // No turn has EVER completed for this owner, yet several fires have landed — the
   // strongest form of the signal (never masked by a stale-but-present lastTurnAt).
-  if (input.lastTurnAtMs == null) return true;
-  const gapMs = input.lastFiredAtMs - input.lastTurnAtMs;
+  if (lastLoopTurnAtMs == null) return true;
+  const gapMs = input.lastFiredAtMs - lastLoopTurnAtMs;
   if (gapMs >= floorMs) return true;
   // WI-6639 — THE FROZEN-GAP BLIND SPOT. The gap above is a difference between two PAST
   // instants, so it only sees "fires kept landing while turns did not". When the scheduler
@@ -1597,6 +1610,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   const completedMs = r.lifecycle_completed_at ? new Date(r.lifecycle_completed_at).getTime() : null;
   const presenceMs = r.presence_last_active_at ? new Date(r.presence_last_active_at).getTime() : null;
   const lastTurnMs = r.last_turn_at ? new Date(r.last_turn_at).getTime() : null;
+  const lastLoopTurnMs = r.last_loop_turn_at ? new Date(r.last_loop_turn_at).getTime() : null;
   const armedAtMs = r.armed_at ? new Date(r.armed_at).getTime() : null;
   const fireCount = r.fire_count == null ? 0 : Number(r.fire_count);
   // WI-36070 — mirror checkLoopDeadMan's own derivation exactly (loop-dead-man.ts), including the
@@ -1613,9 +1627,10 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   });
   const turnsStalled = computeTurnsStalled({
     active: Boolean(r.active),
-    fireCount,
+    fireCount: firesSinceArm,
     lastFiredAtMs: lastFiredMs,
     lastTurnAtMs: lastTurnMs,
+    lastLoopTurnAtMs: lastLoopTurnMs,
     lastActiveAtMs: presenceMs,
     intervalSec,
   });
@@ -1675,6 +1690,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
+    lastLoopTurnAt: r.last_loop_turn_at ? new Date(r.last_loop_turn_at).toISOString() : null,
     lastRealTurnAt: r.last_real_turn_at ? new Date(r.last_real_turn_at).toISOString() : null,
     turnsStalled,
     parkedForSec: parked && parkedMs != null ? Math.max(0, Math.round(parkedMs / 1000)) : null,
@@ -1820,6 +1836,39 @@ export async function getLoopStatuses(
                WHERE st3.owner = r.target_owner_id
                  AND st3.speaker = 'assistant'
             ) real_turn_sources)                                          AS last_real_turn_at,
+           -- EI-21303383797798186: a manual owner prompt can produce arbitrarily many
+           -- assistant rows while an armed loop delivers zero autonomous turns. Pair
+           -- each authored loop-fire USER envelope with assistant output before the
+           -- next user prompt; only that proves the loop wake became a real turn.
+           -- The owner predicate uses session_turns_owner_ts_idx, while each bounded
+           -- same-session range uses the table's (session/source/turn_idx/workspace)
+           -- primary key. Restrict to the current arm to keep the correlated read lean.
+           (SELECT max((
+              SELECT max(a2.ts)
+                FROM harness_shared.session_turns a2
+               WHERE a2.workspace_id = u.workspace_id
+                 AND a2.source_kind = u.source_kind
+                 AND a2.session_id = u.session_id
+                 AND a2.speaker = 'assistant'
+                 AND a2.turn_idx > u.turn_idx
+                 AND a2.turn_idx < COALESCE((
+                       SELECT min(u2.turn_idx)
+                         FROM harness_shared.session_turns u2
+                        WHERE u2.workspace_id = u.workspace_id
+                          AND u2.source_kind = u.source_kind
+                          AND u2.session_id = u.session_id
+                          AND u2.speaker = 'user'
+                          AND u2.turn_idx > u.turn_idx
+                     ), 2147483647)
+            ))
+              FROM harness_shared.session_turns u
+             WHERE u.owner = r.target_owner_id
+               AND u.speaker = 'user'
+               AND u.turn_origin = 'loop-fire'
+               AND u.ts >= COALESCE(
+                     (r.metadata->>'armed_at')::timestamptz,
+                     '-infinity'::timestamptz
+                   ))                                                    AS last_loop_turn_at,
            -- EI-20217869515819188: compute the largest observed gap in this arm's
            -- wake-delivery history without fetching the whole event ledger into JS.
            -- COALESCE(delivered_at, created_at) matches lastWakeAt's existing
