@@ -117,6 +117,23 @@ export function isConfirmedWakeAttemptMiss(
 export const LIVE_TURN_WINDOW_MS = PRESENCE_STALE_MS;
 
 /**
+ * How far back a MISSED WAKE stays visible as evidence (EI-21356139961831796).
+ *
+ * Deliberately much longer than LIVE_TURN_WINDOW_MS, because the two windows
+ * answer different questions. "Is a turn in flight?" is inherently a recent
+ * question — 10 minutes. "Did the wake we sent ever produce a turn?" does not
+ * decay: an owner woken 6 hours ago that has taken no turn since is exactly as
+ * un-dispatchable now as it was a minute after the attempt.
+ *
+ * Sharing one window made the miss evidence expire after 10 minutes, so a
+ * warm-dead owner silently became a `parked` dispatch target again and was
+ * re-selected on the next routing pass — the loop this constant breaks. The
+ * bound exists only to keep the query cheap (it is indexed by
+ * subscriber_id + event_key), not because the evidence goes stale.
+ */
+export const WAKE_MISS_EVIDENCE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
  * The DEAD ceiling (fleet-liveness-zombie-await-2026-07-07). A heartbeat cold
  * beyond this is authoritative-dead REGARDLESS of a lingering wake-await.
  *
@@ -308,6 +325,15 @@ export async function fetchWakeability(
   if (ownerIds.length === 0) return out;
   const { sql } = getOrgPg();
   const windowSec = Math.max(1, Math.round(LIVE_TURN_WINDOW_MS / 1000));
+  // EI-21356139961831796: the wake-miss comparison needs a LONGER horizon than
+  // liveTurn (see WAKE_MISS_EVIDENCE_WINDOW_MS). Both the attempts AND the
+  // activity lookup widen together — widening only the attempts side would
+  // manufacture FALSE misses, because isConfirmedWakeAttemptMiss treats a null
+  // last-activity as "no turn since the attempt", and a turn 20 minutes ago
+  // reads as null through a 10-minute window. liveTurn keeps its own 10-minute
+  // meaning via the explicit recency check below.
+  const missWindowSec = Math.max(windowSec, Math.round(WAKE_MISS_EVIDENCE_WINDOW_MS / 1000));
+  const nowMs = Date.now();
 
   const [wake, turns, attempts] = await Promise.all([
     sql<{ subscriber_id: string }[]>`
@@ -323,7 +349,7 @@ export async function fetchWakeability(
              max(created_at) FILTER (WHERE kind = 'lifecycle' AND summary = ${SESSION_END_MARKER}) AS last_end
         FROM harness_shared.agent_activity
        WHERE owner_id = ANY(${ownerIds}::text[])
-         AND created_at > now() - make_interval(secs => ${windowSec})
+         AND created_at > now() - make_interval(secs => ${missWindowSec})
        GROUP BY owner_id`,
     sql<{ owner_id: string; attempt_at: string | null }[]>`
       SELECT subscriber_id AS owner_id,
@@ -336,7 +362,7 @@ export async function fetchWakeability(
            status IN ('dropped', 'dead')
            OR channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}::text[])
          )
-         AND COALESCE(delivered_at, created_at) > now() - make_interval(secs => ${windowSec})
+         AND COALESCE(delivered_at, created_at) > now() - make_interval(secs => ${missWindowSec})
        GROUP BY subscriber_id`,
   ]);
 
@@ -349,8 +375,16 @@ export async function fetchWakeability(
     const lastEnd = t?.last_end ? Date.parse(t.last_end) : null;
     // A turn is in flight when there is recent activity AND it is not (only) the
     // trailing session-end marker — i.e. no end-marker, or activity after it.
+    // EI-21356139961831796: the activity query now spans the (much longer)
+    // miss-evidence window, so liveTurn MUST assert its own recency explicitly
+    // — otherwise an owner whose last turn was hours ago would satisfy
+    // "activity exists, no trailing end-marker" and read `live`. This check
+    // restores exactly the previous 10-minute meaning.
     const liveTurn =
-      lastAny != null && !Number.isNaN(lastAny) && (lastEnd == null || Number.isNaN(lastEnd) || lastAny > lastEnd);
+      lastAny != null &&
+      !Number.isNaN(lastAny) &&
+      nowMs - lastAny <= LIVE_TURN_WINDOW_MS &&
+      (lastEnd == null || Number.isNaN(lastEnd) || lastAny > lastEnd);
     const attempt = attemptByOwner.get(id)?.attempt_at;
     const attemptAt = attempt ? Date.parse(attempt) : null;
     const wakeAttemptMiss = isConfirmedWakeAttemptMiss(attemptAt, lastAny);
