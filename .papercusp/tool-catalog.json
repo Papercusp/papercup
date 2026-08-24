@@ -9391,7 +9391,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Load integration-tree edits into long-running hosts (no deploy). desktop-dev asks only the verified wrapper-owned :3270 listener for a non-zero graceful recycle and waits for a different verified listener. Route: desktop → \"desktop-dev\"; inference-gateway → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; MCP proxy/transport → \"mcp-proxy\"; shared server → \"staging\" (probe :3170).",
+        "when": "Load integration-tree edits into long-running hosts (no deploy). desktop-dev asks only the verified wrapper-owned :3270 listener for a bounded drain + no-native-teardown hard exit and waits for a different verified listener. Route: desktop → \"desktop-dev\"; inference-gateway → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; MCP proxy/transport → \"mcp-proxy\"; shared server → \"staging\" (probe :3170).",
         "notWhen": "Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.",
         "chaining": "dry → review holders → { confirm:true, authorize:true, reason:\"<why>\", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status."
       }
