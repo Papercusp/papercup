@@ -256,7 +256,7 @@
           "POST"
         ]
       },
-      "description": "Ask UPSTREAM for each pooled Claude or Codex account's REAL budget and record it into the account-pool projection. By default this refreshes Claude accounts; pass `provider:'codex'` to refresh ChatGPT-subscription accounts with `codex-cli:<home>` credentials. Sends one minimal request per selected account through that account's own egress + credential and reads the provider's authoritative rate-limit headers (present on successful responses, not just 429s). This is the ONLY way a usage-walled account gets a fresh reading: it is routed no live traffic, so its projection can never self-heal — it stays walled until its PROJECTED reset (days), even after a real capacity reset. Prefer this over `accounts:reset-rate { resetWindows }`, which merely ASSERTS a reset; this PROVES it (and a 429 reply CONFIRMS a genuine wall instead). Runs out-of-process — no gateway restart needed. `apply:false` for a read-only dry run. Returns { ok, provider, probed, unwalled, applied, rows[] }.",
+      "description": "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
       "capabilities": [
         "harness:write"
       ],
@@ -278,9 +278,9 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "After a capacity/quota reset, or whenever an account reads usageWalled / healthyAccounts is 0 but you suspect the selected provider's projection is STALE. Pass `provider:'codex'` for a Codex capacity reading. Also the durable self-heal a schedule should call.",
-        "notWhen": "Clearing a stale rate-limit PAUSE (accounts:reset-rate — a different meter). Clearing the gateway’s IN-MEMORY exhaustedUntil (POST /admin/readmit or a gateway restart — a different process).",
-        "chaining": "accounts:probe-capacity { provider:'codex', walledOnly:true } → fleet:capacity { provider:'codex' } (confirm the selected provider's reading) → if upstream CONFIRMS the wall, do NOT force it; if the probe cannot run at all, accounts:reset-rate { resetWindows:true } is the deliberate override."
+        "when": "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex.",
+        "notWhen": "Clearing local pauses (`accounts:reset-rate`) or gateway exclusions (POST `/admin/readmit`).",
+        "chaining": "`accounts:probe-capacity { provider:'codex' }` → `fleet:capacity { provider:'codex' }`; leave confirmed walls walled."
       }
     },
     {
