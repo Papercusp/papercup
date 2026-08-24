@@ -102,6 +102,17 @@
 #     before tauri-agent-tools sees them, producing an invalid assertion.
 #     VERIFY_TAURI_POLL retries a data-dependent DOM assertion after navigation
 #     (bounded by VERIFY_TAURI_DOM_TIMEOUT) instead of racing it with a fixed sleep.
+#     GUARD EVERY NEGATIVE ASSERTION (EI-18781011720418569). "the old copy is
+#     gone" / "no undefined leaked" / "no error banner" are all trivially TRUE of
+#     an empty document, so they pass before the sync-backed rows have arrived —
+#     a green exit that verified nothing. Name the subject that must be present:
+#       \"\$VERIFY_TAURI_POLL\" --require '[data-testid=\"schedule-row\"]' \
+#         --eval '!document.body.innerHTML.includes(\"paused from its own subsystem\")'
+#     The guard is fused into the SAME evaluation (add --require-min N when one
+#     node is not enough), so nothing can slip between "rows present" and
+#     "string absent". An unguarded negative --eval is REFUSED, not run; the
+#     escape hatch --allow-unguarded-negative is only for a subject an EARLIER
+#     assertion in the same run already proved renders.
 #     `tauri-agent-tools eval` pretty-prints object results, even when the JS
 #     expression returns JSON.stringify(...). If a shell probe must inspect an
 #     eval result, allow the formatting whitespace:
@@ -1932,20 +1943,152 @@ cat > "$POLL" <<'POLL_SCRIPT'
 #!/usr/bin/env bash
 set -uo pipefail
 
+# EI-18781011720418569 — the VACUOUS GREEN. A NEGATIVE DOM assertion ("the old
+# copy is gone", "no `undefined` leaked", "no error banner") is TRIVIALLY TRUE
+# of an empty document, so it passes before the sync-backed rows have ever
+# reached the DOM: correct-looking script, green exit, zero coverage. Pane-level
+# readiness is NOT data-level readiness — the container renders immediately and
+# the rows arrive over a sync query — so polling for the container and then
+# asserting an absence is a race that usually LOSES on a loaded box and reports
+# a PASS when it does. A negative assertion also has nothing obvious to poll
+# FOR, which is exactly why it silently never gets a guard.
+#
+# So this helper makes the empty-DOM case impossible to pass silently:
+#   --require <css>             the subject that must be PRESENT for the
+#                               assertion to mean anything. With --eval the
+#                               guard is FUSED INTO THE SAME evaluation, so
+#                               nothing can slip between "rows are there" and
+#                               "string is absent"; with the --selector/--text
+#                               forms it gates each attempt.
+#   --require-min <N>           how many nodes must match (default 1).
+#   --allow-unguarded-negative  escape hatch — only when an EARLIER assertion in
+#                               the same run already proved the subject renders.
+# An unguarded negative --eval is REFUSED (exit 2), not run.
+
 timeout="${VERIFY_TAURI_DOM_TIMEOUT:-30}"
 interval="${VERIFY_TAURI_DOM_POLL_INTERVAL:-1}"
 quiet_failure=0
-if [ "${1:-}" = "--quiet" ]; then
-  quiet_failure=1
-  shift
-fi
+require_selector=""
+require_min=1
+require_min_explicit=0
+allow_unguarded_negative=0
+args=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --quiet) quiet_failure=1; shift ;;
+    --require)
+      [ "$#" -ge 2 ] || { echo "FATAL: --require needs a CSS selector" >&2; exit 2; }
+      require_selector="$2"; shift 2 ;;
+    --require=*) require_selector="${1#--require=}"; shift ;;
+    --require-min)
+      [ "$#" -ge 2 ] || { echo "FATAL: --require-min needs an integer" >&2; exit 2; }
+      require_min="$2"; require_min_explicit=1; shift 2 ;;
+    --require-min=*) require_min="${1#--require-min=}"; require_min_explicit=1; shift ;;
+    --allow-unguarded-negative) allow_unguarded_negative=1; shift ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+
 case "$timeout" in
   ''|*[!0-9]*) echo "FATAL: VERIFY_TAURI_DOM_TIMEOUT must be a non-negative integer" >&2; exit 2 ;;
 esac
+case "$require_min" in
+  ''|*[!0-9]*) echo "FATAL: --require-min must be a positive integer" >&2; exit 2 ;;
+esac
+[ "$require_min" -ge 1 ] || {
+  echo "FATAL: --require-min must be >= 1 — a guard that accepts 0 nodes guards nothing" >&2
+  exit 2
+}
+if [ "$require_min_explicit" -eq 1 ] && [ -z "$require_selector" ]; then
+  echo "FATAL: --require-min needs --require <css> — there is no subject to count" >&2
+  exit 2
+fi
 [ "$#" -gt 0 ] || { echo "FATAL: pass tauri-agent-tools check arguments to VERIFY_TAURI_POLL" >&2; exit 2; }
+
+# Which argument carries the caller's --eval expression (separate or inline).
+eval_expr=""
+eval_value_index=-1
+eval_inline_index=-1
+arg_index=0
+for arg in "$@"; do
+  if [ "$eval_value_index" -eq "$arg_index" ]; then
+    eval_expr="$arg"
+  fi
+  case "$arg" in
+    --eval) eval_value_index=$((arg_index + 1)) ;;
+    --eval=*) eval_inline_index=$arg_index; eval_expr="${arg#--eval=}" ;;
+  esac
+  arg_index=$((arg_index + 1))
+done
+
+# Does this expression assert an ABSENCE — i.e. is it trivially true of an
+# empty DOM? `!!x` is a positive truthiness coercion, not an absence check.
+expression_asserts_an_absence() {
+  local expr="$1"
+  local trimmed="$expr"
+  local zero_length_re='\.length[[:space:]]*===?[[:space:]]*0'
+  local short_length_re='\.length[[:space:]]*<[[:space:]]*1'
+  while [ -n "$trimmed" ]; do
+    case "$trimmed" in
+      ' '*|'	'*|'('*) trimmed="${trimmed#?}" ;;
+      *) break ;;
+    esac
+  done
+  case "$trimmed" in
+    '!!'*) ;;
+    '!'*) return 0 ;;
+  esac
+  case "$expr" in
+    *'=== false'*|*'== false'*|*'!== true'*|*'!= true'*) return 0 ;;
+  esac
+  [[ "$expr" =~ $zero_length_re ]] && return 0
+  [[ "$expr" =~ $short_length_re ]] && return 0
+  return 1
+}
+
+if [ -n "$eval_expr" ] && [ -z "$require_selector" ] && [ "$allow_unguarded_negative" -eq 0 ] \
+  && expression_asserts_an_absence "$eval_expr"; then
+  echo "FATAL: refusing an UNGUARDED NEGATIVE DOM assertion (EI-18781011720418569)." >&2
+  echo "       This expression asserts an ABSENCE:" >&2
+  echo "         $eval_expr" >&2
+  cat >&2 <<'POLL_GUARD_HELP'
+       An absence is trivially true of an EMPTY document, so it passes before the
+       sync-backed rows ever reach the DOM and verifies nothing at all.
+       Name the subject that must be present instead:
+         "$VERIFY_TAURI_POLL" --require '[data-testid="your-row"]' --eval '<your expression>'
+       (add --require-min N when one node is not enough). The guard is fused into the
+       SAME evaluation, so nothing can slip between "rows present" and "string absent".
+       Escape hatch, ONLY when an earlier assertion in this same run already proved the
+       subject renders: --allow-unguarded-negative
+POLL_GUARD_HELP
+  exit 2
+fi
+
+guard_expr=""
+if [ -n "$require_selector" ]; then
+  # Single-quoted JS string literal: selectors routinely contain double quotes.
+  guard_selector_literal="${require_selector//\\/\\\\}"
+  guard_selector_literal="${guard_selector_literal//\'/\\\'}"
+  guard_expr="document.querySelectorAll('$guard_selector_literal').length >= $require_min"
+fi
+
+check_args=("$@")
+guard_fused=0
+if [ -n "$guard_expr" ] && [ -n "$eval_expr" ]; then
+  if [ "$eval_inline_index" -ge 0 ]; then
+    check_args[$eval_inline_index]="--eval=($guard_expr) && ($eval_expr)"
+    guard_fused=1
+  elif [ "$eval_value_index" -ge 0 ] && [ "$eval_value_index" -lt "${#check_args[@]}" ]; then
+    check_args[$eval_value_index]="($guard_expr) && ($eval_expr)"
+    guard_fused=1
+  fi
+fi
 
 deadline=$((SECONDS + timeout))
 last_output=""
+guard_seen=0
 tauri_agent_tools_bin="${VERIFY_TAURI_AGENT_TOOLS_BIN:-}"
 if [ -z "$tauri_agent_tools_bin" ]; then
   tauri_agent_tools_bin="$(command -v tauri-agent-tools 2>/dev/null || true)"
@@ -1954,18 +2097,42 @@ fi
   echo "FATAL: tauri-agent-tools is unavailable; set VERIFY_TAURI_AGENT_TOOLS_BIN or add it to PATH" >&2
   exit 127
 }
+
+guard_probe() {
+  [ -n "$guard_expr" ] || return 0
+  "$tauri_agent_tools_bin" check --pid "$VERIFY_TAURI_PID" --eval "$guard_expr" >/dev/null 2>&1
+}
+
 while :; do
   if [ -n "${VERIFY_TAURI_LIVENESS_CHECK:-}" ] && ! bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; then
     exit 1
   fi
-  if last_output="$("$tauri_agent_tools_bin" check --pid "$VERIFY_TAURI_PID" "$@" 2>&1)"; then
+  guard_ok=1
+  # A fused guard rides the assertion itself; an unfused one gates the attempt.
+  if [ -n "$guard_expr" ] && [ "$guard_fused" -eq 0 ]; then
+    if guard_probe; then guard_seen=1; else guard_ok=0; fi
+  fi
+  if [ "$guard_ok" -eq 1 ] \
+    && last_output="$("$tauri_agent_tools_bin" check --pid "$VERIFY_TAURI_PID" ${check_args[@]+"${check_args[@]}"} 2>&1)"; then
+    [ -n "$guard_expr" ] && guard_seen=1
     [ -n "$last_output" ] && printf '%s\n' "$last_output"
     exit 0
   fi
   if [ "$SECONDS" -ge "$deadline" ]; then
+    # Classify the failure: "the subject never arrived" is a different — and far
+    # more common — result than "the subject was there and the claim was false".
+    if [ -n "$guard_expr" ] && [ "$guard_seen" -eq 0 ] && guard_probe; then
+      guard_seen=1
+    fi
     if [ "$quiet_failure" -eq 0 ]; then
-      echo "FATAL: DOM assertion did not pass within ${timeout}s (pid=$VERIFY_TAURI_PID)" >&2
-      [ -n "$last_output" ] && printf '%s\n' "$last_output" >&2
+      if [ -n "$guard_expr" ] && [ "$guard_seen" -eq 0 ]; then
+        echo "FATAL: presence guard never matched within ${timeout}s (pid=$VERIFY_TAURI_PID)" >&2
+        echo "       subject '$require_selector' never reached $require_min node(s)." >&2
+        echo "       The assertion never saw data — an UNGUARDED negative check would have PASSED here." >&2
+      else
+        echo "FATAL: DOM assertion did not pass within ${timeout}s (pid=$VERIFY_TAURI_PID)" >&2
+        [ -n "$last_output" ] && printf '%s\n' "$last_output" >&2
+      fi
     fi
     exit 1
   fi
