@@ -907,6 +907,69 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     stallTimers.set(inFlightId, timer);
   }
 
+  // WI-41257 — inbound observability. The proxy already recorded failures it observed while
+  // forwarding to :3070, but it had no signal for failures on its own client-facing socket. Node
+  // exposes parser/socket failures through `clientError` and admission drops through `drop`; keep
+  // those events separate from upstream failures so an operator can tell "the proxy could not
+  // accept me" from ":3070 was unavailable". These counters are deliberately instance-local and
+  // are also exposed by the proxy-local health route as a bounded snapshot.
+  const inbound = {
+    accepted: 0,
+    active: 0,
+    clientErrors: 0,
+    socketResets: 0,
+    drops: 0,
+  };
+  const resetSockets = new WeakSet<object>();
+  const inboundSnapshot = (): typeof inbound => ({ ...inbound });
+  const isSocketResetError = (error: Error): boolean => {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ECONNRESET' || code === 'EPIPE' || /(?:socket|connection).*(?:reset|hang up)/i.test(error.message);
+  };
+  const socketDetails = (socket: object): Record<string, unknown> => {
+    const peer = socket as {
+      remoteAddress?: string;
+      remotePort?: number;
+      remoteFamily?: string;
+    };
+    return {
+      remoteAddress: peer.remoteAddress,
+      remotePort: peer.remotePort,
+      remoteFamily: peer.remoteFamily,
+    };
+  };
+  const recordInboundSocketReset = (socket: object | undefined, source: string): void => {
+    if (socket && resetSockets.has(socket)) return;
+    if (socket) resetSockets.add(socket);
+    inbound.socketResets++;
+    log(`inbound socket reset (${source})`);
+    record({
+      kind: 'inbound_socket_reset',
+      event: source,
+      socketResets: inbound.socketResets,
+      ...(socket ? socketDetails(socket) : {}),
+    });
+  };
+  const recordInboundClientError = (error: Error, socket: object): void => {
+    inbound.clientErrors++;
+    const socketReset = isSocketResetError(error);
+    if (socketReset) {
+      recordInboundSocketReset(socket, 'clientError');
+    }
+    const errorCode = (error as NodeJS.ErrnoException).code;
+    const message = error.message || String(error);
+    log(`inbound client error${socketReset ? ' / socket reset' : ''}: ${message}`);
+    record({
+      kind: 'inbound_client_error',
+      event: 'clientError',
+      errorCode,
+      detail: message,
+      socketReset,
+      clientErrors: inbound.clientErrors,
+      ...socketDetails(socket),
+    });
+  };
+
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
       let target: McpProxyTarget | null = null;
@@ -916,7 +979,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         target = null;
       }
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, target }));
+      res.end(JSON.stringify({ ok: true, target, inbound: inboundSnapshot() }));
       return;
     }
     // WI-35737 — CLIENT-DISCONNECT TRACKING. Before this, the proxy had no client-side
@@ -934,19 +997,33 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     // exactly the upstream-stall windows when capacity is scarcest.
     let clientGone = false;
     let abortAttempt: (() => void) | null = null;
-    const noteClientGone = (): void => {
+    const noteClientGone = (source: 'response_close' | 'request_aborted'): void => {
       // 'close' also fires on NORMAL completion — `writableFinished` is what separates "the
       // response was fully sent" from "the peer vanished mid-flight". Without this guard
       // every successful request would mark itself aborted.
       if (clientGone || res.writableFinished) return;
       clientGone = true;
+      recordInboundSocketReset(req.socket, source);
       abortAttempt?.();
     };
-    res.on('close', noteClientGone);
-    req.on('aborted', noteClientGone);
+    res.on('close', () => noteClientGone('response_close'));
+    req.on('aborted', () => noteClientGone('request_aborted'));
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('error', () => {
+    req.on('error', (error) => {
+      if (isSocketResetError(error)) {
+        recordInboundSocketReset(req.socket, 'request_error');
+      } else {
+        inbound.clientErrors++;
+        log(`inbound client error (request): ${error.message || String(error)}`);
+        record({
+          kind: 'inbound_client_error',
+          event: 'request_error',
+          detail: error.message || String(error),
+          clientErrors: inbound.clientErrors,
+          ...socketDetails(req.socket),
+        });
+      }
       try {
         res.writeHead(400);
         res.end();
@@ -1188,6 +1265,34 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }
         }
       })();
+    });
+  });
+  // Adding a `clientError` listener disables Node's default socket destruction, so preserve the
+  // default safety behavior after recording the event. The event may represent a parser error or
+  // an ECONNRESET before an IncomingMessage exists; both are inbound and otherwise invisible.
+  server.on('clientError', (error, socket) => {
+    recordInboundClientError(error, socket);
+    socket.destroy();
+  });
+  // Node emits `drop` when its connection admission limit rejects a socket. This is the closest
+  // process-level signal to listen-backlog pressure; kernel-level SYN/backlog drops cannot be
+  // observed by userland, so do not claim this counter is a complete refusal count.
+  server.on('drop', (details) => {
+    inbound.drops++;
+    log(`inbound connection dropped (accept pressure): ${details?.remoteAddress ?? 'unknown peer'}`);
+    record({
+      kind: 'inbound_drop',
+      event: 'drop',
+      acceptPressure: true,
+      drops: inbound.drops,
+      ...details,
+    });
+  });
+  server.on('connection', (socket) => {
+    inbound.accepted++;
+    inbound.active++;
+    socket.once('close', () => {
+      inbound.active = Math.max(0, inbound.active - 1);
     });
   });
   // EI-21275891049298859: the proxy is the MCP client's inbound HTTP server, so it
