@@ -233,6 +233,42 @@ export function resolvedNativeSessionId(
 }
 
 /**
+ * The minimum measured quiet period before an agent-launched headless host may
+ * be treated as a recoverable husk. Keep this deliberately longer than a normal
+ * wake interval: a quiet loop-armed worker is still a live identity, and only a
+ * host with explicit agent provenance is eligible for replacement.
+ */
+export const STALE_HEADLESS_AGENT_HOST_IDLE_MS = 30 * 60_000;
+
+/**
+ * Is a discovered host safe to replace during an ordinary exact resume?
+ *
+ * A process-alive host is normally a live source and must be forked. The one
+ * narrow recovery exception is an explicitly headless host launched by another
+ * agent whose pty activity is measured and has been idle for the recovery
+ * threshold. Missing provenance, missing activity, interactive hosts, and
+ * recent hosts all fail closed to the normal live-source fork behavior.
+ * Pure and injectable so the launch guard can be regression-tested without a
+ * real pty host or wall-clock timing.
+ */
+export function isStaleHeadlessAgentHost(
+  host: Pick<PsuPtyHost, 'bridgeTty' | 'launchedBy' | 'lastActivityAt' | 'lastInputAt' | 'lastOutputAt'> | null | undefined,
+  {
+    now = Date.now(),
+    idleThresholdMs = STALE_HEADLESS_AGENT_HOST_IDLE_MS,
+  }: { now?: number; idleThresholdMs?: number } = {},
+): boolean {
+  if (host?.bridgeTty !== false || !String(host?.launchedBy ?? '').trim()) return false;
+  const activitySamples = [host.lastActivityAt, host.lastOutputAt, host.lastInputAt]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const threshold = Number(idleThresholdMs);
+  if (!activitySamples.length || !Number.isFinite(threshold) || threshold <= 0) return false;
+  const lastActivityAt = Math.max(...activitySamples);
+  return Number.isFinite(now) && now >= lastActivityAt && now - lastActivityAt >= threshold;
+}
+
+/**
  * Resume/fork RESOLVER (P-004, D-004): given an AGENT id (`su-…`) or a native
  * CLI session uuid, resolve the most-recent matching `adv_sessions` row so a
  * caller never hunts a transcript uuid by hand — and detect a still-LIVE

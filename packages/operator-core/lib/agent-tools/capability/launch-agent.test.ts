@@ -653,8 +653,45 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('managed pty');
   });
 
+  it('recovers a stale agent-launched headless host before exact-resume instead of forking it', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    findLiveHostMock.mockReturnValue({
+      ownerId: 'su-a1a71',
+      pid: 42,
+      sock: '/run/host.sock',
+      bridgeTty: false,
+      launchedBy: 'su-caller',
+      lastActivityAt: Date.now() - 31 * 60_000,
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, headless: true, brief: 'continue the recovery' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(shutdownViaPtyMock).toHaveBeenCalledWith(
+      'su-a1a71',
+      expect.objectContaining({ force: true, reason: expect.stringContaining('stale-headless') }),
+    );
+    expect(waitForPtyHostGoneMock).toHaveBeenCalledWith('su-a1a71');
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--resume=sid-dead');
+    expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--fork');
+    expect(textOf(res)).toContain('Guarded stale-headless recovery');
+  });
+
   it('FORKS a still-LIVE source instead of colliding on its transcript (D-007)', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    findLiveHostMock.mockReturnValue({
+      ownerId: 'su-a1a71',
+      pid: 42,
+      sock: '/run/host.sock',
+      bridgeTty: false,
+      launchedBy: 'su-caller',
+      lastActivityAt: Date.now() - 5 * 60_000,
+    });
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
 
     expect(spawnedCommand()).toContain('--resume=sid-dead --fork');

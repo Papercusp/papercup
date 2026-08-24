@@ -9,6 +9,7 @@ import {
   memberLaunchCommand,
   nativeSessionIdFromHost,
   resolvedNativeSessionId,
+  isStaleHeadlessAgentHost,
   restoreVisibleMayShutdown,
   resolveResumeTarget,
   verifyResumeStarted,
@@ -539,5 +540,41 @@ describe('guarded visible restoration', () => {
       pollMs: 10,
       timeoutMs: 25,
     })).resolves.toBe(false);
+  });
+});
+
+describe('stale headless recovery guard', () => {
+  const now = Date.parse('2026-08-24T12:00:00.000Z');
+
+  it('only marks an explicitly agent-launched headless host stale after measured idle time', () => {
+    expect(
+      isStaleHeadlessAgentHost(
+        {
+          bridgeTty: false,
+          launchedBy: 'su-launcher',
+          lastActivityAt: now - 31 * 60_000,
+        },
+        { now },
+      ),
+    ).toBe(true);
+    expect(
+      isStaleHeadlessAgentHost(
+        {
+          bridgeTty: false,
+          launchedBy: 'su-launcher',
+          lastOutputAt: now - 31 * 60_000,
+          lastInputAt: now - 2 * 60_000,
+        },
+        { now },
+      ),
+    ).toBe(false);
+  });
+
+  it('fails closed for unknown provenance/activity and interactive or recent hosts', () => {
+    const stale = now - 31 * 60_000;
+    expect(isStaleHeadlessAgentHost({ bridgeTty: false, lastActivityAt: stale }, { now })).toBe(false);
+    expect(isStaleHeadlessAgentHost({ bridgeTty: false, launchedBy: 'su-launcher' }, { now })).toBe(false);
+    expect(isStaleHeadlessAgentHost({ bridgeTty: true, launchedBy: 'su-launcher', lastActivityAt: stale }, { now })).toBe(false);
+    expect(isStaleHeadlessAgentHost({ bridgeTty: false, launchedBy: 'su-launcher', lastActivityAt: now - 5 * 60_000 }, { now })).toBe(false);
   });
 });
