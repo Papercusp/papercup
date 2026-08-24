@@ -19,7 +19,6 @@ module.exports = {
     'no-bare-db-in-tx': require('./no-bare-db-in-tx.js'),
     'no-raw-route-handlers': require('./no-raw-route-handlers.js'),
     'no-bare-jsonb-cast': require('./no-bare-jsonb-cast.js'),
-    'no-org-pool-sql-json': require('./no-org-pool-sql-json.js'),
     'no-parse-boundary-falsy-default': require('./no-parse-boundary-falsy-default.js'),
   },
 };

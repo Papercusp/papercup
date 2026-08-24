@@ -29,12 +29,51 @@
 // `::jsonb` NOT already prefixed by `::text`, and NOT a longer type (jsonb[], jsonb_path…).
 const BARE_JSONB_AT_START = /^::jsonb(?![A-Za-z0-9_[])/;
 
-/** True for the postgres-js json-helper forms — `sql.json(x)`, `pg.json(x)`,
- *  `tx.json(x)`, or a `pgJson(...)` helper — which must NOT get a ::text cast. */
-function isJsonHelperCall(expr) {
-  if (!expr || expr.type !== 'CallExpression') return false;
-  const callee = expr.callee;
-  if (callee.type === 'MemberExpression' && callee.property.type === 'Identifier' && callee.property.name === 'json') {
+function unwrapExpression(expr) {
+  let current = expr;
+  while (
+    current &&
+    (current.type === 'ChainExpression' ||
+      current.type === 'ParenthesizedExpression' ||
+      current.type === 'TSAsExpression' ||
+      current.type === 'TSTypeAssertion' ||
+      current.type === 'TSNonNullExpression')
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function isNullish(expr) {
+  const value = unwrapExpression(expr);
+  return (
+    (value?.type === 'Literal' && value.value === null) ||
+    (value?.type === 'Identifier' && value.name === 'undefined')
+  );
+}
+
+/** True for postgres-js JSON-helper VALUES — a direct `sql.json(x)` / `pgJson(...)`
+ *  call or a conditional whose non-null branches are all helper values. The
+ *  conditional case matters for nullable columns: `${ok ? sql.json(x) : null}::jsonb`
+ *  is the same safe binding strategy and must not be autofixed to the invalid
+ *  `sql.json(...)::text::jsonb` shape. */
+function isJsonHelperValue(expr) {
+  const value = unwrapExpression(expr);
+  if (!value) return false;
+  if (value.type === 'ConditionalExpression') {
+    const branches = [value.consequent, value.alternate];
+    return (
+      branches.some((branch) => isJsonHelperValue(branch)) &&
+      branches.every((branch) => isNullish(branch) || isJsonHelperValue(branch))
+    );
+  }
+  if (value.type !== 'CallExpression') return false;
+  const callee = unwrapExpression(value.callee);
+  if (
+    callee.type === 'MemberExpression' &&
+    callee.property.type === 'Identifier' &&
+    callee.property.name === 'json'
+  ) {
     return true;
   }
   if (callee.type === 'Identifier' && /json/i.test(callee.name)) return true;
@@ -44,7 +83,10 @@ function isJsonHelperCall(expr) {
 module.exports = {
   meta: {
     type: 'problem',
-    docs: { description: 'Bind jsonb columns as ${x}::text::jsonb, not a client-dependent bare ${x}::jsonb.' },
+    docs: {
+      description:
+        'Bind jsonb columns as ${x}::text::jsonb, not a client-dependent bare ${x}::jsonb.',
+    },
     fixable: 'code',
     schema: [],
     messages: {
@@ -52,7 +94,9 @@ module.exports = {
     },
   },
   create(context) {
-    const sourceCode = context.getSourceCode ? context.getSourceCode() : context.sourceCode;
+    const sourceCode = context.getSourceCode
+      ? context.getSourceCode()
+      : context.sourceCode;
     return {
       TemplateLiteral(node) {
         // quasis[k] (k>=1) is the static text right after expressions[k-1].
@@ -61,7 +105,7 @@ module.exports = {
           const raw = quasi.value.raw;
           if (!BARE_JSONB_AT_START.test(raw)) continue;
           const prevExpr = node.expressions[k - 1];
-          if (isJsonHelperCall(prevExpr)) continue;
+          if (isJsonHelperValue(prevExpr)) continue;
           const fullText = sourceCode.getText();
           const idx = fullText.indexOf('::jsonb', quasi.range[0]);
           if (idx === -1) continue;
@@ -70,7 +114,10 @@ module.exports = {
             messageId: 'bare',
             data: { expr: sourceCode.getText(prevExpr) },
             fix(fixer) {
-              return fixer.replaceTextRange([idx, idx + '::jsonb'.length], '::text::jsonb');
+              return fixer.replaceTextRange(
+                [idx, idx + '::jsonb'.length],
+                '::text::jsonb',
+              );
             },
           });
         }

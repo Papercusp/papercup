@@ -1,117 +1,340 @@
 #!/usr/bin/env node
 /**
- * check-no-sql-json.mjs — ban postgres-js `sql.json(obj)` in operator code that
- * may run against the getOrgPg client.
+ * Canonical postgres-js JSON/JSONB serializer contract guard.
  *
- * `sql.json(object)` THROWS `The "string" argument must be of type string ...
- * Received an instance of Object` on the getOrgPg pg client — a postgres-js
- * dual-package module-instance mismatch in @papercusp/db (NOT config; a fresh
- * `postgres(url)` client tolerates it). It silently broke the experiment ledger
- * (D-018) and EVERY replay-harness cell's persistence (EI-607), and integration
- * tests are structurally BLIND to it (they use the tolerant root-postgres client).
+ * The historical implementation of this command banned `sql.json(value)` in
+ * code that could use a db-org client. That became actively wrong once
+ * `buildClient` started installing `restoreRawJsonbSerializer`: canonical
+ * clients now use one sticky HYBRID serializer that JSON.stringify's raw JS
+ * values and passes already-stringified values through. Both `sql.json(value)`
+ * and `${JSON.stringify(value)}::jsonb` are therefore supported.
  *
- * The portable, UNIVERSALLY-correct jsonb bind is `${JSON.stringify(x)}::jsonb`
- * — the `::jsonb` cast runs server-side, so it yields a real jsonb OBJECT
- * (verified jsonb_typeof = 'object') on every client, getOrgPg included.
+ * Keep the filename and `lint:no-sql-json` package-script entry as a compatibility
+ * surface for CI callers, but guard the root cause instead of valid consumers:
  *
- * Runbook: agent-insight `sql-json-throws-on-getorgpg-client`. EI-607.
+ *   1. the shared serializer must remain hybrid and sticky for OIDs 114 + 3802;
+ *   2. the production `buildClient` factory must install it; and
+ *   3. the production-shaped org test fixture must install it too.
  *
- *   node scripts/check-no-sql-json.mjs
- *
- * The ALLOW set grandfathers files that deliberately use sql.json on a FRESH
- * `postgres(getHarnessAdminUrl()|gymUri, {prepare:false})` pool, where it is
- * tolerated. New jsonb writes should use `${JSON.stringify(x)}::jsonb` regardless.
+ * Behavioral coverage lives in
+ * `libs/papercusp/libs/db/src/connection-jsonb-serializers.test.ts`; detector
+ * positive controls live in
+ * `packages/operator-core/lib/__tests__/check-no-sql-json.test.ts`.
  */
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
-import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
-import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-const ROOT = new URL('..', import.meta.url).pathname;
+export const CONTRACT_PATHS = Object.freeze({
+  connection: 'libs/papercusp/libs/db/src/connection.ts',
+  serializer: 'libs/papercusp/libs/db/src/raw-serializers.ts',
+  orgTestFixture: 'packages/operator-core/test/_org-test-db.ts',
+});
 
-// Dirs where the getOrgPg / buildClient client dominates.
-const SCAN_PREFIXES = [
-  'packages/operator-core/lib/',
-  'apps/operator/lib/',
-  'libs/papercusp/packages/orchestrator/src/',
-  'libs/papercusp/packages/cli/src/',
-];
+function parse(fileName, source) {
+  return ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+}
 
-// Files that deliberately use sql.json on a FRESH postgres() client (tolerant) —
-// NOT getOrgPg. Each must keep building its own `postgres(url, {prepare:false})` pool.
-const ALLOW = new Set([
-  'packages/operator-core/lib/dock-layouts.ts',          // db() = fresh getHarnessAdminUrl pool
-  'packages/operator-core/lib/gym/blueprint-cycle.ts',   // gymSql = fresh gym-operator pool
-  'packages/operator-core/lib/llm-testing/storage.ts',   // fresh getHarnessAdminUrl pool
-  'packages/operator-core/lib/llm-testing/ledger.ts',    // fresh getHarnessAdminUrl pool
-  'packages/operator-core/lib/llm-testing/telemetry.ts', // fresh getHarnessAdminUrl pool
-  // WI-7092 / EI-607, verified 2026-08-02 — each below is genuinely a FRESH
-  // postgres()/getLongLivedAdminPool() pool built via a plain top-level
-  // `import postgres from 'postgres'` (never through @papercusp/db's getOrgPg/
-  // buildClient), so it resolves the tolerant build and sql.json is safe here.
-  'apps/operator/lib/release/release-registry.ts',       // recordRelease's `sql` param is only ever called (record-release-cli.ts) with a fresh `postgres(getHarnessAdminUrl(), {max:1})` pool
-  'packages/operator-core/lib/gym/runner-ports.ts',      // ensureGymPipelinePrincipals is only called with cfg.gymSql (fresh gym-operator pool); its own comment notes `${JSON.stringify}::jsonb` would ALSO reintroduce a real double-encode bug on this column (array caps read back empty)
-  'packages/operator-core/lib/system-health/desktop-perf-runs.ts', // db() = getLongLivedAdminPool (fresh postgres() pool, same class as the llm-testing/* entries above)
-]);
-
-// WI-6666: SCAN_PREFIXES above explicitly names two `libs/papercusp/**` dirs, but a
-// bare `git ls-files` (the original enumerator here) STOPS AT THE SUPERPROJECT
-// BOUNDARY — libs/papercusp is a submodule, so those two prefixes matched ZERO files
-// no matter what they contained. `listTrackedFiles` recurses into submodules, so this
-// guard can finally see the two dirs it always claimed to scan.
-const { files: tracked, unscanned } = listTrackedFiles(ROOT);
-
-const inScope = (f) =>
-  SCAN_PREFIXES.some((p) => f.startsWith(p)) &&
-  /\.(ts|tsx)$/.test(f) &&
-  !/\.(test|spec)\.(ts|tsx)$/.test(f) &&
-  !/\.integration\.test\.(ts|tsx)$/.test(f) &&
-  !f.endsWith('.d.ts') &&
-  !ALLOW.has(f);
-
-// A `sql.json(` / `gymSql.json(` / `this.sql.json(` CALL — not a comment mention.
-const SQL_JSON = /\b\w*[Ss]ql\.json\s*\(/;
-
-const offenders = [];
-for (const f of tracked) {
-  if (!inScope(f)) continue;
-  let text;
-  try {
-    text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
-  } catch {
-    continue;
+function unwrap(node) {
+  let current = node;
+  while (
+    current &&
+    (ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isSatisfiesExpression(current))
+  ) {
+    current = current.expression;
   }
-  if (!/[Ss]ql\.json/.test(text)) continue;
-  // Match against the MASKED text, report the RAW line. The mask is length-preserving,
-  // so line numbers and columns are identical in both — never re-split the masked text
-  // for display, or the offender prints as blanks.
-  //
-  // This replaced a per-line heuristic (`t.startsWith('//') || t.startsWith('*') || …`
-  // plus an indexOf('//') position test) that covered exactly one of the three ways this
-  // token appears without being a call. It missed a `/* … */` block whose continuation
-  // line is not `*`-prefixed, and — measured, WI-37717 — it missed STRING literals
-  // entirely: this guard's own `console.error('✗ sql.json( in getOrgPg-class code…')`
-  // is the shape, and any error message or doc string in the scanned dirs that names the
-  // banned call would red CI while being no call at all.
-  const masked = stripCommentsAndStrings(text, f).split('\n');
-  text.split('\n').forEach((line, i) => {
-    if (!SQL_JSON.test(masked[i] ?? '')) return;
-    offenders.push(`${f}:${i + 1}  ${line.trim().slice(0, 100)}`);
+  return current;
+}
+
+function findFunction(sourceFile, name) {
+  let found = null;
+  const visit = (node) => {
+    if (!found && ts.isFunctionDeclaration(node) && node.name?.text === name)
+      found = node;
+    if (!found) ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
+function hasCall(root, calleeName, firstArgName) {
+  let found = false;
+  const visit = (node) => {
+    const callee = ts.isCallExpression(node) ? unwrap(node.expression) : null;
+    const firstArg = ts.isCallExpression(node)
+      ? unwrap(node.arguments[0])
+      : null;
+    if (
+      !found &&
+      callee &&
+      ts.isIdentifier(callee) &&
+      callee.text === calleeName &&
+      firstArg &&
+      ts.isIdentifier(firstArg) &&
+      firstArg.text === firstArgName
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
+function stringArrayInitializer(sourceFile, declarationName) {
+  let values = null;
+  const visit = (node) => {
+    if (
+      !values &&
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === declarationName
+    ) {
+      const initializer = unwrap(node.initializer);
+      if (initializer && ts.isArrayLiteralExpression(initializer)) {
+        values = initializer.elements
+          .filter(ts.isStringLiteralLike)
+          .map((element) => element.text);
+      }
+    }
+    if (!values) ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return values;
+}
+
+function isJsonStringifyOf(node, argName) {
+  const expression = unwrap(node);
+  if (!expression || !ts.isCallExpression(expression)) return false;
+  const callee = unwrap(expression.expression);
+  const firstArg = unwrap(expression.arguments[0]);
+  return (
+    callee &&
+    ts.isPropertyAccessExpression(callee) &&
+    ts.isIdentifier(callee.expression) &&
+    callee.expression.text === 'JSON' &&
+    callee.name.text === 'stringify' &&
+    firstArg &&
+    ts.isIdentifier(firstArg) &&
+    firstArg.text === argName
+  );
+}
+
+function isStringTypeofCheck(node, argName) {
+  const expression = unwrap(node);
+  if (!expression || !ts.isBinaryExpression(expression)) return false;
+  if (
+    ![
+      ts.SyntaxKind.EqualsEqualsToken,
+      ts.SyntaxKind.EqualsEqualsEqualsToken,
+    ].includes(expression.operatorToken.kind)
+  ) {
+    return false;
+  }
+  const pairs = [
+    [unwrap(expression.left), unwrap(expression.right)],
+    [unwrap(expression.right), unwrap(expression.left)],
+  ];
+  return pairs.some(
+    ([left, right]) =>
+      left &&
+      right &&
+      ts.isTypeOfExpression(left) &&
+      ts.isIdentifier(unwrap(left.expression)) &&
+      unwrap(left.expression).text === argName &&
+      ts.isStringLiteralLike(right) &&
+      right.text === 'string',
+  );
+}
+
+function hasHybridSerializer(functionNode) {
+  let found = false;
+  const visit = (node) => {
+    if (
+      !found &&
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'hybrid'
+    ) {
+      const initializer = unwrap(node.initializer);
+      const parameter =
+        initializer && ts.isArrowFunction(initializer)
+          ? unwrap(initializer.parameters[0]?.name)
+          : null;
+      const arg =
+        parameter && ts.isIdentifier(parameter) ? parameter.text : null;
+      const body =
+        initializer && ts.isArrowFunction(initializer)
+          ? unwrap(initializer.body)
+          : null;
+      const whenTrue =
+        body && ts.isConditionalExpression(body) ? unwrap(body.whenTrue) : null;
+      if (
+        arg &&
+        body &&
+        ts.isConditionalExpression(body) &&
+        isStringTypeofCheck(body.condition, arg) &&
+        whenTrue &&
+        ts.isIdentifier(whenTrue) &&
+        whenTrue.text === arg &&
+        isJsonStringifyOf(body.whenFalse, arg)
+      ) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(functionNode);
+  return found;
+}
+
+function hasStickyAccessors(functionNode) {
+  let found = false;
+  const visit = (node) => {
+    const callee = ts.isCallExpression(node) ? unwrap(node.expression) : null;
+    const target = ts.isCallExpression(node) ? unwrap(node.arguments[0]) : null;
+    const descriptor = ts.isCallExpression(node)
+      ? unwrap(node.arguments[2])
+      : null;
+    if (
+      !found &&
+      callee &&
+      ts.isPropertyAccessExpression(callee) &&
+      ts.isIdentifier(callee.expression) &&
+      callee.expression.text === 'Object' &&
+      callee.name.text === 'defineProperty' &&
+      target &&
+      ts.isIdentifier(target) &&
+      target.text === 'serializers' &&
+      descriptor &&
+      ts.isObjectLiteralExpression(descriptor)
+    ) {
+      const names = new Set(
+        descriptor.properties
+          .map((property) => property.name)
+          .filter(Boolean)
+          .map((name) =>
+            ts.isIdentifier(name) || ts.isStringLiteralLike(name)
+              ? name.text
+              : null,
+          )
+          .filter(Boolean),
+      );
+      if (names.has('get') && names.has('set')) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(functionNode);
+  return found;
+}
+
+export function inspectJsonbSerializerContract(sources) {
+  const problems = [];
+  const connection = parse(CONTRACT_PATHS.connection, sources.connection);
+  const serializer = parse(CONTRACT_PATHS.serializer, sources.serializer);
+  const fixture = parse(CONTRACT_PATHS.orgTestFixture, sources.orgTestFixture);
+
+  const buildClient = findFunction(connection, 'buildClient');
+  if (
+    !buildClient ||
+    !hasCall(buildClient, 'restoreRawJsonbSerializer', 'client')
+  ) {
+    problems.push(
+      `${CONTRACT_PATHS.connection}: buildClient must call restoreRawJsonbSerializer(client) before returning the canonical client`,
+    );
+  }
+
+  const restore = findFunction(serializer, 'restoreRawJsonbSerializer');
+  if (!restore) {
+    problems.push(
+      `${CONTRACT_PATHS.serializer}: export restoreRawJsonbSerializer(client)`,
+    );
+  } else {
+    const modifiers = restore.modifiers?.map((modifier) => modifier.kind) ?? [];
+    if (!modifiers.includes(ts.SyntaxKind.ExportKeyword)) {
+      problems.push(
+        `${CONTRACT_PATHS.serializer}: restoreRawJsonbSerializer must remain exported`,
+      );
+    }
+    if (!hasHybridSerializer(restore)) {
+      problems.push(
+        `${CONTRACT_PATHS.serializer}: restoreRawJsonbSerializer must pass strings through and JSON.stringify raw JS values`,
+      );
+    }
+    if (!hasStickyAccessors(restore)) {
+      problems.push(
+        `${CONTRACT_PATHS.serializer}: restoreRawJsonbSerializer must install sticky get/set accessors with Object.defineProperty`,
+      );
+    }
+  }
+
+  const jsonOids = stringArrayInitializer(
+    serializer,
+    'DRIZZLE_MUTATED_JSON_OIDS',
+  );
+  if (!jsonOids || !jsonOids.includes('114') || !jsonOids.includes('3802')) {
+    problems.push(
+      `${CONTRACT_PATHS.serializer}: DRIZZLE_MUTATED_JSON_OIDS must cover JSON OID 114 and JSONB OID 3802`,
+    );
+  }
+
+  const applyFixtureFixes = findFunction(fixture, 'applyRawSerializerFixes');
+  if (
+    !applyFixtureFixes ||
+    !hasCall(applyFixtureFixes, 'restoreRawJsonbSerializer', 'client')
+  ) {
+    problems.push(
+      `${CONTRACT_PATHS.orgTestFixture}: applyRawSerializerFixes must call restoreRawJsonbSerializer(client) so tests match production`,
+    );
+  }
+
+  return problems;
+}
+
+export function checkJsonbSerializerContract(root = ROOT) {
+  return inspectJsonbSerializerContract({
+    connection: readFileSync(resolve(root, CONTRACT_PATHS.connection), 'utf8'),
+    serializer: readFileSync(resolve(root, CONTRACT_PATHS.serializer), 'utf8'),
+    orgTestFixture: readFileSync(
+      resolve(root, CONTRACT_PATHS.orgTestFixture),
+      'utf8',
+    ),
   });
 }
 
-if (offenders.length === 0) {
-  console.log(
-    '✓ no sql.json( on a getOrgPg-class client (jsonb is bound as ${JSON.stringify(x)}::jsonb).' +
-      describeUnscanned(unscanned),
-  );
-  process.exit(0);
+export function isDirectCliInvocation(entry = process.argv[1]) {
+  return Boolean(entry) && resolve(entry) === fileURLToPath(import.meta.url);
 }
 
-console.error('✗ sql.json( in getOrgPg-class code — it THROWS on the getOrgPg client (EI-607):');
-console.error('  Bind jsonb as `${JSON.stringify(x)}::jsonb` — universally correct (jsonb_typeof=object), server-side cast.');
-console.error('  If this file uses a FRESH postgres() pool where sql.json is tolerated, add it to ALLOW in this script with a note.');
-console.error('  Runbook: /internal/docs/agent-insights/sql-json-throws-on-getorgpg-client\n');
-for (const o of offenders) console.error('    ' + o);
-console.error(`\n  ${offenders.length} offender(s).`);
-process.exit(1);
+if (isDirectCliInvocation()) {
+  const problems = checkJsonbSerializerContract(ROOT);
+  if (problems.length === 0) {
+    console.log(
+      '✓ canonical postgres-js clients install the sticky hybrid JSON/JSONB serializer (sql.json and pre-stringified casts are both supported).',
+    );
+  } else {
+    console.error('✗ canonical JSON/JSONB serializer contract is incomplete:');
+    for (const problem of problems) console.error(`  - ${problem}`);
+    console.error(
+      '\nBehavioral authority: libs/papercusp/libs/db/src/connection-jsonb-serializers.test.ts',
+    );
+    process.exitCode = 1;
+  }
+}

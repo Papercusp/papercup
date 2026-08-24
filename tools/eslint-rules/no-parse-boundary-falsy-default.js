@@ -32,9 +32,8 @@
  * Wire-up (eslint.config.mjs):
  *   { plugins: { papercusp: rules },
  *     rules: { 'papercusp/no-parse-boundary-falsy-default': 'warn' } }
- * (starts at `warn`, not `error` — same conservative rollout as
- * no-org-pool-sql-json's allowlist approach — until false-positive rate on
- * the real tree is measured.)
+ * (starts at `warn`, not `error`, until false-positive rate on the real tree
+ * is measured.)
  */
 
 'use strict';
@@ -64,7 +63,10 @@ function isJsonParseCall(node) {
  * single-property `JSON.parse(s).a ?? false`. */
 function rootObjectOf(node) {
   let cur = node;
-  while (cur && (cur.type === 'MemberExpression' || cur.type === 'ChainExpression')) {
+  while (
+    cur &&
+    (cur.type === 'MemberExpression' || cur.type === 'ChainExpression')
+  ) {
     if (cur.type === 'ChainExpression') {
       cur = cur.expression;
       continue;
@@ -78,7 +80,11 @@ function isFalsyLiteral(node) {
   if (!node) return false;
   if (node.type === 'Literal') return FALSY_LITERAL_VALUES.has(node.value);
   // Cover the unary forms too: `-0`.
-  if (node.type === 'UnaryExpression' && node.operator === '-' && node.argument.type === 'Literal') {
+  if (
+    node.type === 'UnaryExpression' &&
+    node.operator === '-' &&
+    node.argument.type === 'Literal'
+  ) {
     return FALSY_LITERAL_VALUES.has(-node.argument.value);
   }
   return false;
@@ -102,13 +108,21 @@ module.exports = {
       LogicalExpression(node) {
         if (node.operator !== '??' && node.operator !== '||') return;
         if (!isFalsyLiteral(node.right)) return;
-        const left = node.left.type === 'ChainExpression' ? node.left.expression : node.left;
+        const left =
+          node.left.type === 'ChainExpression'
+            ? node.left.expression
+            : node.left;
         if (left.type !== 'MemberExpression') return;
         if (!isJsonParseCall(rootObjectOf(left))) return;
         context.report({
           node,
           messageId: 'collapsed',
-          data: { value: JSON.stringify(node.right.type === 'Literal' ? node.right.value : 0), operator: node.operator },
+          data: {
+            value: JSON.stringify(
+              node.right.type === 'Literal' ? node.right.value : 0,
+            ),
+            operator: node.operator,
+          },
         });
       },
     };
