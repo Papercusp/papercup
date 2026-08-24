@@ -36,6 +36,7 @@ const {
   getActiveRun,
   getRunningRun,
   setRunPhase,
+  failRunIfExecuting,
   executeBulkRunAction,
   reportOutcomes,
   getPendingReviewItems,
@@ -252,6 +253,37 @@ describe('attention bulk-run store (real PG)', () => {
     const items = await getRunItems(run.runId);
     expect(items.filter((i) => i.outcome === 'auto_resolved')).toHaveLength(1);
     expect(items.filter((i) => i.outcome === 'pending')).toHaveLength(2);
+  });
+
+  it('fails a run whose resolver exits, without overwriting an already-settled run', async () => {
+    const run = await createRun({ items: seed('resolver-exit') });
+    await setRunPhase({
+      runId: run.runId,
+      phase: 'running',
+      resolverOwner: 'su-resolver-exit',
+    });
+
+    const failed = await failRunIfExecuting({
+      runId: run.runId,
+      resolverOwner: 'su-resolver-exit',
+      error: 'resolver process ended before settling the run: exit 1',
+    });
+    expect(failed).toMatchObject({
+      phase: 'failed',
+      resolverOwner: 'su-resolver-exit',
+      error: expect.stringMatching(/exit 1/),
+    });
+    expect(failed!.finishedAt).toBeTruthy();
+
+    const settled = await createRun({ items: seed('resolver-late-exit') });
+    await setRunPhase({ runId: settled.runId, phase: 'review' });
+    expect(
+      await failRunIfExecuting({
+        runId: settled.runId,
+        error: 'late clean exit after review',
+      }),
+    ).toBeNull();
+    expect((await getRun(settled.runId))!.phase).toBe('review');
   });
 
   it('getActiveRun ignores terminal runs; getLatestRun does not', async () => {

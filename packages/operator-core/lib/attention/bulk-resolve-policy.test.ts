@@ -33,7 +33,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildResolverBrief } from '../endpoint-route/routes/admin/attention-bulk-resolve';
+import type { ChildProcess } from 'node:child_process';
+import {
+  buildResolverBrief,
+  buildResolverLaunchCommand,
+  resolverSpawnOutcome,
+} from '../endpoint-route/routes/admin/attention-bulk-resolve';
 // Deliberately imported via the AGENT TOOL's own export path, so the identity
 // assertion below fails if that re-export is ever swapped back for a copy.
 import { NAVIGATE_ACTION_IDS } from '../agent-tools/inbox/bulk-run';
@@ -140,6 +145,69 @@ describe('resolver brief — the D-001/D-002 policy it carries into the run', ()
 
   it('gives it a way to give up VISIBLY rather than stalling the run', () => {
     expect(brief).toMatch(/inbox:bulk-run-settle \{ failed: true, error \}/);
+  });
+});
+
+describe('resolver launch — a real supervised headless agent, never a shell greeting', () => {
+  const ownerId = 'su-11111111-1111-4111-8111-111111111111';
+
+  it('uses the shared scripted-agent command with every non-interactive launch rail', () => {
+    const command = buildResolverLaunchCommand({
+      workspaceId: 'papercusp-workspace',
+      harness: 'papercusp',
+      ownerId,
+    });
+
+    expect(command).toContain('psu --no-picker');
+    expect(command).toContain('--account=default');
+    expect(command).toContain('--agent=claude');
+    expect(command).toContain(`--owner-id=${ownerId}`);
+    expect(command).toContain('--harness=papercusp');
+    expect(command).toContain('--workspace=papercusp-workspace');
+    expect(command).toContain('--headless');
+    expect(command).toContain('--carry=warm');
+    expect(command).toContain('--role=su');
+    expect(command).not.toContain('papercup status');
+  });
+
+  it('propagates an explicit spawn error instead of marking the run running', () => {
+    const outcome = resolverSpawnOutcome(
+      { status: 'error', error: 'psu exited at boot', code: 502 },
+      ownerId,
+    );
+    expect(outcome).toEqual({ ok: false, error: 'psu exited at boot' });
+  });
+
+  it('requires a process handle so post-launch death remains observable', () => {
+    const outcome = resolverSpawnOutcome(
+      {
+        status: 'ok',
+        pid: 42,
+        terminal: 'headless',
+        child: null,
+        display: null,
+        desktopEnvResolvedVia: null,
+      },
+      ownerId,
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome).toMatchObject({ error: expect.stringMatching(/no process handle/i) });
+  });
+
+  it('uses the pre-pinned coord owner as the run resolver identity', () => {
+    const child = {} as ChildProcess;
+    const outcome = resolverSpawnOutcome(
+      {
+        status: 'ok',
+        pid: 42,
+        terminal: 'headless',
+        child,
+        display: null,
+        desktopEnvResolvedVia: null,
+      },
+      ownerId,
+    );
+    expect(outcome).toEqual({ ok: true, sessionId: ownerId, child });
   });
 });
 

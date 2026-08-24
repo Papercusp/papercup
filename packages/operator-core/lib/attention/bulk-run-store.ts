@@ -602,6 +602,40 @@ export async function setRunPhase(input: {
 }
 
 /**
+ * Fail a run because its resolver process ended, but ONLY while that process
+ * can still own the run. The phase guard is the important part: a headless psu
+ * normally outlives its first turn, so an eventual clean process exit may race
+ * with `settleRunPhase`. A stale exit observer must never turn an already
+ * reviewed/completed run back into `failed`.
+ *
+ * Returns the failed row when this call won, otherwise null (missing run or a
+ * resolver/owner already settled it). This is intentionally one conditional
+ * UPDATE rather than getRun → setRunPhase; the latter has a check/write race.
+ */
+export async function failRunIfExecuting(input: {
+  runId: string;
+  error: string;
+  resolverOwner?: string | null;
+  workspaceId?: string;
+}): Promise<BulkRunRow | null> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<RawRunRow[]>`
+    UPDATE harness_shared.attention_bulk_runs
+       SET phase = 'failed',
+           resolver_owner = COALESCE(${input.resolverOwner ?? null}, resolver_owner),
+           error = ${input.error.slice(0, 4000)},
+           finished_at = now(),
+           updated_at = now()
+     WHERE workspace_id = ${ws}
+       AND run_id = ${input.runId}
+       AND phase IN ('pending', 'running')
+    RETURNING ${sql.unsafe(RUN_COLUMNS)}
+  `;
+  return rows[0] ? mapRun(rows[0]) : null;
+}
+
+/**
  * Record the resolver's outcomes for one or more items, then RECOMPUTE the run's
  * counters from the item rows.
  *

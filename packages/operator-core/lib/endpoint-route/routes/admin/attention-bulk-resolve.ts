@@ -36,13 +36,19 @@
  * behavior into a second implementation that drifts silently.
  */
 
+import { randomUUID } from 'node:crypto';
+import type { ChildProcess } from 'node:child_process';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { gateApiRoute } from '../../../require-flag';
+import { buildAgentLaunchCommand } from '../../../agent-launch-core';
+import type { SpawnConsoleResult } from '../../../console-spawn';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import {
   BulkRunAlreadyActiveError,
   createRun,
+  failRunIfExecuting,
   markItemAccepted,
   setRunPhase,
   settleRunPhase,
@@ -137,6 +143,55 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
 }
 
 /**
+ * Compose the actual resolver process command through the shared scripted-agent
+ * builder. `spawnHeadless` only decides WHERE a command runs; it does not turn a
+ * shell greeting into an agent. The old route handed it buildConsoleEnvelope's
+ * default `papercup status` greeting, which printed the five-line status banner,
+ * exited, and left the run labelled `running` forever.
+ */
+export function buildResolverLaunchCommand(input: {
+  workspaceId: string;
+  harness: string;
+  ownerId: string;
+}): string {
+  return buildAgentLaunchCommand({
+    mode: 'fresh',
+    agent: 'claude',
+    account: 'default',
+    workspace: input.workspaceId,
+    harness: input.harness,
+    ownerId: input.ownerId,
+    headless: true,
+    carry: 'warm',
+    role: 'su',
+  });
+}
+
+export type ResolverSpawnOutcome =
+  | { ok: true; sessionId: string; child: ChildProcess }
+  | { ok: false; error: string };
+
+/**
+ * Translate the spawner's discriminated result instead of treating "the call
+ * returned" as success. The incident's second fault was reading a nonexistent
+ * `sessionId` property from BOTH result variants and returning ok:true even when
+ * spawnHeadless had explicitly returned status:'error'.
+ */
+export function resolverSpawnOutcome(
+  result: SpawnConsoleResult,
+  resolverOwner: string,
+): ResolverSpawnOutcome {
+  if (result.status !== 'ok') return { ok: false, error: result.error };
+  if (!result.child) {
+    return {
+      ok: false,
+      error: 'headless resolver launch returned no process handle; liveness cannot be supervised',
+    };
+  }
+  return { ok: true, sessionId: resolverOwner, child: result.child };
+}
+
+/**
  * Launch the resolver. Best-effort by design: every failure path returns a
  * reason rather than throwing, so the caller can record it on the run.
  */
@@ -154,9 +209,21 @@ async function launchResolver(
         import('../../../mcp-base-url'),
       ]);
 
+    const workspaceId = activeWorkspaceId();
+    // The middle-pane Inbox is workspace-scoped and therefore sends no harness.
+    // A fresh psu launch without --harness is a plain agent (no su bootstrap or
+    // inbox tools), so bind it to the workspace's canonical home harness.
+    const effectiveHarness = harness?.trim() || operatorHomeHarnessSlug();
+    const resolverOwner = `su-${randomUUID()}`;
+    const greetingCmd = buildResolverLaunchCommand({
+      workspaceId,
+      harness: effectiveHarness,
+      ownerId: resolverOwner,
+    });
+
     const envelope = await buildConsoleEnvelope({
-      workspaceId: activeWorkspaceId(),
-      slug: harness,
+      workspaceId,
+      slug: effectiveHarness,
       operatorBaseUrl: await resolveSpawnHostOperatorBaseUrl(),
       headless: true,
       role: 'su',
@@ -168,13 +235,45 @@ async function launchResolver(
     const res = await spawnHeadless({
       envelope: {
         ...envelope,
+        greetingCmd,
         env: { ...envelope.env, PAPERCUSP_KICKOFF_PROMPT: buildResolverBrief(runId, itemCount) },
       },
       label: `bulk-resolve-${runId.slice(0, 12)}`,
+      coordOwnerId: resolverOwner,
+      launchedBy: 'attention-bulk-resolve',
     });
 
-    const sessionId = (res as { sessionId?: string })?.sessionId;
-    return { ok: true, sessionId: typeof sessionId === 'string' ? sessionId : undefined };
+    const outcome = resolverSpawnOutcome(res, resolverOwner);
+    if (!outcome.ok) return outcome;
+
+    // spawnHeadless catches boot-time death. This observer covers the next
+    // window: if the real agent exits after launch was acknowledged but before
+    // it settles the run, atomically fail the still-executing run and push the
+    // terminal phase to the strip. Once review/complete wins, this is a no-op.
+    let exitHandled = false;
+    const failForExit = (detail: string): void => {
+      if (exitHandled) return;
+      exitHandled = true;
+      void failRunIfExecuting({
+        runId,
+        workspaceId,
+        resolverOwner,
+        error: `resolver process ended before settling the run: ${detail}`,
+      })
+        .then(async (failed) => {
+          if (failed) await invalidateBulkRun();
+        })
+        .catch(() => {
+          // The run remains visible and Stop still works. Never crash the route
+          // process from a detached child's late diagnostic callback.
+        });
+    };
+    outcome.child.once('error', (error) => failForExit(error.message));
+    outcome.child.once('exit', (code, signal) =>
+      failForExit(signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`),
+    );
+
+    return { ok: true, sessionId: outcome.sessionId };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
