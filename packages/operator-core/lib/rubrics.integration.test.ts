@@ -407,6 +407,59 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(revised.status).toBe('active');
   });
 
+  it('acceptance amend tolerates omitted optional prose from the legacy projection', async () => {
+    const subjectPlan = 'acceptance-amend-subject';
+    const rubricId = 'acceptance-amend-empty-prose';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Acceptance amend subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
+              false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+
+    const first = await rubrics.proposeRubric({
+      rubricId,
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'acceptance-amend',
+      title: 'Acceptance amend',
+      criteria: [
+        { key: 'outcome-a', title: 'Outcome A' },
+        { key: 'outcome-b', title: 'Outcome B' },
+      ],
+      by: 'su-test',
+    });
+    expect(first.status).toBe('active');
+
+    // amendRubric reads the legacy Rubric projection, where omitted acceptance prose
+    // comes back as empty strings, then delegates the whole-document write to propose.
+    // The write must normalize those blanks back to omissions instead of applying the
+    // standard rubric's required model/method/driftMarkers validation.
+    const amended = await rubrics.amendRubric({
+      rubricId,
+      methodRef: '/internal/docs/testing/agent-e2e',
+      by: 'su-amender',
+    });
+    expect(amended).toMatchObject({
+      rubricId,
+      kind: 'acceptance',
+      subjectPlan,
+      status: 'active',
+      methodRef: '/internal/docs/testing/agent-e2e',
+    });
+    expect(amended.criteria.map((criterion) => criterion.key)).toEqual(['outcome-a', 'outcome-b']);
+
+    const [stored] = await db.adminSql<{ template_data: { criteria: Record<string, unknown>[]; methodRef: string } }[]>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = ${rubricId} AND template = 'rubric'`;
+    expect(stored.template_data.methodRef).toBe('/internal/docs/testing/agent-e2e');
+    expect(stored.template_data.criteria).toEqual([
+      { key: 'outcome-a', title: 'Outcome A' },
+      { key: 'outcome-b', title: 'Outcome B' },
+    ]);
+  });
+
   it('acceptance re-propose preserves a retired contract and its superseded rubric plan (EI-21296891484659125)', async () => {
     const subjectPlan = 'retired-acceptance-subject';
     const rubricId = 'retired-acceptance-contract';
