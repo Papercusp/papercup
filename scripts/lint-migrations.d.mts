@@ -36,6 +36,37 @@ export function partitionRawTxControl(entries: any, { enforcedFrom, exemptions }
  */
 export function unappliedFrozenExemptions(appliedFilenames: any, exemptions?: Map<string, string>): string[];
 /**
+ * Partition migration files by the unique-index shape-swap rule (check #6),
+ * mirroring partitionRawTxControl so the CLI and the gate-wiring test cannot
+ * disagree about a FROZEN file (the WI-41119 contract). Files below
+ * `enforcedFrom` are grandfathered applied history (564/689) and skipped,
+ * exactly as the inline loop did before.
+ */
+export function partitionIndexSwaps(entries: any, { enforcedFrom, exemptions, }?: {
+    enforcedFrom?: number | undefined;
+    exemptions?: Map<string, string> | undefined;
+}): {
+    offenders: {
+        file: any;
+        hits: {
+            index: string;
+            table: string;
+            partial: boolean;
+            dropped: string[];
+        }[];
+    }[];
+    exempted: {
+        file: any;
+        hits: {
+            index: string;
+            table: string;
+            partial: boolean;
+            dropped: string[];
+        }[];
+        reason: string | undefined;
+    }[];
+};
+/**
  * Top-level `RENAME CONSTRAINT` statements — the 42704 footgun (WI-4547).
  *
  * `ALTER TABLE IF EXISTS t RENAME CONSTRAINT x TO y` READS as guarded and is NOT:
@@ -266,6 +297,19 @@ export const ENFORCED_FROM: 494;
  * ERROR (see unappliedFrozenExemptions) precisely so it cannot be used that way.
  */
 export const FROZEN_TXCTL_EXEMPTIONS: Map<string, string>;
+/**
+ * FROZEN offenders for the index-swap check (#6) — the WI-41119 deadlock, second
+ * rule. The sanctioned fix for a genuinely-safe swap is the in-file
+ * `-- lint-migrations: allow-index-swap <reason>` pragma, but once the file is
+ * APPLIED the migration-immutability guard (WI-38352) refuses that edit exactly
+ * like any other, so a safe-but-applied swap would red-pin the gate permanently.
+ * Entry rules are identical to FROZEN_TXCTL_EXEMPTIONS: deliberate, reasoned,
+ * SHRINK-ONLY in intent, and a listed file that is NOT actually applied is a
+ * hard error (unappliedFrozenExemptions) so the list cannot become a bypass.
+ * An entry must state why the swap is safe ON THE CHECK'S OWN HAZARD MODEL
+ * (no ON CONFLICT can target the swapped index), not merely that it is applied.
+ */
+export const FROZEN_INDEX_SWAP_EXEMPTIONS: Map<string, string>;
 /**
  * Enforcement boundary for the UNIQUE-INDEX SHAPE SWAP check (below).
  *
