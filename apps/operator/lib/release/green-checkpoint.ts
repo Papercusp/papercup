@@ -139,7 +139,10 @@ export interface CheckpointExecutionContext {
   affectedTestProofGroup?: string;
 }
 
-/** Provenance for a run that is intentionally diagnostic rather than a gate observation. */
+/** Canonical provenance for the candidate a run judges. */
+export type CheckpointCandidateSource = "pinned" | "tip";
+
+/** Backward-compatible provenance for a run that is intentionally diagnostic. */
 export type CheckpointDiagnostic = "candidate-pinned";
 
 export interface CheckpointDeps {
@@ -305,6 +308,7 @@ export interface CheckpointDeps {
    */
   recordInFlightCandidate?(info: {
     candidate: string;
+    candidateSource: CheckpointCandidateSource;
     base: string | null;
     selectedAtMs: number;
     quietCutApplied: boolean;
@@ -662,7 +666,9 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  /** Explicit provenance for a diagnostic run; absent means a normal gate observation. */
+  /** Canonical provenance: pinned diagnostics never mutate the live gate. */
+  candidateSource?: CheckpointCandidateSource;
+  /** Compatibility field for older recorders that predate candidateSource. */
   diagnostic?: CheckpointDiagnostic;
   reason:
     | "up-to-date"
@@ -5676,7 +5682,9 @@ export function summarizeSuiteOutput(fullOutput: string): string {
 export interface CheckpointOpts {
   /** Override the candidate (default: integration-branch HEAD). */
   candidate?: string;
-  /** Mark this explicitly pinned candidate as diagnostic; do not infer from `candidate`. */
+  /** Canonical candidate provenance. Explicit candidates are pinned only when the caller says so. */
+  candidateSource?: CheckpointCandidateSource;
+  /** Compatibility field for recorders that predate candidateSource. */
   diagnostic?: CheckpointDiagnostic;
   /** Don't push `ready` to origin (local-only). */
   noPush?: boolean;
@@ -6336,7 +6344,8 @@ export type GatePromotionReason =
    *  credential (WI-39549) — was invisible from the gate's own log. */
   | "push-failed"
   | "advance-failed"
-  | "superseded-by-refire";
+  | "superseded-by-refire"
+  | "diagnostic-only";
 
 /** Render the trailer. Uppercase-token line, the same shape as GATE_HELD_BY /
  *  AFFECTED_TESTS_RESULT so it greps identically:
@@ -6496,7 +6505,7 @@ export function stampGatePromotion(
   }
 }
 
-export async function runGreenCheckpoint(
+async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
@@ -6508,6 +6517,12 @@ export async function runGreenCheckpoint(
   // refiring straight past the suite timeout, be killed mid-suite, and record NO verdict at all.
   const passStartedAtMs = Date.now();
   const runStartedAtMs = opts.runStartedAtMs ?? passStartedAtMs;
+  const candidateSource: CheckpointCandidateSource =
+    opts.candidateSource ??
+    (opts.diagnostic === "candidate-pinned" ? "pinned" : "tip");
+  const diagnostic: CheckpointDiagnostic | undefined =
+    candidateSource === "pinned" ? "candidate-pinned" : opts.diagnostic;
+  const diagnosticOnly = candidateSource === "pinned";
   // EI-19346606967082413: `opts.runStartedAtMs` is threaded ONLY by nextRefireOpts, so it is
   // undefined exactly on the OUTERMOST pass — i.e. this is the once-per-RUN seam. Resetting the
   // transcript here (rather than per pass) is what makes it span every auto-refire instead of
@@ -6652,6 +6667,7 @@ export async function runGreenCheckpoint(
   // the normal verdict: wake both red subscribers, retire the mutually-exclusive green
   // waits, and clear the in-flight marker before the caller releases the run lock.
   const emitTerminalRed = async (result: CheckpointResult): Promise<void> => {
+    if (diagnosticOnly) return;
     const pipeline = pipelineName(cfg.integrationRoot);
     const redSummary = `[${pipeline}] green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
     const payload = {
@@ -6663,6 +6679,7 @@ export async function runGreenCheckpoint(
       logPath: result.logPath ?? null,
       runId: result.runId ?? deps.runId ?? null,
       lineage: result.lineage ?? null,
+      candidateSource,
     };
     const cancelSiblingKeysFor = [
       "release:green",
@@ -6752,7 +6769,7 @@ export async function runGreenCheckpoint(
     }
     return { candidate: exactCandidate, advance };
   };
-  if (deps.readFrozenRepairQueue) {
+  if (!diagnosticOnly && deps.readFrozenRepairQueue) {
     try {
       repairQueue = await deps.readFrozenRepairQueue();
     } catch (e) {
@@ -6829,6 +6846,7 @@ export async function runGreenCheckpoint(
             sha: exactPromotion.candidate,
             from: exactPromotion.advance.from,
             pipeline,
+            candidateSource,
             runId: deps.runId ?? null,
           };
           try {
@@ -7205,6 +7223,7 @@ export async function runGreenCheckpoint(
   // red verdict, or newer staging tip therefore resumes this exact candidate. The production
   // writer supplies the complete repair hooks; older/direct callers keep their historical path.
   if (
+    !diagnosticOnly &&
     !repairQueue &&
     deps.writeFrozenRepairQueue &&
     deps.prepareFrozenRepairWorktree &&
@@ -7275,6 +7294,7 @@ export async function runGreenCheckpoint(
   if (abandonedNote) deps.log(abandonedNote);
   await deps.recordInFlightCandidate?.({
     candidate,
+    candidateSource,
     base: lastReady ?? null,
     selectedAtMs: candidateSelectedAtMs,
     quietCutApplied,
@@ -7603,6 +7623,34 @@ export async function runGreenCheckpoint(
       { candidate, green, promoted, reason, advancedTo },
       (s) => deps.log(s),
     );
+  if (diagnosticOnly) {
+    const diagnosticGreen = infraFault ? null : green;
+    const diagnosticSummary =
+      `${infraFault ? `green-checkpoint ABORTED its verdict on ${candidate.slice(0, 8)} — ${infraFault.note}` : summary}` +
+      `\n\nCandidate-pinned diagnostic: suite/log/pipeline evidence retained; promotion and every live-gate side effect suppressed.`;
+    stampPromotion(false, "diagnostic-only");
+    return {
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green: diagnosticGreen,
+      candidateSource,
+      ...(diagnostic ? { diagnostic } : {}),
+      reason: infraFault ? "infra-inconclusive" : green ? "up-to-date" : "not-green",
+      summary: diagnosticSummary,
+      ...(infraFault ? { infraFault } : failingTests?.length ? { failingTests } : {}),
+      ...(!infraFault && !green
+        ? { failingTestNames: extractFailingTestNames(summary) }
+        : {}),
+      ...(flakeSuspects?.length ? { flakeSuspects } : {}),
+      ...(retriedTests?.length ? { retriedTests } : {}),
+      ...(cleanGreen === undefined ? {} : { cleanGreen }),
+      ...(deps.runId ? { runId: deps.runId } : {}),
+      ...(logPath ? { logPath } : {}),
+      ...(isolationNote ? { isolationNote } : {}),
+      ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+    };
+  }
   // WI-39450 / WI-39671: publish the verdict NOW, before any optional post-verdict leg can kill
   // the run and take it with them. Everything between here and a disposition site is optional
   // work that can outlive its budget — the prefix salvage on the red path (a SECOND full affected
@@ -7623,6 +7671,8 @@ export async function runGreenCheckpoint(
       candidate,
       from: lastReady,
       green,
+      candidateSource,
+      ...(diagnostic ? { diagnostic } : {}),
       reason: green ? "up-to-date" : "not-green",
       promotionPending: true,
       summary,
@@ -7709,6 +7759,7 @@ export async function runGreenCheckpoint(
     // queue before any stale-tip re-triage, auto-refire, or backward prefix salvage can
     // move the target. Infra reds returned above and never enter this path.
     if (
+      !diagnosticOnly &&
       deps.writeFrozenRepairQueue &&
       deps.prepareFrozenRepairWorktree &&
       deps.dispatchFrozenRepairFixer
@@ -7855,6 +7906,8 @@ export async function runGreenCheckpoint(
       candidate,
       from: lastReady,
       green: false,
+      candidateSource,
+      ...(diagnostic ? { diagnostic } : {}),
       reason: "not-green",
       summary,
       failingTests,
@@ -8019,6 +8072,7 @@ export async function runGreenCheckpoint(
         sha: candidate,
         from: lastReady ?? null,
         pipeline,
+        candidateSource,
         summary: summary + lineageNote + alreadyFixedNote + historicalFlakeNote,
         failingTests: failingTests ?? [],
         logPath: logPath ?? null,
@@ -8912,6 +8966,7 @@ export async function runGreenCheckpoint(
       sha: candidate,
       from: adv.from,
       pipeline,
+      candidateSource,
       runId: deps.runId ?? null,
     };
     // EI-12457: this candidate resolved green — a subscriber's still-pending red
@@ -8961,6 +9016,32 @@ export async function runGreenCheckpoint(
     ...(deps.runId ? { runId: deps.runId } : {}),
     ...(logPath ? { logPath } : {}),
     ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+  };
+}
+
+/**
+ * Public result boundary. New producers always stamp candidate provenance, while the
+ * compatibility `diagnostic` field keeps older recorders fail-closed during version skew.
+ */
+export async function runGreenCheckpoint(
+  cfg: ReleaseConfig,
+  deps: CheckpointDeps,
+  opts: CheckpointOpts = {},
+): Promise<CheckpointResult> {
+  const candidateSource: CheckpointCandidateSource =
+    opts.candidateSource ??
+    (opts.diagnostic === "candidate-pinned" ? "pinned" : "tip");
+  const diagnostic: CheckpointDiagnostic | undefined =
+    candidateSource === "pinned" ? "candidate-pinned" : opts.diagnostic;
+  const result = await runGreenCheckpointInner(cfg, deps, {
+    ...opts,
+    candidateSource,
+    ...(diagnostic ? { diagnostic } : {}),
+  });
+  return {
+    ...result,
+    candidateSource,
+    ...(diagnostic ? { diagnostic } : {}),
   };
 }
 
@@ -13216,6 +13297,8 @@ if (require.main === module) {
         sha: r.candidate,
         from: r.from,
         pipeline,
+        candidateSource: r.candidateSource ?? "tip",
+        ...(r.diagnostic ? { diagnostic: r.diagnostic } : {}),
         reason: r.reason,
         summary: r.summary ?? null,
         runId: r.runId ?? null,
@@ -13261,7 +13344,12 @@ if (require.main === module) {
     // AWAITED (not fire-and-forget): every caller of emitResult exits the process
     // immediately after calling it (releaseAndExit / process.exit) — the exact EI-10800
     // class of bug where an un-awaited emit races process teardown and never fires.
-    if (r.green === null) await emitInconclusiveVerdict(r);
+    if (
+      r.green === null &&
+      r.candidateSource !== "pinned" &&
+      r.diagnostic !== "candidate-pinned"
+    )
+      await emitInconclusiveVerdict(r);
     // Retire the in-flight-candidate marker here because EVERY terminal path funnels through
     // this function — verdict, crash, and inconclusive alike. Clearing at the happy-path return
     // instead would leave a CRASHED run advertising itself as live until the 3h freshness bound
@@ -13321,6 +13409,12 @@ if (require.main === module) {
   };
 
   const candidateArg = arg("--candidate");
+  const candidateSource: CheckpointCandidateSource = candidateArg
+    ? "pinned"
+    : "tip";
+  const diagnostic: CheckpointDiagnostic | undefined = candidateArg
+    ? "candidate-pinned"
+    : undefined;
   // WI-4957: ONE runId for this whole process, shared by the normal verdict path
   // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
   // own event payload independently) — so every event this process could possibly emit
@@ -13350,9 +13444,11 @@ if (require.main === module) {
     } catch {
       /* best-effort — keep the fallback candidate above */
     }
-    await emitResult(
-      buildTerminalFailureCheckpointResult({ candidate, error: e, runId }),
-    );
+    await emitResult({
+      ...buildTerminalFailureCheckpointResult({ candidate, error: e, runId }),
+      candidateSource,
+      ...(diagnostic ? { diagnostic } : {}),
+    });
   };
 
   const lock = acquireCheckpointRunLock(
@@ -13376,6 +13472,8 @@ if (require.main === module) {
           candidate,
           from,
           green: null,
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
           // NOT 'up-to-date' (which release-actions treats as a benign green that resets
           // the stall streak): a lock-skip is a NON-advance, and a PERSISTENT one (a stale
           // lock that never reclaims) is exactly the silent multi-hour deploy freeze. Its
@@ -13421,6 +13519,8 @@ if (require.main === module) {
           advanced: false,
           candidate: candidateArg ?? cfg.integrationBranch,
           from: null,
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
           // `null`, NOT `false` — same reasoning as buildCrashCheckpointResult. A watchdog kill
           // means this run never rendered a verdict, so claiming the code is RED is a fabricated
           // measurement; `green === null` is what routes it to `green-checkpoint:inconclusive`.
@@ -13468,22 +13568,24 @@ if (require.main === module) {
         // eventually resolve and the next cron may well green it. No wake is lost: `checkpoint:await`
         // arms all three verdict keys (agent-tools/events/sugar.ts, release-checkpoint-launch.ts),
         // and the normal red path still emits the red pair.
-        try {
-          const { notifyAttention } =
-            await import("@papercusp/operator-core/lib/attention-notify");
-          await notifyAttention({
-            kind: "intervention",
-            title:
-              "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)",
-            body: inconclusive.summary ?? "self-watchdog fired with no summary",
-            importance: "urgent",
-            data: {
-              candidate: inconclusive.candidate,
-              reason: inconclusive.reason,
-            },
-          });
-        } catch {
-          /* best-effort — the kill proceeds regardless */
+        if (candidateSource !== "pinned" && diagnostic !== "candidate-pinned") {
+          try {
+            const { notifyAttention } =
+              await import("@papercusp/operator-core/lib/attention-notify");
+            await notifyAttention({
+              kind: "intervention",
+              title:
+                "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)",
+              body: inconclusive.summary ?? "self-watchdog fired with no summary",
+              importance: "urgent",
+              data: {
+                candidate: inconclusive.candidate,
+                reason: inconclusive.reason,
+              },
+            });
+          } catch {
+            /* best-effort — the kill proceeds regardless */
+          }
         }
       },
     });
@@ -13532,6 +13634,8 @@ if (require.main === module) {
       realCheckpointDeps(cfg, undefined, runId, undefined, watchdog.progress),
       {
         candidate: candidateArg,
+        candidateSource,
+        ...(diagnostic ? { diagnostic } : {}),
         noPush: process.argv.includes("--no-push"),
       },
     )

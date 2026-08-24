@@ -51,6 +51,8 @@ export const IN_FLIGHT_CANDIDATE_MAX_AGE_MS = 3 * 60 * 60_000;
 export interface InFlightCandidateInfo {
   /** The sha being judged, full length. THE field this module exists to publish. */
   candidate: string;
+  /** Whether this run observes the live tip or is an explicitly pinned diagnostic. */
+  candidateSource: 'pinned' | 'tip';
   /** The green pin this candidate would advance from (`lastReady`), or null on a first run. */
   base: string | null;
   /** WI-7069's stamp: the instant the candidate became FINAL. Everything after it (setupTree,
@@ -130,6 +132,7 @@ export function parseInFlightCandidate(raw: unknown, nowMs: number = Date.now())
   if (nowMs - observedAtMs > IN_FLIGHT_CANDIDATE_MAX_AGE_MS) return null; // abandoned — see doc above.
   return {
     candidate,
+    candidateSource: r.candidateSource === 'pinned' ? 'pinned' : 'tip',
     base: typeof r.base === 'string' ? r.base : null,
     selectedAtMs,
     quietCutApplied: r.quietCutApplied === true,
@@ -151,7 +154,8 @@ export function describeInFlightCandidate(marker: StoredInFlightCandidate, nowMs
     marker.quietCutApplied && marker.tipAtSelection
       ? ` — quiet cut stepped back from tip ${marker.tipAtSelection.slice(0, 8)}, so commits newer than this candidate are deliberately NOT judged`
       : '';
-  return `judging ${marker.candidate.slice(0, 12)}, selected ${age}s ago${refire}${quiet}`;
+  const source = marker.candidateSource === 'pinned' ? 'pinned diagnostic' : 'tip';
+  return `judging ${marker.candidate.slice(0, 12)} (source=${source}), selected ${age}s ago${refire}${quiet}`;
 }
 
 /**

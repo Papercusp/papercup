@@ -20,6 +20,7 @@ const NOW = 1_785_000_000_000;
 function marker(over: Partial<StoredInFlightCandidate> = {}): StoredInFlightCandidate {
   return {
     candidate: 'd5fcc6149021aea811a9fe7b4927ea0a444afff7',
+    candidateSource: 'tip',
     base: '1e0ddc58645453a9edb3faa394e3d5019b2e7060',
     selectedAtMs: NOW - 60_000,
     quietCutApplied: true,
@@ -64,9 +65,18 @@ describe('parseInFlightCandidate', () => {
     expect(parseInFlightCandidate(raw, NOW)).toBeNull();
   });
 
-  it('defaults refireDepth to 0 and quietCutApplied to false when absent, never to a truthy guess', () => {
+  it('defaults legacy markers to tip while preserving explicit pinned provenance', () => {
     const parsed = parseInFlightCandidate({ candidate: 'abc123', selectedAtMs: NOW, observedAtMs: NOW }, NOW);
-    expect(parsed).toMatchObject({ refireDepth: 0, quietCutApplied: false, tipAtSelection: null, base: null });
+    expect(parsed).toMatchObject({
+      candidateSource: 'tip',
+      refireDepth: 0,
+      quietCutApplied: false,
+      tipAtSelection: null,
+      base: null,
+    });
+    expect(parseInFlightCandidate(marker({ candidateSource: 'pinned' }), NOW)).toMatchObject({
+      candidateSource: 'pinned',
+    });
   });
 });
 
@@ -74,7 +84,13 @@ describe('describeInFlightCandidate', () => {
   it('names the candidate and its age — the two facts a reader otherwise reconstructs by hand', () => {
     const line = describeInFlightCandidate(marker({ quietCutApplied: false, tipAtSelection: null }), NOW);
     expect(line).toContain('judging d5fcc6149021');
+    expect(line).toContain('source=tip');
     expect(line).toContain('60s ago');
+  });
+
+  it('labels a pinned diagnostic explicitly so no reader treats it as the live gate', () => {
+    const line = describeInFlightCandidate(marker({ candidateSource: 'pinned' }), NOW);
+    expect(line).toContain('source=pinned diagnostic');
   });
 
   it('says the candidate MOVED IN-PROCESS on a refire — the signature repeatedly misread as corruption', () => {

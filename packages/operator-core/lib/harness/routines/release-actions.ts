@@ -30,7 +30,7 @@ import { appendPipelineEvent } from '../git-sync/pipeline-events';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName } from '../../release/pipeline-name';
-import { releaseCheckpointConfig } from '../../release-checkpoint-config';
+import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
   describeGateRedOwnership,
@@ -183,11 +183,20 @@ export function buildScheduledCheckpointShell(
  * so the deployed routine must emit both the global and pipeline-scoped keys after parsing its
  * candidate-bound red result. Best-effort: a wake failure must not change gate recording.
  */
+function isPinnedCheckpointVerdict(
+  verdict:
+    | { candidateSource?: 'pinned' | 'tip'; diagnostic?: 'candidate-pinned' }
+    | null
+    | undefined,
+): boolean {
+  return verdict?.candidateSource === 'pinned' || verdict?.diagnostic === 'candidate-pinned';
+}
+
 async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdict): Promise<void> {
   // Candidate-pinned runs are diagnostics, not observations of the live gate. Keep their
   // append-only pipeline history (the caller records it separately), but never wake red
   // subscribers from the legacy/version-skew fallback.
-  if (verdict.diagnostic === 'candidate-pinned') return;
+  if (isPinnedCheckpointVerdict(verdict)) return;
   if (verdict.green !== false || !verdict.candidate) return;
   const pipeline = pipelineName(root);
   const candidate = verdict.candidate;
@@ -519,7 +528,9 @@ function runScript(
 export interface CheckpointVerdict {
   reason: string;
   green?: boolean | null;
-  /** Explicit provenance for a diagnostic run; absent means a normal gate observation. */
+  /** Canonical provenance: pinned diagnostics never mutate the live gate. */
+  candidateSource?: 'pinned' | 'tip';
+  /** Compatibility field for older producers that predate candidateSource. */
   diagnostic?: 'candidate-pinned';
   candidate?: string;
   from?: string | null;
@@ -663,6 +674,8 @@ export interface CheckpointVerdict {
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
 export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
+  if (v.candidateSource) detail.candidateSource = v.candidateSource;
+  else if (v.diagnostic === 'candidate-pinned') detail.candidateSource = 'pinned';
   if (v.diagnostic) detail.diagnostic = v.diagnostic;
   if (v.promotionPending === true) detail.promotionPending = true;
   if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
@@ -916,7 +929,7 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   });
   // A pinned candidate is retained as diagnostic pipeline evidence, but it must not become
   // shared gate state or trigger any repair/escalation machinery.
-  if (verdict.diagnostic === 'candidate-pinned') return true;
+  if (isPinnedCheckpointVerdict(verdict)) return true;
   // EI-19405864032365760: `summary` rides along so the 'migrations-pending' abort path can name
   // the pending migration in `gate_health.inconclusive` — it is the only field carrying it.
   await trackGateStall(
@@ -966,7 +979,7 @@ export async function recordPendingCheckpointVerdict(
   });
   // Keep the pending diagnostic row for history, but never mutate gate health or dispatch a
   // fixer for a candidate that was explicitly pinned for investigation.
-  if (verdict.diagnostic === 'candidate-pinned') return true;
+  if (isPinnedCheckpointVerdict(verdict)) return true;
   await trackGateStall(
     target,
     verdict.reason,
@@ -1026,6 +1039,43 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       kind: 'green_checkpoint',
       status: 'skipped-no-tooling',
       detail: { reason: tooling.reason, root },
+    });
+    return;
+  }
+  // EI-21363817573800034: ADMISSION — the LAST gate before we spawn, and deliberately so.
+  //
+  // The run-lock is taken by the CHILD (green-checkpoint.ts), so returning here means no lock is
+  // ever acquired — which is the property this guard has to have. Until this existed, an active
+  // serializer hold bound humans and agents but not the hourly cron: the wrapper took the lock,
+  // and a supervisor hand-stopped the systemd scope afterwards (2026-08-24 D-025 at 18:16Z and
+  // D-031 at 19:20Z; both candidates then had to be marked permanently non-qualifying).
+  //
+  // `unknown` is treated like `held` on purpose — see readQualificationAdmission: an admission we
+  // could not MEASURE is not permission. It skips this tick only and retries on the next.
+  const admission = await readQualificationAdmission();
+  if (admission.status !== 'clear') {
+    const held = admission.status === 'held';
+    console.warn(
+      `${orchestratorStdoutTag()} skip ${ctx.installSlug}: ` +
+        (held
+          ? `qualification HELD by ${admission.hold.governingRef}` +
+            (admission.hold.blockingItems?.length ? ` (blocked on ${admission.hold.blockingItems.join(', ')})` : '')
+          : `admission UNDETERMINED (${admission.reason}) — not launching`),
+    );
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: held ? 'skipped-held' : 'skipped-admission-unknown',
+      detail: held
+        ? {
+            governingRef: admission.hold.governingRef,
+            blockingItems: admission.hold.blockingItems ?? [],
+            reason: admission.hold.reason ?? null,
+            placedBy: admission.hold.placedBy ?? null,
+            placedAtMs: admission.hold.placedAtMs ?? null,
+          }
+        : { reason: admission.reason },
     });
     return;
   }
@@ -1118,7 +1168,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // EI-20981232855780375: an old CLI can record the red result but cannot emit the
     // candidate-bound awaitable wake. Keep this strictly on the parsed red fallback;
     // modern producer-side recording already emits it, and crash/green results do not.
-    if (parsed?.diagnostic !== 'candidate-pinned' && parsed?.green === false && parsed.candidate) {
+    if (!isPinnedCheckpointVerdict(parsed) && parsed?.green === false && parsed.candidate) {
       await emitLegacyRedVerdictEvent(root, parsed);
     }
   }
@@ -1132,7 +1182,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // the dedup'd decision for every routine tick on a modern CLI; gating on !recordedByRun
   // keeps this a pure fallback instead of a race with the producer-side dispatch.
   if (
-    parsed?.diagnostic !== 'candidate-pinned' &&
+    !isPinnedCheckpointVerdict(parsed) &&
     !recordedByRun &&
     !parsed?.repairQueue &&
     shouldDispatchReleaseFixer(status, candidate, failingTests)
@@ -1148,7 +1198,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // verdict so it resets on green; fail-safe.
   // WI-4494: skipped when the run recorded its own verdict — see `recordedByRun` above. A second
   // trackGateStall for ONE verdict would count the same red twice.
-  if (parsed?.diagnostic !== 'candidate-pinned' && !recordedByRun) {
+  if (!isPinnedCheckpointVerdict(parsed) && !recordedByRun) {
     // EI-13288: thread the parsed run's own retriage verdict through this fallback recorder too
     // (version-skew / crash path) — same as the WI-4494 producer-side path above.
     // EI-20767792192323374: thread `summary` here too. Both abort reasons ('migrations-pending',
@@ -1175,7 +1225,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // pass absorbed (red under load, green in isolation) — proven flakes keyed by
   // `<ws>::<file>`, finer-grained than the workspace-retry markers, so a chronically
   // load-flaky FILE trips the same quarantine nudge.
-  if (parsed?.diagnostic !== 'candidate-pinned') {
+  if (!isPinnedCheckpointVerdict(parsed)) {
     await trackFlakeHistory(ctx, summary, flakeSuspects).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} flake history failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -1781,10 +1831,11 @@ export async function trackGateStall(
     promotionPending?: boolean;
     green?: boolean | null;
     runId?: string;
+    candidateSource?: 'pinned' | 'tip';
     diagnostic?: 'candidate-pinned';
   } = {},
 ): Promise<void> {
-  if (options.diagnostic === 'candidate-pinned') return;
+  if (isPinnedCheckpointVerdict(options)) return;
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
