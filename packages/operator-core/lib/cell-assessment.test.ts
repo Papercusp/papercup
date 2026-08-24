@@ -3,7 +3,8 @@
  * safe to do about it.
  *
  * The centre of gravity of this suite is ONE invariant, which is the whole reason the
- * assessment replaces the falsifier rather than sitting beside it:
+ * assessment REPLACED the axis-1 falsifier (P-006 deleted it) rather than sitting
+ * beside it:
  *
  *   GENERIC CODE MAY TRANSPORT A DOMAIN CODE. IT MAY NEVER INVENT ONE.
  *
@@ -11,8 +12,8 @@
  * not declare, evidence that went missing, a door-truncated payload — must converge on
  * `unavailable`. A plausible enum nobody measured is worse than an honest refusal,
  * because it arrives wearing the contract's badge; that is the exact failure D-038 was
- * written about one field over, and the reason `falsifier` is being retired rather
- * than merely renamed.
+ * written about one field over, and the reason `falsifier` was retired rather than
+ * merely renamed.
  *
  * ⚠ ON THE CONTROLS AT THE BOTTOM OF THIS FILE. A guard test that has never failed is
  * a guard nobody has tested. This repo's falsifiability rule forbids proving that by
@@ -240,17 +241,28 @@ describe('read — a declared code is TRANSPORTED with its meaning and safe acti
     expect(r.value).toBe(true);
   });
 
-  it('ADDITIVITY: an unmigrated cell carries no `assessment` key at all', async () => {
-    registerCell(spec());
+  /**
+   * P-006 replaced the old ADDITIVITY test here. That test asserted an "unmigrated"
+   * poll cell reads with no `assessment` key — a state the contract can no longer
+   * reach, since `assessment` is required and only an EVENT cell may answer `null`
+   * (D-016). The surviving question is the one below: absence is now a statement
+   * about the cell's SIGNAL KIND, not about migration progress.
+   */
+  it('an EVENT cell — the only kind that may answer `null` — carries no `assessment` key', async () => {
+    registerCell(
+      spec({
+        cell: 'test.eventCell',
+        assessment: null,
+        changeSignal: { kind: 'event', key: 'test:fixture-changed' },
+      }),
+    );
     dispatchReadOnlyTool.mockResolvedValue(payload());
 
-    const r = await readCell('test.cell', READER, ENV);
+    const r = await readCell('test.eventCell', READER, ENV);
 
     expect(r.status).toBe('value');
     if (r.status !== 'value') return;
     expect(r.assessment).toBeUndefined();
-    // …and the retiring field still ships, because P-003 removes nothing.
-    expect(r.falsifier).toBeDefined();
   });
 });
 
