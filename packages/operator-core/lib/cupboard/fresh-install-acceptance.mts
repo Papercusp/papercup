@@ -33,6 +33,7 @@ import { installPluginFromCupboardCore } from './install-plugin-core';
 import { installTemplateFromCupboardCore } from './install-template-core';
 import { fetchKnowledgePackFromRepo } from '../knowledge-packs/install-from-repo';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
+import { resolveLocalGoalPackage } from './goal-package-store';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { GLOBAL_PLUGINS_DIR } from '../plugin-catalog';
 
@@ -203,6 +204,28 @@ async function main() {
     } catch (e) {
       results.push({ kind: 'template', target, ok: false, detail: e instanceof Error ? e.message : String(e) });
     }
+  }
+
+  // bundled goal package (WI-41126 / P-007): the bundled FLOOR is HOME-independent —
+  // it resolves via PAPERCUSP_GOAL_PACKAGES_DIR (release sidecar) or the in-repo
+  // goal-packages/ fallback, never via PAPERCUSP_HOME — so even a clean home must
+  // see the first-party work-on-everything standing goal. Deliberately NO
+  // prod-worker `goal` browse leg: worker migration 016 is NOT applied to prod,
+  // so a listings?kind=goal probe would false-fail this acceptance.
+  try {
+    const woe = resolveLocalGoalPackage('work-on-everything');
+    const ok = !!woe && woe.standing === true && (woe.budgetWindowSec ?? 0) > 0;
+    results.push({
+      kind: 'goal-bundled',
+      target: 'work-on-everything',
+      ok,
+      installedTo: woe?.dir,
+      detail: woe
+        ? `layer=${woe.layer} standing=${woe.standing} budgetWindowSec=${woe.budgetWindowSec}`
+        : 'work-on-everything did not resolve from the bundled goal-package floor',
+    });
+  } catch (e) {
+    results.push({ kind: 'goal-bundled', target: 'work-on-everything', ok: false, detail: e instanceof Error ? e.message : String(e) });
   }
 
   for (const r of results) {

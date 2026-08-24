@@ -159,8 +159,12 @@ async function readAgentModes(
  * the owner. Ranking every holder of a marked goal as the steward is the correct reading
  * of "is this session running the Blender loop"; picking a winner between duplicate goals
  * is the owner's call, not this resolver's.
+ *
+ * EXPORTED for the goal-package bundle-integrity gate (WI-41126 / P-007): the bundled
+ * work-on-everything goal package's body must carry this marker, and the gate imports
+ * the code truth here instead of keeping a copyable literal that could drift.
  */
-const BLENDER_GOAL_BODY_MARKER = 'blender-su-grade-integration-2026-08-11';
+export const BLENDER_GOAL_BODY_MARKER = 'blender-su-grade-integration-2026-08-11';
 
 /**
  * The ACTIVE Blender-steward goal ids. Fail-soft to an EMPTY set: with no resolvable goal,
