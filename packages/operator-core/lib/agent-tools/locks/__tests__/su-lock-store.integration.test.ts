@@ -23,6 +23,9 @@
  *   npx vitest run lib/agent-tools/locks/__tests__/su-lock-store.integration.test.ts
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ensureBootstrap,
@@ -66,6 +69,41 @@ function nextWs(): string {
   return `${SUITE_PREFIX}-${++suiteIdx}`;
 }
 
+// Migration 931 is authored at a `.DRAFT` path until its focused tests pass.
+// The side-db bootstrap runner intentionally ignores drafts, so this suite
+// applies the draft directly when it is not armed. Once armed, ensureBootstrap
+// applies it normally and this check becomes a no-op.
+const LOCKS_SQL_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../../libs/papercusp/packages/locks/src/sql',
+);
+
+async function ensureRecursiveOverlapMigrationForTests(): Promise<void> {
+  const sql = getTxPool();
+  const functions = await sql<Array<{
+    overlaps: boolean;
+    paths_overlap: boolean;
+    prefixes: boolean;
+  }>>`
+    SELECT
+      to_regprocedure('lock_path_overlaps(text,text)') IS NOT NULL AS overlaps,
+      to_regprocedure('lock_paths_overlap(text[],text[])') IS NOT NULL AS paths_overlap,
+      to_regprocedure('lock_path_prefixes(text)') IS NOT NULL AS prefixes
+  `;
+  if (functions[0]?.overlaps && functions[0]?.paths_overlap && functions[0]?.prefixes) {
+    return;
+  }
+
+  const migration = ['931-locks-recursive-path-overlap.sql', '931-locks-recursive-path-overlap.sql.DRAFT']
+    .map((file) => resolve(LOCKS_SQL_DIR, file))
+    .find((file) => existsSync(file));
+  if (!migration) throw new Error(`migration 931 not found under ${LOCKS_SQL_DIR}`);
+
+  await sql.begin(async (tx) => {
+    await tx.unsafe(readFileSync(migration, 'utf8'));
+  });
+}
+
 // WI-2900: under the green-checkpoint gate the FULL suite runs in parallel on a box that is ALSO
 // running the live fleet, so PG stays sustained-saturated for the whole run. At the baked 5s
 // lock_timeout an inWorkspaceTxn advisory-lock acquire / commit intermittently exceeds it and raises
@@ -96,6 +134,7 @@ beforeAll(async () => {
     }
   }
   await ensureBootstrap();
+  await ensureRecursiveOverlapMigrationForTests();
 });
 
 afterAll(async () => {
@@ -320,6 +359,172 @@ describe('tryAcquire', () => {
     expect(() =>
       normalizePaths(['/abs/path']),
     ).toThrow(InvalidPathError);
+  });
+
+  it('treats directory holds as recursive, boundary-safe overlaps', async () => {
+    const ws = nextWs();
+    const parent = await inWorkspaceTxn(ws, 'parent', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'parent',
+        ownerLabel: 'PARENT',
+        paths: ['packages'],
+        intent: 'parent hold',
+        ttlSec: 60,
+      }),
+    );
+    if (!parent.ok) throw new Error('parent acquire should succeed');
+
+    const sibling = await inWorkspaceTxn(ws, 'sibling', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'sibling',
+        ownerLabel: 'SIBLING',
+        paths: ['packages-old'],
+        intent: 'boundary control',
+        ttlSec: 60,
+      }),
+    );
+    expect(sibling.ok).toBe(true);
+
+    const descendant = await inWorkspaceTxn(ws, 'descendant', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'descendant',
+        ownerLabel: 'DESCENDANT',
+        paths: ['packages/operator-core/lib/file.ts'],
+        intent: 'descendant write',
+        ttlSec: 60,
+      }),
+    );
+    expect(descendant.ok).toBe(false);
+    if (!descendant.ok) {
+      expect(descendant.busy).toEqual([
+        expect.objectContaining({ path: 'packages', owner: 'parent' }),
+      ]);
+    }
+
+    const queue = await readQueue(getTxPool(), {
+      coordinationDomain: ws,
+      paths: ['packages/operator-core/lib/file.ts'],
+    });
+    expect(queue.active_locks.map((lock) => lock.path)).toEqual(['packages']);
+
+    if (sibling.ok) {
+      await inWorkspaceTxn(ws, 'sibling', (tx) =>
+        tryRelease(tx, { coordinationDomain: ws, owner: 'sibling', lockId: sibling.lock_id }),
+      );
+    }
+    await inWorkspaceTxn(ws, 'parent', (tx) =>
+      tryRelease(tx, { coordinationDomain: ws, owner: 'parent', lockId: parent.lock_id }),
+    );
+  });
+
+  it('blocks descendant waiters and grants them after a parent release', async () => {
+    const ws = nextWs();
+    const sql = getTxPool();
+    const parent = await inWorkspaceTxn(ws, 'parent', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'parent',
+        ownerLabel: 'PARENT',
+        paths: ['packages'],
+        intent: 'parent hold',
+        ttlSec: 60,
+      }),
+    );
+    if (!parent.ok) throw new Error('parent acquire should succeed');
+
+    const waiter = await inWorkspaceTxn(ws, 'descendant', (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain: ws,
+        owner: 'descendant',
+        ownerLabel: 'DESCENDANT',
+        paths: ['packages/operator-core/lib/file.ts'],
+        intent: 'descendant waiter',
+        ttlSec: 60,
+        maxWaitSec: 60,
+      }),
+    );
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('descendant should queue');
+
+    const queue = await readQueue(sql, {
+      coordinationDomain: ws,
+      paths: ['packages/operator-core/lib/file.ts'],
+    });
+    expect(queue.active_locks.map((lock) => lock.path)).toEqual(['packages']);
+    expect(queue.waiting.map((ticket) => ticket.ticket_id)).toContain(waiter.ticket_id);
+
+    await inWorkspaceTxn(ws, 'parent', (tx) =>
+      tryRelease(tx, { coordinationDomain: ws, owner: 'parent', lockId: parent.lock_id }),
+    );
+    await expect(readWaiterStatus(sql, waiter.ticket_id)).resolves.toMatchObject({
+      status: 'granted',
+    });
+  });
+});
+
+describe('recursive path advisory serialization', () => {
+  it('serializes a descendant transaction behind an in-flight parent transaction', async () => {
+    const ws = nextWs();
+    const savedHost = locksHost();
+    configureLocks({
+      ...savedHost,
+      getTxnTimeouts: () => ({ lockTimeoutMs: 100, statementTimeoutMs: 100 }),
+    });
+
+    let releaseParent!: () => void;
+    let parentReady!: () => void;
+    const parentReleased = new Promise<void>((resolve) => {
+      releaseParent = resolve;
+    });
+    const parentAcquired = new Promise<void>((resolve) => {
+      parentReady = resolve;
+    });
+
+    const parentTxn = inWorkspaceTxn(
+      ws,
+      'parent',
+      async (tx) => {
+        const acquired = await tryAcquire(tx, {
+          coordinationDomain: ws,
+          owner: 'parent',
+          ownerLabel: 'PARENT',
+          paths: ['packages'],
+          intent: 'in-flight parent hold',
+          ttlSec: 60,
+        });
+        if (!acquired.ok) throw new Error('parent acquire should succeed');
+        parentReady();
+        await parentReleased;
+        return acquired;
+      },
+      { paths: ['packages'] },
+    );
+
+    await parentAcquired;
+    const descendantTxn = inWorkspaceTxn(
+      ws,
+      'descendant',
+      (tx) =>
+        tryAcquire(tx, {
+          coordinationDomain: ws,
+          owner: 'descendant',
+          ownerLabel: 'DESCENDANT',
+          paths: ['packages/operator-core/lib/file.ts'],
+          intent: 'blocked descendant',
+          ttlSec: 60,
+        }),
+      { paths: ['packages/operator-core/lib/file.ts'] },
+    );
+
+    try {
+      await expect(descendantTxn).rejects.toMatchObject({ name: 'WorkspaceContendedError' });
+    } finally {
+      releaseParent();
+      await parentTxn;
+      configureLocks(savedHost);
+    }
   });
 });
 
