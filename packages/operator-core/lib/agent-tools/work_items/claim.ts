@@ -14,25 +14,16 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   resolveAgentIdentity,
-  deriveFleetMembership,
   SUPERUSER_FALLBACK_CLIENT_ID,
   isEphemeralMcpCallIdentity,
   type AgentIdentity,
 } from '../coordination/identity';
-import {
-  classifyUnknownRecipients,
-  isSessionShapedOwnerId,
-  lookupEndedSessions,
-  roleAddressingGuidance,
-} from '../coordination/dead-session-recipient-guidance';
-import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   claimWorkItem,
   classifyClaimFailure,
   getWorkItem,
   readUnresolvedDepBlockers,
-  readWorkItemClaimHoldProvenance,
   type UnresolvedDepBlocker,
 } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
@@ -76,7 +67,6 @@ import {
 // cycle with the scheduler (the VALUE side is dynamically imported at its use site below,
 // the same way fleet:leader-brief reaches this store).
 import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
-import { assessClaimHoldGuard, recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
 import { suggestedWatchesForItemBlockers } from '../../interest-profiles';
 
 interface ClaimItem {
@@ -84,33 +74,7 @@ interface ClaimItem {
   assignee?: string;
   harness?: string;
   force?: boolean;
-  ownerOverride?: boolean;
   reason?: string;
-}
-
-/**
- * A claim-hold's `by` value is durable, but older holds recorded the su SESSION
- * that created them instead of the standing role that owns the parked work. Once
- * that session ends, the ordinary "coord:send the holder" advice is impossible
- * to follow. Reuse coord:send's existing session→role/fleet guidance at the
- * refusal seam; non-session holder labels stay on the original short path.
- *
- * Best-effort by design: guidance enriches a refusal but never decides whether
- * the claim is allowed. A degraded presence/session lookup must preserve the
- * durable hold guard and its ordinary coordination hint.
- */
-async function claimHoldHolderGuidance(identity: AgentIdentity, holder: string | null | undefined): Promise<string | null> {
-  const trimmed = holder?.trim();
-  if (!trimmed || !isSessionShapedOwnerId(trimmed)) return null;
-  try {
-    const [classified, fleetMembership] = await Promise.all([
-      classifyUnknownRecipients([trimmed], (ids) => lookupEndedSessions(ids, identity.workspaceId)),
-      resolvePresenceFleet(identity.ownerId, deriveFleetMembership()),
-    ]);
-    return roleAddressingGuidance(classified, fleetMembership.fleetSlug);
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -384,18 +348,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     };
   }
-  // WI-5946: the by-id claim path never checked `payload._claimHold` — an owner-gated hold
-  // (D-003; work_items:hold_open / release{claimHold:true}) was silently claimable by anyone
-  // naming the id, even though the SAME flag already refuses self-select AND a non-holder's
-  // terminal transition (setWorkItemState's held-open guard). Pre-read the item and mirror
-  // hold_open's own clear-guard (force + a stricter ownerOverride for a policy-tier reason,
-  // EI-18672701535825889) — one shared predicate (assessClaimHoldGuard), never a bypassable gap.
-  // WI-6746: this pre-read IS the hold guard — claimWorkItem gates on taken_by + G2/P-010
-  // admission and knows nothing about held_open/claim_hold. So swallowing the read to null
-  // (the old `.catch(() => null)`) did not degrade the guard, it DELETED it: a PG fault
-  // produced a null item, hence a null refusal, hence a completed claim past a hold someone
-  // deliberately placed — un-audited and un-notified, because the provenance read below is
-  // derived from the same null. Fail CLOSED instead: an unreadable item is not an unheld one.
+  // D-008: readiness/lifecycle floors, including claim-hold, gate self-select only. A named
+  // by-id claim is the deliberate operator override, so do not apply a claim-hold refusal here.
+  // Keep this pre-read for the separate checked cross-holder takeover below: force:true must
+  // compare against the exact holder it read before claimWorkItem's CAS. WI-6746 still requires
+  // the read to fail closed rather than turning an unreadable holder into an apparent vacancy.
   const preClaim = await lookupWorkItem(it.id, it.harness);
   if (preClaim.status === 'unreadable') {
     return {
@@ -403,8 +360,8 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       id: it.id,
       error: 'work_item_unreadable',
       hint:
-        `${it.id} could not be read, so its claim-hold state is UNKNOWN — the read failed (${preClaim.error}). ` +
-        'Refusing the claim rather than risk bypassing a hold. This is a READ FAILURE, not a missing or unheld item: retry, ' +
+        `${it.id} could not be read, so its current claim state is UNKNOWN — the read failed (${preClaim.error}). ` +
+        'Refusing the claim rather than make a holder/force decision from an unreadable row. This is a READ FAILURE, not a missing item: retry, ' +
         'and if it persists check database health (dev:pg_health) rather than the item.',
     };
   }
@@ -445,38 +402,6 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     }
     forced = { holder: currentHolder, basis: verdict.basis as ForceReleaseBasis, reason };
   }
-  const claimHoldProvenance = preClaimItem ? readWorkItemClaimHoldProvenance(preClaimItem.payload) : null;
-  const claimHold = claimHoldProvenance?.heldOpen ?? claimHoldProvenance?.parked ?? null;
-  const holderGuidance = await claimHoldHolderGuidance(identity, claimHold?.by);
-  const claimHoldRefusal = preClaimItem
-    ? assessClaimHoldGuard(preClaimItem.payload, {
-        force: it.force,
-        ownerOverride: it.ownerOverride,
-        holderGuidance,
-      })
-    : null;
-  if (claimHoldRefusal) {
-    return {
-      ok: false,
-      id: it.id,
-      workItem: preClaimItem,
-      error: claimHoldRefusal.error,
-      heldBy: claimHoldRefusal.heldBy,
-      heldReason: claimHoldRefusal.heldReason,
-      convention: claimHoldRefusal.convention,
-      hint: `${it.id} is ${claimHoldRefusal.hint}`,
-    };
-  }
-  // `preClaimItem` reaching here with a hold means force (and, for a policy-tier reason,
-  // ownerOverride) already cleared the guard above — re-derive the SAME provenance once more
-  // (cheap, pure, no extra query) purely to know WHOM to audit/notify after the claim lands.
-  const priorHoldForNotify = preClaimItem ? readWorkItemClaimHoldProvenance(preClaimItem.payload) : null;
-  const bypassedHold = priorHoldForNotify?.heldOpen ?? priorHoldForNotify?.parked ?? null;
-  const bypassedHoldConvention: 'held_open (lease)' | 'claim_hold (durable park)' | null = priorHoldForNotify?.heldOpen
-    ? 'held_open (lease)'
-    : priorHoldForNotify?.parked
-      ? 'claim_hold (durable park)'
-      : null;
   // EI-19313376980892266: RESOLVE the concurrency verdict BEFORE the claim mutates the rows it
   // counts. Starting the read early is not enough — it is `getActiveClaimsForBee` against the
   // same `taken_by` column the claim below writes, so awaiting it later (e.g. in the hint batch)
@@ -513,25 +438,6 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       harness: workItem.harness ?? it.harness ?? null,
       operation: 'claim',
       replacementAssignee: claimer,
-    });
-  }
-  if (workItem && bypassedHold && bypassedHoldConvention) {
-    // Forced past a claim-hold — leave the hold IN PLACE (this never clears it; a leader lifts
-    // it explicitly via work_items:hold_open{clear:true}) but leave a forensic trail identical
-    // in shape to work_items:release's own force-bypass audit + notify (release-force-guard.ts).
-    void recordClaimHoldBypassAudit(claimer, it.id, {
-      heldBy: bypassedHold.by,
-      heldReason: bypassedHold.reason,
-      convention: bypassedHoldConvention,
-      harness: workItem.harness ?? it.harness ?? null,
-      ownerOverride: Boolean(it.ownerOverride),
-    });
-    void notifyClaimHoldBypass(identity, {
-      itemId: it.id,
-      heldBy: bypassedHold.by,
-      heldReason: bypassedHold.reason,
-      convention: bypassedHoldConvention,
-      harness: workItem.harness ?? it.harness ?? null,
     });
   }
   if (workItem) {
@@ -878,19 +784,19 @@ export default defineTool({
   // the rationale that used to live in the prompt now lives here, where it costs no context:
   //   · claim_conflict → a LIVE peer holds it. Coordinate via coord:send; do NOT blind-retry.
   //     A DEAD holder is freed automatically by the stale-claim lane, so retrying only races.
-  //   · claim_hold_blocked / policy_gate_requires_owner_override → deliberately parked
-  //     (WI-2797 / D-003, enforced on the by-id path by WI-5946's claim-hold-guard). force /
-  //     ownerOverride bypass it, leave the hold in place, and emit an audit row + notify.
+  //   · Readiness/lifecycle floors (including claim-hold, blockers, and terminal state) gate
+  //     self-select only; a named by-id claim is the deliberate operator override. The
+  //     successful response carries advisory signals for the caller to inspect.
   //   · There is no work_items:heartbeat — ANY papercusp-su call refreshes liveness, which is
   //     what the stale-claim reaper reads. The one gap is a long stretch of PURELY-LOCAL tool
   //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
   //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way. `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
+    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available. `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
   guidance: {
     when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.',
     notWhen:
-      '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.',
+      '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `work_item_unreadable` = the pre-claim read failed; retry or inspect database health.',
     chaining:
       'work_items:list → claim → set_state → release/close. No heartbeat verb exists — any platform call refreshes liveness; during a long LOCAL-ONLY stretch call work_items:checkpoint as a liveness pulse (EI-6772).',
     seeAlso: [
@@ -925,26 +831,19 @@ export default defineTool({
             assignee: z.string().max(120).optional(),
             harness: z.string().max(80).optional(),
             force: z.boolean().optional(),
-            ownerOverride: z.boolean().optional(),
             reason: z.string().max(500).optional(),
           }),
         )
         .min(1)
         .max(200)
         .optional()
-        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, ownerOverride?, reason? }'),
+        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, reason? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
       force: z
         .boolean()
         .optional()
         .describe(
-          'default for the inline id / every id in `ids`: claim past a `payload._claimHold` exclusion (WI-2797 durable park / hold_open lease), or checked-reclaim another agent\'s claim with `reason`; holds stay in place and every cross-holder takeover is audited + notifies the holder and owner.',
-        ),
-      ownerOverride: z
-        .boolean()
-        .optional()
-        .describe(
-          'default for the inline id / every id in `ids`: REQUIRED in addition to `force` when the claim-hold reason names a policy-tier gate (a D-NNN decision id, `triageDecision:"gate"`, or "policy-tier") — `force` alone is refused for a policy gate (mirrors work_items:hold_open, EI-18672701535825889).',
+          'default for the inline id / every id in `ids`: checked-reclaim another agent\'s claim with `reason`; readiness floors are already overridden by naming an id, and every cross-holder takeover is audited + notifies the holder and owner.',
         ),
       reason: z
         .string()
@@ -977,7 +876,6 @@ export default defineTool({
           assignee: it.assignee ?? args.assignee,
           harness: it.harness ?? args.harness,
           force: it.force ?? args.force,
-          ownerOverride: it.ownerOverride ?? args.ownerOverride,
           reason: it.reason ?? args.reason,
         }))
       : args.ids?.length
@@ -986,7 +884,6 @@ export default defineTool({
             assignee: args.assignee,
             harness: args.harness,
             force: args.force,
-            ownerOverride: args.ownerOverride,
             reason: args.reason,
           }))
         : [
@@ -995,7 +892,6 @@ export default defineTool({
               assignee: args.assignee,
               harness: args.harness,
               force: args.force,
-              ownerOverride: args.ownerOverride,
               reason: args.reason,
             },
           ];
