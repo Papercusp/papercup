@@ -17,9 +17,13 @@
  *   · too broad (if naively widened to a bare `VAL-` substring) — would match inside `EVAL-`
  *     and `RETRIEVAL-`, manufacturing legacy signal from unrelated prose.
  *
- * The corpus contains no `EVAL-` false positive today, which is exactly why a careless
- * widening would look safe in production and land unnoticed. Both directions are asserted
- * here so neither regression can pass silently.
+ * Both directions are load-bearing, and both were MEASURED over all 1,391 live plans
+ * (2026-08-24): the naive `VAL-` substring flags 16 plans where the anchored pattern flags
+ * 9. Of those seven false positives, ONE comes from the word-anchor
+ * (`bettor-evaluation-framework-2026-06-25`, via `EVAL-FRAMEWORK`) and SIX from requiring an
+ * id character after the dash (shipped plans that merely discuss the `VAL-` convention in
+ * prose). So the negative cases below are not hypothetical hygiene — each guards a
+ * misclassification that a careless widening would actually produce today.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
@@ -65,6 +69,9 @@ describe('LEGACY_VAL_TEXT_PATTERN', () => {
     const negatives: [string, string][] = [
       ['EVAL- with a digit — the naive-widening trap', 'the EVAL-1 optimizer'],
       ['EVAL- inside a slug', 'harness-gym-EVAL-optimizer'],
+      // A REAL corpus instance, not a constructed one: this token is why
+      // bettor-evaluation-framework-2026-06-25 would be misflagged by a bare `VAL-` substring.
+      ['EVAL-FRAMEWORK — the live false positive the anchor excludes', 'see the EVAL-FRAMEWORK notes'],
       ['RETRIEVAL- with a digit', 'RETRIEVAL-2 thing'],
       ['lowercase word containing val-', 'interval-based backoff'],
       ['VAL- with no id character after the dash', 'a bare VAL- and nothing else'],

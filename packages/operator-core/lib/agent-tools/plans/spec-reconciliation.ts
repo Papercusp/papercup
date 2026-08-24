@@ -66,9 +66,12 @@ import {
  *     reintroduced one layer down in the detector itself.
  *
  *   · TOO BROAD — a bare `VAL-` substring also matches inside `EVAL-`, `RETRIEVAL-`, and
- *     any other word ending in VAL, which would manufacture legacy signal from unrelated
- *     prose. (No such false positive exists in the corpus today, which is exactly why a
- *     naive widening would look safe and land unnoticed.)
+ *     any other word ending in VAL, and it matches a bare `VAL-` token written in prose
+ *     with no id after it. Measured over all 1,391 live plans (2026-08-24): the naive
+ *     substring flags 16 plans where this pattern flags 9 — SEVEN false positives, one
+ *     from the word-anchor (`bettor-evaluation-framework-2026-06-25`, via `EVAL-FRAMEWORK`)
+ *     and six from requiring an id character after the dash (shipped plans that merely
+ *     discuss the `VAL-` convention). Both guards are load-bearing; neither is theoretical.
  *
  * `\m` is a Postgres word-START anchor, so `VAL-` matches only where a word begins there:
  * it admits `VAL-028`, `VAL-007-01` and the plan-scoped ids, and rejects `EVAL-1` and
