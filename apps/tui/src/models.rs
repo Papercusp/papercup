@@ -1743,7 +1743,22 @@ pub struct MemoriesPayload {
 
 // ─── Operator chat pane (tui-operator-surface-2026-06-04) ───
 
-/// A tool the operator called mid-turn — rendered as a chip under its message.
+/// How a tool call ENDED, as reported by the seam's `tool_result` frame.
+///
+/// Every call starts `Pending` — the loop has announced it but not yet reported
+/// an outcome — and exactly one `tool_result` moves it to a terminal variant.
+/// `Denied` is deliberately distinct from `Failed`: the tool did not run and
+/// nothing went wrong, the operator said no, and a card that renders a refusal
+/// as an error teaches the user to distrust their own decisions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolOutcome {
+    Pending,
+    Ok,
+    Failed(String),
+    Denied,
+}
+
+/// A tool the operator called mid-turn — rendered as a card under its message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatToolCall {
     pub name: String,
@@ -1751,20 +1766,33 @@ pub struct ChatToolCall {
     /// keyed by, so it is what an approve/deny POST must carry — losing it makes
     /// a parked call unresolvable from the pane. `None` on the legacy converse
     /// lane and on persisted history, neither of which carries a call id.
+    ///
+    /// It is ALSO the correlation key a `tool_result` frame arrives on, so the
+    /// same id that makes a call answerable is what makes it completable.
     pub id: Option<String>,
     /// This call is parked server-side on a HITL approval decision (native seam
     /// only). While true the turn is STALLED, not failed: the loop is waiting.
     pub needs_approval: bool,
+    /// The call's arguments, verbatim from the seam. Carried through the mapping
+    /// per D-017 even though only the card lane reads it — re-widening a mapping
+    /// every time a later slice needs a field is what cost a wake on slice 2.
+    pub input: Option<serde_json::Value>,
+    /// Terminal outcome, or `Pending` while the loop is still working.
+    pub outcome: ToolOutcome,
 }
 
 impl ChatToolCall {
     /// A chip with no call id and no approval gate — the legacy converse lane
-    /// and replayed history, which carry neither.
+    /// and replayed history, which carry neither. Such a lane emits no
+    /// `tool_result` either, so these stay `Pending` and render without a
+    /// status glyph rather than claiming an outcome nobody reported.
     pub fn plain(name: String) -> Self {
         Self {
             name,
             id: None,
             needs_approval: false,
+            input: None,
+            outcome: ToolOutcome::Pending,
         }
     }
 }
