@@ -427,12 +427,17 @@ export interface PeerFederationHealth {
    * admits nothing anywhere"), because the scan reads only its own scope. That
    * unmeasured distinction collapsed to the first branch, so ONE host-wide
    * condition was reported as N scope-local peer stories — measured on this host
-   * 2026-08-24: `admittedLogCount` was min=1 max=1 across 101 booted scopes (own
-   * log only, zero remote admitted anywhere) while 45 scopes held durable remote
-   * cursors, i.e. 45 latent per-scope majors for one condition. Worse, WHICH of
-   * them alarmed was decided by the unrelated `scope-dormant` guard — whether we
-   * happened to have written locally in the last SLO window — so the alarming set
-   * was arbitrary with respect to the fault.
+   * 2026-08-24: all 80 booted scopes in the workspace admitted exactly ONE log,
+   * their own (zero remote admitted anywhere), while 45 of them held durable
+   * remote cursors, i.e. 45 latent per-scope majors for one condition. Worse,
+   * WHICH of them alarmed was decided by the unrelated `scope-dormant` guard —
+   * whether we happened to have written locally in the last SLO window — so the
+   * alarming set was arbitrary with respect to the fault.
+   *
+   * ⚠ Count the WORKSPACE's scopes, not the status row's entries: the single
+   * `substrate_booted_handles_status` row carried 101 `logStats` entries, but 21
+   * of them belonged to OTHER workspaces. Both readings here keep the
+   * `ls->>'workspaceId'` predicate for that reason.
    */
   hostAdmitsAnyRemoteLog: boolean | null;
   /**
