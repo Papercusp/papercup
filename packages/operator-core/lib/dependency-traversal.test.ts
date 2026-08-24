@@ -83,7 +83,7 @@ describe('traverseDependencies result shaping', () => {
 
 describe('readDependencyBottlenecks result shaping', () => {
   it('preserves the population contract, canonical progress, and ranked row', async () => {
-    const query = vi.fn(async () => [
+    const query = vi.fn(async (_text: string, _params: readonly unknown[]) => [
       {
         row_kind: 'population' as const,
         blocker_key: null,
