@@ -24,7 +24,7 @@
  * `POST .../agent-chats/:chatId/approvals/:callId`.
  */
 import type { TranscriptTurn } from '../agent-chats-data';
-import type { ModelMessage, ModelPort } from './model-port';
+import type { ModelMessage, ModelPort, ModelUsage } from './model-port';
 import {
   runAgentLoop,
   stepCountIs,
@@ -37,6 +37,8 @@ import {
   awaitLoopApprovalDecision,
   createLoopApproval,
 } from './approval-store';
+import { maybeCompactSession } from './session-compaction';
+import type { LoopSessionRow, LoopSessionStore } from './session-store';
 
 /** Interactive default — overridable per message (`body.model`) or by env. */
 export const DEFAULT_LOOP_CHAT_MODEL =
@@ -73,6 +75,11 @@ export interface LoopChatTurnOpts {
   /** Injectable seams (tests). Defaults: gateway-native port; PG approvals. */
   port?: ModelPort;
   approvals?: ApprovalPort;
+  /** P-009 session store: when provided, the turn RESUMES from the stored
+   *  ModelMessage working set (full tool detail) and persists the updated
+   *  set + usage totals afterward. The ROUTE wires the PG store; omitting it
+   *  (tests, one-shot callers) degrades to the text-transcript rebuild. */
+  sessions?: LoopSessionStore;
 }
 
 export interface LoopChatTurnResult {

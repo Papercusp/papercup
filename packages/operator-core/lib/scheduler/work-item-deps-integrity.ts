@@ -4,9 +4,9 @@
  * (work-item-dependency-edges-2026-08-02, EI-19325959789634791 / D-017 step 2).
  *
  * ── Why it covers three relations, not one (EI-19376392851673381) ───────────────────────
- * It originally read `work_item_deps` alone — which is the MIRROR. `coord_links` is the
- * AUTHORITATIVE store it is derived from, so a bad ref there is faithfully reproduced into
- * the mirror and re-running the writer can never fix it. Watching only the mirror produced
+ * It originally read `work_item_deps` alone while work-item blocks were dual-written from
+ * coord_links. A bad ref there was faithfully reproduced into the mirror. Watching only the
+ * scheduler table produced
  * the worst possible failure mode: after migration 734's backfill the sweep reported
  * defects=0 while 32 stale qualified refs sat live in coord_links + coord_threads,
  * invisible, under a green verdict.
@@ -57,10 +57,10 @@ const ISSUE_ENDPOINT_KIND = 'issue';
 const FEATURE_ENDPOINT_KIND = 'feature';
 
 /**
- * Which relation the endpoint lives in. `work_item_deps` is the MIRROR; `coord_links` is
- * the AUTHORITATIVE store it is derived from, and `coord_threads` holds the third family
- * of qualified refs (a work-item's comment thread). Watching only the mirror is how 32
- * stale refs stayed live under a green verdict — see the header.
+ * Which relation the endpoint lives in. `work_item_deps` is now canonical for blocking;
+ * coord_links is still scanned because it carries non-block relations and because any
+ * reintroduced work-item block there is legacy/rogue data worth detecting. coord_threads
+ * holds a work-item's comment thread.
  */
 export type DepEndpointRelation = 'work_item_deps' | 'coord_links' | 'coord_threads';
 
@@ -163,8 +163,9 @@ export async function reconcileWorkItemDepEndpoints(
       SELECT id::text, workspace_id, 'work_item_deps', 'blocker', blocker_kind, blocker_ref
         FROM harness_shared.work_item_deps
        WHERE dep_type = 'blocks'
-      -- coord_links is the AUTHORITATIVE store; work_item_deps above is its mirror. Both
-      -- sides are filtered to the two work-item families ON PURPOSE: coord_links also
+      -- coord_links is NOT a blocking source after migration 935, but it remains a
+      -- polymorphic endpoint store and a detector surface for rogue legacy work-item blocks.
+      -- Both sides are filtered to the two work-item families ON PURPOSE: coord_links also
       -- carries plan_item / topic endpoints, whose refs use a DIFFERENT grammar
       -- ('<planSlug>#P-NNN'), and feeding those to a work-item oracle would report every
       -- one of them as dangling. The work_item_deps arms above are deliberately NOT

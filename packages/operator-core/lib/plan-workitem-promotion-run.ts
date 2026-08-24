@@ -491,13 +491,9 @@ export async function promotePlanItems(opts: {
  * dependency side, and the graph the plan described existed nowhere queryable.
  *
  * ⚠ WHICH WRITER — this is the part that is easy to get wrong and impossible to notice.
- * Per D-010, edges go through `syncFeatureBlockEdges` (coord_links), **not** the
- * `work_item_deps` store directly. Reads flipped to `work_item_deps` in the P-004 cutover, so
- * a direct write there is read back correctly and its tests pass — but `syncFeatureBlockEdges`
- * REBUILDS that table's feature-family edges for a blocked ref from coord_links (delete, then
- * insert), so the next unrelated blocker sync for the same item would silently erase every
- * edge promotion wrote. Writing through the authoritative seam keeps both stores consistent
- * and cannot be clobbered.
+ * Per D-010, edges go through `syncFeatureBlockEdges`, the policy-bearing canonical writer,
+ * rather than issuing raw work_item_deps DML here. That keeps replacement semantics and the
+ * acyclicity guard centralized even though the physical store is now singular.
  *
  * Endpoint form follows D-009 rule 1: promoted items are FEATURE-family (computePromotions
  * hardcodes `kind: 'feature'`), so `featureRef()`'s harness-qualified `<harness>#<id>` is the

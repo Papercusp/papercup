@@ -42,6 +42,8 @@ export const SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS = [
 export const SYSTEMD_ENV_RUNNER_PATH = fileURLToPath(new URL('./systemd-scope-env-runner.mjs', import.meta.url));
 /** Credential id is deliberately boring: it is visible to systemd, never a secret. */
 export const SYSTEMD_ENV_CREDENTIAL_NAME = 'papercusp-env';
+/** The fd must outlive asynchronous systemd admission, but never forever. */
+export const SECRET_ENV_TRANSPORT_RELEASE_GRACE_MS = 60_000;
 
 export interface SecretEnvironmentTransport {
   /** `/proc/<operator-pid>/fd/<fd>`; the backing file is unlinked immediately. */
@@ -50,8 +52,15 @@ export interface SecretEnvironmentTransport {
   release: () => void;
 }
 
+export interface SecretEnvironmentPayload {
+  argv: string[];
+  transport: SecretEnvironmentTransport;
+  /** The transient-service property that makes the credential available. */
+  credentialProperty?: string;
+}
+
 /** Encode the exact replacement environment as NUL-delimited NAME=value records. */
-export function encodeSecretEnvironment(env: NodeJS.ProcessEnv): Buffer {
+export function encodeSecretEnvironment(env: Readonly<Record<string, string | undefined>>): Buffer {
   const records: string[] = [];
   for (const [name, value] of Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (value === undefined) continue;
@@ -67,7 +76,9 @@ export function encodeSecretEnvironment(env: NodeJS.ProcessEnv): Buffer {
  * path (tmpfs); the unlinked tmpdir fallback keeps payload data out of argv and
  * journald even on hosts without a usable shared-memory mount.
  */
-export function createSecretEnvironmentTransport(env: NodeJS.ProcessEnv): SecretEnvironmentTransport {
+export function createSecretEnvironmentTransport(
+  env: Readonly<Record<string, string | undefined>>,
+): SecretEnvironmentTransport {
   const bytes = encodeSecretEnvironment(env);
   const roots = process.platform === 'linux' && existsSync('/dev/shm') ? ['/dev/shm', tmpdir()] : [tmpdir()];
   let fd: number | null = null;
@@ -102,17 +113,22 @@ export function createSecretEnvironmentTransport(env: NodeJS.ProcessEnv): Secret
     throw error;
   }
   let released = false;
+  let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    if (releaseTimer) clearTimeout(releaseTimer);
+    try { closeSync(fd!); } catch { /* already closed */ }
+  };
+  releaseTimer = setTimeout(release, SECRET_ENV_TRANSPORT_RELEASE_GRACE_MS);
+  releaseTimer.unref?.();
   return {
     sourcePath: `/proc/${process.pid}/fd/${fd}`,
-    release: () => {
-      if (released) return;
-      released = true;
-      try { closeSync(fd!); } catch { /* already closed */ }
-    },
+    release,
   };
 }
 
-function environmentRunnerPayload(base: readonly string[], source: string, mode: 'fd-path' | 'credential'): string[] {
+export function environmentRunnerPayload(base: readonly string[], source: string, mode: 'fd-path' | 'credential'): string[] {
   return [
     process.execPath,
     SYSTEMD_ENV_RUNNER_PATH,
@@ -121,6 +137,39 @@ function environmentRunnerPayload(base: readonly string[], source: string, mode:
     '--',
     ...base,
   ];
+}
+
+function buildSecretEnvironmentPayload(
+  base: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+  mode: 'fd-path' | 'credential',
+): SecretEnvironmentPayload {
+  const transport = createSecretEnvironmentTransport(env);
+  return {
+    argv: environmentRunnerPayload(
+      base,
+      mode === 'credential' ? SYSTEMD_ENV_CREDENTIAL_NAME : transport.sourcePath,
+      mode,
+    ),
+    transport,
+    ...(mode === 'credential'
+      ? { credentialProperty: `--property=LoadCredential=${SYSTEMD_ENV_CREDENTIAL_NAME}:${transport.sourcePath}` }
+      : {}),
+  };
+}
+
+export function buildExactEnvPayloadWithTransport(
+  base: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+): SecretEnvironmentPayload {
+  return buildSecretEnvironmentPayload(base, env, 'fd-path');
+}
+
+export function buildServiceEnvPayloadWithTransport(
+  base: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+): SecretEnvironmentPayload {
+  return buildSecretEnvironmentPayload(base, env, 'credential');
 }
 
 /** Shared per-agent scope budget. Headless fleet members and orchestrated agent
@@ -153,12 +202,42 @@ export function checkpointScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env):
   return CHECKPOINT_SCOPE_OVERHEAD_G + CHECKPOINT_FORKS_BY_MODE[mode] * CHECKPOINT_FORK_HEAP_G;
 }
 
+/**
+ * Swap policy for a transient scope. Choose by what the payload IS, not by habit.
+ *
+ * `'deny'` (MemorySwapMax=0) is correct ONLY for a long-lived process whose event loop the
+ * rest of the system waits on. There, swap-thrash IS the freeze: the bg-host incident
+ * (WI-1086, 2026-06-30) measured a 68 GB thrash producing ~100s page-in stalls that froze
+ * routinesTick/git-sync into an ~11min restart loop, so a clean hard-recycle at MemoryMax
+ * genuinely beat paging. That reasoning is about a SHARED ORCHESTRATOR — not about memory.
+ *
+ * `'allow'` is correct for a WORKER: an agent session, a spawned job. Nothing blocks on its
+ * event loop, so if it exceeds its budget the right outcome is that it gets SLOWER, not that
+ * it dies. Denying swap on a worker converts ordinary memory pressure into an OOM kill even
+ * when the host has terabytes of free swap — measured 2026-08-24 at 1.87 TB free while agent
+ * scopes were being killed at a 6 GiB cap, with 7 of 74 scopes sitting at exactly 6.0 GiB
+ * (i.e. cap-bounded, not demand). That is the WI-41206 defect: this policy was mirrored from
+ * bg-host onto agent scopes, where the analogy does not hold.
+ *
+ * MemoryMax stays in BOTH cases as the per-payload runaway backstop. This changes only what
+ * happens when a payload reaches it: page, or die.
+ */
+export type ScopeSwapPolicy = 'allow' | 'deny';
+
 /** Build the systemd-run argv that runs `base` in a transient user SCOPE with its own
  *  memory cap. `--scope` (NOT `--unit`): the payload stays OUR CHILD — stdio piped,
  *  process-group kill + full env inheritance intact — but lands in its own cgroup
- *  OUTSIDE the launching service's MemoryMax. MemorySwapMax=0 mirrors the bg-host
- *  policy (50-cgroup-memory.conf: swap-thrash IS the event-loop freeze). */
-export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number): string[] {
+ *  OUTSIDE the launching service's MemoryMax.
+ *
+ *  `swap` defaults to 'allow' (WI-41206): the dominant caller here is a worker scope, and a
+ *  worker should page rather than be killed. A caller whose payload is a shared orchestrator —
+ *  or a known leaker whose thrash would wedge the box — opts into 'deny' EXPLICITLY, so that
+ *  choice is visible at the call site instead of silently inherited. */
+export function buildIsolatedScopeArgv(
+  base: string[],
+  memoryMaxG: number,
+  swap: ScopeSwapPolicy = 'allow',
+): string[] {
   return [
     'systemd-run',
     '--user',
@@ -166,7 +245,7 @@ export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number): stri
     '--quiet',
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--property=MemoryMax=${memoryMaxG}G`,
-    '--property=MemorySwapMax=0',
+    ...(swap === 'deny' ? ['--property=MemorySwapMax=0'] : []),
     ...base,
   ];
 }
@@ -210,6 +289,10 @@ export interface TaskScopeProperties {
    * payload, so without this the job silently runs in the home directory.
    */
   workingDirectory?: string | null;
+  /** WI-41206: swap policy for this task's cgroup. Defaults to 'allow' — a task that reaches
+   *  its MemoryMax should PAGE, not be OOM-killed. Pass 'deny' only for a payload whose
+   *  thrashing would wedge something the whole system waits on. See {@link ScopeSwapPolicy}. */
+  swap?: ScopeSwapPolicy;
   /** Extra `--property=K=V` pairs; escape hatch for a one-off, kept last. */
   extraProperties?: readonly string[];
 }
@@ -217,9 +300,12 @@ export interface TaskScopeProperties {
 function appendTaskProperties(argv: string[], props: TaskScopeProperties): void {
   if (props.memoryMaxBytes && props.memoryMaxBytes > 0) {
     argv.push(`--property=MemoryMax=${Math.floor(props.memoryMaxBytes)}`);
-    // Swap-thrash IS the event-loop freeze (50-cgroup-memory.conf) — a task allowed
-    // to swap does not fail fast, it wedges the whole box while appearing alive.
-    argv.push('--property=MemorySwapMax=0');
+    // WI-41206: defaults to 'allow'. This used to hardcode MemorySwapMax=0 on the reasoning
+    // that "swap-thrash IS the event-loop freeze" — true of the bg-host ORCHESTRATOR that
+    // reasoning came from (WI-1086), false of a task scope, which nothing waits on. A task at
+    // its cap should page and finish slowly, not be OOM-killed on a host with free swap.
+    // See {@link ScopeSwapPolicy}; MemoryMax above is still the runaway backstop.
+    if ((props.swap ?? 'allow') === 'deny') argv.push('--property=MemorySwapMax=0');
   }
   if (props.cpuWeight && props.cpuWeight > 0) {
     argv.push(`--property=CPUWeight=${Math.floor(props.cpuWeight)}`);
@@ -232,21 +318,6 @@ function appendTaskProperties(argv: string[], props: TaskScopeProperties): void 
   }
   for (const p of props.extraProperties ?? []) argv.push(`--property=${p}`);
 }
-
-function appendTaskEnvironment(argv: string[], env: TaskScopeProperties['env']): void {
-  for (const [name, value] of Object.entries(env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    if (value !== undefined) argv.push(`--setenv=${name}=${value}`);
-  }
-}
-
-/**
- * `env` is absolute on purpose. systemd-run resolves the payload binary with the
- * CLIENT's PATH, and the whole point of this wrapper is that the client's env and
- * the payload's env are no longer the same thing — so resolving `env` itself
- * through either one would reintroduce the coupling in the one place it is
- * hardest to see.
- */
-const ENV_BIN = '/usr/bin/env';
 
 /**
  * Wrap a payload so it runs under EXACTLY `env`, independently of the environment
@@ -284,7 +355,8 @@ const ENV_BIN = '/usr/bin/env';
  *
  * So the hazard is a REDIRECTED bus, not a thin env. The fix still belongs here
  * rather than in the one caller that redirects today: run the client with the
- * operator's own environment, and give the payload its exact env through `env -i`.
+ * operator's own environment, and give the payload its exact env through an
+ * anonymous fd that never puts values in argv or a journal-visible property.
  * Measured: the payload still lands in its own scope cgroup, so confinement is
  * unaffected.
  *
@@ -295,32 +367,51 @@ const ENV_BIN = '/usr/bin/env';
  * available.
  */
 export function buildExactEnvPayload(base: readonly string[], env: NodeJS.ProcessEnv): string[] {
-  const pairs: string[] = [];
-  for (const [name, value] of Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-    // `undefined` is dropped by node's own spawn; a name carrying `=` or NUL cannot
-    // be expressed as an `env` operand at all, and passing it would silently shift
-    // every later operand. Dropping it keeps the payload's env a subset of what was
-    // asked for, never a different one.
-    if (value === undefined) continue;
-    if (name.length === 0 || name.includes('=') || name.includes('\0')) continue;
-    pairs.push(`${name}=${value}`);
-  }
-  return [ENV_BIN, '-i', ...pairs, ...base];
+  return buildExactEnvPayloadWithTransport(base, env).argv;
 }
 
-export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): string[] {
+export interface BuiltTaskArgv {
+  argv: string[];
+  transport: SecretEnvironmentTransport | null;
+}
+
+function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope' | 'service'): BuiltTaskArgv {
+  const payload = props.env
+    ? kind === 'service'
+      ? buildServiceEnvPayloadWithTransport(base, props.env)
+      : buildExactEnvPayloadWithTransport(base, props.env)
+    : null;
   const argv = [
     'systemd-run',
     '--user',
-    '--scope',
+    ...(kind === 'scope' ? ['--scope'] : ['--pipe', '--wait']),
     '--quiet',
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${props.unit}`,
     `--slice=${props.slice}`,
   ];
+  if (kind === 'service') {
+    argv.push(
+      // EI-21192501620501693: keep the whole transient service cgroup reaped.
+      '--property=KillMode=control-group',
+      '--property=TimeoutStopSec=10s',
+    );
+  }
+  if (kind === 'service' && props.workingDirectory) {
+    argv.push(`--working-directory=${props.workingDirectory}`);
+  }
+  if (payload?.credentialProperty) argv.push(payload.credentialProperty);
   appendTaskProperties(argv, props);
-  argv.push(...base);
-  return argv;
+  argv.push(...(payload?.argv ?? base));
+  return { argv, transport: payload?.transport ?? null };
+}
+
+export function buildTaskScopeArgvWithTransport(base: string[], props: TaskScopeProperties): BuiltTaskArgv {
+  return buildTaskArgv(base, props, 'scope');
+}
+
+export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): string[] {
+  return buildTaskScopeArgvWithTransport(base, props).argv;
 }
 
 /**
@@ -331,37 +422,9 @@ export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): 
  * while the service unit remains owned by the user manager if this client dies.
  */
 export function buildTaskServiceArgv(base: string[], props: TaskScopeProperties): string[] {
-  const argv = [
-    'systemd-run',
-    '--user',
-    '--pipe',
-    '--wait',
-    '--quiet',
-    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
-    `--unit=${props.unit}`,
-    `--slice=${props.slice}`,
-    // EI-21192501620501693: make the subtree cleanup contract explicit instead
-    // of inheriting systemd's defaults. A test runner can print its terminal
-    // summary and let its main shell exit while leaked workers remain. The
-    // transient SERVICE owns that whole control group, terminates every member
-    // when the main process exits, and escalates within a bounded window rather
-    // than leaving a terminal task consuming the host indefinitely.
-    '--property=KillMode=control-group',
-    '--property=TimeoutStopSec=10s',
-  ];
-  // EI-21229453838112711: a transient service is started by the USER MANAGER,
-  // not forked from this client, so it does not inherit our cwd — systemd
-  // defaults its WorkingDirectory to $HOME. Every `npm run …` backgrounded
-  // through capability:bash therefore died with an ENOENT on the repo's
-  // package.json while REPORTING the project dir, which reads as a clean pass.
-  // Deliberately NOT the `-` (tolerate-missing) form: falling back to $HOME is
-  // precisely the silent failure this exists to stop, so an unusable directory
-  // must fail the unit loudly instead.
-  if (props.workingDirectory) {
-    argv.push(`--working-directory=${props.workingDirectory}`);
-  }
-  appendTaskEnvironment(argv, props.env);
-  appendTaskProperties(argv, props);
-  argv.push(...base);
-  return argv;
+  return buildTaskServiceArgvWithTransport(base, props).argv;
+}
+
+export function buildTaskServiceArgvWithTransport(base: string[], props: TaskScopeProperties): BuiltTaskArgv {
+  return buildTaskArgv(base, props, 'service');
 }

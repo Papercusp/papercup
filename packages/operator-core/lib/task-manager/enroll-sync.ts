@@ -197,6 +197,9 @@ export function beginSyncEnrolment(
           // the client's cwd. See TaskScopeProperties.workingDirectory.
           workingDirectory: cwd,
           memoryMaxBytes: spec.memoryMaxBytes,
+          // WI-41206: carry the caller's swap policy through. Omitted => 'allow' (page, don't
+          // OOM-kill). The substrate sidecar is the one in-tree caller that sets 'deny'.
+          swap: spec.swap ?? undefined,
           cpuWeight: spec.cpuWeight,
           tasksMax: spec.tasksMax,
           runtimeMaxSec: spec.runtimeMaxSec,

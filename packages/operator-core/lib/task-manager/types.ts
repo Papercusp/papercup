@@ -124,6 +124,12 @@ export interface TaskProvenance {
  *  everything is today), it just cannot be protected from taking the box down. */
 export interface TaskBudget {
   memoryMaxBytes?: number | null;
+  /** WI-41206: cgroup swap policy for this task. Omitted/'allow' (the default) lets the task
+   *  PAGE when it reaches `memoryMaxBytes` instead of being OOM-killed — correct for a worker,
+   *  which nothing waits on. Pass 'deny' (MemorySwapMax=0) only for a payload whose thrashing
+   *  would wedge something the whole system depends on; the substrate sidecar is the one such
+   *  caller in-tree, because its leak is what produced the WI-1086 68 GB thrash. */
+  swap?: 'allow' | 'deny' | null;
   cpuWeight?: number | null;
   tasksMax?: number | null;
   /** Wall-clock ceiling. Enforced by systemd's own RuntimeMaxSec — NOT by a timer

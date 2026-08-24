@@ -313,6 +313,9 @@ export async function managedSpawn(
         slice: sliceForClass(spec.class),
         env: payloadEnv,
         memoryMaxBytes: spec.memoryMaxBytes,
+        // WI-41206: carry the caller's swap policy through. Omitted => 'allow' (page, don't
+        // OOM-kill) — see ScopeSwapPolicy in systemd-scope.ts.
+        swap: spec.swap ?? undefined,
         cpuWeight: spec.cpuWeight,
         tasksMax: spec.tasksMax,
         runtimeMaxSec: spec.runtimeMaxSec,

@@ -208,8 +208,9 @@ export type CellRead =
  * See `CellSpec.pointers` for the declaration side.
  *
  * `when`/`answers` are carried straight from the spec (never re-derived), for the same
- * reason `CellFalsifierRead` carries `kills`: a reader should not have to go read the
- * registry to know whether following the pointer is worth a dispatch.
+ * reason `CellAssessmentRead` carries its declared `meaning`/`safeAction`: a reader
+ * should not have to go read the registry to know whether following the pointer is
+ * worth a dispatch.
  *
  * ⚠ THE UNRESOLVED CASE IS DELIBERATELY *NOT* SPLIT, and this reverses the first draft
  * of this file — recording the reversal because the reasoning that produced it is the
@@ -430,8 +431,9 @@ export function formatCellAssessment(a: CellAssessmentRead, cell: string): strin
       a.truncatedByDoor ? ' (the payload declared ITSELF truncated, so the absence is unattributable)' : ''
     } ${a.safeAction}`,
     ...(evidence === null ? [] : [`evidence: ${evidence}`]),
-    // The door's own escape hatch survives the migration off falsifiers: when the
-    // payload truncated itself, the ONE useful next move is the untruncated re-read.
+    // The door's own escape hatch outlived the retired axis-1 contract it was first
+    // built for: when the payload truncated itself, the ONE useful next move is the
+    // untruncated re-read.
     ...(a.fullRead === undefined ? [] : [`full read: ${briefCellValue(a.fullRead, 240)}`]),
   ].join(' · ');
 }
@@ -921,8 +923,9 @@ async function readCellValue(
  * dispatches the TOOL, it walked the SHAPED payload and reported `drifted: true`, whose
  * prose tells the agent to read it "as a registration defect in the resolver". So a
  * correct, fully-explained measurement was rendered as a code bug in a blameless resolver,
- * and `serving.startedSinceCodeChange` — the falsifier CLAUDE.md names as the ONLY way to
- * separate "deployed sha X" from "the process is EXECUTING X" — silently stopped arriving.
+ * and `serving.startedSinceCodeChange` — the independent check CLAUDE.md names as the ONLY
+ * way to separate "deployed sha X" from "the process is EXECUTING X" — silently stopped
+ * arriving.
  *
  * ⚠ WHY TRUNCATION ALONE DECIDES THIS, and NOT a lookup in `omittedFields`. That list is
  * computed against ONE shaping tier, so it under-reports precisely when the shaping was
@@ -979,56 +982,8 @@ function sourceFrom(payload: unknown, spec: CellHeadlineSource): CellSourceRead 
 }
 
 /**
- * WI-6506 — own-key path walk: does EVERY segment actually exist in the object
- * graph, independent of what value is found there? Mirrors
- * `state-plane-stamp.ts`'s exported `pathExists` exactly (own-key check via `in`,
- * not `valueAtPath`'s `cur == null` short-circuit).
- *
- * The distinction is load-bearing here in a way it is not for `hoistFrom`/`material`
- * above: `valueAtPath` treats a legitimately-null INTERMEDIATE segment (e.g.
- * `goal.agreement` when `goal` itself is `null` — "this agent holds no goal", a real
- * measured answer) the SAME as a missing key anywhere along the chain, collapsing
- * both to `undefined`. A falsifier is exactly the field a caller must be able to
- * trust is either genuinely resolved (even to `null`) or genuinely absent — using
- * `valueAtPath` here would silently reintroduce the MISSING-vs-NULL conflation this
- * whole item exists to close.
- */
-function falsifierPathExists(payload: unknown, path: string): { exists: boolean; value: unknown } {
-  let cur: unknown = payload;
-  for (const seg of path.split('.')) {
-    if (cur === null || cur === undefined || typeof cur !== 'object') return { exists: false, value: undefined };
-    if (!(seg in (cur as Record<string, unknown>))) return { exists: false, value: undefined };
-    cur = (cur as Record<string, unknown>)[seg];
-  }
-  return { exists: true, value: cur };
-}
-
-/**
- * WI-6506 — the falsifier lens, off the SAME payload (axis 5, exactly like `material`
- * and `hoistFrom` above: one derivation, many lenses — no second dispatch).
- */
-function falsifierFrom(payload: unknown, f: { field: string; kills: string }): CellFalsifierRead {
-  const r = falsifierPathExists(payload, f.field);
-  if (r.exists) return { field: f.field, value: r.value, kills: f.kills };
-  // WI-38266 — same MISSING-vs-EATEN split as `hoistFrom`, and it matters MORE here: a
-  // drifted falsifier reads as "this cell's apparatus is broken", while a truncated one
-  // means the headline simply arrived UNFALSIFIED and the reader must go get it.
-  const door = payloadTruncatedByDoor(payload);
-  if (door.truncated) {
-    return {
-      field: f.field,
-      value: null,
-      kills: f.kills,
-      truncatedByDoor: true,
-      ...(door.fullRead === undefined ? {} : { fullRead: door.fullRead }),
-    };
-  }
-  return { field: f.field, value: null, kills: f.kills, drifted: true };
-}
-
-/**
  * D-008 — THE ASSESSMENT LENS, off the SAME payload (axis 5, exactly like `material`,
- * `hoistFrom`, `sourceFrom` and `falsifierFrom` above: one derivation, many lenses).
+ * `hoistFrom` and `sourceFrom` above: one derivation, many lenses).
  *
  * ⚠ THE ONE INVARIANT WORTH STATING PLAINLY: this function can only ever TRANSPORT a
  * domain code the owning resolver emitted AND the spec declared. It has no path that
@@ -1038,13 +993,14 @@ function falsifierFrom(payload: unknown, f: { field: string; kills: string }): C
  * without ever learning any domain: the registry cannot be wrong about what a gate
  * verdict means, because it never forms an opinion about one.
  *
- * ⚠ USES THE SHARED `pathExists` FROM `state-plane-stamp`, not the local
- * `falsifierPathExists` below. Same own-key discipline, but that one is TOTAL — a
- * throwing getter or a hostile proxy reports as missing rather than propagating out
- * to the caller's catch and blacking out an otherwise-good read. `falsifierFrom` is
- * deliberately left on the local copy: `falsifier` is deleted wholesale at P-006, so
- * changing its behaviour now would churn a field with weeks to live for no reader's
- * benefit. P-006 removes the local copy with the field it serves.
+ * ⚠ USES THE SHARED `pathExists` FROM `state-plane-stamp`, and it must stay that way.
+ * Own-key existence, not `valueAtPath`: `valueAtPath` collapses a legitimately-NULL
+ * intermediate segment and a MISSING key to the same `undefined`, and those two demand
+ * opposite responses here. The shared copy is additionally TOTAL — a throwing getter or
+ * a hostile proxy reports as missing rather than propagating out to the caller's catch
+ * and blacking out an otherwise-good read. This file once carried its own non-total
+ * variant of the same walk; P-006 deleted it with the field it served, so there is no
+ * second implementation left to drift from this one.
  */
 function assessmentFrom(payload: unknown, spec: CellAssessmentSpec): CellAssessmentRead {
   const path = spec.path;

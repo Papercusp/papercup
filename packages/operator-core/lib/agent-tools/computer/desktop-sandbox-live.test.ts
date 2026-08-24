@@ -23,7 +23,7 @@ import { X11_SOCKET_DIR, a11yBusSocketPath, buildDesktopSandboxCommand } from '.
 
 function hasBin(bin: string): boolean {
   try {
-    return spawnSync('which', [bin], { stdio: 'ignore' }).status === 0;
+    return spawnSync('which', [bin], { stdio: 'ignore', timeout: 10_000, killSignal: 'SIGKILL' }).status === 0;
   } catch {
     return false;
   }
@@ -81,13 +81,13 @@ describe.skipIf(!liveEnabled)('P-010 desktop sandbox — LIVE (real Xvfb, real b
     const child = spawnSync('sh', [
       '-c',
       `Xvfb ${DISPLAY} -screen 0 800x600x24 -nolisten tcp >/dev/null 2>&1 & echo $!`,
-    ], { encoding: 'utf8' });
+    ], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL' });
     xvfbPid = Number.parseInt((child.stdout ?? '').trim(), 10);
     for (let i = 0; i < 60; i++) {
-      if (spawnSync('xdpyinfo', ['-display', DISPLAY], { stdio: 'ignore' }).status === 0) break;
-      spawnSync('sleep', ['0.25']);
+      if (spawnSync('xdpyinfo', ['-display', DISPLAY], { stdio: 'ignore', timeout: 10_000, killSignal: 'SIGKILL' }).status === 0) break;
+      spawnSync('sleep', ['0.25'], { timeout: 10_000, killSignal: 'SIGKILL' });
     }
-    expect(spawnSync('xdpyinfo', ['-display', DISPLAY], { stdio: 'ignore' }).status).toBe(0);
+    expect(spawnSync('xdpyinfo', ['-display', DISPLAY], { stdio: 'ignore', timeout: 10_000, killSignal: 'SIGKILL' }).status).toBe(0);
 
     // A real filesystem-backed bus, the same `unix:tmpdir=/tmp` shape P-007 provisions.
     busDir = mkdtempSync(join(tmpdir(), 'p010-bus-'));
@@ -109,9 +109,14 @@ describe.skipIf(!liveEnabled)('P-010 desktop sandbox — LIVE (real Xvfb, real b
   afterAll(() => {
     // Kill by the pid we captured, never by name — a pattern kill on this shared box has
     // twice taken out a peer's Xvfb.
-    if (xvfbPid > 0) spawnSync('kill', [String(xvfbPid)]);
+    if (xvfbPid > 0) spawnSync('kill', [String(xvfbPid)], { timeout: 10_000, killSignal: 'SIGKILL' });
     const busPath = a11yBusSocketPath(busAddress);
-    if (busPath) spawnSync('sh', ['-c', `fuser -k ${busPath} 2>/dev/null || true`]);
+    if (busPath) {
+      spawnSync('sh', ['-c', `fuser -k ${busPath} 2>/dev/null || true`], {
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      });
+    }
     if (busDir) rmSync(busDir, { recursive: true, force: true });
     rmSync(`/tmp/.X${DISPLAY_NUM}-lock`, { force: true });
   });
@@ -136,19 +141,19 @@ describe.skipIf(!liveEnabled)('P-010 desktop sandbox — LIVE (real Xvfb, real b
     const child = spawnSync('sh', [
       '-c',
       `bwrap ${argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ')} >/dev/null 2>&1 & echo $!`,
-    ], { encoding: 'utf8', env: { ...process.env, DISPLAY } });
+    ], { encoding: 'utf8', env: { ...process.env, DISPLAY }, timeout: 15_000, killSignal: 'SIGKILL' });
     const pid = Number.parseInt((child.stdout ?? '').trim(), 10);
     try {
       let found = '';
       for (let i = 0; i < 40; i++) {
         const s = run('xdotool', ['search', '--name', 'p010-probe']);
         if (s.status === 0 && s.out) { found = s.out; break; }
-        spawnSync('sleep', ['0.25']);
+        spawnSync('sleep', ['0.25'], { timeout: 10_000, killSignal: 'SIGKILL' });
       }
       // A mapped window is the end-to-end proof: the app started, connected, and drew.
       expect(found).not.toBe('');
     } finally {
-      if (pid > 0) spawnSync('kill', [String(pid)]);
+      if (pid > 0) spawnSync('kill', [String(pid)], { timeout: 10_000, killSignal: 'SIGKILL' });
     }
   }, 120_000);
 
@@ -211,19 +216,23 @@ p=sys.argv[1]
 s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind(p); s.listen(8)
 threading.Thread(target=lambda:[s.accept() for _ in iter(int,1)],daemon=True).start()
 time.sleep(600)' ${sock} >/dev/null 2>&1 & echo $!`,
-    ], { encoding: 'utf8' });
+    ], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL' });
     const pid = Number.parseInt((listener.stdout ?? '').trim(), 10);
     try {
       // INSTRUMENT CHECK — on the host, outside any sandbox. Until this passes, a refusal
       // inside the sandbox is a statement about the fixture, not about the mount.
       let ready = false;
       for (let i = 0; i < 80; i++) {
-        const probe = spawnSync('python3', ['-c', CONNECT, sock], { encoding: 'utf8' });
+        const probe = spawnSync('python3', ['-c', CONNECT, sock], {
+          encoding: 'utf8',
+          timeout: 15_000,
+          killSignal: 'SIGKILL',
+        });
         if ((probe.stdout ?? '').includes('CONNECT_OK')) {
           ready = true;
           break;
         }
-        spawnSync('sleep', ['0.25']);
+        spawnSync('sleep', ['0.25'], { timeout: 10_000, killSignal: 'SIGKILL' });
       }
       expect(
         ready,
@@ -241,12 +250,12 @@ time.sleep(600)' ${sock} >/dev/null 2>&1 & echo $!`,
         '-c',
         'import socket,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(sys.argv[1])',
         deadSock,
-      ]);
+      ], { timeout: 15_000, killSignal: 'SIGKILL' });
       const control = run('bwrap', sandboxArgv(['python3', '-c', CONNECT, deadSock], { denyNetwork: true }));
       expect(control.out).toContain('CONNECT_FAIL');
       expect(control.out).not.toContain('CONNECT_OK');
     } finally {
-      if (pid > 0) spawnSync('kill', [String(pid)]);
+      if (pid > 0) spawnSync('kill', [String(pid)], { timeout: 10_000, killSignal: 'SIGKILL' });
       rmSync(sock, { force: true });
       rmSync(deadSock, { force: true });
     }

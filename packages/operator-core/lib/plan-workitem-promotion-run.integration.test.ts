@@ -160,8 +160,8 @@ beforeAll(async () => {
   // serves a row. This fresh-DB fixture must therefore carry the same canonical table
   // dependency as every other claim-path integration fixture.
   await db.sql.unsafe(WATCHDOG_TICKS_DDL);
-  // P-006: promotion now writes blocks-edges, so both stores must exist — coord_links (the
-  // authoritative writer, created by ensureCoordCapabilityTables) AND its work_item_deps mirror.
+  // P-006: promotion writes canonical blocks edges to work_item_deps. coord_links still exists
+  // for plan coverage and every non-work relation.
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
@@ -511,12 +511,7 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(await depEdges()).toEqual([{ blocked, blocker }]);
   });
 
-  it('P-006/D-010: the edge lands in coord_links (authoritative) too, not only the work_item_deps mirror', async () => {
-    // The regression this pins: writing straight to work_item_deps reads back correctly today
-    // (the P-004 cutover flipped READS there) so it looks right — but syncFeatureBlockEdges
-    // rebuilds that table's edges for a blocked ref FROM coord_links, so a mirror-only edge is
-    // erased by the next unrelated blocker sync. Asserting the authoritative row is what makes
-    // "written through the wrong seam" a test failure instead of a silent time bomb.
+  it('P-006/D-010: the edge lands only in canonical work_item_deps', async () => {
     h.plans.set(PLAN, {
       items: [
         { id: 'P-001', status: 'todo', text: 'Prereq' },
@@ -530,8 +525,7 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     const blocker = rows.find((r) => r.title === 'Prereq')!.feature_id;
     const links = await db.sql<{ src_ref: string; dst_ref: string }[]>`
       SELECT src_ref, dst_ref FROM harness_shared.coord_links WHERE rel = 'blocks'`;
-    // coord_links stores blocker → blocked; work_item_deps stores blocked → blocker.
-    expect(links).toEqual([{ src_ref: `${HARNESS}#${blocker}`, dst_ref: `${HARNESS}#${blocked}` }]);
+    expect(links).toEqual([]);
     expect(await depEdges()).toEqual([{ blocked, blocker }]);
   });
 
@@ -634,7 +628,7 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     );
   });
 
-  /** The blocker edges in coord_links (the AUTHORITATIVE store), as bare ids. */
+  /** Legacy work-item blocker rows in coord_links; canonical writers must leave this empty. */
   const linkEdges = async () => {
     const rows = await db.sql<{ src_ref: string; dst_ref: string }[]>`
       SELECT src_ref, dst_ref FROM harness_shared.coord_links WHERE rel = 'blocks' ORDER BY dst_ref, src_ref`;

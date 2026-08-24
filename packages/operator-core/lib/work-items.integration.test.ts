@@ -145,6 +145,7 @@ afterAll(async () => {
 beforeEach(async () => {
   wi.resetWorkItemEmbedderWarmup();
   await db.sql`TRUNCATE harness_shared.work_items,
+                       harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,

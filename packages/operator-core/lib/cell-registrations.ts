@@ -97,25 +97,6 @@ export const GIT_PIPELINE_POSITION_CELL: CellSpec = {
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'positions.deployed',
 
-  /**
-   * Axis 1. The falsifier is deliberately NOT `stages[].health`, even though D-038's
-   * table pairs them at the cell level: for the SERVING stage, `health` is computed
-   * FROM `startedSinceCodeChange` (git-pipeline-position.ts, computeStages), so that
-   * pairing would be "derived from the headline value" — which the registry's own
-   * axis-1 rule rejects, and rightly.
-   *
-   * `serving.startedSinceCodeChange` is a genuinely INDEPENDENT measurement: a live
-   * systemd probe of the serving process, which knows nothing about git. This is the
-   * pairing CLAUDE.md already states as a rule, after the same confusion was filed
-   * four separate times.
-   */
-  falsifier: {
-    field: 'serving.startedSinceCodeChange',
-    measurement:
-      'live systemd start time of the serving unit (probeServiceStart) compared against codeAsOfMs — a PROCESS measurement that shares no input with any git read',
-    kills:
-      '"deployed ✓" read as "the running process is executing my code". The two disagree whenever the host was never restarted after the deploy, and the git fact alone cannot see it.',
-  },
 
   /**
    * D-009's ladder, first-match. The codes are ORDERED CLAIMS about one journey, so
@@ -274,10 +255,10 @@ const VERDICT_HOIST = 'verdictUnknown';
 /**
  * Cell 1 — what the gate's last verdict was.
  *
- * PAIRED WITH CELL 4 AS MUTUAL FALSIFIERS, which is not a shortcut but the whole
- * point: a test-verdict TALLY and a git ANCESTRY check are two different apparatus
- * answering "is the pipeline healthy", so either can catch the other lying. The live
- * exercise caught exactly that (see `provenance.evidence`).
+ * PAIRED WITH CELL 4 AS MUTUAL CHECKS, which is not a shortcut but the whole point: a
+ * test-verdict TALLY and a git ANCESTRY check are two different apparatus answering
+ * "is the pipeline healthy", so either can catch the other lying. The live exercise
+ * caught exactly that (see `provenance.evidence`).
  */
 export const GATE_VERDICT_CELL: CellSpec = {
   cell: 'gate.greenCheckpoint.verdict',
@@ -285,15 +266,6 @@ export const GATE_VERDICT_CELL: CellSpec = {
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'gate.consecutiveReds',
 
-  falsifier: {
-    // Repointed to the polarity-correct projection of the SAME devDeployState reading
-    // (EI-20046248345042252). The measurement is unchanged; only its sign is.
-    field: 'verdictProvenance.mainBehindStaging',
-    measurement:
-      'a git ancestry check (is the newest green pin exactly at STAGING head, from devDeployState) — a REF-GRAPH measurement that shares no input with the green-checkpoint routine metadata the red streak is counted from. ⚠ pin-vs-STAGING, not pin-vs-main: the green pin IS main HEAD by devDeployState\'s own definition, so a pin-vs-main check could never diverge and would be a falsifier that can never fire (WI-6357 / EI-18790908999972569 corrected the same stale wording on the resolver field).',
-    kills:
-      '"0 consecutive reds" read as "the pipeline is healthy". A gate that never FIRED cannot go red, and a gate whose verdict never promoted main leaves the tally green while nothing advances — the count alone cannot see either.',
-  },
 
   /**
    * D-009, first-match. THE ORDER IS THE CONTENT HERE: `inconclusive` and `red-stale`
@@ -421,13 +393,6 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'changeInCandidate.judgingSha',
 
-  falsifier: {
-    field: 'changeInCandidate.judgingContainsPath',
-    measurement:
-      'a blob comparison of the working-tree content against the candidate commit (classifyPathsAgainstCandidate) — a CONTENT containment check, independent of which sha the gate happens to be running',
-    kills:
-      '"the gate is red" read as "the gate is red ABOUT MY CHANGE". The quiet-cut routinely steps the candidate back from the tip, so an in-flight run can be judging a commit that predates the fix entirely.',
-  },
 
   /**
    * D-009, first-match. `no-active-run` is the code worth reading twice: it is a
@@ -596,25 +561,17 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
 /**
  * Cell 2b — WHO owns the gate incident, and whether that ownership is real.
  *
- * A SEPARATE cell rather than a second falsifier on cells 1/2, because `CellSpec`
- * carries exactly ONE `falsifier` and the validator rejects a falsifier that is
- * the headline wearing a hat. The plan's P-005 assumed a cell could carry a
- * falsifier per BLOCK; it cannot, and the honest expression of "this block has its
- * own headline and its own independent check" is its own cell (see D-014).
+ * A SEPARATE cell rather than a second independent check bolted onto cells 1/2. A
+ * `CellSpec` describes exactly ONE subject, and the validator rejects any field that is
+ * the headline wearing a hat. The plan's P-005 assumed a cell could carry a per-BLOCK
+ * side-claim; it cannot, and the honest expression of "this block has its own headline
+ * and its own independent check" is its own cell (see D-014).
  */
 export const GATE_OWNERSHIP_CELL: CellSpec = {
   cell: 'gate.greenCheckpoint.ownership',
   registeredOn: '2026-08-03',
   owner: 'gate-ownership-condition-singleton-2026-08-03',
   headline: 'gate.ownership.claimState',
-
-  falsifier: {
-    field: 'gate.ownership.holderSessionState',
-    measurement:
-      "the presence oracle's per-owner liveness verdict (resolveSessionStates — heartbeat freshness, wakeability, a pid probe and recorded-session authority), which shares no input with the work-item lease columns `taken_by`/`expires_at` the headline is computed from",
-    kills:
-      '"someone is on it", read off a claim row. A lease lapses on a CLOCK, so a claim with a long or absent expiry reads `held` forever — including one taken by an agent that died minutes later. Reporting a dead holder as live ownership is worse than reporting none, because it actively suppresses the next agent from picking the work up. ⚠ CORRECTION 2026-08-03 (D-018): the VERDICT HELPER over this field, ownershipContradicted(), shipped in P-005 counting `recorded` as a dead holder. It is the opposite — `recorded` is authoritatively ALIVE per the session log, merely not inbox-wake-dispatchable, and the oracle classifies it before the heartbeat/pid path precisely so it is never force-ended. So the helper reported LIVE holders as abandoned claims: this falsifier`s own failure mode, sign-flipped. Only `ended` is a confirmed contradiction; `draining`/`suspect` are ambiguous and are CLASSIFIED by ownershipNeedsLivenessConfirmation(). ⚠ READ THAT PRECISELY (EI-20209536730887204): until 2026-08-12 this sentence said they "route to" that helper, which readers reasonably took to mean the ambiguous case was HANDLED — it was not. The helper had ZERO production callers, so an ambiguous holder silently lost stand-down protection and `release:checkpoint-run` fell straight through to launch with nothing recorded. It is now wired: checkpoint-run sends the holder a required wake; a delivered wake confirms a coordination-live peer and refuses the redundant launch, while a wake miss fails open so an uncertain signal cannot wedge the fleet\'s only verdict lever. Missed confirmations remain visible through `ownershipLivenessAmbiguous: true` metadata. The field itself was always right — the interpretation of it was not.',
-  },
 
   /**
    * D-009, first-match. This table is where the falsifier's long correction history
@@ -705,9 +662,9 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
 /**
  * Cell 3 — the sha :3070 is running.
  *
- * ⚠ Shares `serving.startedSinceCodeChange` with `git.pipelinePosition`'s falsifier.
- * That is legal and deliberate, not copy-paste: the two cells have DIFFERENT headlines
- * (a position boolean vs the deployed sha), and the probe is independent of both. It is
+ * ⚠ Cites `serving.startedSinceCodeChange` as evidence, exactly as `git.pipelinePosition`
+ * does. That is legal and deliberate, not copy-paste: the two cells have DIFFERENT
+ * headlines (a position boolean vs the deployed sha), and the probe is independent of both. It is
  * also the pairing CLAUDE.md already states as a rule after the confusion was filed
  * four separate times, so re-pairing it here is the point rather than an oversight.
  */
@@ -717,13 +674,6 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'deployedSha',
 
-  falsifier: {
-    field: 'serving.startedSinceCodeChange',
-    measurement:
-      'a live systemd start-time probe of the serving unit (probeServiceStart) compared against when the code last changed — a PROCESS measurement that shares no input with any git read',
-    kills:
-      '"deployed sha X" read as "the process is EXECUTING X". A deploy that moved the checkout without restarting the host leaves the two disagreeing, and the git fact alone cannot see it.',
-  },
 
   /**
    * D-009, first-match. Three codes, and the third is the one that did not exist as a
@@ -817,24 +767,6 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'verdictProvenance.mainBehindStaging',
 
-  /**
-   * ⚠ THE KILLS IS THE OPPOSITE OF THE OBVIOUS ONE, and writing the obvious one would
-   * make this cell actively harmful. A nonzero staging buffer is NORMAL on this fleet:
-   * git-sync commits staging continuously while the green-checkpoint promotes main only
-   * hourly and only when green. `why-chain.ts` therefore DELIBERATELY does not fire on
-   * it (EI-11012) — the naive "behind = broken" reading is what made the deploy stage
-   * report degraded essentially always, shadowing every real downstream cause.
-   *
-   * So the false reading to kill is "nonzero lag means the pipeline is stalled", and
-   * only gate FIRE-LIVENESS separates a normal buffer from a wedged gate.
-   */
-  falsifier: {
-    field: 'gate.fireStale',
-    measurement:
-      "the green-checkpoint routine's own last-fire timestamp against the fire interval (the green-stall watchdog's rule) — a SCHEDULER-LIVENESS measurement, sharing no input with any commit-graph read",
-    kills:
-      '"main is behind staging, so the pipeline is stalled". A buffer of un-promoted commits is the normal steady state here and is NOT a fault; what distinguishes it from a wedged pipeline is whether the gate is still firing, which no lag figure can tell you. (The inverse misread is equally live: main behind staging with a green tally is what the mutual falsifier in `gate.greenCheckpoint.verdict` catches.)',
-  },
 
   /**
    * D-009, first-match — and this is the table where the assessment contract most

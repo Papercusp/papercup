@@ -1,6 +1,6 @@
 /**
- * work_items:link — Linkable (D-003). Creates a coord_links edge from this
- * work-item to a target. Blocking is the uniform `rel='blocks'` edge and works
+ * work_items:link — Linkable (D-003). Creates a typed edge from this work-item to a target.
+ * Work-item blocking persists in work_item_deps; polymorphic/non-block relations use coord_links.
  * ACROSS kinds (a bug can block a feature) — the substrate keys on (kind, ref),
  * not the physical table. Target is another work-item (by id) or an explicit
  * coord ObjectRef (e.g. a plan_item: { target_kind:'plan_item', target_ref:'<plan>#<item>' }).
@@ -111,7 +111,7 @@ export default defineTool({
         }
         const harness = it.harness ?? args.harness;
         // Acyclicity (P-003, F4): a feature→feature `blocks` edge that closes a cycle silently
-        // deadlocks the scheduler frontier. The link tools write a raw coord_links edge (bypassing
+        // deadlocks the scheduler frontier. The link tools write through the canonical dependency seam
         // syncFeatureBlockEdges' replace-semantics guard), so reject the cycle-closing edge here.
         // The coord_links convention is src=blocker → dst=blocked, so the SOURCE work-item is the
         // blocker and `dst` is the blocked feature.

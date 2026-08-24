@@ -132,12 +132,12 @@ async function sweepEndpointIntegrity(): Promise<void> {
     if (res.mismatched.length > 0) {
       console.warn(`[readiness-drift-monitor] mismatched: ${fmtEndpoint(res.mismatched)}`);
       console.warn(
-        '[readiness-drift-monitor] a mismatch should be INEXPRESSIBLE at the write seam ' +
+        '[readiness-drift-monitor] a mismatch should be INEXPRESSIBLE at the canonical write seam ' +
           '(resolveDepEndpoint) — its presence means a writer BYPASSED that seam. Investigate the ' +
           'writer; repair by re-running syncWorkItemDepEdges for the affected item, not by hand-editing rows. ' +
-          'NOTE the relation: a work_item_deps row is the MIRROR and re-running the writer fixes it, ' +
-          'but a coord_links row is the AUTHORITATIVE source — re-running the writer there just ' +
-          'reproduces the bad ref, so the source row itself has to be corrected.',
+          'NOTE the relation: work_item_deps is canonical and re-running the writer fixes it; ' +
+          'a work-item blocks row in coord_links is unsupported legacy/rogue data after migration 935 ' +
+          'and must be removed or corrected at the bypassing writer.',
       );
     }
     if (res.dangling.length > 0) {
