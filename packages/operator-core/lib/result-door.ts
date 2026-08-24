@@ -360,6 +360,56 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
   return { workspaceId, toolName, runId };
 }
 
+interface JsonPrefixSlice {
+  start: number;
+  end: number;
+}
+
+/** Find a complete object/array JSON value at the start of a text item. Some
+ * dispatch paths append guidance to the SAME text item rather than emitting a
+ * separate content item, so JSON.parse(item.text) cannot identify the payload
+ * even though the bytes before the guidance are a complete JSON document. */
+function findJsonPrefixSlice(text: string): JsonPrefixSlice | null {
+  const start = text.search(/\S/);
+  if (start < 0 || (text[start] !== '{' && text[start] !== '[')) return null;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+      continue;
+    }
+    if (char === '{' || char === '[') depth += 1;
+    else if (char === '}' || char === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        const end = index + 1;
+        try {
+          JSON.parse(text.slice(start, end));
+          const trailing = text.slice(end).trim();
+          // Only split a same-item suffix when it has the framework's known
+          // advisory shape. A JSON snippet followed by arbitrary text can be a
+          // genuine non-JSON result (including tool-owned truncation samples),
+          // and treating that as a complete payload would overclaim recovery.
+          if (trailing && !/^(?:See also:|\[batch-hint\]|\[nudge\])/i.test(trailing)) return null;
+          return { start, end };
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Keep a per-item JSON payload parseable when the MCP result also carries
  * advisory text items (for example a tool's `guidance.seeAlso` entry).
@@ -375,9 +425,21 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
 function buildSpillAdvisoryPrefix(
   textItems: ReadonlyArray<{ text: string }>,
   jsonItemIndex: number,
+  jsonSlice?: JsonPrefixSlice | null,
 ): string {
-  if (jsonItemIndex < 0 || textItems.length <= 1) return '';
-  const advisoryTexts = textItems.filter((_, index) => index !== jsonItemIndex).map((item) => item.text);
+  if (jsonItemIndex < 0) return '';
+  const advisoryTexts: string[] = [];
+  textItems.forEach((item, index) => {
+    if (index !== jsonItemIndex) {
+      advisoryTexts.push(item.text);
+      return;
+    }
+    if (!jsonSlice) return;
+    const before = item.text.slice(0, jsonSlice.start).trim();
+    const after = item.text.slice(jsonSlice.end).trim();
+    if (before) advisoryTexts.push(before);
+    if (after) advisoryTexts.push(after);
+  });
   if (advisoryTexts.length === 0) return '';
   return (
     `# result-door advisory text item(s) moved before the JSON payload so the payload remains parseable\n` +
@@ -680,10 +742,33 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // content item. Classify once before writing the spill so the machine-
     // readable payload can be kept as the final byte stream, with those
     // advisories preserved in the prefix rather than appended after JSON.
-    const bodyShape = classifyProjectionBody(textItems);
-    const jsonItemIndex = bodyShape.json?.itemIndex ?? -1;
-    const spillBodyText = jsonItemIndex >= 0 ? textItems[jsonItemIndex].text : fullText;
-    const spillAdvisoryPrefix = buildSpillAdvisoryPrefix(textItems, jsonItemIndex);
+    const classifiedBodyShape = classifyProjectionBody(textItems);
+    let jsonItemIndex = classifiedBodyShape.json?.itemIndex ?? -1;
+    let jsonSlice = jsonItemIndex >= 0 ? findJsonPrefixSlice(textItems[jsonItemIndex].text) : null;
+    if (jsonItemIndex < 0) {
+      for (let index = 0; index < textItems.length; index += 1) {
+        const candidate = findJsonPrefixSlice(textItems[index].text);
+        if (!candidate) continue;
+        jsonItemIndex = index;
+        jsonSlice = candidate;
+        break;
+      }
+    }
+    const bodyShape = classifiedBodyShape.json || !jsonSlice
+      ? classifiedBodyShape
+      : {
+          ...classifiedBodyShape,
+          json: {
+            parsed: JSON.parse(textItems[jsonItemIndex].text.slice(jsonSlice.start, jsonSlice.end)),
+            itemIndex: jsonItemIndex,
+          },
+        };
+    const spillBodyText = jsonItemIndex >= 0 && jsonSlice
+      ? textItems[jsonItemIndex].text.slice(jsonSlice.start, jsonSlice.end)
+      : jsonItemIndex >= 0
+        ? textItems[jsonItemIndex].text
+        : fullText;
+    const spillAdvisoryPrefix = buildSpillAdvisoryPrefix(textItems, jsonItemIndex, jsonSlice);
     // WI-36047 (borrow item 9, opencode/OMP research): THE SPILL GETS ITS OWN
     // FAIL-SOFT BOUNDARY, SEPARATE FROM THE CAP.
     //

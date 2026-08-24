@@ -292,6 +292,28 @@ describe('applyResultDoor', () => {
     expect(JSON.parse(advisoryLine!.slice('# advisory-text-items-json: '.length))).toEqual([advisory]);
   });
 
+  it('keeps a JSON payload parseable when advisory prose shares its text item', () => {
+    const original = JSON.stringify({
+      rows: Array.from({ length: 300 }, (_, i) => ({ id: `WI-${i}`, detail: 'x'.repeat(120) })),
+    });
+    const advisory = 'See also: work_items:observe (claimability without taking these ids)';
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: `${original}\n\n${advisory}` }] },
+      { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      _projection: { cursor: { bodyOffsetInPayload?: number } };
+    };
+    const spill = readSpill('ws-1', 'tools:invoke', RUN_ID);
+    const parsed = JSON.parse(
+      Buffer.from(spill, 'utf8').subarray(body._projection.cursor.bodyOffsetInPayload!).toString('utf8'),
+    ) as { rows: Array<{ id: string }> };
+
+    expect(parsed.rows).toHaveLength(300);
+    expect(spill.endsWith(original)).toBe(true);
+    expect(spill).toContain(`# advisory-text-items-json: ${JSON.stringify([advisory])}`);
+  });
+
   it('every truncation footer teaches `projection` — the knob that would have avoided the spill (P-020)', () => {
     // The projection stage is a DISPATCH-level reserved arg, so it is in no
     // tool's inputSchema and an agent can only learn it exists from a moment
