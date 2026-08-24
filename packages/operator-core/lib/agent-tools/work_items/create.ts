@@ -555,8 +555,9 @@ export default defineTool({
       { keyOf: (spec) => ({ title: spec.title }) },
     );
     // Create-time dedup port (memory-delivery-unification-2026-07-12 P-009 /
-    // D-006): the work-items-corpus leg already ships as `similarOpen` (the
-    // semantic-dupe guard); this is the MEMORY-POOLS leg — surface fuzzy prior
+    // D-006): the work-items-corpus leg is the semantic-dupe guard (which ships as
+    // `similarOpen` on a REFUSAL and as persisted dedup edges on a successful create —
+    // work-queue-admission D-010); this is the MEMORY-POOLS leg — surface fuzzy prior
     // knowledge about what's being filed, at exactly the moment a duplicate
     // could be created. Deadline-bounded, epoch-deduped (port 'create'),
     // never-throws. Queries the item titles + summaries (top 3 per D-005).
