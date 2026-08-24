@@ -497,6 +497,7 @@ describe('turn-start-orientation — what it says', () => {
       },
       executableFrontier: { planSlug: 'one-plan', executableWidth: 2 },
       neverDropFacts: ['guard-rail:some-settled-thing'],
+      toolSurface: null,
     });
   });
 

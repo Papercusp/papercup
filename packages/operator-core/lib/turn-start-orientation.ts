@@ -139,6 +139,38 @@ export function selectOrientationImprovementTriage(
  * every turn is worse than no count. Add it by calling that tool's underlying
  * read, never by hand-writing a floor query here.
  */
+/**
+ * Evidence that this agent's MCP tool surface loaded EMPTY (EI-21308269358666878).
+ *
+ * A psu session can come up with ZERO papercusp tools and never notice: it keeps
+ * heartbeating, presence stays 'live', and it looks healthy to every peer — while
+ * being unable to claim, checkpoint, complete, or control its own loop. The tool
+ * list is fetched once at MCP connect and never re-listed, so the condition is
+ * PERMANENT for that session's life: it cannot self-heal, and retrying inside the
+ * session cannot fix it. That is why this warns instead of waiting.
+ *
+ * The signal is the CALL-ORIGIN SPLIT, not a call count. Hook calls reach the
+ * operator over plain HTTP, BYPASSING the agent MCP surface, so they keep flowing
+ * while agent-issued calls stop dead. Measured on the confirmed incident
+ * (su-b39c3537, sessions cdcdc38c + ed80eafe, 2026-08-24): 355+ hook calls against
+ * 0 agent calls, over ~4 hours — a state its own transcript describes as "no
+ * papercusp tools registered". That asymmetry also rules out "merely idle": an
+ * idle session is not being handed turn-start blocks at all.
+ *
+ * ⚠ A raw invocation COUNT does not work and was tried first: the sanctioned
+ * `scripts/mcp-call.mjs` fallback and the hooks both write rows, so a toolless
+ * agent still logs plenty of invocations. Only the split separates them.
+ *
+ * Present ⇒ toolless. `null` is BOTH "healthy" and "cannot tell", deliberately:
+ * every unknown degrades to silence, never to a false alarm on a working agent.
+ */
+export interface OrientationToolSurface {
+  /** Hook-origin calls since the context generation began — proves the operator is reachable. */
+  hookCalls: number;
+  /** Minutes since the context generation began, so the line can say how long. */
+  windowMinutes: number;
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -156,6 +188,27 @@ export interface OrientationState {
   improvementTriage: OrientationImprovementTriage | null;
   /** Canonical P-011 executable width; null means inapplicable or unreadable. */
   executableFrontier: OrientationExecutableFrontier | null;
+  /**
+   * KEYS of the never-drop standing facts (`dead-end:` / `wall:` / `guard-rail:`).
+   *
+   * These exist to OVERRIDE a stale plan, which is the whole reason they are
+   * folded into a block this small. EI-18725816532600240 established exactly
+   * this rule for coord:orient's monitor tick, after a cold wake was told to
+   * implement an approach a `dead-end:` fact had ALREADY falsified — "the
+   * antidote was absent precisely where the poison was strongest". This fold
+   * fires even more often than that one and did not inherit the lesson
+   * (EI-21309540201944554).
+   *
+   * KEYS ONLY. The bodies are what make the full fold expensive, and a key is
+   * enough to answer the only question this line needs to answer: "is there a
+   * settled do-not-repeat about the thing I am about to do?"
+   */
+  neverDropFacts: string[];
+  /**
+   * Set when this agent's MCP tool surface is observably EMPTY; null when it is
+   * healthy OR unreadable. See OrientationToolSurface for why unknown ⇒ null.
+   */
+  toolSurface: OrientationToolSurface | null;
 }
 
 /** Default budget. Small on purpose: this fires EVERY turn and compounds. */
@@ -180,7 +233,22 @@ const CHECKPOINT_DISPLAY_CAP = 2;
 const CHECKPOINT_EXCERPT_CHARS = 150;
 const GATE_DISPLAY_CAP = 3;
 const INBOX_DISPLAY_CAP = 2;
+/** Two keys is enough to say "a do-not-repeat exists here"; the count carries the
+ *  rest. Kept small because composeOrientationBlock BREAKS on the first line that
+ *  does not fit, so an overlong line here silently truncates every line below it. */
+const FACT_DISPLAY_CAP = 2;
+const FACT_KEY_CHARS = 38;
 const IMPROVEMENT_TRIAGE_WINDOW_LIMIT = 100;
+/**
+ * Hook-origin calls required before the toolless warning fires (EI-21308269358666878).
+ *
+ * MEASURED, not guessed. Among active agent owners with ZERO agent-origin calls since
+ * their context epoch, the hook-call distribution has a hard cliff — 355, 96, then 12,
+ * 8, 8, 5, 4, 3, 2… — so every threshold in 20..90 selects the same set, and 20 keeps
+ * margin above the low-activity noise floor while still firing within a few turns of
+ * onset. Live 6h sample: 1 flagged of 243 active agent owners (0.41%).
+ */
+const TOOLLESS_HOOK_THRESHOLD = 20;
 
 /** True when there is genuinely nothing worth spending a single character on. */
 export function isEmptyOrientation(state: OrientationState): boolean {
@@ -192,7 +260,9 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     !state.loopArmed &&
     !state.loopFireWithheld &&
     state.improvementTriage === null &&
-    state.executableFrontier === null
+    state.executableFrontier === null &&
+    state.neverDropFacts.length === 0 &&
+    state.toolSurface === null
   );
 }
 
@@ -317,6 +387,19 @@ export function fingerprintOrientation(
       : typeof committed?.frontier === 'string'
         ? committed.frontier
         : '',
+    // A NEWLY asserted guard-rail / dead-end / wall MUST re-emit the block. It is
+    // most valuable on the very turn it first applies, and a fingerprint blind to
+    // it would suppress the fold for an agent already mid-mistake — the same
+    // "absent where it is needed most" failure EI-18725816532600240 describes.
+    facts: state.neverDropFacts.slice().sort().join('|'),
+    // MUST VARY WHILE THE CONDITION PERSISTS. `hookCalls` strictly increases on
+    // every turn a toolless agent takes — the hooks are precisely what keep firing
+    // — so this token changes each turn and the warning RE-EMITS. A constant token
+    // (a bare boolean, say) would make the single most important line in this block
+    // a ONE-SHOT: shown once, then suppressed as "unchanged" for the rest of a
+    // session that cannot act. That is the `facts` trap noted below, in the one
+    // case where the agent has no way to recover the information for itself.
+    toolSurface: state.toolSurface ? `${state.toolSurface.hookCalls}` : '',
     epoch,
   };
 }
@@ -333,6 +416,15 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.gates === b.gates &&
     a.loop === b.loop &&
     a.loopWithheld === b.loopWithheld &&
+    // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
+    // does nothing on its own — this whitelist is what decides re-emission. Without
+    // the comparison a newly-landed guard rail is suppressed as "unchanged",
+    // which is the silent half of the bug this fold exists to fix.
+    a.facts === b.facts &&
+    // REQUIRED for the same reason `facts` is: writing the fingerprint token above
+    // does NOTHING unless it is compared HERE. Omitting this line reinstates the
+    // one-shot warning with no visible symptom — the block simply goes quiet.
+    a.toolSurface === b.toolSurface &&
     a.triage === b.triage &&
     (a.frontier ?? '') === (b.frontier ?? '') &&
     a.epoch === b.epoch
@@ -368,6 +460,14 @@ function compactActor(actor: string): string {
   return actor.length <= 18 ? actor : `${actor.slice(0, 15)}…`;
 }
 
+/** Truncate the SLUG, never the type prefix (`guard-rail:` / `wall:` / `dead-end:`):
+ *  the prefix is the half that says how much authority the fact carries, so a key
+ *  clipped down to a bare "guard-r…" would cost the reader the only part that is
+ *  legible at a glance. */
+function compactFactKey(key: string): string {
+  return key.length <= FACT_KEY_CHARS ? key : `${key.slice(0, FACT_KEY_CHARS - 1)}…`;
+}
+
 function compactHeadline(summary: string | undefined): string {
   const text = (summary ?? '(no summary)').replace(/\s+/g, ' ').trim();
   return text.length <= 72 ? text : `${text.slice(0, 71)}…`;
@@ -396,6 +496,18 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
  */
 export function renderOrientationLines(state: OrientationState, committed: CursorState | null = null): string[] {
   const lines: string[] = [];
+  // FIRST, above even the directed-message line. An agent whose tool surface is
+  // empty cannot act on ANY line below this one — it cannot claim, checkpoint, or
+  // even answer the directed message that otherwise leads. Deliberately terse: the
+  // composer BREAKS on the first line that does not fit, so length spent here is
+  // taken from every line after it.
+  if (state.toolSurface) {
+    lines.push(
+      `- 🚨 MCP TOOLS NOT REGISTERED — 0 tool calls in ${state.toolSurface.windowMinutes}m vs ` +
+        `${state.toolSurface.hookCalls} harness beats OK. Tool list loaded EMPTY; it cannot ` +
+        `self-heal. RESTART THE SESSION (EI-21308269358666878).`,
+    );
+  }
   if (state.unansweredDirected > 0) {
     lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
   }
@@ -413,6 +525,19 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
   const missing = state.held.filter((h) => !h.checkpoint?.trim()).map((h) => h.id);
   if (missing.length > 0) {
     lines.push(`- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`);
+  }
+  // ABOVE the "what to work on" lines (frontier / triage) on purpose. These say
+  // "not that way", and a do-not-repeat is worth almost nothing once the agent
+  // has already picked an approach — which is exactly what the lines below help
+  // it do. Deliberately short: the composer BREAKS on the first line that does
+  // not fit, so length spent here is taken from every line after it.
+  if (state.neverDropFacts.length > 0) {
+    lines.push(
+      `- 🛡️ never-drop facts: ${compactIds(
+        state.neverDropFacts.map(compactFactKey),
+        FACT_DISPLAY_CAP,
+      )} — facts:list before you plan.`,
+    );
   }
   const frontierLine = renderExecutableFrontierLine(state.executableFrontier, committed);
   if (frontierLine) lines.push(frontierLine);
@@ -519,6 +644,15 @@ export interface OrientationDeps {
     ownerId: string,
     workspaceId: string,
   ) => Promise<OrientationExecutableFrontier | null>;
+  /** KEYS of never-drop standing facts in this agent's scopes (workspace + owner). */
+  neverDropFacts: (ownerId: string, workspaceId: string) => Promise<string[]>;
+  /**
+   * Evidence that this agent's MCP tool surface loaded EMPTY, or null for
+   * healthy/unreadable. Takes only `ownerId`: the detector deliberately scopes by
+   * NOTHING else (see the default reader for why a workspace/harness predicate
+   * manufactures false positives here).
+   */
+  toolSurface: (ownerId: string) => Promise<OrientationToolSurface | null>;
   /**
    * The agent's CONTEXT GENERATION (P-023 / D-008) — NOT part of the rendered
    * state, only of the dedup key, which is why it is not on `OrientationState`.
@@ -542,8 +676,17 @@ export async function resolveOrientationState(
   deps: Partial<OrientationDeps> = {},
 ): Promise<OrientationState> {
   const d = { ...defaultOrientationDeps(), ...deps };
-  const [held, inbox, announcedGates, loopArmed, loopFireWithheld, improvementTriage, executableFrontier] =
-    await Promise.all([
+  const [
+    held,
+    inbox,
+    announcedGates,
+    loopArmed,
+    loopFireWithheld,
+    improvementTriage,
+    executableFrontier,
+    neverDropFacts,
+    toolSurface,
+  ] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId).catch(() => [] as OrientationAnnouncedGate[]),
@@ -551,6 +694,15 @@ export async function resolveOrientationState(
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
     d.executableFrontier(ownerId, workspaceId).catch(() => null),
+    // Degrades to "say nothing about facts", never to a thrown turn — same rule
+    // as every other source here. A failed read must not be able to suppress the
+    // block that carries the other agents' warnings.
+    d.neverDropFacts(ownerId, workspaceId).catch(() => [] as string[]),
+    // Fail-soft to null — "cannot tell" renders as SILENCE, never as a verdict. A
+    // slow or broken read here must not be able to accuse a working agent of being
+    // toolless; the cost of a missed warning is one more turn, the cost of a false
+    // one is an agent restarting a session that was fine.
+    d.toolSurface(ownerId).catch(() => null as OrientationToolSurface | null),
   ]);
   return {
     held,
@@ -561,6 +713,8 @@ export async function resolveOrientationState(
     loopFireWithheld,
     improvementTriage,
     executableFrontier,
+    neverDropFacts,
+    toolSurface,
   };
 }
 
@@ -568,6 +722,25 @@ export async function resolveOrientationState(
  *  Dynamic imports keep them off the module graph until a turn actually needs them. */
 export function defaultOrientationDeps(): OrientationDeps {
   return {
+    // The SAME primitive coord:orient folds this tier with (foldNeverDropFacts,
+    // narrowed in SQL to NEVER_DROP_KEY_PREFIXES), so the per-turn block and the
+    // orient fold cannot drift on "what counts as a never-drop fact".
+    //
+    // Scoped to workspace + owner, matching orient's own selector set minus the
+    // harness leg — this fold has no harness argument to pass, and a guard rail
+    // worth interrupting a turn for is asserted at workspace scope in practice.
+    neverDropFacts: async (ownerId, workspaceId) => {
+      const { foldNeverDropFacts } = await import('./agent-facts/store');
+      const selectors = [
+        { scope: 'workspace' as const },
+        ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
+      ];
+      const facts = await foldNeverDropFacts(selectors, { workspaceId });
+      const keys = facts.map((f) => f.key).filter((k): k is string => Boolean(k));
+      // Deduped because the same key can legitimately resolve from two selectors;
+      // sorted so the fingerprint is stable across fold order.
+      return [...new Set(keys)].sort();
+    },
     // carry-brief.ts's reader, already extracted so this fold and orient's
     // post-compaction recovery fold cannot drift on "what am I holding".
     //
@@ -713,6 +886,73 @@ export function defaultOrientationDeps(): OrientationDeps {
     // already passes the OWNER id as that key (`session: { sessionId: owner }`).
     // Passing the same value here is what makes the two folds share one
     // generation; a different key would silently give each its own.
+    // EI-21308269358666878. DERIVED from two EXISTING ledgers — no new record, and
+    // deliberately so: a server-side "we served tools/list" row would measure the
+    // SERVER'S INTENT to serve, and goes blind in exactly the failure it is meant to
+    // catch (the operator answers, the response dies in the proxy). Counting what
+    // the CLIENT observably completed cannot be fooled that way.
+    //
+    // ⚠⚠ FILTER NEITHER harness_slug NOR workspace_id. Both legitimately hold the
+    // literal '*' for workspace-global tools (coord:*, work_items:*) — 11k+ and 1k+
+    // rows respectively in a 6h window — so scoping either DROPS most agent calls
+    // and MANUFACTURES toolless-looking sessions. Measured, not theoretical: a
+    // harness-scoped draft of this query flagged three healthy agents that had 379,
+    // 432 and 331 agent calls. Only coord_owner_id + invoked_at + call_origin belong
+    // in it. The same trap has a sibling — grouping by (owner, role) instead of
+    // owner splits an owner's calls across role-slices and fakes a zero.
+    //
+    // The epoch row IS the guard, not just the window: no row ⇒ no anchor ⇒ no
+    // verdict. That is what keeps a re-identified process (a carry-respawn whose
+    // agent calls moved to a NEW ownerId while hook beats kept landing on the old
+    // one) from reading as permanently toolless.
+    toolSurface: async (ownerId) => {
+      const [{ getOrgPg }, timeout] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('./bounded-timeout'),
+      ]);
+      const { sql } = getOrgPg();
+      const read = async (): Promise<OrientationToolSurface | null> => {
+        // NOT EXISTS is the cheap leg and gates the row: a healthy agent has an
+        // agent-origin call almost immediately, the (coord_owner_id, invoked_at)
+        // index stops at the first hit, and the hook count is never computed. Only
+        // a genuinely silent owner pays for the count.
+        const rows = await sql<Array<{ hook_calls: string | number; window_minutes: number }>>`
+          WITH anchor AS (
+            SELECT bumped_at
+              FROM harness_shared.memory_session_epochs
+             WHERE session_id = ${ownerId}
+          )
+          SELECT (
+                   SELECT count(*)
+                     FROM harness_shared.tool_invocations t
+                    WHERE t.coord_owner_id = ${ownerId}
+                      AND t.invoked_at >= a.bumped_at
+                      AND t.call_origin = 'hook'
+                 ) AS hook_calls,
+                 floor(extract(epoch FROM (now() - a.bumped_at)) / 60)::int AS window_minutes
+            FROM anchor a
+           WHERE NOT EXISTS (
+                   SELECT 1
+                     FROM harness_shared.tool_invocations t2
+                    WHERE t2.coord_owner_id = ${ownerId}
+                      AND t2.invoked_at >= a.bumped_at
+                      AND t2.call_origin = 'agent'
+                 )
+        `;
+        const row = rows[0];
+        if (!row) return null;
+        const hookCalls = Number(row.hook_calls);
+        if (!Number.isFinite(hookCalls) || hookCalls < TOOLLESS_HOOK_THRESHOLD) return null;
+        const windowMinutes = Number(row.window_minutes);
+        return { hookCalls, windowMinutes: Number.isFinite(windowMinutes) ? windowMinutes : 0 };
+      };
+      const { value } = await timeout.withBoundedTimeout(read(), {
+        fallback: null as OrientationToolSurface | null,
+        timeoutMs: 700,
+        label: 'turn-start tool surface',
+      });
+      return value;
+    },
     contextEpoch: async (ownerId) => {
       const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
         import('./memory/session-epoch-ledger'),
