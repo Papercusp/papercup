@@ -39,6 +39,7 @@ const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 
 const getRun = vi.fn();
 const getRunItems = vi.fn();
+const recordRunHeartbeat = vi.fn();
 const reportOutcomes = vi.fn();
 const settleRunPhase = vi.fn();
 const setRunPhase = vi.fn();
@@ -47,6 +48,7 @@ const getActiveRun = vi.fn();
 vi.mock('../attention/bulk-run-store', () => ({
   getRun: (...a: unknown[]) => getRun(...a),
   getRunItems: (...a: unknown[]) => getRunItems(...a),
+  recordRunHeartbeat: (...a: unknown[]) => recordRunHeartbeat(...a),
   reportOutcomes: (...a: unknown[]) => reportOutcomes(...a),
   settleRunPhase: (...a: unknown[]) => settleRunPhase(...a),
   setRunPhase: (...a: unknown[]) => setRunPhase(...a),
@@ -87,8 +89,9 @@ describe('WI-41021 — the flag gates ACTING, never STOPPING (agent verbs)', () 
   beforeEach(() => {
     vi.clearAllMocks();
     initFlagBackend(null);
-    getRun.mockResolvedValue({
+    const run = {
       runId: RUN_ID,
+      workspaceId: 'ws-kill-switch-test',
       phase: 'running',
       totalItems: 1,
       autoResolved: 0,
@@ -97,7 +100,9 @@ describe('WI-41021 — the flag gates ACTING, never STOPPING (agent verbs)', () 
       failed: 0,
       filterSnapshot: {},
       requestedBy: 'owner',
-    });
+    };
+    getRun.mockResolvedValue(run);
+    recordRunHeartbeat.mockResolvedValue(run);
     // No pending rows: keeps the manifest off the live-actions path, which would
     // pull in the whole attention source stack for no gain here.
     getRunItems.mockResolvedValue([]);
@@ -136,6 +141,11 @@ describe('WI-41021 — the flag gates ACTING, never STOPPING (agent verbs)', () 
     // making the feature permanently unusable.
     expect(res.stopped).toBe(false);
     expect(res.featureDisabled).toBe(false);
+    expect(recordRunHeartbeat).toHaveBeenCalledWith({
+      runId: RUN_ID,
+      resolverOwner: 'su-test-resolver',
+      workspaceId: 'ws-kill-switch-test',
+    });
   });
 
   it('report REFUSES and writes NOTHING when the feature is off', async () => {
