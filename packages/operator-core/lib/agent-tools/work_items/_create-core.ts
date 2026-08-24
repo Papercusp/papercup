@@ -876,6 +876,36 @@ export async function createOneWorkItem(
         existing: { id: planItemCollision.feature_id, state: planItemCollision.status },
       };
     }
+    // ── ADMISSION GATE (plan work-queue-admission-and-bulk-dedup-2026-08-24, P-002) ──
+    // Born-pending is UNIVERSAL here, not conditional on this filing having found
+    // similar items. Every kind this path can mint is feature|chunk|bug|change|task —
+    // observations have their own writer (work_items:observe) and never reach here — so
+    // "every non-observation filing path lands pending" is, at this choke point, simply
+    // "every item, minus the bypasses below".
+    //
+    // The gate judges DUPLICATION ONLY, never merit (plan charter: redundancy kappa
+    // 0.679 vs merit kappa 0.289). Two bypasses, both meaning "already reviewed by
+    // something with more context than a similarity score":
+    //   * plan provenance — the item implements a plan item, so it passed plan review;
+    //   * critical severity / a security topic — promote now, review post-hoc, because
+    //     the cost of delaying a real one dominates the cost of a duplicate.
+    //
+    // `args.force` is DELIBERATELY NOT a bypass. force means "file despite the hard
+    // dedup refusals", which is a claim about THIS filing's duplicates — exactly the
+    // question the promoter re-asks with corpus-wide evidence. Letting it also skip the
+    // gate would make the gate opt-out by the one flag every blocked filer already
+    // reaches for. A forced item lands pending and is promoted on the normal tick; if
+    // the promoter is dead or lagging, the fail-open path admits it as 'unreviewed'
+    // rather than starving the queue.
+    const admissionBypass: string | null =
+      planItemIdentities.size > 0
+        ? 'bypass:plan-item'
+        : args.severity === 'critical'
+          ? 'bypass:severity-critical'
+          : args.topics?.some((t) => t.trim().toLowerCase() === 'security')
+            ? 'bypass:topic-security'
+            : null;
+    const bornAdmission: 'pending' | 'auto' = admissionBypass ? 'auto' : 'pending';
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
@@ -893,6 +923,10 @@ export async function createOneWorkItem(
       // the durable delegator (`assignedBy`, issue-family only).
       assignee: args.assign_to,
       assignedBy: args.assign_to ? ctx.ownerId : undefined,
+      // P-002: rides in the INSERT for both families — never a post-create UPDATE,
+      // which would leave the row admitted and claimable in the gap between writes.
+      admission: bornAdmission,
+      admittedBy: admissionBypass,
     });
     // WI-39604: claim the condition key for the fresh mint. A lost race means a
     // concurrent filer's row is the incumbent: this reading is refreshed onto the
