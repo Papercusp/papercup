@@ -1446,6 +1446,38 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(written).not.toContain('- ✓ [#gate] gate is green —'); // the old wording is GONE, not duplicated
   });
 
+  it('promotes legacy unkeyed rows when a caller adds ids under merge, without duplicating them', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior([
+        { claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30' },
+        { claim: 'main is at abc123', recheck: 'git rev-parse HEAD', verified: 'observed abc123' },
+        { claim: 'deploy landed', recheck: 'health probe', verified: 'health ok' },
+        { claim: 'tests passed', recheck: 'focused suite', verified: '4/4 passed' },
+      ]),
+    );
+    const b = body(
+      await call({
+        did: 'progress',
+        checks: [
+          { id: 'gate', claim: 'gate is green' },
+          { id: 'tip', claim: 'main is at abc123' },
+          { id: 'deploy', claim: 'deploy landed' },
+          { id: 'tests', claim: 'tests passed' },
+        ],
+        rowsMode: 'merge',
+      }),
+    );
+
+    expect(b.checks).toBe(4);
+    expect(b.checksDropped).toBeUndefined();
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written.match(/^[-] [✓?⚠]/gm)).toHaveLength(4);
+    expect(written).toContain('[#gate] gate is green');
+    expect(written).toContain('[#tip] main is at abc123');
+    expect(written).toContain('saw 30/30');
+    expect(written).not.toContain('- ✓ gate is green —');
+  });
+
   it("explains that merge's [] is a no-op, so a caller never reads it as a failed clear", async () => {
     getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
     const b = body(await call({ did: 'progress', checks: [], rowsMode: 'merge' }));
