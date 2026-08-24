@@ -151,7 +151,7 @@ export default defineTool({
             costPerTask: 'one run-attributed agent_usage_samples USD row per paired task; missing/duplicate/unpriced holds',
             streamFidelity: 'exactly one backend terminal, valid JSONL, non-empty final text; native tool events balanced',
             mcpCompatibility: 'run_id-correlated tool_invocations failure rate + baseline tool-name coverage',
-            pairing: 'same harness + SHA-256 prompt hash + same requested model; repeated prompts newest-to-newest',
+            pairing: 'same harness + SHA-256 task-prompt hash (inline prompt before per-run tail) + same requested model; repeated prompts newest-to-newest',
           },
           ...(parityReadError
             ? { reasons: [`telemetry read failed: ${parityReadError}`, ...parityGate!.reasons] }

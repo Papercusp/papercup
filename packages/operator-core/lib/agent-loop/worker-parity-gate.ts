@@ -3,7 +3,8 @@
  *
  * The candidate is Papercusp's operator-owned loop; the baseline is the exact
  * same worker prompt through `omp -p`. Runs are paired by harness + SHA-256
- * prompt hash and, for repeated prompts, newest-to-newest. A pair is assessable
+ * task-prompt hash (the pre-runtime-tail inline canary prompt when supplied) and,
+ * for repeated prompts, newest-to-newest. A pair is assessable
  * only when both paths were launched with the same requested model. The gate is deliberately
  * fail-closed: missing samples, missing prices, or an MCP-free corpus HOLD;
  * measured regressions RED; only a fully assessable cohort can turn GREEN.
