@@ -59,7 +59,95 @@ const SELF_EXCLUDED = new Set(['packages/operator-core/lib/work-items.ts']);
  * passing `admission` explicitly, which is also how it becomes visible to the P-003
  * promoter and the stats ledger.
  */
-export const ALLOWLIST = new Map([]);
+export const ALLOWLIST = new Map([
+  // ── PASS-THROUGH seams: they forward the CALLER's input, so admission already
+  //    flows from whoever decided it. Naming admission here would be a lie about
+  //    where the decision is made. ──────────────────────────────────────────────
+  [
+    'packages/operator-core/lib/coord/condition-upsert.ts',
+    "mintWithConditionKey spreads `...input` into createWorkItem, so the caller's admission " +
+      'rides through unchanged (_create-core, the choke point, is such a caller). The condition ' +
+      'KEY is also a stronger dedup guarantee than the promoter: a unique index, not a similarity ' +
+      'score — a second filer on the same key adopts the incumbent instead of minting.',
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/coordination/conversations-core.ts',
+    'DI seam only — declares the `createIssue(input)` interface the promote bridge implements; ' +
+      'mints nothing itself. The implementations are judged on their own rows.',
+  ],
+  [
+    'packages/operator-core/lib/escalation/episodic-ei.ts',
+    'DI wiring — `create: (input) => m.createIssue(input)` forwards an opaque caller object.',
+  ],
+  [
+    'packages/operator-core/lib/operator-sentinel-handoff-deps.ts',
+    'DI wiring for operator-sentinel-handoff.ts; forwards that caller\'s input verbatim.',
+  ],
+  [
+    'packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts',
+    "DI wiring for papercup-deep-delegate.ts; forwards that caller's input verbatim.",
+  ],
+
+  // ── BYPASS class "already reviewed": the filing passed a gate with more context
+  //    than any similarity score, which is the plan's own bypass rationale. ─────
+  [
+    'packages/operator-core/lib/plan-items/convert.ts',
+    'bypass:plan-item — a plan-item conversion HAS passed plan review; it also stamps ' +
+      'source_plan_slug, which is the plan\'s stated bypass condition. Born pending would ' +
+      'quarantine exactly the work a plan lane was launched to do.',
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/work_items/expand.ts',
+    'bypass:parent-admitted — expansion children of a DISPOSED parent inherit that parent\'s ' +
+      'review; the expansion plan itself was adjudicated before any child is minted.',
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/coordination/conversations.ts',
+    'bypass:deliberated — the promote bridge (D-005) mints only from a conversation that was ' +
+      'explicitly promoted, i.e. after human/agent deliberation on the thread.',
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/consult/close.ts',
+    'bypass:deliberated — a GRADUATED consult (D-004: the question outgrew the consult) is a ' +
+      'closer\'s explicit judgement that this is new work, recorded with its own reason.',
+  ],
+  [
+    'packages/operator-core/lib/operator-sentinel-handoff.ts',
+    'bypass:user-requested — the operator hands off work the USER asked for (USER_REQUESTED_LABEL, ' +
+      'urgent-wake path). Same class as critical severity: the cost of delaying a real one ' +
+      'dominates the cost of a duplicate.',
+  ],
+
+  // ── NOT QUEUE WORK: these rows are never claimed off the frontier, so the gate
+  //    has nothing to protect. ──────────────────────────────────────────────────
+  [
+    'packages/operator-core/lib/delegated-tasks.ts',
+    'not queue work — a delegated task is minted ALREADY assigned to one delegate session ' +
+      '(`assignee: delegate:<sessionId>`); it never sits on the claimable frontier.',
+  ],
+  [
+    'packages/operator-core/lib/papercup/papercup-deep-delegate.ts',
+    'not queue work — minted already assigned to a live deep session (or its spawn id); a ' +
+      'directed hand-off, not a filing.',
+  ],
+  [
+    'packages/operator-core/lib/scout/rubric-live-drill.ts',
+    "not queue work — a synthetic drill SCORECARD, explicitly `lane: 'observation'` (D-005) so " +
+      'scheduler self-selectors cannot pick it as a bug. Observations are outside the gate by ' +
+      "the plan's own scope ('every NON-OBSERVATION filing path').",
+  ],
+
+  // ── KNOWN GAP, named rather than hidden ─────────────────────────────────────
+  [
+    'packages/operator-core/lib/blueprint/blueprint-run-action.ts',
+    '⚠ NOT the shared writer: this file defines its OWN local `createWorkItem(ctx, bp)` that ' +
+      'INSERTs into harness_shared.work_items directly (ON CONFLICT DO NOTHING, explicit ' +
+      'feature_id), so it bypasses the createWorkItem facade entirely and no facade-level stamp ' +
+      'can reach it. A scheduled blueprint firing in work-item mode is a machine emitter and ' +
+      'SHOULD be born pending; doing it means adding the column to that raw INSERT. Left as a ' +
+      'named gap rather than a silent one — the guard prints this list on every run.',
+  ],
+]);
 
 /** Callee names that mint a work-item row. `deps.`/`m.`/`this.` prefixes included. */
 const WRITER_CALL = /(?:^|[^A-Za-z0-9_$.])(?:[A-Za-z0-9_$]+\s*\.\s*)?(createWorkItem|createIssue)\s*\(/m;

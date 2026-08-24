@@ -517,6 +517,15 @@ export async function acquireConditionOwner(
     harness,
     severity: spec.severity ?? 'major',
     workspaceId: spec.workspaceId,
+    // Admission (work-queue-admission-and-bulk-dedup-2026-08-24 P-002): auto, not
+    // pending. The CONDITION KEY is already a stronger duplicate guarantee than the
+    // promoter's similarity score — an exact key, checked immediately above
+    // (`findConditionObject`), so a second reporter of the same condition adopts the
+    // incumbent instead of minting. Holding an INCIDENT item for a ≤30-minute promoter
+    // tick would delay exactly the class where delay costs most, to re-answer a
+    // question the key has already answered exactly.
+    admission: 'auto',
+    admittedBy: 'bypass:condition-key',
     // Stamp the mint so `releaseConditionOwner` can tell an INCIDENT item (safe to
     // auto-settle) from a hand-filed ROOT-CAUSE item that merely holds the same key.
     // See BRIDGE_MINT_MARKER.

@@ -279,6 +279,13 @@ export function makeLiveBoundaryPorts(opts: { identity: AgentIdentity; harness?:
     },
     async createWorkRequest(env) {
       const wi = await createWorkItem({
+        // Born-pending (work-queue-admission-and-bulk-dedup-2026-08-24 P-002): this is
+        // an inbound request from a PEER HIVE — the one filing path where the author is
+        // outside this install entirely. Nothing local has reviewed it, so it lands
+        // pending and the promoter judges it against our own corpus before it can be
+        // claimed. (Distinct from the G2 remote-trust `audit_verdict` gate, which asks
+        // whether the AUTHOR is trusted; this asks whether the WORK is a duplicate.)
+        admission: 'pending',
         kind: 'change',
         title: `[cross-Hive request · ${peerTag(env.fromHivePubkey)}] ${env.subject}`,
         summary: env.body,
