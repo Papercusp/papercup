@@ -6,7 +6,7 @@
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/dev/service_health.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../service-health", () => ({
   probeAll: vi.fn(),
@@ -87,7 +87,15 @@ const tool = (await import("./service_health")).default;
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // The fleet test lane inherits the bg-host's opt-in environment. Pin this
+  // handler suite to its request-only default; pure overlay tests pass the
+  // environment they intend explicitly below.
+  vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR", "0");
+  vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR_MODE", "0");
+});
+afterEach(() => vi.unstubAllEnvs());
 
 describe("dev:service_health handler", () => {
   it("opts out of the ambient workspace transaction because health probes are DB-independent", () => {
@@ -494,7 +502,14 @@ describe("overlayNodeChildSupervision (P-006, pure)", () => {
     );
 
     expect(out[2]).toEqual(base[2]);
-    expect(buildServiceHealthDiagnostic([{ name: "operator", up: true, status: null, latencyMs: 1 }], out).effective.supervisionUnhealthy).toBe(1);
+    const diagnostic = buildServiceHealthDiagnostic([{ name: "operator", up: true, status: null, latencyMs: 1 }], out);
+    // The fixture's already-damping mcp-proxy is a real finding; the guard's
+    // contract is that the stale spawner latch is absent from this evidence.
+    expect(diagnostic.effective.supervisionUnhealthy).toBe(2);
+    expect(diagnostic.evidence.unhealthySupervision.map((entry) => entry.name)).toEqual([
+      "mcp-proxy",
+      "substrate-sidecar",
+    ]);
   });
 
   it("derives flapState 'ok' when running with zero attempts, 'gave-up' takes priority over a nonzero attempt count", () => {
