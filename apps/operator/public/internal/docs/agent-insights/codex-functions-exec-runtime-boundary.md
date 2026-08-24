@@ -1,7 +1,7 @@
 # Codex functions.exec is a V8 isolate: use session-preserving recovery paths
 URL: /internal/docs/agent-insights/codex-functions-exec-runtime-boundary
 
-Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion out of outer JS template literals and use tracked-session ptool for authenticated local agent-tools verification.
+Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion and raw markdown backticks out of outer JS template literals, and use tracked-session ptool for authenticated local agent-tools verification.
 
 # The boundary
 
@@ -10,6 +10,15 @@ Codex `functions.exec` is a V8 execution isolate, not a Node.js child process. I
 # JavaScript template literals do not defer shell expansion
 
 The JavaScript passed to `functions.exec` is evaluated before its nested `exec_command` call starts. Shell syntax such as `${PAPERCUSP_WORKSPACE}` is therefore dangerous inside an outer JavaScript template literal: V8 tries to resolve it as a JavaScript identifier first and can throw `ReferenceError` before `ptool` or the shell runs.
+
+Raw markdown backticks are the other parse-time hazard. If a command is assembled inside an outer JavaScript template literal, an unescaped backtick in prose or a markdown work-item comment closes that outer literal before `exec_command` is dispatched, producing a `SyntaxError` and zero nested-tool calls. This is a client-wrapper parse failure, not a Papercusp endpoint failure.
+
+Keep shell commands and JSON payloads in ordinary JavaScript strings or structured objects. For a payload that may contain markdown punctuation, stringify the object and concatenate the shell command instead of embedding the payload in a template literal:
+
+```js
+const payload = { body: "A comment containing `markdown` and an apostrophe" };
+const cmd = "ptool work_items:comment --json - " + JSON.stringify(payload);
+```
 
 Keep the shell command in a normal JavaScript string when it contains shell environment expansion:
 

@@ -41,7 +41,11 @@ import type {
   TemplateMust,
   TemplateScope,
 } from "./template-manifest.js";
-import { validateTemplateManifest } from "./template-manifest.js";
+import {
+  isOptionalSelect,
+  selectingDecisionPoints,
+  validateTemplateManifest,
+} from "./template-manifest.js";
 
 /** An item of the additive union, tagged with the template that contributed it. */
 export interface ComposedFrom<T> {
@@ -235,6 +239,54 @@ export function composeTemplates(
       } else if (target.version !== req.version) {
         errors.push(
           `'${t.id}' requires '${req.id}@${req.version}' but the composition has ${target.version} (stale pin)`,
+        );
+      }
+    }
+  }
+
+  // D-001 SELECTION SATISFACTION — the guard that replaces the hard `requires`
+  // pin for an axis whose answer picks the template (chassis, agent plane).
+  // Evaluated STRUCTURALLY, with no answers in hand: an option counts as chosen
+  // when every template it names is present at its pinned version. That is what
+  // makes it enforceable in exactly the places `requires` was — registry
+  // validation and composition — which is why a `when:`-style conditional edge
+  // was rejected.
+  for (const t of templates) {
+    for (const dp of selectingDecisionPoints(t)) {
+      const chosen = dp.selects.options.filter((o) =>
+        o.templates.every((r) => selected.get(r.id)?.version === r.version),
+      );
+      // An option naming NO templates is vacuously chosen — it is the explicit
+      // "none" answer, and its presence is precisely what makes the axis
+      // optional. Only NON-empty options evidence a real selection.
+      const picked = chosen.filter((o) => o.templates.length > 0);
+
+      // A named template present at the WRONG version reads as "no option
+      // satisfied", which would be reported below as if the builder forgot to
+      // add it. Say what actually happened instead.
+      for (const o of dp.selects.options) {
+        for (const r of o.templates) {
+          const present = selected.get(r.id);
+          if (present && present.version !== r.version) {
+            errors.push(
+              `'${t.id}' decision point '${dp.id}' option '${o.value}' selects '${r.id}@${r.version}' but the composition has ${present.version} (stale pin)`,
+            );
+          }
+        }
+      }
+
+      if (picked.length === 0 && !isOptionalSelect(dp.selects)) {
+        errors.push(
+          `'${t.id}' decision point '${dp.id}' selects a REQUIRED template axis, but the composition satisfies none of its options (${dp.selects.options
+            .map((o) => `'${o.value}'`)
+            .join(", ")}) — add the chosen option's templates to the composition`,
+        );
+      }
+      if ((dp.selects.arity ?? "one") === "one" && picked.length > 1) {
+        errors.push(
+          `'${t.id}' decision point '${dp.id}' has arity 'one' but the composition satisfies ${picked
+            .map((o) => `'${o.value}'`)
+            .join(", ")} — declare arity 'one-or-more' if answers are meant to combine`,
         );
       }
     }

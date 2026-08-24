@@ -1,7 +1,7 @@
 # plans:list/attention egress is poll-FREQUENCY, not payload — and deltas cut bytes, not call count
 URL: /internal/docs/agent-insights/plans-egress-is-poll-frequency-not-payload
 
-plans:list + plans:attention are the dominant read-byte tools (~340GB/7d, the EI-2661 headline). MEASURED: that traffic is ~100% desktop-UI HTTP polling (transport='http': ~560K calls each / 3d; agents via mcp: <100), at ~4 calls/sec EACH, the two fired in lockstep from the same poll cycle. But the underlying plan tables are written only ~10-30×/HOUR — a ~500-2000:1 read:write ratio, so ~99.9% of those reads return byte-identical data. Two INDEPENDENT levers follow, and conflating them is the trap: (1) the rows-delta protocol (SYNC_RESOURCE_DELTA, default-ON 2026-06-23; resource-delta-config lists plans.list + plans.attention) collapses the ~99.9% unchanged reads into tiny `not_modified` bodies — the right fix for BYTES, and it's why tool_invocations.output_size will NOT show the win (it records the full pre-delta result). (2) The call COUNT itself (~4/sec, decoupled from data) stays pure waste even with deltas — each is still a full server-side tool invocation + round-trip. cachedRead (caching-an-expensive-tool-read) makes each cheap on the server but does not remove the call. The count lever is to make these reads invalidation-driven (SSE push on the rare write + a LONG drift-repair poll), not a tight fixed poll. Do NOT declare egress 'solved' when the delta lands — the byte win is real, the count waste is not touched. ⚠ STATUS CORRECTION 2026-08-09 (WI-37557): that last clause is now STALE — the count lever WAS subsequently built. plans.list/plans.attention are invalidation-driven today (useSyncQuery + notifySyncInvalidate), and measured on the same transport='http' population they now run 0.032 and 0.017 calls/sec against the ~4/sec recorded here — a ~66-125x reduction. The two-levers ANALYSIS below is still correct and still worth reading; only its present-tense status claims are out of date. Trusting them cost a wrong verdict (plan semantic-search-fingerprint-coverage-2026-08-03, D-049 retracted by D-050).
+Historical investigation of why plans:list and plans:attention generated high egress. The durable lesson: payload deltas reduce bytes, while invalidation-driven reads reduce call count; measure each separately and attribute traffic at the route/client layer. Current status: the tight poll was replaced by useSyncQuery/SSE plus a 180s drift-repair tick, and later fixes deduped invalidation fanout and need-gated TUI plan fetches. Includes verification queries and transport gotchas.
 
 ## ⚠ STATUS CORRECTION — 2026-08-09: the COUNT lever shipped. Read this before acting on anything below.
 
@@ -251,8 +251,9 @@ pc-admin-plans-ui` via the shared plans-read dispatcher):
   the shape. **Update 2026-07-26:** the batch endpoint named above is deprecated and client-less
   (drop-sync-batcher-2026-07-25) — the same delta negotiation lives on `GET /rest-query`
   (`?delta=<cursor>`, `?delta=` cold), so target that, not `rest-query-batch`.
-* Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts`
-  (deleted 2026-07-26; the delta wiring now lives in its replacement, `query-fetcher.ts`)
+* Meta-gotcha that stalled this diagnosis: the deleted polling transport's `batch-fetcher.ts`
+  (deleted 2026-07-26; the delta wiring now lives in its replacement,
+  `libs/generic/sync/src/transports/polling/query-fetcher.ts`)
   contained a raw NUL byte (cache-key delimiter), so ripgrep classified it BINARY and every
   content search skipped it — the delta wiring looked absent when it wasn't. Fixed to the
   escaped form (backslash-u0000) 2026-07-03; if a file's matches mysteriously don't appear,
