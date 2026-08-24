@@ -33,13 +33,17 @@ import {
   getPlanItemStatuses,
   isVerifyingCitation,
   prepareAuditPassEntries,
+  recordCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
   resolveCitation,
   summarizeCoverage,
   type AuditCitation,
   type AuditItemEntry,
+  type ActivationAuditPayload,
 } from '../../plan-audits';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { parseTurnRef, resolveSessionTurnRefs, SESSION_SOURCE_KINDS } from '../sessions/_shared';
 
 const citationSchema = z.object({
   kind: z.enum(CITATION_KINDS).describe(
@@ -68,13 +72,75 @@ const findingSchema = z.object({
   ref: z.string().min(1).optional(),
 });
 
+const sourceRangeSchema = z.object({
+  sourceKind: z.enum(SESSION_SOURCE_KINDS),
+  sessionId: z.string().min(1).max(300),
+  fromTurn: z.number().int().min(0),
+  toTurn: z.number().int().min(0),
+}).refine((range) => range.fromTurn <= range.toTurn, {
+  message: 'fromTurn must be <= toTurn',
+  path: ['toTurn'],
+});
+
+const activationMappingSchema = z.object({
+  id: z.string().regex(/^M-\d{3,}$/),
+  sourceRefs: z.array(z.string().min(1).max(500)).min(1).max(100),
+  requirement: z.string().min(1).max(4000),
+  planTargets: z.array(z.string().min(1).max(500)).min(1).max(100),
+  disposition: z.enum(['covered', 'repaired', 'rejected', 'open']),
+}).superRefine((mapping, ctx) => {
+  if (new Set(mapping.sourceRefs).size !== mapping.sourceRefs.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceRefs'], message: 'sourceRefs must be unique within a mapping' });
+  }
+  if (new Set(mapping.planTargets).size !== mapping.planTargets.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['planTargets'], message: 'planTargets must be unique within a mapping' });
+  }
+});
+
 const argsSchema = z.object({
   slug: z.string().min(1).describe('The plan being audited.'),
   harness: harnessArg,
-  items: z.array(itemSchema).min(1).max(200).describe('One entry per plan item you audited.'),
-  findings: z.array(findingSchema).max(50).optional().describe('Out-of-scope discoveries. A finding NEVER blocks the ship — that is what keeps "fix any bugs" from making a plan un-closeable — but a `filed` one must carry its work-item ref so nothing is silently swallowed.'),
+  phase: z.enum(['completion', 'activation']).default('completion').describe(
+    '`completion` (default) audits implemented code. `activation` audits the source conversation before ready/active and records the exact current plan revision.',
+  ),
+  items: z.array(itemSchema).min(1).max(200).optional().describe('Completion phase only: one entry per plan item audited.'),
+  findings: z.array(findingSchema).max(50).optional().describe('Completion phase only: out-of-scope discoveries.'),
+  auditedSha: z.string().min(7).max(64).optional().describe('Completion phase only: commit audited against; resolved from the local tree when omitted.'),
+  sourceRanges: z.array(sourceRangeSchema).min(1).max(50).optional().describe(
+    'Activation phase: bounded source conversations covered by this pass.',
+  ),
+  mappings: z.array(activationMappingSchema).min(1).max(300).optional().describe(
+    'Activation phase: every requirement/constraint/decision mapped from canonical session_turn refs to current P-NNN, D-NNN, or section:<heading> targets.',
+  ),
+  repairedOmissions: z.array(z.string().min(1).max(2000)).max(100).optional(),
+  rejectedOrSuperseded: z.array(z.string().min(1).max(2000)).max(100).optional(),
+  unresolvedBlockers: z.array(z.string().min(1).max(2000)).max(100).optional(),
   summary: z.string().max(4000).optional(),
-  auditedSha: z.string().min(7).max(64).optional().describe('The commit audited against. Resolved from the local tree when omitted.'),
+}).superRefine((args, ctx) => {
+  if (args.phase === 'activation') {
+    if (!args.sourceRanges) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceRanges'], message: 'sourceRanges is required for phase:activation' });
+    }
+    if (!args.mappings) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mappings is required for phase:activation' });
+    } else if (new Set(args.mappings.map((mapping) => mapping.id)).size !== args.mappings.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mapping ids must be unique within an activation audit' });
+    }
+    for (const field of ['items', 'findings', 'auditedSha'] as const) {
+      if (args[field] !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is completion-phase only` });
+      }
+    }
+  } else {
+    if (!args.items) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
+    }
+    for (const field of ['sourceRanges', 'mappings', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers'] as const) {
+      if (args[field] !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is activation-phase only` });
+      }
+    }
+  }
 });
 
 interface Problem {
@@ -125,6 +191,139 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
 
+    if (args.phase === 'activation') {
+      const sourceRanges = args.sourceRanges ?? [];
+      const mappings = args.mappings ?? [];
+      const activation: ActivationAuditPayload = {
+        sourceRanges,
+        mappings,
+        repairedOmissions: args.repairedOmissions ?? [],
+        rejectedOrSuperseded: args.rejectedOrSuperseded ?? [],
+        unresolvedBlockers: args.unresolvedBlockers ?? [],
+      };
+
+      if (
+        activation.unresolvedBlockers.length > 0 ||
+        activation.mappings.some((mapping) => mapping.disposition === 'open')
+      ) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          error: 'activation_blocked',
+          message:
+            'Activation audit has unresolved blockers or open mappings. Repair/map them before ready/active; no audit was recorded.',
+          unresolvedBlockers: activation.unresolvedBlockers,
+          openMappingIds: activation.mappings
+            .filter((mapping) => mapping.disposition === 'open')
+            .map((mapping) => mapping.id),
+        } };
+      }
+
+      const sourceProblems: Problem[] = [];
+      const sourceRefs: string[] = [];
+      for (const mapping of mappings) {
+        for (const ref of mapping.sourceRefs) {
+          sourceRefs.push(ref);
+          const parsed = parseTurnRef(ref);
+          if (!parsed || !ref.startsWith('session_turn:')) {
+            sourceProblems.push({
+              itemId: mapping.id,
+              code: 'invalid_session_turn_ref',
+              detail: `${mapping.id} source ref '${ref}' is not a canonical session_turn:<kind>:<session>:<turn> reference`,
+            });
+            continue;
+          }
+          const covered = sourceRanges.some(
+            (range) =>
+              range.sourceKind === parsed.sourceKind &&
+              range.sessionId === parsed.sessionId &&
+              parsed.turnIdx >= range.fromTurn &&
+              parsed.turnIdx <= range.toTurn,
+          );
+          if (!covered) {
+            sourceProblems.push({
+              itemId: mapping.id,
+              code: 'source_ref_outside_range',
+              detail: `${mapping.id} source ref '${ref}' is outside every declared sourceRange`,
+            });
+          }
+        }
+      }
+      if (sourceProblems.length > 0) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          error: 'activation_audit_invalid',
+          problems: sourceProblems,
+          message: `${sourceProblems.length} source mapping problem(s) — nothing was recorded.`,
+        } };
+      }
+
+      const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
+      const resolutions = await resolveSessionTurnRefs(
+        sctx.tx as Parameters<typeof resolveSessionTurnRefs>[0],
+        workspaceId,
+        sourceRefs,
+      );
+      const unresolved = resolutions.filter((resolution) => !resolution.ok);
+      if (unresolved.length > 0) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          error: 'source_refs_unresolved',
+          problems: unresolved.map((resolution) => ({
+            code: resolution.reason === 'invalid_ref' ? 'invalid_session_turn_ref' : 'session_turn_not_found',
+            detail: `'${resolution.ref}' could not be resolved through sessions:read's index/archive stores`,
+          })),
+          message:
+            `${unresolved.length} source ref(s) are not directly readable. Refresh/repair the transcript source; no audit was recorded.`,
+        } };
+      }
+
+      const recorded = await recordCurrentActivationAudit({
+        workspaceId,
+        planSlug: args.slug,
+        harnessSlug: harnessSlug ?? '',
+        createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
+        activation,
+        summary: args.summary ?? null,
+      });
+      if (!recorded.ok) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          ...recorded,
+        } };
+      }
+
+      await emitPlanEventForCaller(ctx as Parameters<typeof emitPlanEventForCaller>[0], {
+        planSlug: args.slug,
+        event: 'plan_audited',
+        detail: `activation audit #${recorded.audit.auditSeq}`,
+        after:
+          `${mappings.length} mapping(s), ${resolutions.length} canonical source ref(s), ` +
+          `revision ${recorded.auditedPlanRevision.seq}`,
+      });
+
+      return { data: {
+        ok: true as const,
+        slug: args.slug,
+        phase: 'activation' as const,
+        auditSeq: recorded.audit.auditSeq,
+        auditedPlanRevision: recorded.auditedPlanRevision,
+        sourceRanges: sourceRanges.length,
+        mappings: mappings.length,
+        sourceRefsResolved: resolutions.length,
+        sourceRefsFromArchive: resolutions.filter((resolution) => resolution.source === 'archive').length,
+        repairedOmissions: activation.repairedOmissions.length,
+        rejectedOrSuperseded: activation.rejectedOrSuperseded.length,
+      } };
+    }
+
     // The plan's real items. An empty read is ambiguous between "no such plan" and "the
     // index read failed", and BOTH must refuse: validating against an empty list would
     // accept every itemId, which is the opposite of this tool's job.
@@ -160,7 +359,7 @@ export default defineTool({
     const seenItems = new Set<string>();
     let citationsChecked = 0;
 
-    for (const it of args.items) {
+    for (const it of args.items ?? []) {
       if (seenItems.has(it.itemId)) {
         problems.push({
           itemId: it.itemId,
