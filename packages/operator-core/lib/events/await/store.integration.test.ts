@@ -522,6 +522,38 @@ describe('await-event store (PG)', () => {
     expect(await cancelAwaitsForSubscribersOnKeys(['sub-a'], [])).toBe(0);
   });
 
+  // EI-21338391080494784: events:await re-registration must retire the prior
+  // row and insert the replacement as one serialized operation. Separate
+  // cancel→insert calls let concurrent retries both observe no pending row and
+  // leave duplicate active awaits for one subscriber/key.
+  it('concurrent superseding registrations leave exactly one pending await for a subscriber/key', async () => {
+    const subscriberId = 'sub-concurrent-rearm';
+    const eventKey = 'concurrent:rearm:key';
+    const registerSuperseding = (note: string) =>
+      registerAwait({
+        subscriberId,
+        eventKey,
+        note,
+        supersedePending: { excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX },
+      } as unknown as Parameters<typeof registerAwait>[0]);
+
+    const registrations = await Promise.all(
+      Array.from({ length: 12 }, (_, index) => registerSuperseding(`re-arm-${index}`)),
+    );
+
+    expect(registrations).toHaveLength(12);
+    const active = await listActiveAwaits(subscriberId);
+    expect(active.filter((row) => row.eventKey === eventKey)).toHaveLength(1);
+
+    const history = await rootSql<{ cancelled_at: string | null }[]>`
+      SELECT cancelled_at
+        FROM harness_shared.event_awaits
+       WHERE subscriber_id = ${subscriberId} AND event_key = ${eventKey}
+    `;
+    expect(history).toHaveLength(12);
+    expect(history.filter((row) => row.cancelled_at == null)).toHaveLength(1);
+  });
+
   it('keeps a leader-managed fleet bench out of member self-await supersede, while re-stage can retire it explicitly', async () => {
     const bench = await registerAwait({
       subscriberId: 'sub-bench',
