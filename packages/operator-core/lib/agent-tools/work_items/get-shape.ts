@@ -750,9 +750,13 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
         ? {
             _shapeNote: {
               tier,
-              checkpointCharsPerRow: checkpointChars,
-              summaryCharsPerRow: summaryChars,
-              lifecycleCharsPerRow: lifecycleChars,
+              // Zero-budget fields are omitted, not emitted as 0: the dropped[]
+              // names already carry the loss, and these bytes sit on a payload
+              // graded against this very door (EI-21349427754992019 — three
+              // zero-entries tipped borderline single-item reads over it).
+              ...(checkpointChars > 0 ? { checkpointCharsPerRow: checkpointChars } : {}),
+              ...(summaryChars > 0 ? { summaryCharsPerRow: summaryChars } : {}),
+              ...(lifecycleChars > 0 ? { lifecycleCharsPerRow: lifecycleChars } : {}),
               dropped: [...dropped].sort(),
               ...(stubbedCount > 0
                 ? {
