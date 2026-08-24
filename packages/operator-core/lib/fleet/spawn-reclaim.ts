@@ -1264,10 +1264,11 @@ export async function reclaimWedgedSpawns(
   // incarnation (killable here), with a real CHILD pid (not an in-process launch
   // recorded with the operator's own pid). `isPossiblyWedged` below is the
   // authoritative classification.
-  const candidates = await sql<
+  const rawCandidates = await sql<
     {
       spawn_id: string;
       workspace_id: string;
+      run_id: string;
       launcher_host: string | null;
       launcher_boot_id: string | null;
       pid: number | null;
@@ -1275,7 +1276,7 @@ export async function reclaimWedgedSpawns(
       last_output_at: string | null;
     }[]
   >`
-    SELECT spawn_id, workspace_id, launcher_host, launcher_boot_id, pid,
+    SELECT spawn_id, workspace_id, run_id, launcher_host, launcher_boot_id, pid,
            heartbeat_at, last_output_at
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
@@ -1286,6 +1287,27 @@ export async function reclaimWedgedSpawns(
        AND heartbeat_at >= now() - ${staleSec}::int * interval '1 second'
        AND last_output_at IS NOT NULL
        AND last_output_at < now() - ${silentSec}::int * interval '1 second'`;
+  // WI-6113 (2026-08-24): DEFENCE IN DEPTH — added ALONGSIDE the `last_output_at IS NOT NULL`
+  // predicate above, never in place of it. WI-41328 measured that substitution and ruled it a
+  // DOWNGRADE (that predicate is 100% effective as a class filter where `isSupervisedBeeRow`
+  // alone is 29%), so the SQL is deliberately left exactly as it was.
+  //
+  // What changes is the REASON the predicate protects this class. Until now it was the ONLY
+  // thing keeping in-process/durable-spawn rows out of this reaper, and that protection is
+  // INCIDENTAL — a property of the data, not an expressed intent. `last_output_at` is NULL on
+  // 3,017 of 3,017 durable-spawn rows (measured 2026-08-24) purely because the class has no
+  // writer for it. WI-6113 is chartered to ADD that writer. The moment it lands the incidental
+  // filter evaporates and every such row becomes a live SIGTERM candidate here, because their
+  // heartbeat is ALWAYS fresh — dbos/durable-spawn.ts runs an unconditional 60s keepalive that
+  // is decoupled from progress — so they satisfy every remaining predicate of the SELECT.
+  //
+  // Stating the exclusion explicitly means the progress-signal half of WI-6113 CANNOT silently
+  // arm this reaper, and the two halves can land in either order. Strictly protective: it can
+  // only ever REMOVE rows from a kill list, never add one. Ids-only (mirrors the sibling
+  // `reclaimFirstOutputStalledSpawns`), so the exclusion cannot be undone by a run_id rename.
+  const candidates = rawCandidates.filter(
+    (c) => isSupervisedBeeRow(c) && !isInProcessLaunchIdentity(c),
+  );
   if (candidates.length === 0) {
     return { reclaimed: 0, spawnIds: [], workspaces: [] };
   }
