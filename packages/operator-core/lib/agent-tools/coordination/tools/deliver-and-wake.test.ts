@@ -320,7 +320,9 @@ describe('coord:send', () => {
     expect(send1(res).wake).toMatchObject({
       targets: ['su-bee-1', 'su-bee-2'],
       queued: 2,
-      woken: 0,
+      // Legacy `woken` mirrors the event-engine queue count; it is not an
+      // execution receipt. `pickupConfirmed` carries that distinction.
+      woken: 2,
       pickupConfirmed: false,
     });
   });
@@ -460,7 +462,7 @@ describe('coord:send', () => {
       mode: 'required',
       targets: ['su-bee-1', 'su-bee-2'],
       queued: 2,
-      woken: 0,
+      woken: 2,
       pickupConfirmed: false,
       wakeOutcome: 'queued',
     });
@@ -512,7 +514,7 @@ describe('coord:send', () => {
     expect(stagePendingWake).toHaveBeenCalledTimes(1);
     const { wake } = send1(res);
     expect(wake.queued).toBe(1); // the auto peer's durable wake delivery was queued
-    expect(wake.woken).toBe(0); // no execution receipt exists yet
+    expect(wake.woken).toBe(1); // legacy alias for queued; no execution receipt exists yet
     expect(wake.staged).toBe(1);
     expect(wake.stagedTargets).toEqual(['su-bee-2']);
     expect(wake.note).toMatch(/STAGED/);
