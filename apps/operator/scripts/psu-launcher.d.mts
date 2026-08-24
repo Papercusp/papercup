@@ -182,13 +182,25 @@ export function parseArgs(argv: any): {
     label: null;
     headless: boolean;
 };
+/** Flags that make an invocation a native/session-engine launch rather than
+ * the bare interactive front door. The stored UI preference never rewrites
+ * automation, fleet launches, or resumes into PUI. */
+export function puiClientConflicts(args: any): (string | null)[];
 /**
- * Resolve the dependency-safe owned-client preview route prepared by P-013.
- * Bare `psu` and `--client=legacy` both return null and continue through the
- * existing launcher byte-for-byte. Only the explicit PUI choice launches the
- * owned chat dock; P-012 will consult the persisted default after D-015 is
- * GREEN. Reject legacy-session flags instead of silently ignoring them.
+ * Resolve P-012's interactive default. Explicit `--client` always wins.
+ * Scripted/session-bearing invocations retain the legacy engine path so this
+ * UI cutover cannot break fleets or resumes. A bare interactive invocation
+ * reads the canonical saved preference; an unreachable/old operator inherits
+ * the shipped PUI default rather than silently undoing the cutover.
  */
+export function resolveInteractiveClient(args: any, { fetchImpl, operatorUrl, timeoutMs, }?: {
+    fetchImpl?: typeof fetch | undefined;
+    operatorUrl?: any;
+    timeoutMs?: number | undefined;
+}): Promise<any>;
+/** Launch the owned chat dock, rejecting native-session flags instead of
+ * silently ignoring them. `--client=legacy` returns null and preserves the
+ * Claude/OMP/Codex escape-hatch path. */
 export function puiClientCommand(args: any): {
     command: string;
     args: string[];
@@ -2527,6 +2539,8 @@ export function detectBackendBin(agent: any): {
 export function setupReminderLines(stage: any): string[] | null;
 export const AGENTS: string[];
 export const INTERACTIVE_CLIENTS: string[];
+/** Mirrored from agent-config-constants.ts; pinned by psu-launcher.test.ts. */
+export const DEFAULT_INTERACTIVE_CLIENT: "pui";
 /**
  * The side-effect-free CLI reference shown by `psu --help`.
  *
@@ -2534,7 +2548,7 @@ export const INTERACTIVE_CLIENTS: string[];
  * discoverable place to document it. The `--` escape hatch remains available
  * for backend-native flags that psu intentionally does not own.
  */
-export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  --client=<legacy|pui>              UI to open (bare psu remains legacy until parity is green)\n  --resume[=<id>] [id]               Resume a tracked or native session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --role=<role>                      Launch a role-scoped session\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=<trimmed|full>      Context payload tier\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain                       Start in DRAIN mode (implies AUTO)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --                                 Forward remaining arguments to the backend\n\nValues may use either --name=value or (where supported) --name value form.\n";
+export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  --client=<legacy|pui>              UI to open (bare interactive psu defaults to owned PUI)\n  --resume[=<id>] [id]               Resume a tracked or native session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --role=<role>                      Launch a role-scoped session\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=<trimmed|full>      Context payload tier\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain                       Start in DRAIN mode (implies AUTO)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --                                 Forward remaining arguments to the backend\n\nValues may use either --name=value or (where supported) --name value form.\n";
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN: "<no-plan>";
