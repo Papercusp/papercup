@@ -667,6 +667,68 @@ describe('the committed CLAUDE.md table matches the pairs', () => {
   });
 });
 
+describe('the committed prefilter head sets match the pairs', () => {
+  // EI-18704153588567089: adding a pair used to need three hand-edits, and a missed
+  // one froze the green gate (2026-07-26, candidate 45a059cd). `gen:tool-routing`
+  // now projects both zero-import hook copies, but unlike the CLAUDE.md table above
+  // they had no assertion in the ordinary test run -- drift was caught only by
+  // remote CI. These run the generator's own staleness predicate
+  // (scripts/gen-tool-routing.ts:152 `current !== expected`) locally, using the
+  // same imported functions rather than a copy that could drift into agreeing
+  // with itself.
+  const heads = deriveSubstitutionPrefilterHeads(loadPairFixtures(BASH_GATE_PAIRS));
+
+  const projections = () => [
+    {
+      label: 'Claude shell substitution prefilter',
+      path: join(REPO_ROOT, 'apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh'),
+      begin: SHELL_PREFILTER_BEGIN_MARKER,
+      end: SHELL_PREFILTER_END_MARKER,
+      block: renderShellPrefilterHeads(heads),
+    },
+    {
+      label: 'OMP TypeScript substitution prefilter',
+      path: join(REPO_ROOT, 'apps/operator/scripts/hooks/omp/coord-hook.ts'),
+      begin: TS_PREFILTER_BEGIN_MARKER,
+      end: TS_PREFILTER_END_MARKER,
+      block: renderTsPrefilterHeads(heads),
+    },
+  ];
+
+  const isStale = (current: string, p: ReturnType<typeof projections>[number]): boolean =>
+    current !== spliceGeneratedRegion(current, p.begin, p.end, p.block, p.label);
+
+  for (const p of projections()) {
+    it(`${p.label} is in sync — run \`npm run gen:tool-routing\` if this fails`, () => {
+      const current = readFileSync(p.path, 'utf8');
+      expect(current, `${p.path} is missing the generated markers`).toContain(p.begin);
+      expect(isStale(current, p)).toBe(false);
+    });
+
+    // The control that makes the assertion above falsifiable: a guard that has
+    // never failed is a guard nobody has tested. Removing one generated head MUST
+    // read as stale -- otherwise the parity check passes vacuously and the gate
+    // freeze this item was filed for could recur unobserved.
+    it(`${p.label} reports drift when a generated head is removed`, () => {
+      const current = readFileSync(p.path, 'utf8');
+      const si = current.indexOf(p.begin);
+      const ei = current.indexOf(p.end, si);
+      const lines = current.slice(si + p.begin.length, ei).split('\n');
+      const victim = lines.findIndex((l) => /^\s*'[^']+',\s*$/.test(l));
+      expect(victim, 'no generated head line inside the marked region').toBeGreaterThanOrEqual(0);
+
+      const mutant =
+        current.slice(0, si + p.begin.length) +
+        [...lines.slice(0, victim), ...lines.slice(victim + 1)].join('\n') +
+        current.slice(ei);
+
+      // A no-op mutation would make the guard look strong for free.
+      expect(mutant, 'mutation changed nothing — verdict void').not.toBe(current);
+      expect(isStale(mutant, p)).toBe(true);
+    });
+  }
+});
+
 describe('the projected routing block is identical on every surface it lands in', () => {
   // EI-20429916097018614: gen:tool-routing writes CLAUDE.md directly while AGENTS.md is
   // emitted by the doc-parts projector from the corpus copy of the same block. The two
