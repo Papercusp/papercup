@@ -58,6 +58,10 @@ import {
   getClaimTimePlanItemContradiction,
   planItemContradictionWarning,
 } from '../../work-item-plan-contradiction';
+import {
+  getClaimTimePlanItemLanded,
+  planItemLandedWarning,
+} from '../../work-item-plan-item-landed';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
@@ -579,6 +583,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       planContradiction,
       behaviorContractHint,
       pathHintsResult,
+      planItemLanded,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -680,6 +685,19 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
         })
         .catch(() => null),
+      // EI-18713141708830049: the MIRROR of the planContradiction hint above — the linked
+      // plan item is still OPEN while a settled sibling already implements it, so the work
+      // may already be in the tree. That is the measured failure mode of routing off the
+      // ledger instead of the tree: four items on one plan misreported their real state,
+      // and the cost when the re-investigation is skipped is duplicate implementation.
+      // Same fail-soft seam as every sibling hint above: saying nothing asserts nothing.
+      getClaimTimePlanItemLanded({
+        workItemId: workItem.id ?? it.id,
+        payload: workItem.payload,
+        sourcePlanSlug: workItem.sourcePlanSlug,
+        sourcePlanItemIds: workItem.sourcePlanItemIds,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
@@ -702,6 +720,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     // not). See detectBgJobCheckpointClaim for why this can't be a live PID check here.
     const bgJobWarning = hint ? detectBgJobCheckpointClaim(hint.checkpoint) : { detected: false };
     const planContradictionWarn = planItemContradictionWarning(planContradiction, workItem.id ?? it.id);
+    const planItemLandedWarn = planItemLandedWarning(planItemLanded, workItem.id ?? it.id);
     return hint
       ? {
           ok: true,
@@ -730,6 +749,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(planContradictionWarn
             ? { planItemContradiction: planContradiction, planItemContradictionWarning: planContradictionWarn }
+            : {}),
+          ...(planItemLandedWarn
+            ? { planItemLanded, planItemLandedWarning: planItemLandedWarn }
             : {}),
           ...(authorshipRevalidationWarn
             ? { authorshipRevalidation, authorshipRevalidationWarning: authorshipRevalidationWarn }
@@ -770,6 +792,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(planContradictionWarn
             ? { planItemContradiction: planContradiction, planItemContradictionWarning: planContradictionWarn }
+            : {}),
+          ...(planItemLandedWarn
+            ? { planItemLanded, planItemLandedWarning: planItemLandedWarn }
             : {}),
           ...(authorshipRevalidationWarn
             ? { authorshipRevalidation, authorshipRevalidationWarning: authorshipRevalidationWarn }
