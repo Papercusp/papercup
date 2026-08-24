@@ -119,34 +119,42 @@ describe('decideMeshCapacity', () => {
     expect(d.budgetBytes).toBe(Number.POSITIVE_INFINITY);
   });
 
-  it('scales with the host: the same 96-peer mesh that is refused on a small box is admitted on a big one', () => {
+  it('scales with the host: the same 96-peer mesh that WARNS on a small box is silent on a big one', () => {
     const peers = 96;
-    expect(decideMeshCapacity({ peers, availableBytes: MEASURED_AVAILABLE }).ok).toBe(false);
+    expect(decideMeshCapacity({ peers, availableBytes: MEASURED_AVAILABLE }).reason).toBeDefined();
     // 96 * ~383MB = ~36.8GB, which needs > 73.5GB available at the default fraction.
-    expect(decideMeshCapacity({ peers, availableBytes: 200e9 }).ok).toBe(true);
+    expect(decideMeshCapacity({ peers, availableBytes: 200e9 }).reason).toBeUndefined();
   });
 
-  it('honours an explicit override, so a deliberate operator can still force a run', () => {
+  it('honours an explicit override, so a deliberate operator can silence the advisory', () => {
     const base = { peers: 96, availableBytes: MEASURED_AVAILABLE };
-    expect(decideMeshCapacity(base).ok).toBe(false);
-    expect(decideMeshCapacity({ ...base, availableFraction: 1.0 }).ok).toBe(true);
+    expect(decideMeshCapacity(base).reason).toBeDefined();
+    expect(decideMeshCapacity({ ...base, availableFraction: 1.0 }).reason).toBeUndefined();
     // A peer that genuinely costs less makes the same mesh fit.
-    expect(decideMeshCapacity({ ...base, perPeerBytes: 50e6 }).ok).toBe(true);
+    expect(decideMeshCapacity({ ...base, perPeerBytes: 50e6 }).reason).toBeUndefined();
   });
 
-  it('reports the arithmetic it used, so a refusal can be checked rather than trusted', () => {
+  it('NEVER returns ok:false, however far past the budget the mesh is (WI-41206)', () => {
+    // The regression guard for the whole change: memory may warn, never refuse. A future
+    // edit that reintroduces a refusal fails here rather than silently freezing perf runs.
+    for (const peers of [96, 128, 512, 4096]) {
+      expect(decideMeshCapacity({ peers, availableBytes: 1e9 }).ok).toBe(true);
+    }
+  });
+
+  it('reports the arithmetic it used, so an advisory can be checked rather than trusted', () => {
     const d = decideMeshCapacity({ peers: 96, availableBytes: MEASURED_AVAILABLE });
     expect(d.projectedBytes).toBe(96 * perPeerBytesFor(96));
     expect(d.budgetBytes).toBe(MEASURED_AVAILABLE * DEFAULT_AVAILABLE_FRACTION);
   });
 
-  it('sits exactly at the boundary: <= budget admits, one peer over refuses', () => {
+  it('sits exactly at the boundary: <= budget is silent, one peer over warns', () => {
     // Derived from the model rather than hardcoded, so re-measuring the
     // coefficients moves the boundary here instead of silently breaking this test.
     const budget = 10 * perPeerBytesFor(10);
     const availableBytes = budget / DEFAULT_AVAILABLE_FRACTION;
-    expect(decideMeshCapacity({ peers: 10, availableBytes }).ok).toBe(true);
-    expect(decideMeshCapacity({ peers: 11, availableBytes }).ok).toBe(false);
+    expect(decideMeshCapacity({ peers: 10, availableBytes }).reason).toBeUndefined();
+    expect(decideMeshCapacity({ peers: 11, availableBytes }).reason).toBeDefined();
   });
 });
 
