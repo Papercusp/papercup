@@ -5,9 +5,11 @@
  * `payload.paths`) has something to work with. An explicit `payload.paths` — INCLUDING
  * an explicit empty array — is never overridden.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 const createWorkItemMock = vi.fn(async (input: { kind: string; title: string; payload?: Record<string, unknown> }) => ({
@@ -37,15 +39,35 @@ vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string)
 vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => null) }));
 vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
 vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
+  resolveHarnessContentPath: vi.fn(() => undefined),
+}));
 
-import { createOneWorkItem } from './_create-core';
+import { createOneWorkItem, selectExplicitRepoPathRoot } from './_create-core';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp', projectDir: repoRoot };
+let targetRoot: string;
 
 beforeEach(() => {
   createWorkItemMock.mockClear();
+  vi.mocked(loadHarnessRegistry).mockResolvedValue({ projects: [] });
+  vi.mocked(resolveHarnessContentPath).mockReturnValue(undefined);
 });
+
+beforeAll(() => {
+  targetRoot = mkdtempSync(`${tmpdir()}/work-item-target-root-`);
+  mkdirSync(`${targetRoot}/apps/api/src/scout`, { recursive: true });
+  writeFileSync(`${targetRoot}/apps/api/src/scout/scout.service.ts`, 'export const scout = true;\n');
+  writeFileSync(
+    `${targetRoot}/apps/api/src/scout/scout-runtime.integration.test.ts`,
+    'export const runtime = true;\n',
+  );
+});
+
+afterAll(() => rmSync(targetRoot, { recursive: true, force: true }));
 
 describe('createOneWorkItem × path-affinity fallback (EI-16028)', () => {
   it('derives payload.paths from title+summary when the caller supplied none', async () => {
@@ -98,6 +120,51 @@ describe('createOneWorkItem × path-affinity fallback (EI-16028)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect(r.explicitPathsWarning).toBeUndefined();
+  });
+
+  it('validates explicit paths against the target harness and names the selected source', async () => {
+    vi.mocked(resolveHarnessContentPath).mockReturnValue(targetRoot);
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        harness: 'sidestage',
+        title: 'target harness source paths',
+        payload: {
+          paths: [
+            'apps/api/src/scout/scout.service.ts',
+            'apps/api/src/scout/scout-runtime.integration.test.ts',
+          ],
+        },
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.explicitPathsWarning).toBeUndefined();
+    expect(loadHarnessRegistry).toHaveBeenCalledWith('default');
+  });
+
+  it('warns against the target harness tree and includes its provenance', async () => {
+    vi.mocked(resolveHarnessContentPath).mockReturnValue(targetRoot);
+    const missing = 'apps/api/src/scout/missing.ts';
+    expect(await selectExplicitRepoPathRoot([missing], ctx, 'sidestage')).toEqual({
+      root: targetRoot,
+      source: 'target-harness',
+    });
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        harness: 'sidestage',
+        title: 'target harness missing source path',
+        payload: { paths: [missing] },
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.explicitPathsWarning).toContain(missing);
+    expect(r.explicitPathsWarning).toContain('source: target-harness');
+    expect(r.explicitPathsWarning).toContain(`root: ${targetRoot}`);
   });
 
   it('leaves payload untouched when title/summary carry no derivable path', async () => {

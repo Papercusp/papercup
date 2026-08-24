@@ -133,13 +133,26 @@ export function validateExplicitRepoPaths(
   }
 }
 
+export interface ExplicitRepoPathsWarningContext {
+  /** How the repository tree used for the advisory was selected. */
+  rootSource?: string;
+  /** The concrete tree used for the advisory, when one was selected. */
+  root?: string;
+}
+
 /** Human-facing, warn-only message for a create that recorded unresolved paths. */
-export function explicitRepoPathsWarning(missing: readonly string[]): string | undefined {
+export function explicitRepoPathsWarning(
+  missing: readonly string[],
+  context: ExplicitRepoPathsWarningContext = {},
+): string | undefined {
   if (missing.length === 0) return undefined;
   const noun = missing.length === 1 ? 'path' : 'paths';
+  const source = context.rootSource
+    ? ` (source: ${context.rootSource}${context.root ? `; root: ${context.root}` : ''})`
+    : '';
   return (
     `work_items:create recorded explicit payload.paths ${missing.length} ${noun} that do NOT exist in the ` +
-    `selected repository tree: ${missing.join(', ')}. This is an advisory only and does not block creation. ` +
+    `selected repository tree${source}: ${missing.join(', ')}. This is an advisory only and does not block creation. ` +
     `If the path was deleted, belongs to a sibling checkout, or is intentionally illustrative, ignore this; ` +
     `otherwise re-read the canonical repository spelling and update the work-item. ` +
     `A common failure is inventing a hyphenated directory when the source uses underscores.`

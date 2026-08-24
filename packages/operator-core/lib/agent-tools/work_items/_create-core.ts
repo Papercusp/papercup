@@ -34,12 +34,17 @@ import { resolveGoalContext } from '../../modes/goal-context';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
+import { discoverKnownHiveCheckoutRoots } from '../testing/run';
+import { selectUnambiguousEvidenceRoot, type EvidenceRootCandidate } from '../../evidence-root-selection';
 import {
   deriveRepoPathsFromText,
   explicitRepoPathsWarning,
   validateExplicitRepoPaths,
 } from './_derive-paths';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import {
@@ -231,6 +236,70 @@ function hasDeclaredLineageTo(
   return (links ?? []).some(
     (l) => l.rel !== 'duplicates' && (l.target_id ?? '').trim().toLowerCase() === target,
   );
+}
+
+export type ExplicitRepoPathRootSource = 'caller-workspace' | 'target-harness' | 'hive-checkout';
+
+export interface SelectedExplicitRepoPathRoot {
+  root: string;
+  source: ExplicitRepoPathRootSource;
+}
+
+function explicitPathsResolveAtRoot(paths: readonly string[], root: string): boolean {
+  try {
+    if (!statSync(root).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  return validateExplicitRepoPaths(paths, { repoRoot: root }) === undefined;
+}
+
+/**
+ * Select the tree used by the explicit-path advisory. A concrete target harness
+ * owns the evidence when the caller names one; the ambient caller tree is only
+ * the preferred tree when no target can be resolved. If a registered target path
+ * is stale, exactly one discovered Hive checkout may recover it. Ambiguity never
+ * chooses a tree, and the returned fallback keeps the old warn-only behavior.
+ */
+export async function selectExplicitRepoPathRoot(
+  paths: readonly string[],
+  ctx: CreateOneWorkItemCtx,
+  requestedHarness?: string | null,
+): Promise<SelectedExplicitRepoPathRoot> {
+  const ambientRoot = resolveAgentWorkspaceRoot(ctx);
+  const targetHarness = resolveConcreteHarnessSlug(requestedHarness, ctx);
+  let targetRoot: string | undefined;
+
+  if (targetHarness) {
+    try {
+      const registry = await loadHarnessRegistry(
+        ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined,
+      );
+      targetRoot = resolveHarnessContentPath(registry, targetHarness);
+    } catch {
+      // Registry access is advisory here; discovered roots and the caller tree
+      // still provide safe, fail-open behavior for creation.
+    }
+  }
+
+  const preferred: EvidenceRootCandidate<ExplicitRepoPathRootSource> = targetRoot
+    ? { root: targetRoot, source: 'target-harness' }
+    : { root: ambientRoot, source: 'caller-workspace' };
+  const discovered: EvidenceRootCandidate<ExplicitRepoPathRootSource>[] = targetHarness
+    ? discoverKnownHiveCheckoutRoots().map((root) => ({ root, source: 'hive-checkout' }))
+    : [];
+  const selected = selectUnambiguousEvidenceRoot({
+    preferred,
+    candidates: discovered,
+    resolvesEvery: (root) => {
+      // When a target was requested but its registry path is unavailable, the
+      // ambient root is not evidence for that target. Let a discovered checkout
+      // win, or fall back to the ambient tree only after selection fails.
+      if (targetHarness && !targetRoot && resolve(root) === resolve(ambientRoot)) return false;
+      return explicitPathsResolveAtRoot(paths, root);
+    },
+  });
+  return selected ?? (targetRoot ? preferred : { root: ambientRoot, source: 'caller-workspace' });
 }
 
 /**
@@ -795,10 +864,13 @@ export async function createOneWorkItem(
     let explicitPathsWarning: string | undefined;
     if (explicitPaths !== undefined && explicitPaths.length > 0) {
       try {
+        const rootSelection = await selectExplicitRepoPathRoot(explicitPaths, ctx, args.harness);
         const unresolved = validateExplicitRepoPaths(explicitPaths, {
-          repoRoot: resolveAgentWorkspaceRoot(ctx),
+          repoRoot: rootSelection.root,
         });
-        explicitPathsWarning = unresolved ? explicitRepoPathsWarning(unresolved.missing) : undefined;
+        explicitPathsWarning = unresolved
+          ? explicitRepoPathsWarning(unresolved.missing, rootSelection)
+          : undefined;
       } catch {
         // EI-20191260047847804: this check is an advisory. A root-resolution or fs
         // failure must never turn a successful create into a failure.
