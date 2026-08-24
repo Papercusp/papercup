@@ -162,13 +162,45 @@ describe('GoalStatusControl — a degraded write is not a clean one', () => {
 });
 
 describe('GoalStatusControl — which move each button actually writes', () => {
-  it('Reopen writes `active`, never `paused`', async () => {
+  it('Reopen calls the existing-goal start route so status and holder move together', async () => {
     render(<GoalStatusControl goalId="G-1" status="killed" variant="panel" />);
     fireEvent.click(screen.getByTestId('goal-reopen'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(writtenBody()).toEqual({ id: 'G-1', status: 'active' });
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/goals/update');
+    expect(writtenBody()).toEqual({ id: 'G-1' });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/goals/start-existing');
+  });
+
+  it('Start on a holderless active goal uses the same activation route', async () => {
+    render(
+      <GoalStatusControl
+        goalId="G-1"
+        status="active"
+        effectiveStatus="dormant"
+        holderLiveness="unheld"
+        variant="panel"
+      />,
+    );
+    fireEvent.click(screen.getByTestId('goal-start'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/goals/start-existing');
+    expect(writtenBody()).toEqual({ id: 'G-1' });
+    expect(screen.queryByTestId('goal-pause-resume')).toBeNull();
+  });
+
+  it('does not start against UNKNOWN holder liveness', () => {
+    render(
+      <GoalStatusControl
+        goalId="G-1"
+        status="active"
+        effectiveStatus="active"
+        holderLiveness="unknown"
+        variant="panel"
+      />,
+    );
+    expect(screen.queryByTestId('goal-start')).toBeNull();
+    expect(screen.getByTestId('goal-pause-resume')).toBeTruthy();
   });
 
   it('Resume from paused writes `active`; Pause from active writes `paused`', async () => {

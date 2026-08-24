@@ -875,7 +875,13 @@ export default function GoalDetailPanel({
                 write cannot leave it lying. Panel variant, so the terminal moves are
                 here (behind a confirm) and the card keeps only the reversible pair. */}
             {goal ? (
-              <GoalStatusControl goalId={goal.id} status={goal.status} variant="panel" />
+              <GoalStatusControl
+                goalId={goal.id}
+                status={goal.status}
+                effectiveStatus={data?.effectiveStatus}
+                holderLiveness={data?.holderLiveness}
+                variant="panel"
+              />
             ) : null}
             {goal ? (
               <span

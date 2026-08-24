@@ -393,6 +393,9 @@ export interface HudGoalInput {
   id: string;
   title: string;
   status: string;
+  /** Server-derived activity status; notably `dormant` for holderless active goals. */
+  effectiveStatus?: string | null;
+  deactivated?: boolean | null;
   killCriterion?: string | null;
   /** Items on this goal parked on the owner — the needs-you signal. */
   needsHuman?: number | null;

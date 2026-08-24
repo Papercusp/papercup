@@ -934,9 +934,18 @@ export default function HudView({
      second copy of the goal's state on screen that could disagree with the pill in the
      popup. One store, read twice. */
   const goalStatusById = useMemo(() => {
-    const m = new Map<string, string>();
+    const m = new Map<
+      string,
+      { status: string; effectiveStatus?: string | null; holderLiveness?: string | null }
+    >();
     for (const g of goalsQuery.data?.[0]?.goals ?? []) {
-      if (g.id) m.set(g.id, String(g.status ?? ''));
+      if (g.id) {
+        m.set(g.id, {
+          status: String(g.status ?? ''),
+          effectiveStatus: g.effectiveStatus,
+          holderLiveness: g.holderLiveness,
+        });
+      }
     }
     return m;
   }, [goalsQuery.data]);
@@ -947,11 +956,19 @@ export default function HudView({
          the DECLARED intent, never on pattern-matching the id — that re-derivation is
          exactly what WI-6742 fixed. */
       if (card.open?.kind === 'start-goal') return null;
-      const status = goalStatusById.get(card.id);
-      if (!status) return null;
+      const goalState = goalStatusById.get(card.id);
+      if (!goalState?.status) return null;
       /* CARD variant: the reversible pair only. Closing a goal is a decision that
          belongs in the popup, next to the kill criterion that justifies it. */
-      return <GoalStatusControl goalId={card.id} status={status} variant="card" />;
+      return (
+        <GoalStatusControl
+          goalId={card.id}
+          status={goalState.status}
+          effectiveStatus={goalState.effectiveStatus}
+          holderLiveness={goalState.holderLiveness}
+          variant="card"
+        />
+      );
     },
     [goalStatusById],
   );

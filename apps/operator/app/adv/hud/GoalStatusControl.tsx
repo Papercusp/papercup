@@ -52,9 +52,17 @@ export interface GoalStatusControlProps {
   /** Current status straight off the store — never a local copy. */
   status: string | null | undefined;
   /**
-   * `card` renders ONLY the reversible pause/resume verb (a board card is a glance, and
-   * a terminal action does not belong on the easiest click surface). `panel` adds the
-   * terminal moves behind a confirm.
+   * Server-derived status (`dormant` when an active goal that requires a live
+   * holder has none). Optional only for cached payloads predating the holder
+   * guarantee; absence never means dormant.
+   */
+  effectiveStatus?: string | null;
+  /** held | unheld | lost | unknown. Unknown is never safe to start against. */
+  holderLiveness?: string | null;
+  /**
+   * `card` renders the everyday pause/resume or holderless Start verb (a board card is
+   * a glance, and a terminal action does not belong on the easiest click surface).
+   * `panel` adds the terminal moves behind a confirm.
    */
   variant: 'card' | 'panel';
   /** Fired after a write lands, so a host holding its own snapshot can re-read. */
@@ -91,9 +99,29 @@ async function writeGoalStatus(goalId: string, status: GoalStatus): Promise<Goal
   return body;
 }
 
+async function startExistingGoal(goalId: string): Promise<GoalUpdateReply> {
+  const res = await fetch('/api/admin/goals/start-existing', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: goalId }),
+  });
+  let body: GoalUpdateReply;
+  try {
+    body = (await res.json()) as GoalUpdateReply;
+  } catch {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  if (!res.ok) {
+    throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+  }
+  return body;
+}
+
 export default function GoalStatusControl({
   goalId,
   status,
+  effectiveStatus,
+  holderLiveness,
   variant,
   onChanged,
 }: GoalStatusControlProps) {
@@ -101,15 +129,24 @@ export default function GoalStatusControl({
   const [pending, setPending] = useState<GoalStatus | null>(null);
 
   const current = (status ?? '').toLowerCase();
+  const effective = (effectiveStatus ?? current).toLowerCase();
+  const liveness = (holderLiveness ?? '').toLowerCase();
   const isPaused = current === 'paused';
   const isTerminal = TERMINAL.has(current);
+  const isHolderless =
+    current === 'active' &&
+    liveness !== 'unknown' &&
+    (effective === 'dormant' || liveness === 'unheld' || liveness === 'lost');
 
   const run = useCallback(
-    async (next: GoalStatus, verb: string) => {
+    async (next: GoalStatus, verb: string, write: 'status' | 'start' = 'status') => {
       if (pending) return;
       setPending(next);
       try {
-        const reply = await writeGoalStatus(goalId, next);
+        const reply =
+          write === 'start'
+            ? await startExistingGoal(goalId)
+            : await writeGoalStatus(goalId, next);
 
         // A degraded write is a SUCCESS that did less than its label implies. It gets a
         // warning that does not auto-dismiss, because the whole point is that the reader
@@ -134,22 +171,37 @@ export default function GoalStatusControl({
   );
 
   /**
-   * Move a goal back to `active`. Shared by Resume (from paused) and Reopen (from a
-   * terminal status) because the WRITE is identical — only the framing differs. Keeping
-   * them as one path is deliberate: an earlier revision routed Reopen through the
-   * pause/resume toggle, and since a terminal goal is not `paused`, that toggle fell
-   * through to the PAUSE branch and would have paused an already-closed goal.
+   * Move a goal back to `active`. Paused Resume is a status transition only;
+   * terminal Reopen and holderless Start use the composed activation route so
+   * the status and fresh holder cannot drift apart. Keeping their framing in one
+   * callback prevents the older bug where Reopen fell through to Pause.
    */
   const reactivate = useCallback(
-    async (from: 'paused' | 'terminal') => {
+    async (from: 'paused' | 'terminal' | 'holderless') => {
       const ok = await askConfirm({
-        title: from === 'paused' ? 'Resume this goal?' : 'Reopen this goal?',
+        title:
+          from === 'paused'
+            ? 'Resume this goal?'
+            : from === 'terminal'
+              ? 'Reopen this goal?'
+              : 'Start this goal?',
         body:
-          'Placement re-opens on the projects this goal owns, so its fleet can begin picking up work again. Sessions paused earlier are NOT re-armed — new work re-forms from placement.',
-        confirmLabel: from === 'paused' ? 'Resume goal' : 'Reopen goal',
+          from === 'paused'
+            ? 'Placement re-opens on the projects this goal owns. Sessions paused earlier are NOT re-armed — new work re-forms from placement.'
+            : 'Placement re-opens and a fresh owning agent is launched and attached to this goal. Its conversation will appear here once the session registers.',
+        confirmLabel:
+          from === 'paused'
+            ? 'Resume goal'
+            : from === 'terminal'
+              ? 'Reopen goal'
+              : 'Start goal',
       });
       if (!ok) return;
-      await run('active', from === 'paused' ? 'resumed' : 'reopened');
+      await run(
+        'active',
+        from === 'paused' ? 'resumed' : from === 'terminal' ? 'reopened' : 'started',
+        from === 'paused' ? 'status' : 'start',
+      );
     },
     [askConfirm, run],
   );
@@ -194,7 +246,23 @@ export default function GoalStatusControl({
     <>
       {/* A terminal goal has no everyday verb — nothing to pause, nothing to resume.
           Reopening it is a panel-only move (below), never a card click. */}
-      {!isTerminal ? (
+      {!isTerminal && isHolderless ? (
+        <Tooltip label="Launch and attach a fresh owning agent for this goal">
+          <button
+            type="button"
+            className="pc-ctl-act"
+            data-testid="goal-start"
+            disabled={busy}
+            aria-label="Start this goal"
+            onClick={(e) => {
+              e.stopPropagation();
+              void reactivate('holderless');
+            }}
+          >
+            {busy ? '…' : 'Start'}
+          </button>
+        </Tooltip>
+      ) : !isTerminal ? (
         <Tooltip
           label={
             isPaused

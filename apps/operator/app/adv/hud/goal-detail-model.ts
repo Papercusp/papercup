@@ -146,6 +146,8 @@ export interface GoalDetailAgentInput {
   ownerId: string;
   setAt?: string | null;
   setBy?: string | null;
+  live?: boolean | null;
+  sessionState?: string | null;
 }
 
 /**
@@ -223,6 +225,11 @@ export interface GoalDetailLaunchDefaults {
 
 export interface GoalDetailInput {
   goal: GoalDetailGoalInput | null;
+  /** held | unheld | lost | unknown, resolved by the server's holder oracle. */
+  holderLiveness?: string | null;
+  /** Raw active becomes dormant when policy requires a live holder and none exists. */
+  effectiveStatus?: string | null;
+  deactivated?: boolean | null;
   /** Null = nothing pinned, which is the launch default and NOT an error. */
   launchSettings?: GoalDetailLaunchSettings | null;
   /** Non-null when the stored document could not be read — so the ceilings are
