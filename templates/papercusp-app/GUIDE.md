@@ -36,16 +36,21 @@ that shape the composition — above all `target`, which picks the chassis.
    states. On web, `tenancy` says outright that it comes first: single-user
    local install vs multi-user server deployment forks auth, connection
    resolution, and the hosting target beneath it.
-3. **Answer `domain`** — the noun the app ledgers and surfaces. Every
+3. **Answer `agents`** — `none` (the ordinary answer) or `pots`. Answering
+   `pots` layers `papercusp-ops-pots` onto this same root, which is why there
+   is no separate "agentic" template to switch to: the agent plane was always a
+   layer on the same app. Treat it as an architectural commitment, not a
+   feature flag — it introduces the judgment plane and the one typed seam.
+4. **Answer `domain`** — the noun the app ledgers and surfaces. Every
    aspect-level decision point (schema, panels, lexicon terms, searchable
    surfaces) derives from it.
-4. **Expand the closure** (`resolveSelection` in `@papercusp/template-kit`,
+5. **Expand the closure** (`resolveSelection` in `@papercusp/template-kit`,
    which takes your answers and returns the full template list) and work each
    aspect's GUIDE in dependency order: chassis → data-layer → ui.
-5. **Answer `optional-planes`** — add `papercusp-data-sync` and/or
+6. **Answer `optional-planes`** — add `papercusp-data-sync` and/or
    `papercusp-search` to the composition now if the app needs them. Both drop
    onto either chassis.
-6. **Run the union of checks.** Every template in your closure contributes its
+7. **Run the union of checks.** Every template in your closure contributes its
    checks and all of them must be green — that additive rule is what keeps free
    composition safe without a deterministic generator.
 
@@ -63,8 +68,13 @@ that shape the composition — above all `target`, which picks the chassis.
    stated in the ship disclosure. The code is already shared; what doubles is
    the **checks**, on every build. Choose it because the app genuinely ships
    two artifacts, never because it sounded more flexible.
-5. **`no-agent-surfaces`** — no hives and no seam unless `papercusp-ops-pots`
-   is explicitly in your composition. The agent plane is never implicit.
+5. **`agents-are-explicit`** — no hives and no seam unless you answered
+   `agents: pots`. The default answer cannot drag the plane in, and
+   `checks/composition-integrity.test.ts` proves it rather than asserting it.
+6. **`one-seam`** — with the plane composed, the deterministic and judgment
+   halves meet at exactly ONE typed seam. That discipline is
+   `papercusp-ops-pots`' own Tier B MUST; honor it, do not re-invent it in app
+   code.
 
 ## SHOULD
 
@@ -80,9 +90,11 @@ that shape the composition — above all `target`, which picks the chassis.
 - How you organise your own source tree — the closure constrains the seams
   between aspects, not the shape of your product code.
 
-## What this template does NOT decide for you
+## If agents appear mid-build
 
-The agent plane. An app with agents composes `papercusp-ops-pots` on top of
-this root, and crosses into the judgment plane at exactly one typed seam. If
-agents appear mid-build, add it to the composition explicitly rather than
-growing an ad-hoc orchestration loop inside the app.
+Re-answer `agents` as `pots` and re-expand the closure. Do **not** grow an
+ad-hoc orchestration loop inside app code: `papercusp-ops-pots` exists so the
+judgment plane arrives with its seam contract and its checks attached, and an
+app that hand-rolls one gets neither. Nothing else about the app changes — the
+chassis, data layer and UI closure are the same either way, which is exactly
+why this is an answer and not a different template.

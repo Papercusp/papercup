@@ -194,3 +194,63 @@ describe.skipIf(!root || !have(INVARIANT_IDS) || !have(CHASSIS_IDS))("papercusp-
     expect(bogus.errors.join("; ")).toContain("mainframe");
   });
 });
+
+/**
+ * The `agents` axis (D-001) — the MUST `agents-are-explicit`, made mechanical.
+ *
+ * "The agent plane is never implicit" is only prose until something proves the
+ * default answer cannot drag it in. That is what the first case here does, and
+ * it is why this MUST cites composition-integrity rather than prose-only.
+ */
+const AGENT_PLANE_ID = "papercusp-ops-pots";
+describe.skipIf(!root || !have(INVARIANT_IDS) || !have(CHASSIS_IDS) || !byId.has(AGENT_PLANE_ID))(
+  "papercusp-app agent plane selection",
+  () => {
+    it("agents: none does NOT pull the agent plane in — the plane is never implicit", () => {
+      const resolved = resolveSelection(root!, { target: "desktop", agents: "none" }, manifests);
+      expect(resolved.ok, resolved.errors.join("; ")).toBe(true);
+      expect(resolved.templates.map((t) => t.id)).not.toContain(AGENT_PLANE_ID);
+    });
+
+    it("the axis is OPTIONAL — leaving `agents` unanswered is legal and yields no plane", () => {
+      const resolved = resolveSelection(root!, { target: "desktop" }, manifests);
+      expect(resolved.ok, resolved.errors.join("; ")).toBe(true);
+      expect(resolved.templates.map((t) => t.id)).not.toContain(AGENT_PLANE_ID);
+    });
+
+    it("agents: pots layers the plane onto the SAME root, on either chassis", () => {
+      for (const target of ["desktop", "web"] as const) {
+        const resolved = resolveSelection(root!, { target, agents: "pots" }, manifests);
+        expect(resolved.ok, `${target}: ${resolved.errors.join("; ")}`).toBe(true);
+        const ids = resolved.templates.map((t) => t.id);
+        expect(ids).toContain(AGENT_PLANE_ID);
+        expect(ids).toContain(ROOT_ID);
+        // Still ONE root app — the plane is an aspect layered on, not a second app.
+        const composed = composeTemplates(resolved.templates);
+        expect(composed.ok, composed.errors.join("; ")).toBe(true);
+        expect(composed.composition!.appTemplateId).toBe(ROOT_ID);
+        // And its checks are in the union, which is what makes the seam gated.
+        const checkIds = composed.composition!.checks.map((c) => `${c.templateId}:${c.item.id}`);
+        for (const c of byId.get(AGENT_PLANE_ID)!.checks) expect(checkIds).toContain(`${AGENT_PLANE_ID}:${c.id}`);
+      }
+    });
+
+    it("an unknown `agents` answer is an ERROR, not a silent 'none'", () => {
+      const bogus = resolveSelection(root!, { target: "desktop", agents: "swarm" }, manifests);
+      expect(bogus.ok).toBe(false);
+      expect(bogus.errors.join("; ")).toContain("swarm");
+    });
+
+    it("the four old roots' shapes are all reachable from this ONE root", () => {
+      // web/desktop x agents/no-agents — the cross-product the retired roots
+      // enumerated as separate templates.
+      for (const target of ["desktop", "web"] as const) {
+        for (const agents of ["none", "pots"] as const) {
+          const resolved = resolveSelection(root!, { target, agents }, manifests);
+          expect(resolved.ok, `${target}/${agents}: ${resolved.errors.join("; ")}`).toBe(true);
+          expect(composeTemplates(resolved.templates).ok).toBe(true);
+        }
+      }
+    });
+  },
+);

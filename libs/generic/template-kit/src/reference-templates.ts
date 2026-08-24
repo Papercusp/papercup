@@ -1192,6 +1192,32 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
         ],
       },
     },
+    // The second axis the four old roots encoded as separate templates.
+    // OPTIONAL — the explicit `none` answer is what makes it so.
+    {
+      id: "agents",
+      prompt:
+        "Does this app embed an agent plane? `none` is the ordinary answer and the default shape: a " +
+        "deterministic app with no hives and no seam. Answer `pots` and papercusp-ops-pots joins the " +
+        "composition, bringing the judgment plane and the ONE typed seam the app crosses to reach it — which " +
+        "is a real architectural commitment, not a feature flag. It is answered here rather than by picking a " +
+        "different template, because the agent plane was always a layer on the same app, never a different app.",
+      selects: {
+        options: [
+          {
+            value: "none",
+            summary: "No agent plane. No hives, no seam — the deterministic app only.",
+            templates: [],
+          },
+          {
+            value: "pots",
+            summary:
+              "The judgment plane, layered on via papercusp-ops-pots and reached across exactly one typed seam.",
+            templates: [{ id: "papercusp-ops-pots", version: "0.1.0" }],
+          },
+        ],
+      },
+    },
     {
       id: "domain",
       prompt:
@@ -1211,6 +1237,7 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
     "papercusp-web-host",
     "papercusp-data-layer",
     "papercusp-ui",
+    "papercusp-ops-pots",
     "papercusp-data-sync",
     "papercusp-search",
   ],
@@ -1256,8 +1283,13 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       enforcedBy: "prose-only",
     },
     {
-      id: "no-agent-surfaces",
-      rule: "No hives and no seam in an app built from this template unless papercusp-ops-pots is explicitly added to the composition — the agent plane is never implicit",
+      id: "agents-are-explicit",
+      rule: "No hives and no seam unless `agents` was answered `pots` — the agent plane joins only by an explicit answer that puts papercusp-ops-pots in the composition, and is never implicit",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "one-seam",
+      rule: "When `agents` is `pots`, the deterministic and judgment planes meet at exactly ONE typed seam — the seam discipline is papercusp-ops-pots' Tier B MUST and is honored in full, not re-invented in app code",
       enforcedBy: "prose-only",
     },
   ],
