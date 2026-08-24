@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   computeBenchSuggestion,
+  computeDarkFleetAlert,
   computeDormantAlert,
   computeFleetBlockVerdict,
   computeFloorStarvedFleetAlert,
@@ -40,6 +41,59 @@ const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 describe('fleet:leader-brief — ambient workspace transaction safety (EI-20192040030675541)', () => {
   it('opts out because the supervision read never uses ctx.tx', () => {
     expect((leaderBriefTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
+describe('computeDarkFleetAlert (WI-41172 / P-010)', () => {
+  it('fires for at least three registered members with zero genuine activity in 30 minutes', () => {
+    const out = computeDarkFleetAlert({
+      fleet: 'dark-fleet',
+      presenceDegraded: false,
+      roster: [
+        { lastActiveSecAgo: null },
+        { lastActiveSecAgo: 30 * 60 },
+        { lastActiveSecAgo: 4 * 60 * 60 },
+      ],
+    });
+
+    expect(out.alert).toBe(true);
+    if (out.alert !== true) throw new Error('expected dark-fleet alert to fire');
+    expect(out.reason).toMatch(/ZERO genuine activity.*30 minutes/i);
+    expect(out.falsifier).toMatchObject({
+      tool: 'fleet:assignments',
+      check: "fleet:assignments { fleet: 'dark-fleet', include_stale: true }",
+    });
+    expect(out.falsifier.measurement).toMatch(/independent of.*lastActiveSecAgo/i);
+    expect(out.falsifier.kills).toMatch(/tool call within the last 30 minutes|progressing claim/i);
+  });
+
+  it('stays false below the population floor or when any member took a recent turn', () => {
+    expect(
+      computeDarkFleetAlert({
+        presenceDegraded: false,
+        roster: [{ lastActiveSecAgo: null }, { lastActiveSecAgo: null }],
+      }).alert,
+    ).toBe(false);
+    expect(
+      computeDarkFleetAlert({
+        presenceDegraded: false,
+        roster: [
+          { lastActiveSecAgo: null },
+          { lastActiveSecAgo: 29 * 60 + 59 },
+          { lastActiveSecAgo: 10 * 60 * 60 },
+        ],
+      }).alert,
+    ).toBe(false);
+  });
+
+  it('returns in-band unknown when presence degraded, never a false clean or dark verdict', () => {
+    const out = computeDarkFleetAlert({
+      presenceDegraded: true,
+      roster: Array.from({ length: 5 }, () => ({ lastActiveSecAgo: null })),
+    });
+
+    expect(out).toMatchObject({ alert: null, reason: expect.stringMatching(/UNKNOWN.*presence/i) });
+    expect(out.falsifier).toBeUndefined();
   });
 });
 

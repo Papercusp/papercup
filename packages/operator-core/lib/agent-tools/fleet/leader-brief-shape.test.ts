@@ -89,6 +89,32 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
   });
 
+  it('retains the dark-fleet verdict, reason, and independent falsifier at the normal monitor tier', () => {
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'dark-fleet', members: 5, darkFleetAlert: true },
+        darkFleetAlertReason: '5 registered members have taken zero turns in 30 minutes',
+        darkFleetAlertFalsifier: {
+          tool: 'fleet:assignments',
+          check: "fleet:assignments { fleet: 'dark-fleet', include_stale: true }",
+          measurement: 'fresh agent-activity tool calls',
+          kills: 'any member shows a recent tool call or progressing claim',
+        },
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+
+    expect(out.summary).toMatchObject({ darkFleetAlert: true });
+    expect(out).toMatchObject({
+      darkFleetAlertReason: expect.stringContaining('zero turns'),
+      darkFleetAlertFalsifier: {
+        tool: 'fleet:assignments',
+        check: expect.stringContaining("fleet: 'dark-fleet'"),
+      },
+    });
+  });
+
   it('keeps every typed terminal audit-feed field through campaign compaction', () => {
     const row = {
       id: 'WI-42',
@@ -186,6 +212,15 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
   it('preserves the monitoring-blind advisory in the emergency byte-pressure projection', () => {
     const input = largeBrief();
     (input.summary as Record<string, unknown>).admission_blocked = 6;
+    (input.summary as Record<string, unknown>).darkFleetAlert = true;
+    (input as Record<string, unknown>).darkFleetAlertReason =
+      '53 registered members have taken zero turns in 30 minutes';
+    (input as Record<string, unknown>).darkFleetAlertFalsifier = {
+      tool: 'fleet:assignments',
+      check: "fleet:assignments { fleet: 'large-fleet', include_stale: true }",
+      measurement: 'fresh agent-activity tool calls',
+      kills: 'any member shows a recent tool call or progressing claim',
+    };
     (input as Record<string, unknown>).admissionBlocked = Array.from({ length: 6 }, (_, index) => ({
       itemId: `WI-${5891 + index}`,
       member: `su-blocked-${index}`,
@@ -217,6 +252,11 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     const out = shapeLeaderBrief(input, 'trimmed') as Record<string, unknown>;
 
     expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed', emergency: true });
+    expect(out.summary).toMatchObject({ darkFleetAlert: true });
+    expect(out).toMatchObject({
+      darkFleetAlertReason: expect.stringContaining('zero turns'),
+      darkFleetAlertFalsifier: { tool: 'fleet:assignments' },
+    });
     expect(out.monitoringBlindAdvisory).toMatchObject({
       line: expect.stringContaining('monitoring blind'),
       arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },

@@ -1142,6 +1142,77 @@ export function renderFalsifierCall(tool: string, args: Record<string, unknown>)
   return parts.length > 0 ? `${tool} { ${parts.join(', ')} }` : `${tool} {}`;
 }
 
+const DARK_FLEET_MIN_MEMBERS = 3;
+const DARK_FLEET_ACTIVITY_WINDOW_SEC = 30 * 60;
+
+export type DarkFleetAlertEvaluation =
+  | { alert: true; reason: string; falsifier: AlertFalsifier }
+  | { alert: false; reason?: undefined; falsifier?: undefined }
+  | { alert: null; reason: string; falsifier?: undefined };
+
+/**
+ * WI-41172 / P-010: the built-in form of the incident invariant
+ * `fleet-is-dark-nobody-taking-turns`.
+ *
+ * Population is the canonical, UNFILTERED presence-primary roster. Do not feed
+ * this the leader brief's displayed-member slice: that slice intentionally drops
+ * stale-idle rows, which are precisely the rows a dark-fleet detector must count.
+ * `lastActiveSecAgo` is derived by the roster from genuine coord activity and the
+ * turn-parts writer; heartbeat freshness never qualifies as a turn.
+ *
+ * A degraded presence leg makes both membership and its activity timestamps
+ * unverified. That state is in-band `null`, never a false clean `false` and never a
+ * fabricated dark `true` from an assignments-only fallback.
+ */
+export function computeDarkFleetAlert(input: {
+  roster: ReadonlyArray<{ lastActiveSecAgo?: number | null }>;
+  presenceDegraded: boolean;
+  fleet?: string | null;
+}): DarkFleetAlertEvaluation {
+  if (input.presenceDegraded) {
+    return {
+      alert: null,
+      reason:
+        'dark-fleet state is UNKNOWN because the canonical presence roster read degraded; ' +
+        'membership and genuine-activity timestamps were not measured on this brief.',
+    };
+  }
+
+  if (input.roster.length < DARK_FLEET_MIN_MEMBERS) return { alert: false };
+  const recentActivity = input.roster.some(
+    (member) =>
+      typeof member.lastActiveSecAgo === 'number' &&
+      Number.isFinite(member.lastActiveSecAgo) &&
+      member.lastActiveSecAgo < DARK_FLEET_ACTIVITY_WINDOW_SEC,
+  );
+  if (recentActivity) return { alert: false };
+
+  return {
+    alert: true,
+    falsifier: {
+      tool: 'fleet:assignments',
+      check: renderFalsifierCall('fleet:assignments', {
+        fleet: input.fleet,
+        include_stale: true,
+      }),
+      measurement:
+        'per-member lastToolCallAt/verdict and progressing work from the assignments + ' +
+        'agent-activity path — independent of the presence-derived lastActiveSecAgo values ' +
+        'that fired this alert',
+      kills:
+        'any member shows a tool call within the last 30 minutes or a currently progressing ' +
+        'claim → the fleet is working and the presence activity signal under-reported it; do ' +
+        'not wake or relaunch the members on this alert.',
+    },
+    reason:
+      `${input.roster.length} registered fleet member(s) show ZERO genuine activity in the ` +
+      'last 30 minutes (WI-41172) — heartbeat keepalives do not count as turns. Run the ' +
+      'independent fleet:assignments falsifier before acting; if it confirms the dark state, ' +
+      'restore member turns now and diagnose the shared launch/loop/auth path instead of ' +
+      'waiting for a member to recover itself.',
+  };
+}
+
 /**
  * EI-15055 (fleet-members-parked-stall-2026-07-17): the ZERO-WIP-WITH-SUPPLY alert.
  * `parked` was a plain count with no severity — a leader reading `parked:7` next to
@@ -1827,6 +1898,8 @@ export type DecoratedAgent = AgentAssignment & {
   nextFireAt?: string | null;
   loopMode?: 'work' | 'monitor' | null;
   lifecycleBackoff?: LifecycleBackoffInfo | null;
+  /** Genuine-activity age from the canonical presence/turn-parts roster fold. */
+  lastActiveSecAgo?: number | null;
 };
 
 /**
@@ -2345,6 +2418,14 @@ export async function buildLeaderBrief(
       ? { wakeMode: entry.wakeMode }
       : { wakeMode: undefined }),
   }));
+  // WI-41172 / P-010: compute from the UNFILTERED canonical roster before
+  // selectLeaderBriefMembers drops stale-idle entries. Presence degradation is
+  // in-band UNKNOWN; an assignments-only fallback must never become a verdict.
+  const darkFleetAlert = computeDarkFleetAlert({
+    roster: rosterEntries,
+    presenceDegraded: rosterResult.degradedLegs.includes('presence'),
+    fleet,
+  });
   // ── P-004 / D-096: leadership self-claim ────────────────────────────────
   // Decided from `rosterEntries` — the UNFILTERED roster — and NOT from
   // `grouped` below, which drops idle members with a stale heartbeat unless
@@ -2500,7 +2581,10 @@ export async function buildLeaderBrief(
     fleet,
     harness: args.harness,
     workspaceId: actorWorkspace,
-    assignee: ownerId,
+    // WI-41163 / P-001 / D-003: this is a FLEET population count, not the
+    // reading leader's private claim verdict. Omitting assignee prevents the
+    // leader's own cooldown/grace floors from rendering its private zero as
+    // `summary.claimable_now` for the whole fleet.
   });
   const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
   const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
@@ -2980,6 +3064,7 @@ export async function buildLeaderBrief(
       ...(blockedAt ? { blockedAt } : {}),
       summary: {
         ...summary,
+        darkFleetAlert: darkFleetAlert.alert,
         strandedFleetAlert: strandedFleetAlert != null,
         specStarvedAlert: specStarvedAlert != null,
         declaredPlanSpecDivergenceAlert: declaredPlanSpecDivergenceAlert != null,
@@ -3114,6 +3199,10 @@ export async function buildLeaderBrief(
             floorStarvedAlertReason: floorStarvedAlert.reason,
             floorStarvedAlertFalsifier: floorStarvedAlert.falsifier,
           }
+        : {}),
+      ...(darkFleetAlert.reason ? { darkFleetAlertReason: darkFleetAlert.reason } : {}),
+      ...(darkFleetAlert.alert === true
+        ? { darkFleetAlertFalsifier: darkFleetAlert.falsifier }
         : {}),
       // P-014: always carried when ANY invariant is registered — including the
       // all-satisfied case. A leader must be able to tell "my checks ran and found
