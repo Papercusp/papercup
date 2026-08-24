@@ -293,17 +293,43 @@ describe('PlanDashboard header', () => {
 
   it('starts a one-plan clean-up from the header and deep-links its run', async () => {
     seed();
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, runId: 'cleanup-dash-1', launched: true }),
-    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === '/api/agent-config'
+        ? {
+            ok: true,
+            json: async () => ({
+              config: {
+                resolverProfiles: {
+                  'plan-cleanup': {
+                    model: null,
+                    effort: null,
+                    account: 'default',
+                    carry: 'warm',
+                  },
+                },
+              },
+            }),
+          }
+        : {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              runId: 'cleanup-dash-1',
+              launched: true,
+              resolverNeeded: true,
+            }),
+          },
+    );
     vi.stubGlobal('fetch', fetchMock);
     renderDash();
 
-    fireEvent.click(screen.getByTestId('plan-dash-cleanup'));
+    const start = screen.getByTestId('plan-dash-cleanup') as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    fireEvent.click(start);
 
     await waitFor(() => expect(setters.opcln).toHaveBeenCalledWith('cleanup-dash-1'));
-    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+    const startCall = fetchMock.mock.calls.find(([url]) => url === '/api/admin/plan-cleanup')!;
+    expect(JSON.parse((startCall[1] as RequestInit).body as string)).toEqual({
       op: 'start',
       planSlugs: ['p1'],
       filter: {
@@ -314,6 +340,7 @@ describe('PlanDashboard header', () => {
         harness: 'papercusp',
       },
       harness: 'papercusp',
+      launch: { model: null, effort: null, account: 'default', carry: 'warm' },
     });
   });
 
