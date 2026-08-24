@@ -26,6 +26,7 @@ import { statSync, openSync, readSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { McpProxyHealth } from './types';
+import { isCheapRepeatingBeat } from './mcp-proxy-beats';
 
 /** The ledger path — MUST match apps/operator/lib/mcp-proxy/proxy.ts `failureLogPath()`.
  *  Resolved per-call (not cached) so the env override is honoured at runtime + in tests. */
@@ -168,13 +169,28 @@ export function isStaleSocket400(rec: Pick<McpProxyFailureRecord, 'status' | 'co
 }
 
 /**
+ * True for terminal failures on a cheap repeating beat. The next beat is already scheduled,
+ * so these misses are soft even when the proxy exhausted its short retry window. Intermediate
+ * retry markers and successful recoveries stay in their existing classifications.
+ */
+export function isSoftBeatFailure(
+  rec: Pick<McpProxyFailureRecord, 'kind' | 'path'>,
+): boolean {
+  return (
+    typeof rec.path === 'string' &&
+    isCheapRepeatingBeat(rec.path) &&
+    (rec.kind === 'exhausted_refused' || rec.kind === 'upstream_error' || rec.kind === 'upstream_non2xx')
+  );
+}
+
+/**
  * PURE: fold failure records into the windowed {@link McpProxyHealth} summary.
  *
  * Classification:
  *  - `recovered`                         → SOFT (proxy retried a refused upstream and
  *                                          succeeded; the agent saw success) → `recovered`.
- *  - `exhausted_refused` | `upstream_error` → HARD (the call terminally failed: 503 after
- *                                          the retry window, or a 502 post-connect error).
+ *  - `exhausted_refused` | `upstream_error` → HARD unless the record's path is a cheap repeating
+ *                                          beat, in which case it is `softBeatFailures`.
  *  - `upstream_non2xx` + benign probe (408 heartbeat / GET-405) → `benign` (P-006, NOT a
  *                                          failure — kept out of every alarm class).
  *  - `upstream_non2xx` + stale-socket-400 signature → HARD (W1.3 regression).
@@ -205,6 +221,7 @@ export function summarizeMcpProxyHealth(
   const byKind: Record<string, number> = {};
   let total = 0;
   let hardFailures = 0;
+  let softBeatFailures = 0;
   let recovered = 0;
   let otherNon2xx = 0;
   let benign = 0;
@@ -226,7 +243,9 @@ export function summarizeMcpProxyHealth(
       nonInstance += 1;
       continue;
     }
-    if (r.kind === 'recovered') {
+    if (isSoftBeatFailure(r)) {
+      softBeatFailures += 1;
+    } else if (r.kind === 'recovered') {
       recovered += 1;
     } else if (r.kind === 'handshake_timeout_retry') {
       // WI-6740 upstream silence on the control-plane handshake. Kept OUT of hardFailures on
@@ -251,7 +270,7 @@ export function summarizeMcpProxyHealth(
     }
   }
   return {
-    windowMs, total, hardFailures, recovered, otherNon2xx, benign, nonInstance,
+    windowMs, total, hardFailures, softBeatFailures, recovered, otherNon2xx, benign, nonInstance,
     handshakeStalls, shed, byKind, newestAt,
   };
 }

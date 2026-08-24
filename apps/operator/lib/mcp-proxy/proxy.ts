@@ -39,6 +39,8 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { normalizeMcpName } from '@papercusp/tooldef';
+import { isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
+export { CHEAP_REPEATING_BEAT_PATHS, isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
 // The one path this proxy answers itself. Shared with watchdog.mjs so the liveness probe and
 // the route it probes cannot drift apart (WI-6743).
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -658,10 +660,9 @@ function forwardOnce(
  * causes the storm). Fix at the CLASSIFIER — never by making the endpoint lie about its
  * status code.
  *
- * ⚠ WI-35737 (2026-08-08) — THE LIST WAS SEEDED WITH THE TWO KNOWN OFFENDERS AND THEN LEFT
- * ALONE, so the same storm recurred on a path nobody had added. Membership is a PROPERTY
- * ("high-frequency + soft failure + replacement already scheduled"), not a fixed roster, and
- * the entry above documents the property while the list below encoded only the instances.
+ * ⚠ WI-35737 (2026-08-08) — membership is a PROPERTY ("high-frequency + soft failure +
+ * replacement already scheduled"), not a fixed roster. The canonical list is shared with the
+ * health reader in operator-core so retry and alarm classification cannot drift.
  *
  * The recurrence: `/api/agent-mcp/mid-turn-context` is the per-tool-batch memory-injection
  * search — simultaneously the most EXPENSIVE endpoint on the box (`searchMs` p50 1000ms,
@@ -679,28 +680,18 @@ function forwardOnce(
  * so the proxy multiplied load ~4x onto the exact dependency that was struggling and turned
  * a bursty upstream stall into a fleet-wide 429 outage. Same storm, same classifier, new path.
  *
- * Both additions below satisfy the property: losing one is SOFT (the agent's turn simply
+ * The memory-injection paths satisfy the property: losing one is SOFT (the agent's turn simply
  * carries no memory-injection block — `injection.ts` degrades, it does not fail), and the
  * replacement is already scheduled (the next tool batch / the next turn).
+ *
+ * The canonical path list and predicate now live in operator-core and are shared with the
+ * system-health reader. Keeping one classifier prevents a path from receiving the cheap-beat
+ * retry budget while still being counted as a hard failure by health (EI-21304678711668996).
  */
-export const CHEAP_REPEATING_BEAT_PATHS: readonly string[] = [
-  '/api/agent-mcp/console/bootstrap-su/heartbeat',
-  '/api/admin/owner-presence/touch',
-  // WI-35737 — per-tool-batch memory-injection search; soft failure, next batch re-fires.
-  '/api/agent-mcp/mid-turn-context',
-  // WI-35737 — per-turn sibling of the above, same soft-degradation contract.
-  '/api/agent-mcp/turn-start-memory',
-];
 
 /** Retry budget for a cheap repeating beat: one prompt re-attempt, then give up and let the
  *  NEXT beat carry the liveness signal. Deliberately far below `retryWindowMs`. */
 export const CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS = 2000;
-
-/** True when `url` is a high-frequency liveness beat whose replacement is already scheduled. */
-export function isCheapRepeatingBeat(url: string): boolean {
-  const path = (url.split('?')[0] ?? '').replace(/\/+$/, '');
-  return CHEAP_REPEATING_BEAT_PATHS.includes(path);
-}
 
 /** The retry window this REQUEST gets — the restart-sized default, unless it is a cheap
  *  repeating beat, which must fail fast rather than amplify (EI-19294517824914302). */

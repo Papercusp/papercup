@@ -572,6 +572,12 @@ export interface McpProxyHealth {
    *  stale-socket-400 signature (W1.3 regression: status 400 + `connection: close`). The
    *  SLO number — sustained non-zero reds the Infra panel → operator_degraded → overall. */
   hardFailures: number;
+  /**
+   * SOFT terminal misses on cheap repeating beats (heartbeat, owner-presence, or scheduled
+   * context injection). The replacement is already scheduled, so these records remain visible
+   * in the summary but never inflate the hard-failure SLO.
+   */
+  softBeatFailures: number;
   /** SOFT: the proxy retried a refused upstream and RECOVERED (a deploy-restart window it
    *  absorbed; the agent saw success). Informational — elevated under deploy churn, never
    *  alarming (the resilience working as designed). */

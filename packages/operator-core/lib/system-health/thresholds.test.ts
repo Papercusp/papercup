@@ -491,7 +491,7 @@ describe('worstStatus — the fail-soft roll-up', () => {
 });
 
 const mcpProxy = (o: Partial<McpProxyHealth> = {}): McpProxyHealth => ({
-  windowMs: 60 * 60_000, total: 0, hardFailures: 0, recovered: 0, otherNon2xx: 0, benign: 0, nonInstance: 0, handshakeStalls: 0, shed: 0, byKind: {}, newestAt: null, ...o,
+  windowMs: 60 * 60_000, total: 0, hardFailures: 0, softBeatFailures: 0, recovered: 0, otherNon2xx: 0, benign: 0, nonInstance: 0, handshakeStalls: 0, shed: 0, byKind: {}, newestAt: null, ...o,
 });
 const infra = (o: Partial<InfraHealth> = {}): InfraHealth => ({
   pg: { version: '16', total: 10, active: 2, idle: 8, postmasterStartMs: null }, gatewayReachable: true, perf: null, mcpProxy: null, ...o,

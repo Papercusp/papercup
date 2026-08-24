@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   summarizeMcpProxyHealth,
+  isSoftBeatFailure,
   isStaleSocket400,
   isBenignProbe,
   isNonInstanceRecord,
@@ -45,6 +46,31 @@ describe('isStaleSocket400 — the W1.3 signature (HTTP 400 + connection:close)'
 });
 
 describe('summarizeMcpProxyHealth — classification', () => {
+  it('soft-beat exhausted misses stay out of hardFailures while real MCP failures remain hard', () => {
+    const d = summarizeMcpProxyHealth(
+      [
+        rec({
+          kind: 'exhausted_refused',
+          status: 503,
+          path: '/api/agent-mcp/console/bootstrap-su/heartbeat',
+        }),
+        rec({ kind: 'exhausted_refused', status: 503, path: '/api/mcp' }),
+      ],
+      NOW,
+    );
+    expect(d.softBeatFailures).toBe(1);
+    expect(d.hardFailures).toBe(1);
+    expect(d.total).toBe(2);
+  });
+
+  it('path-aware soft classification covers terminal error kinds but not intermediate retry markers', () => {
+    expect(isSoftBeatFailure({ kind: 'exhausted_refused', path: '/api/agent-mcp/mid-turn-context?client=abc' })).toBe(true);
+    expect(isSoftBeatFailure({ kind: 'upstream_error', path: '/api/agent-mcp/turn-start-memory/' })).toBe(true);
+    expect(isSoftBeatFailure({ kind: 'upstream_non2xx', path: '/api/admin/owner-presence/touch' })).toBe(true);
+    expect(isSoftBeatFailure({ kind: 'post_connect_retry', path: '/api/agent-mcp/console/bootstrap-su/heartbeat' })).toBe(false);
+    expect(isSoftBeatFailure({ kind: 'exhausted_refused', path: '/api/mcp' })).toBe(false);
+  });
+
   it('exhausted_refused and upstream_error are HARD failures', () => {
     const d = summarizeMcpProxyHealth(
       [rec({ kind: 'exhausted_refused', status: 503 }), rec({ kind: 'upstream_error', status: 502 })],
