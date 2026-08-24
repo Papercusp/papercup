@@ -50,6 +50,7 @@
 # Usage:
 #   setup-release-checkout.sh [--ref <commit-ish>] [--node-modules auto|force|skip]
 #                             [--node-modules-copy hardlink|copy]
+#                             [--node-modules-generation required|off]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #
@@ -66,6 +67,9 @@ set -euo pipefail
 # AND ships the owner's identity inside the release source drop).
 _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_DEFAULT="$(git -C "$_HERE" rev-parse --show-toplevel 2>/dev/null || (cd "$_HERE/../../../.." && pwd))"
+# P-006 extends this setup path rather than creating a parallel checkpoint
+# materializer. The sourceable helper also serves install:safe's publisher.
+source "$_HERE/dependency-generation.sh"
 INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$_REPO_DEFAULT}"
 RELEASE_ROOT="${PAPERCUSP_RELEASE_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-release}"
 REF="main"
@@ -74,6 +78,10 @@ NODE_MODULES_MODE="auto"   # auto = copy when missing/lockfile-changed; force = 
 # copy because their source tree can be npm-installed concurrently; sharing inodes
 # would let that install mutate the supposedly pinned checkpoint tree.
 NODE_MODULES_COPY_MODE="${NODE_MODULES_COPY_MODE:-hardlink}"
+# Independent checkpoint copies pin an immutable dependency generation by
+# default. The live deploy's `hardlink` mode keeps its existing fast path.
+NODE_MODULES_GENERATION_MODE="${NODE_MODULES_GENERATION_MODE:-required}"
+DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
 
 BUILD_SPA="0"
 PREPARE_EXISTING="0"
@@ -84,6 +92,8 @@ while [ $# -gt 0 ]; do
     --ref) REF="$2"; REF_WAS_SET="1"; shift 2 ;;
     --node-modules) NODE_MODULES_MODE="$2"; shift 2 ;;
     --node-modules-copy) NODE_MODULES_COPY_MODE="$2"; shift 2 ;;
+    --node-modules-generation) NODE_MODULES_GENERATION_MODE="$2"; shift 2 ;;
+    --dependency-generation-root) DEPENDENCY_GENERATION_ROOT="$2"; shift 2 ;;
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
     --build-spa) BUILD_SPA="1"; shift ;;
@@ -95,6 +105,10 @@ done
 case "$NODE_MODULES_COPY_MODE" in
   hardlink|copy) ;;
   *) echo "[setup-release] bad --node-modules-copy mode: $NODE_MODULES_COPY_MODE" >&2; exit 2 ;;
+esac
+case "$NODE_MODULES_GENERATION_MODE" in
+  required|off) ;;
+  *) echo "[setup-release] bad --node-modules-generation mode: $NODE_MODULES_GENERATION_MODE" >&2; exit 2 ;;
 esac
 
 log() { echo "[setup-release] $*"; }
@@ -592,9 +606,7 @@ assert_hardlink_compatible_roots() {
 # Named so setup-release-checkout-deps.test.ts executes the shipped predicate rather
 # than carrying a second hand-maintained `find` expression.
 enumerate_node_modules() {
-  find "$INTEGRATION_ROOT" \
-    \( -type d \( -name .papercusp -o -name .git \) -prune \) -o \
-    \( -type d -name node_modules -prune -print \)
+  dependency_generation_enumerate_node_modules "${1:-$INTEGRATION_ROOT}"
 }
 
 # A metadata identity for an already-materialized dependency tree. This deliberately
@@ -606,15 +618,7 @@ enumerate_node_modules() {
 # aborts before the atomic swap. The marker itself is excluded because it belongs to the
 # snapshot, not the integration dependency tree.
 node_modules_tree_fingerprint() {
-  local root="$1"
-  [ -d "$root" ] || return 1
-  (
-    cd "$root" || exit 1
-    LC_ALL=C find . -xdev -mindepth 1 \
-      ! -path './.papercusp-isolated-snapshot' \
-      -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \
-      | sha256sum | awk '{ print $1 }'
-  )
+  dependency_generation_tree_fingerprint "$1"
 }
 
 # ATOMIC refresh of ONE node_modules dir (infra-fail-fast — the 2026-06-25 all-pages
@@ -659,6 +663,23 @@ sync_one_node_modules() {
   case "${NODE_MODULES_COPY_MODE:-hardlink}" in
     hardlink) cp -al "$src" "$tmp" ;;  # fast; source and destination share file data
     copy)
+      if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+        # Generation files are immutable and independently owned; a same-device
+        # hardlink materialization is therefore safe and fast. The helper falls
+        # back to a regular independent copy across filesystems.
+        log "materializing pinned dependency generation ${PINNED_DEPENDENCY_GENERATION_ID}"
+        dependency_generation_materialize_tree "$src" "$tmp"
+        src_before="$(node_modules_tree_fingerprint "$src" 2>/dev/null || true)"
+        tmp_fingerprint="$(node_modules_tree_fingerprint "$tmp" 2>/dev/null || true)"
+        if [ -z "$src_before" ] || [ -z "$tmp_fingerprint" ]; then
+          rm -rf "$tmp"
+          echo "[setup-release] FATAL: could not fingerprint pinned dependency generation materialization" >&2
+          return 1
+        fi
+        printf 'source=%s\nsnapshot=%s\ngeneration=%s\n' \
+          "$src_before" "$tmp_fingerprint" "$PINNED_DEPENDENCY_GENERATION_ID" \
+          > "$tmp/.papercusp-isolated-snapshot"
+      else
       # EI-21206772578500745 / WI-40774: `cp -a` of the unchanged 12.56 GiB root
       # tree charged ~14 GiB to the checkpoint scope and drove memory + I/O PSI
       # critical when it overlapped a broad test sweep. The prior checkpoint tree
@@ -699,6 +720,7 @@ sync_one_node_modules() {
       }
       printf 'source=%s\nsnapshot=%s\n' "$src_after" "$tmp_fingerprint" \
         > "$tmp/.papercusp-isolated-snapshot"
+      fi
       ;;
     *) echo "[setup-release] bad --node-modules-copy mode: ${NODE_MODULES_COPY_MODE}" >&2; return 2 ;;
   esac
@@ -712,24 +734,72 @@ sync_one_node_modules() {
 }
 
 if need_node_modules; then
+  NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
+  if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
+    DEPENDENCY_GENERATION_ROOT="${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}"
+    dependency_generation_ensure "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT"
+    PINNED_DEPENDENCY_GENERATION_ID="$DEPENDENCY_GENERATION_ID"
+    NODE_MODULES_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
+    log "pinned immutable dependency generation $PINNED_DEPENDENCY_GENERATION_ID (reused=$DEPENDENCY_GENERATION_REUSED)"
+  fi
   assert_hardlink_compatible_roots
-  log "${NODE_MODULES_COPY_MODE}-copying node_modules from integration tree (atomic swap; this can take a minute)"
+  log "${NODE_MODULES_COPY_MODE}-copying node_modules from dependency source (atomic swap; this can take a minute)"
   # Enumerate every package-local node_modules in the integration tree (prune so
   # we get the dir itself, not the ones nested inside it — those ride along in the
   # parent's selected cp mode). Each is refreshed via an atomic sibling-temp swap (above).
   while IFS= read -r nm; do
-    rel="${nm#"$INTEGRATION_ROOT"/}"
+    rel="${nm#"$NODE_MODULES_SOURCE_ROOT"/}"
     sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
-  done < <(enumerate_node_modules)
+  done < <(enumerate_node_modules "$NODE_MODULES_SOURCE_ROOT")
   # Record WHICH dep state was just copied without touching pinned tracked source.
   # The marker is inside gitignored node_modules and is consumed by
   # need_node_modules() above on the next auto pass.
   [ -f "$INTEGRATION_ROOT/package-lock.json" ] \
     && cp "$INTEGRATION_ROOT/package-lock.json" "$RELEASE_ROOT/node_modules/.papercusp-source-package-lock.json"
+  if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+    printf 'identity=%s\nsource=%s\n' \
+      "$PINNED_DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+      > "$RELEASE_ROOT/node_modules/.papercusp-dependency-generation"
+    log "DEPENDENCY_GENERATION_PIN identity=$PINNED_DEPENDENCY_GENERATION_ID"
+  fi
   log "node_modules sync complete"
 else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"
 fi
+
+# A generation is immutable, so same-filesystem checkpoint materialization uses
+# read-only hardlinks. Copy up only the dependency packages a later setup phase
+# must mutate (patch-package or a native-addon rebuild), preserving both the
+# generation and the fast path for the rest of the ~13 GiB tree.
+copy_up_generation_dependency_path() {
+  local path="$1"
+  [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ] || return 0
+  [ -d "$path" ] || return 0
+  local tmp="${path}.copy-up.$$" old="${path}.copy-up-old.$$"
+  rm -rf "$tmp" "$old"
+  dependency_generation_copy_independent "$path" "$tmp"
+  chmod -R u+w "$tmp"
+  mv "$path" "$old"
+  mv "$tmp" "$path"
+  chmod -R u+w "$old" 2>/dev/null || true
+  rm -rf "$old"
+}
+
+copy_up_generation_patch_targets() {
+  [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ] || return 0
+  [ -d "$RELEASE_ROOT/patches" ] || return 0
+  local package_path
+  while IFS= read -r package_path; do
+    [ -n "$package_path" ] || continue
+    log "copying up generation-backed patch target $package_path"
+    copy_up_generation_dependency_path "$RELEASE_ROOT/node_modules/$package_path"
+  done < <(
+    find "$RELEASE_ROOT/patches" -type f -name '*.patch' -exec \
+      awk '/^diff --git a\/node_modules\// { path=$3; sub(/^a\/node_modules\//, "", path); n=split(path, p, "/"); if (p[1] ~ /^@/ && n > 1) print p[1] "/" p[2]; else print p[1] }' {} + \
+      | LC_ALL=C sort -u
+  )
+}
+copy_up_generation_patch_targets
 
 # 3a½. pnpm-debris self-heal ---------------------------------------------------
 # A release/checkpoint tree never runs installs, so a .pnpm virtual store that is
@@ -865,6 +935,7 @@ RUNTIME_BUILD_WORKSPACES=(
 
 build_pinned_workspace_runtime_outputs() {
   local workspace scope package manifest integration_workspace_root release_workspace_root
+  local dependency_workspace_node_modules
   for workspace in "${RUNTIME_BUILD_WORKSPACES[@]}"; do
     scope="${workspace%%/*}"
     package="${workspace#*/}"
@@ -905,7 +976,15 @@ build_pinned_workspace_runtime_outputs() {
       case "$integration_workspace_root:$release_workspace_root" in
         "$INTEGRATION_ROOT"/*:"$RELEASE_ROOT"/*)
           log "restoring package-local toolchain for $workspace"
-          sync_one_node_modules "$integration_workspace_root/node_modules" "$release_workspace_root/node_modules"
+          dependency_workspace_node_modules="$integration_workspace_root/node_modules"
+          if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+            dependency_workspace_node_modules="$DEPENDENCY_GENERATION_TREE/${integration_workspace_root#"$INTEGRATION_ROOT"/}/node_modules"
+            [ -d "$dependency_workspace_node_modules" ] || {
+              echo "[setup-release] FATAL: pinned dependency generation $PINNED_DEPENDENCY_GENERATION_ID is missing the package-local toolchain for $workspace" >&2
+              return 1
+            }
+          fi
+          sync_one_node_modules "$dependency_workspace_node_modules" "$release_workspace_root/node_modules"
           ;;
         *)
           echo "[setup-release] FATAL: runtime workspace $workspace resolves outside the integration/release roots — refusing a cross-tree toolchain copy" >&2
@@ -959,6 +1038,7 @@ rebuild_stale_native_addons() {
       continue   # loads cleanly under the runtime Node — ABI matches, nothing to do
     fi
     log "WARN native addon '$addon' will not load under Node ABI $node_abi — rebuilding in the release checkout"
+    copy_up_generation_dependency_path "$RELEASE_ROOT/node_modules/$addon"
     if (cd "$RELEASE_ROOT" && npm rebuild "$addon") >/dev/null 2>&1 \
        && (cd "$RELEASE_ROOT" && node -e "require('$addon')") >/dev/null 2>&1; then
       log "native addon '$addon' rebuilt OK for Node ABI $node_abi"

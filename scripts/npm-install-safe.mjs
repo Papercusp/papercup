@@ -71,6 +71,10 @@ const DEFAULT_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPAIR_ARGS = ['install', '--legacy-peer-deps'];
 const EXEC_UNDER_LOCK_FLAG = "--exec-under-lock";
 const CACHE_VERIFY_ARGS = ['cache', 'verify'];
+const DEPENDENCY_GENERATION_SCRIPT = join(
+  DEFAULT_REPO_ROOT,
+  'apps/operator/bin/release/dependency-generation.sh',
+);
 
 /**
  * Keep an explicit --cache override attached to the cache repair. Without it,
@@ -383,6 +387,34 @@ export function normalizeNpmArgs(argv) {
 }
 
 /**
+ * Publish the verified install as an immutable dependency generation after the
+ * shared install mutex has been released. The generation builder carries its
+ * own before/after fingerprint guard and a short atomic-publish lock, so this
+ * potentially long copy never turns the install mutex into a fleet-wide reader
+ * stall. A concurrent writer produces rc75 and no generation, never a torn one.
+ */
+export function publishDependencyGeneration({
+  repoRoot = DEFAULT_REPO_ROOT,
+  runPublisher = spawnSync,
+  env = process.env,
+} = {}) {
+  if (env.PAPERCUSP_SKIP_DEP_GENERATION === '1') return 0;
+  const result = runPublisher(
+    'bash',
+    [DEPENDENCY_GENERATION_SCRIPT, '--integration', repoRoot],
+    { cwd: repoRoot, stdio: 'inherit', env },
+  );
+  if (result.error) throw result.error;
+  const status = result.status ?? 1;
+  if (status !== 0) {
+    console.error(
+      `NPM_INSTALL_SAFE_FATAL: immutable dependency generation publish exited ${status}; the install is healthy but no checkpoint-safe generation was published.`,
+    );
+  }
+  return status;
+}
+
+/**
  * Parse the wrapper-only target selector without stealing npm's own flags.
  * `--repo-root` is recognized only as the first wrapper argument and an
  * optional `--` cleanly separates it from the npm argv.
@@ -450,14 +482,14 @@ export function runCommandUnderInstallMutex({
   );
 }
 
-export function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2)) {
   const parsed = parseCliArgs(argv);
   if ("commandArgs" in parsed) return runCommandUnderInstallMutex(parsed);
 
   const { repoRoot, npmArgs } = parsed;
   const lockName = repoLockName(repoRoot);
 
-  return withFsMutex(
+  const installStatus = await withFsMutex(
     lockName,
     async () => {
       const cacheStatus = verifyNpmCache({ repoRoot, npmArgs });
@@ -483,6 +515,8 @@ export function main(argv = process.argv.slice(2)) {
       },
     },
   );
+  if (installStatus !== 0) return installStatus;
+  return publishDependencyGeneration({ repoRoot });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
