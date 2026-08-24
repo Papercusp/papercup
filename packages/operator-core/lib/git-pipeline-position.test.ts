@@ -5845,6 +5845,34 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
     expect(cacheOnly).toMatch(/according to the run-liveness CACHE/);
     expect(cacheOnly).not.toMatch(/measured/);
   });
+
+  it('⭐ composes a live run-lock into the stale-verdict reason (EI-21345219754813525)', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          snap({
+            consecutiveReds: 5,
+            stalled: true,
+            verdictStale: true,
+            verdictStaleReason: 'the gate writer has not produced a verdict since the last fire',
+            verdictStaleReasonCode: 'writer-starved',
+          }),
+        readCheckpointRunSnapshot: async () => null,
+        readCheckpointRunLock: async () => ({ held: true, elapsedSec: 600 }),
+      },
+    );
+
+    expect(res.gate.checkpointRunInFlight?.active).toBe(true);
+    expect(res.gate.checkpointRunInFlight?.activeSource).toBe('run-lock');
+    expect(res.gate.verdictStale).toBe(true);
+    expect(res.gate.verdictStaleReasonCode).toBe('run-in-flight');
+    expect(res.gate.verdictStaleReason).toMatch(/measured live via the run lock/);
+    expect(res.gate.verdictStaleReason).toMatch(/do NOT fire release:checkpoint-run/);
+  });
 });
 
 /**

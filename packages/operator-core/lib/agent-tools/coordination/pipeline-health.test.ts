@@ -18,6 +18,7 @@ import {
   PIPELINE_RED_NOTE,
   PIPELINE_STALE_NOTE,
   PIPELINE_REFIRE_IN_FLIGHT_NOTE,
+  PIPELINE_RUN_IN_FLIGHT_NOTE,
 } from './pipeline-health';
 import type { PipelineHealth } from '../../why-chain';
 
@@ -142,6 +143,26 @@ describe('toOrientPipeline — what a waking agent is told', () => {
     expect(out.gate).toBe('stale-verdict');
     expect(out.failingFiles).toBeUndefined(); // still names nobody, same as any stale-verdict
     expect(out.note).toBe(PIPELINE_REFIRE_IN_FLIGHT_NOTE);
+    expect(out.note).not.toBe(PIPELINE_STALE_NOTE);
+  });
+
+  it('⭐ a RUN-IN-FLIGHT stale reason gets a pending-verdict note and still names NO tests', () => {
+    const out = toOrientPipeline(
+      health({
+        gateLabel: 'stale-verdict',
+        consecutiveReds: 1,
+        verdictStale: true,
+        verdictStaleReasonCode: 'run-in-flight',
+        recentFailingFiles: ['lib/innocent.test.ts'],
+        gate: { stage: 'gate', status: 'degraded', reason: 'gate verdict is STALE (a run is IN FLIGHT) — UNKNOWN' },
+        rootCause: { stage: 'gate', status: 'degraded', reason: 'gate verdict is STALE (a run is IN FLIGHT) — UNKNOWN' },
+      }),
+      NOW,
+    )!;
+    expect(out.gate).toBe('stale-verdict');
+    expect(out.failingFiles).toBeUndefined();
+    expect(out.note).toBe(PIPELINE_RUN_IN_FLIGHT_NOTE);
+    expect(out.note).toContain('wait for this active run to finish');
     expect(out.note).not.toBe(PIPELINE_STALE_NOTE);
   });
 

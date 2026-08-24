@@ -87,6 +87,12 @@ export const PIPELINE_REFIRE_IN_FLIGHT_NOTE =
   'NOT go fix the tests it names, and do NOT fire another checkpoint run — a fresh verdict is ' +
   'imminent; just wait for it.';
 
+/** A measured green-checkpoint run is active, so the stale verdict is pending rather than starved. */
+export const PIPELINE_RUN_IN_FLIGHT_NOTE =
+  'a green-checkpoint run is IN FLIGHT right now (measured live via the run lock), so the stale verdict ' +
+  'is pending. Do NOT fire another release:checkpoint-run or fix the named tests while it runs; wait ' +
+  'for this active run to finish.';
+
 /** EI-17603: the checkpoint's own failingTests record for this commit was CONTRADICTED by the
  *  test-run ledger — `failingFiles` below is ledger-derived, not the checkpoint's own (wrong)
  *  list. Told explicitly because the checkpoint blob is otherwise the FIRST-preferred source
@@ -135,9 +141,11 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
       ? // EI-18669342433807110: a refire-in-flight stale reason gets its OWN note — the generic
         // PIPELINE_STALE_NOTE says "re-run the checkpoint for a real verdict", which is actively
         // wrong advice while one is already running.
-        health.verdictStaleReasonCode === 'refire-in-flight'
-        ? PIPELINE_REFIRE_IN_FLIGHT_NOTE
-        : PIPELINE_STALE_NOTE
+        health.verdictStaleReasonCode === 'run-in-flight'
+        ? PIPELINE_RUN_IN_FLIGHT_NOTE
+        : health.verdictStaleReasonCode === 'refire-in-flight'
+          ? PIPELINE_REFIRE_IN_FLIGHT_NOTE
+          : PIPELINE_STALE_NOTE
       : gateOk
         ? PIPELINE_BEHIND_NOTE
         : health.gateVerdictDisjointFromLedger
