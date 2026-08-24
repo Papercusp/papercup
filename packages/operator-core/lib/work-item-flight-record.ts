@@ -19,6 +19,7 @@ export const WORK_ITEM_FLIGHT_RECORD_LIMIT = 3;
 export const WORK_ITEM_FLIGHT_TOOL_LIMIT = 12;
 
 const CHECKPOINT_SEPARATOR = '\n\n---\n';
+const STRUCTURED_CARRY_SECTION_RE = /^##\s+(?:Checks|Walls)\s*$/im;
 
 export type WorkItemFlightRecordCause = 'lease-release' | 'forced-interrupt';
 
@@ -114,7 +115,9 @@ const RECORD_WITH_SEPARATOR_RE = new RegExp(
 /**
  * Insert a record atomically into the checkpoint text. Agent-authored prose is
  * retained, only the newest three automatic records survive, and an existing
- * legacy mechanical tail remains the final block.
+ * legacy mechanical tail remains the final block. Automatic records stay before
+ * structured Checks/Walls sections so their telemetry lines cannot be parsed as
+ * carry rows on the next wake.
  */
 export function mergeWorkItemFlightRecord(
   priorCheckpoint: string | null | undefined,
@@ -131,7 +134,11 @@ export function mergeWorkItemFlightRecord(
   const existingRecords = Array.from(beforeMechanical.matchAll(RECORD_RE), (match) => match[0]);
   const authored = beforeMechanical.replace(RECORD_WITH_SEPARATOR_RE, '').trimEnd();
   const boundedRecords = [...existingRecords, record].slice(-Math.max(1, limit));
-  const merged = [authored, ...boundedRecords].filter(Boolean).join(CHECKPOINT_SEPARATOR);
+  const sectionMatch = STRUCTURED_CARRY_SECTION_RE.exec(authored);
+  const structuredStart = sectionMatch?.index ?? -1;
+  const authoredBody = structuredStart >= 0 ? authored.slice(0, structuredStart).trimEnd() : authored;
+  const structuredSections = structuredStart >= 0 ? authored.slice(structuredStart).trimStart() : '';
+  const merged = [authoredBody, ...boundedRecords, structuredSections].filter(Boolean).join(CHECKPOINT_SEPARATOR);
   return mechanicalTail ? `${merged}${mechanicalTail}` : merged;
 }
 

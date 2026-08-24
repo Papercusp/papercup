@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { splitCarryNoteChecks, splitCarryNoteWalls } from './carry-note';
 import { MECHANICAL_CHECKPOINT_MARKER } from './turn-end-tracking';
 import {
   WORK_ITEM_FLIGHT_RECORD_BEGIN,
@@ -60,5 +61,47 @@ describe('work-item flight record', () => {
     expect(merged).toContain('intent 4');
     expect(merged.indexOf('intent 4')).toBeLessThan(merged.indexOf(MECHANICAL_CHECKPOINT_MARKER));
     expect(merged.endsWith(mechanical)).toBe(true);
+  });
+
+  it('keeps automatic telemetry outside authored Checks and Walls sections', () => {
+    const prior = [
+      '## Did',
+      'The agent-authored checkpoint.',
+      '',
+      '## Checks',
+      '✓ existing claim — re-check: run the probe — evidence: still true',
+      '',
+      '## Walls',
+      '- owner gate — re-check: ask the owner',
+    ].join('\n');
+    const automatic = formatWorkItemFlightRecord({
+      ownerId: 'su-target',
+      cause: 'lease-release',
+      capturedAt: '2026-08-23T00:00:00.000Z',
+      intent: 'recover the interrupted task',
+      currentFiles: ['a.ts'],
+      tools: [
+        {
+          tool: 'coord:glance',
+          status: 'ok',
+          invokedAt: '2026-08-23T00:00:00.000Z',
+          durationMs: 10,
+          errorCode: null,
+          argsJson: { checks: ['not-a-carry-claim'] },
+        },
+      ],
+    });
+
+    const merged = mergeWorkItemFlightRecord(prior, automatic);
+    const { body, checks } = splitCarryNoteChecks(merged);
+    const { walls } = splitCarryNoteWalls(merged);
+
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.claim).toBe('existing claim');
+    expect(walls).toHaveLength(1);
+    expect(walls[0]?.claim).toBe('owner gate');
+    expect(body).toContain(WORK_ITEM_FLIGHT_RECORD_BEGIN);
+    expect(body).toContain('args_key_digest=');
+    expect(merged.indexOf(WORK_ITEM_FLIGHT_RECORD_BEGIN)).toBeLessThan(merged.indexOf('## Checks'));
   });
 });
