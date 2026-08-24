@@ -1861,11 +1861,19 @@ export interface ReleaseTriggerFreezeSnapshot {
   /** the release-trigger routine's `active` flag, or null when the row doesn't
    *  exist (a hive with no deploy target never seeds one — never alarm on that). */
   active: boolean | null;
-  /** epoch ms of the routine row's `updated_at` — routines:set is the ONLY
-   *  writer of `active` (the playbook forbids raw UPDATE) and always stamps
-   *  `updated_at = now()` on every flip, so this doubles as "since when it went
-   *  inactive" without a dedicated column. null if unresolvable. */
-  updatedAtMs: number | null;
+  /** epoch ms of the routine row's `active_changed_at` — the instant `active` last
+   *  FLIPPED, stamped by the `routines_active_changed_at_trg` database trigger
+   *  (migration 933), never by application code. null if unresolvable.
+   *
+   *  ⚠ This used to read `updated_at`, justified by "routines:set is the ONLY writer
+   *  of `active`, so updated_at doubles as 'since when it went inactive'". That
+   *  invariant was already false — ~8 raw `UPDATE harness_shared.routines` sites stamp
+   *  `updated_at` (this file's own watchdogAlerted flips and gate-health-merge's
+   *  candidate markers among them), mostly without touching `active`. Every such write
+   *  moves the timestamp FORWARD, so the derived age UNDER-stated the pause and the
+   *  alarm below fired late or never — the dangerous direction for a guard whose
+   *  condition "will NEVER self-clear". EI-21299569563939689. */
+  activeChangedAtMs: number | null;
   /** green commits deployable but not live right now
    *  (`release-deploy-launch`'s `computeDeployStatus().deploy.deployedBehindGreenPin`). */
   deployedBehindGreenPin: number | null;
@@ -1925,10 +1933,10 @@ export function evaluateReleaseTriggerFreeze(
   if (s.deployedBehindGreenPin == null || s.deployedBehindGreenPin <= 0) {
     return { frozen: false, reason: null }; // nothing green is waiting — a paused trigger is harmless
   }
-  // An unresolvable `updated_at` is treated as maximally stale (never assumed
+  // An unresolvable `active_changed_at` is treated as maximally stale (never assumed
   // fresh) — mirrors evaluateDeployStaleness's handling of a null deployedAtMs
   // in the sibling release-deploy-staleness-watchdog.
-  const ageMs = s.updatedAtMs != null ? now - s.updatedAtMs : Number.POSITIVE_INFINITY;
+  const ageMs = s.activeChangedAtMs != null ? now - s.activeChangedAtMs : Number.POSITIVE_INFINITY;
   if (ageMs <= thresholdMs) return { frozen: false, reason: null };
   const mins = Number.isFinite(ageMs) ? Math.round(ageMs / 60_000) : null;
   return {
@@ -1965,8 +1973,16 @@ export async function checkReleaseTriggerFreeze(
   let passError: unknown;
   try {
     const installSlug = opts.installSlug ?? 'papercusp';
-    const rows = await sql<{ active: boolean; updated_at_ms: string | number | null; workspace_id: string }[]>`
-      SELECT active, extract(epoch from updated_at) * 1000 AS updated_at_ms, workspace_id
+    // `active_changed_at` (migration 933) is stamped by a trigger ONLY when `active` flips, so
+    // it keeps accruing across the metadata-only writes that constantly bump `updated_at`.
+    // COALESCE is a floor, not a fallback we expect to hit: 933 backfills every existing row and
+    // defaults every new one, so this only covers a row inserted by some path that names the
+    // column explicitly. `updated_at` under-states the age, so the coalesced value can only ever
+    // alarm LATER than the truth, never spuriously.
+    const rows = await sql<{ active: boolean; active_changed_at_ms: string | number | null; workspace_id: string }[]>`
+      SELECT active,
+             extract(epoch from COALESCE(active_changed_at, updated_at)) * 1000 AS active_changed_at_ms,
+             workspace_id
         FROM harness_shared.routines
        WHERE install_slug = ${installSlug} AND name = 'release-trigger'
        LIMIT 1`;
@@ -1981,7 +1997,8 @@ export async function checkReleaseTriggerFreeze(
     const verdict = evaluateReleaseTriggerFreeze(
       {
         active: rows[0].active,
-        updatedAtMs: rows[0].updated_at_ms != null ? Number(rows[0].updated_at_ms) : null,
+        activeChangedAtMs:
+          rows[0].active_changed_at_ms != null ? Number(rows[0].active_changed_at_ms) : null,
         deployedBehindGreenPin: status.deploy.deployedBehindGreenPin,
       },
       now,

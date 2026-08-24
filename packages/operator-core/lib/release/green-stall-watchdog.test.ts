@@ -1691,33 +1691,33 @@ describe('checkMainBehindStaging gate-advance suppression wiring (EI-10202)', ()
 
 describe('evaluateReleaseTriggerFreeze (WI-4322)', () => {
   it('a fresh/active routine never alarms, however much green code is stranded', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: true, updatedAtMs: NOW - 24 * H, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: true, activeChangedAtMs: NOW - 24 * H, deployedBehindGreenPin: 44 }, NOW);
     expect(v.frozen).toBe(false);
     expect(v.reason).toBeNull();
   });
 
   it('no routine row (active: null — no deploy target declared) never alarms', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: null, updatedAtMs: null, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: null, activeChangedAtMs: null, deployedBehindGreenPin: 44 }, NOW);
     expect(v.frozen).toBe(false);
   });
 
   it('paused but nothing green is stranded — harmless, never alarms', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 2 * H, deployedBehindGreenPin: 0 }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 2 * H, deployedBehindGreenPin: 0 }, NOW);
     expect(v.frozen).toBe(false);
   });
 
   it('paused with null deployedBehindGreenPin never alarms (unknown ≠ pending)', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 2 * H, deployedBehindGreenPin: null }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 2 * H, deployedBehindGreenPin: null }, NOW);
     expect(v.frozen).toBe(false);
   });
 
   it('paused + green stranded, but only just (< 30m threshold) — a normal short manual pause, not yet a freeze', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 10 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 10 * 60_000, deployedBehindGreenPin: 44 }, NOW);
     expect(v.frozen).toBe(false);
   });
 
   it('THE SIGNATURE: paused > 30m + green code stranded ⇒ frozen, with an actionable reason', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 45 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 45 * 60_000, deployedBehindGreenPin: 44 }, NOW);
     expect(v.frozen).toBe(true);
     expect(v.reason).toContain('PAUSED');
     expect(v.reason).toContain('44 green commit');
@@ -1726,19 +1726,19 @@ describe('evaluateReleaseTriggerFreeze (WI-4322)', () => {
   });
 
   it('boundary: exactly at the threshold does not alarm (strict >)', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 30 * 60_000, deployedBehindGreenPin: 5 }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 30 * 60_000, deployedBehindGreenPin: 5 }, NOW);
     expect(v.frozen).toBe(false);
   });
 
   it('an unresolvable updated_at (null) while paused + green-ahead is treated as maximally stale, not healthy', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: null, deployedBehindGreenPin: 3 }, NOW);
+    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: null, deployedBehindGreenPin: 3 }, NOW);
     expect(v.frozen).toBe(true);
     expect(v.reason).toContain('pause duration unknown');
   });
 
   it('kill switch: thresholdMs <= 0 never alarms', () => {
     const v = evaluateReleaseTriggerFreeze(
-      { active: false, updatedAtMs: NOW - 99 * H, deployedBehindGreenPin: 44 },
+      { active: false, activeChangedAtMs: NOW - 99 * H, deployedBehindGreenPin: 44 },
       NOW,
       { thresholdMs: 0 },
     );
@@ -1747,7 +1747,7 @@ describe('evaluateReleaseTriggerFreeze (WI-4322)', () => {
 
   it('honors a custom (tighter) threshold', () => {
     const v = evaluateReleaseTriggerFreeze(
-      { active: false, updatedAtMs: NOW - 6 * 60_000, deployedBehindGreenPin: 1 },
+      { active: false, activeChangedAtMs: NOW - 6 * 60_000, deployedBehindGreenPin: 1 },
       NOW,
       { thresholdMs: 5 * 60_000 },
     );
