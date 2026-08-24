@@ -49,7 +49,12 @@ const brokenDetector: ContentDetector = {
 
 /** Run git synchronously for test setup; throws on failure. */
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  }).trim();
 }
 function configUser(repo: string): void {
   git(repo, 'config', 'user.email', 'test@papercusp.local');
@@ -568,7 +573,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const calls: string[][] = [];
     const failedOnce = new Set<string>();
     const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return {
         code: result.status ?? -1,
         stdout: String(result.stdout ?? ''),
@@ -603,7 +608,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const calls: string[][] = [];
     let rejectedPush = false;
     const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return {
         code: result.status ?? -1,
         stdout: String(result.stdout ?? ''),
@@ -639,7 +644,7 @@ describe('runGitSync (real git, no submodule)', () => {
     writeFileSync(join(repo, 'no-email-fallback.txt'), 'retain the original error\n');
     const calls: string[][] = [];
     const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return {
         code: result.status ?? -1,
         stdout: String(result.stdout ?? ''),
@@ -665,7 +670,7 @@ describe('runGitSync (real git, no submodule)', () => {
     writeFileSync(join(repo, 'no-fallback.txt'), 'keep the original failure\n');
     const calls: string[][] = [];
     const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return {
         code: result.status ?? -1,
         stdout: String(result.stdout ?? ''),
@@ -751,7 +756,7 @@ describe('runGitSync (real git, no submodule)', () => {
           stderr: `error: could not lock config file ${join(repo, '.git', 'config')}: File exists`,
         };
       }
-      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
 
@@ -930,7 +935,7 @@ describe('runGitSync (real git, no submodule)', () => {
 
     // A real-git runner (non-throwing: returns {code} instead of throwing on non-zero).
     const realGit: RunGit = async (args, cwd) => {
-      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
     // Fail ONLY the first attributed commit — the one carrying a `Papercusp-Agent:` trailer
@@ -1240,7 +1245,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const reclaimedBytes = 8 * 1024 * 1024;
     const logs: string[] = [];
     const realRunGit: RunGit = async (args, cwd) => {
-      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return {
         code: r.status ?? -1,
         stdout: String(r.stdout ?? ''),
@@ -1318,7 +1323,7 @@ describe('runGitSync (real git, no submodule)', () => {
     utimesSync(staleTmpPack, oldSeconds, oldSeconds);
 
     const realRunGit: RunGit = async (args, cwd) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       return {
         code: result.status ?? -1,
         stdout: String(result.stdout ?? ''),

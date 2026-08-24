@@ -78,7 +78,13 @@ function sentinelFromDenylist(): string {
 }
 
 function have(bin: string): boolean {
-  return spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status === 0;
+  return (
+    spawnSync('sh', ['-c', `command -v ${bin}`], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    }).status === 0
+  );
 }
 
 describe('release identity gate: archive expansion (EI-20108164746219771)', () => {
@@ -124,18 +130,28 @@ describe('release identity gate: archive expansion (EI-20108164746219771)', () =
       const deb = path.join(dir, 'probe.deb');
       // -Zxz so the payload is genuinely compressed; an uncompressed payload would
       // be caught by the raw grep and prove nothing about expansion.
-      execFileSync('dpkg-deb', ['-Zxz', '--build', pkg, deb], { stdio: 'ignore' });
+      execFileSync('dpkg-deb', ['-Zxz', '--build', pkg, deb], {
+        stdio: 'ignore',
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
+      });
       rmSync(pkg, { recursive: true, force: true }); // the .deb must stand ALONE
 
       // PRECONDITION: the raw bytes really are blind to the sentinel. Without this
       // the test could pass for the wrong reason (payload accidentally plaintext),
       // which would make it a guard that cannot fail.
-      const raw = spawnSync('grep', ['-acF', sentinel, deb], { encoding: 'utf8' });
+      const raw = spawnSync('grep', ['-acF', sentinel, deb], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
       expect(raw.stdout.trim(), 'payload was not actually compressed').toBe('0');
 
       const run = spawnSync('python3', [GATE, '--scan-dir', dir], {
         encoding: 'utf8',
         env: GATE_ENV,
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
       });
       const out = `${run.stdout}${run.stderr}`;
       expect(out).toMatch(/expanding 1 archive\(s\)/);

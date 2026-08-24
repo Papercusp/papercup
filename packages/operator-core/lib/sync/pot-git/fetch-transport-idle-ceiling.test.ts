@@ -56,15 +56,18 @@ function repoWithCommit(): string {
     GIT_COMMITTER_EMAIL: 't@t',
   };
   const work = join(d, 'work');
-  execFileSync('git', ['init', '-q', work]);
+  execFileSync('git', ['init', '-q', work], { timeout: 30_000, killSignal: 'SIGKILL' });
   writeFileSync(join(work, 'f'), 'x');
-  execFileSync('git', ['-C', work, 'add', 'f'], { env });
-  execFileSync('git', ['-C', work, 'commit', '-qm', 'c'], { env });
+  execFileSync('git', ['-C', work, 'add', 'f'], { env, timeout: 30_000, killSignal: 'SIGKILL' });
+  execFileSync('git', ['-C', work, 'commit', '-qm', 'c'], { env, timeout: 30_000, killSignal: 'SIGKILL' });
   // A BARE repo. Handed a worktree root upload-pack exits in ~30ms with
   // "does not appear to be a git repository", which returns timedOut:false and
   // makes every timing assertion below pass or fail for the wrong reason.
   const bare = join(d, 'r.bare');
-  execFileSync('git', ['clone', '--bare', '-q', work, bare]);
+  execFileSync('git', ['clone', '--bare', '-q', work, bare], {
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
+  });
   return bare;
 }
 
