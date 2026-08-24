@@ -826,6 +826,13 @@ export const PTOOL_EVENTS_AWAIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // the observed proxy path without changing the ordinary deadline for unrelated tools.
 export const PTOOL_PLANS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
+// `work_items:get` performs several independent checkpoint, holder, plan-lane,
+// prior-work, and lifecycle reads. Under a busy fleet that compound read can
+// outlive the ordinary 30s ptool deadline, especially through tools:invoke;
+// keep its client budget aligned with the other durable coordination reads
+// (EI-21281814895308307).
+export const PTOOL_WORK_ITEMS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
 // `locks:heartbeat_resource` may heartbeat multiple lock ids sequentially and
 // probe the caller plus special coordination domains for each id. Under a
 // serialized package build, each transaction can consume the configured
@@ -846,6 +853,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
+  ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.

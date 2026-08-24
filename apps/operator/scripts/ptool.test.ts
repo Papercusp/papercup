@@ -19,6 +19,7 @@ import {
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
+  PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
@@ -122,6 +123,11 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:get',
+      args: { id: 'EI-21281814895308307' },
+    })).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(60_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:get',
