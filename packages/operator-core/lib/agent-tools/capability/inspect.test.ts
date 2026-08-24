@@ -4,7 +4,7 @@
  * security-load-bearing part is the PURE command construction + path validation,
  * which is what these cover — proving the agent can never inject a shell command.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -35,6 +35,7 @@ import {
   resolveTypecheckCwd,
   filterTscOutputToPaths,
   deadTypecheckVerdict,
+  resolveNpmWorkspaceAlias,
 } from './inspect';
 import inspectTool from './inspect';
 import { startBackground } from './bash-jobs';
@@ -76,15 +77,53 @@ describe('resolveInspectCommand — verb mapping', () => {
     });
   });
 
-  it('explains that package is a repository path when an npm-style name is supplied', () => {
-    const r = resolveInspectCommand({ check: 'typecheck', package: '@papercusp/operator-core' }, BASE);
+  it('an unresolved scoped npm name still fails bad_package, naming both accepted forms', () => {
+    const r = resolveInspectCommand({ check: 'typecheck', package: '@papercusp/not-a-pkg' }, BASE);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.reason).toBe('bad_package');
-      expect(r.message).toContain('repository-relative directory path, not an npm package name');
-      expect(r.message).toContain('packages/operator-core');
+      expect(r.message).toContain('repository-relative directory containing tsconfig.json');
+      expect(r.message).toContain('@papercusp/operator-core');
     }
   });
+
+  it('EI-21200682380693689: an npm workspace alias resolves to the workspace dir', () => {
+    expect(
+      resolveInspectCommand(
+        { check: 'typecheck', package: '@papercusp/operator-core' },
+        BASE,
+        (name) => (name === '@papercusp/operator-core' ? 'packages/operator-core' : null),
+      ),
+    ).toEqual({ ok: true, command: 'npx tsc --noEmit', cwd: '/repo/packages/operator-core' });
+  });
+
+describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
+  it('resolves a scoped workspace name through its real node_modules symlink, end to end', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cap-inspect-ws-'));
+    const pkgDir = join(root, 'libs', 'flags');
+    mkdirSync(pkgDir, { recursive: true });
+    mkdirSync(join(root, 'node_modules', '@papercusp'), { recursive: true });
+    symlinkSync(pkgDir, join(root, 'node_modules', '@papercusp', 'flags'), 'dir');
+    expect(resolveNpmWorkspaceAlias('@papercusp/flags', root)).toBe(join('libs', 'flags'));
+    // The DEFAULT (filesystem-backed) wiring through the pure resolver.
+    expect(resolveInspectCommand({ check: 'typecheck', package: '@papercusp/flags' }, root)).toEqual({
+      ok: true,
+      command: 'npx tsc --noEmit',
+      cwd: pkgDir,
+    });
+  });
+
+  it('passes non-scoped names through and refuses unresolved or escaping links', () => {
+    expect(resolveNpmWorkspaceAlias('flags', '/repo')).toBeNull();
+    expect(resolveNpmWorkspaceAlias('@papercusp/missing', '/repo')).toBeNull();
+    // A link whose target escapes the project dir is not a workspace.
+    expect(resolveNpmWorkspaceAlias('@papercusp/evil', '/repo', () => '/etc/passwd')).toBeNull();
+    // A link resolving INSIDE node_modules (a vendored dep) is refused.
+    expect(
+      resolveNpmWorkspaceAlias('@papercusp/vendor', '/repo', () => '/repo/node_modules/@papercusp/vendor'),
+    ).toBeNull();
+  });
+});
 
   it('typecheck with package-relative onlyPaths → the package baseline gate with repo-relative files', () => {
     expect(
@@ -255,7 +294,8 @@ describe('resolveInspectCommand — verb mapping', () => {
 
   it('publishes self-correcting guidance for the flattened test/typecheck argument surface', () => {
     const shape = (inspectTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
-    expect(shape.package.description).toMatch(/Repository-relative directory path \(not an npm package name\)/);
+    expect(shape.package.description).toMatch(/Repository-relative directory path to run in/);
+    expect(shape.package.description).toMatch(/or the canonical npm workspace name such as "@papercusp\/operator-core"/);
     expect(shape.onlyPaths.description).toMatch(/never pass with check:"test"/);
     expect(shape.path.description).toMatch(/one test file\/dir/);
     expect(shape.path.description).toMatch(/when omitted, it is repo-relative/);

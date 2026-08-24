@@ -24,7 +24,7 @@
  */
 
 import { isAbsolute, basename, dirname, relative, resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -73,10 +73,63 @@ function validateRelPath(
   return { ok: true, abs, rel };
 }
 
+/**
+ * EI-21200682380693689: callers naturally pass the canonical npm WORKSPACE name
+ * (`@papercusp/flags` — the spelling package.json and every import use), but npm
+ * workspaces materialize packages as filesystem directories. Resolve a SCOPED
+ * name through the node_modules symlink npm creates for every workspace and
+ * return its repo-relative directory. Containment mirrors validateRelPath: the
+ * resolved target must stay inside the project dir and outside node_modules
+ * itself, so a vendored dependency can never become an inspect cwd. Scoped
+ * names only — an unscoped one is ambiguous with a legitimate relative
+ * directory. Returns null when the name does not resolve as a workspace alias;
+ * the caller falls through to ordinary path validation (whose SAFE_PATH charset
+ * rejects `@`, producing the actionable bad_package message).
+ */
+const NPM_SCOPED_NAME = /^@[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function resolveNpmWorkspaceAlias(
+  packageName: string,
+  baseDir: string,
+  realpath: (p: string) => string = realpathSync,
+): string | null {
+  if (!NPM_SCOPED_NAME.test(packageName)) return null;
+  let abs: string;
+  try {
+    abs = realpath(resolve(baseDir, 'node_modules', packageName));
+  } catch {
+    return null;
+  }
+  const rel = relative(baseDir, abs);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+  if (rel.split(/[\\/]/).includes('node_modules')) return null;
+  return rel;
+}
+
+/** Injectable seam so the pure resolver unit tests stay filesystem-free. */
+type WorkspaceAliasResolver = (packageName: string, baseDir: string) => string | null;
+
+function defaultResolveWorkspaceAlias(packageName: string, baseDir: string): string | null {
+  return resolveNpmWorkspaceAlias(packageName, baseDir);
+}
+
+function validatePackageArg(
+  p: string,
+  baseDir: string,
+  resolveWorkspaceAlias: WorkspaceAliasResolver,
+): { ok: true; abs: string; rel: string } | { ok: false; reason: string } {
+  const aliasRel = resolveWorkspaceAlias(p, baseDir);
+  if (aliasRel !== null) {
+    const abs = resolve(baseDir, aliasRel);
+    return { ok: true, abs, rel: relative(baseDir, abs) };
+  }
+  return validateRelPath(p, baseDir);
+}
+
 function packagePathError(packageValue: string, reason: string): string {
-  return `${reason} \`package\` is a repository-relative directory path, not an npm package name. ` +
-    `Pass the directory containing tsconfig.json (for example, \`packages/operator-core\`) rather than ` +
-    `\`${packageValue}\`.`;
+  return `${reason} \`package\` must be a repository-relative directory containing tsconfig.json — ` +
+    `for example, \`packages/operator-core\` — or the canonical npm workspace name such as ` +
+    `\`@papercusp/operator-core\`. Received: \`${packageValue}\`.`;
 }
 
 export interface InspectArgs {
@@ -103,15 +156,21 @@ const LAYERED_TEST_FILE = /\.(integration|browser)\.test\.[cm]?[jt]sx?$/i;
 const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
 
 /**
- * Pure: map the validated args to the fixed verification command + cwd, or an
- * error. Exported so the (security-load-bearing) command construction is unit-
- * tested without executing anything. The agent's only inputs are `check` (enum)
- * and the charset-validated `package`/`path`; the command verb is never agent text.
+ * Map the validated args to the fixed verification command + cwd, or an error.
+ * Exported so the (security-load-bearing) command construction is unit-tested
+ * without executing anything: path validation stays charset+containment only,
+ * and the npm-workspace alias resolution is INJECTABLE (tests stub it), so the
+ * suite stays deterministic. The agent's only inputs are `check` (enum) and the
+ * validated `package`/`path`; the command verb is never agent text.
  */
-export function resolveInspectCommand(args: InspectArgs, baseDir: string): InspectResolution {
+export function resolveInspectCommand(
+  args: InspectArgs,
+  baseDir: string,
+  resolveWorkspaceAlias: WorkspaceAliasResolver = defaultResolveWorkspaceAlias,
+): InspectResolution {
   let cwd = baseDir;
   if (args.package !== undefined) {
-    const v = validateRelPath(args.package, baseDir);
+    const v = validatePackageArg(args.package, baseDir, resolveWorkspaceAlias);
     if (!v.ok) return { ok: false, reason: 'bad_package', message: packagePathError(args.package, v.reason) };
     cwd = v.abs;
   }
@@ -172,6 +231,7 @@ export function resolveScopedTypecheckCommand(
   baseDir: string,
   gates: TypecheckGate[],
   pathExists: (repoRelativePath: string) => boolean = (path) => existsSync(resolve(baseDir, path)),
+  resolveWorkspaceAlias: WorkspaceAliasResolver = defaultResolveWorkspaceAlias,
 ): InspectResolution {
   if (args.check !== 'typecheck' || !args.onlyPaths || args.onlyPaths.length === 0) {
     return {
@@ -184,7 +244,7 @@ export function resolveScopedTypecheckCommand(
     return { ok: false, reason: 'bad_args', message: 'typecheck requires `package` (the dir holding tsconfig.json).' };
   }
 
-  const pkg = validateRelPath(args.package, baseDir);
+  const pkg = validatePackageArg(args.package, baseDir, resolveWorkspaceAlias);
   if (!pkg.ok) return { ok: false, reason: 'bad_package', message: packagePathError(args.package, pkg.reason) };
   const packageRel = TSCONFIG_BASENAME.test(basename(pkg.rel)) ? dirname(pkg.rel) : pkg.rel;
 
@@ -434,7 +494,8 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'Repository-relative directory path (not an npm package name) to run in, e.g. "packages/operator-core". ' +
+        'Repository-relative directory path to run in, e.g. "packages/operator-core", or the canonical npm ' +
+          'workspace name such as "@papercusp/operator-core" (resolved via its node_modules workspace link). ' +
           'It must contain tsconfig.json for typecheck. For test, omit to run `npm run test:affected` at the repo root.',
       ),
     path: z
