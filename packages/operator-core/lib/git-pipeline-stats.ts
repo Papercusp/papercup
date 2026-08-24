@@ -36,7 +36,7 @@ import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { pipelineName } from './release/pipeline-name';
-import type { CheckpointSystemdProbe } from './release-checkpoint-launch';
+import type { CheckpointProcessAuthorityReading, CheckpointSystemdProbe } from './release-checkpoint-launch';
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -341,6 +341,13 @@ export interface GitPipelineSnapshot {
     /** The live process was found through the shared checkpoint run-lock rather than
      * the manual systemd unit (normally the scheduled/cron runner). */
     heldExternally?: true;
+    /** P-009: live pre-lock startup observed from gate authority env + exact root + cgroup. */
+    preLockAuthority?: {
+      workspace: string;
+      harness: string;
+      cgroupPath: string;
+      pid: number;
+    };
     /** The systemd probe itself failed. When heldExternally is also true, the
      * independent run-lock still proves a run is live; otherwise liveness is unknown. */
     probeFailed?: true;
@@ -746,6 +753,9 @@ export interface GitPipelineSnapshotOpts {
     current_phase?: string | null;
     elapsed_sec?: number | null;
   };
+  /** P-009 test seam for pre-lock process authority. When probeActiveRun is injected
+   * and this seam is omitted, no real procfs scan is performed. */
+  probeProcessAuthority?: (root: string) => CheckpointProcessAuthorityReading;
 }
 
 /** PURE (P-001): map a checkActiveCheckpointRun probe result onto the snapshot's
@@ -1110,6 +1120,29 @@ export async function gitPipelineSnapshot(
       if (resolvedActiveRunRoot) {
         const probe = opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
         activeRun = mapActiveRun(probe(resolvedActiveRunRoot));
+        const authorityProbe =
+          opts.probeProcessAuthority ??
+          (opts.probeActiveRun
+            ? null
+            : (await import('./release-checkpoint-launch')).readCheckpointProcessAuthorityCheap);
+        const authority = authorityProbe?.(resolvedActiveRunRoot) ?? null;
+        if (authority?.active && authority.pid !== null && authority.cgroupPath && authority.workspace && authority.harness) {
+          activeRun = {
+            ...activeRun,
+            active: true,
+            preLockAuthority: {
+              workspace: authority.workspace,
+              harness: authority.harness,
+              cgroupPath: authority.cgroupPath,
+              pid: authority.pid,
+            },
+            candidate: null,
+            startedAtMs: authority.startedAtMs,
+            progressAtMs: authority.startedAtMs,
+            currentPhase: 'materializing',
+            elapsedSec: authority.elapsedSec,
+          };
+        }
       }
     } catch {
       activeRun = null;

@@ -1053,6 +1053,145 @@ export function isCheckpointRunLockHeldCheap(
     : { held: false, elapsedSec: null };
 }
 
+export interface CheckpointProcessAuthorityReading {
+  active: boolean;
+  probeFailed: boolean;
+  pid: number | null;
+  startedAtMs: number | null;
+  elapsedSec: number | null;
+  cgroupPath: string | null;
+  workspace: string | null;
+  harness: string | null;
+}
+
+export interface CheckpointProcessAuthorityProbeDeps {
+  listPids?: () => number[];
+  readEnvironment?: (pid: number) => string | null;
+  readCgroup?: (pid: number) => string | null;
+  readProcessStartMs?: (pid: number) => number | null;
+  nowMs?: () => number;
+}
+
+function defaultListProcPids(): number[] {
+  return readdirSync('/proc', { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+    .map((entry) => Number(entry.name));
+}
+
+function defaultReadProcFile(pid: number, name: 'environ' | 'cgroup'): string | null {
+  try {
+    return readFileSync(`/proc/${pid}/${name}`, 'utf8');
+  } catch {
+    // A process may exit between the directory listing and this read. That row simply
+    // stopped being evidence; it does not poison the rest of the procfs census.
+    return null;
+  }
+}
+
+function nulEnvironment(raw: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const entry of raw.split('\0')) {
+    const eq = entry.indexOf('=');
+    if (eq <= 0) continue;
+    out.set(entry.slice(0, eq), entry.slice(eq + 1));
+  }
+  return out;
+}
+
+function unifiedCgroupPath(raw: string): string | null {
+  const value = raw
+    .split('\n')
+    .find((line) => line.startsWith('0::'))
+    ?.slice(3)
+    .trim();
+  return value && value.startsWith('/') ? value : null;
+}
+
+/**
+ * P-009 / WI-41252: find a gate-owned process during the startup interval before
+ * `green-checkpoint.ts` acquires its shared run-lock or publishes a candidate.
+ *
+ * The identity deliberately uses three independent OS-owned facts and ZERO argv:
+ *  - authority: both gate-verdict target stamps are present;
+ *  - environment: PAPERCUSP_INTEGRATION_ROOT resolves to the root being queried;
+ *  - cgroup: the process belongs to a live unified cgroup.
+ *
+ * An agent prompt or a status command can mention every checkpoint token in argv, so
+ * argv matching is not liveness evidence. Descendants inherit these authority stamps;
+ * treating the whole cgroup as active is intentional because materialization work may
+ * already have moved below the original wrapper. A failed procfs census is UNKNOWN,
+ * never a confident idle reading.
+ */
+export function readCheckpointProcessAuthorityCheap(
+  root: string,
+  deps: CheckpointProcessAuthorityProbeDeps = {},
+): CheckpointProcessAuthorityReading {
+  const listPids = deps.listPids ?? defaultListProcPids;
+  const readEnvironment = deps.readEnvironment ?? ((pid: number) => defaultReadProcFile(pid, 'environ'));
+  const readCgroup = deps.readCgroup ?? ((pid: number) => defaultReadProcFile(pid, 'cgroup'));
+  const readProcessStartMs = deps.readProcessStartMs ?? defaultReadProcessStartMs;
+  const nowMs = (deps.nowMs ?? Date.now)();
+  let pids: number[];
+  try {
+    pids = listPids();
+  } catch {
+    return {
+      active: false,
+      probeFailed: true,
+      pid: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      cgroupPath: null,
+      workspace: null,
+      harness: null,
+    };
+  }
+
+  const expectedRoot = path.resolve(root);
+  const matches: Array<Omit<CheckpointProcessAuthorityReading, 'active' | 'probeFailed'>> = [];
+  for (const pid of pids) {
+    const rawEnv = readEnvironment(pid);
+    const rawCgroup = readCgroup(pid);
+    if (rawEnv === null || rawCgroup === null) continue;
+    const env = nulEnvironment(rawEnv);
+    const workspace = (env.get(GATE_VERDICT_WORKSPACE_ENV) ?? '').trim();
+    const harness = (env.get(GATE_VERDICT_HARNESS_ENV) ?? '').trim();
+    const integrationRoot = (env.get('PAPERCUSP_INTEGRATION_ROOT') ?? '').trim();
+    const cgroupPath = unifiedCgroupPath(rawCgroup);
+    if (!workspace || !harness || !integrationRoot || !cgroupPath) continue;
+    if (path.resolve(integrationRoot) !== expectedRoot) continue;
+
+    const startedAtMs = readProcessStartMs(pid);
+    const elapsedSec = Number.isFinite(startedAtMs)
+      ? Math.max(0, Math.floor((nowMs - startedAtMs!) / 1000))
+      : null;
+    // A process tree that somehow retained the launch stamps past the run-lock's own
+    // hard stale horizon must not wedge the gate forever. The same bound guards the
+    // canonical lock owner above; an unmeasured start remains positive live evidence.
+    if (elapsedSec !== null && elapsedSec * 1000 > CHECKPOINT_RUN_LOCK_STALE_MS) continue;
+    matches.push({ pid, startedAtMs, elapsedSec, cgroupPath, workspace, harness });
+  }
+
+  matches.sort(
+    (a, b) =>
+      (a.startedAtMs ?? Number.POSITIVE_INFINITY) - (b.startedAtMs ?? Number.POSITIVE_INFINITY) ||
+      (a.pid ?? Number.MAX_SAFE_INTEGER) - (b.pid ?? Number.MAX_SAFE_INTEGER),
+  );
+  const match = matches[0];
+  return match
+    ? { active: true, probeFailed: false, ...match }
+    : {
+        active: false,
+        probeFailed: false,
+        pid: null,
+        startedAtMs: null,
+        elapsedSec: null,
+        cgroupPath: null,
+        workspace: null,
+        harness: null,
+      };
+}
+
 /**
  * Detect whether a manual checkpoint run for `root` is CURRENTLY ACTIVE, before we'd try to
  * launch a new one (WI-1562). Reads systemd's live unit state directly — rather than firing
