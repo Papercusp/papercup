@@ -19,6 +19,9 @@
 import { listPresence, PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
 import { fetchPresenceFleet } from '../agent-tools/coordination/presence-fleet';
 import {
+  computeIntentDivergent,
+  computeIntentStale,
+  computeLastActiveSecAgo,
   deriveLastActive,
   fetchPresenceTier1,
   stripTurnPartLastAt,
@@ -26,6 +29,7 @@ import {
 } from '../agent-tools/coordination/presence-tier1';
 import {
   fetchWakeability,
+  overrideIntentStaleForSessionState,
   type SessionState,
   type WakeabilitySignals,
 } from '../agent-tools/coordination/presence-wakeability';
@@ -76,6 +80,9 @@ export interface FleetFoldPresence {
   startedAt: string | null;
   heartbeatAt: string | null;
   lastActiveAt: string | null;
+  /** When the current declared intent was written. Optional for federated and
+   * legacy fixtures; null/absent keeps intent-age verdicts in-band unknown. */
+  intentDeclaredAt?: string | null;
   agentRole: string | null;
   /** The SOFT named-fleet membership label (joined in per-owner — does NOT ride the
    *  base PresenceRecord like hive_slug). */
@@ -127,6 +134,12 @@ export interface FleetRosterEntry extends AgentAssignment {
   confirmLiveness: boolean | null;
   // ── Tier-1 (P-003) — populated for local agents; null/empty for federated peers
   lastActiveSecAgo: number | null;
+  /** Age of the declared intent text; null when its writer timestamp is unavailable. */
+  intentAgeSec: number | null;
+  /** TRUE means the declared intent is not being actively progressed. */
+  intentStale: boolean | null;
+  /** TRUE means genuine activity is fresh but the declared intent text is old. */
+  intentDivergent: boolean | null;
   claimedItems: string[];
   model: string | null;
   awaitingEvent: boolean;
@@ -245,6 +258,16 @@ export function foldFleetRoster(
         : sessionState === 'recorded'
           ? true
           : base.alive;
+    const { lastActiveSecAgo } = deriveLastActive(
+      p?.lastActiveAt ?? null,
+      tier1.get(id)?.turnPartLastAt ?? null,
+      nowMs,
+    );
+    const intentAgeSec = computeLastActiveSecAgo(p?.intentDeclaredAt ?? null, nowMs);
+    const intentStale = overrideIntentStaleForSessionState(
+      computeIntentStale(lastActiveSecAgo),
+      sessionState,
+    );
     out.push({
       ...base,
       alive,
@@ -269,11 +292,14 @@ export function foldFleetRoster(
       federated: Boolean(p?.federated),
       // P-011: same combined derivation as coord:presence (one oracle) — the
       // transcript leg's raw timestamp is derivation input, stripped from the row.
-      lastActiveSecAgo: deriveLastActive(
-        p?.lastActiveAt ?? null,
-        tier1.get(id)?.turnPartLastAt ?? null,
-        nowMs,
-      ).lastActiveSecAgo,
+      lastActiveSecAgo,
+      // WI-41174 / P-012: carry the SAME intent freshness derivations as
+      // coord:presence into the canonical fleet roster. A leader brief cannot
+      // make these signals actionable if its roster silently drops the writer
+      // timestamp that defines them.
+      intentAgeSec,
+      intentStale,
+      intentDivergent: computeIntentDivergent(intentAgeSec, lastActiveSecAgo),
       ...EMPTY_TIER1,
       ...stripTurnPartLastAt(tier1.get(id)),
     });
@@ -338,6 +364,7 @@ export function foldFederatedSessionPresence(
       startedAt: null,
       heartbeatAt: iso,
       lastActiveAt: iso,
+      intentDeclaredAt: null,
       agentRole: r.kind,
       fleetSlug: r.fleet_slug ?? null,
       fleetRole: r.fleet_role ?? null,
@@ -370,6 +397,7 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
       startedAt: r.startedAt,
       heartbeatAt: r.heartbeatAt,
       lastActiveAt: r.lastActiveAt,
+      intentDeclaredAt: r.intentDeclaredAt,
       agentRole: r.agentRole,
       fleetSlug: f?.fleetSlug ?? null,
       fleetRole: f?.fleetRole ?? null,
