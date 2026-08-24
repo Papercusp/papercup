@@ -61,6 +61,46 @@ describe('prescribedRecurrenceGuardCoverageGap', () => {
     ).toBeUndefined();
   });
 
+  it('ignores a quoted historical anecdote instead of treating it as a live prescription', () => {
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        {
+          title: 'Completion evidence should require a machine-checkable ref',
+          summary:
+            "The item summary quoted Avi describing a prior agent who had 'added a recurrence-guard health-check'. " +
+            'That quotation explains the motivating incident; it does not prescribe a new guard for this item.',
+        },
+        {
+          summary: 'closed with committed authority',
+          testsRun: 'packages/operator-core/lib/work-item-completion-authority.test.ts',
+          testResult: 'passed',
+        },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('credits an exact declared test path cited by testsRun', () => {
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        {
+          title: 'Completion integrity',
+          summary: 'The fix must add a recurrence guard for this behavior.',
+          payload: {
+            paths: [
+              'packages/operator-core/lib/agent-tools/work_items/complete.ts',
+              'packages/operator-core/lib/agent-tools/work_items/complete.prescribed-guard.test.ts',
+            ],
+          },
+        },
+        {
+          summary: 'closed with committed authority',
+          testsRun: 'packages/operator-core/lib/agent-tools/work_items/complete.prescribed-guard.test.ts',
+          testResult: '10 passed',
+        },
+      ),
+    ).toBeUndefined();
+  });
+
   // EI-20551121122206657 — the three cases below pin the PER-PART matching rule. The first
   // is the observed false alarm; the second is the flag placement the tool's own description
   // recommends; the third is the calibration that keeps the fix from being a blanket
