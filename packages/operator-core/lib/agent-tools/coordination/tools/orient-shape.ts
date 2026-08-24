@@ -15,6 +15,7 @@
 
 import { shapeFleetAssignments } from '../../fleet/assignments-shape';
 import { capPreservingOperativeDetailed } from '../../../operative-clause';
+import { workItemFetchHint } from '../../../work-item-fetch-hint';
 import { ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
@@ -703,7 +704,12 @@ function projectRecovery(rec: unknown, c: Caps): unknown {
   out.checkpoints = kept.map((e) => {
     if (!e || typeof e !== 'object') return e;
     const h = e as Record<string, unknown>;
-    const more = typeof h.id === 'string' ? `work_items:get { id: '${h.id}' }` : undefined;
+    // EI-20451119672468393: keep the re-cap hint harness-qualified — the row's
+    // canonical harness may differ from the reading session's scope.
+    const more =
+      typeof h.id === 'string'
+        ? workItemFetchHint(h.id, typeof h.harness === 'string' ? h.harness : null)
+        : undefined;
     const ckpt = recapDisclosed(h.checkpoint, h.checkpointTruncated, c.recoveryCheckpoint, more);
     const body = recapDisclosed(h.body, h.bodyTruncated, c.recoveryBody, more);
     const o: Record<string, unknown> = { ...h };
