@@ -328,3 +328,135 @@ describe('specTestAdequacyCompletionGate', () => {
     expect(deps.listEvidence).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * P-016 / D-012 / D-013 — applicability is BEHAVIOR-owned, and the report is advisory.
+ *
+ * D-013 splits this surface: P-016 REPORTS what the universal resolver newly resolves,
+ * P-013 turns the same reconciled condition into hard enforcement. Both halves need a
+ * falsifier, and the second is the one that matters: a test that only proves the new
+ * clauses are VISIBLE would pass just as happily if P-016 had also started refusing on
+ * them, which would block completions fleet-wide on edges authored as documentation.
+ */
+describe('specTestAdequacyCompletionGate — universal contract resolution (P-016)', () => {
+  const OTHER_PLAN_CLAUSE = clause({
+    planSlug: 'other-plan',
+    specId: 'SPEC-900-01',
+    planItemId: 'P-900',
+    contentHash: 'sha256:other-v1',
+  });
+
+  /** Routes clause reads by namespace so a cross-namespace resolution is observable. */
+  function namespacedDeps(
+    edges: Array<{ planSlug: string; specId: string; specRevision: number }>,
+    clausesByPlan: Record<string, SpecClauseRevision[]>,
+  ) {
+    const deps = passingDeps();
+    deps.listEdges.mockImplementation(async () =>
+      edges.map((edge) => ({
+        workItemId: 'WI-101',
+        planSlug: edge.planSlug,
+        specId: edge.specId,
+        specRevision: edge.specRevision,
+        specFingerprint: 'sha256:edge',
+      })),
+    );
+    deps.listClauses.mockImplementation(async (options) => {
+      const pool = clausesByPlan[options.planSlug] ?? [];
+      if (options.specIds) return pool.filter((c) => options.specIds!.includes(c.specId));
+      if (options.planItemIds) return pool.filter((c) => options.planItemIds!.includes(c.planItemId));
+      return pool;
+    });
+    return deps;
+  }
+
+  it('resolves a STANDALONE behavior-changing item through its edges — no plan provenance needed', async () => {
+    const deps = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
+      'other-plan': [OTHER_PLAN_CLAUSE],
+    });
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { id: 'WI-101', kind: 'bug', harness: 'papercusp', payload: null } },
+      deps,
+    );
+
+    // Before P-016 this returned from the missing plan stamp having read nothing at all.
+    expect(deps.listEdges).toHaveBeenCalledWith({ harnessSlug: 'papercusp', workItemId: 'WI-101' });
+    expect(result.impactReport).toContain('other-plan/SPEC-900-01@1');
+  });
+
+  it('REPORTS a cross-namespace clause without enforcing it — the D-013 split', async () => {
+    const deps = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
+      'reconnect-plan': [clause()],
+      'other-plan': [OTHER_PLAN_CLAUSE],
+    });
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { ...WORK_ITEM, kind: 'bug' }, attestation: ATTESTATION },
+      deps,
+    );
+
+    // The stamped namespace's clause is the ONLY one enforced...
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    // ...while the cross-namespace one is reported, named, and explicitly deferred.
+    expect(result.impactReport).toContain('other-plan/SPEC-900-01@1');
+    expect(result.impactReport).toContain('Reported, not enforced');
+    // The falsifier for the split: the newly-visible clause must not reach the verdict.
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.checked).not.toContain('SPEC-900-01@1');
+  });
+
+  it('never turns an unresolved standalone item into a refusal (enforcement is P-013)', async () => {
+    const deps = namespacedDeps([], {});
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { id: 'WI-orphan', kind: 'change', harness: 'papercusp', payload: null } },
+      deps,
+    );
+
+    // D-012 REQUIRES a behavior-changing item to resolve clauses; D-013 assigns the
+    // refusal to P-013. So this reports and passes — asserting both together is what
+    // stops enforcement from leaking in unnoticed.
+    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ applicable: false, checked: [] });
+    expect(result.impactReport).toContain('Reported, not enforced');
+  });
+
+  it('reports an edge pinned to a superseded revision instead of dropping it', async () => {
+    const deps = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
+      'other-plan': [{ ...OTHER_PLAN_CLAUSE, revision: 3, currentRevision: 3 }],
+    });
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { id: 'WI-101', kind: 'bug', harness: 'papercusp', payload: null } },
+      deps,
+    );
+
+    // A silently-dropped stale edge is a coverage claim against a since-revised promise.
+    expect(result.impactReport).toContain('edge@1 vs current@3');
+  });
+
+  it('keeps a draft clause non-enforceable until promotion makes it active', async () => {
+    const asDraft = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
+      'other-plan': [{ ...OTHER_PLAN_CLAUSE, lifecycleStatus: 'draft' }],
+    });
+    const draftResult = await specTestAdequacyCompletionGate(
+      { workItem: { id: 'WI-101', kind: 'bug', harness: 'papercusp', payload: null } },
+      asDraft,
+    );
+    // Candidate inputs are non-enforceable until promoted (D-012), so the clause is
+    // resolved but contributes no enforceable obligation to name.
+    expect(draftResult.impactReport ?? '').not.toContain('other-plan/SPEC-900-01@1');
+
+    const asActive = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
+      'other-plan': [OTHER_PLAN_CLAUSE],
+    });
+    const activeResult = await specTestAdequacyCompletionGate(
+      { workItem: { id: 'WI-101', kind: 'bug', harness: 'papercusp', payload: null } },
+      asActive,
+    );
+    // The promotion is the only difference between the two runs — a positive control,
+    // without which "draft is invisible" is indistinguishable from "nothing resolves".
+    expect(activeResult.impactReport).toContain('other-plan/SPEC-900-01@1');
+  });
+});
