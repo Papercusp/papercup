@@ -19,6 +19,7 @@ vi.mock('../../../cpu-task-worker', () => ({
 }));
 
 type RestRoute = {
+  auth?: unknown;
   handler: (req: Request) => Promise<Response>;
 };
 
@@ -31,6 +32,10 @@ beforeEach(() => {
 });
 
 describe('GET /zero-harness/rest-query stale-process diagnosis', () => {
+  it('keeps the sync read surface loopback-only', async () => {
+    expect((await route()).auth).toBe('loopback');
+  });
+
   it('turns an ESM link failure into an actionable stale-operator response', async () => {
     resolveNamedQueryMock.mockRejectedValueOnce(
       new Error(
