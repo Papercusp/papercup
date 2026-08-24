@@ -66,11 +66,40 @@ export interface SystemActionOptions {
    * provides the one-big-step "re-run from the top" recovery semantics.
    */
   ownSteps?: boolean;
+  /**
+   * EI-18752496371939475 — how this action's routine ROW is expected to come into
+   * existence. This is the third direction of the handler/registration cross-check:
+   * a handler can be perfectly registered and still be dead code because no
+   * `harness_shared.routines` row targets `system:<name>`, so it never fires. Two
+   * guards already cover the other directions (an ACTIVE row whose handler is not
+   * registered; a handler that is never `registerSystemAction`ed at all) — nothing
+   * compared the registered set against the rows that actually exist, which is the
+   * code↔DATA direction. A seed script that is written but never RUN is green code
+   * doing nothing, invisible to every test in the tree.
+   *
+   *  - `'standing'` (the DEFAULT): a row is expected to exist in any workspace that
+   *    runs routines, normally created once by a `seed-<name>-routine.ts` script. Its
+   *    absence means the seed was never run → reported by `validateActiveRoutines`
+   *    as an `unscheduledSystemActions` offender.
+   *  - `'on-demand'`: rows are materialized per OBJECT at runtime (per goal, plan,
+   *    blueprint, harness, hive…) or the handler is invoked directly. Having zero
+   *    rows is normal — the action is exempt from that check.
+   *
+   * The default is deliberately the LOUD one: a new action added without a thought
+   * about scheduling should surface, not sit silent. Declaring it here rather than in
+   * a separate allowlist keeps the fact next to the thing it describes, so it cannot
+   * drift out of step with the registration it is about.
+   */
+  scheduling?: SystemActionScheduling;
 }
+
+/** How a system action's routine row is expected to exist. See `SystemActionOptions.scheduling`. */
+export type SystemActionScheduling = 'standing' | 'on-demand';
 
 export interface SystemActionEntry {
   fn: SystemAction;
   ownSteps: boolean;
+  scheduling: SystemActionScheduling;
 }
 
 /** The reserved `target_role` prefix that routes a routine to a system action. */
