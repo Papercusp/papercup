@@ -68,7 +68,17 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
       headless: true,
       mode: 'auto',
       deferSpawn: false,
+      kickoff: null,
     });
+  });
+
+  it('threads the kickoff brief to launch-su as the first turn (P-017)', async () => {
+    const d = deps();
+    await launchGoalHolderSession(
+      { workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1', kickoffPrompt: 'first-turn brief' },
+      d,
+    );
+    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ kickoff: 'first-turn brief' }));
   });
 
   it('surfaces a resolver refusal and never calls launch-su', async () => {

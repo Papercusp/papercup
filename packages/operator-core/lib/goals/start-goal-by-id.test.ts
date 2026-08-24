@@ -188,6 +188,7 @@ describe('startGoalById — launch then attach', () => {
       harnessSlug: 'papercusp',
       launcherOwnerId: 'trigger-binding-7',
       deferSpawn: false,
+      kickoffPrompt: null,
     });
     expect(attach).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -204,6 +205,14 @@ describe('startGoalById — launch then attach', () => {
     await run(deps, { input: { deferSpawn: true } });
     expect(launch).toHaveBeenCalledWith(expect.objectContaining({ deferSpawn: true, launcherOwnerId: null }));
     expect(attach).toHaveBeenCalledWith(expect.objectContaining({ setBy: 'goal-start-by-id' }));
+  });
+
+  it('threads kickoffPrompt to the launch door (P-017 package starts brief their holder)', async () => {
+    const { deps, launch } = makeDeps();
+    await run(deps, { input: { kickoffPrompt: 'GOAL brief: keep the queue drained' } });
+    expect(launch).toHaveBeenCalledWith(
+      expect.objectContaining({ kickoffPrompt: 'GOAL brief: keep the queue drained' }),
+    );
   });
 
   it('a launch failure propagates as a throw and nothing is attached', async () => {

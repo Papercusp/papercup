@@ -57,7 +57,7 @@ import {
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import { GOAL_HOLDER_DEFAULTS } from '../goal-launch-settings-shared';
 import { evaluateGoalStartInputs } from './goal-io-validation';
-import { startGoalById, type StartGoalByIdResult } from './start-goal-by-id';
+import { startGoalById } from './start-goal-by-id';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal } from './drain-fleet-mint';
 
 /**
