@@ -18,6 +18,7 @@ import releaseTrace from '../release/trace';
 import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
 import eventsAwait from '../events/await';
+import complete from '../work_items/complete';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -165,6 +166,33 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('path?:string');
     expect(entry?.argSchema).toContain('sha?:string');
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
+  });
+
+  it('projects root anyOf and oneOf branches with their required-key hint', () => {
+    for (const keyword of ['anyOf', 'oneOf'] as const) {
+      const compact = compactSchemaForResult({
+        [keyword]: [
+          { type: 'object', required: ['path'], properties: { path: { type: 'string' }, sha: { type: 'string' } } },
+          { type: 'object', required: ['sha'], properties: { path: { type: 'string' }, sha: { type: 'string' } } },
+        ],
+      });
+
+      expect(compact).toBe('one-of:path|sha; path?:string; sha?:string');
+    }
+  });
+
+  it('keeps work_items:complete assumptions visible in the bounded discovery schema', () => {
+    expect(complete.name).toBe('work_items:complete');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'work_items:complete');
+    const schema = schemaByTool.get('work_items:complete');
+    const compact = compactSchemaForResult(schema);
+
+    expect(schema).toMatchObject({ anyOf: expect.any(Array) });
+    expect(entry?.argSchema).toContain('assumptions?');
+    expect(compact).toContain('one-of:items');
+    expect(compact).toContain('assumptions?');
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 });
 
