@@ -355,4 +355,6 @@ export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
   }
 }
 
-registerSystemAction('plan-run', handlePlanRun);
+// `scheduling: 'on-demand'` (EI-18752496371939475): one row per scheduled PLAN, created by
+// plans:arm-schedule — not a standing workspace-wide row to seed.
+registerSystemAction('plan-run', handlePlanRun, { scheduling: 'on-demand' });

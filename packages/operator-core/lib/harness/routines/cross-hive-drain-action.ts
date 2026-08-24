@@ -79,6 +79,13 @@ export async function runCrossHiveDrainTick(
   return { delivered, pendingTotal, drainedBoundaries };
 }
 
-registerSystemAction('cross-hive-outbox-drain', async (ctx: SystemActionCtx) => {
-  await runCrossHiveDrainTick(ctx);
-});
+// `scheduling: 'on-demand'` (EI-18752496371939475): armed per HIVE by
+// `arm-hive-cross-hive-drain.ts` as hives are created, not seeded once per workspace. A
+// workspace with no hives legitimately has zero rows.
+registerSystemAction(
+  'cross-hive-outbox-drain',
+  async (ctx: SystemActionCtx) => {
+    await runCrossHiveDrainTick(ctx);
+  },
+  { scheduling: 'on-demand' },
+);

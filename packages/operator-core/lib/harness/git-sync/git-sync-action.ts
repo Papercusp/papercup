@@ -4627,5 +4627,8 @@ registerSystemAction(
   async (ctx: SystemActionCtx): Promise<void> => {
     await handleGitSync(ctx);
   },
-  { ownSteps: true },
+  // `scheduling: 'on-demand'` (EI-18752496371939475): one row per HARNESS, ensured by
+  // `git-sync-routine.ts` as harnesses are registered — not a standing workspace-wide row a
+  // seed script creates. A workspace with no harnesses yet legitimately has zero rows.
+  { ownSteps: true, scheduling: 'on-demand' },
 );

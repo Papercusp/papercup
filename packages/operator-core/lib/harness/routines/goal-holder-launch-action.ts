@@ -145,6 +145,13 @@ export async function runGoalHolderLaunchAction(
   return result;
 }
 
-registerSystemAction('goal-holder-launch', async (ctx) => {
-  await runGoalHolderLaunchAction(ctx);
-});
+// `scheduling: 'on-demand'` (EI-18752496371939475): rows are materialized per GOAL, carrying
+// that goal's id in `payload_template` (see register-system-actions.ts), not seeded once per
+// workspace. Zero rows means no goal currently needs a holder — not a missing seed.
+registerSystemAction(
+  'goal-holder-launch',
+  async (ctx) => {
+    await runGoalHolderLaunchAction(ctx);
+  },
+  { scheduling: 'on-demand' },
+);

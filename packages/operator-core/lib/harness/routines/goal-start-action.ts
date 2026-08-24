@@ -67,6 +67,14 @@ export async function runGoalStartAction(
   return { started: false, goalId, refusal: res.reason };
 }
 
-registerSystemAction('goal-start', async (ctx) => {
-  await runGoalStartAction(ctx);
-});
+// `scheduling: 'on-demand'` (EI-18752496371939475): there is no standing `system:goal-start`
+// row to seed. Rows are materialized per goal schedule by `materialize-goal-schedule.ts` when
+// an owner arms one (goals:set-schedule → goals:arm-schedule), so a workspace with no armed
+// goal schedules legitimately has zero rows and must not be reported as dead code.
+registerSystemAction(
+  'goal-start',
+  async (ctx) => {
+    await runGoalStartAction(ctx);
+  },
+  { scheduling: 'on-demand' },
+);

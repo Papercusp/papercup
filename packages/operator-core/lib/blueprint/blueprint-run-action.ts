@@ -597,4 +597,6 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void | S
   console.log(`[blueprint-run] ${installSlug}: fired decider '${role}' (scheduled blueprint run)`);
 }
 
-registerSystemAction('blueprint-run', handleBlueprintRun);
+// `scheduling: 'on-demand'` (EI-18752496371939475): one row per BLUEPRINT run schedule,
+// materialized when a blueprint is armed — not a standing workspace-wide row to seed.
+registerSystemAction('blueprint-run', handleBlueprintRun, { scheduling: 'on-demand' });

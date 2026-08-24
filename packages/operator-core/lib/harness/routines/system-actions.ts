@@ -109,7 +109,14 @@ const REGISTRY = new Map<string, SystemActionEntry>();
 
 /** Register a `system:<name>` action handler. Idempotent (last registration wins). */
 export function registerSystemAction(name: string, fn: SystemAction, opts: SystemActionOptions = {}): void {
-  REGISTRY.set(name, { fn, ownSteps: opts.ownSteps === true });
+  REGISTRY.set(name, {
+    fn,
+    ownSteps: opts.ownSteps === true,
+    // Default 'standing' — see SystemActionOptions.scheduling. An action registered with no
+    // opinion about scheduling is treated as one that SHOULD have a routine row, so a missing
+    // row is reported rather than silently accepted.
+    scheduling: opts.scheduling === 'on-demand' ? 'on-demand' : 'standing',
+  });
 }
 
 /** Look up a registered system action by name (the part after `system:`). */
@@ -125,4 +132,22 @@ export function getSystemActionEntry(name: string): SystemActionEntry | undefine
 /** All registered system-action names (diagnostics / tests). */
 export function listSystemActions(): string[] {
   return [...REGISTRY.keys()];
+}
+
+/**
+ * Registered actions declared `scheduling: 'standing'` — i.e. the ones a
+ * `harness_shared.routines` row is expected to exist for (EI-18752496371939475).
+ *
+ * This is the code half of the code↔DATA cross-check run by
+ * `startup/validate-active-routines.ts`; the data half is the set of `system:<action>`
+ * `target_role`s that actually have rows. An action in this list with NO row never fires,
+ * however green its tests are.
+ *
+ * Read the LIVE registry rather than grepping for `registerSystemAction(` — a grep also
+ * picks up handlers registered inside test files (the `dogfood-*` fixtures in
+ * `dbos/ephemeral-cadence-dogfood.integration.test.ts`), which are not production actions
+ * and would be permanent false positives.
+ */
+export function listStandingSystemActions(): string[] {
+  return [...REGISTRY.entries()].filter(([, e]) => e.scheduling === 'standing').map(([name]) => name);
 }

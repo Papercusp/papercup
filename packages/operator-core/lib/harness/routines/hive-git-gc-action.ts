@@ -70,7 +70,9 @@ const potGitGcTick = async (ctx: SystemActionCtx) => {
  * POT SUBSTRATE — it gc's the p2p git store behind a Pot's git plane and
  * consults no retirement flag — so the settlement was RENAME, not retire.
  */
-registerSystemAction('pot-git-gc', potGitGcTick);
+// `scheduling: 'on-demand'` (EI-18752496371939475): one row per POT, armed as pots are
+// created — not a standing workspace-wide row to seed.
+registerSystemAction('pot-git-gc', potGitGcTick, { scheduling: 'on-demand' });
 
 /*
  * NO `hive-git-gc` ALIAS. It existed transiently during P-051 to cover the
