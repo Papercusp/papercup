@@ -2436,6 +2436,7 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
   const deadPid = (() => {
     try { return Number(readFileSync('/proc/sys/kernel/pid_max', 'utf8').trim()); } catch { return 0x7ffffff0; }
   })();
+  const checkpointLockStaleMs = 190 * 60_000;
 
   it('clamps the effective slot count to a quarter while a run is LIVE', () => {
     expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
@@ -2610,6 +2611,50 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
     expect(slotsLine(r.stderr)).toContain('slots=12');
     expect(slotsLine(r.stderr)).toContain('gate=0');
     expect(r.stderr).not.toContain('release gate is JUDGING');
+  });
+
+  it('FAILS OPEN when a live PID is beyond the writer stale horizon', () => {
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], { stdio: 'ignore' });
+    try {
+      plantLock({
+        pid: holder.pid,
+        startedAt: new Date(Date.now() - checkpointLockStaleMs - 1_000).toISOString(),
+        token: 'stale-live-pid',
+      });
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(r.status).toBe(0);
+      expect(slotsLine(r.stderr)).toContain('slots=12');
+      expect(slotsLine(r.stderr)).toContain('gate=0');
+    } finally {
+      try { holder.kill('SIGTERM'); } catch { /* already gone */ }
+    }
+  });
+
+  it('FAILS OPEN when a live PID started after the lock timestamp (recycled-PID identity mismatch)', () => {
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], { stdio: 'ignore' });
+    try {
+      // The child is guaranteed to have started after this timestamp, while the
+      // lock is still young enough that only the procfs identity check can reject it.
+      plantLock({
+        pid: holder.pid,
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        token: 'recycled-pid',
+      });
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+      expect(r.status).toBe(0);
+      expect(slotsLine(r.stderr)).toContain('slots=12');
+      expect(slotsLine(r.stderr)).toContain('gate=0');
+    } finally {
+      try { holder.kill('SIGTERM'); } catch { /* already gone */ }
+    }
+  });
+
+  it('keeps the old liveness fallback when startedAt is unparseable', () => {
+    plantLock({ pid: process.pid, startedAt: 'not-a-timestamp', token: 'unknown-age' });
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+    expect(r.status).toBe(0);
+    expect(slotsLine(r.stderr)).toContain('slots=3');
+    expect(slotsLine(r.stderr)).toContain('gate=1');
   });
 
   it('FAILS OPEN on an unparseable / pid-less / empty owner.json', () => {
