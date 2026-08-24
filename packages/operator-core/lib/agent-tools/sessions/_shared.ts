@@ -236,3 +236,122 @@ export function parseTurnRef(sourceIdOrRef: string): SessionTurnRef | null {
   }
   return { sourceKind, sessionId, turnIdx };
 }
+
+export interface SessionTurnRefResolution {
+  ref: string;
+  ok: boolean;
+  source?: 'index' | 'archive';
+  reason?: 'invalid_ref' | 'not_found';
+}
+
+interface ResolveTurnRefsDeps {
+  refresh?: typeof refreshTargetSessionBeforeRead;
+  readArchive?: (
+    sessionId: string,
+    sourceKind?: 'claude' | 'codex' | 'omp',
+  ) => Promise<{
+    sourceKind: 'claude' | 'codex' | 'omp';
+    turns: Array<{ turn_idx: number }>;
+  } | null>;
+}
+
+/**
+ * Resolve canonical session-turn refs against the same two stores as
+ * sessions:read: the bounded live index first, then the permanent archive.
+ * Active sessions are refreshed best-effort before the index query. The audit
+ * writer uses this at its write boundary so every persisted source ref is
+ * directly readable rather than merely well-shaped.
+ */
+export async function resolveSessionTurnRefs(
+  sql: Sql,
+  workspaceId: string,
+  refs: readonly string[],
+  deps: ResolveTurnRefsDeps = {},
+): Promise<SessionTurnRefResolution[]> {
+  const uniqueRefs = [...new Set(refs)];
+  const parsed = uniqueRefs.map((ref) => ({ ref, parsed: parseTurnRef(ref) }));
+  const valid = parsed.filter(
+    (entry): entry is { ref: string; parsed: SessionTurnRef } => entry.parsed !== null,
+  );
+
+  const refresh = deps.refresh ?? refreshTargetSessionBeforeRead;
+  const sessions = new Map<string, SessionTurnRef>();
+  for (const entry of valid) {
+    sessions.set(`${entry.parsed.sourceKind}\u0000${entry.parsed.sessionId}`, entry.parsed);
+  }
+  await Promise.all(
+    [...sessions.values()].map(async (target) => {
+      try {
+        await refresh(sql, target.sourceKind, target.sessionId);
+      } catch {
+        // Read-time freshness is best-effort, exactly as sessions:read; the
+        // already-indexed row and archive fallback remain authoritative.
+      }
+    }),
+  );
+
+  const wanted = valid.map(({ ref, parsed: turn }) => ({
+    ref,
+    sourceKind: turn.sourceKind,
+    sessionId: turn.sessionId,
+    turnIdx: turn.turnIdx,
+  }));
+  const indexed = wanted.length === 0
+    ? []
+    : await sql<Array<{ ref: string }>>`
+        WITH wanted AS (
+          SELECT *
+            FROM jsonb_to_recordset(${JSON.stringify(wanted)}::text::jsonb) AS w(
+              ref text, "sourceKind" text, "sessionId" text, "turnIdx" integer
+            )
+        )
+        SELECT w.ref
+          FROM wanted w
+         WHERE EXISTS (
+           SELECT 1
+             FROM harness_shared.session_turns t
+            WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
+              AND t.source_kind = w."sourceKind"
+              AND t.session_id = w."sessionId"
+              AND t.turn_idx = w."turnIdx"
+         )`;
+  const found = new Map(indexed.map((row) => [row.ref, 'index' as const]));
+
+  const missingBySession = new Map<string, typeof wanted>();
+  for (const entry of wanted) {
+    if (found.has(entry.ref)) continue;
+    const key = `${entry.sourceKind}\u0000${entry.sessionId}`;
+    const group = missingBySession.get(key) ?? [];
+    group.push(entry);
+    missingBySession.set(key, group);
+  }
+
+  const readArchive = deps.readArchive ?? (await import('../../session-archive-read')).readArchivedSessionTurns;
+  await Promise.all(
+    [...missingBySession.values()].map(async (group) => {
+      const first = group[0];
+      if (!first || !['claude', 'codex', 'omp'].includes(first.sourceKind)) return;
+      try {
+        const archive = await readArchive(
+          first.sessionId,
+          first.sourceKind as 'claude' | 'codex' | 'omp',
+        );
+        if (!archive || archive.sourceKind !== first.sourceKind) return;
+        const turns = new Set(archive.turns.map((turn) => turn.turn_idx));
+        for (const entry of group) {
+          if (turns.has(entry.turnIdx)) found.set(entry.ref, 'archive');
+        }
+      } catch {
+        // Absence/unreadability is reported uniformly as not_found below.
+      }
+    }),
+  );
+
+  return parsed.map(({ ref, parsed: turn }) => {
+    if (!turn) return { ref, ok: false, reason: 'invalid_ref' };
+    const source = found.get(ref);
+    return source
+      ? { ref, ok: true, source }
+      : { ref, ok: false, reason: 'not_found' };
+  });
+}
