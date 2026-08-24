@@ -34,6 +34,7 @@ const base: OrientationState = {
   loopArmed: false,
   loopFireWithheld: false,
   improvementTriage: null,
+  executableFrontier: null,
 };
 const withWork: OrientationState = {
   held: [
@@ -51,6 +52,7 @@ const withWork: OrientationState = {
   loopArmed: true,
   loopFireWithheld: false,
   improvementTriage: null,
+  executableFrontier: null,
 };
 
 /** The context generation most of these cases hold fixed; P-023's own block varies it. */
@@ -72,6 +74,63 @@ describe('turn-start-orientation — when it speaks', () => {
   it('says NOTHING on a turn where nothing changed — the whole economy of the fold', () => {
     const committed = fingerprintOrientation(withWork, EPOCH);
     expect(composeOrientationBlock({ state: withWork, committed, epoch: EPOCH })).toBe('');
+  });
+
+  it('emits the executable frontier on baseline, then suppresses it during unrelated changes', () => {
+    const state: OrientationState = {
+      ...withWork,
+      executableFrontier: { planSlug: 'one-plan', executableWidth: 7 },
+    };
+    expect(composeOrientationBlock({ state, committed: null, epoch: EPOCH })).toContain(
+      'frontier: 7 executable (one-plan)',
+    );
+
+    const committed = fingerprintOrientation(state, EPOCH);
+    const unrelated = composeOrientationBlock({
+      state: { ...state, unansweredDirected: 3 },
+      committed,
+      epoch: EPOCH,
+    });
+    expect(unrelated).toContain('3 directed msg(s)');
+    expect(unrelated).not.toContain('frontier:');
+  });
+
+  it('emits only real executable-frontier edges, including plan identity changes', () => {
+    const previous: OrientationState = {
+      ...withWork,
+      executableFrontier: { planSlug: 'one-plan', executableWidth: 7 },
+    };
+    const committed = fingerprintOrientation(previous, EPOCH);
+    expect(
+      composeOrientationBlock({
+        state: { ...previous, executableFrontier: { planSlug: 'one-plan', executableWidth: 1 } },
+        committed,
+        epoch: EPOCH,
+      }),
+    ).toContain('frontier: 7 -> 1 executable (one-plan)');
+    expect(
+      composeOrientationBlock({
+        state: { ...previous, executableFrontier: { planSlug: 'next-plan', executableWidth: 2 } },
+        committed,
+        epoch: EPOCH,
+      }),
+    ).toContain('frontier: one-plan@7 -> next-plan@2 executable');
+  });
+
+  it('preserves the last frontier cursor through an unknown read without repeating it later', () => {
+    const previous: OrientationState = {
+      ...withWork,
+      executableFrontier: { planSlug: 'one-plan', executableWidth: 7 },
+    };
+    const committed = fingerprintOrientation(previous, EPOCH);
+    const unknown: OrientationState = {
+      ...previous,
+      unansweredDirected: 3,
+      executableFrontier: null,
+    };
+    const out = composeOrientationBlock({ state: unknown, committed, epoch: EPOCH });
+    expect(out).not.toContain('frontier:');
+    expect(fingerprintOrientation(unknown, EPOCH, committed).frontier).toBe(committed.frontier);
   });
 
   it('speaks again the moment ANY tracked field changes', () => {
@@ -416,6 +475,7 @@ describe('turn-start-orientation — what it says', () => {
         lowerBound: false,
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       }),
+      executableFrontier: async () => ({ planSlug: 'one-plan', executableWidth: 2 }),
     });
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
@@ -430,6 +490,7 @@ describe('turn-start-orientation — what it says', () => {
         lowerBound: false,
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       },
+      executableFrontier: { planSlug: 'one-plan', executableWidth: 2 },
     });
   });
 
@@ -443,8 +504,12 @@ describe('turn-start-orientation — what it says', () => {
       improvementTriage: async () => {
         throw new Error('ranker unavailable');
       },
+      executableFrontier: async () => {
+        throw new Error('frontier unavailable');
+      },
     });
     expect(state.improvementTriage).toBeNull();
+    expect(state.executableFrontier).toBeNull();
     expect(composeOrientationBlock({ state, committed: null, epoch: EPOCH })).toBe('');
   });
 });
