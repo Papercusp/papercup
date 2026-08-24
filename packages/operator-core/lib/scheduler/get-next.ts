@@ -2282,6 +2282,57 @@ export async function getNextWorkItem(
   const ladderBudgetMs = opts.claimBudgetMs ?? CLAIM_LADDER_BUDGET_MS;
   const ladderDeadline = Date.now() + ladderBudgetMs;
 
+  // EI-21288979130080074: prepare the issue-family narrowing once so the optional
+  // cross-family priority preclaim and the existing tier-3 fallback use the same
+  // issue floors/filter/rank. The feature-side comparator uses the widened feature
+  // view because the ladder may fall through tier 2 before tier 3.
+  const widened = widenPastKind(spec.view.filter);
+  const issueKinds = issueKindsForFallback(spec.view.filter);
+  const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
+  const excludeIds = negativeIdExclusions(spec.view.filter);
+  const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
+  const specOrderSql = compileRank(sql, spec, bee);
+  const featurePriorityFilterSql = compileFilter(sql, widened);
+  const claimIssue = (priorityBeforeFeature?: boolean) =>
+    claimNextIssueWorkItem(
+      {
+        harness: opts.harness,
+        assignee: bee.assignee,
+        states: effectiveStates,
+        swarmId: opts.swarmId,
+        excludeRedundant: opts.excludeRedundant,
+        rigAvailable: opts.rigAvailable,
+        claimantFleetSlug: opts.fleetSlug,
+        claimSpecReferencesFleet,
+      },
+      ws,
+      {
+        issueKinds,
+        ids: idValues,
+        excludeIds: excludeIds.length ? excludeIds : undefined,
+        specFilterSql,
+        specOrderSql,
+        ...(priorityBeforeFeature
+          ? {
+              priorityBeforeFeature: {
+                featureFilterSql: featurePriorityFilterSql,
+                useMaintainedReady,
+              },
+            }
+          : {}),
+      },
+    );
+
+  // The normal ladder is feature-first, but an issue with an explicit priority may
+  // atomically preclaim before it when it is strictly better than every eligible
+  // feature candidate. Specs without a priority term retain the legacy family order.
+  const hasPriorityRank = spec.rank.terms.some((term) => term.expr === 'priority');
+  let issuesClaimable: boolean | undefined;
+  const issueClaimsEnabled = async () => {
+    if (issuesClaimable === undefined) issuesClaimable = await schedulerIssuesClaimableEnabled();
+    return issuesClaimable;
+  };
+
   /** One attempt at the compiled query under a given (possibly widened) filter node. */
   const attempt = async (filterNode: FilterNode | undefined): Promise<WorkItem | null> => {
     const remainingMs = ladderDeadline - Date.now();
@@ -2324,8 +2375,15 @@ export async function getNextWorkItem(
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
 
+  // Priority preclaim: this is the only issue-family path that runs before the
+  // feature tiers. Equal/worse priorities return null here and preserve feature-first.
+  let claimed: WorkItem | null = null;
+  if (hasPriorityRank && (await issueClaimsEnabled())) {
+    claimed = await claimIssue(true);
+  }
+
   // Tier 1: the spec's view exactly as authored.
-  let claimed = await attempt(spec.view.filter);
+  if (!claimed) claimed = await attempt(spec.view.filter);
 
   // Tier 2 (fallback-ladder P-005, fleet-backlog-lessons-2026-07-01, WI-1407): a spec that
   // narrowed to one feature-family `kind` and drained it must not exit — widen to the REST
@@ -2333,7 +2391,6 @@ export async function getNextWorkItem(
   // plan/tags/risk_tier/etc — intact) before reporting a miss. `widenPastKind` only rewrites
   // shapes it can simplify safely (a bare leaf or one inside a top-level `all`); when it can't
   // (kind nested in an `any`/`not`), it hands back the SAME node and this tier is a no-op.
-  const widened = widenPastKind(spec.view.filter);
   if (!claimed && widened !== spec.view.filter) {
     claimed = await attempt(widened);
   }

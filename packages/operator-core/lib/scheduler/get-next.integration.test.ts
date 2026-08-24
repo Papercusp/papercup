@@ -96,12 +96,13 @@ async function seedIssue(
   id: string,
   // `title` (EI-18665895916759270): the column a WI-3268 `not:{title glob}` exclusion leg reads —
   // defaults to the id so every existing caller keeps a non-null, non-matching title.
-  opts: { createdTs?: number; state?: string; kind?: string; title?: string } = {},
+  opts: { createdTs?: number; state?: string; kind?: string; title?: string; featureOrder?: number | null } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, title)
-    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${WS}, ${opts.createdTs ?? 0}, 0, ${opts.title ?? id})`;
+      (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, title, feature_order)
+    VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${WS}, ${opts.createdTs ?? 0}, 0,
+            ${opts.title ?? id}, ${opts.featureOrder ?? null})`;
 }
 
 async function blockByFeature(blockedId: string, blockerId: string) {
@@ -618,6 +619,42 @@ describe('get_next — DEFAULT_CLAIM_SPEC reproduces current ordering (D-003)', 
 describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue fallthrough (tier 3)', () => {
   afterAll(() => {
     setFlagOverridesForTest(null); // never leak an override past this describe block
+  });
+
+  // EI-21288979130080074: the family split must not hide an explicitly prioritized
+  // issue behind an unprioritized/promoted feature row. The issue preclaim compares
+  // both families atomically using the same feature claim floors.
+  it('cross-family priority: a strictly better issue priority preclaims before the feature tier', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedFeature('F-cross-family-feature', { featureOrder: 10, createdTs: 10 });
+    await seedIssue('EI-cross-family-better', { featureOrder: 1, createdTs: 100 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'cross-family-priority',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('EI-cross-family-better');
+  });
+
+  it.each([
+    { label: 'equal', featureOrder: 10, issueOrder: 10 },
+    { label: 'worse', featureOrder: 10, issueOrder: 20 },
+  ])('cross-family priority: an $label issue priority leaves the feature tier first', async ({ featureOrder, issueOrder }) => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedFeature('F-cross-family-feature', { featureOrder, createdTs: 10 });
+    await seedIssue('EI-cross-family-not-better', { featureOrder: issueOrder, createdTs: 100 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'cross-family-priority-boundary',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-cross-family-feature');
   });
 
   it('tier 1: an exact kind match wins outright — no widening needed', async () => {
