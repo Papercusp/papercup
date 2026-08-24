@@ -329,7 +329,10 @@ _guard_typecheck_cgroup_headroom() {
       _scope_cmd+=("$@")
       PC_HEAVY_CGROUP_REEXEC=1 "${_scope_cmd[@]}"
       _reexec_rc=$?
-      return "$_reexec_rc"
+      # This guard runs at the script's top level. Once the detached child has
+      # executed the requested command, the outer wrapper must terminate rather
+      # than fall through and execute the same command a second time.
+      exit "$_reexec_rc"
     fi
   fi
 
