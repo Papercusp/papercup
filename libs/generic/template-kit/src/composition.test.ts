@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composeTemplates, resolveRequiresClosure, validateTemplateSet } from "./composition.js";
+import { composeTemplates, resolveRequiresClosure, resolveSelection, validateTemplateSet } from "./composition.js";
 import {
   AGENTIC_DESKTOP_APP_TEMPLATE,
   PAPERCUSP_ANDROID_APP_TEMPLATE,
@@ -318,5 +318,206 @@ describe("P-015 — requires: hard pinned cross-template deps", () => {
     const composed = composeTemplates(res.templates);
     expect(composed.ok).toBe(true);
     expect(composed.composition!.appTemplateId).toBe("papercusp-agentic-desktop-app");
+  });
+});
+
+/**
+ * SELECTING decision points (plan unified-app-template-2026-08-23, D-001).
+ *
+ * These cover the SEMANTICS at the unit level; the papercusp-app template's own
+ * shipped check covers the same rules against the real registry. Both matter:
+ * the shipped check would still pass if the rule were vacuously true, so the
+ * negative cases live here, where the inputs are controlled.
+ */
+describe("selecting decision points (D-001)", () => {
+  const chassisA = aspect("chassis-a", { checks: [{ id: "boot-a", run: "checks/boot.test.ts" }] });
+  const chassisB = aspect("chassis-b", { checks: [{ id: "boot-b", run: "checks/boot.test.ts" }] });
+  const plane = aspect("plane", { checks: [{ id: "seam", run: "checks/seam.test.ts" }] });
+  const shared = aspect("shared");
+
+  /** A root whose chassis axis is REQUIRED (no empty option) and combinable. */
+  const root = (over: Partial<TemplateManifest> = {}): TemplateManifest =>
+    aspect("root", {
+      scope: "app",
+      category: "app",
+      components: [],
+      composesWith: ["chassis-a", "chassis-b", "shared"],
+      requires: [{ id: "shared", version: "1.0.0" }],
+      decisionPoints: [
+        {
+          id: "target",
+          prompt: "which chassis?",
+          selects: {
+            arity: "one-or-more",
+            options: [
+              { value: "a", templates: [{ id: "chassis-a", version: "1.0.0" }] },
+              { value: "b", templates: [{ id: "chassis-b", version: "1.0.0" }] },
+            ],
+          },
+        },
+      ],
+      ...over,
+    });
+
+  const strictRoot = (): TemplateManifest =>
+    root({
+      decisionPoints: [
+        {
+          id: "target",
+          prompt: "which chassis?",
+          selects: {
+            options: [
+              { value: "a", templates: [{ id: "chassis-a", version: "1.0.0" }] },
+              { value: "b", templates: [{ id: "chassis-b", version: "1.0.0" }] },
+            ],
+          },
+        },
+      ],
+    });
+
+  const optionalRoot = (): TemplateManifest =>
+    root({
+      decisionPoints: [
+        {
+          id: "agents",
+          prompt: "agent plane?",
+          selects: {
+            options: [
+              { value: "none", templates: [] },
+              { value: "pots", templates: [{ id: "plane", version: "1.0.0" }] },
+            ],
+          },
+        },
+      ],
+    });
+
+  const registry = [root(), chassisA, chassisB, plane, shared];
+
+  describe("composeTemplates enforces the selection structurally", () => {
+    it("REJECTS a composition satisfying no option of a required axis", () => {
+      const { ok, errors } = composeTemplates([root(), shared]);
+      expect(ok).toBe(false);
+      expect(errors.join("; ")).toContain("'target' selects a REQUIRED template axis");
+    });
+
+    it("ACCEPTS a composition satisfying one option", () => {
+      expect(composeTemplates([root(), shared, chassisA]).ok).toBe(true);
+    });
+
+    it("ACCEPTS both options when arity is 'one-or-more'", () => {
+      expect(composeTemplates([root(), shared, chassisA, chassisB]).ok).toBe(true);
+    });
+
+    it("REJECTS two options when arity is 'one' (the default)", () => {
+      const { ok, errors } = composeTemplates([strictRoot(), shared, chassisA, chassisB]);
+      expect(ok).toBe(false);
+      expect(errors.join("; ")).toContain("arity 'one'");
+    });
+
+    it("an EMPTY option makes the axis optional — zero chosen is legal", () => {
+      expect(composeTemplates([optionalRoot(), shared]).ok).toBe(true);
+      expect(composeTemplates([optionalRoot(), shared, plane]).ok).toBe(true);
+    });
+
+    it("reports a STALE PIN distinctly, not as 'you forgot to add it'", () => {
+      const bumped = aspect("chassis-a", { version: "2.0.0" });
+      const { ok, errors } = composeTemplates([root(), shared, bumped]);
+      expect(ok).toBe(false);
+      expect(errors.join("; ")).toContain("stale pin");
+    });
+  });
+
+  describe("resolveSelection expands answers into the full closure", () => {
+    it("pulls in the answered chassis and NOT the other", () => {
+      const res = resolveSelection(root(), { target: "a" }, registry);
+      expect(res.ok, res.errors.join("; ")).toBe(true);
+      const ids = res.templates.map((t) => t.id);
+      expect(ids).toContain("chassis-a");
+      expect(ids).not.toContain("chassis-b");
+      expect(ids).toContain("shared");
+      expect(res.selections).toEqual([{ decisionPointId: "target", templateId: "root", values: ["a"] }]);
+    });
+
+    it("combines answers, and the check union carries BOTH chassis suites", () => {
+      const res = resolveSelection(root(), { target: ["a", "b"] }, registry);
+      expect(res.ok, res.errors.join("; ")).toBe(true);
+      const composed = composeTemplates(res.templates);
+      expect(composed.ok).toBe(true);
+      const ids = composed.composition!.checks.map((c) => `${c.templateId}:${c.item.id}`);
+      expect(ids).toContain("chassis-a:boot-a");
+      expect(ids).toContain("chassis-b:boot-b");
+    });
+
+    it("ERRORS on an unanswered required axis rather than defaulting a chassis", () => {
+      const { ok, errors } = resolveSelection(root(), {}, registry);
+      expect(ok).toBe(false);
+      expect(errors.join("; ")).toContain("is unanswered");
+    });
+
+    it("ERRORS on an unknown answer, naming what was expected", () => {
+      const { ok, errors } = resolveSelection(root(), { target: "mainframe" }, registry);
+      expect(ok).toBe(false);
+      expect(errors.join("; ")).toContain("unknown answer 'mainframe'");
+      expect(errors.join("; ")).toContain("'a'");
+    });
+
+    it("ERRORS on several answers to an arity 'one' axis", () => {
+      const strict = strictRoot();
+      const { ok, errors } = resolveSelection(strict, { target: ["a", "b"] }, [strict, chassisA, chassisB, shared]);
+      expect(ok).toBe(false);
+      expect(errors.join("; ")).toContain("arity 'one'");
+    });
+
+    it("an OPTIONAL axis left unanswered resolves fine", () => {
+      const optional = optionalRoot();
+      const res = resolveSelection(optional, {}, [optional, plane, shared]);
+      expect(res.ok, res.errors.join("; ")).toBe(true);
+      expect(res.templates.map((t) => t.id)).not.toContain("plane");
+    });
+
+    it("follows a NESTED select — a template an answer pulls in may itself select", () => {
+      const leaf = aspect("leaf");
+      const middle = aspect("middle", {
+        decisionPoints: [
+          {
+            id: "extra",
+            prompt: "extra?",
+            selects: {
+              options: [
+                { value: "none", templates: [] },
+                { value: "leaf", templates: [{ id: "leaf", version: "1.0.0" }] },
+              ],
+            },
+          },
+        ],
+      });
+      const nesting = root({
+        decisionPoints: [
+          {
+            id: "target",
+            prompt: "which chassis?",
+            selects: {
+              options: [
+                { value: "m", templates: [{ id: "middle", version: "1.0.0" }] },
+                { value: "a", templates: [{ id: "chassis-a", version: "1.0.0" }] },
+              ],
+            },
+          },
+        ],
+      });
+      const res = resolveSelection(nesting, { target: "m", extra: "leaf" }, [nesting, middle, leaf, chassisA, shared]);
+      expect(res.ok, res.errors.join("; ")).toBe(true);
+      expect(res.templates.map((t) => t.id)).toEqual(expect.arrayContaining(["middle", "leaf"]));
+    });
+  });
+
+  it("the REAL papercusp-app root behaves this way against the reference registry", () => {
+    const real = REFERENCE_TEMPLATES.find((t) => t.id === "papercusp-app")!;
+    expect(real).toBeDefined();
+    const web = resolveSelection(real, { target: "web" }, REFERENCE_TEMPLATES);
+    expect(web.ok, web.errors.join("; ")).toBe(true);
+    expect(web.templates.map((t) => t.id)).toContain("papercusp-web-host");
+    expect(web.templates.map((t) => t.id)).not.toContain("papercusp-tauri-desktop-shell");
+    expect(resolveSelection(real, {}, REFERENCE_TEMPLATES).ok).toBe(false);
   });
 });

@@ -8,7 +8,9 @@ import {
   TAURI_DESKTOP_SHELL_TEMPLATE,
 } from "./reference-templates.js";
 import {
+  isOptionalSelect,
   parseTemplateManifest,
+  selectingDecisionPoints,
   validateTemplateAgainstCatalog,
   unenforcedMusts,
   validateTemplateManifest,
@@ -248,5 +250,119 @@ describe("P-002 structured MUSTs — musts[] + unenforcedMusts (template-prompt-
     ]) as TemplateManifest;
     expect(unenforcedMusts(m).map((x) => x.id)).toEqual(["b"]);
     expect(unenforcedMusts(valid())).toEqual([]);
+  });
+});
+
+/**
+ * `decisionPoints[].selects` (plan unified-app-template-2026-08-23, D-001) —
+ * the block that names which templates an answer pulls into a composition.
+ * It is the highest-stakes field in the manifest, so every malformed shape
+ * must be REJECTED loudly rather than silently ignored: a `selects` block the
+ * validator skipped would be a chassis nobody selected.
+ */
+describe("decision point selects (D-001)", () => {
+  const withSelects = (selects: unknown): Record<string, unknown> => ({
+    ...(valid() as unknown as Record<string, unknown>),
+    decisionPoints: [{ id: "target", prompt: "which chassis?", selects }],
+  });
+
+  const wellFormed = {
+    arity: "one-or-more",
+    options: [
+      { value: "web", summary: "the browser chassis", templates: [{ id: "papercusp-web-host", version: "0.1.0" }] },
+      { value: "desktop", templates: [{ id: "papercusp-tauri-desktop-shell", version: "0.1.0" }] },
+    ],
+  };
+
+  it("accepts a well-formed selects block", () => {
+    expect(validateTemplateManifest(withSelects(wellFormed))).toEqual({ ok: true, errors: [] });
+  });
+
+  it("accepts an omitted selects (the common, non-selecting decision point)", () => {
+    expect(validateTemplateManifest(valid()).ok).toBe(true);
+  });
+
+  it("accepts an EMPTY option — the explicit 'none' answer that makes an axis optional", () => {
+    const optional = {
+      options: [
+        { value: "none", templates: [] },
+        { value: "pots", templates: [{ id: "papercusp-ops-pots", version: "0.1.0" }] },
+      ],
+    };
+    expect(validateTemplateManifest(withSelects(optional)).ok).toBe(true);
+  });
+
+  it("rejects a non-object selects", () => {
+    const v = validateTemplateManifest(withSelects("web"));
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes("selects: must be an object"))).toBe(true);
+  });
+
+  it("rejects an unknown arity", () => {
+    const v = validateTemplateManifest(withSelects({ ...wellFormed, arity: "many" }));
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes("selects.arity"))).toBe(true);
+  });
+
+  it("rejects fewer than two options — a single answer is not a choice", () => {
+    const v = validateTemplateManifest(withSelects({ options: [wellFormed.options[0]] }));
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes("at least 2 options"))).toBe(true);
+  });
+
+  it("rejects a duplicate option value", () => {
+    const v = validateTemplateManifest(
+      withSelects({ options: [wellFormed.options[0], { ...wellFormed.options[1], value: "web" }] }),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes("duplicate option value 'web'"))).toBe(true);
+  });
+
+  it("rejects a non-kebab option value and a non-semver template pin", () => {
+    const v = validateTemplateManifest(
+      withSelects({
+        options: [
+          { value: "Web Host", templates: [{ id: "papercusp-web-host", version: "latest" }] },
+          wellFormed.options[1],
+        ],
+      }),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes("options[0].value"))).toBe(true);
+    expect(v.errors.some((e) => e.includes("options[0].templates[0].version"))).toBe(true);
+  });
+
+  it("rejects MORE THAN ONE empty option — optionality must be unambiguous", () => {
+    const v = validateTemplateManifest(
+      withSelects({ options: [{ value: "none", templates: [] }, { value: "nil", templates: [] }] }),
+    );
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes('at most one may be the explicit "none" answer'))).toBe(true);
+  });
+
+  it("rejects a template selecting ITSELF", () => {
+    const self = validateTemplateManifest(
+      withSelects({
+        options: [
+          { value: "self", templates: [{ id: (valid() as TemplateManifest).id, version: "0.1.0" }] },
+          wellFormed.options[1],
+        ],
+      }),
+    );
+    expect(self.ok).toBe(false);
+    expect(self.errors.some((e) => e.includes("cannot select itself"))).toBe(true);
+  });
+
+  it("selectingDecisionPoints returns only the selecting ones; isOptionalSelect reads the empty option", () => {
+    const m = parseTemplateManifest({
+      ...withSelects(wellFormed),
+      decisionPoints: [
+        { id: "domain", prompt: "which noun?" },
+        { id: "target", prompt: "which chassis?", selects: wellFormed },
+      ],
+    });
+    expect(selectingDecisionPoints(m).map((d) => d.id)).toEqual(["target"]);
+    expect(isOptionalSelect(wellFormed as never)).toBe(false);
+    expect(isOptionalSelect({ options: [{ value: "none", templates: [] }, wellFormed.options[1]!] } as never)).toBe(true);
   });
 });
