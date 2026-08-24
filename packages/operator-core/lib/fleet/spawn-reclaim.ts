@@ -888,6 +888,18 @@ function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null; pid?
  *
  * Use this ALONGSIDE `isSupervisedBeeRow` — never instead of it — so the filter is
  * the INTERSECTION of both, and can only ever remove rows from a kill list.
+ *
+ * TWIN, AND THE DIVERGENCE THAT CAUSED THIS BUG: watchdog.ts's `isInProcessLaunchRow`
+ * is logically identical to this function, and its docblock says it "mirrors
+ * spawn-reclaim.ts's `kind` classifier (the single source of truth)". It does not, and
+ * that is precisely how the hole opened: watchdog's copy is ids-only and stayed correct,
+ * while the classifier it claims to mirror grew an `invoke-*` short-circuit that moved
+ * 71% of the durable-spawn population to the other side of the boundary. The two were
+ * only ever kept in step by a comment. Consolidating them is safe from a module-graph
+ * standpoint (spawn-reclaim does not import watchdog, and watchdog references
+ * spawn-reclaim only in prose) but is deliberately NOT done here — it edits a hot shared
+ * file for no behavioural gain, and it is filed as follow-up work instead. Until then:
+ * a change to EITHER of these two predicates must be made to BOTH.
  */
 export function isInProcessLaunchIdentity(row: { spawn_id: string; run_id: string | null }): boolean {
   return (row.run_id ?? '').startsWith('launch-') || row.spawn_id.startsWith('durable-spawn:');
