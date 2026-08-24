@@ -44,11 +44,12 @@ import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 import { softText, clampText, LIMITS } from '../limits';
 import {
   executeBulkRunAction,
+  failRunIfExecuting,
   getRun,
   getActiveRun,
   getRunItems,
+  recordRunHeartbeat,
   reportOutcomes,
-  setRunPhase,
   settleRunPhase,
   type BulkOutcomeReport,
 } from '../../attention/bulk-run-store';
@@ -287,7 +288,8 @@ export const bulkRunManifest = defineTool({
       .optional()
       .describe('include items already reported (default false — you normally want only what is left)'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
     const featureEnabled = await bulkResolveEnabled();
     const runId = await resolveRunId(args.runId);
     if (!runId) {
@@ -305,14 +307,24 @@ export const bulkRunManifest = defineTool({
       };
     }
 
-    const run = await getRun(runId);
-    if (!run) {
+    const storedRun = await getRun(runId);
+    if (!storedRun) {
       return {
         content: [
           { type: 'text' as const, text: JSON.stringify({ ok: false, error: 'run_not_found', runId }) },
         ],
       };
     }
+    const executing = storedRun.phase === 'pending' || storedRun.phase === 'running';
+    const heartbeat = featureEnabled && executing
+      ? await recordRunHeartbeat({
+          runId,
+          resolverOwner: identity.ownerId,
+          workspaceId: storedRun.workspaceId,
+        }).catch(() => null)
+      : null;
+    const ownershipRevoked = featureEnabled && executing && heartbeat === null;
+    const run = heartbeat ?? storedRun;
 
     const rows = await getRunItems(runId);
     const wanted = args.includeReported ? rows : rows.filter((r) => r.outcome === 'pending');
@@ -353,6 +365,8 @@ export const bulkRunManifest = defineTool({
               failed: run.failed,
               filter: run.filterSnapshot,
               requestedBy: run.requestedBy,
+              heartbeatAt: run.heartbeatAt,
+              resolverOwner: run.resolverOwner,
             },
             items,
             remaining: rows.filter((r) => r.outcome === 'pending').length,
@@ -361,6 +375,7 @@ export const bulkRunManifest = defineTool({
             // process that would otherwise never notice it moved, so it reaches
             // you through this same `stopped` bit rather than a second channel.
             featureDisabled: !featureEnabled,
+            ownershipRevoked,
             // WI-41013 — the owner's Stop settles the run row; you are a
             // separate process and will not otherwise notice. When this is
             // true the run is NO LONGER YOURS: stop immediately, take no
@@ -368,7 +383,7 @@ export const bulkRunManifest = defineTool({
             // for a stopped run are refused, and a refusal after you have
             // already acted means the action happened with nothing recording
             // it — which is exactly the state to avoid.
-            stopped: !featureEnabled || !['pending', 'running'].includes(run.phase),
+            stopped: !featureEnabled || ownershipRevoked || !['pending', 'running'].includes(run.phase),
           }),
         },
       ],
@@ -434,6 +449,26 @@ export const bulkRunAct = defineTool({
         ],
       };
     }
+    const heartbeat = await recordRunHeartbeat({
+      runId,
+      resolverOwner: identity.ownerId,
+      workspaceId: run.workspaceId,
+    }).catch(() => null);
+    if (!heartbeat) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              refused: 'resolver_owner_mismatch_or_not_executing',
+              runId,
+              actionDispatched: false,
+            }),
+          },
+        ],
+      };
+    }
     const row = (await getRunItems(runId)).find((item) => item.itemId === args.itemId);
     if (!row) {
       return {
@@ -477,6 +512,7 @@ export const bulkRunAct = defineTool({
         confidence: args.confidence ?? null,
         consulted: args.consulted === true,
         consultReply: clampText(args.consultReply, LIMITS.ANNOTATION)?.trim() ?? null,
+        resolverOwner: identity.ownerId,
         workspaceId: run.workspaceId,
         async execute() {
           // Re-read INSIDE the run-row authority window. A manifest read is
@@ -648,7 +684,8 @@ export const bulkRunReport = defineTool({
     .refine((a) => Boolean(a.items?.length) || (Boolean(a.itemId) && Boolean(a.outcome)), {
       message: 'pass `{ itemId, outcome }` (one) or `items:[{ itemId, outcome }]` (many)',
     }),
-  async handler(args) {
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
     const runId = await resolveRunId(args.runId);
     if (!runId) {
       return {
@@ -674,6 +711,29 @@ export const bulkRunReport = defineTool({
               wrote: 0,
               message:
                 "Bulk resolve has been turned OFF by the owner while this run was in flight. Nothing from this report was written. STOP: take no further action on any item in this run, and do NOT re-route the work to the item's own verb outside the run. If you already took an action before this refusal, say so plainly in your final message rather than retrying or hiding it.",
+            }),
+          },
+        ],
+      };
+    }
+    const run = await getRun(runId);
+    const heartbeat = run
+      ? await recordRunHeartbeat({
+          runId,
+          resolverOwner: identity.ownerId,
+          workspaceId: run.workspaceId,
+        }).catch(() => null)
+      : null;
+    if (!heartbeat) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              refused: 'resolver_owner_mismatch_or_not_executing',
+              runId,
+              wrote: 0,
             }),
           },
         ],
@@ -736,7 +796,12 @@ export const bulkRunReport = defineTool({
 
     let unknown: string[] = [];
     if (accepted.length > 0) {
-      const res = await reportOutcomes({ runId, outcomes: accepted });
+      const res = await reportOutcomes({
+        runId,
+        outcomes: accepted,
+        resolverOwner: identity.ownerId,
+        workspaceId: heartbeat.workspaceId,
+      });
       unknown = res.unknown;
 
       // WI-41013 — the run was stopped (or settled) between your last read and
@@ -819,13 +884,27 @@ export const bulkRunSettle = defineTool({
     }
 
     const run = args.failed
-      ? await setRunPhase({
+      ? await failRunIfExecuting({
           runId,
-          phase: 'failed',
           resolverOwner: identity.ownerId,
           error: clampText(args.error, LIMITS.ANNOTATION)?.trim() || 'resolver abandoned the run',
         })
       : await settleRunPhase({ runId, resolverOwner: identity.ownerId });
+
+    if (!run) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              refused: 'resolver_owner_mismatch_or_not_executing',
+              runId,
+            }),
+          },
+        ],
+      };
+    }
 
     try {
       await notifyBulkRunChanged();
@@ -840,11 +919,11 @@ export const bulkRunSettle = defineTool({
           text: JSON.stringify({
             ok: true,
             runId,
-            phase: run?.phase ?? null,
-            autoResolved: run?.autoResolved ?? 0,
-            recommended: run?.recommended ?? 0,
-            skipped: run?.skipped ?? 0,
-            failed: run?.failed ?? 0,
+            phase: run.phase,
+            autoResolved: run.autoResolved,
+            recommended: run.recommended,
+            skipped: run.skipped,
+            failed: run.failed,
           }),
         },
       ],
