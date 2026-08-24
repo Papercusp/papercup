@@ -267,9 +267,23 @@ export default defineTool({
         },
       ]),
     );
+    // The operator process does not run inside the caller's psu shell, so its
+    // inherited PAPERCUSP_SID is either absent or belongs to a different
+    // session. Resolve the caller through the shared coordination identity
+    // seam and explicitly bind that id to every child, including foreground
+    // verifier commands. If this context cannot be attributed, clear the
+    // inherited value rather than letting a stale operator identity authorize
+    // a verifier against the wrong desktop.
+    let callerSid = '';
+    try {
+      callerSid = resolveAgentIdentity(ctx as unknown as ResolveIdentityCtx).ownerId.trim();
+    } catch {
+      callerSid = '';
+    }
     const childEnv = {
       ...(desktopEnv ?? {}),
       ...integrationEnv,
+      PAPERCUSP_SID: callerSid,
     };
     const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
     const integrationHeader =

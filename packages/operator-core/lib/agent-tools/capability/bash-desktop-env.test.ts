@@ -37,8 +37,9 @@ const bash = bashTool as unknown as Tool;
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-disp-'));
 
 let savedDisplay: string | undefined;
+let savedPapercuspSid: string | undefined;
 
-function makeCtx(harnessSlug?: string) {
+function makeCtx(harnessSlug?: string, over: Record<string, unknown> = {}) {
   return {
     projectDir: STATE,
     stateDir: STATE,
@@ -46,6 +47,7 @@ function makeCtx(harnessSlug?: string) {
     signal: new AbortController().signal,
     emit: () => {},
     role: 'cup',
+    ...over,
   } as never;
 }
 
@@ -67,11 +69,15 @@ function fakeLease(display: string) {
 describe('capability:bash — DISPLAY from the hive desktop lease (Gap C)', () => {
   beforeEach(() => {
     savedDisplay = process.env.DISPLAY;
+    savedPapercuspSid = process.env.PAPERCUSP_SID;
     process.env.DISPLAY = ':5'; // a sentinel host-seat value: proves the lease overrides it, and that it is otherwise stripped
+    process.env.PAPERCUSP_SID = 'operator-process-sid';
   });
   afterEach(async () => {
     if (savedDisplay === undefined) delete process.env.DISPLAY;
     else process.env.DISPLAY = savedDisplay;
+    if (savedPapercuspSid === undefined) delete process.env.PAPERCUSP_SID;
+    else process.env.PAPERCUSP_SID = savedPapercuspSid;
     await releaseAllHiveDesktops();
     __resetProvisioner();
     __resetBashJobs();
@@ -99,6 +105,17 @@ describe('capability:bash — DISPLAY from the hive desktop lease (Gap C)', () =
     // No ctx.harnessSlug → no lease lookup → no DISPLAY bound; the inherited host seat
     // (:5) is stripped, never passed through.
     expect(r.content[0].text).toContain('D=[]');
+  });
+
+  it("binds the resolved caller's PAPERCUSP_SID instead of the operator process identity", async () => {
+    const callerSid = 'su-caller-session';
+    const r = await bash.handler(
+      { command: 'printf "SID=[%s]" "$PAPERCUSP_SID"' },
+      makeCtx(undefined, { isSuperuser: true, uiClientId: callerSid }),
+    );
+
+    expect(r.content[0].text).toContain(`SID=[${callerSid}]`);
+    expect(r.content[0].text).not.toContain('operator-process-sid');
   });
 });
 
