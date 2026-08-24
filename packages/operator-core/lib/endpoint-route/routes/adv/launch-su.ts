@@ -68,6 +68,12 @@ const launchSu = defineTool({
       context_size?: string | null;
       resume_session_id?: string | null;
       kickoff?: { kind?: string } | null;
+      // P-017 (work-on-everything-goal): free-text first-turn brief, delivered
+      // spawn-safe via the PAPERCUSP_KICKOFF_PROMPT env (psu resolveKickoffText's
+      // fallback) — never a `--kickoff=` argv value (shell-quoting breaks inside a
+      // greeting oneliner) and never the curated `kickoff` above. NOT carried by
+      // the defer_spawn (workbench) path, which records argv only.
+      kickoff_prompt?: string | null;
       // WI-6321 (owner ask 2026-07-27): psu-parity launch options the GUI could
       // not express, so every GUI launch was silently unfleeted and on the
       // default system credential.
@@ -222,6 +228,10 @@ const launchSu = defineTool({
       return json({ status: 'error', error: kickoffV.error }, 400);
     }
     const kickoffKind = kickoffV.value?.kind ?? null;
+    const kickoffPrompt =
+      typeof body.kickoff_prompt === 'string' && body.kickoff_prompt.trim()
+        ? body.kickoff_prompt
+        : null;
 
     // Safety floor (unify-agent-spawn-chokepoint P-012): a human-initiated psu
     // launch WAIVES brain admission (the human is the judgment + the durability)
@@ -467,7 +477,14 @@ const launchSu = defineTool({
           skipMcpJson: true,
         });
         const r = await spawnHeadless({
-          envelope: { ...base, greetingCmd: oneliner, cwd: base.cwd },
+          envelope: {
+            ...base,
+            // Same delivery goal-auto-start / capability:launch-agent use: the
+            // brief rides the spawn-safe env, read by psu's resolveKickoffText.
+            ...(kickoffPrompt ? { env: { ...base.env, PAPERCUSP_KICKOFF_PROMPT: kickoffPrompt } } : {}),
+            greetingCmd: oneliner,
+            cwd: base.cwd,
+          },
           label: `${agent}${plan ? ` · ${plan}` : ''} (headless)`,
           // The workspace's fleet-logs dir — NON-repo, so git-sync never tries to
           // commit a session log into the staging tree.
@@ -536,7 +553,13 @@ const launchSu = defineTool({
           // behaves exactly as it did before, printing to the window only.
           receiptPath: psuLaunchLogPath(ownerId),
         }),
-        env: { ...process.env, PAPERCUSP_OPERATOR_URL: resolveSpawnHostOperatorBaseUrl() },
+        env: {
+          ...process.env,
+          PAPERCUSP_OPERATOR_URL: resolveSpawnHostOperatorBaseUrl(),
+          // The bash -lc child inherits this env (the operator-URL var above
+          // already rides the same seam) — spawn-safe, unlike a --kickoff argv.
+          ...(kickoffPrompt ? { PAPERCUSP_KICKOFF_PROMPT: kickoffPrompt } : {}),
+        },
       });
       spawned = r.ok ? r : { ok: false, error: r.error };
     }

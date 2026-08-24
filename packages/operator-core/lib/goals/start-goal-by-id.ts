@@ -76,8 +76,9 @@ export interface StartGoalByIdInput {
   /** Test/probe seam, forwarded to the launch door: record without spawning. */
   deferSpawn?: boolean;
   /**
-   * First-turn brief for the spawned holder, threaded to launch-su's `kickoff`
-   * (psu delivers it as the fresh CLI's first turn). Omitted ⇒ the holder
+   * First-turn brief for the spawned holder, threaded to launch-su's
+   * `kickoff_prompt` (the spawn-safe PAPERCUSP_KICKOFF_PROMPT env; psu
+   * delivers it as the fresh CLI's first turn). Omitted ⇒ the holder
    * re-orients from its GOAL-mode contract alone — the pre-P-017 behavior for
    * every trigger/schedule/watchdog leg. The package start door (P-017) passes
    * `buildGoalKickoffBrief` output here so a deliberate start briefs its agent

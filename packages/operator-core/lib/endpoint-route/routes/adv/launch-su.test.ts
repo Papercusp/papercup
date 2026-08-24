@@ -33,7 +33,7 @@ const spawnInTerminalMock = vi.fn(async (_opts: { oneliner: string; env: NodeJS.
   likelyOpened: true,
 }));
 const spawnHeadlessMock = vi.fn(
-  async (_opts: { envelope: { greetingCmd: string; cwd: string }; label: string; logDir: string }) => ({
+  async (_opts: { envelope: { greetingCmd: string; cwd: string; env?: NodeJS.ProcessEnv }; label: string; logDir: string }) => ({
     status: 'ok' as string,
     terminal: 'headless (log: /tmp/fleet-logs/x.log)',
     pid: 5151 as number | undefined,
@@ -189,6 +189,27 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(spawnInTerminalMock).toHaveBeenCalledTimes(1);
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(headedOneliner()).not.toContain('--headless');
+  });
+
+  it('kickoff_prompt rides the spawn-safe PAPERCUSP_KICKOFF_PROMPT env into BOTH spawn shapes (P-017)', async () => {
+    await launch({ headless: true, kickoff_prompt: 'GOAL brief: keep draining' });
+    expect(spawnHeadlessMock.mock.calls[0]![0].envelope.env?.PAPERCUSP_KICKOFF_PROMPT).toBe(
+      'GOAL brief: keep draining',
+    );
+    // Never an argv token — free text inside a greeting oneliner breaks quoting
+    // (the exact reason resolveKickoffText has an env fallback).
+    expect(headlessOneliner()).not.toContain('kickoff');
+
+    vi.clearAllMocks();
+    await launch({ kickoff_prompt: 'headed brief' });
+    expect(spawnInTerminalMock.mock.calls[0]![0].env.PAPERCUSP_KICKOFF_PROMPT).toBe('headed brief');
+    expect(headedOneliner()).not.toContain('kickoff');
+  });
+
+  it('an omitted or blank kickoff_prompt sets no env var', async () => {
+    await launch({ headless: true, kickoff_prompt: '   ' });
+    const env = spawnHeadlessMock.mock.calls[0]![0].envelope.env ?? {};
+    expect('PAPERCUSP_KICKOFF_PROMPT' in env).toBe(false);
   });
 
   /**

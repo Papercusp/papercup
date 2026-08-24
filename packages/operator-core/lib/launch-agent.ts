@@ -65,6 +65,14 @@ export interface LaunchAgentOpts extends LaunchOpts {
    */
   contextSize?: SuContextSize;
   /**
+   * P-017 (work-on-everything-goal): free-text first-turn brief for the spawned
+   * session, delivered via the spawn-safe PAPERCUSP_KICKOFF_PROMPT env
+   * (launch-su threads it into the child env; psu's resolveKickoffText reads
+   * it). DISTINCT from the inherited curated `kickoff` ({ kind: 'new-plan' }),
+   * which selects an in-repo brief file — this one carries the text itself.
+   */
+  kickoffPrompt?: string | null;
+  /**
    * WI-6321 — psu-parity launch options. Before these, a GUI launch could express
    * neither, so every one was silently unfleeted and on the default system
    * credential while `psu` offered both.
@@ -171,6 +179,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     context_size: opts.contextSize ?? null,
     resume_session_id: opts.resumeSessionId ?? null,
     kickoff: opts.kickoff ?? null,
+    kickoff_prompt: opts.kickoffPrompt ?? null,
     defer_spawn: opts.deferSpawn ?? false,
     // WI-6321 — psu parity. Null-safe: an omitted option keeps the previous
     // behaviour exactly (launch-su treats null as "not supplied").
