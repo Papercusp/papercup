@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_LEADER_BLOCKER_STALL_THRESHOLD_HOURS,
   computeLeaderBlockerStallAlert,
+  computeLeaderBlockerStallView,
   type LeaderBlockerStallAlertInput,
+  type LeaderBlockerStallRankedRow,
 } from './leader-blocker-stall-alert';
 
 const row = (over: Partial<LeaderBlockerStallAlertInput> = {}): LeaderBlockerStallAlertInput => ({
@@ -12,6 +14,16 @@ const row = (over: Partial<LeaderBlockerStallAlertInput> = {}): LeaderBlockerSta
   holderId: null,
   holderLive: null,
   hoursSinceProgress: 5,
+  ...over,
+});
+
+const rankedRow = (over: Partial<LeaderBlockerStallRankedRow> = {}): LeaderBlockerStallRankedRow => ({
+  rank: 1,
+  ref: 'work_item:WI-40086',
+  workItemRefs: ['WI-40086'],
+  openBlockedCount: 2,
+  hoursSinceProgress: 5,
+  holder: { state: 'unowned', count: 0, agents: [], truncated: false },
   ...over,
 });
 
@@ -111,5 +123,128 @@ describe('computeLeaderBlockerStallAlert', () => {
     const verdict = computeLeaderBlockerStallAlert(row({ fleet: null }));
     if (verdict.alert !== true) throw new Error('expected the alert to fire');
     expect(verdict.falsifier.check).toBe('fleet:assignments { include_stale: true }');
+  });
+});
+
+describe('computeLeaderBlockerStallView', () => {
+  it('selects the highest-ranked known alert and names its work-item identity', () => {
+    const view = computeLeaderBlockerStallView({
+      fleet: 'loop-observability',
+      rows: [
+        rankedRow({ rank: 2, workItemRefs: ['WI-2'] }),
+        rankedRow({ rank: 1, workItemRefs: ['WI-1'], hoursSinceProgress: 8 }),
+      ],
+    });
+
+    expect(view.status).toBe('alert');
+    expect(view.row).toEqual({ rank: 1, itemRef: 'WI-1' });
+    expect(view.alert).toBe(true);
+  });
+
+  it('lets a known alert dominate an earlier unknown row', () => {
+    const view = computeLeaderBlockerStallView({
+      rows: [rankedRow({ rank: 1, hoursSinceProgress: null }), rankedRow({ rank: 2, workItemRefs: ['WI-alert'] })],
+    });
+
+    expect(view.status).toBe('alert');
+    expect(view.row).toEqual({ rank: 2, itemRef: 'WI-alert' });
+  });
+
+  it('returns clear only when every ranked row is a known negative', () => {
+    expect(
+      computeLeaderBlockerStallView({
+        rows: [
+          rankedRow({ rank: 1, openBlockedCount: 0 }),
+          rankedRow({
+            rank: 2,
+            holder: {
+              state: 'held',
+              count: 1,
+              agents: [{ agentId: 'su-live', alive: true }],
+              truncated: false,
+            },
+          }),
+        ],
+      }),
+    ).toEqual({ status: 'clear', alert: false, thresholdHours: 4, checkedRows: 2 });
+  });
+
+  it('keeps the highest-ranked unknown explicit when no row proves an alert', () => {
+    const view = computeLeaderBlockerStallView({
+      rows: [rankedRow({ rank: 2, hoursSinceProgress: null }), rankedRow({ rank: 1, openBlockedCount: null })],
+    });
+
+    expect(view.status).toBe('unknown');
+    expect(view.row).toEqual({ rank: 1, itemRef: 'WI-40086' });
+    expect(view.unknown).toEqual({ code: 'open-blocked-count-unmeasured' });
+    expect(view.checkedRows).toBe(2);
+  });
+
+  it('treats a visible live holder as a complete falsifier even when the sample is truncated', () => {
+    const view = computeLeaderBlockerStallView({
+      rows: [
+        rankedRow({
+          holder: {
+            state: 'held',
+            count: 5,
+            agents: [
+              { agentId: 'su-dead', alive: false },
+              { agentId: 'su-live', alive: true },
+            ],
+            truncated: true,
+          },
+        }),
+      ],
+    });
+
+    expect(view.status).toBe('clear');
+  });
+
+  it('does not infer all holders are dead from a truncated non-live sample', () => {
+    const view = computeLeaderBlockerStallView({
+      rows: [
+        rankedRow({
+          holder: {
+            state: 'held',
+            count: 4,
+            agents: [{ agentId: 'su-dead', alive: false }],
+            truncated: true,
+          },
+        }),
+      ],
+    });
+
+    expect(view.status).toBe('unknown');
+    expect(view.unknown).toEqual({ code: 'holder-ownership-unmeasured' });
+  });
+
+  it('fires when a complete holder population is entirely non-live', () => {
+    const view = computeLeaderBlockerStallView({
+      rows: [
+        rankedRow({
+          holder: {
+            state: 'held',
+            count: 2,
+            agents: [
+              { agentId: 'su-dead-a', alive: false },
+              { agentId: 'su-dead-b', alive: false },
+            ],
+            truncated: false,
+          },
+        }),
+      ],
+    });
+
+    expect(view.status).toBe('alert');
+    expect(view.reason).toContain('held by non-live session su-dead-a');
+  });
+
+  it('treats a measured empty ranking as clear and normalizes the threshold', () => {
+    expect(computeLeaderBlockerStallView({ rows: [], thresholdHours: -1 })).toEqual({
+      status: 'clear',
+      alert: false,
+      thresholdHours: 4,
+      checkedRows: 0,
+    });
   });
 });

@@ -49,6 +49,26 @@ export interface LeaderBlockerStallAlertInput {
   thresholdHours?: number;
 }
 
+/**
+ * Structural subset of P-006's ranked leader-bottleneck row consumed by this
+ * detector. Keeping the reducer dependent on the response contract instead of
+ * its producer type prevents a graph-read cycle and makes the no-second-read
+ * boundary executable in a pure unit test.
+ */
+export interface LeaderBlockerStallRankedRow {
+  rank: number;
+  ref: string;
+  workItemRefs?: readonly string[];
+  openBlockedCount: number | null | undefined;
+  hoursSinceProgress: number | null | undefined;
+  holder: {
+    state: 'held' | 'unowned';
+    count: number;
+    agents: ReadonlyArray<{ agentId: string; alive: boolean }>;
+    truncated: boolean;
+  };
+}
+
 export type LeaderBlockerStallAlertEvaluation =
   | {
       alert: true;
@@ -68,6 +88,31 @@ export type LeaderBlockerStallAlertEvaluation =
       reason: string;
       unknown: { code: LeaderBlockerStallUnknownCode };
       falsifier?: undefined;
+    };
+
+export type LeaderBlockerStallView =
+  | {
+      status: 'alert';
+      alert: true;
+      thresholdHours: number;
+      row: { rank: number; itemRef: string };
+      reason: string;
+      falsifier: AlertFalsifier;
+    }
+  | {
+      status: 'clear';
+      alert: false;
+      thresholdHours: number;
+      checkedRows: number;
+    }
+  | {
+      status: 'unknown';
+      alert: null;
+      thresholdHours: number;
+      checkedRows: number;
+      row: { rank: number; itemRef: string };
+      reason: string;
+      unknown: { code: LeaderBlockerStallUnknownCode };
     };
 
 function measuredNonNegative(value: number | null | undefined): value is number {
@@ -170,5 +215,111 @@ export function computeLeaderBlockerStallAlert(input: LeaderBlockerStallAlertInp
       `no progress for ${input.hoursSinceProgress}h (threshold ${thresholdHours}h). Run the read-only ` +
       'falsifier before any reclaim, wake, or reassignment.',
     falsifier: buildBlockerStallFalsifier(input.itemRef, input.fleet, thresholdHours),
+  };
+}
+
+function rankedRowInput(
+  row: LeaderBlockerStallRankedRow,
+  fleet: string | null | undefined,
+  thresholdHours: number,
+): LeaderBlockerStallAlertInput {
+  const itemRef = row.workItemRefs?.[0] ?? row.ref;
+  if (row.holder.state === 'unowned') {
+    return {
+      itemRef,
+      fleet,
+      openBlockedCount: row.openBlockedCount,
+      holderId: null,
+      holderLive: null,
+      hoursSinceProgress: row.hoursSinceProgress,
+      thresholdHours,
+    };
+  }
+
+  // One visible live holder is a complete falsifier even when the bounded
+  // holder sample is truncated. Without one, a truncated/inconsistent sample
+  // cannot prove that every holder is non-live and must stay UNKNOWN.
+  const liveHolder = row.holder.agents.find((holder) => holder.alive);
+  if (liveHolder) {
+    return {
+      itemRef,
+      fleet,
+      openBlockedCount: row.openBlockedCount,
+      holderId: liveHolder.agentId,
+      holderLive: true,
+      hoursSinceProgress: row.hoursSinceProgress,
+      thresholdHours,
+    };
+  }
+  const completeHolderPopulation =
+    !row.holder.truncated && row.holder.count > 0 && row.holder.count === row.holder.agents.length;
+  const nonLiveHolder = completeHolderPopulation ? row.holder.agents[0] : undefined;
+  return {
+    itemRef,
+    fleet,
+    openBlockedCount: row.openBlockedCount,
+    holderId: nonLiveHolder?.agentId,
+    holderLive: nonLiveHolder ? false : undefined,
+    hoursSinceProgress: row.hoursSinceProgress,
+    thresholdHours,
+  };
+}
+
+/**
+ * Collapse the already-measured P-006 ranking into one leader-facing alarm.
+ * A known alert outranks an unknown row because it proves the incident shape
+ * exists somewhere in the measured population. Clear is returned only when
+ * every ranked row is a known negative; otherwise the highest-ranked unknown
+ * remains explicit.
+ */
+export function computeLeaderBlockerStallView(input: {
+  rows: readonly LeaderBlockerStallRankedRow[];
+  fleet?: string | null;
+  thresholdHours?: number;
+}): LeaderBlockerStallView {
+  const thresholdHours = normalizeThresholdHours(input.thresholdHours);
+  const rows = [...input.rows].sort((a, b) => a.rank - b.rank);
+  let firstUnknown:
+    | {
+        row: LeaderBlockerStallRankedRow;
+        itemRef: string;
+        evaluation: Extract<LeaderBlockerStallAlertEvaluation, { alert: null }>;
+      }
+    | undefined;
+
+  for (const row of rows) {
+    const evaluation = computeLeaderBlockerStallAlert(rankedRowInput(row, input.fleet, thresholdHours));
+    const itemRef = row.workItemRefs?.[0] ?? row.ref;
+    if (evaluation.alert === true) {
+      return {
+        status: 'alert',
+        alert: true,
+        thresholdHours,
+        row: { rank: row.rank, itemRef },
+        reason: evaluation.reason,
+        falsifier: evaluation.falsifier,
+      };
+    }
+    if (evaluation.alert === null && !firstUnknown) {
+      firstUnknown = { row, itemRef, evaluation };
+    }
+  }
+
+  if (firstUnknown) {
+    return {
+      status: 'unknown',
+      alert: null,
+      thresholdHours,
+      checkedRows: rows.length,
+      row: { rank: firstUnknown.row.rank, itemRef: firstUnknown.itemRef },
+      reason: firstUnknown.evaluation.reason,
+      unknown: firstUnknown.evaluation.unknown,
+    };
+  }
+  return {
+    status: 'clear',
+    alert: false,
+    thresholdHours,
+    checkedRows: rows.length,
   };
 }
