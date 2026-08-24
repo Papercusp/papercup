@@ -1042,7 +1042,21 @@ interface TurnRow {
  */
 export const UNENROLLED_ORIGIN_VERDICT = 'unenrolled-origin';
 
-const FILE_BACKED_SOURCE_KINDS = new Set<SourceKind>(['claude', 'omp', 'codex']);
+/**
+ * Source kinds whose `speaker='user'` rows can never carry an enrollment
+ * envelope, and whose `owner-typed` residual is therefore downgraded to
+ * `UNENROLLED_ORIGIN_VERDICT` below.
+ *
+ * EXPORTED because that downgrade has a consequence a READER must be told
+ * about: `turn_origin:'owner-typed'` is structurally unreachable for these
+ * kinds (measured 2026-08-24: 0 such rows against 18,091 `unenrolled-origin`
+ * ones), so a provenance-filtered search over a CLI session returns a
+ * guaranteed-empty result that looks exactly like "the owner never said it".
+ * `sessions:search` derives its zero-hit caveat from this set rather than
+ * restating the membership in prose, so the warning cannot drift from the
+ * rule that causes it.
+ */
+export const FILE_BACKED_SOURCE_KINDS = new Set<SourceKind>(['claude', 'omp', 'codex']);
 
 function isUnenrolledFileRow(row: Pick<TurnRow, 'source_kind' | 'speaker'>): boolean {
   return row.speaker === 'user' && FILE_BACKED_SOURCE_KINDS.has(row.source_kind as SourceKind);
