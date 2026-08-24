@@ -185,6 +185,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // harness_plans invalidates the plan directory + per-plan reads. plan_revisions
   // / plan_runs feed the audit + run panels.
   'harness_shared.harness_plans': [
+    // P-017 slice D: plan DECISIONS and the current spec are protected rows inside the
+    // prior-attempt brief, so adding a decision changes what an open panel should show.
+    'workItems.priorAttempts',
     'plans.list',
     'coord.plans',
     // plans.get (EI-7433): scoped by plan slug (mig 507's natural-key
@@ -452,6 +455,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
      would never be bridged at all and the meters would look simply broken. */
 
   'harness_shared.work_items': [
+    // P-017 slice D: the prior-attempt brief summarizes the whole plan LANE, so a
+    // SIBLING item's completion/checkpoint changes it exactly as much as a write to the
+    // item the panel is open on. Full-bust for that reason — an id-scoped rule would miss
+    // the sibling writes this panel exists to surface. Only ever mounted while a human
+    // has the section open (useSyncQuery `enabled`), so the bust costs nothing otherwise.
+    'workItems.priorAttempts',
     // Goal surfaces count OPEN and needs-human items per goal, so a state flip
     // or a new goal-stamped item moves both the rail glance and the detail page.
     'goals.list',

@@ -141,6 +141,10 @@ import { projectAuthoredFields } from '../agent-tools/coordination/message-field
 // figures deliberately DO NOT SUM and the list returns a distinct-project
 // portfolio total instead. See ./goals.
 import { resolveGoalDetail, resolveGoalsList } from './goals';
+import {
+  resolveWorkItemPriorAttempts,
+  workItemPriorAttemptsArgsSchema,
+} from './work-item-prior-attempts';
 import { trackDetached } from '../detached-imports';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
@@ -2786,6 +2790,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return item ? [item] : [];
     },
   },
+
+  // workItems.priorAttempts — P-017 slice D: the claim-time prior-attempt brief as a
+  // READ. Before this, the brief was computed at claim time and thrown away, so the only
+  // way to see "what was already tried on this lane" was to CLAIM the item — a write with
+  // side effects. Runs the SAME getClaimTimePriorAttemptBrief port the four claim paths
+  // use, so the panel cannot drift from what an agent is actually handed.
+  //
+  // MOUNTED ONLY ON DEMAND. The collector is multi-table under a 2.5s budget and measured
+  // 869–3,499 estimated tokens on real items, so the consumer gates it with
+  // `useSyncQuery({ enabled })` and nothing runs until a human opens the section.
+  //
+  // Both backing tables full-bust deliberately: the brief summarizes the whole plan LANE,
+  // so a SIBLING work-item's completion or a new plan decision changes it just as much as
+  // a write to this item does. A row-id scope would silently miss exactly the updates
+  // this panel exists to show.
+  'workItems.priorAttempts': {
+    argsSchema: workItemPriorAttemptsArgsSchema,
+    resolve: (args) => resolveWorkItemPriorAttempts(args),
+    backingTables: ['harness_shared.work_items', 'harness_shared.harness_plans'],
+  } as QueryEntry<unknown>,
 
   // workItems.depEdges — the EDGE half of the Work-tab dependency graph pane
   // (dependency-health-pane-2026-08-02 P-003). Deliberately edges ONLY: the graph's
