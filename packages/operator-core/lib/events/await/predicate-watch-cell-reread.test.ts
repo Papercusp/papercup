@@ -22,6 +22,14 @@ function spec(over: Partial<CellSpec> & Pick<CellSpec, 'cell'>): CellSpec {
   return {
     owner: 'test',
     headline: 'value.headline',
+    assessment: {
+      path: 'probe.assessment',
+      codes: {
+        current: { meaning: 'the measured value is current', safeAction: 'use the value' },
+        stale: { meaning: 'the measured value predates the subject', safeAction: 're-measure before acting' },
+      },
+      evidence: ['probe.independent'],
+    },
     falsifier: {
       field: 'probe.independent',
       measurement: 'an independent probe against the live subject',
