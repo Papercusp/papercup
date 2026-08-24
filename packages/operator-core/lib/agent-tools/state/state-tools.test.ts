@@ -74,24 +74,27 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
     cell: 'test.cell',
     owner: 'test',
     headline: 'positions.deployed',
-    assessment: {
-      path: 'assessments.deploy',
-      codes: {
-        serving: {
-          meaning: 'the running process is executing this sha.',
-          safeAction: 'Treat the deploy as live.',
-        },
-        'checked-out-not-running': {
-          meaning: 'the sha is on disk but the process was never restarted onto it.',
-          safeAction: 'Restart the serving unit before concluding the deploy took effect.',
-        },
-      },
-      evidence: ['serving.startedSinceCodeChange'],
-    },
+    assessment:
+      over.changeSignal?.kind === 'event'
+        ? null
+        : {
+            path: 'assessments.deploy',
+            codes: {
+              serving: {
+                meaning: 'the running process is executing this sha.',
+                safeAction: 'Treat the deploy as live.',
+              },
+              'checked-out-not-running': {
+                meaning: 'the sha is on disk but the process was never restarted onto it.',
+                safeAction: 'Restart the serving unit before concluding the deploy took effect.',
+              },
+            },
+            evidence: ['serving.startedSinceCodeChange'],
+          },
     nullable: false,
     callerRelativity: { kind: 'global' },
     provenance: { obtainedBy: 'git rev-list', liveExercised: true, evidence: 'run live 2026-07-27' },
-    resolver: 'git-pipeline-position.ts',
+    resolver: `fixture:${over.cell ?? 'test.cell'}`,
     visibility: { kind: 'workspace' },
     federation: { kind: 'local' },
     changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'positions.deployed' },
@@ -101,7 +104,7 @@ function spec(over: Partial<CellSpec> = {}): CellSpec {
 }
 
 /**
- * P-005 — the same spec with a DECLARED assessment.
+ * P-005 — an alternate assessed spec with the domain codes used by target tests.
  *
  * `assessment.path` is deliberately a THIRD field, distinct from both the headline
  * (`positions.deployed`) and the materiality path used above: a target-resolution test
@@ -214,7 +217,10 @@ describe('state:subscribe — R4, it DELEGATES to watch:create and registers not
   it('takes the (tool, args, path) triple from the CELL and only the comparator from the caller', async () => {
     registerCell(spec());
 
-    await subscribeTool.handler({ cell: 'test.cell', on: { op: 'eq', value: true } } as never, CTX as never);
+    await subscribeTool.handler(
+      { cell: 'test.cell', target: 'measurement', on: { op: 'eq', value: true } } as never,
+      CTX as never,
+    );
 
     expect(watchHandler).toHaveBeenCalledTimes(1);
     const sent = watchHandler.mock.calls[0][0] as Record<string, unknown>;
@@ -246,7 +252,7 @@ describe('state:subscribe — R4, it DELEGATES to watch:create and registers not
     registerCell(spec());
 
     await subscribeTool.handler(
-      { cell: 'test.cell', on: { op: 'gt', value: 3 }, once: false, interval_sec: 120 } as never,
+      { cell: 'test.cell', target: 'measurement', on: { op: 'gt', value: 3 }, once: false, interval_sec: 120 } as never,
       CTX as never,
     );
 
@@ -338,10 +344,13 @@ describe('P-021 — state:subscribe never applies materiality silently', () => {
       },
     });
 
-  it('DEFAULTS to the headline path — an existing subscription is unchanged', async () => {
+  it('keeps the headline path when the caller explicitly targets the measurement', async () => {
     registerCell(withMateriality());
 
-    await subscribeTool.handler({ cell: 'test.cell', on: { op: 'eq', value: true } } as never, CTX as never);
+    await subscribeTool.handler(
+      { cell: 'test.cell', target: 'measurement', on: { op: 'eq', value: true } } as never,
+      CTX as never,
+    );
 
     const sent = watchHandler.mock.calls[0][0] as { predicate: { path: string } };
     expect(sent.predicate.path).toBe('positions.deployed');
@@ -413,15 +422,15 @@ describe('state:subscribe — the explicit `target` (P-005 / D-007 / D-014 §4)'
     expect(sent.note).toContain('(assessment)');
   });
 
-  it('a cell with NO assessment still defaults to the measurement path — every existing subscription is unchanged', async () => {
+  it('target:"measurement" keeps an operand-free subscription on the raw path with its unannotated note', async () => {
     registerCell(spec());
 
-    await subscribeTool.handler({ cell: 'test.cell' } as never, CTX as never);
+    await subscribeTool.handler({ cell: 'test.cell', target: 'measurement' } as never, CTX as never);
 
     const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown>; note: string };
     expect(sent.predicate.path).toBe('positions.deployed');
-    // `measurement` stays unannotated: relabelling the unqualified case would churn
-    // every note in the fleet for no information.
+    // `measurement` stays unannotated: the note names the cell transition without
+    // duplicating the raw-path implementation detail.
     expect(sent.note).toBe('cell test.cell changed');
   });
 
@@ -625,7 +634,7 @@ describe('state:subscribe — omitting `on` means "wake me when it moves" (P-004
     expect(sent.predicate).toEqual({
       tool: 'dev:pipeline_position',
       args: {},
-      path: 'positions.deployed',
+      path: 'assessments.deploy',
       op: 'changed',
     });
   });
@@ -633,7 +642,10 @@ describe('state:subscribe — omitting `on` means "wake me when it moves" (P-004
   it('does NOT override an explicit `on` — a real threshold still wins', async () => {
     registerCell(spec());
 
-    await subscribeTool.handler({ cell: 'test.cell', on: { op: 'gt', value: 3 } } as never, CTX as never);
+    await subscribeTool.handler(
+      { cell: 'test.cell', target: 'measurement', on: { op: 'gt', value: 3 } } as never,
+      CTX as never,
+    );
 
     const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
     expect(sent.predicate.op).toBe('gt');
@@ -649,7 +661,7 @@ describe('state:subscribe — omitting `on` means "wake me when it moves" (P-004
     expect((sent.predicate as Record<string, unknown>).op).toBe('changed');
     // No trailing operand in the human-readable note either — "changed null" would
     // read as "compared against null", which is not what happened.
-    expect(sent.note).toBe('cell test.cell changed');
+    expect(sent.note).toBe('cell test.cell (assessment) changed');
   });
 
   it('the tool schema accepts a call with no `on` at all', () => {
@@ -699,12 +711,6 @@ describe('state:subscribe — refusal codes are queryable (P-004)', () => {
     expect(b.reason).toMatch(/declares no materiality path/);
   });
 
-  it('no_assessment — target:"assessment" on a cell that declares none', async () => {
-    const b = await codeFor({ cell: 'test.cell', target: 'assessment' }, spec());
-    expect(b.error).toBe('no_assessment');
-    expect(b.reason).toMatch(/declares no assessment/);
-  });
-
   it('target_required — a valued condition on an assessed cell with no target named', async () => {
     const b = await codeFor({ cell: 'test.cell', on: { op: 'eq', value: true } }, assessed());
     expect(b.error).toBe('target_required');
@@ -721,6 +727,8 @@ describe('state:subscribe — refusal codes are queryable (P-004)', () => {
       'cell_event_signalled',
       'subject_required',
       'no_materiality',
+      // Defensive only after D-008: a valid poll registration cannot omit its
+      // assessment, but the tool keeps this refusal for a corrupted registry row.
       'no_assessment',
       'target_required',
       'of_renamed',

@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
   openEscalation: vi.fn(async () => ({ msg_id: 'esc-test', ts: new Date(0).toISOString() })),
   resolveEscalation: vi.fn(async () => undefined),
-  mugKettleSystemEnabled: vi.fn(async () => true),
+  mugKettleSystemEnabled: vi.fn(async () => false),
 }));
 vi.mock('../agent-tools/coordination/inbox-wake', async (orig) => ({
   ...(await (orig as () => Promise<Record<string, unknown>>)()),
