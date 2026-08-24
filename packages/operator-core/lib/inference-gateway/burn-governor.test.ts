@@ -6,9 +6,12 @@ import { describe, expect, it } from 'vitest';
 import {
   HISTORY_7D_MAX_SAMPLES,
   HISTORY_7D_MIN_SPACING_MS,
+  accountBurnAction,
+  accountBurnVerdict,
   appendUtilization7dSample,
   recordAccountWindow,
   registerAccount,
+  selectAccountForSpawn,
   type AccountPool,
 } from '../deployment/account-pool';
 import {
@@ -391,5 +394,152 @@ describe('evaluateAccountBurn (composition over a rate-shaped row)', () => {
     expect(evaluateAccountBurn({ utilization7d: 0.5, utilizationAt: now }, now).action).toBe('none');
     // ...but a walled reading sheds even with zero history:
     expect(evaluateAccountBurn({ utilization7d: BURN_EXHAUSTED_UTIL, utilizationAt: now }, now).action).toBe('shed');
+  });
+});
+
+// ── Stale gate + selection wiring (WI-41147 legs a/d) ────────────────────────
+
+describe('accountBurnVerdict stale gate', () => {
+  it('never-observed reading → none, governor stands down', () => {
+    const v = accountBurnVerdict({ pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 }, T0);
+    expect(v.action).toBe('none');
+    expect(v.reason).toMatch(/never observed/);
+  });
+
+  it('stale reading (past DRAIN_UTIL_STALE_MS) → none even on an alarming trajectory', () => {
+    const rate = {
+      pausedUntil: 0,
+      lastPenaltyAt: 0,
+      penaltyCount: 0,
+      windowStartedAt: 0,
+      history7d: [
+        { at: T0 - 2 * HR, u: 0.9 },
+        { at: T0 - HR, u: 0.98 },
+      ],
+      utilization7d: 0.98,
+      utilizationAt: T0 - HR, // 1h old ≫ 10min staleness window
+      windowResetAt7d: T0 + 24 * HR,
+    };
+    const v = accountBurnVerdict(rate, T0);
+    expect(v.action).toBe('none');
+    expect(v.reason).toMatch(/stale/);
+    // ...while the SAME row with a fresh stamp sheds:
+    expect(accountBurnVerdict({ ...rate, utilizationAt: T0 }, T0).action).toBe('shed');
+  });
+});
+
+describe('selectAccountForSpawn burn wiring', () => {
+  // Build a 2-account pool: `bad` has MORE 5h headroom (would win the drain) but a burn
+  // trajectory; `ok` is flat. Selection at T0+35min keeps the last reading fresh (<10min).
+  const SEL_NOW = T0 + 35 * MIN;
+
+  function poolWith(badTrajectory: { u0: number; u1: number; resetAt?: number }): AccountPool {
+    let pool: AccountPool = { accounts: [] };
+    pool = registerAccount(pool, { id: 'bad', credentialRef: 'cred-bad' }, T0 - HR);
+    pool = registerAccount(pool, { id: 'ok', credentialRef: 'cred-ok' }, T0 - HR);
+    // `bad`: low 5h util (drain-attractive), climbing 7d util.
+    pool = recordAccountWindow(
+      pool,
+      'bad',
+      { utilization: 0.1, utilization7d: badTrajectory.u0, windowResetAt7d: badTrajectory.resetAt },
+      T0,
+    );
+    pool = recordAccountWindow(pool, 'bad', { utilization: 0.1, utilization7d: badTrajectory.u1 }, T0 + 30 * MIN);
+    // `ok`: higher 5h util (drain-unattractive), flat 7d.
+    pool = recordAccountWindow(pool, 'ok', { utilization: 0.5, utilization7d: 0.5, windowResetAt7d: T0 + 24 * HR }, T0);
+    pool = recordAccountWindow(pool, 'ok', { utilization: 0.5, utilization7d: 0.5 }, T0 + 30 * MIN);
+    return pool;
+  }
+
+  it('a SHED-trajectory account is refused the hard pin — at LOW absolute utilization, where the drain selector alone would still pick it', () => {
+    // 0.31 → 0.45 in 30min = 0.28/hr → exhausts in ~1.96h (imminent), reset 24h out → shed.
+    // Effective drain util for `bad` = max(0.1, 0.45) = 0.45 < `ok`'s 0.5, so WITHOUT the
+    // governor the drain would pick `bad` (the flag-off test below proves that) — this is the
+    // trajectory-not-threshold case the governor exists for.
+    const pool = poolWith({ u0: 0.31, u1: 0.45, resetAt: T0 + 24 * HR });
+    expect(accountBurnAction(pool.accounts[0]!, SEL_NOW)).toBe('shed');
+    const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0 });
+    expect(sel.accountId).toBe('ok');
+  });
+
+  it('a THROTTLE-trajectory account yields to a non-throttled peer (first-pass preference) despite better drain', () => {
+    // 0.30 → 0.40 in 30min = 0.2/hr → exhausts in ~3h (not imminent) BEFORE the 24h reset → throttle.
+    // Effective drain util for `bad` = 0.40 < `ok`'s 0.5 — drain alone would pick `bad`.
+    const pool = poolWith({ u0: 0.3, u1: 0.4, resetAt: T0 + 24 * HR });
+    expect(accountBurnAction(pool.accounts[0]!, SEL_NOW)).toBe('throttle');
+    const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0 });
+    expect(sel.accountId).toBe('ok');
+  });
+
+  it('when EVERY candidate is throttled the second pass still serves one (graceful, never bricks the pool)', () => {
+    let pool = poolWith({ u0: 0.5, u1: 0.55, resetAt: T0 + 24 * HR });
+    // Make `ok` throttled too.
+    pool = {
+      accounts: pool.accounts.map((a) =>
+        a.id === 'ok'
+          ? {
+              ...a,
+              rate: {
+                ...a.rate,
+                history7d: [
+                  { at: T0, u: 0.5 },
+                  { at: T0 + 30 * MIN, u: 0.56 },
+                ],
+                utilization7d: 0.56,
+                windowResetAt7d: T0 + 24 * HR,
+              },
+            }
+          : a,
+      ),
+    };
+    expect(accountBurnAction(pool.accounts[1]!, SEL_NOW)).toBe('throttle');
+    const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0 });
+    expect(sel.accountId).toBeDefined(); // still serves — throttle is a preference, not a wall
+  });
+
+  it('all-shed pool → no hard pin (the gateway unpinned failover path takes over)', () => {
+    let pool = poolWith({ u0: 0.9, u1: 0.95, resetAt: T0 + 24 * HR });
+    pool = {
+      accounts: pool.accounts.map((a) =>
+        a.id === 'ok'
+          ? {
+              ...a,
+              rate: {
+                ...a.rate,
+                history7d: [
+                  { at: T0, u: 0.88 },
+                  { at: T0 + 30 * MIN, u: 0.94 },
+                ],
+                utilization7d: 0.94,
+                windowResetAt7d: T0 + 24 * HR,
+              },
+            }
+          : a,
+      ),
+    };
+    const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0 });
+    expect(sel.accountId).toBeUndefined();
+  });
+
+  it('burnGovernor: false restores pre-governor selection (the shed-trajectory account wins on drain again)', () => {
+    // Same low-absolute-util shed trajectory as above: effective drain util 0.45 vs 0.5 means
+    // pre-governor drain picks `bad` — proving the governor (not the existing 7d wall ranking)
+    // is what flipped the choice in the shed test.
+    const pool = poolWith({ u0: 0.31, u1: 0.45, resetAt: T0 + 24 * HR });
+    const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0, burnGovernor: false });
+    expect(sel.accountId).toBe('bad'); // kill-switch semantics: byte-identical to pre-governor
+  });
+
+  it('a sticky prior account with a shed trajectory is evacuated', () => {
+    const pool = poolWith({ u0: 0.9, u1: 0.95, resetAt: T0 + 24 * HR });
+    const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0, priorAccountId: 'bad' });
+    expect(sel.accountId).toBe('ok'); // sticky would have kept 'bad'; shed breaks the pin
+  });
+
+  it('a sticky prior account with only a THROTTLE trajectory keeps the pin (cache affinity dominates)', () => {
+    const pool = poolWith({ u0: 0.5, u1: 0.55, resetAt: T0 + 24 * HR });
+    const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0, priorAccountId: 'bad' });
+    expect(sel.accountId).toBe('bad');
+    expect(sel.pinSource).toBe('sticky');
   });
 });
