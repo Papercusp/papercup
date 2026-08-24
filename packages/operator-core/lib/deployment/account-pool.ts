@@ -138,6 +138,46 @@ export interface ClaudeAccount {
   rate: AccountRateState;
 }
 
+/** One timestamped unified-7d utilization observation retained for burn-rate derivation (WI-41147). */
+export interface Utilization7dSample {
+  /** Epoch ms the reading was observed. */
+  at: number;
+  /** The unified-7d utilization fraction (1.0 = 100%) observed at `at`. */
+  u: number;
+}
+
+/** Max retained `history7d` samples per account — bounds the JSONB row (~30 bytes/sample). */
+export const HISTORY_7D_MAX_SAMPLES = 48;
+/**
+ * Minimum spacing between retained `history7d` samples. Live gateway traffic can observe the
+ * window every few seconds; retaining every reading would turn the ring into a few minutes of
+ * near-identical points (useless for an hourly-rate fit) while churning the pool row. With
+ * 5-minute spacing the 48-sample cap covers ≥4h of history — comfortably more than the burn
+ * governor's fit lookback.
+ */
+export const HISTORY_7D_MIN_SPACING_MS = 5 * 60_000;
+
+/**
+ * Append a unified-7d observation to the retained history (WI-41147). Pure. Skips (returns the
+ * input list) when the new sample is closer than `HISTORY_7D_MIN_SPACING_MS` to the last retained
+ * one, or not strictly newer (out-of-order / clock-skew guard) — the freshest reading is always
+ * available from `utilization7d`/`utilizationAt`, so history holds only well-spaced points.
+ * Non-finite junk in a hand-edited persisted row is dropped on the way through.
+ */
+export function appendUtilization7dSample(
+  history: Utilization7dSample[] | undefined,
+  sample: Utilization7dSample,
+): Utilization7dSample[] {
+  const clean = (history ?? []).filter(
+    (s) => s && Number.isFinite(s.at) && Number.isFinite(s.u),
+  );
+  if (!Number.isFinite(sample.at) || !Number.isFinite(sample.u)) return clean;
+  const last = clean[clean.length - 1];
+  if (last && sample.at - last.at < HISTORY_7D_MIN_SPACING_MS) return clean;
+  clean.push({ at: sample.at, u: sample.u });
+  return clean.length > HISTORY_7D_MAX_SAMPLES ? clean.slice(clean.length - HISTORY_7D_MAX_SAMPLES) : clean;
+}
+
 /** The rolled-up rate-limit state for one account (the Queen's projection). */
 export interface AccountRateState {
   /** Epoch ms the account is paused until; `0` = not paused. Mirrors the governor pause. */
@@ -168,6 +208,16 @@ export interface AccountRateState {
   utilization7d?: number;
   /** Epoch ms the unified-7d window resets (`anthropic-ratelimit-unified-7d-reset`). `undefined` until observed. */
   windowResetAt7d?: number;
+  /**
+   * Bounded, time-spaced history of observed `utilization7d` readings (WI-41147) — the raw
+   * material the burn-rate governor derives d(utilization7d)/dt from, so the fleet can see
+   * "this pool exhausts before its window resets" BEFORE it hits the wall. Retention rules
+   * (see `appendUtilization7dSample`): samples closer than `HISTORY_7D_MIN_SPACING_MS` to the
+   * last retained one are skipped (the freshest reading always lives in
+   * `utilization7d`/`utilizationAt` anyway), and the list is capped at
+   * `HISTORY_7D_MAX_SAMPLES` (oldest trimmed). `undefined` until first observed.
+   */
+  history7d?: Utilization7dSample[];
   /**
    * Epoch ms of the most recent `accounts:probe-capacity` attempt on this account that came back
    * `no-reading` (the probe request itself failed — network/auth/timeout — so upstream told us
@@ -477,6 +527,14 @@ export function recordAccountWindow(
         utilization7d: w.utilization7d ?? a.rate.utilization7d,
         windowResetAt7d: w.windowResetAt7d ?? a.rate.windowResetAt7d,
         utilizationAt: now,
+        // WI-41147: retain a spaced history of 7d readings so the burn governor can derive
+        // d(utilization7d)/dt. Only a real 7d observation appends — a 5h-only update leaves
+        // the history untouched (appending the STALE carried-forward 7d value would flatten
+        // the derived rate toward zero exactly when traffic is heaviest).
+        history7d:
+          w.utilization7d !== undefined
+            ? appendUtilization7dSample(a.rate.history7d, { at: now, u: w.utilization7d })
+            : a.rate.history7d,
         // A real observation just landed — any earlier "we asked and got nothing" marker is stale.
         lastProbeFailedAt: undefined,
       };
