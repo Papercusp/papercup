@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // parsers (they ARE the subject under test via the route's drop detection).
 const { writeMock, readMock, listResumableSessionsMock, readCodexHomeDiagnosticsMock } = vi.hoisted(() => ({
   writeMock: vi.fn(async (cfg: unknown) => cfg),
-  readMock: vi.fn(async () => ({
+  readMock: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
     interactiveClient: 'legacy',
     backend: 'claude-code',
     cmd: '',
@@ -21,7 +21,12 @@ const { writeMock, readMock, listResumableSessionsMock, readCodexHomeDiagnostics
     tiers: [],
     tierCeilings: {},
     resolverProfiles: {
-      'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
+      'inbox-resolve': {
+        model: null as string | null,
+        effort: null as string | null,
+        account: 'default',
+        carry: 'warm',
+      },
       'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
     },
   })),

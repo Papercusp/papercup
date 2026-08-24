@@ -216,6 +216,7 @@ describe('assembleAgentConfig — THE WIPE REGRESSION: invalid edits hold, never
 
 describe('tier compaction limit (context-trimming-tiers D-001/D-002)', () => {
   const baseInput = () => ({
+    interactiveClient: 'legacy' as const,
     backend: 'auto' as const,
     cmd: '',
     modelsJson: '',
