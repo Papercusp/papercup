@@ -1343,7 +1343,7 @@ function suggestExistingPath(
 }
 
 function completionEvidenceFromRecord(
-  rec: Omit<CompletionRecord, 'workItem'> & { workItem?: string },
+  rec: Omit<CompletionRecord, 'workItem' | 'status'> & { workItem?: string; status?: string },
 ): CompletionVerificationEvidence | undefined {
   const nested = rec.verification ?? {};
   // EI-20489220527537464: `verification` is the canonical evidence object and the
