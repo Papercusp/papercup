@@ -7,6 +7,7 @@ import {
 
 const ALL_NAMES = [
   'coord:orient', 'coord:declare-intent', 'coord:glance',
+  'mode:set',
   'work_items:get', 'work_items:checkpoint', 'work_items:complete', 'work_items:burn_down',
   'plans:get', 'plans:items', 'locks:acquire', 'locks:release',
   'loop:arm', 'loop:status', 'loop:checkpoint', 'loop:end',
@@ -45,6 +46,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     expect(names).toEqual(expect.arrayContaining([
       'coord:orient',
       'coord:declare-intent',
+      'mode:set',
       'work_items:checkpoint',
       'loop:status',
       'loop:checkpoint',
@@ -134,10 +136,18 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'single-complete shorthand work-item id' },
-        state: { type: 'string', description: 'optional terminal state' },
+        state: {
+          type: 'string',
+          description:
+            "Terminal intent: feature/chunk uses 'passed'|'deprecated' and issue uses 'resolved'|'closed'; unified 'done'|'dropped' aliases are also accepted.",
+        },
         completion: verboseCompletion,
         assumptions: {
           description: 'Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.',
+          anyOf: [
+            { type: 'array', minItems: 1, maxItems: 10, items: { type: 'string' } },
+            { type: 'string', const: 'none' },
+          ],
         },
       },
     };
@@ -151,6 +161,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     const args = pack.tools.find((tool) => tool.name === 'work_items:complete')?.args ?? '';
 
     expect(args.length).toBeLessThanOrEqual(180);
+    expect(args).toContain('completion?:object structured record');
     expect(args).toContain('assumptions?');
     expect(args).toContain('terminal close');
     expect(args).toContain('record-only');

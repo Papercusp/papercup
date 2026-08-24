@@ -187,21 +187,52 @@ function compactSchema(schema: unknown): string | null {
       : root
         ? [root]
         : [];
-  const terminalContracts = new Map<string, string>();
+  const terminalContracts = new Map<string, { fragment: string; priority: number }>();
   for (const rawBranch of rawBranches) {
     if (!rawBranch || typeof rawBranch !== 'object' || Array.isArray(rawBranch)) continue;
     const properties = (rawBranch as Record<string, unknown>).properties;
     if (!properties || typeof properties !== 'object' || Array.isArray(properties)) continue;
     for (const [name, rawProperty] of Object.entries(properties as Record<string, unknown>)) {
       if (!rawProperty || typeof rawProperty !== 'object' || Array.isArray(rawProperty)) continue;
-      const description = (rawProperty as Record<string, unknown>).description;
-      if (typeof description !== 'string' || !/\bterminal(?:\s+close)?\b/i.test(description)) continue;
+      const property = rawProperty as Record<string, unknown>;
+      const description = property.description;
+      const isCompletion = name === 'completion';
+      if (
+        !isCompletion &&
+        (typeof description !== 'string' || !/\bterminal(?:\s+close)?\b/i.test(description))
+      ) continue;
       const fragment = schemaToText({ type: 'object', properties: { [name]: rawProperty } });
-      if (fragment) terminalContracts.set(name, fragment);
+      if (!fragment && !isCompletion) continue;
+
+      // Keep the structured-completion marker short enough to share the bounded
+      // suffix with the terminal assumptions contract. The full schema remains
+      // available through tools/list_changed; this marker prevents a recovery
+      // caller from mistaking the write for a prose-only shorthand.
+      const compactFragment = isCompletion
+        ? `${name}?:object structured record`
+        : fragment;
+      if (compactFragment) {
+        terminalContracts.set(name, {
+          fragment: compactFragment,
+          priority: name === 'assumptions' ? 100 : isCompletion ? 90 : 10,
+        });
+      }
     }
   }
 
-  const suffix = [...terminalContracts.values()].join('; ');
+  // Prefer the fields that determine whether a terminal write is valid. A long
+  // description on an earlier field (notably `state`) must not force a fallback
+  // to the prefix-only preview and hide both `completion` and `assumptions`.
+  const suffixParts: string[] = [];
+  let suffixLength = 0;
+  const suffixBudget = ARG_SCHEMA_CAP - '; …; '.length;
+  for (const { fragment } of [...terminalContracts.values()].sort((a, b) => b.priority - a.priority)) {
+    const separatorLength = suffixParts.length > 0 ? 2 : 0;
+    if (suffixLength + separatorLength + fragment.length > suffixBudget) continue;
+    suffixParts.push(fragment);
+    suffixLength += separatorLength + fragment.length;
+  }
+  const suffix = suffixParts.join('; ');
   const separator = '; …; ';
   if (suffix && suffix.length + separator.length < ARG_SCHEMA_CAP) {
     const prefixLength = ARG_SCHEMA_CAP - separator.length - suffix.length;
@@ -230,6 +261,11 @@ export function buildTaskToolSchemaPack(
   add(candidates, [
     'coord:orient',
     'coord:declare-intent',
+    // Mode transitions are part of the session lifecycle, not an intent-specific
+    // capability. A successor must be able to enter/exit/repair a registered mode
+    // immediately after orient, before relying on tools:list_changed or the
+    // tools:invoke fallback (EI-21312723403670925).
+    'mode:set',
     'work_items:get',
     'work_items:checkpoint',
     'work_items:complete',
