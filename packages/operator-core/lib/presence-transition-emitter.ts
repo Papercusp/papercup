@@ -172,12 +172,29 @@ function commitmentPhrase(c: Commitment): string {
 }
 
 /** What the receiver should DO — the reason this is worth a line at all. A
- *  notice that only reports a fact makes the reader derive the consequence. */
+ *  notice that only reports a fact makes the reader derive the consequence.
+ *
+ *  These lines stay ACTIONABLE without asserting the future, and that
+ *  distinction is load-bearing (EI-21337853199637756). `ended` is derived from
+ *  the owner's most-recent RECORDED SESSION — `endedRecordedOwnerIds` takes the
+ *  latest `adv_sessions` row by `started_at` and asks whether `ended_at` is set.
+ *  That is a fact about a SESSION, stamped onto an ownerId, and the same ownerId
+ *  routinely comes back: a carry-respawn, `claude --resume`, or a relaunch
+ *  resumes it under the identical id and can still answer. So non-arrival is not
+ *  something this emitter is in a position to know.
+ *
+ *  It was also measured false: an alert asserted "that reply is not coming" at
+ *  12:06Z and the reply arrived from that same ownerId at 12:33:54Z, 27 minutes
+ *  later. An agent that believes the assertion abandons a thread that is still
+ *  alive. So: tell the receiver to stop BLOCKING (which is always sound, because
+ *  they cannot know WHEN it resumes), never that the thing will never arrive.
+ *  `presence-transition-emitter.test.ts` pins this as a guard over every remedy
+ *  string, so a future edit cannot quietly reintroduce the certainty. */
 function remedy(to: PresenceAlertState, kinds: ReadonlySet<CommitmentKind>): string {
   if (to === 'suspect') return 'it may recover — re-check before abandoning the wait';
-  if (kinds.has('blocked-on-lock')) return 'their lock will not be released by them — expect a reaper release, or take it up';
-  if (kinds.has('awaiting-held-item')) return 'that await will never fire from them — reclaim the item or re-place the work';
-  return 'that reply is not coming — do not keep waiting on it';
+  if (kinds.has('blocked-on-lock')) return 'do not block on them releasing that lock — expect a reaper release, or take it up';
+  if (kinds.has('awaiting-held-item')) return 'do not block on that await firing from them — reclaim the item or re-place the work';
+  return 'do not keep blocking on that reply — chase it another way if you still need it';
 }
 
 /**

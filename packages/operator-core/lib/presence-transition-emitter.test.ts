@@ -123,16 +123,54 @@ describe('selectPresenceNotices', () => {
     expect(notices[0].summary).toContain('re-check before abandoning');
   });
 
-  it('a confirmed death tells the reader the wait is over, per commitment class', () => {
+  it('a confirmed death tells the reader to stop BLOCKING, per commitment class', () => {
     expect(selectPresenceNotices([dead], [c({ kind: 'blocked-on-lock' })])[0].summary).toContain(
-      'will not be released by them',
+      'do not block on them releasing that lock',
     );
     expect(selectPresenceNotices([dead], [c({ kind: 'awaiting-held-item' })])[0].summary).toContain(
-      'never fire from them',
+      'do not block on that await firing from them',
     );
     expect(selectPresenceNotices([dead], [c({ kind: 'awaiting-reply' })])[0].summary).toContain(
-      'reply is not coming',
+      'do not keep blocking on that reply',
     );
+  });
+
+  // EI-21337853199637756. An alert asserted "that reply is not coming" at 12:06Z and the
+  // reply arrived from the SAME ownerId at 12:33:54Z, 27 minutes later. `ended` is derived
+  // from the owner's most-recent RECORDED SESSION, but a carry-respawn / `--resume` /
+  // relaunch brings the identical ownerId back and it can still answer — and in the filed
+  // case the verdict came from the heuristic path, not positive session-log death evidence
+  // (that owner had no adv_sessions row at all at alert time). Telling the receiver to stop
+  // BLOCKING is always sound; telling them a thing will never arrive is not knowable here.
+  it('never asserts NON-ARRIVAL — an ended verdict is not a statement about the future', () => {
+    const kinds: Commitment['kind'][] = ['awaiting-reply', 'blocked-on-lock', 'awaiting-held-item'];
+    const summaries = kinds.map((kind) => selectPresenceNotices([dead], [c({ kind })])[0].summary);
+
+    // Positive control FIRST: prove the selector actually produced advice for every kind,
+    // so the absence assertions below cannot pass vacuously on empty/missing summaries.
+    expect(summaries).toHaveLength(kinds.length);
+    for (const s of summaries) expect(s).toMatch(/do not (keep )?block/i);
+
+    // The forbidden class: any claim about what will or will not happen next.
+    const assertsNonArrival = (s: string) =>
+      /is not coming/i.test(s) ||
+      /will never/i.test(s) ||
+      /never fire/i.test(s) ||
+      /will not be released/i.test(s);
+
+    // FALSIFIABILITY CONTROL, kept permanently rather than proven by mutating the
+    // shared tree (a probe that edits a tracked file can be committed by the git-sync
+    // sweep even when nothing goes wrong). These are the verbatim PRE-FIX strings; the
+    // SAME predicate that clears the live summaries must REJECT every one of them, or
+    // the assertion below is a regex that matches nothing and would pass on anything.
+    const PRE_FIX_REMEDIES = [
+      'that reply is not coming — do not keep waiting on it',
+      'that await will never fire from them — reclaim the item or re-place the work',
+      'their lock will not be released by them — expect a reaper release, or take it up',
+    ];
+    for (const s of PRE_FIX_REMEDIES) expect(assertsNonArrival(s)).toBe(true);
+
+    for (const s of summaries) expect(assertsNonArrival(s)).toBe(false);
   });
 
   it('fans out to every distinct blocked agent, one line each', () => {
