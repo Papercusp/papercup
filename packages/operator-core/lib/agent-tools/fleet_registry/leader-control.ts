@@ -38,10 +38,20 @@ import { interestProfilesFor, type InterestProfileRow } from '../../interest-pro
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getPresence } from '../coordination/presence';
+import type { FleetControlState } from '../../agent-fleets-store';
 
 export const LEADER_MONITOR_INTERVAL_SEC = 60;
 /** One leader/profile may never manufacture an unbounded interrupt fan-out. */
 export const LEADER_PROFILE_AUTO_ARM_CAP = 16;
+
+/**
+ * A typed fleet wind-down is a durable stop boundary for leader supervision.
+ * Keep the legacy `undefined` case active for callers that predate the fleet
+ * control-state field; current callers pass the registry value explicitly.
+ */
+export function shouldMaintainFleetLeaderControl(controlState?: FleetControlState | null): boolean {
+  return controlState !== 'winding-down';
+}
 
 export type LeaderAutoArmTarget =
   | {

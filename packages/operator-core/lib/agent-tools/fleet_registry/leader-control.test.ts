@@ -69,6 +69,7 @@ import {
   resolveFleetLeaderAutoArmTargets,
   resolveFleetLeaderTransitionEventKeys,
   retireFleetLeaderWatches,
+  shouldMaintainFleetLeaderControl,
 } from './leader-control';
 
 const input = {
@@ -143,6 +144,13 @@ describe('retireFleetLeaderWatches', () => {
 });
 
 describe('ensureFleetLeaderControl', () => {
+  it('treats typed wind-down as a stop boundary after loop:end', () => {
+    expect(shouldMaintainFleetLeaderControl('active')).toBe(true);
+    expect(shouldMaintainFleetLeaderControl('winding-down')).toBe(false);
+    // Legacy callers without the typed field retain the pre-existing behavior.
+    expect(shouldMaintainFleetLeaderControl(undefined)).toBe(true);
+  });
+
   it('derives the exact five standard event keys from the fleet-leader auto-arm profile', () => {
     expect(standardEventKeys()).toEqual([
       'fleet:member-dead:alpha',
