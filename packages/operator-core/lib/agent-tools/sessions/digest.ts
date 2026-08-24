@@ -28,7 +28,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS } from './_shared';
+import { parseSessionSelector, sessionSearchEnabled, disabledResult, SESSION_SOURCE_KINDS } from './_shared';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -113,7 +113,7 @@ export default defineTool({
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 100 } },
   args: z.object({
-    session: z.string().max(200).optional().describe("One session id, or 'self'. Omit to digest a window (see since/owner)."),
+    session: z.string().max(200).optional().describe("One session id, '<source-kind>:<session-id>', or 'self'. Omit to digest a window (see since/owner)."),
     owner: z.string().max(120).optional().describe("Filter to one agent ownerId ('self' = the caller)."),
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional(),
     cwd_contains: z.string().max(200).optional().describe('Substring match on the session cwd.'),
@@ -134,6 +134,12 @@ export default defineTool({
     const now = Date.now();
 
     let sessionFilter: string | null = args.session ?? null;
+    let sourceKind = args.source_kind;
+    if (sessionFilter && sessionFilter !== 'self') {
+      const selector = parseSessionSelector(sessionFilter, sourceKind);
+      sessionFilter = selector.sessionId;
+      sourceKind = selector.sourceKind;
+    }
     if (args.session === 'self') {
       const { resolveSelfSession } = await import('../../search/self-session');
       const self = await resolveSelfSession(resolveAgentIdentity(ctx).ownerId ?? '');
@@ -152,7 +158,7 @@ export default defineTool({
          WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
            AND (${sessionFilter}::text IS NULL OR session_id = ${sessionFilter})
            AND (${owner}::text IS NULL OR owner = ${owner})
-           AND (${args.source_kind ?? null}::text IS NULL OR source_kind = ${args.source_kind ?? null})
+           AND (${sourceKind ?? null}::text IS NULL OR source_kind = ${sourceKind ?? null})
            AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
            AND (${args.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${args.since ?? null}::timestamptz)
       ),

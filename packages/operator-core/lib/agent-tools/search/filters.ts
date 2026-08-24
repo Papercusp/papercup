@@ -20,6 +20,7 @@
 import { z } from 'zod';
 import type { Sql } from 'postgres';
 import type { SearchFilters } from '@papercusp/search';
+import { parseSessionSelector } from '../sessions/_shared';
 
 /** Shared zod arg fragments for search:fulltext / search:semantic / sessions:search. */
 export const searchFilterArgs = {
@@ -150,6 +151,12 @@ export async function resolveSearchFilters(
   }
 
   let sessionId = args.session;
+  let sourceKind = args.source_kind;
+  if (sessionId && sessionId !== 'self') {
+    const selector = parseSessionSelector(sessionId, sourceKind);
+    sessionId = selector.sessionId;
+    sourceKind = selector.sourceKind;
+  }
   let selfSession: ResolvedSearchFilters['selfSession'];
   if (args.session === 'self') {
     const { resolveSelfSession } = await import('../../search/self-session');
@@ -195,7 +202,7 @@ export async function resolveSearchFilters(
   if (args.owner_only !== undefined) filters.ownerOnly = args.owner_only;
   if (args.owner_candidates !== undefined) filters.ownerCandidates = args.owner_candidates;
   if (sessionId && sessionId !== 'self') filters.sessionId = sessionId;
-  if (args.source_kind) filters.sourceKind = args.source_kind;
+  if (sourceKind) filters.sourceKind = sourceKind;
   const since = isoOrUndefined(args.since);
   const until = isoOrUndefined(args.until);
   if (since) filters.since = since;

@@ -1,5 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveSessionTurnRefs } from './_shared';
+import { parseSessionSelector, resolveSessionTurnRefs } from './_shared';
+
+describe('parseSessionSelector', () => {
+  it('splits a source-prefixed session id while preserving colons in the native id', () => {
+    expect(parseSessionSelector('codex:rollout-123')).toEqual({
+      sessionId: 'rollout-123',
+      sourceKind: 'codex',
+    });
+    expect(parseSessionSelector('omp:thread:with:colons')).toEqual({
+      sessionId: 'thread:with:colons',
+      sourceKind: 'omp',
+    });
+  });
+
+  it('keeps a raw id unchanged and honors an explicit source kind', () => {
+    expect(parseSessionSelector('rollout:with:colons', 'codex')).toEqual({
+      sessionId: 'rollout:with:colons',
+      sourceKind: 'codex',
+    });
+    expect(parseSessionSelector('codex:rollout-123', 'codex')).toEqual({
+      sessionId: 'rollout-123',
+      sourceKind: 'codex',
+    });
+  });
+});
 
 describe('resolveSessionTurnRefs', () => {
   it('resolves through the live index first and permanent archive second', async () => {

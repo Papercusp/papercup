@@ -12,6 +12,35 @@ import { FLAGS } from '@papercusp/flags';
 
 export const SESSION_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
 export const SESSION_TURN_REF_PREFIX = 'session_turn:';
+export type SessionSourceKind = (typeof SESSION_SOURCE_KINDS)[number];
+
+export interface SessionSelector {
+  sessionId: string;
+  sourceKind?: SessionSourceKind;
+}
+
+/**
+ * Normalize the two session selector shapes exposed by sessions:list:
+ * `session_id` on its own, or the convenient `<source_kind>:<session_id>`
+ * form callers commonly build from a list row. A native session id may itself
+ * contain colons, so only a known source-kind prefix is consumed.
+ */
+export function parseSessionSelector(
+  sessionIdOrSelector: string,
+  sourceKind?: SessionSourceKind,
+): SessionSelector {
+  const separator = sessionIdOrSelector.indexOf(':');
+  if (separator > 0) {
+    const prefix = sessionIdOrSelector.slice(0, separator);
+    if ((SESSION_SOURCE_KINDS as readonly string[]).includes(prefix)) {
+      const sessionId = sessionIdOrSelector.slice(separator + 1);
+      if (sessionId) {
+        return { sessionId, sourceKind: sourceKind ?? (prefix as SessionSourceKind) };
+      }
+    }
+  }
+  return { sessionId: sessionIdOrSelector, sourceKind };
+}
 
 export interface SessionTurnRef {
   sourceKind: string;

@@ -15,6 +15,7 @@ import {
   SESSION_SOURCE_KINDS,
   SESSION_TURN_REF_PREFIX,
   formatSessionTurnRef,
+  parseSessionSelector,
   parseTurnRef,
   refreshTargetSessionBeforeRead,
 } from './_shared';
@@ -31,7 +32,7 @@ const readArgsSchema = z
       .describe(
         'Canonical session-turn reference from sessions:search/read: session_turn:<source-kind>:<full-session-id>:<turn-index>. Pass directly to retrieve that exact turn; add context for surrounding turns.',
       ),
-    session: z.string().min(1).max(200).optional().describe("Session id, or 'self' for the calling agent's current session."),
+    session: z.string().min(1).max(200).optional().describe("Session id, '<source-kind>:<session-id>', or 'self' for the calling agent's current session."),
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional().describe('Disambiguates when the same id exists under two sources; usually unnecessary.'),
     around: z.number().int().min(0).optional().describe('Center the window on this turn_idx.'),
     context: z.number().int().min(0).max(50).optional().describe('Turns each side of `around` or `ref` (around default 5; ref default 0 = exact turn).'),
@@ -124,6 +125,11 @@ export default defineTool({
 
     let sessionId = parsedRef?.sessionId ?? args.session!;
     let sourceKind = parsedRef?.sourceKind ?? args.source_kind;
+    if (!parsedRef) {
+      const selector = parseSessionSelector(sessionId, sourceKind);
+      sessionId = selector.sessionId;
+      sourceKind = selector.sourceKind;
+    }
     let selfNote: string | undefined;
     const selfSession = sessionId === 'self';
     if (selfSession) {
