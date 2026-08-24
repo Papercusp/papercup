@@ -911,12 +911,23 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         //
         // Why the pre-existing signal could not catch it: `workers.embedder.
         // pendingCount` READS like queue depth but is `_pending.size` — units
-        // already handed to the worker — so it is structurally capped at
-        // `concurrency` and is an OCCUPANCY gauge. The one field that looked
-        // like a backlog signal CANNOT EXCEED `concurrency`, so it can never
-        // indicate a backlog: pinned at 2, it is indistinguishable from "two in
-        // flight, all well". That also defeats probing, since a discriminator
-        // correlating latency against it is correlating against a constant.
+        // already HANDED TO the worker — so it is an OCCUPANCY gauge that says
+        // nothing about what is still waiting. In steady state it simply equals
+        // `active` and is therefore bounded by `concurrency` (measured: 6/6,
+        // 5/5, 2/2), so pinned at the cap it is indistinguishable from "N in
+        // flight, all well". That also defeats probing: at c=2 it is a constant,
+        // and a discriminator correlating latency against a constant finds
+        // nothing however carefully it is run.
+        //
+        // It is worse than merely capped — it is CONFLATED, and therefore
+        // ambiguous in BOTH directions. Boot warm-up embeds bypass this FIFO,
+        // so during warm-up `_pending` carries non-FIFO work too and the gauge
+        // can EXCEED concurrency (measured 10 against concurrency 6 at ~12s
+        // uptime). So a reading above the cap does not mean a backlog either.
+        //
+        // Measured 2026-08-24, ~29s after a restart, this endpoint reported
+        // `pendingCount: 6` while the real backlog was **15**. That single pair
+        // is the whole case for the field below.
         //
         // `depth` is the queue no one could see; `saturated` is the predicate a
         // health check should actually alert on (up AND keeping up).
