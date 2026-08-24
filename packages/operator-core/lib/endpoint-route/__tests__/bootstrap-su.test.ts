@@ -50,6 +50,21 @@ const rekeyCodexHomeMock = vi.fn((_source: string | number, target: string | num
 const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
   configDir: `/fake/.papercusp/session-claude/${opts.sid}`,
 }));
+const claimAgentLaunchMock = vi.fn(
+  async (_opts: unknown): Promise<{
+    won: boolean;
+    priorSummary: Record<string, unknown> | null;
+    priorLaunchedAt: number | null;
+    priorLaunchedBy: string | null;
+  }> => ({
+    won: true,
+    priorSummary: null,
+    priorLaunchedAt: null,
+    priorLaunchedBy: null,
+  }),
+);
+const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => undefined);
+const releaseAgentLaunchClaimMock = vi.fn(async (_opts: unknown) => true);
 const getSessionPortMock = vi.fn(async (_id: string, _workspaceId: string) => null as any);
 const transitionSessionPortMock = vi.fn(async (_id: string, _ws: string, _to: string, _fields: unknown) => ({ status: 'pending' }));
 const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => 'ported history\n[PAPERCUSP SESSION PORT CHECKSUM rendered-hash]');
@@ -133,6 +148,14 @@ vi.mock('../../modes/store', () => ({
 }));
 vi.mock('../../role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
+}));
+vi.mock('../../agent-launch-core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-launch-core')>()),
+  claimAgentLaunch: (...args: unknown[]) => claimAgentLaunchMock(...(args as [any])),
+  recordAgentLaunchResult: (...args: unknown[]) =>
+    recordAgentLaunchResultMock(...(args as [any])),
+  releaseAgentLaunchClaim: (...args: unknown[]) =>
+    releaseAgentLaunchClaimMock(...(args as [any])),
 }));
 vi.mock('../../role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
@@ -361,6 +384,14 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  claimAgentLaunchMock.mockReset().mockResolvedValue({
+    won: true,
+    priorSummary: null,
+    priorLaunchedAt: null,
+    priorLaunchedBy: null,
+  });
+  recordAgentLaunchResultMock.mockReset().mockResolvedValue(undefined);
+  releaseAgentLaunchClaimMock.mockReset().mockResolvedValue(true);
   recordAdvSessionMock.mockResolvedValue(42);
   getSessionPortMock.mockResolvedValue(null);
   // P-002 brain-brief defaults: one started hive + a brief string. Tests that
@@ -409,6 +440,75 @@ describe('bootstrap-su', () => {
     expect(json.envelopeEnv.CODEX_HOME).toBeUndefined();
     // coord extension resolved for omp's -e (present in this test env).
     expect(json.coordExtPath).toBe(COORD_EXT);
+  });
+
+  it('replays a completed key from the shared launch ledger without minting another session', async () => {
+    const request = {
+      agent: 'claude',
+      harness_slug: 'papercup',
+      plan_slug: 'my-plan',
+      bootstrap_idempotency_key: 'bootstrap-key-1',
+    };
+    const first = await callPost(request);
+    expect(first.status).toBe(200);
+    const firstJson = await first.json();
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-su:bootstrap-key-1',
+      summary: firstJson,
+    });
+    expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
+
+    claimAgentLaunchMock.mockResolvedValue({
+      won: false,
+      priorSummary: firstJson,
+      priorLaunchedAt: Date.now(),
+      priorLaunchedBy: null,
+    });
+    const replay = await callPost(request);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      status: 'ok',
+      sessionId: firstJson.sessionId,
+      bootstrapDeduped: true,
+    });
+    expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a typed retryable conflict while the winning bootstrap is still in flight', async () => {
+    claimAgentLaunchMock.mockResolvedValue({
+      won: false,
+      priorSummary: {},
+      priorLaunchedAt: Date.now(),
+      priorLaunchedBy: null,
+    });
+    const response = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      bootstrap_idempotency_key: 'bootstrap-key-in-flight',
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      status: 'error',
+      error: 'bootstrap_in_progress',
+      retryAfterSec: 1,
+    });
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('releases a won bootstrap claim when a later session write fails', async () => {
+    recordAdvSessionMock.mockRejectedValueOnce(new Error('session write failed'));
+    await expect(
+      callPost({
+        agent: 'claude',
+        harness_slug: 'papercup',
+        bootstrap_idempotency_key: 'bootstrap-key-failed',
+      }),
+    ).rejects.toThrow('session write failed');
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-su:bootstrap-key-failed',
+    });
   });
 
   it('stamps the resolved harness onto presence before the launched agent takes turn 1', async () => {

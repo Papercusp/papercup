@@ -64,7 +64,13 @@ import {
   kickoffGuardProfileForAgent,
   type RemoteSeatSummary,
 } from '../../../agent-tools/plans/launch-prompt';
-import { normalizeLaunchMode, type LaunchMode } from '../../../agent-launch-core';
+import {
+  claimAgentLaunch,
+  normalizeLaunchMode,
+  recordAgentLaunchResult,
+  releaseAgentLaunchClaim,
+  type LaunchMode,
+} from '../../../agent-launch-core';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
 import { rekeyCodexHome, writeSuCodexHome } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
@@ -148,6 +154,8 @@ export async function bindKnownAgentSessionTasks(input: {
 
 export interface BootstrapSuResult {
   status: 'ok';
+  /** True when this response was replayed from the launch idempotency ledger. */
+  bootstrapDeduped?: boolean;
   /** adv_sessions row id; null if the insert failed (best-effort). */
   sessionId: number | null;
   /** The agent's NATIVE session id the launcher must force on the CLI so the
@@ -1524,6 +1532,9 @@ const post = defineTool({
        *  only reliable binding). Validated + live-collision-checked below; omitted ⇒
        *  server mints (today's behavior). */
       owner_id?: string | null;
+      /** WI-41363: stable client-generated key for replaying this fresh bootstrap
+       * after the MCP proxy accepted the request but lost its response headers. */
+      bootstrap_idempotency_key?: unknown;
     } = {};
     try {
       const text = await req.text();
@@ -1549,6 +1560,30 @@ const post = defineTool({
     if (body.workspace?.trim() && !isKnownWorkspace(workspace)) {
       return jsonRes({ status: 'error', error: `unknown workspace: ${workspace.slice(0, 48)}` }, 400);
     }
+    const rawBootstrapIdempotencyKey = body.bootstrap_idempotency_key;
+    const bootstrapIdempotencyKey =
+      typeof rawBootstrapIdempotencyKey === 'string'
+        ? rawBootstrapIdempotencyKey.trim()
+        : null;
+    if (
+      rawBootstrapIdempotencyKey != null &&
+      (typeof rawBootstrapIdempotencyKey !== 'string' ||
+        !bootstrapIdempotencyKey ||
+        bootstrapIdempotencyKey.length > 200)
+    ) {
+      return jsonRes(
+        {
+          status: 'error',
+          error: 'bootstrap_idempotency_key must be a non-empty string of at most 200 characters',
+        },
+        400,
+      );
+    }
+    // Prefix the shared ledger key so a caller cannot collide with the outer
+    // capability:launch-agent invocation that opened this psu process.
+    const bootstrapLedgerKey = bootstrapIdempotencyKey
+      ? `bootstrap-su:${bootstrapIdempotencyKey}`
+      : null;
     const harnessSlug = body.harness_slug?.trim() || null;
     const planSlug = body.plan_slug?.trim() || null;
     const callerCwd = body.cwd?.trim() || null;
@@ -1779,6 +1814,38 @@ const post = defineTool({
       sessionPortContext = { row, seed };
     }
 
+    // WI-41363: claim before the first session/fleet/account write. A replay
+    // after the proxy's upstream-silent 502 either receives the completed
+    // response verbatim or a typed, retryable in-progress result; it never
+    // mints a second session. The existing agent-launch ledger is the one
+    // durable idempotency surface for every launch path.
+    let bootstrapClaimWon = false;
+    let bootstrapCompleted = false;
+    if (bootstrapLedgerKey) {
+      const claim = await claimAgentLaunch({
+        workspaceId: workspace,
+        idempotencyKey: bootstrapLedgerKey,
+        launchedBy: body.launched_by?.trim() || body.owner_id?.trim() || null,
+      });
+      if (!claim.won) {
+        const prior = claim.priorSummary;
+        if (prior?.status === 'ok') {
+          return jsonRes({ ...(prior as unknown as BootstrapSuResult), bootstrapDeduped: true });
+        }
+        return jsonRes(
+          {
+            status: 'error',
+            error: 'bootstrap_in_progress',
+            detail: 'the first request still owns this bootstrap idempotency key; retry with the same key',
+            retryAfterSec: 1,
+          },
+          409,
+        );
+      }
+      bootstrapClaimWon = true;
+    }
+
+    try {
     // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
     // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
     // and the lock hooks read the same var, so a session's interactive calls
@@ -2733,7 +2800,26 @@ const post = defineTool({
         status: 'pending',
       } : null,
     };
+    if (bootstrapLedgerKey) {
+      await recordAgentLaunchResult({
+        workspaceId: workspace,
+        idempotencyKey: bootstrapLedgerKey,
+        summary: result as unknown as Record<string, unknown>,
+      });
+    }
+    bootstrapCompleted = true;
     return jsonRes(result);
+    } finally {
+      // A validation/storage exception after winning the claim must not strand
+      // an empty replay row. Completed launches retain the row permanently (up
+      // to the shared ledger TTL) so a lost response cannot duplicate them.
+      if (bootstrapClaimWon && !bootstrapCompleted) {
+        await releaseAgentLaunchClaim({
+          workspaceId: workspace,
+          idempotencyKey: bootstrapLedgerKey,
+        });
+      }
+    }
   },
 });
 
@@ -2909,7 +2995,8 @@ const optionsForHeartbeat = defineTool({
 });
 
 /**
- * POST /api/agent-mcp/console/bootstrap-su/session-ended  { advSessionId, exitCode? }
+ * POST /api/agent-mcp/console/bootstrap-su/session-ended
+ *   { advSessionId, exitCode?, killedBySignal?, launchFailed? }
  *
  * The psu launcher's exit report. psu stays alive as the agent's parent in
  * BOTH launch paths (the same property the supervisor beat rides), and on
@@ -2920,8 +3007,11 @@ const optionsForHeartbeat = defineTool({
  * open-row protection never expired, wedging collection of abandoned dirs.
  *
  * Best-effort contract like the sibling heartbeat: the launcher swallows any
- * failure (it is about to process.exit). markAdvSessionEnded is idempotent —
- * it only stamps an unset ended_at — so a duplicate report is harmless.
+ * failure (it is about to process.exit). A claimed resume that never starts a
+ * child reports `launchFailed:true`; that is a CLOSE, not an observed child
+ * exit, so it maps to `ended_by='cleanup'` and becomes immediately retryable.
+ * markAdvSessionEnded is idempotent — it only stamps an unset ended_at — so a
+ * duplicate report is harmless.
  */
 const sessionEnded = defineTool({
   method: 'POST',
@@ -2933,11 +3023,13 @@ const sessionEnded = defineTool({
     let advSessionId: number | null = null;
     let exitCode: number | null = null;
     let killedBySignal: string | null = null;
+    let launchFailed = false;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
         exitCode?: unknown;
         killedBySignal?: unknown;
+        launchFailed?: unknown;
       };
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
@@ -2948,6 +3040,7 @@ const sessionEnded = defineTool({
       // Shape-validated rather than trusted: this string is persisted and then read back
       // as the reason an agent died, so it must be a signal NAME and nothing else.
       killedBySignal = parseKilledBySignalReport(body.killedBySignal);
+      launchFailed = body.launchFailed === true;
     } catch {
       /* fall through to the 400 */
     }
@@ -2961,8 +3054,13 @@ const sessionEnded = defineTool({
       // recorded as the session choosing to exit. Combined with node-pty's exitCode 0
       // for a signal death, the row then asserted a clean exit outright, which is why a
       // mass reap of the owner's agents was indistinguishable from two normal endings.
-      const endedBy = killedBySignal ? 'signal' : 'self';
-      await markAdvSessionEnded(advSessionId, exitCode, endedBy, { signal: killedBySignal });
+      // A launch failure means no child ever ran. Prefer the explicit cleanup
+      // classification even if a malformed/overlapping report also contains a
+      // signal; `ended_signal` is only valid for observed signal exits.
+      const endedBy = launchFailed ? 'cleanup' : killedBySignal ? 'signal' : 'self';
+      await markAdvSessionEnded(advSessionId, exitCode, endedBy, {
+        signal: launchFailed ? null : killedBySignal,
+      });
       return jsonRes({ ok: true });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);

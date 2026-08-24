@@ -528,6 +528,16 @@ export const MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS = 20_000;
 export const MCP_PROXY_OVERLOAD_DEFAULT_RETRY_MS = 1_000;
 export const MCP_PROXY_OVERLOAD_MAX_RETRY_MS = 5_000;
 
+// WI-41363: a fresh bootstrap is replay-safe only when it carries the stable
+// idempotency key cached by bootstrap-su. The proxy's upstream-silent 502 means
+// the request MAY still have completed, so this budget is deliberately separate
+// from connection/429 retries and remains small enough not to amplify a busy
+// request cluster. Four total attempts fit inside psu's 120s request budget even
+// when each proxy attempt spends the full 8s response-header timeout.
+export const BOOTSTRAP_REPLAY_MAX_ATTEMPTS = 4;
+export const BOOTSTRAP_REPLAY_BUDGET_MS = 30_000;
+export const BOOTSTRAP_REPLAY_DEFAULT_DELAY_MS = 1_000;
+
 /** Parse a Retry-After delta-seconds value into a bounded delay for psu's
  * front-door overload retry. Invalid/missing values use the supplied fallback. */
 export function proxyOverloadRetryDelayMs(
@@ -546,6 +556,35 @@ export function proxyOverloadRetryDelayMs(
 export function isRetryableMcpProxyOverload(response) {
   if (response?.status !== 429) return false;
   return typeof response?.headers?.get === "function" && response.headers.get("retry-after") != null;
+}
+
+/**
+ * Classify the two typed bootstrap responses that are safe to replay with the
+ * SAME idempotency key. `clone()` preserves the original response for api() to
+ * surface unchanged when the bounded retry budget is exhausted.
+ */
+export async function bootstrapReplayDirective(response) {
+  if (response?.status !== 409 && response?.status !== 502) return null;
+  let body;
+  try {
+    body = await response.clone().json();
+  } catch {
+    return null;
+  }
+  if (response.status === 502 && body?.error === "mcp_proxy_upstream_error") {
+    return { kind: "upstream-silent", delayMs: BOOTSTRAP_REPLAY_DEFAULT_DELAY_MS };
+  }
+  if (response.status === 409 && body?.error === "bootstrap_in_progress") {
+    return {
+      kind: "in-progress",
+      delayMs: proxyOverloadRetryDelayMs(
+        body?.retryAfterSec,
+        BOOTSTRAP_REPLAY_DEFAULT_DELAY_MS,
+        MCP_PROXY_OVERLOAD_MAX_RETRY_MS,
+      ),
+    };
+  }
+  return null;
 }
 
 /** Coarse human age ("3m" / "2h" / "5d") for the stale-operator message. */
@@ -5092,6 +5131,9 @@ export async function fetchWithResilience(
     timeoutMs = REQUEST_TIMEOUT_MS,
     connectBudgetMs = CONNECT_RETRY_BUDGET_MS,
     timeoutRetries = TIMEOUT_RETRIES,
+    retryBootstrapFailures = false,
+    bootstrapReplayMaxAttempts = BOOTSTRAP_REPLAY_MAX_ATTEMPTS,
+    bootstrapReplayBudgetMs = BOOTSTRAP_REPLAY_BUDGET_MS,
     label = url,
     target = OPERATOR_TARGET,
     // Stale-shell heal (mac VM owner repro 2026-07-07): when the target keeps
@@ -5128,6 +5170,9 @@ export async function fetchWithResilience(
   let overloadAttempts = 1;
   let announcedOverloadRetry = false;
   const overloadDeadline = now() + MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS;
+  let bootstrapReplayAttempts = 1;
+  let announcedBootstrapReplay = false;
+  const bootstrapReplayDeadline = now() + bootstrapReplayBudgetMs;
   let lastErr;
   for (;;) {
     try {
@@ -5158,6 +5203,33 @@ export async function fetchWithResilience(
           }
           await sleep(delayMs);
           continue;
+        }
+      }
+      if (retryable && retryBootstrapFailures) {
+        const directive = await bootstrapReplayDirective(response);
+        if (directive) {
+          const remaining = bootstrapReplayDeadline - now();
+          if (
+            bootstrapReplayAttempts < bootstrapReplayMaxAttempts &&
+            remaining >= directive.delayMs
+          ) {
+            if (!announcedBootstrapReplay) {
+              onNotice(
+                `psu: bootstrap ${directive.kind === "upstream-silent" ? "lost its upstream response" : "is still completing"}; ` +
+                  `retrying safely with the same idempotency key ` +
+                  `(attempt ${bootstrapReplayAttempts + 1}/${bootstrapReplayMaxAttempts})…\n`,
+              );
+              announcedBootstrapReplay = true;
+            }
+            bootstrapReplayAttempts += 1;
+            try {
+              await response.body?.cancel?.();
+            } catch {
+              /* best-effort; the typed response is no longer needed */
+            }
+            await sleep(directive.delayMs);
+            continue;
+          }
         }
       }
       return response;
@@ -5296,18 +5368,19 @@ export function formatApiFailureMessage(json, status, path) {
 }
 
 async function api(path, opts = {}) {
+  const { retryBootstrapFailures = false, ...fetchOpts } = opts;
   const token = readToken();
   const res = await fetchWithResilience(
     OPERATOR_URL + path,
     {
-      ...opts,
+      ...fetchOpts,
       headers: {
         "content-type": "application/json",
         ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...(opts.headers || {}),
+        ...(fetchOpts.headers || {}),
       },
     },
-    { label: path },
+    { label: path, retryBootstrapFailures },
   );
   const text = await res.text();
   let json;
@@ -6971,10 +7044,14 @@ export function startSupervisorBeat(
  * @param {number|string|null} advSessionId  the adv_sessions PK to stamp
  * @param {number|null|undefined} exitCode   the child's exit code (null when unknown)
  * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
- *           timeoutMs?: number, killedBySignal?: string|null }} [opts]
+ *           timeoutMs?: number, killedBySignal?: string|null,
+ *           launchFailed?: boolean }} [opts]
  *   `killedBySignal` is the signal NAME that killed the child, or null for a voluntary
  *   exit. The server derives `ended_by` from it (WI-38054); omitting it makes every kill
- *   record as a clean self-reported exit.
+ *   record as a clean self-reported exit. `launchFailed` is used when the launcher
+ *   claimed a tracked resume row but never got a child process running; the server
+ *   records that as cleanup so the row is immediately retryable rather than waiting
+ *   for stale-claim recovery.
  */
 export async function reportSessionEnded(
   advSessionId,
@@ -6985,6 +7062,7 @@ export async function reportSessionEnded(
     token = null,
     timeoutMs = 2_000,
     killedBySignal = null,
+    launchFailed = false,
   } = {},
 ) {
   if (!advSessionId) return;
@@ -7007,6 +7085,7 @@ export async function reportSessionEnded(
           advSessionId: Number(advSessionId),
           exitCode: exitCode ?? null,
           killedBySignal: killedBySignal ?? null,
+          ...(launchFailed ? { launchFailed: true } : {}),
         }),
       },
     );
@@ -7659,7 +7738,17 @@ export function spawnInherit({
         `psu: is ${wrapperBin} on PATH? run apps/operator/scripts/install-standalone-mcp.sh`,
       );
     }
-    processExit(127);
+    // A tracked resume claims its row before setup/spawn. If the wrapper itself
+    // cannot be started, close that claim as an unobserved launcher cleanup so a
+    // retry is available immediately instead of waiting for stale recovery.
+    void Promise.resolve()
+      .then(() =>
+        reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
+          launchFailed: true,
+        }),
+      )
+      .catch(() => undefined)
+      .finally(() => processExit(127));
   });
   child.on("exit", (code, signal) => {
     if (finished) return;
@@ -7723,7 +7812,7 @@ function repoCwdOrRedirect(cwd) {
   return cwd; // no better answer — do not invent one
 }
 
-function runWrapper({
+export function runWrapper({
   wrapperBin,
   args = [],
   cwd,
@@ -7732,6 +7821,7 @@ function runWrapper({
   kickoffFile = null,
   sessionPort = null,
   preserveCwd = false,
+  reportSessionEndedImpl = reportSessionEnded,
 }) {
   // EI-10938's `.papercusp` state-dir → checkout redirect is correct for a FRESH
   // launch, but a RESUME/FORK MUST keep the recorded cwd: `claude --resume` /
@@ -7986,7 +8076,7 @@ function runWrapper({
         // WI-38054: the managed-PTY path had no `signal` parameter at all, which is
         // where the owner's reaped agents lost the only evidence they were killed.
         onExit: (code, killedBySignal = null) => {
-          void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code, {
+          void reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, code, {
             killedBySignal,
           }).finally(() => process.exit(code ?? 0));
         },
@@ -7996,14 +8086,26 @@ function runWrapper({
         process.stderr.write(
           `psu: managed-pty host error: ${e?.message ?? e}\n`,
         );
+        // A tracked resume claims its row before this host starts. If the host
+        // rejects before handing a child a usable session, release that claim
+        // immediately; otherwise the picker sees a false live row until stale
+        // recovery. This is deliberately launchFailed, not a child-exit report.
+        const cleanup = Promise.resolve(
+          reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
+            launchFailed: true,
+          }),
+        ).catch(() => undefined);
         const finish =
           kickoffFile && sessionPort
-            ? reportSessionPortDelivery(sessionPort, {
-                persisted: false,
-                renderedHash: sessionPort.renderedHash,
-                error: `managed-pty host failed: ${e?.message ?? e}`,
-              }).catch(() => undefined)
-            : Promise.resolve();
+            ? Promise.all([
+                cleanup,
+                reportSessionPortDelivery(sessionPort, {
+                  persisted: false,
+                  renderedHash: sessionPort.renderedHash,
+                  error: `managed-pty host failed: ${e?.message ?? e}`,
+                }).catch(() => undefined),
+              ])
+            : cleanup;
         void finish.finally(() => process.exit(1));
       });
       return;
@@ -8025,6 +8127,11 @@ function runWrapper({
       `psu: session-port launch refused: a managed pty is required to deliver and verify the seed.\n`,
     );
     process.exitCode = 1;
+    void Promise.resolve(
+      reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
+        launchFailed: true,
+      }),
+    ).catch(() => undefined);
     if (sessionPort) {
       void reportSessionPortDelivery(sessionPort, {
         persisted: false,
@@ -8042,7 +8149,13 @@ function runWrapper({
         `turn yourself (coord:wake once it registers presence).\n`,
     );
   }
-  spawnInherit({ wrapperBin, args, cwd, env });
+  spawnInherit({
+    wrapperBin,
+    args,
+    cwd,
+    env,
+    reportSessionEndedImpl,
+  });
 }
 
 /**
@@ -8187,6 +8300,14 @@ async function launchResume(
       process.exit(2);
     }
   }
+  let resumeClaimed = false;
+  const cleanupResumeClaim = async () => {
+    if (!resumeClaimed || session.id == null) return;
+    // Flip the local guard before the best-effort network call so a future
+    // cleanup path cannot report the same claim twice.
+    resumeClaimed = false;
+    await reportSessionEnded(session.id, null, { launchFailed: true });
+  };
   // The manual resume and an already-queued loop wake can race after the old
   // process exits. Claim the ended adv row BEFORE any config repair or spawn;
   // claimAdvSessionResume's claim window makes this a stale-safe single-winner handoff.
@@ -8200,7 +8321,9 @@ async function launchResume(
       process.exitCode = 2;
       return;
     }
+    resumeClaimed = true;
   }
+  try {
   if (addDir.length && session.agent === "omp") {
     console.error(
       "psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.",
@@ -8412,6 +8535,13 @@ async function launchResume(
       ? tagKickoffProvenance(kickoff, env.PAPERCUSP_SID || null)
       : null,
   });
+  } catch (error) {
+    // Everything above runWrapper is post-claim setup. A config repair, model
+    // route, argv build, or synchronous spawn failure must not leave the
+    // successfully claimed row looking live until stale recovery.
+    await cleanupResumeClaim();
+    throw error;
+  }
 }
 
 /**
@@ -8618,13 +8748,24 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   return argv;
 }
 
-export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
+export function freshSuBootstrapBody(
+  selections,
+  args,
+  { brain = false, bootstrapIdempotencyKey = null } = {},
+) {
   const launchMode = launchModeFromArgs(args);
   return {
     agent: selections.agent,
     workspace: selections.workspace,
     harness_slug: selections.harness,
     plan_slug: selections.plan,
+    // WI-41363: stable across every fetchWithResilience replay of THIS launch.
+    // bootstrap-su caches the completed response under the existing agent-launch
+    // ledger, so an upstream-silent 502 can be retried without minting a second
+    // session/process. Omitted outside the fresh scripted launch path.
+    ...(bootstrapIdempotencyKey
+      ? { bootstrap_idempotency_key: bootstrapIdempotencyKey }
+      : {}),
     // WI-1343: the literal psu invocation → adv_sessions.launch_argv (traceability).
     launch_argv: psuLaunchArgvRecord(selections, args, { brain }),
     // headless-fleet-launch-and-carry-knob: the launch argv is an audit record;
@@ -10672,9 +10813,15 @@ async function fetchSetupStageSoft({
  * it reaches this launcher.
  */
 async function launchFreshSu(selections, args, { brain = false } = {}) {
+  const bootstrapIdempotencyKey = randomUUID();
   const res = await api("/api/agent-mcp/console/bootstrap-su", {
     method: "POST",
-    body: JSON.stringify(freshSuBootstrapBody(selections, args, { brain })),
+    body: JSON.stringify(
+      freshSuBootstrapBody(selections, args, { brain, bootstrapIdempotencyKey }),
+    ),
+    // Only the key-bearing bootstrap request is replay-safe. api() strips this
+    // internal option before calling fetch.
+    retryBootstrapFailures: true,
   });
   // WI-1408 (fleet-join-startup-assertion): a requested fleet must have actually
   // registered — see assertFleetJoined's doc comment.

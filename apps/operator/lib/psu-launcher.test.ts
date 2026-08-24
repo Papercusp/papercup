@@ -158,6 +158,8 @@ import {
   formatApiFailureMessage,
   proxyOverloadRetryDelayMs,
   isRetryableMcpProxyOverload,
+  BOOTSTRAP_REPLAY_MAX_ATTEMPTS,
+  BOOTSTRAP_REPLAY_BUDGET_MS,
   MCP_PROXY_OVERLOAD_MAX_ATTEMPTS,
   MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS,
   resolveFallbackOperatorTargets,
@@ -2945,6 +2947,15 @@ describe("psu-launcher arg parsing", () => {
       account: "codex-main",
       launch_context: "/tmp/kickoff.md",
     });
+  });
+
+  it("freshSuBootstrapBody carries a stable replay key only when the fresh launcher supplies one", () => {
+    const selections = { agent: "codex", workspace: "ws1", harness: "h1", plan: "p1" };
+    const keyed = freshSuBootstrapBody(selections, {}, {
+      bootstrapIdempotencyKey: "bootstrap-key-1",
+    });
+    expect(keyed.bootstrap_idempotency_key).toBe("bootstrap-key-1");
+    expect("bootstrap_idempotency_key" in freshSuBootstrapBody(selections, {})).toBe(false);
   });
 
   it("freshSuBootstrapBody forwards --label so bootstrap-su stamps adv_sessions.label (docs-agent reuse)", () => {
@@ -7342,6 +7353,43 @@ describe("spawnInherit — plain fallback owns and cleans up the backend process
     expect(signalSource.listenerCount("SIGHUP")).toBe(0);
   });
 
+  it("reports a wrapper spawn error as launch-failed cleanup before exiting", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4444;
+    child.kill = vi.fn();
+    const processKill = vi.fn();
+    const processExit = vi.fn();
+    const signalSource = new EventEmitter();
+    const report = vi.fn(async () => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    spawnInherit({
+      wrapperBin: "codex-su",
+      cwd: "/tmp",
+      env: { PAPERCUSP_ADV_SESSION_ID: "17" },
+      spawnImpl: vi.fn(() => child),
+      processApi: { pid: 9003, kill: processKill, exit: processExit },
+      signalSource,
+      reportSessionEndedImpl: report,
+    });
+
+    child.emit("error", new Error("ENOENT"));
+    await flush();
+
+    expect(report).toHaveBeenCalledOnce();
+    expect(report).toHaveBeenCalledWith("17", null, { launchFailed: true });
+    expect(processKill).toHaveBeenCalledWith(-4444, "SIGKILL");
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(processExit).toHaveBeenCalledWith(127);
+    expect(signalSource.listenerCount("SIGINT")).toBe(0);
+    expect(signalSource.listenerCount("SIGTERM")).toBe(0);
+    expect(signalSource.listenerCount("SIGHUP")).toBe(0);
+    errorSpy.mockRestore();
+  });
+
   it("forwards a parent termination signal and removes handlers before re-signalling the parent", async () => {
     const child = new EventEmitter() as EventEmitter & {
       pid: number;
@@ -8136,6 +8184,26 @@ describe("reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
     });
   });
 
+  it("marks a claimed resume launch failure explicitly, without inventing a signal", async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { ok: true };
+    };
+    await reportSessionEnded(17, null, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+      launchFailed: true,
+    });
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      advSessionId: 17,
+      exitCode: null,
+      killedBySignal: null,
+      launchFailed: true,
+    });
+  });
+
   it("sends killedBySignal: null for an ordinary exit — never omits the key", async () => {
     // Omitting it would be indistinguishable, server-side, from an older launcher that
     // cannot report signals at all. Always stating it keeps "no signal" an assertion
@@ -8359,6 +8427,27 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(claim).toBeGreaterThan(-1);
     expect(configRepair).toBeGreaterThan(claim);
     expect(spawn).toBeGreaterThan(claim);
+  });
+
+  it("wraps every post-claim setup failure in launch-failed cleanup", () => {
+    const cleanupHelper = body.indexOf("const cleanupResumeClaim = async () => {");
+    const cleanupGuard = body.indexOf(
+      "if (!resumeClaimed || session.id == null) return;",
+      cleanupHelper,
+    );
+    const cleanupReport = body.indexOf(
+      "await reportSessionEnded(session.id, null, { launchFailed: true });",
+      cleanupHelper,
+    );
+    const claimed = body.indexOf("resumeClaimed = true");
+    const catchBlock = body.indexOf("} catch (error) {", claimed);
+    const cleanupCall = body.indexOf("await cleanupResumeClaim();", catchBlock);
+    expect(cleanupHelper).toBeGreaterThan(-1);
+    expect(cleanupGuard).toBeGreaterThan(cleanupHelper);
+    expect(cleanupReport).toBeGreaterThan(cleanupGuard);
+    expect(claimed).toBeGreaterThan(-1);
+    expect(catchBlock).toBeGreaterThan(cleanupReport);
+    expect(cleanupCall).toBeGreaterThan(catchBlock);
   });
 });
 
@@ -8643,6 +8732,102 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
     expect(proxyOverloadRetryDelayMs("2")).toBe(2_000);
     expect(proxyOverloadRetryDelayMs("99")).toBe(5_000);
     expect(proxyOverloadRetryDelayMs("garbage")).toBe(1_000);
+  });
+
+  it("recovers thirty concurrent key-bearing bootstraps after one typed upstream-silent 502 each", async () => {
+    const attempts = Array.from({ length: 30 }, () => 0);
+    const results = await Promise.all(
+      attempts.map(async (_unused, index) => {
+        const body = JSON.stringify({ bootstrap_idempotency_key: `key-${index}` });
+        return fetchWithResilience(
+          "http://op/api/agent-mcp/console/bootstrap-su",
+          { method: "POST", body },
+          {
+            fetchImpl: async (_url, init) => {
+              expect(init?.body).toBe(body); // the SAME key crosses every replay
+              attempts[index] += 1;
+              return new Response(
+                JSON.stringify(
+                  attempts[index] === 1
+                    ? {
+                        error: "mcp_proxy_upstream_error",
+                        detail: "upstream silent for 8000ms (no response headers)",
+                      }
+                    : { status: "ok", sessionId: index + 1 },
+                ),
+                {
+                  status: attempts[index] === 1 ? 502 : 200,
+                  headers: { "content-type": "application/json" },
+                },
+              );
+            },
+            sleep: async () => {},
+            now: () => 0,
+            onNotice: () => {},
+            target: devTarget,
+            retryBootstrapFailures: true,
+          },
+        );
+      }),
+    );
+
+    expect(results.every((response) => response.status === 200)).toBe(true);
+    expect(attempts).toEqual(Array.from({ length: 30 }, () => 2));
+    expect(BOOTSTRAP_REPLAY_MAX_ATTEMPTS).toBe(4);
+    expect(BOOTSTRAP_REPLAY_BUDGET_MS).toBe(30_000);
+  });
+
+  it("retries a typed in-progress bootstrap but never an arbitrary 502", async () => {
+    let inProgressAttempts = 0;
+    const recovered = await fetchWithResilience(
+      "http://op/api/agent-mcp/console/bootstrap-su",
+      {},
+      {
+        fetchImpl: async () => {
+          inProgressAttempts += 1;
+          return new Response(
+            JSON.stringify(
+              inProgressAttempts === 1
+                ? { error: "bootstrap_in_progress", retryAfterSec: 0 }
+                : { status: "ok" },
+            ),
+            {
+              status: inProgressAttempts === 1 ? 409 : 200,
+              headers: { "content-type": "application/json" },
+            },
+          );
+        },
+        sleep: async () => {},
+        now: () => 0,
+        onNotice: () => {},
+        target: devTarget,
+        retryBootstrapFailures: true,
+      },
+    );
+    expect(recovered.status).toBe(200);
+    expect(inProgressAttempts).toBe(2);
+
+    let genericAttempts = 0;
+    const generic = await fetchWithResilience(
+      "http://op/api/agent-mcp/console/bootstrap-su",
+      {},
+      {
+        fetchImpl: async () => {
+          genericAttempts += 1;
+          return new Response(JSON.stringify({ error: "bad_gateway" }), {
+            status: 502,
+            headers: { "content-type": "application/json" },
+          });
+        },
+        sleep: async () => {},
+        now: () => 0,
+        onNotice: () => {},
+        target: devTarget,
+        retryBootstrapFailures: true,
+      },
+    );
+    expect(generic.status).toBe(502);
+    expect(genericAttempts).toBe(1);
   });
 
   it("retries a proxy overload on Retry-After and returns once admission recovers", async () => {
