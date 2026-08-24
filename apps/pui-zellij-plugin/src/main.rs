@@ -74,6 +74,12 @@ struct PuiCompanion {
     /// re-check on each `TabUpdate` until the active preset matches (bounded so an
     /// unknown name can't loop forever). `None` when not seeking.
     pending_swap: Option<(String, u8)>,
+    /// Command panes opened with `stack:true` can be returned by zellij before
+    /// they appear in the next `PaneUpdate`. Keep their terminal ids until a
+    /// manifest proves they exist, then stack the complete current work set.
+    /// The queue is bounded per pane so a failed open cannot leave stale state
+    /// forever; exit/close events remove entries immediately.
+    pending_stack_panes: Vec<(u32, u8)>,
     /// One-shot latch for the EI-9 self-hide retry. zellij launches a
     /// `zellij pipe -p` plugin in a focused **floating** pane by default (the
     /// CLI's `floating_plugin` defaults to floating) — but this companion is
@@ -118,6 +124,22 @@ fn work_terminal_pane_ids(panes: &PaneManifest, tabs: &[TabInfo]) -> Vec<u32> {
         .filter(|p| !p.is_plugin && !is_hud_pane(p))
         .map(|p| p.id)
         .collect()
+}
+
+/// Return the current work set once at least one pending stack target is visible
+/// in the manifest. `None` means the open-command-pane result raced ahead of the
+/// corresponding `PaneUpdate`, so the caller should retain the pending target.
+/// Pure so the delayed-manifest race is covered by native tests.
+fn stack_ids_when_ready(
+    panes: &PaneManifest,
+    tabs: &[TabInfo],
+    pending_ids: &[u32],
+) -> Option<Vec<u32>> {
+    let ids = work_terminal_pane_ids(panes, tabs);
+    pending_ids
+        .iter()
+        .any(|pending_id| ids.contains(pending_id))
+        .then_some(ids)
 }
 
 /// Is this pane the pui HUD? Matches its command (`pui hud`) first, then falls
@@ -224,6 +246,7 @@ impl ZellijPlugin for PuiCompanion {
                 if self.should_retry_self_hide() {
                     hide_self();
                 }
+                self.advance_pending_stack_panes();
                 self.emit_topology();
             }
             Event::TabUpdate(tabs) => {
@@ -237,6 +260,8 @@ impl ZellijPlugin for PuiCompanion {
             // A command pane's command exited (pane is held) — the crash/finish
             // signal `pui` uses to offer/auto-relaunch an agent.
             Event::CommandPaneExited(terminal_pane_id, exit_code, _ctx) => {
+                self.pending_stack_panes
+                    .retain(|(pane_id, _)| *pane_id != terminal_pane_id);
                 self.emit(&PluginEvent::PaneExited {
                     pane_id: terminal_pane_id,
                     exit_code,
@@ -246,6 +271,7 @@ impl ZellijPlugin for PuiCompanion {
                 let id = match pane_id {
                     PaneId::Terminal(i) | PaneId::Plugin(i) => i,
                 };
+                self.pending_stack_panes.retain(|(pane_id, _)| *pane_id != id);
                 self.emit(&PluginEvent::PaneClosed { pane_id: id });
             }
             _ => {}
@@ -327,22 +353,16 @@ impl PuiCompanion {
                 }
                 let opened = open_command_pane(to_run, context);
                 // Dockview launch (D-008): stack the new pane into the work group.
-                // open_command_pane returns the new PaneId synchronously, so we
-                // gather the existing work panes (from the current manifest, which
-                // doesn't yet include the new one) + the new id and stack them.
-                // Focus-independent — works even though the launch fired from the
-                // HUD pane (a plain reflow would split the HUD instead, D-007).
+                // zellij returns the new PaneId before the next PaneUpdate, so queue
+                // it and converge from the first manifest that contains it. This is
+                // focus-independent — the launch may fire from the HUD pane (a plain
+                // reflow would split the HUD instead, D-007).
                 if stack {
-                    if let Some(new_id) = opened {
-                        let mut ids: Vec<PaneId> = work_terminal_pane_ids(&self.panes, &self.tabs)
-                            .into_iter()
-                            .map(PaneId::Terminal)
-                            .collect();
-                        ids.push(new_id);
-                        // A 1-pane stack is a no-op; only stack once there's a set.
-                        if ids.len() >= 2 {
-                            stack_panes(ids);
-                        }
+                    if let Some(PaneId::Terminal(new_id)) = opened {
+                        self.pending_stack_panes
+                            .retain(|(pane_id, _)| *pane_id != new_id);
+                        self.pending_stack_panes.push((new_id, 64));
+                        self.advance_pending_stack_panes();
                     }
                 }
             }
@@ -424,6 +444,29 @@ impl PuiCompanion {
         }
         self.pending_swap = Some((target, attempts - 1));
         next_swap_layout(); // → a fresh TabUpdate re-enters this method
+    }
+
+    /// Stack pending command panes after zellij publishes them in a manifest.
+    /// Multiple launches may be pending at once; one stack operation gathers
+    /// every currently visible work pane, so an earlier launch is not lost when
+    /// a later launch arrives before its first `PaneUpdate`.
+    fn advance_pending_stack_panes(&mut self) {
+        if self.pending_stack_panes.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_stack_panes);
+        let pending_ids: Vec<u32> = pending.iter().map(|(id, _)| *id).collect();
+        let Some(ids) = stack_ids_when_ready(&self.panes, &self.tabs, &pending_ids) else {
+            self.pending_stack_panes = pending
+                .into_iter()
+                .filter_map(|(id, attempts)| (attempts > 0).then_some((id, attempts - 1)))
+                .collect();
+            return;
+        };
+
+        if ids.len() >= 2 {
+            stack_panes(ids.into_iter().map(PaneId::Terminal).collect());
+        }
     }
 
     fn emit_topology(&self) {
@@ -589,6 +632,41 @@ mod tests {
     #[test]
     fn work_set_empty_when_no_panes() {
         assert!(work_terminal_pane_ids(&PaneManifest::default(), &[]).is_empty());
+    }
+
+    #[test]
+    fn stack_waits_for_delayed_pane_update_then_uses_complete_work_set() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            0usize,
+            vec![
+                cmd_pane(1, "existing-agent", Some("psu --agent=claude"), false),
+                cmd_pane(2, "pui", Some("pui hud"), false),
+            ],
+        );
+        let tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..Default::default()
+        }];
+
+        // open_command_pane returned 9, but the first manifest has not caught
+        // up yet: stacking now would race and silently miss the new pane.
+        assert_eq!(
+            stack_ids_when_ready(&PaneManifest { panes: panes.clone() }, &tabs, &[9]),
+            None
+        );
+
+        panes.get_mut(&0).unwrap().push(cmd_pane(
+            9,
+            "new-agent",
+            Some("psu --agent=codex"),
+            false,
+        ));
+        assert_eq!(
+            stack_ids_when_ready(&PaneManifest { panes }, &tabs, &[9]),
+            Some(vec![1, 9])
+        );
     }
 
     #[test]
