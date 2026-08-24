@@ -819,8 +819,17 @@ export default defineTool({
                     : additiveChecks || preservePriorOnShrink
                       ? [...suppliedChecks, ...prior]
                       : suppliedChecks;
+                // An empty additive list is a true no-op, including for legacy notes
+                // that exceed today's cap. Do not run the carried rows back through
+                // normalizeCheckEntries, or the recovery would succeed only after
+                // silently evicting the very rows it promised to preserve.
+                const preserveEmptyAdditiveChecks = additiveChecks && suppliedChecks?.length === 0;
                 const merged =
-                  effectiveChecks !== undefined ? normalizeCheckEntries(effectiveChecks, prior) : prior;
+                  effectiveChecks !== undefined
+                    ? preserveEmptyAdditiveChecks
+                      ? prior
+                      : normalizeCheckEntries(effectiveChecks, prior)
+                    : prior;
                 // Recomputed on every transform invocation (the store may retry it under
                 // its lock) so the last run — the one whose result is stored — wins.
                 // Drop detection must use the same stable identity as the merge and
@@ -913,6 +922,10 @@ export default defineTool({
          */
         const overflowGuard: CheckpointGuard | null = !wantsConfirmShrink && suppliedChecks !== undefined
           ? (_priorNote) => {
+              // An explicitly empty list is the documented additive no-op for both
+              // recovery shapes. It must not reject a legacy note that already carries
+              // more rows than the current cap; there are no supplied rows to evict.
+              if (suppliedChecks.length === 0) return null;
               if (!(additiveChecks || preservePriorOnShrink)) return null;
               const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
               return overflowCount > 0

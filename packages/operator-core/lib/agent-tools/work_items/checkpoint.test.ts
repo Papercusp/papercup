@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
 // the cap re-tunes the test instead of breaking it — the guard is about the note being
 // truthful at the boundary, not about the boundary sitting at any particular number.
-import { CARRY_NOTE_MAX_CHECKS } from '../../carry-note';
+import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks } from '../../carry-note';
 
 const setWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
@@ -1597,6 +1597,42 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           return prior;
         };
 
+        /** Install a legacy prior that predates the current row cap. Recovery writes
+         * must preserve it when they pass an explicitly empty additive list. The mock
+         * invokes both the guard and transform so the regression fails at the same
+         * decision point as the real locked store. */
+        const installLegacyPrior = (prior: string) => {
+          let current: string | null = prior;
+          getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+          getWorkItemCheckpoint.mockImplementation(async () => current);
+          setWorkItemCheckpointWithPrior.mockImplementation(
+            async (
+              _ref: unknown,
+              incoming: string | null | undefined,
+              opts?: {
+                guard?: (priorNote: string | null, priorLength: number) => string | null;
+                transform?: (priorNote: string | null, next: string | null | undefined) => string | null | undefined;
+              },
+            ) => {
+              const blockedReason = opts?.guard?.(current, current?.length ?? 0) ?? undefined;
+              if (blockedReason) return { stored: current, priorLength: prior.length, blockedReason };
+              const next = opts?.transform ? opts.transform(current, incoming) : incoming;
+              current = typeof next === 'string' && next.trim().length > 0 ? next : null;
+              return { stored: current, priorLength: prior.length };
+            },
+          );
+          return () => current;
+        };
+
+        const legacyPriorWithExtraRow = () =>
+          withCarryNoteChecks(
+            'legacy checkpoint body',
+            Array.from({ length: CARRY_NOTE_MAX_CHECKS + 1 }, (_, i) => ({
+              claim: `LEGACY-${String(i + 1).padStart(2, '0')} holds`,
+              recheck: `probe legacy ${i + 1}`,
+            })),
+          );
+
         it('UNIONS a supplied row onto the carried set instead of dropping the rest', async () => {
           await seed([
             { claim: 'A holds', recheck: 'probe A' },
@@ -1719,6 +1755,21 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(await lastStored()).toBe(prior);
         });
 
+        it('accepts the advertised append:true checks:[] recovery when a legacy prior exceeds the current cap', async () => {
+          const prior = legacyPriorWithExtraRow();
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({ id: 'WI-7', append: true, checks: [] })) as {
+            ok: boolean;
+            checks: number;
+            error?: string;
+          };
+
+          expect(r).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS + 1 });
+          expect(r.error).toBeUndefined();
+          expect(readCurrent()).toBe(prior);
+        });
+
         /**
          * EI-21228214077347799 — the SAME cap-eviction loss as EI-20004424625703051
          * above, reached through the door that guard does not cover.
@@ -1788,6 +1839,28 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.error).toContain(`${CARRY_NOTE_MAX_CHECKS}-row cap`);
           expect(writes).toBe(0);
           expect(await lastStored()).toBe(prior);
+        });
+
+        it("accepts the advertised rowsMode:'merge' checks:[] recovery when a legacy prior exceeds the current cap", async () => {
+          const prior = legacyPriorWithExtraRow();
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({ id: 'WI-7', rowsMode: 'merge', checks: [] })) as {
+            ok: boolean;
+            rowsMode?: string;
+            rowsModeNote?: string;
+            checks: number;
+            error?: string;
+          };
+
+          expect(r).toMatchObject({
+            ok: true,
+            rowsMode: 'merge',
+            checks: CARRY_NOTE_MAX_CHECKS + 1,
+          });
+          expect(r.rowsModeNote).toContain('NO-OP');
+          expect(r.error).toBeUndefined();
+          expect(readCurrent()).toBe(prior);
         });
 
         it('PLAIN (non-append) replace is UNCHANGED — retiring a stale check still works', async () => {
