@@ -45,6 +45,14 @@ const M = vi.hoisted(() => ({
   })),
 }));
 
+// Checkpoint enrichment deliberately sits outside work_items:get's cached base-row
+// read. Keep the integration suite deterministic so the regression below can change
+// the stored checkpoint between two calls while the work-item row remains a cache hit.
+const CHECKPOINT = vi.hoisted(() => ({
+  getWorkItemCheckpointWithMeta: vi.fn(async () => ({ checkpoint: null, updatedAtMs: null })),
+  getWorkItemCheckpointFreshness: vi.fn(async () => undefined),
+}));
+
 vi.mock("../../work-items", async (orig) => {
   const actual = await orig<typeof import("../../work-items")>();
   return {
@@ -54,6 +62,11 @@ vi.mock("../../work-items", async (orig) => {
     getWorkItemDetail: M.getWorkItemDetail,
   };
 });
+
+vi.mock("../../work-item-checkpoint", () => ({
+  getWorkItemCheckpointWithMeta: CHECKPOINT.getWorkItemCheckpointWithMeta,
+  getWorkItemCheckpointFreshness: CHECKPOINT.getWorkItemCheckpointFreshness,
+}));
 
 import listTool from "./list";
 import getTool from "./get";
@@ -86,6 +99,8 @@ beforeEach(async () => {
   M.listWorkItems.mockClear();
   M.getWorkItem.mockClear();
   M.getWorkItemDetail.mockClear();
+  CHECKPOINT.getWorkItemCheckpointWithMeta.mockReset().mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+  CHECKPOINT.getWorkItemCheckpointFreshness.mockReset().mockResolvedValue(undefined);
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -148,6 +163,23 @@ describe("work_items:get — per-item cache wiring", () => {
     await get({ id: "WI-1" });
     await get({ id: "WI-1" });
     expect(M.getWorkItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("READ-YOUR-CHECKPOINT-WRITES: a cache-primed base row still reads the latest checkpoint", async () => {
+    let checkpoint = "before checkpoint write";
+    CHECKPOINT.getWorkItemCheckpointWithMeta.mockImplementation(async () => ({
+      checkpoint,
+      updatedAtMs: Date.now(),
+    }));
+
+    const first = (await get({ id: "WI-1" })) as { data: { results: Array<{ checkpoint: string }> } };
+    checkpoint = "after checkpoint write";
+    const second = (await get({ id: "WI-1" })) as { data: { results: Array<{ checkpoint: string }> } };
+
+    expect(first.data.results[0].checkpoint).toBe("before checkpoint write");
+    expect(second.data.results[0].checkpoint).toBe("after checkpoint write");
+    expect(M.getWorkItem).toHaveBeenCalledTimes(1);
+    expect(CHECKPOINT.getWorkItemCheckpointWithMeta).toHaveBeenCalledTimes(2);
   });
 
   it("READ-YOUR-WRITES: a real work-item write busts the get cache (base-table tag)", async () => {
