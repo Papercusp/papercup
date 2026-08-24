@@ -1039,6 +1039,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
         'events:status expected_verdict=pending',
         'D-077 pending-fire hold',
         'loop health check reported five live awaits',
+        'loop active/reachable interval180, pending exact await; events:await returned81020',
       ];
 
       for (const evidence of literalStateEvidence) {
