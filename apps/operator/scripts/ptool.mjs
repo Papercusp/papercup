@@ -850,6 +850,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21314560074357302: an exact capability:launch-agent resume resolves
+  // the target session and saved fleet profile before the headless boot/receipt
+  // probe. The ordinary 30s client deadline can expire while that bounded
+  // server-side work is still running, especially through tools:invoke. Keep
+  // the client outside the MCP transport cap so it observes the typed result
+  // instead of returning an ambiguous may-have-executed timeout.
+  ['capability:launch-agent', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],

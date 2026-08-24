@@ -568,6 +568,25 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
   });
 });
 
+describe('ptool timeoutForTool — capability:launch-agent resumes outlive the default client deadline (EI-21314560074357302)', () => {
+  it('gives exact launch-agent resumes a client deadline beyond the MCP transport cap', () => {
+    const timeout = timeoutForTool('capability:launch-agent', {
+      resume: { agentId: 'su-example' },
+      headless: true,
+    });
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('applies the same budget when launch-agent is reached through tools:invoke', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'capability:launch-agent',
+      args: { resume: { agentId: 'su-example' }, headless: true },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — scorecards:emit outlives its 180s tool budget (EI-21179169504957086)', () => {
   it('keeps the direct client request alive through criterion checks and ledger persistence', () => {
     expect(timeoutForTool('scorecards:emit', {})).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
