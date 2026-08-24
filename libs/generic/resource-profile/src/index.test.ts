@@ -193,20 +193,37 @@ describe('backgroundInProcess — split only on a server with dedicated PG', () 
   });
 });
 
-describe('free-RAM clamp', () => {
-  it('caps agents by free RAM even when cores are plentiful', () => {
-    // 128 cores would give 16 agents by core, but only 2 GiB free -> floor(2 / 0.5) = 4.
+// WI-41206 / remove-memory-derived-work-refusals-2026-08-24: this block asserted the OPPOSITE
+// until now — that free RAM capped the agent budget. The clamp is gone on two grounds: running
+// the box into paging is the operator's call, and `os.freemem()` was the wrong measurement
+// anyway (it excludes reclaimable page cache; measured here at ~33 GiB free vs ~70 GiB truly
+// available). These cases are kept, inverted, as the regression guard.
+describe('free RAM no longer caps the agent budget (WI-41206)', () => {
+  it('does NOT cap agents by free RAM when cores are plentiful', () => {
+    // Previously: 2 GiB free -> floor(2 / 0.5) = 4 agents. Now purely core-derived:
+    // 128 cores * 0.5 = 64, clamped to the ceiling of 16.
     const p = deriveResourceProfile(
       signals({ cores: 128, embeddedPg: false, totalMemBytes: 512 * GIB, freeMemBytes: 2 * GIB }),
     );
-    expect(p.maxSimultaneousAgents).toBe(4);
+    expect(p.maxSimultaneousAgents).toBe(16);
   });
 
-  it('never drops below the agent floor of 1 even with almost no free RAM', () => {
+  it('keeps the full core-derived budget even with almost no free RAM', () => {
+    // Previously clamped to the floor of 1. A host under memory pressure should get SLOWER,
+    // not be told it may run only one agent.
     const p = deriveResourceProfile(
       signals({ cores: 64, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes: 0.1 * GIB }),
     );
-    expect(p.maxSimultaneousAgents).toBe(1);
+    expect(p.maxSimultaneousAgents).toBe(16);
+  });
+
+  it('returns the SAME budget regardless of free RAM, all else equal', () => {
+    // The sharpest statement of the property: free RAM is not an input to this number.
+    const at = (freeMemBytes: number) =>
+      deriveResourceProfile(
+        signals({ cores: 16, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes }),
+      ).maxSimultaneousAgents;
+    expect(at(0.1 * GIB)).toBe(at(200 * GIB));
   });
 });
 
@@ -315,15 +332,16 @@ describe('non-finite cores never poison the profile (RP1 — was a real defect)'
   });
 
   it('a non-finite freeMemBytes is absorbed by the clamp guard, not the cap', () => {
-    // freeMemBytes:NaN -> Math.max(0,NaN)=NaN -> floor(NaN/0.5)=NaN ->
-    // Math.min(agentsByCore, NaN)=NaN reaches clamp(). Without the clamp
-    // Number.isFinite guard the agent cap would come back NaN even though cores
-    // is a healthy 16; the guard pins it to the floor of 1.
+    // WI-41206: freeMemBytes is no longer an input to the agent budget, so a NaN reading can
+    // no longer poison it by ANY path — previously NaN flowed through floor(NaN/0.5) into
+    // Math.min and was only rescued by clamp()'s isFinite guard, pinning the cap to 1. The
+    // NaN-safety property is still worth asserting; it is now satisfied structurally rather
+    // than by a rescue, and a healthy 16-core host keeps its real budget (16 * 0.5 = 8).
     const p = deriveResourceProfile(
       signals({ cores: 16, freeMemBytes: NaN }),
     );
     expect(Number.isFinite(p.maxSimultaneousAgents)).toBe(true);
-    expect(p.maxSimultaneousAgents).toBe(1);
+    expect(p.maxSimultaneousAgents).toBe(8);
   });
 });
 
@@ -345,13 +363,14 @@ describe('cores + freeMem normalization (RP2)', () => {
     }).toThrow();
   });
 
-  it('a negative freeMemBytes is floored to 0, clamping agents to the floor of 1', () => {
-    // Math.max(0, freeMemBytes)/GIB -> 0 free GiB -> floor(0/0.5)=0 agents-by-ram,
-    // clamped up to the floor of 1.
+  it('a negative freeMemBytes cannot affect the agent budget at all (WI-41206)', () => {
+    // Previously: Math.max(0, freeMemBytes) -> 0 free GiB -> 0 agents-by-ram -> floor of 1.
+    // Now free RAM is not an input, so a nonsense reading is simply inert and the budget stays
+    // core-derived (128 * 0.5 = 64, clamped to the ceiling of 16).
     const p = deriveResourceProfile(
       signals({ cores: 128, embeddedPg: false, totalMemBytes: 512 * GIB, freeMemBytes: -1 * GIB }),
     );
-    expect(p.maxSimultaneousAgents).toBe(1);
+    expect(p.maxSimultaneousAgents).toBe(16);
   });
 });
 
