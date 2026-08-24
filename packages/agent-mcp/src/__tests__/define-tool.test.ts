@@ -302,6 +302,47 @@ describe('defineTool', () => {
       expect(message).toContain('(required: claim; optional: id, recheck, verified)');
       expect(message.indexOf(example)).toBeLessThan(message.indexOf('verbose schema:'));
     });
+
+    it('does not teach empty arrays for nested fields with minItems', async () => {
+      defineTool({
+        name: 'operator:min_items_nested_hint_probe',
+        description: 'nested minItems schema-hint probe',
+        capability: 'operator:scan',
+        requirePrincipal: false,
+        agentRoles: ['operator'],
+        args: z.object({
+          coverage: z.object({
+            population: z.array(z.string()).min(1),
+            checked: z.array(z.string()).optional(),
+            residue: z.array(z.string()).min(1),
+          }),
+        }),
+        async handler() {
+          return { content: [{ type: 'text', text: 'should not run' }] };
+        },
+      });
+      const tool = lookupByMcpName('operator:min_items_nested_hint_probe')!;
+      const result = await dispatchProjectedTool(
+        tool,
+        'operator:min_items_nested_hint_probe',
+        { coverage: { population: 'all', checked: 'all', residue: 'none' } },
+        {
+          log: () => {},
+          signal: new AbortController().signal,
+          progress: () => {},
+          emit: () => {},
+          workspaceId: 'default',
+          role: 'operator',
+          runId: 'run_T',
+        },
+        {},
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toContain(
+        'e.g. {"population":["<string>"],"checked":[],"residue":["<string>"]}',
+      );
+    });
   });
 
   it('appends the FULL args schema to invalid_args failures (P-004, code-run-batch-adoption)', async () => {
