@@ -1390,6 +1390,14 @@ export default defineTool({
       planItemContradiction: unknown;
       planItemContradictionWarning: string;
     } | null = null;
+    // P-011: WHICH behavior clauses this claim puts the agent on the hook for, at
+    // WHICH revision. Advisory (D-017) — reported here, never enforced; P-013 owns
+    // any refusal. Same port the completion gate uses, so what a claimant is told
+    // cannot drift from what they will be held to.
+    let behaviorContractHint: {
+      behaviorContract: unknown;
+      behaviorContractNote: string;
+    } | null = null;
     if (res?.workItem) {
       const wi = res.workItem as {
         id?: string | null;
@@ -1400,7 +1408,7 @@ export default defineTool({
         sourcePlanSlug?: string | null;
         sourcePlanItemIds?: string[] | null;
       };
-      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint] =
+      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint] =
         await Promise.all([
           import('../../plan-decisions-claim-port')
             .then(async (m) => {
@@ -1461,6 +1469,22 @@ export default defineTool({
               return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
             })
             .catch(() => null),
+          wi.id
+            ? import('../../behavior-contract-claim-port')
+                .then((m) =>
+                  m.getClaimTimeBehaviorContract(
+                    {
+                      id: wi.id as string,
+                      payload: wi.payload,
+                      harness: wi.harness,
+                      sourcePlanSlug: wi.sourcePlanSlug,
+                      sourcePlanItemIds: wi.sourcePlanItemIds,
+                    },
+                    wi.harness ?? args.harness,
+                  ),
+                )
+                .catch(() => null)
+            : Promise.resolve(null),
         ]);
     }
     // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
@@ -1590,6 +1614,8 @@ export default defineTool({
           authorshipRevalidationWarning: authorshipRevalidationHint?.authorshipRevalidationWarning,
           planItemContradiction: planContradictionHint?.planItemContradiction,
           planItemContradictionWarning: planContradictionHint?.planItemContradictionWarning,
+          behaviorContract: behaviorContractHint?.behaviorContract,
+          behaviorContractNote: behaviorContractHint?.behaviorContractNote,
           // EI-19396519606401168: this note used to be built from the
           // POST-CAP length, so a capped brief announced itself as the
           // complete set. The shared helper still renders the true total

@@ -48,6 +48,7 @@ const LEG_IMPLEMENTATION: Record<ClaimTimeEnrichmentLeg, string> = {
   retraction: 'getClaimTimeRetractionAdvisory',
   authorship: 'getClaimTimeAuthorshipRevalidationHint',
   planContradiction: 'getClaimTimePlanItemContradiction',
+  behaviorContract: 'getClaimTimeBehaviorContract',
 };
 
 /** Every surface that hands an agent a claimed item and is therefore obliged to warn it. */

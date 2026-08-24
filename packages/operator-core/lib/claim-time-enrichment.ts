@@ -57,11 +57,12 @@ export const CLAIM_TIME_ENRICHMENT_LEGS = [
   'retraction',
   'authorship',
   'planContradiction',
-  // P-011 'behaviorContract' is IMPLEMENTED below and runs on the delegating surface,
-  // but is deliberately NOT registered yet: registering it asserts parity across all
-  // four claim surfaces, and three of them still hand-wire their own enrichment batch.
-  // Register it in the SAME change that wires those three, so the parity guard never
-  // states a coverage it does not have. See WI-40090's checkpoint for the finish plan.
+  // P-011: WHICH promises a claimed item is on the hook for, at WHICH revision.
+  // Registered here only once all four surfaces attach it — the three hand-wiring
+  // surfaces call `getClaimTimeBehaviorContract` directly, plan_items:claim gets it
+  // by delegating to this port. Registering earlier would have made the parity guard
+  // assert a coverage the tree did not have.
+  'behaviorContract',
 ] as const;
 
 export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number];
@@ -260,33 +261,8 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       // ⚠ ADVISORY (D-017): reported, never enforced here. P-013 owns any refusal.
       // Needs a live work-item — a bare plan-item claim has no item to resolve edges for.
       behaviorContractWorkItem
-        ? import('./agent-tools/plans/behavior-contract-resolver')
-            .then(async (m) => {
-              const contract = await m.resolveWorkItemBehaviorContract({
-                id: behaviorContractWorkItem.id,
-                kind: null,
-                harness,
-                payload: behaviorContractWorkItem.payload,
-                sourcePlanSlug: behaviorContractWorkItem.sourcePlanSlug,
-                ...(behaviorContractWorkItem.sourcePlanItemIds
-                  ? { sourcePlanItemIds: behaviorContractWorkItem.sourcePlanItemIds }
-                  : {}),
-              });
-              // An item on the hook for NOTHING is a real, common answer — saying so
-              // would be noise on most claims, so only a non-empty contract decorates.
-              if (!contract || contract.enforceable.length === 0) return null;
-              const staleEdges = contract.groups.reduce((n, g) => n + g.staleEdges.length, 0);
-              return {
-                behaviorContract: contract,
-                behaviorContractNote:
-                  `⚠ ADVISORY — this item is on the hook for ${contract.enforceable.length} behavior ` +
-                  `clause(s); satisfy them at their CURRENT revision or the completion gate will refuse` +
-                  (staleEdges > 0
-                    ? `. ${staleEdges} existing coverage claim(s) are pinned to a SUPERSEDED revision and must be re-proven`
-                    : '') +
-                  '.',
-              };
-            })
+        ? import('./behavior-contract-claim-port')
+            .then((m) => m.getClaimTimeBehaviorContract(behaviorContractWorkItem, harness))
             .catch(() => null)
         : Promise.resolve(null),
     ]);
