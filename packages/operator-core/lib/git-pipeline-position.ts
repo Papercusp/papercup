@@ -778,6 +778,25 @@ export function assessGateVerdict(input: {
   return input.mainBehindStaging ? 'passing-buffered' : 'passing-current';
 }
 
+/**
+ * EI-21347137633438058: a stale verdict must never dispatch a caller to fix the
+ * failures it names and then re-run the checkpoint against that same verdict.
+ * The assessment surface already carries the safe action for this state; keep this
+ * small projection at the stage boundary so `nextAction` cannot contradict it.
+ *
+ * Only stale-verdict advice is rewritten. A null lever (for example, a measured
+ * in-flight run) and an unrelated lever (for example, a migration blocker) retain
+ * their existing meaning.
+ */
+export function staleVerdictSafeLever(
+  reasonCode: PipelinePosition['gate']['verdictStaleReasonCode'],
+  lever: string | null,
+): string | null {
+  if (reasonCode === null || lever === null) return lever;
+  if (!/fix the reds|release:checkpoint-run/i.test(lever)) return lever;
+  return `Verify the CURRENT candidate before fixing anything — the named failures may belong to a run that has already been abandoned (stale verdict: ${reasonCode}).`;
+}
+
 export function assessGateCandidate(input: {
   judgingSha: string | null;
   judgingShaSource?: ChangeInCandidate['judgingShaSource'];
@@ -3047,83 +3066,86 @@ export function computeStages(
       detail: gateDetail === null ? null : `${gateDetail}${livenessNote}`,
       // Containment outranks the gate's own health: firing a verdict on a candidate that
       // cannot see your change buys nothing, so fixing THAT comes before greening reds.
-      lever: !p.positions.inMain
-        ? notInCandidate
-          ? cic.missingReason === 'uncommitted' || cic.missingReason === 'absent'
-            ? 'git-sync:run (the judged candidate does not contain your change yet)'
-            : // EI-18797292094433710: 'newer-commit' with a run ALREADY IN FLIGHT must
-              // not route to a re-fire. The file merely moved since the cut — a peer's
-              // edit does that too — so the in-flight candidate may already carry the
-              // change, and a re-fire would throw away a verdict that is minutes from
-              // landing to start a fresh ~55min clock (done twice during a 3h+ outage
-              // whose fix was in every candidate). Same reasoning as the
-              // judgingContainsPath===true arm below: a verdict is coming, so wait.
+      lever: staleVerdictSafeLever(
+        g.verdictStaleReasonCode,
+        !p.positions.inMain
+          ? notInCandidate
+            ? cic.missingReason === 'uncommitted' || cic.missingReason === 'absent'
+              ? 'git-sync:run (the judged candidate does not contain your change yet)'
+              : // EI-18797292094433710: 'newer-commit' with a run ALREADY IN FLIGHT must
+                // not route to a re-fire. The file merely moved since the cut — a peer's
+                // edit does that too — so the in-flight candidate may already carry the
+                // change, and a re-fire would throw away a verdict that is minutes from
+                // landing to start a fresh ~55min clock (done twice during a 3h+ outage
+                // whose fix was in every candidate). Same reasoning as the
+                // judgingContainsPath===true arm below: a verdict is coming, so wait.
+                //
+                // EI-19311755730915969: "is one in flight" is `checkpointRunInFlight.active`,
+                // not `cic.judgingSha` — see the three-state note above. An UNKNOWN reading
+                // falls through to the lever deliberately: the caller is told the truth by
+                // `livenessNote`, and `release:checkpoint-run` REFUSES a second fire anyway,
+                // so a needless fire attempt is cheap while a false "wait" costs hours.
+                runInFlight
+                ? null
+                : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
+            : // A run is ALREADY IN FLIGHT judging a candidate that carries this change: a
+              // verdict covering it is coming, so waiting is the correct move and there is
+              // nothing to fire. Telling the caller to run release:checkpoint-run here is
+              // actively wrong — the gate is a singleton, so a second fire is REFUSED, and
+              // reaching for replaceStale to "unstick" it is the EI-11667 replace-storm that
+              // starved the gate of every verdict for 2h. Found by dogfooding this surface on
+              // a live stale red whose in-flight run already carried the fix.
               //
-              // EI-19311755730915969: "is one in flight" is `checkpointRunInFlight.active`,
-              // not `cic.judgingSha` — see the three-state note above. An UNKNOWN reading
-              // falls through to the lever deliberately: the caller is told the truth by
-              // `livenessNote`, and `release:checkpoint-run` REFUSES a second fire anyway,
-              // so a needless fire attempt is cheap while a false "wait" costs hours.
-              runInFlight
+              // EI-19311755730915969: same re-key as above. This arm is the one that reported
+              // "nothing to do" on a gate that had been red for 6.7h with NOTHING running.
+              runInFlight && judgedRunCoversChange
               ? null
-              : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
-          : // A run is ALREADY IN FLIGHT judging a candidate that carries this change: a
-            // verdict covering it is coming, so waiting is the correct move and there is
-            // nothing to fire. Telling the caller to run release:checkpoint-run here is
-            // actively wrong — the gate is a singleton, so a second fire is REFUSED, and
-            // reaching for replaceStale to "unstick" it is the EI-11667 replace-storm that
-            // starved the gate of every verdict for 2h. Found by dogfooding this surface on
-            // a live stale red whose in-flight run already carried the fix.
-            //
-            // EI-19311755730915969: same re-key as above. This arm is the one that reported
-            // "nothing to do" on a gate that had been red for 6.7h with NOTHING running.
-            runInFlight && judgedRunCoversChange
-            ? null
-            : // EI-19405864032365760: an ABORTED tick has a lever, and it is NOT the one the two
-              // arms below would hand out. `fireStale` is false (the gate IS firing, on schedule,
-              // and aborting each time) and the red streak belongs to an older run, so both
-              // "fire a checkpoint run" and "fix the reds" send the reader at the wrong thing —
-              // a re-fire aborts identically at the same preflight, and the named failing tests
-              // are not what is holding the pipeline. Route to the blocking condition instead.
-              g.pause
-              ? null
-              : g.inconclusive
-              ? g.inconclusive.status === 'migrations-pending'
-                ? 'db:migrate (the gate aborts before judging while a migration is pending — apply it, THEN the next scheduled run judges normally; firing one now aborts the same way)'
-                : // EI-20767792192323374: an infra abort is the one abort where RE-FIRING IS the
-                  // lever — the condition is transient host weather (something deleted the runner's
-                  // temp root mid-suite), not a standing blocker, so the generic "re-firing aborts
-                  // the same way" below would be false and would tell the reader to wait on nothing.
-                  // The load caveat is the point: firing into the same pressure repeats the fault.
-                  g.inconclusive.status === 'infra-inconclusive'
-                  ? "release:checkpoint-run once the box is quiet (the gate's own module cache was deleted mid-run — a HOST fault, so it rendered no verdict; ⚠ do NOT triage the files the last red named, they are innocent)"
-                  : // WI-39841: a deadline-kill is the OTHER abort where the generic arm below
-                    // would be actively wrong. "Re-firing aborts the same way" is false — there
-                    // is no standing blocker to clear, the run simply ran out of clock, and the
-                    // next one may well finish. But it is not the infra case either: the lever
-                    // is the run's BUDGET vs its WORKLOAD, not host weather. And the strongest
-                    // thing to say is what NOT to do: this tick recorded no verdict, so any
-                    // failing files still on display belong to an older run.
-                    g.inconclusive.status === 'deadline-exceeded'
-                    ? 'release:checkpoint-run (the last run was SIGTERMd at its suite budget before it could record a verdict — nothing is blocking a re-fire; ⚠ do NOT triage the files an earlier red named, they are not what stopped it. If it keeps dying at the deadline, the run needs more budget or less work — that is the fix, not triage)'
-                    : // EI-21290961259437085: the remaining recorded statuses route through the
-                      // shared classification instead of inheriting the standing-condition
-                      // wording. 'cancelled' is the live case that motivated this: an external
-                      // SIGTERM (exit 143) RECORDS a kill and latches nothing, so both clauses of
-                      // the old generic text — "clear the abort condition" and "re-firing aborts
-                      // the same way" — were false, and it told a whole fleet to wait on nothing.
-                      // ⚠ The generic wording is still CORRECT for a genuine standing condition
-                      // and is still what `gateAbortLever` returns for one; this is a routing fix,
-                      // not a blanket claim that aborts never block a re-fire.
-                      gateAbortLever(g.inconclusive.status)
-              : g.fireStale
-                ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
-                : redWithoutFailingTests
-                  ? 'inspect the latest green-checkpoint run/materialisation blocker (the gate records no failing tests to fix), then release:checkpoint-run once that blocker clears'
-                : gateHealth === 'stalled'
-                  ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
-                  : null
-        : null,
+              : // EI-19405864032365760: an ABORTED tick has a lever, and it is NOT the one the two
+                // arms below would hand out. `fireStale` is false (the gate IS firing, on schedule,
+                // and aborting each time) and the red streak belongs to an older run, so both
+                // "fire a checkpoint run" and "fix the reds" send the reader at the wrong thing —
+                // a re-fire aborts identically at the same preflight, and the named failing tests
+                // are not what is holding the pipeline. Route to the blocking condition instead.
+                g.pause
+                ? null
+                : g.inconclusive
+                ? g.inconclusive.status === 'migrations-pending'
+                  ? 'db:migrate (the gate aborts before judging while a migration is pending — apply it, THEN the next scheduled run judges normally; firing one now aborts the same way)'
+                  : // EI-20767792192323374: an infra abort is the one abort where RE-FIRING IS the
+                    // lever — the condition is transient host weather (something deleted the runner's
+                    // temp root mid-suite), not a standing blocker, so the generic "re-firing aborts
+                    // the same way" below would be false and would tell the reader to wait on nothing.
+                    // The load caveat is the point: firing into the same pressure repeats the fault.
+                    g.inconclusive.status === 'infra-inconclusive'
+                    ? "release:checkpoint-run once the box is quiet (the gate's own module cache was deleted mid-run — a HOST fault, so it rendered no verdict; ⚠ do NOT triage the files the last red named, they are innocent)"
+                    : // WI-39841: a deadline-kill is the OTHER abort where the generic arm below
+                      // would be actively wrong. "Re-firing aborts the same way" is false — there
+                      // is no standing blocker to clear, the run simply ran out of clock, and the
+                      // next one may well finish. But it is not the infra case either: the lever
+                      // is the run's BUDGET vs its WORKLOAD, not host weather. And the strongest
+                      // thing to say is what NOT to do: this tick recorded no verdict, so any
+                      // failing files still on display belong to an older run.
+                      g.inconclusive.status === 'deadline-exceeded'
+                      ? 'release:checkpoint-run (the last run was SIGTERMd at its suite budget before it could record a verdict — nothing is blocking a re-fire; ⚠ do NOT triage the files an earlier red named, they are not what stopped it. If it keeps dying at the deadline, the run needs more budget or less work — that is the fix, not triage)'
+                      : // EI-21290961259437085: the remaining recorded statuses route through the
+                        // shared classification instead of inheriting the standing-condition
+                        // wording. 'cancelled' is the live case that motivated this: an external
+                        // SIGTERM (exit 143) RECORDS a kill and latches nothing, so both clauses of
+                        // the old generic text — "clear the abort condition" and "re-firing aborts
+                        // the same way" — were false, and it told a whole fleet to wait on nothing.
+                        // ⚠ The generic wording is still CORRECT for a genuine standing condition
+                        // and is still what `gateAbortLever` returns for one; this is a routing fix,
+                        // not a blanket claim that aborts never block a re-fire.
+                        gateAbortLever(g.inconclusive.status)
+                : g.fireStale
+                  ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
+                  : redWithoutFailingTests
+                    ? 'inspect the latest green-checkpoint run/materialisation blocker (the gate records no failing tests to fix), then release:checkpoint-run once that blocker clears'
+                  : gateHealth === 'stalled'
+                    ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
+                    : null
+          : null,
+      ),
     });
 
     // WI-6357 / EI-18790908999972569: a nonzero staging buffer is the fleet's normal
