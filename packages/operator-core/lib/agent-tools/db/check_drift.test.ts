@@ -84,3 +84,14 @@ describe('db:check_drift handler', () => {
     expect(got.content_drift_executable).toEqual([hazard]);
   });
 });
+
+describe('db:check_drift call-scope contract', () => {
+  it('documents and enforces its operator-global no-harness invocation', () => {
+    expect(tool.args.safeParse({}).success).toBe(true);
+    expect(tool.args.safeParse({ harness: 'papercusp' }).success).toBe(false);
+
+    const guidance = `${tool.description} ${tool.guidance?.when ?? ''}`;
+    expect(guidance).toMatch(/operator-global/i);
+    expect(guidance).toMatch(/do not pass [`"]?harness/i);
+  });
+});

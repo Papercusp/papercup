@@ -16,9 +16,10 @@ import { checkMigrationDrift } from '../../migration-drift';
 export default defineTool({
   name: 'db:check_drift',
   description:
-    'Report DB migration drift — sql/*.sql files not yet applied (per harness_shared.schema_migrations). Detection only. Checks BOTH the tree serving this call AND the canonical staging tree agents author migrations in (EI-18757486483124756) — `in_sync` is false if EITHER lags. `missing`/`missing_canonical` = added since the last operator boot; restart the operator (boot auto-applies) or use db:migrate. `extra` = applied but file gone (investigate). `content_drift` = applied migrations whose bytes CHANGED after they ran (EI-19365742982915607) — the edit never executed and no restart will run it; repair with a NEW migration. `schema_ahead` = the DB was migrated by a newer tree than this one.',
+    'Report DB migration drift — sql/*.sql files not yet applied (per harness_shared.schema_migrations). Operator-global: call with `{}`; do not pass `harness` or another scope key. Detection only. Checks BOTH the tree serving this call AND the canonical staging tree agents author migrations in (EI-18757486483124756) — `in_sync` is false if EITHER lags. `missing`/`missing_canonical` = added since the last operator boot; restart the operator (boot auto-applies) or use db:migrate. `extra` = applied but file gone (investigate). `content_drift` = applied migrations whose bytes CHANGED after they ran (EI-19365742982915607) — the edit never executed and no restart will run it; repair with a NEW migration. `schema_ahead` = the DB was migrated by a newer tree than this one.',
   guidance: {
-    when: 'After adding a migration, or when a runtime "missing column/relation" error suggests the live DB lags the sql/ dir.',
+    when:
+      'After adding a migration, or when a runtime "missing column/relation" error suggests the live DB lags the sql/ dir. This is operator-global: call with `{}` and do not pass `harness`.',
     notWhen: 'Applying a migration — that is the boot auto-apply (restart) or db:migrate for a one-off.',
     chaining:
       'missing/missing_canonical non-empty → restart the operator (or db:migrate that file). `sql_dir` is the tree ' +
