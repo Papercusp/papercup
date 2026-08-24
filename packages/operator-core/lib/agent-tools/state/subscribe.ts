@@ -50,7 +50,7 @@ export default defineTool({
     when: 'You need to proceed only once a value MOVES or crosses a threshold — a deploy landing, a gate verdict flipping, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.',
     notWhen: 'You need the value now — that is state:read. The event has an exact key already — that is events:await. A recurring TIME schedule — routines own those.',
     chaining:
-      'state:subscribe { cell } → END YOUR TURN. Omitting `on` means `changed`; never write `ne` against the value\'s current reading to mean that — it transcribes a volatile value and misses a move landing before the call. Standing watch: no `timeout_sec`/`on_timeout`/`wake` (events:await owns those), and the why-field is `note`. once:false re-fires per change. Cancel via events:cancel.',
+      'state:subscribe { cell } → END YOUR TURN. Omitting `on` means `changed`; never write `ne` against the value\'s current reading to mean that — it transcribes a volatile value and misses a move landing before the call. A valued `on` on an assessed cell must name `target` — refused, not guessed. Standing watch: no `timeout_sec`/`on_timeout`/`wake` (events:await owns those), and the why-field is `note`. once:false re-fires per change. Cancel via events:cancel.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
