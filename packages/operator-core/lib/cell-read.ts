@@ -54,7 +54,7 @@
  * into an if-chain.
  */
 
-import { cellUnknown, type CellUnknown } from './cell-contract';
+import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 import {
   getCell,
   type CellAssessmentSpec,
@@ -410,6 +410,100 @@ export type CellAssessmentRead =
  */
 const ASSESSMENT_UNAVAILABLE_SAFE_ACTION =
   'Do not act on this cell as though it carried a verdict: no assessment resolved, so the raw value is UNINTERPRETED — not benign. Read the evidence below, or re-read the cell, before treating the value as decision input.';
+
+/**
+ * Render a value compactly enough to sit in a summary line or a wake turn without
+ * becoming it.
+ *
+ * Shared rather than copied (D-014): D-008 requires pull, push and subscription
+ * consumers to project the SAME read contract, and a value that renders one way in
+ * `state:read` and another way in a delivery-time fold is that contract already broken.
+ */
+export function briefCellValue(value: unknown, max = 120): string {
+  let s: string;
+  try {
+    s = typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    s = String(value);
+  }
+  if (s === undefined) s = String(value);
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/**
+ * One declared evidence path, with MISSING and TRUNCATED kept loud and distinct from a
+ * measured null — the same three-way split `CellAssessmentEvidence` encodes, carried
+ * into prose so a reader who never inspects the payload still cannot conflate them.
+ */
+function assessmentEvidenceNote(e: CellAssessmentEvidence): string {
+  if (e.truncatedByDoor) {
+    return `${e.path} = TRUNCATED IN TRANSIT (unattributable — re-read for the full payload)`;
+  }
+  if (e.drifted) {
+    return `${e.path} = ABSENT from the resolver result (registration drift, NOT a measured null)`;
+  }
+  return `${e.path} = ${briefCellValue(e.value)}`;
+}
+
+/**
+ * P-005 / D-014 — THE DECISION-READY HALF, RENDERED FIRST.
+ *
+ * ⚠ THE CODE IS TRANSPORTED, NEVER RE-DERIVED (D-012 ruling 2). `code`, `meaning` and
+ * `safeAction` are read straight off the resolved branch. Recomputing any of them from
+ * `evidence` would be the "enrich a consumer surface" move that ruling forbids, and it
+ * would be silently WRONG in the ordinary case rather than merely impure: a door-bounded
+ * payload legitimately drops evidence fields, while the code — computed inside the
+ * resolver before any door — survives. Evidence EXPLAINS a verdict here; it never
+ * produces one.
+ *
+ * ⚠ NOT QUIET ON THE HEALTHY PATH, unlike `formatCellHoist` and the source caveat, and
+ * D-014 records why the asymmetry stops here. Those two QUALIFY a headline the reader
+ * already holds, so saying nothing when nothing is wrong costs nothing. This IS the
+ * answer. Printing it only when it is MISSING would mean semantics are visible solely in
+ * their absence — which teaches exactly the habit this plan exists to remove: read the
+ * number, infer the meaning yourself. A `healthy` code is not the string "normal"; it is
+ * a measured verdict from a closed vocabulary, and it carries a safeAction.
+ */
+export function formatCellAssessment(a: CellAssessmentRead, cell: string): string {
+  const evidence = a.evidence.length === 0 ? null : a.evidence.map(assessmentEvidenceNote).join('; ');
+  if (a.status === 'resolved') {
+    return [
+      `ASSESSMENT ${a.code} — ${a.meaning}`,
+      `safe action: ${a.safeAction}`,
+      ...(evidence === null ? [] : [`evidence: ${evidence}`]),
+    ].join(' · ');
+  }
+  return [
+    `⚠ UNINTERPRETED: no assessment resolved for ${cell} — ${formatCellUnknown(a.unknown)}${
+      a.truncatedByDoor ? ' (the payload declared ITSELF truncated, so the absence is unattributable)' : ''
+    } ${a.safeAction}`,
+    ...(evidence === null ? [] : [`evidence: ${evidence}`]),
+    // The door's own escape hatch survives the migration off falsifiers: when the
+    // payload truncated itself, the ONE useful next move is the untruncated re-read.
+    ...(a.fullRead === undefined ? [] : [`full read: ${briefCellValue(a.fullRead, 240)}`]),
+  ].join(' · ');
+}
+
+/**
+ * The SAME assessment as an indented block, for a wake turn — P-005 requires
+ * `cell-wake-fold` to render the identical delivery-time contract. Same fields, same
+ * loudness, same transported code; only the line shape differs, which is precisely why
+ * both shapes are built here instead of once per call site.
+ */
+export function cellAssessmentLines(a: CellAssessmentRead, indent = '  '): string[] {
+  const lines: string[] =
+    a.status === 'resolved'
+      ? [`${indent}assessment · ${a.code} — ${a.meaning}`, `${indent}  safe action · ${a.safeAction}`]
+      : [
+          `${indent}⚠ assessment · UNINTERPRETED — ${formatCellUnknown(a.unknown)}${
+            a.truncatedByDoor ? ' (payload declared ITSELF truncated; unattributable)' : ''
+          }`,
+          `${indent}  safe action · ${a.safeAction}`,
+          ...(a.fullRead === undefined ? [] : [`${indent}  full read · ${briefCellValue(a.fullRead, 240)}`]),
+        ];
+  for (const e of a.evidence) lines.push(`${indent}  evidence · ${assessmentEvidenceNote(e)}`);
+  return lines;
+}
 
 /**
  * Render a hoist for a prose surface, or `null` when it has nothing to say.

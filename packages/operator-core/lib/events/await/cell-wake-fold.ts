@@ -35,7 +35,7 @@
  * resolver — yields the handle-only form or `null`, i.e. the pre-P-022 wake.
  */
 
-import { formatCellHoist, readCell, type CellFalsifierRead } from '../../cell-read';
+import { briefCellValue, cellAssessmentLines, formatCellHoist, readCell } from '../../cell-read';
 import { deriveCellReread, getPredicateWatch } from './predicate-watch';
 
 /** Wake-safe resolve budget. Deliberately far below `readCell`'s own ~10s bound: that
@@ -52,46 +52,9 @@ export interface CellWakeFoldInput {
   budgetMs?: number;
 }
 
-/** Render a value compactly enough to sit in a wake turn without becoming the turn. */
-function brief(value: unknown, max = 120): string {
-  let s: string;
-  try {
-    s = typeof value === 'string' ? value : JSON.stringify(value);
-  } catch {
-    s = String(value);
-  }
-  if (s === undefined) s = String(value);
-  return s.length > max ? `${s.slice(0, max)}…` : s;
-}
-
 function handleCall(handle: { args: { cell: string; as?: string } }): string {
   const { cell, as } = handle.args;
   return `state:read { cell: '${cell}'${as ? `, as: '${as}'` : ''} }`;
-}
-
-/**
- * Render the independent measurement that can invalidate a tempting reading of the
- * headline. A delivery-time fold without this block is weaker than the `state:read`
- * it claims to carry: the push recipient gets the value, but not the evidence the
- * cell author declared specifically to keep that value from becoming a false verdict.
- *
- * Drift and door truncation are deliberately LOUD. In either case the falsifier did
- * not arrive, so `value:null` must never look like measured agreement.
- */
-function falsifierLines(falsifier: CellFalsifierRead): string[] {
-  if (falsifier.truncatedByDoor) {
-    return [
-      `  ⚠ falsifier · ${falsifier.field} was truncated in transit; the headline is UNFALSIFIED`,
-      ...(falsifier.fullRead === undefined ? [] : [`    full read · ${brief(falsifier.fullRead, 240)}`]),
-    ];
-  }
-  if (falsifier.drifted) {
-    return [
-      `  ⚠ falsifier · ${falsifier.field} is absent from the resolver result (registration drift); ` +
-        'the headline is UNFALSIFIED',
-    ];
-  }
-  return [`  falsifier · ${falsifier.field} = ${brief(falsifier.value)}`, `    kills · ${brief(falsifier.kills, 280)}`];
 }
 
 /**
@@ -180,12 +143,28 @@ export async function prepareCellWakeFold(input: CellWakeFoldInput): Promise<str
 
     const lines: string[] = [];
     if (read.status === 'value') {
-      lines.push(`[cell] ${read.cell} · ${read.headline} = ${brief(read.value)}  (re-read at delivery ${stamp})`);
-      lines.push(...falsifierLines(read.falsifier));
+      /**
+       * P-005 / D-014 — THE ASSESSMENT PRECEDES THE RAW MEASUREMENT, here exactly as in
+       * `state:read`. A wake is an interrupt: the agent is being resumed BECAUSE of this
+       * value and will act on the first thing it reads, so the first thing it reads is
+       * what the value MEANS, not the number it happens to hold. Rendered by the SHARED
+       * formatter (D-014 §2) so a push and a pull cannot drift apart.
+       */
+      lines.push(`[cell] ${read.cell}  (re-read at delivery ${stamp})`);
+      if (read.assessment) {
+        lines.push(...cellAssessmentLines(read.assessment));
+      } else {
+        // ANNOUNCED, never silently omitted — the same rule the degrade path above
+        // follows. A cell with no declared assessment means nobody stated what its value
+        // means, and a reader who simply sees no semantics block would read that absence
+        // as reassurance, which is the false all-clear this whole subsystem refuses.
+        lines.push('  ⚠ assessment · NONE DECLARED for this cell — the measurement below is UNINTERPRETED');
+      }
+      lines.push(`  measurement · ${read.headline} = ${briefCellValue(read.value)}`);
       if (read.material) {
         // P-021: the MATERIAL answer is a lens on the same derivation, and it is the one
         // a subscriber watching a high-churn cell actually asked about.
-        lines.push(`  material · ${read.material.path} = ${brief(read.material.value)}`);
+        lines.push(`  material · ${read.material.path} = ${briefCellValue(read.material.value)}`);
       }
       const hoist = read.unknownHoist ? formatCellHoist(read.unknownHoist) : null;
       if (hoist) lines.push(`  ⚠ ${hoist}`);

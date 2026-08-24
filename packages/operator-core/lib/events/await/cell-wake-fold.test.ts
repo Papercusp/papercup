@@ -55,6 +55,18 @@ const valueRead = (over: Record<string, unknown> = {}) => ({
   value: 0,
   headline: 'gate.consecutiveReds',
   resolver: 'gitPipelinePosition',
+  // P-005 / D-014 — the fold renders the ASSESSMENT, not the falsifier.
+  assessment: {
+    status: 'resolved' as const,
+    path: 'assessments.gateVerdict',
+    code: 'green',
+    meaning: 'the last checkpoint passed and main is fast-forwarding',
+    safeAction: 'Proceed; no gate repair is needed.',
+    evidence: [{ path: 'verdictProvenance.mainBehindStaging', value: false }],
+  },
+  // DELIBERATELY STILL HERE. `CellSpec.falsifier` survives until P-006 deletes the
+  // concept, so a read can still carry one — and the point of keeping it in the fixture
+  // is the guard below: the fold must no longer RENDER it. Remove this only with P-006.
   falsifier: {
     field: 'verdictProvenance.mainBehindStaging',
     value: false,
@@ -75,7 +87,8 @@ describe('the healthy fold', () => {
 
     // Keep the declared path and measured value distinct. The old fixture set both to
     // "green", masking a renderer that printed the path while dropping `read.value`.
-    expect(block).toContain('gate.greenCheckpoint.verdict · gate.consecutiveReds = 0');
+    expect(block).toContain('[cell] gate.greenCheckpoint.verdict');
+    expect(block).toContain('measurement · gate.consecutiveReds = 0');
     expect(block).toContain('re-read at delivery');
     // The handle rides along even on the healthy path: this reading is itself a
     // snapshot, just a dated one, and the agent may act minutes from now.
@@ -119,31 +132,40 @@ describe('the healthy fold', () => {
     expect(block).toContain('material · gate.red = 3');
   });
 
-  it('carries the falsifier measurement and the false reading it kills', async () => {
-    readCellMock.mockResolvedValue(
-      valueRead({
-        falsifier: {
-          field: 'verdictProvenance.mainBehindStaging',
-          value: true,
-          kills: '"0 consecutive reds" read as "the pipeline is healthy"',
-        },
-      }),
-    );
-
+  it('renders the ASSESSMENT before the raw measurement, with its meaning and safe action', async () => {
     const block = await prepareCellWakeFold(INPUT);
 
-    expect(block).toContain('falsifier · verdictProvenance.mainBehindStaging = true');
-    expect(block).toContain('kills · "0 consecutive reds" read as "the pipeline is healthy"');
+    expect(block).toContain('assessment · green — the last checkpoint passed and main is fast-forwarding');
+    expect(block).toContain('safe action · Proceed; no gate repair is needed.');
+    expect(block).toContain('evidence · verdictProvenance.mainBehindStaging = false');
+
+    // P-005's ORDERING claim, asserted as an ordering rather than as two memberships.
+    // A wake is an interrupt: the agent acts on the first thing it reads, so the
+    // meaning has to precede the number rather than merely accompany it.
+    expect(block!.indexOf('assessment · green')).toBeLessThan(block!.indexOf('measurement · gate.consecutiveReds'));
   });
 
-  it('reports a drifted falsifier as missing, never as measured null agreement', async () => {
+  it('does NOT render the falsifier, even when the read still carries one (D-014 §3)', async () => {
+    // The fixture deliberately still carries a falsifier — `CellSpec.falsifier` lives
+    // until P-006 — so this is a real guard against the consumer silently reverting,
+    // not a vacuous assertion about a field that is absent anyway.
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).not.toContain('falsifier');
+    expect(block).not.toContain('UNFALSIFIED');
+    expect(block).not.toContain('kills ·');
+  });
+
+  it('reports DRIFTED evidence as missing, never as measured null agreement', async () => {
     readCellMock.mockResolvedValue(
       valueRead({
-        falsifier: {
-          field: 'verdictProvenance.mainBehindStaging',
-          value: null,
-          kills: 'a false healthy verdict',
-          drifted: true,
+        assessment: {
+          status: 'resolved' as const,
+          path: 'assessments.gateVerdict',
+          code: 'green',
+          meaning: 'the last checkpoint passed',
+          safeAction: 'Proceed.',
+          evidence: [{ path: 'verdictProvenance.mainBehindStaging', value: null, drifted: true }],
         },
       }),
     );
@@ -151,17 +173,46 @@ describe('the healthy fold', () => {
     const block = await prepareCellWakeFold(INPUT);
 
     expect(block).toContain('registration drift');
-    expect(block).toContain('headline is UNFALSIFIED');
+    expect(block).toContain('ABSENT from the resolver result');
+    // MISSING is not a measured null — collapsing the two is the defect this plan exists
+    // to close, and rendering `= null` here would do exactly that.
     expect(block).not.toContain('mainBehindStaging = null');
   });
 
-  it('reports a door-truncated falsifier and preserves its full-read lever', async () => {
+  it('reports DOOR-TRUNCATED evidence as unattributable, distinct from drift', async () => {
     readCellMock.mockResolvedValue(
       valueRead({
-        falsifier: {
-          field: 'serving.startedSinceCodeChange',
-          value: null,
-          kills: '"deployed" read as "the process executes it"',
+        assessment: {
+          status: 'resolved' as const,
+          path: 'assessments.gateVerdict',
+          code: 'green',
+          meaning: 'the last checkpoint passed',
+          safeAction: 'Proceed.',
+          evidence: [{ path: 'serving.startedSinceCodeChange', value: null, truncatedByDoor: true }],
+        },
+      }),
+    );
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('TRUNCATED IN TRANSIT');
+    expect(block).toContain('unattributable');
+    // Truncation and drift demand OPPOSITE responses — re-read vs fix the registration —
+    // so the renderer must never report one as the other.
+    expect(block).not.toContain('registration drift');
+  });
+
+  it('renders an UNAVAILABLE assessment loudly and preserves the door full-read lever', async () => {
+    readCellMock.mockResolvedValue(
+      valueRead({
+        assessment: {
+          status: 'unavailable' as const,
+          path: 'assessments.gateVerdict',
+          code: null,
+          meaning: null,
+          safeAction: 'Do not treat the value below as a verdict.',
+          evidence: [],
+          unknown: { code: 'not-measured' as const },
           truncatedByDoor: true,
           fullRead: { tool: 'dev:pipeline_position', args: { path: 'x.ts' } },
         },
@@ -170,10 +221,12 @@ describe('the healthy fold', () => {
 
     const block = await prepareCellWakeFold(INPUT);
 
-    expect(block).toContain('was truncated in transit');
-    expect(block).toContain('headline is UNFALSIFIED');
+    expect(block).toContain('UNINTERPRETED');
+    expect(block).toContain('unattributable');
+    expect(block).toContain('Do not treat the value below as a verdict.');
+    // The door's escape hatch survived the migration off falsifiers: when the payload
+    // truncated ITSELF, the untruncated re-read is the one useful next move.
     expect(block).toContain('full read · {"tool":"dev:pipeline_position"');
-    expect(block).not.toContain('registration drift');
   });
 
   it('hoists a NON-AUTHORITATIVE reading where it cannot be skipped', async () => {
@@ -297,6 +350,6 @@ describe('the budget itself', () => {
     const block = await prepareCellWakeFold({ ...INPUT, budgetMs: 500 });
 
     expect(block).not.toContain('NOT re-read at delivery');
-    expect(block).toContain('gate.greenCheckpoint.verdict · gate.consecutiveReds = 0');
+    expect(block).toContain('measurement · gate.consecutiveReds = 0');
   });
 });

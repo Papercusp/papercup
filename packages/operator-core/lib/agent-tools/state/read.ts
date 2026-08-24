@@ -20,7 +20,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { formatCellHoist, formatCellPointers, readCell, type CellRead } from '../../cell-read';
+import { formatCellAssessment, formatCellHoist, formatCellPointers, readCell, type CellRead } from '../../cell-read';
 import { listCells, getCell } from '../../cell-registry';
 import { formatCellUnknown } from '../../cell-contract';
 import { absentReadAftercare, resolveSelfSubject } from '../../cell-suggest';
@@ -59,25 +59,27 @@ function valueResult(out: Extract<CellRead, { status: 'value' }>) {
    */
   const pointerProse = out.pointers ? formatCellPointers(out.pointers) : null;
   /**
-   * D-008 — HOIST AN UNAVAILABLE ASSESSMENT, and ONLY an unavailable one.
+   * P-005 / D-014 — THE ASSESSMENT LEADS, RESOLVED OR NOT.
    *
-   * Same asymmetry as `sourceProse` above, applied to the semantics channel. A
-   * RESOLVED assessment needs no prose: its code, meaning and `safeAction` sit in the
-   * structured `assessment` field where a caller reads them, and announcing them on
-   * every healthy read would spend the summary channel to say "normal" — which is how
-   * a line becomes one agents learn to skip.
+   * ⚠ THIS DELIBERATELY BREAKS the asymmetry `sourceProse` and `hoistProse` follow, and
+   * D-014 records the argument so it is not "fixed" back. Until P-005 this branch read
+   * `status === 'unavailable'` only, citing D-008. But D-008 fixes the assessment SHAPE
+   * and requires pull/push/subscription consumers to project the SAME contract — it
+   * never ratified suppressing the resolved branch; that was an extrapolation from the
+   * two caveats above.
    *
-   * An UNAVAILABLE one is the opposite case, and it is the dangerous one. The caller
-   * still has a raw `value` in hand and nothing in the shape of the result stops them
-   * acting on it; the only thing that changed is that nobody established what it
-   * MEANS. That is exactly the hurried consumer this registry's axis-2 rule is
-   * written against, so the caveat goes where they cannot miss it.
+   * The extrapolation does not hold, because those two QUALIFY a headline the reader
+   * already holds, so silence costs nothing. The assessment IS the answer — the whole
+   * point of this plan is to put the MEANING in front of the raw number. Rendering it
+   * only when it is missing would make semantics visible solely in their absence, which
+   * teaches the exact habit the plan exists to remove: read the number, infer the
+   * meaning yourself.
+   *
+   * It goes FIRST in the summary for the same reason. The renderer is shared with
+   * `cell-wake-fold` (D-014 §2) so a push and a pull cannot drift.
    */
-  const assessmentProse =
-    out.assessment && out.assessment.status === 'unavailable'
-      ? `⚠ UNINTERPRETED: no assessment resolved for ${out.cell} — ${formatCellUnknown(out.assessment.unknown)} ${out.assessment.safeAction}`
-      : null;
-  const summary = [hoistProse, sourceProse, assessmentProse, pointerProse]
+  const assessmentProse = out.assessment ? formatCellAssessment(out.assessment, out.cell) : null;
+  const summary = [assessmentProse, hoistProse, sourceProse, pointerProse]
     .filter((s): s is string => s !== null)
     .join(' · ');
   return summary === '' ? { ok: true, ...out } : { ok: true, ...out, summary };
