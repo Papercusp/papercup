@@ -267,8 +267,10 @@ export function scanForCleanupFindings(
     for (const item of plan.items) {
       if (!FLIPPABLE_PLAN_ITEM_STATUSES.has(item.status)) continue;
       const links = idx.linksByItem.get(item.id) ?? [];
-      const doneLinks = links.filter((l) => DONE_WORK_ITEM_STATES.has(l.state));
-      const openLinks = links.filter((l) => !TERMINAL_WORK_ITEM_STATES_SCAN.has(l.state));
+      const doneLinks = links.filter((l) => l.state !== null && DONE_WORK_ITEM_STATES.has(l.state));
+      // Open-coverage uses the family-aware `terminal` flag so an UNRESOLVED
+      // non-terminal link still blocks the flip (the conservative direction).
+      const openLinks = links.filter((l) => !l.terminal);
       if (doneLinks.length === 0) continue;
       // Open-coverage guard (EI-19972048649686949): another non-terminal
       // work-item still covering the item means the lane is NOT finished.
