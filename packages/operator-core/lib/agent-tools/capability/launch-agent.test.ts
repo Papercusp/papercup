@@ -301,6 +301,15 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(textOf(res)).toContain("first turn");
   });
 
+  it('honors the internal fresh owner pin used to correlate concurrent respawns', async () => {
+    await launchAgent.handler({
+      brief: 'replace one fleet member',
+      __respawnOwnerId: 'su-respawn-test-owner',
+    } as never, ctx);
+
+    expect(spawnedCommand()).toContain('--owner-id=su-respawn-test-owner');
+  });
+
   it('refuses a launch with nothing to do (it would just sit idle)', async () => {
     const res = await launchAgent.handler({}, ctx);
     expect(isError(res)).toBe(true);

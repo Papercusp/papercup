@@ -100,9 +100,13 @@ beforeEach(() => {
   // mockReset (not clearAllMocks) — a leftover `once` value would be consumed by the verification
   // poll instead of the snapshot, and the test would then really wait out the 90s window.
   listFleetPresence.mockReset();
-  listFleetPresence
-    .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
-    .mockResolvedValue([row(LEADER), row('su-new-xyz')]);
+  let rosterReadCount = 0;
+  listFleetPresence.mockImplementation(async () => {
+    rosterReadCount += 1;
+    if (rosterReadCount === 1) return [row(LEADER), row(MEMBER)];
+    const launchArgs = launchHandler.mock.calls[0]?.[0] as { __respawnOwnerId?: string } | undefined;
+    return [row(LEADER), row(launchArgs?.__respawnOwnerId ?? 'su-new-xyz')];
+  });
   resolveSavedFleetLaunchSpec.mockReset();
   resolveSavedFleetLaunchSpec.mockImplementation(async (opts: { requested?: Record<string, unknown>; reusePath: string }) => {
     const member: Record<string, unknown> = {
@@ -168,11 +172,29 @@ describe('fleet:respawn-member (P-008)', () => {
       expect.objectContaining({
         fleet: SLUG,
         count: 1,
+        __respawnOwnerId: expect.stringMatching(/^su-respawn-/),
         members: [expect.objectContaining({ model: 'opus[1m]', effort: 'high', compactionLimit: 200_000, brief: expect.any(String) })],
       }),
       expect.anything(),
     );
     expect(p.launched).toContain('Launched su-new');
+    expect(p.newMember).toBe(p.replacementOwner);
+  });
+
+  it('correlates the exact replacement when concurrent respawns add multiple fresh rows', async () => {
+    const result = await awaitReplacementMember({
+      before: new Set([LEADER, 'old-member-a', 'old-member-b']),
+      expectedOwnerId: 'su-respawn-b',
+      list: async () => [
+        row(LEADER),
+        row('su-respawn-a'),
+        row('su-respawn-b'),
+      ],
+      timeoutMs: 1_000,
+      now: () => Date.now(),
+    });
+
+    expect(result).toMatchObject({ verified: true, newMemberOwnerId: 'su-respawn-b' });
   });
 
   it('uses the audited respawn door to correct a saved visible member to headless while preserving the rest of its profile', async () => {
@@ -393,7 +415,7 @@ describe('fleet:respawn-member replacement verification (WI-6936)', () => {
   it('reports verified with the NEW owner-id once it appears in the roster', async () => {
     const res = await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never);
     const p = parse(res);
-    expect(p).toMatchObject({ ok: true, verified: true, newMember: 'su-new-xyz' });
+    expect(p).toMatchObject({ ok: true, verified: true, newMember: expect.stringMatching(/^su-respawn-/) });
     // the pre-kill snapshot is what makes the new owner identifiable
     expect(listFleetPresence).toHaveBeenCalledWith('ws', SLUG);
   });

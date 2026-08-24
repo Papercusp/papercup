@@ -281,6 +281,11 @@ export default defineTool({
     // change and callers cannot smuggle an unaudited recovery carry.
     let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' })
       .__savedLaunchCarry;
+    // Internal seam used by fleet:respawn-member: a replacement must be
+    // identity-correlated before it is spawned, because concurrent respawns
+    // cannot safely identify one another by roster ordering after launch.
+    const respawnOwnerId = (args as typeof args & { __respawnOwnerId?: string })
+      .__respawnOwnerId?.trim() || null;
     const isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     const isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
     const sourceAction = isResume || isSuccessor;
@@ -881,7 +886,7 @@ export default defineTool({
           : buildAgentLaunchCommand({
               mode: 'fresh',
               agent: (isSuccessor ? resumeAgent : folded.agent) ?? null,
-              ownerId: isSuccessor ? resumeOwnerId : null,
+              ownerId: isSuccessor ? resumeOwnerId : respawnOwnerId,
               plan: args.plan ?? null,
               // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
               // live-verify): `--harness` is what makes psu bootstrap a papercusp-su

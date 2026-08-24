@@ -13,6 +13,7 @@
  * NOT settable here (use fleet:reconfigure-member for the claim lane; fleet:launch-on-plan for a
  * carry change). Member resolution + leader/queen/owner auth are the shared resolveFleetMemberTarget.
  */
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import type { MemberSpec } from '../../agent-launch-core';
@@ -39,6 +40,24 @@ const DRAIN_POLL_MS = 3_000;
 /** A presence row counts as the live replacement only if its heartbeat is this fresh. */
 const VERIFY_FRESH_MS = 120_000;
 
+/**
+ * Mint the identity that the replacement process will use before launching it. A stable value
+ * for an idempotent retry lets a deduped launch be verified against the same owner; an unkeyed
+ * call gets a fresh identity. The owner id is deliberately opaque to roster ordering — two
+ * concurrent respawns must never both select whichever new row happens to sort first.
+ */
+function replacementOwnerId(fleetSlug: string, memberOwnerId: string, idempotencyKey?: string): string {
+  const key = idempotencyKey?.trim();
+  if (key) {
+    const digest = createHash('sha256')
+      .update(`fleet:respawn-member\u0000${fleetSlug}\u0000${memberOwnerId}\u0000${key}`)
+      .digest('hex')
+      .slice(0, 32);
+    return `su-respawn-${digest}`;
+  }
+  return `su-respawn-${randomUUID()}`;
+}
+
 export interface AwaitReplacementResult {
   verified: boolean;
   newMemberOwnerId: string | null;
@@ -62,6 +81,8 @@ export interface AwaitReplacementResult {
  */
 export async function awaitReplacementMember(opts: {
   before: Set<string>;
+  /** Exact owner pre-pinned for this launch; required to disambiguate concurrent respawns. */
+  expectedOwnerId?: string;
   list: () => Promise<FleetPresenceRow[]>;
   timeoutMs: number;
   intervalMs?: number;
@@ -71,6 +92,7 @@ export async function awaitReplacementMember(opts: {
 }): Promise<AwaitReplacementResult> {
   const {
     before,
+    expectedOwnerId,
     list,
     timeoutMs,
     intervalMs = VERIFY_POLL_MS,
@@ -93,9 +115,13 @@ export async function awaitReplacementMember(opts: {
     }
     rosterOwnerIds = rows.map((r) => r.ownerId);
     const at = now();
-    const fresh = rows.find(
-      (r) => !before.has(r.ownerId) && at - new Date(r.heartbeatAt).getTime() <= freshMs,
-    );
+    const fresh = rows.find((r) => {
+      // A keyed retry may observe the already-present owner from its original launch, so the
+      // exact pre-pin takes precedence over the before-roster heuristic. Without the pin, the
+      // old heuristic remains available to callers/tests that only need generic new-row polling.
+      const identityMatches = expectedOwnerId != null ? r.ownerId === expectedOwnerId : !before.has(r.ownerId);
+      return identityMatches && at - new Date(r.heartbeatAt).getTime() <= freshMs;
+    });
     if (fresh) {
       return { verified: true, newMemberOwnerId: fresh.ownerId, waitedMs: at - startedAt, rosterOwnerIds };
     }
@@ -461,6 +487,12 @@ export default defineTool({
         ? 'already-dead'
         : 'killed';
 
+    // Pre-pin the fresh process identity before dispatching capability:launch-agent. Presence
+    // roster ordering is not a correlation key: overlapping respawns can both see the same two
+    // new rows and return the first one. A stable pin also makes an idempotent launch replay
+    // verifiable after capability:launch-agent reports deduped.
+    const replacementOwner = replacementOwnerId(slug, memberOwnerId, args.idempotencyKey);
+
     // 2. Fresh-launch the replacement into the SAME fleet from the RESOLVED
     //    canonical spec. The caller's explicit delta is already audited above;
     //    nothing omitted can now fall through to a system default.
@@ -480,6 +512,7 @@ export default defineTool({
           harness: savedLaunchSpec.effective.harness,
           members: [spec],
           __savedLaunchCarry: savedLaunchSpec.effective.member.carry,
+          __respawnOwnerId: replacementOwner,
           ...(args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : {}),
         } as never,
         ctx,
@@ -492,6 +525,7 @@ export default defineTool({
           ok: false,
           fleet: slug,
           oldMember: memberOwnerId,
+          replacementOwner,
           invokedAs,
           changed: changedFields,
           drainOutcome,
@@ -521,6 +555,7 @@ export default defineTool({
         ok: true,
         fleet: slug,
         oldMember: memberOwnerId,
+        replacementOwner,
         invokedAs,
         changed: changedFields,
         drainOutcome,
@@ -541,6 +576,7 @@ export default defineTool({
 
     const verify = await awaitReplacementMember({
       before: rosterBefore,
+      expectedOwnerId: replacementOwner,
       list: () => listFleetPresence(workspaceId, slug),
       timeoutMs: verifySec * 1000,
     });
@@ -550,6 +586,7 @@ export default defineTool({
         ok: verify.verified,
         fleet: slug,
         oldMember: memberOwnerId,
+        replacementOwner,
         invokedAs,
         changed: changedFields,
         drainOutcome,
