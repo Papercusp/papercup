@@ -1608,6 +1608,13 @@ async function completeOne(
   // legacy and non-behavioral work items compatible. Infrastructure/read failures fail
   // CLOSED and are retryable: an unavailable gate must never silently become a pass.
   let specAdequacyChecked: string[] | undefined;
+  // P-016 / D-013: the gate's ADVISORY impact report. Surfaced on both the refusal and
+  // the success path because it is not a verdict — it names behavior obligations the
+  // universal resolver made visible (standalone work with no resolved clause, clauses
+  // reached only through a cross-namespace edge, edges pinned to superseded revisions)
+  // that P-013, not P-016, will turn into a refusal. Reporting it here is what makes it
+  // a report at all: a report no caller receives is indistinguishable from none.
+  let specAdequacyImpactReport: string | undefined;
   if (closeIntentRequested) {
     try {
       const gate = await specTestAdequacyCompletionGate({
@@ -1621,9 +1628,15 @@ async function completeOne(
           error:
             `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
             'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. No completion record or state transition was written.',
-          specAdequacy: { applicable: true, retryable: true, checked: gate.checked },
+          specAdequacy: {
+            applicable: true,
+            retryable: true,
+            checked: gate.checked,
+            ...(gate.impactReport ? { impactReport: gate.impactReport } : {}),
+          },
         };
       }
+      specAdequacyImpactReport = gate.impactReport;
       if (gate.applicable) specAdequacyChecked = gate.checked;
     } catch (error) {
       return {
@@ -2484,7 +2497,15 @@ async function completeOne(
     completion,
     reflect,
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
-    ...(specAdequacyChecked ? { specAdequacy: { applicable: true, checked: specAdequacyChecked } } : {}),
+    ...(specAdequacyChecked || specAdequacyImpactReport
+      ? {
+          specAdequacy: {
+            applicable: Boolean(specAdequacyChecked),
+            checked: specAdequacyChecked ?? [],
+            ...(specAdequacyImpactReport ? { impactReport: specAdequacyImpactReport } : {}),
+          },
+        }
+      : {}),
     ...(finish ? { finish } : {}),
   };
 }
