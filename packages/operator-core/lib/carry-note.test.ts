@@ -379,6 +379,18 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     ).toEqual({ claim: 'canonical claim' });
     expect(canonicalRepairs[0]?.detail).toContain('canonical claim value was kept');
   });
+  it('maps a bare-string row to its claim text (EI-21268881673610011)', () => {
+    const repairs: CarryArgRepair[] = [];
+    expect(coerceCarryRowShape('the suite is green', 'checks[0]', repairs)).toEqual({
+      claim: 'the suite is green',
+    });
+    expect(repairs).toEqual([expect.objectContaining({ field: 'checks[0]', kind: 'renamed' })]);
+    // Whitespace-only still routes through; the schema's own claim.min(1) is
+    // what rejects it, with a message naming the real problem.
+    expect(coerceCarryRowShape('   ', 'checks[1]', [])).toEqual({ claim: '   ' });
+    // Non-string scalars keep passing through to fail validation unchanged.
+    expect(coerceCarryRowShape(42, 'checks[2]', [])).toBe(42);
+  });
 
   /**
    * The claim-bearing aliases beyond label/name, and the `key`->`id` alias. Each

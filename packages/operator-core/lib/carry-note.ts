@@ -339,7 +339,8 @@ const CARRY_ID_ALIASES = ['key'] as const;
  * shape (mapped to `{claim, recheck, verified}`), the documented-looking
  * `{claim, probe, verified}` alias where `probe` is intended to mean `recheck`,
  * `key` for `id`, and a row that carries an identity + evidence but no claim text
- * at all.
+ * at all, and a BARE-STRING row (the shorthand evidence list — mapped to
+ * `{ claim }`, since a string can only be the claim text on every carry surface).
  * Measured across 6 days of transcripts, `evidence` (57×) and `status` (40×) were
  * by far the top rejected undeclared keys; the probe alias is handled here too so
  * a caller's concrete falsification command is not discarded at the schema boundary.
@@ -350,6 +351,24 @@ const CARRY_ID_ALIASES = ['key'] as const;
  * NOT verified maps to no `verified` at all, rather than inventing one.
  */
 export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryArgRepair[]): unknown {
+  // EI-21268881673610011: callers send each row as a BARE STRING — the shorthand
+  // evidence list (`checks: ["suite green", "sha matches"]`). On every carry
+  // surface a bare string can only BE the claim text, so map it to `{ claim }`
+  // rather than letting Zod reject the whole write with "expected object,
+  // received string". Parity: loop:checkpoint already accepted string rows via
+  // its own compact-input normalizer while work_items:checkpoint rejected them —
+  // an identical payload was ok:true on one carry surface and invalid_args on
+  // the other, the exact class this file's strict-schema comments document.
+  // Whitespace-only still routes through so the schema's own `claim.min(1)`
+  // names the real problem; non-string scalars keep passing through unchanged.
+  if (typeof row === 'string') {
+    repairs.push({
+      field: path,
+      kind: 'renamed',
+      detail: 'a bare-string row is accepted as its claim text; mapped to `{ claim }`',
+    });
+    return { claim: row };
+  }
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const r = { ...(row as Record<string, unknown>) };
   // EI-21311156936925867: callers also send a structured verification row as
