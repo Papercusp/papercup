@@ -9767,7 +9767,7 @@
           "POST"
         ]
       },
-      "description": "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Pass `query` (or legacy alias `q`; `query` wins when both are supplied). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'`/`harness:'engineering'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\". A workspace-scoped session gets `harness_forbidden` for `harness:'all'` — pass `harness:'engineering'` instead to reach the same corpus.",
+      "description": "Keyword search over the current harness/project docs, or the Papercusp framework for su callers. `query` wins over legacy `q`; returns ranked slug/title/description/excerpt hits. Harness/project scope excludes agent-insights and framework docs, so weak results include `scopeNote`; do not read them as absence. Workspace sessions cannot use `harness:'all'`; use `harness:'engineering'` for that corpus.",
       "capabilities": [
         "docs:read"
       ],
@@ -10854,7 +10854,7 @@
           "POST"
         ]
       },
-      "description": "Read live inference-pool capacity for an explicit provider/model/account scope (the gateway /stats oracle): dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. The legacy default is Claude; pass `provider:\"codex\"`, `model:\"gpt-5.6-luna\"`, or a Codex `account` to read the Codex backend. Cross-checks dispatchBudget against REAL account-pool availability and sets `poolExhausted:true` (with factor 0) only for the selected provider. An unmeasured or contradictory scope returns `verdict:\"unknown\"` instead of borrowing another provider's data. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, verdict, scope, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.",
+      "description": "Read live inference-pool capacity for an explicit provider/model/account scope or the caller's current fleet scope (the gateway /stats oracle): dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. Pass `fleet` to inspect a named fleet; when omitted, a fleet member automatically resolves its current fleet. Explicit provider/model/account scope always wins. A fleet with mixed providers returns per-provider readings with no guessed aggregate. The legacy Claude default is used only outside a fleet. Cross-checks dispatchBudget against REAL account-pool availability and sets `poolExhausted:true` (with factor 0) only for the selected provider. An unmeasured or contradictory scope returns `verdict:\"unknown\"` instead of borrowing another provider's data. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, verdict, scope, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.",
       "capabilities": [
         "harness:read"
       ],
@@ -10878,7 +10878,7 @@
       "guidance": {
         "when": "Before a placement round, to size how many FRESH members to spawn: select the provider/model/account scope, then place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.",
         "notWhen": "Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.",
-        "chaining": "fleet:capacity { provider: \"codex\", model: \"gpt-5.6-luna\", headroom: <members you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first)."
+        "chaining": "fleet:capacity { fleet: \"my-fleet\", headroom: <members you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first)."
       }
     },
     {
@@ -15954,7 +15954,7 @@
           "POST"
         ]
       },
-      "description": "Read or write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { read:true, ownerId?, harness? } to read, or { did, left, insight, next } (goal aliases next) or { note }; `checkpoint` is accepted as a compatibility alias for `note` (note wins when both are supplied); blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, then supplied win and ? PREDICTED yields before ✓ VERIFIED); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
+      "description": "Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with { read:true, ownerId?, harness? }; write { did, left, insight, next } (goal aliases next), { note }, or compatibility alias { checkpoint }; note wins and blank/null clears. Keyed by ownerId. walls/checks merge by default: supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' retires omitted rows; [] with replace clears. Returns verified metadata plus walls/checks. PostgreSQL contention returns retryable timeout data, not a transport hang.",
       "capabilities": [
         "routines:write"
       ],
@@ -15977,9 +15977,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Use rowsMode:'replace' only when retiring rows; default merge mode preserves them. Pair with work_items:checkpoint because a loop note can be lost if the session dies.",
+        "when": "At a COLD loop turn's end, store compressed facts, not a transcript. Add a real same-line [turn:<session>@<iso-ts>] ref for owner directives/completed coordination; mark other sources [self-imposed], [peer:<sid>], or [inferred]. Use replace only to retire rows. Pair with work_items:checkpoint.",
         "notWhen": "WARM loops (carry:'warm', the default) carry the live transcript and need no note. Use work_items:checkpoint for work-item state.",
-        "chaining": "Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor recovery and facts:assert for durable conclusions. When retuning carry, re-arm with every required field: loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes."
+        "chaining": "Write last before a cold turn ends; also refresh work_items:checkpoint and facts:assert durable conclusions. To retune carry, re-arm with intervalSec, goal, and carry:'cold'|'warm'; all remain required."
       }
     },
     {
@@ -18799,7 +18799,7 @@
           "POST"
         ]
       },
-      "description": "Record one of TWO typed audit phases on the existing plan-audit ledger. `phase:'completion'` (default) is the CODE-TRUTH audit: audit only changed items; prior entries carry with original provenance; code/test citations resolve against the tree. `phase:'activation'` is the pre-ready conversation audit: map canonical session_turn refs to current P-NNN/D-NNN/section targets; every ref resolves through sessions:read's index/archive stores; open gaps refuse; the server atomically records the exact current revision. No parallel review tool exists.",
+      "description": "Record one of two plan-audit phases. `completion` (default) checks changed items against resolving code/test citations; prior entries retain provenance. `activation` maps canonical session_turn refs to current P-NNN/D-NNN/sections, resolves every ref, refuses open gaps, and records the exact current revision. No parallel review tool exists.",
       "capabilities": [
         "plans:write"
       ],
@@ -18860,9 +18860,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before ready/active, use `phase:'activation'` after reading the COMPLETE source conversation (never memory/summary). Map every requirement, scope boundary, constraint, correction, rejected alternative, decision, dependency, sequence, acceptance condition, open question, and promised follow-up to current P-NNN/D-NNN/sections; repair omissions first. Before shipped, use the default completion phase and compare every item to the ACTUAL CODE — not work-item records or memory.",
+        "when": "Before ready/active, read the COMPLETE source conversation (never memory/summary), map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions, then use `activation`. Before shipped, use `completion` and compare items to ACTUAL CODE.",
         "notWhen": "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
-        "chaining": "sessions:search/read (complete source) → repair omissions → plans:audit { phase:'activation' } → plans:set-plan-status { status:'ready' }. Later edits preserve the audit and return activationAudit audited/current revision metadata: re-audit only when meaning changes; cosmetic-only edits do not require it. Completion: plans:audit → rubric/scorecard → shipped."
+        "chaining": "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revisions: re-audit only for meaning changes, not cosmetic edits. Completion: plans:audit → rubric/scorecard → shipped."
       }
     },
     {
