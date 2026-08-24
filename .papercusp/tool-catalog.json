@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 819,
+  "count": 820,
   "tools": [
     {
       "name": "ablation:report",
@@ -22119,6 +22119,38 @@
       }
     },
     {
+      "name": "plans:spec-reconciliation",
+      "http": {
+        "path": "/api/agent-tools/plans/spec-reconciliation",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Pre-enforcement spec reconciliation ledger across plans: which plans adopted first-class clauses, which still carry only legacy VAL-* text, which declare no behavior at all, plus per-plan coverage/adequacy gaps and the action each needs. Report-only; never refuses.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "kettle",
+        "worker"
+      ],
+      "guidance": {
+        "when": "Before enabling clause enforcement, or to see what enforcement would actually be enforcing over. Answers \"is this green because it is covered, or because nothing was ever declared?\".",
+        "notWhen": "One plan's clause detail — plans:get-specs. One plan's ship verdict — the acceptance gate.",
+        "chaining": "plans:spec-reconciliation → plans:set-specs (backfill a legacy plan) → plans:bind-spec-evidence."
+      }
+    },
+    {
       "name": "plans:start",
       "http": {
         "path": "/api/agent-tools/plans/start",
@@ -29759,7 +29791,7 @@
           "POST"
         ]
       },
-      "description": "Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding \"no duplicate exists\": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence.",
+      "description": "Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding \"no duplicate exists\": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item.",
       "capabilities": [
         "work_items:read"
       ],
