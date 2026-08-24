@@ -57,6 +57,60 @@ describe('deriveSessionState', () => {
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('draining');
   });
 
+  // EI-21356139961831796 — WARM-DEAD. `hardStale` only catches a process that
+  // DIED (heartbeat clock). A process that is alive and heartbeating with a
+  // wedged agent loop keeps hardStale=false + wakeable=true and used to fall
+  // through to `parked`. A confirmed wake MISS is the direct evidence.
+  describe('warm-dead: a confirmed wake miss is not a dispatch target', () => {
+    // The measured incident shape: pid alive 22h54m, heartbeat 7s fresh, last
+    // turn 21h25m ago, two delivered wakes, zero turns — and it was scored the
+    // TOP consult responder.
+    it('wakeable + fresh heartbeat + no turn after a delivered wake → ended, not parked', () => {
+      expect(
+        deriveSessionState({ stale: false, wakeable: true, liveTurn: false, wakeAttemptMiss: true }),
+      ).toBe('ended');
+    });
+
+    it('CONTROL — the SAME row without the wake miss is still parked', () => {
+      // Proves the verdict is driven by the miss and not by the other inputs;
+      // without this, the assertion above passes for the wrong reason.
+      expect(
+        deriveSessionState({ stale: false, wakeable: true, liveTurn: false, wakeAttemptMiss: false }),
+      ).toBe('parked');
+      expect(deriveSessionState({ stale: false, wakeable: true, liveTurn: false })).toBe('parked');
+    });
+
+    it('a live turn still WINS over a wake miss (never call a working agent dead)', () => {
+      // isConfirmedWakeAttemptMiss goes false as soon as activity postdates the
+      // attempt, so these cannot really disagree — but ordering is asserted so a
+      // later refactor cannot reintroduce the EI-12699 "ended while mid-turn" bug.
+      expect(
+        deriveSessionState({ stale: false, wakeable: true, liveTurn: true, wakeAttemptMiss: true }),
+      ).toBe('live');
+      expect(
+        deriveSessionState({ stale: true, wakeable: true, liveTurn: true, wakeAttemptMiss: true }),
+      ).toBe('draining');
+    });
+
+    it('claims still held downgrade to suspect, mirroring the hardStale line', () => {
+      expect(
+        deriveSessionState({
+          stale: false,
+          wakeable: true,
+          liveTurn: false,
+          wakeAttemptMiss: true,
+          claimsHeld: true,
+        }),
+      ).toBe('suspect');
+    });
+
+    it('an unchecked/absent miss signal never force-ends (conservative on missing data)', () => {
+      expect(
+        deriveSessionState({ stale: false, wakeable: true, liveTurn: false, wakeAttemptMiss: undefined }),
+      ).toBe('parked');
+    });
+  });
+
   // fleet-liveness-zombie-await-2026-07-07: an abrupt death (reboot/SIGKILL)
   // leaves the wake-await un-cancelled, so `wakeable:true` would pin a long-dead
   // row to `parked` forever. `hardStale` (heartbeat cold > PRESENCE_DEAD_MS) is
