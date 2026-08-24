@@ -570,11 +570,31 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`; free-text `q` is not an inbox argument — use `coord:feed` when you need query matching over summary/body/from/to. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`; free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for query matching or a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. Bound a direct read with `limit` — `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
     notWhen:
       'For agent-presence ("who is active?") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll.',
+    // EI-21349112990078630: `since` on an inbox read is the measured recurrence —
+    // filed 10+ times (EI-21250840792137976, EI-21070825753924729, EI-21191189549068493,
+    // EI-21040673138977548, …) because the bare unrecognized-key rejection never named
+    // where a time-bounded read lives. The absence is DELIBERATE (D-002/D-013 R1,
+    // fleet-deltas-leader-primitives-2026-07-10: a client-seeded timestamp is the
+    // WI-1600 footgun — seed it to wall-clock now and every earlier message is
+    // invisible forever; coord:inbox is a VIEW bounded by `limit`). Costs zero prompt
+    // weight (not rendered into the description); paid only on that failure path.
+    argRedirects: {
+      since: {
+        tool: 'coord:feed',
+        args: { since: '<ISO-timestamp>', owner: '<your ownerId>' },
+        note: 'coord:inbox has NO time filter by ratified decision (D-002: agents never hand-carry read cursors — the WI-1600 seed-to-now footgun); it is a VIEW bounded by `limit`. A time-bounded read of your own traffic is coord:feed { since, owner } (owner = a literal ownerId; feed does not resolve "self")',
+      },
+      since_ts: {
+        tool: 'coord:feed',
+        args: { since: '<ISO-timestamp>', owner: '<your ownerId>' },
+        note: 'coord:inbox has NO time filter by ratified decision (D-002); use coord:feed { since, owner } for a time-bounded read (feed also accepts legacy since_ts; owner = a literal ownerId)',
+      },
+    },
   },
   capability: "coord:read",
   requirePrincipal: false,
