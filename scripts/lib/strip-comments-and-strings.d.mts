@@ -46,8 +46,8 @@
  *
  * ⚠ NOT FOR EVERY GUARD. Some guards detect tokens that legitimately live INSIDE string or
  * template literals — `check-no-raw-install-slug-filter` matches `harness_slug = ${installSlug}`
- * inside SQL template literals BY DESIGN, and the SQL-in-string guards
- * (check-migration-forward-compat, check-no-sql-json) are the same shape. For those, stripping
+ * inside SQL template literals BY DESIGN, and `check-migration-forward-compat`
+ * has the same SQL-in-string shape. For those guards, stripping
  * strings would trade this false positive for a false NEGATIVE. Use this module when the token
  * you detect is CODE (a call or identifier); keep reading raw text when the token is legitimately
  * string-resident.
