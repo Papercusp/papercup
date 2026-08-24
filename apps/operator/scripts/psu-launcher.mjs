@@ -8359,8 +8359,12 @@ async function launchResume(
       console.error(
         `psu: refusing to resume session #${session.id} — its ended-session resume claim was not acquired; no agent process was spawned.`,
       );
-      process.exitCode = 2;
-      return;
+      // Headless revival runs this launcher beneath a detached, non-interactive
+      // shell whose lifetime is the launcher's lifetime. Setting exitCode and
+      // returning is not enough when launcher-owned handles remain open: the
+      // shell can stay alive while holding a dead session. Terminate now; no
+      // child was spawned and this branch owns no resume claim to clean up.
+      process.exit(2);
     }
     resumeClaimed = true;
   }
