@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   cacheVerifyArgs,
   publishDependencyGeneration,
+  repoLockName,
+  runCommandUnderInstallMutex,
   verifyNpmCache,
 } from './npm-install-safe.mjs';
+import { withFsMutex } from './lib/fs-mutex.mjs';
 
 test('cacheVerifyArgs preserves an explicit npm cache path', () => {
   assert.deepEqual(cacheVerifyArgs(['dedupe', '--cache', '/tmp/npm-cache']), [
@@ -98,4 +104,43 @@ test('publishDependencyGeneration preserves an explicit emergency skip', () => {
     0,
   );
   assert.equal(called, false);
+});
+
+test('nested exec-under-lock readers do not reacquire the writer mutex', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'install-safe-nested-reader-'));
+  const previousEnv = {
+    PAPERCUSP_FS_MUTEX_LOCK_DIR: process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR,
+    PAPERCUSP_FS_MUTEX_TIMEOUT_MS: process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS,
+    PAPERCUSP_FS_MUTEX_RETRY_MS: process.env.PAPERCUSP_FS_MUTEX_RETRY_MS,
+    PAPERCUSP_INSTALL_MUTEX_HELD: process.env.PAPERCUSP_INSTALL_MUTEX_HELD,
+  };
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(repoRoot, 'locks');
+  process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS = '25';
+  process.env.PAPERCUSP_FS_MUTEX_RETRY_MS = '1';
+  process.env.PAPERCUSP_INSTALL_MUTEX_HELD = '1';
+
+  try {
+    const calls = [];
+    await withFsMutex(repoLockName(repoRoot), async () => {
+      await assert.doesNotReject(
+        runCommandUnderInstallMutex({
+          repoRoot,
+          commandArgs: ['ptool', 'events:status'],
+          runCommand: (...args) => {
+            calls.push(args);
+            return { status: 0 };
+          },
+        }),
+      );
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][2].env.PAPERCUSP_INSTALL_MUTEX_HELD, '1');
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });

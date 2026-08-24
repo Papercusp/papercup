@@ -451,27 +451,43 @@ export function runCommandUnderInstallMutex({
   repoRoot = DEFAULT_REPO_ROOT,
   commandArgs,
   runCommand = spawnSync,
+  env = process.env,
 } = {}) {
   if (!Array.isArray(commandArgs) || commandArgs.length === 0) {
     throw new Error(`${EXEC_UNDER_LOCK_FLAG} requires a command`);
   }
   const [command, ...args] = commandArgs;
   const lockName = repoLockName(repoRoot);
+  const mutexAlreadyHeld = env.PAPERCUSP_INSTALL_MUTEX_HELD === '1';
+  const childEnv = {
+    ...env,
+    ...(mutexAlreadyHeld ? {} : { PAPERCUSP_INSTALL_MUTEX_HELD: '1' }),
+  };
+
+  const executeReader = async () => {
+    // Reader diagnostics belong on stderr: callers such as ptool expose the
+    // child command's stdout as a machine-readable JSON stream.
+    console.error(
+      `${mutexAlreadyHeld ? 'NPM_INSTALL_SAFE mutex already held; running nested reader directly' : 'NPM_INSTALL_SAFE guarding reader'}: ${commandArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`,
+    );
+    const result = runCommand(command, args, {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      env: childEnv,
+    });
+    if (result.error) throw result.error;
+    return result.status ?? 1;
+  };
+
+  // A command launched by an install-safe reader inherits this marker. Its
+  // nested reader is already inside the install boundary and must not install
+  // another reader marker beneath the writer it is waiting on: that is a
+  // self-deadlock when the outer command still owns the writer lock.
+  if (mutexAlreadyHeld) return executeReader();
 
   return withFsMutexRead(
     lockName,
-    async () => {
-      // Reader diagnostics belong on stderr: callers such as ptool expose the
-      // child command's stdout as a machine-readable JSON stream.
-      console.error(`NPM_INSTALL_SAFE guarding reader: ${commandArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`);
-      const result = runCommand(command, args, {
-        cwd: repoRoot,
-        stdio: 'inherit',
-        env: { ...process.env, PAPERCUSP_INSTALL_MUTEX_HELD: '1' },
-      });
-      if (result.error) throw result.error;
-      return result.status ?? 1;
-    },
+    executeReader,
     {
       onWaiting: ({ owner, elapsedMs }) => {
         console.error(
