@@ -31,7 +31,7 @@ import { holderContextReader, resolveHolderAdvisory } from '../coordination/hold
 import { planItemRef } from '../../agent-goal-ref';
 import type { CellReader } from '../../cell-registry';
 import type { LivenessMode } from '../../plan-items/claims';
-import { getClaimTimePlanDecisions, renderPlanDecisionsNote } from '../../plan-decisions-claim-port';
+import { buildClaimTimeEnrichment, type ClaimTimeEnrichmentSubject } from '../../claim-time-enrichment';
 
 /**
  * P-027 / D-055 A5 — attach the blocking holder's goal to a plan-item claim
@@ -87,52 +87,39 @@ async function planItemConflictAdvisory(
  * Fail-soft (never throws): decoration on a successful claim, never a new way
  * for the claim to fail.
  */
-async function claimTimePlanDecisions(
-  planSlug: string,
-  harness: string | undefined,
-  workspaceId: string,
-): Promise<{ planDecisions?: unknown; planDecisionsNote?: string }> {
-  try {
-    const brief = await getClaimTimePlanDecisions({ planSlug, harness: harness ?? null, workspaceId });
-    return brief ? { planDecisions: brief.decisions, planDecisionsNote: renderPlanDecisionsNote(brief) } : {};
-  } catch {
-    return {};
-  }
-}
-
-async function claimTimePriorAttempts(
-  planSlug: string,
-  planItemId: string,
-  workItemId: string | null,
-  harness: string | undefined,
-): Promise<{ priorAttemptBrief?: unknown }> {
-  try {
-    const brief = await import('../../prior-attempt-context').then((m) =>
-      m.getClaimTimePriorAttemptBrief({
-        planSlug,
-        planItemId,
-        workItemId,
-        harness: harness ?? null,
-      }),
-    );
-    return brief ? { priorAttemptBrief: brief } : {};
-  } catch {
-    return {};
-  }
-}
-
+/**
+ * WI-41182: this surface used to hand-roll its own two-leg batch (plan Decisions
+ * + prior attempts) while the other three claim surfaces hand-rolled their own
+ * five- and six-leg batches. It was the thinnest of the four — an agent claiming
+ * here got no premise check, no retraction warning, no authorship revalidation,
+ * and no plan-says-done contradiction (WI-39498's zombie guard), silently, purely
+ * because this file was written before those guards existed and nothing pointed
+ * back at it when they were added.
+ *
+ * All six now come from `buildClaimTimeEnrichment`, which is also what the parity
+ * test enumerates — so the next guard cannot land at three surfaces and miss the
+ * fourth.
+ *
+ * ⚠ The CONVERT path passes the minted/resumed work-item, so it gets all six; the
+ * BARE path has no work-item by definition and gets the two that a plan pointer
+ * alone can answer. That asymmetry is real (the work-item-keyed guards have
+ * nothing to key on until an item exists) rather than the drift above — and it is
+ * now visible in one place instead of implied by four files.
+ */
 async function claimTimeContext(
   planSlug: string,
   planItemId: string,
-  workItemId: string | null,
+  workItem: ClaimTimeEnrichmentSubject | null,
   harness: string | undefined,
   workspaceId: string,
 ): Promise<Record<string, unknown>> {
-  const [decisions, attempts] = await Promise.all([
-    claimTimePlanDecisions(planSlug, harness, workspaceId),
-    claimTimePriorAttempts(planSlug, planItemId, workItemId, harness),
-  ]);
-  return { ...decisions, ...attempts };
+  return buildClaimTimeEnrichment({
+    planSlug,
+    planItemId,
+    workItem,
+    harness: harness ?? null,
+    workspaceId,
+  });
 }
 
 interface ClaimSpecItem {
@@ -274,10 +261,14 @@ export default defineTool({
               result: { status: 'claimed', claim: conv.claim, mode: conv.mode, viaAssignment: conv.viaAssignment },
               convertStatus: conv.status,
               workItem: { id: conv.workItem.id, kind: conv.workItem.kind, harness: conv.workItem.harness ?? null },
+              // WI-41182: pass the whole minted/resumed row, not just its id — the
+              // premise, retraction, authorship and contradiction guards key on the
+              // payload/title/summary/state that only the full row carries. Handing
+              // over the id alone is exactly how this surface stayed at 2 of 6.
               ...(await claimTimeContext(
                 it.plan,
                 it.item,
-                conv.workItem.id,
+                conv.workItem,
                 it.harness ?? args.harness,
                 workspaceId,
               )),
