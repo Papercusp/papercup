@@ -86,7 +86,7 @@ async function backdatePause(id: string, agoMs: number): Promise<void> {
 async function metadataOnlyWrite(id: string, key: string): Promise<void> {
   await sql`
     UPDATE harness_shared.routines
-       SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), ${sql.array([key])}, 'true'::jsonb),
+       SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), ARRAY[${key}]::text[], 'true'::jsonb),
            updated_at = now()
      WHERE id = ${id}`;
 }
