@@ -126,7 +126,7 @@ export interface AdvSessionRow {
    *
    * ⚠ Read this, NOT {@link startedAt}, when you mean "most recently worked in". `startedAt`
    * is neither a birth time nor an activity time: it is the time of the last (RE)ACTIVATION,
-   * because `reactivateAdvSession` / `reactivateAdvSessionByOwner` bump it to `now()` whenever
+   * because `claimAdvSessionResume` / `reactivateAdvSessionByOwner` bump it to `now()` whenever
    * an ended row comes back to life. So a session that has been running and busy for ten hours
    * straight (never ended ⇒ never reactivated) keeps a ten-hour-old `startedAt` and sorts BELOW
    * a session that merely resumed a minute ago and has done nothing since. Ordering a
@@ -1027,22 +1027,6 @@ export async function markAdvSessionShutdownAcceptedByOwner(coordOwnerId: string
   }
 }
 
-export async function reactivateAdvSession(id: number): Promise<boolean> {
-  try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ id: number }[]>`
-      UPDATE harness_shared.adv_sessions
-         SET ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
-       WHERE id = ${id} AND ended_at IS NOT NULL
-      RETURNING id
-    `;
-    return rows.length > 0;
-  } catch (e) {
-    warnUnlessMissingTable(e, 'reactivateAdvSession');
-    return false;
-  }
-}
-
 /**
  * How recently a resume claim must have been taken for a LATER claimant to be
  * treated as the loser of a live race rather than the resumer of a stale row.
@@ -1055,12 +1039,9 @@ const RESUME_CLAIM_WINDOW_SEC = 300;
 /**
  * EI-21247460909447431: claim the single-winner right to RESUME an adv session.
  *
- * Deliberately NOT `reactivateAdvSession`. That function is a best-effort,
- * idempotent SELF-REPORT ("I am live again") whose `false` means "already live
- * — a harmless no-op", and its contract test pins exactly that reading. A
- * resume CLAIM needs the opposite reading of `false` ("another writer won —
- * do not spawn"), so a single function cannot serve both without conflating a
- * no-op with a lost race.
+ * This is the sole numeric-id launch-acquisition path. Do not substitute the
+ * owner-keyed best-effort activity repair below: its false result is a harmless
+ * no-op, while false here means "another writer won — do not spawn".
  *
  * Two shapes of row are legitimately resumable, and the claim must admit both:
  *   - `ended_at IS NOT NULL` — the clean-exit case.
@@ -1102,8 +1083,8 @@ export async function claimAdvSessionResume(
  * `psu --resume`). Called from the declared-activity presence write so the instant a live agent
  * declares intent / orients, a stale `ended_at` left by a prior incarnation is cleared and it reads
  * LIVE instead of `ended`. Touches only the most-recent ENDED row for that owner; idempotent + cheap
- * (a 0-row no-op when the session is already live). Generalizes `reactivateAdvSession` (by numeric id,
- * psu-launcher only) so EVERY resume path is honest. Returns true when a row was re-activated.
+ * (a 0-row no-op when the session is already live). This covers non-launch resume
+ * paths that prove liveness through genuine activity. Returns true when a row was re-activated.
  */
 export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise<boolean> {
   if (!coordOwnerId) return false;
@@ -1140,7 +1121,7 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
  * Updating `session_id` in place keeps the row the SAME logical session (same
  * coord owner, same pty, same adv id) while tracking the live incarnation;
  * ended/exit stamps are cleared and `started_at` bumped for the same
- * resume-visibility reasons as {@link reactivateAdvSession}. Idempotent per
+ * resume-visibility reasons as {@link claimAdvSessionResume}. Idempotent per
  * native id; returns true when a row was updated.
  */
 export async function reanchorAdvSessionNativeId(
@@ -1425,7 +1406,7 @@ const RESUMABLE_SCAN_LIMIT = 300;
  * from the same owner report (2026-08-12, WI-38226: "psu --resume is not listing any codex
  * sessions... there were active codex sessions in that window"):
  *
- * 1. IT ORDERS BY ACTIVITY, NOT BY `started_at`. `started_at` is mutable — `reactivateAdvSession`
+ * 1. IT ORDERS BY ACTIVITY, NOT BY `started_at`. `started_at` is mutable — `claimAdvSessionResume`
  *    and `reactivateAdvSessionByOwner` set it to `now()` when an ended row comes back — so it
  *    means "last (re)activation", which is neither birth (`first_seen_at`) nor activity. A
  *    session running and busy for hours never reactivates, so it sinks below sessions that
@@ -1791,7 +1772,7 @@ export async function listRecordedLiveSessions(
  * spawn + su/console launch paths), so a bee reported `ended` by the wake path
  * lands here too. Positive-evidence by design — an owner with NO recorded session
  * (a test-synthetic presence row, a legacy agent) is NEVER flagged, and a
- * launching / live / RESUMED session (reactivateAdvSession clears `ended_at`) has
+ * launching / live / RESUMED session (the resume paths clear `ended_at`) has
  * a LIVE most-recent row → excluded. `DISTINCT ON (coord_owner_id)` most-recent
  * row per owner (a resume reuses the SID, so the latest row wins). Federated
  * (`fed:…`) owners never have a local record → dropped up front. Best-effort →

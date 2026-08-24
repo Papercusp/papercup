@@ -70,7 +70,6 @@ describe('accepted session shutdown marker (EI-21266145962856513)', () => {
 
   it('clears accepted shutdown across every reactivation and re-anchor path', () => {
     for (const fn of [
-      'reactivateAdvSession',
       'claimAdvSessionResume',
       'reactivateAdvSessionByOwner',
       'reanchorAdvSessionNativeId',

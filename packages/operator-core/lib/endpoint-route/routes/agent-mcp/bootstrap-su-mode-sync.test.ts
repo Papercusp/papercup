@@ -45,7 +45,7 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
-  reactivateAdvSession: vi.fn(async () => false),
+  claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
 }));
 vi.mock('../../../agent-tools/coordination/presence', () => ({

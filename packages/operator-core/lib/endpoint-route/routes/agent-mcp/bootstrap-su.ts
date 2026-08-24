@@ -32,7 +32,7 @@ import {
   endedRecordedOwnerIds,
   markAdvSessionEnded,
   parseKilledBySignalReport,
-  reactivateAdvSession,
+  claimAdvSessionResume,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
@@ -2982,17 +2982,14 @@ const optionsForSessionEnded = defineTool({
 /**
  * POST /api/agent-mcp/console/bootstrap-su/session-resumed  { advSessionId }
  *
- * The psu launcher's RESUME report — the inverse of session-ended. `psu --resume`
- * brings the agent process back to life but `launchResume` takes the no-POST path
- * (it reuses the original coord identity + adv row), so without this the row keeps
- * the ended_at/exit_code from the prior exit and the running agent is recorded as
- * dead → invisible to the roster + presence-as-a-view. This re-activates the row
- * (clears ended_at/exit_code, bumps started_at) so a resumed session shows live
- * immediately, before it touches coord (presence-derive-from-session-log P-002).
+ * The psu launcher's atomic RESUME claim. Manual resume can race an already-queued
+ * loop wake after the prior process exits, and a winning claimant can die before
+ * its agent process registers liveness. claimAdvSessionResume admits both a cleanly
+ * ended row and a stale active row, while its started_at window preserves exactly
+ * one winner during normal spawn/bootstrap latency.
  *
- * Best-effort + idempotent like the sibling session-ended: reactivateAdvSession
- * only touches an already-ENDED row, so a duplicate / already-live report is a
- * harmless no-op, and the launcher swallows any failure.
+ * The response keeps the historical `reactivated` field for launcher compatibility,
+ * but false now unambiguously means "the claim was not acquired — do not spawn".
  */
 const sessionResumed = defineTool({
   method: 'POST',
@@ -3014,8 +3011,8 @@ const sessionResumed = defineTool({
       return jsonRes({ error: 'advSessionId required' }, 400);
     }
     try {
-      const reactivated = await reactivateAdvSession(advSessionId);
-      return jsonRes({ ok: true, reactivated });
+      const claimed = await claimAdvSessionResume(advSessionId);
+      return jsonRes({ ok: true, reactivated: claimed });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }

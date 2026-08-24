@@ -97,7 +97,7 @@ vi.mock('../../console-launcher', () => ({
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
   markAdvSessionEnded: vi.fn(async () => {}),
-  reactivateAdvSession: vi.fn(async () => {}),
+  claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
   recordSuLaunchSpec: vi.fn(async () => true),

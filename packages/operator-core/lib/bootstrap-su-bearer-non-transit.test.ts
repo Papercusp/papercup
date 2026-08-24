@@ -97,7 +97,7 @@ vi.mock('./adv-sessions', async (orig) => ({ ...(await orig<typeof import('./adv
   // this; missing it made the arm's non-fatal error log trip fail-on-console.
   latestAdvSessionByCoordOwner: vi.fn(async () => null),
   markAdvSessionEnded: vi.fn(async () => {}),
-  reactivateAdvSession: vi.fn(async () => false),
+  claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
   recordSuLaunchSpec: vi.fn(async () => true),

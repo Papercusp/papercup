@@ -60,7 +60,7 @@ vi.mock('../../../auth/require-principal', () => ({
 vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: endedRecordedOwnerIdsMock,
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
-  reactivateAdvSession: vi.fn(async () => false),
+  claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => true),
 }));
 

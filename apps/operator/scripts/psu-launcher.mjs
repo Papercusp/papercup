@@ -8189,7 +8189,7 @@ async function launchResume(
   }
   // The manual resume and an already-queued loop wake can race after the old
   // process exits. Claim the ended adv row BEFORE any config repair or spawn;
-  // reactivateAdvSession's ended_at predicate makes this a single-winner handoff.
+  // claimAdvSessionResume's claim window makes this a stale-safe single-winner handoff.
   // A lost/unknown claim must never launch a second exact-session writer.
   if (!fork && session.id != null) {
     const claimed = await reportSessionResumed(session.id);

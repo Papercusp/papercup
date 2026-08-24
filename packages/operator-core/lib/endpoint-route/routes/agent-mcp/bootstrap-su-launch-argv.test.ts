@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
-  reactivateAdvSession: vi.fn(async () => false),
+  claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
 }));
 // Keep the (PG-backed) presence module out of this pure argv test — bootstrap-su

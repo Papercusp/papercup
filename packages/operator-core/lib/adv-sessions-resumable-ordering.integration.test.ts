@@ -14,7 +14,7 @@
  * sessions... there were active codex sessions in that window"):
  *
  *  1. ORDERED BY THE WRONG COLUMN. `ORDER BY started_at DESC` looks like a recency sort but
- *     `started_at` is mutable — `reactivateAdvSession*` bumps it to now() when an ended row
+ *     `started_at` is mutable — resume claim/activity-repair paths bump it to now() when an ended row
  *     comes back — so it means "last (re)activation". A session that has been running and busy
  *     for hours never reactivates, so it sorts BELOW one that resumed a minute ago and did
  *     nothing since. Measured live at the time: 53 of the 74 codex sessions active within the
