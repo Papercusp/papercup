@@ -672,6 +672,25 @@ describe('ptool timeoutForTool — db:migrate outlives the MCP request deadline 
   });
 });
 
+describe('ptool timeoutForTool — continuity/control-plane calls outlive the flat deadline (EI-21269176538636068)', () => {
+  const CONTINUITY_TOOLS = [
+    'loop:checkpoint',
+    'loop:status',
+    'improvements:capture',
+  ];
+
+  it.each(CONTINUITY_TOOLS)('%s gets a long-call deadline beyond the MCP transport cap', (name) => {
+    const timeout = timeoutForTool(name, {});
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it.each(CONTINUITY_TOOLS)('%s keeps the long-call deadline through tools:invoke', (name) => {
+    expect(timeoutForTool('tools:invoke', { name })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool serviceOf / groupTools', () => {
   it('splits the service off the colon', () => {
     expect(serviceOf('work_items:list')).toBe('work_items');

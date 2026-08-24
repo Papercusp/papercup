@@ -866,6 +866,15 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
   ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
+  // EI-21269176538636068: these continuity/control-plane calls perform
+  // multi-leg coordination reads or writes of their own. Under pool
+  // contention they can legitimately outlive the ordinary 30s ptool
+  // deadline; cutting the request off first turns a valid typed result into
+  // an ambiguous blank/transport failure. Keep the caller outside the MCP
+  // transport cap so the server-side result remains observable.
+  ['loop:checkpoint', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['loop:status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['improvements:capture', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.
