@@ -61,6 +61,14 @@ describe('invokeServerCapability — EI-1751 callerSid attribution', () => {
     expect(r.ok).toBe(true);
     expect(capturedCtx?.spawnId).toBe('palette');
     expect(capturedCtx?.uiClientId).toBeNull();
+    expect(capturedCtx?.principal).toMatchObject({
+      kind: 'system',
+      slug: 'loopback',
+      workspaceId: 'ws1',
+      authMethod: 'process-internal',
+      trust: 'trusted',
+    });
+    expect(capturedCtx?.principal?.capabilities.has('*')).toBe(true);
   });
 
   it('a callerSid is folded into ctx.uiClientId WITHOUT touching spawnId', async () => {

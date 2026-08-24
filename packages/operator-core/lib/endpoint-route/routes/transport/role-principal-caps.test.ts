@@ -7,7 +7,12 @@
  */
 import { describe, test, expect } from 'vitest';
 import type { Sql } from 'postgres';
-import { effectiveDispatchWorkspace, loadRoleCapabilities } from './role-principal-caps.js';
+import {
+  effectiveDispatchWorkspace,
+  loadRoleCapabilities,
+  synthesizeDispatchPrincipal,
+  synthesizeTransportPrincipal,
+} from './role-principal-caps.js';
 
 /** A fake `tx` tagged-template that returns a fixed row set regardless of query. */
 function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
@@ -370,6 +375,90 @@ describe('loadRoleCapabilities', () => {
         expect(caps.has(c), `bee should NOT have ${c}`).toBe(false);
       }
     });
+  });
+});
+
+describe('synthesizeDispatchPrincipal — telemetry provenance', () => {
+  test('verified spawn URLs produce a trusted harness principal', async () => {
+    const principal = await synthesizeDispatchPrincipal(fakeTx([]), {
+      workspaceId: 'ws',
+      role: 'worker',
+      sigVerifiedSpawn: true,
+    });
+    expect(principal).toMatchObject({
+      kind: 'harness',
+      slug: 'system:worker',
+      workspaceId: 'ws',
+      authMethod: 'spawn-url',
+      trust: 'trusted',
+    });
+    expect(principal.capabilities.has('agent_tools:read')).toBe(true);
+  });
+
+  test('accepted unsigned legacy spawn URLs stay explicitly unverified loopback', async () => {
+    const principal = await synthesizeDispatchPrincipal(fakeTx([]), {
+      workspaceId: 'ws',
+      role: 'worker',
+      sigVerifiedSpawn: false,
+    });
+    expect(principal).toMatchObject({
+      kind: 'loopback',
+      authMethod: 'host-loopback',
+      trust: 'unverified-loopback',
+    });
+  });
+
+  test('superuser and power-user dispatches produce a trusted system principal', async () => {
+    const principal = await synthesizeDispatchPrincipal(fakeTx([]), {
+      workspaceId: 'ws',
+      role: 'operator',
+      isSuperuser: true,
+      sigVerifiedSpawn: false,
+    });
+    expect(principal).toMatchObject({
+      kind: 'system',
+      slug: 'system:operator',
+      authMethod: 'bearer-token',
+      trust: 'trusted',
+    });
+  });
+});
+
+describe('synthesizeTransportPrincipal — no-tx telemetry provenance', () => {
+  test('concrete superuser transport gets a trusted system principal', () => {
+    expect(
+      synthesizeTransportPrincipal({ workspaceId: 'ws', role: 'operator', isSuperuser: true }),
+    ).toMatchObject({
+      kind: 'system',
+      slug: 'system:operator',
+      authMethod: 'bearer-token',
+      trust: 'trusted',
+    });
+  });
+
+  test('verified role transport gets a trusted harness principal', () => {
+    expect(
+      synthesizeTransportPrincipal({ workspaceId: 'ws', role: 'worker', sigVerifiedSpawn: true }),
+    ).toMatchObject({
+      kind: 'harness',
+      slug: 'system:worker',
+      authMethod: 'spawn-url',
+      trust: 'trusted',
+    });
+  });
+
+  test('unsigned legacy role transport remains explicitly unverified loopback', () => {
+    expect(
+      synthesizeTransportPrincipal({ workspaceId: 'ws', role: 'worker', sigVerifiedSpawn: false }),
+    ).toMatchObject({
+      kind: 'loopback',
+      authMethod: 'host-loopback',
+      trust: 'unverified-loopback',
+    });
+  });
+
+  test('unscoped transport has no principal', () => {
+    expect(synthesizeTransportPrincipal({ workspaceId: '*', role: 'operator', isSuperuser: true })).toBeNull();
   });
 });
 
