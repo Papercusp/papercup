@@ -111,6 +111,14 @@
     "scripts/check-migration-forward-compat.mjs",
     "scripts/check-green-checkpoint-tag.mjs",
     "scripts/check-js-syntax.mjs",
+    // work-queue-admission-and-bulk-dedup-2026-08-24 P-002 (item e) — the born-pending
+    // admission-writer sweep. Registered for the FIRST reason this list exists: it is
+    // imported directly by work-item-admission-writers-guard.test.ts, which is BOTH the
+    // guard's falsifiability proof and (per check-lint-guard-reachability) the blocking
+    // path that keeps a `lint:*` script from rotting unwired. Unregistered that import is
+    // a TS7016 — confirmed at both gates on 2026-08-24, check-unenrolled-mjs-imports red
+    // and lint:tsc reporting the matching error on the same line.
+    "scripts/check-work-item-admission-writers.mjs",
     // WI-40358 — format-check-script.test.ts imports this module directly so the
     // range parser can be falsified without running Prettier. Leaving it unenrolled
     // turns that import into TS7016 and lets its next real type error hide in the
