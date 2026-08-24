@@ -1,0 +1,39 @@
+.inbox-bulk-report__subtitle {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.inbox-bulk-report__error,
+.inbox-bulk-report__row-error {
+  color: var(--bad);
+}
+
+.inbox-bulk-report__drill {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.inbox-bulk-report__drill-toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.inbox-bulk-report__detail-loading {
+  color: var(--fg-mute);
+}
+
+.inbox-bulk-report__loading {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-mute);
+  background: var(--bg);
+}
