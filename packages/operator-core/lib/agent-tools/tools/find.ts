@@ -361,14 +361,16 @@ export function boundDiscoveryHits(
  * `name \n description \n when \n argSchema` — the richest intent signal for the
  * semantic leg.
  */
-export function buildCorpus(): {
-  corpus: ToolDiscoveryEntry[];
-  embedText: Map<string, string>;
-  /** EI-10882: name → the tool's declared RESPONSE shape (guidance.returns). */
-  returnsByTool: Map<string, string>;
-  /** name → raw schema, used to project a compact schema in the response. */
-  schemaByTool: Map<string, unknown>;
-} {
+// Schema-to-text projection is materially more expensive than lexical ranking.
+// Reuse one snapshot per executable registry revision so a recovery lookup does
+// not rebuild every projected tool contract on every call. Plugin/catalog drift
+// changes the revision and therefore invalidates this cache.
+let corpusCache: { revision: string; value: ToolFindCorpus } | null = null;
+
+export function buildCorpus(): ToolFindCorpus {
+  const revision = projectedToolRegistryRevision();
+  if (corpusCache?.revision === revision) return corpusCache.value;
+
   const corpus: ToolDiscoveryEntry[] = [];
   const embedText = new Map<string, string>();
   const returnsByTool = new Map<string, string>();
@@ -400,12 +402,23 @@ export function buildCorpus(): {
     } as unknown as ToolDiscoveryEntry);
     embedText.set(name, [name, tool.description, when, argSchema].filter(Boolean).join('\n'));
   }
-  return { corpus, embedText, returnsByTool, schemaByTool };
+  const value = { corpus, embedText, returnsByTool, schemaByTool };
+  corpusCache = { revision, value };
+  return value;
 }
 
 type DiscoveryScopeContext = {
   workspaceId?: unknown;
   harnessSlug?: unknown;
+};
+
+type ToolFindCorpus = {
+  corpus: ToolDiscoveryEntry[];
+  embedText: Map<string, string>;
+  /** EI-10882: name → the tool's declared RESPONSE shape (guidance.returns). */
+  returnsByTool: Map<string, string>;
+  /** name → raw schema, used to project a compact schema in the response. */
+  schemaByTool: Map<string, unknown>;
 };
 
 type HiveHomeResolver = (workspaceId: string, harnessSlug: string) => Promise<string | null>;
