@@ -145,16 +145,22 @@ const RULES: Rule[] = [
     check(ir, _ctx, emit) {
       const declared = new Set((ir.components ?? []).map((c) => c.id));
       const referenced = new Set<string>();
-      walkNodes(ir.layout, '/layout', (n) => {
-        if (n.kind === 'component' && n.ref) referenced.add(n.ref);
-      });
+      const collectRefs = (root: UiNode | undefined, pathPrefix: string) => {
+        walkNodes(root, pathPrefix, (n) => {
+          if (n.kind === 'component' && n.ref) referenced.add(n.ref);
+        });
+      };
+      collectRefs(ir.layout, '/layout');
+      for (const [stateName, stateRoot] of Object.entries(ir.states ?? {})) {
+        collectRefs(stateRoot, `/states/${stateName}`);
+      }
       for (const id of declared) {
         if (!referenced.has(id)) {
           // warning, not error: pre-declaring components for later use is OK
           emit({
             severity: 'warning',
             path: `/components`,
-            message: `component "${id}" declared but never referenced from layout`,
+            message: `component "${id}" declared but never referenced from layout or state roots`,
           });
         }
       }

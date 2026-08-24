@@ -159,6 +159,23 @@ describe('orphan-component-binding', () => {
     expect(findsFor(issues, 'orphan-component-binding')).toEqual([]);
   });
 
+  it('clean: components referenced from every state root are not orphaned', () => {
+    const issues = lintIr(
+      ir({
+        layout: cleanLayout,
+        states: {
+          error: { kind: 'banner', children: [{ kind: 'component', ref: 'feedback.banner' }] },
+          stale: { kind: 'stack', children: [{ kind: 'component', ref: 'action.secondary' }] },
+        },
+        components: [
+          { id: 'feedback.banner', registry: 'feedback.banner' },
+          { id: 'action.secondary', registry: 'action.secondary' },
+        ],
+      }),
+    );
+    expect(findsFor(issues, 'orphan-component-binding')).toEqual([]);
+  });
+
   it('anti-pattern (warning): component declared but never referenced', () => {
     const issues = lintIr(
       ir({ layout: cleanLayout, components: [{ id: 'btn', registry: 'action.primary' }] }),
