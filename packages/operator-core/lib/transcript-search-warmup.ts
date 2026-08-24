@@ -1,5 +1,6 @@
 /**
- * Boot-time pre-warm of the interactive transcript-search path (WI-4734).
+ * Boot-time pre-warm of the interactive transcript-search and turn-start
+ * corpus paths (WI-4734, EI-21304382115507204).
  *
  * WHY: the agents-pill "search anything" endpoint
  * (`/api/adv/sessions/search-transcripts`) is human-interactive, but every
@@ -18,7 +19,10 @@
  *   3. one tiny hybrid search over the `session_turn` source (PG pool
  *      connections, prepared statements, engine code paths),
  *   4. the roster merge the endpoint runs per query (presence/assignment
- *      stores), with per-entry "thinking" resolution fully skipped.
+ *      stores), with per-entry "thinking" resolution fully skipped,
+ *   5. the turn-start corpus query embedder, which otherwise warms lazily on
+ *      the first context-injection request and can miss its 1200ms query
+ *      budget on every cold worker.
  *
  * Best-effort by design: every failure is swallowed (one warn line) — a
  * warmup must never affect boot health. Deps are injectable for unit tests.
@@ -28,7 +32,7 @@ export interface TranscriptSearchWarmupResult {
   ok: boolean;
   ms: number;
   /** Which legs completed (search implies embed-acquire was attempted too). */
-  legs: { search: boolean; roster: boolean };
+  legs: { search: boolean; roster: boolean; corpus: boolean };
   error?: string;
 }
 
@@ -48,6 +52,9 @@ export interface TranscriptSearchWarmupDeps {
   loadRoster: () => Promise<{
     mergeRosterWithAssignments: (opts: Record<string, unknown>) => Promise<unknown>;
   }>;
+  loadCorpusWarmup: () => Promise<{
+    warmCorpusEmbedder: (opts?: { acquireBudgetMs?: number }) => Promise<boolean>;
+  }>;
 }
 
 const realDeps: TranscriptSearchWarmupDeps = {
@@ -57,6 +64,9 @@ const realDeps: TranscriptSearchWarmupDeps = {
   loadWorkspace: () => import('./workspace-registry') as never,
   loadPg: () => import('@papercusp/db-org') as never,
   loadRoster: () => import('./adv-roster') as never,
+  // Keep the corpus leg dynamic: corpus-recall-io imports the full search
+  // stack, and boot should only pay that graph after the listener is ready.
+  loadCorpusWarmup: () => import('./memory/corpus-recall-io') as never,
 };
 
 /** Warm query: embeds fine, matches little (cheap BM25), exercises every code
@@ -70,9 +80,17 @@ export async function warmTranscriptSearchPath(
   const log = opts.log ?? ((m: string) => console.warn(m));
   const deps = opts.deps ?? realDeps;
   const t0 = Date.now();
-  const legs = { search: false, roster: false };
+  const legs = { search: false, roster: false, corpus: false };
   try {
-    const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { activeWorkspaceId }, { getOrgPg }, { mergeRosterWithAssignments }] =
+    const [
+      { runHybridSearch },
+      { SEARCH_SOURCES },
+      { buildQueryEmbedder },
+      { activeWorkspaceId },
+      { getOrgPg },
+      { mergeRosterWithAssignments },
+      { warmCorpusEmbedder },
+    ] =
       await Promise.all([
         deps.loadEngine(),
         deps.loadSources(),
@@ -80,10 +98,11 @@ export async function warmTranscriptSearchPath(
         deps.loadWorkspace(),
         deps.loadPg(),
         deps.loadRoster(),
+        deps.loadCorpusWarmup(),
       ]);
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
     const { sql } = getOrgPg();
-    // The two legs are independent — warm them concurrently, each fail-soft,
+    // The legs are independent — warm them concurrently, each fail-soft,
     // so one leg's failure (e.g. PG mid-boot) never blocks the other.
     await Promise.all([
       (async () => {
@@ -109,8 +128,18 @@ export async function warmTranscriptSearchPath(
         await mergeRosterWithAssignments({ workspaceId: null, thinkingFor: () => false });
         legs.roster = true;
       })().catch((err) => log(`[transcript-search-warmup] roster leg failed (ignored): ${(err as Error).message}`)),
+      (async () => {
+        // Boot work is deliberately allowed to outlive the turn-start budget:
+        // its purpose is to pay cold acquisition before the first context
+        // injection, not to abandon the warmup at the same 1200ms boundary it
+        // exists to protect.
+        legs.corpus = await warmCorpusEmbedder({ acquireBudgetMs: 60_000 });
+        if (!legs.corpus) {
+          log('[transcript-search-warmup] corpus leg did not become warm (ignored)');
+        }
+      })().catch((err) => log(`[transcript-search-warmup] corpus leg failed (ignored): ${(err as Error).message}`)),
     ]);
-    return { ok: legs.search || legs.roster, ms: Date.now() - t0, legs };
+    return { ok: legs.search || legs.roster || legs.corpus, ms: Date.now() - t0, legs };
   } catch (err) {
     // Even the import phase is fail-soft: a warmup must never affect boot.
     return { ok: false, ms: Date.now() - t0, legs, error: (err as Error).message };
@@ -136,7 +165,7 @@ export function scheduleTranscriptSearchWarmup(
       .then((r) => {
         log(
           `[transcript-search-warmup] ${r.ok ? 'done' : 'failed'} in ${r.ms}ms ` +
-            `(search=${r.legs.search} roster=${r.legs.roster}${r.error ? ` error=${r.error}` : ''})`,
+            `(search=${r.legs.search} roster=${r.legs.roster} corpus=${r.legs.corpus}${r.error ? ` error=${r.error}` : ''})`,
         );
       })
       .catch(() => {});
