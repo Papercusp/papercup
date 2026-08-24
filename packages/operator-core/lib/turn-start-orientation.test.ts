@@ -36,6 +36,7 @@ const base: OrientationState = {
   improvementTriage: null,
   executableFrontier: null,
   neverDropFacts: [],
+  toolSurface: null,
 };
 const withWork: OrientationState = {
   held: [
@@ -55,6 +56,7 @@ const withWork: OrientationState = {
   improvementTriage: null,
   executableFrontier: null,
   neverDropFacts: [],
+  toolSurface: null,
 };
 
 /** The context generation most of these cases hold fixed; P-023's own block varies it. */
