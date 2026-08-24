@@ -48,6 +48,7 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import type { AgentIdentity } from '../coordination/identity';
 import { getFleet } from '../../agent-fleets-store';
+import type { FleetControlState } from '../../agent-fleets-store';
 import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
 import {
   ensureFleetLeaderControl,
@@ -58,6 +59,7 @@ import {
 import {
   decideLeadershipDisposition,
   buildNotLeaderNotice,
+  type LeadershipDisposition,
   type NotLeaderNotice,
   type AutoClaimedNotice,
 } from './leadership-disposition';
@@ -2712,6 +2714,27 @@ export interface LeaderBriefCaller {
 }
 
 /**
+ * The refresh branch is a write hidden inside a health read. A typed fleet
+ * wind-down is a durable stop boundary, so even the registered leader must not
+ * be repaired back into an active loop by the next orient/leader-brief read.
+ */
+export function shouldRefreshLeaderControlForBrief(input: {
+  disposition: LeadershipDisposition;
+  allowLeadershipWrites: boolean;
+  hasFleetRecord: boolean;
+  ownerId?: string;
+  controlState?: FleetControlState | null;
+}): boolean {
+  return (
+    input.disposition.kind === 'is-leader' &&
+    input.allowLeadershipWrites &&
+    input.hasFleetRecord &&
+    Boolean(input.ownerId) &&
+    shouldMaintainFleetLeaderControl(input.controlState)
+  );
+}
+
+/**
  * The READ half of `fleet:leader-brief` — every leg from roster through
  * decorations, alerts and the fleet-block verdict. Pure with respect to the
  * fleet registry when `allowLeadershipWrites` is false.
@@ -2819,11 +2842,14 @@ export async function buildLeaderBrief(
             : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
       };
     } else if (
-      disposition.kind === 'is-leader' &&
-      allowLeadershipWrites &&
-      fleetRecord &&
-      ownerId &&
-      shouldMaintainFleetLeaderControl(fleetRecord.controlState)
+      shouldRefreshLeaderControlForBrief({
+        disposition,
+        allowLeadershipWrites,
+        hasFleetRecord: fleetRecord != null,
+        ownerId,
+        controlState: fleetRecord?.controlState,
+      }) &&
+      fleetRecord
     ) {
       // Also a WRITE (it refreshes the leader's control row), so it is gated
       // too — a viewer reading a leader's brief must not touch that leader's

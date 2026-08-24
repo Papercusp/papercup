@@ -36,6 +36,7 @@ import {
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
   selectLeaderBriefMembers,
+  shouldRefreshLeaderControlForBrief,
   topExcludedFloors,
   type ComposedParkEntry,
   type DecoratedAgent,
@@ -45,6 +46,41 @@ import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('leader-brief leadership refresh boundary (EI-21355781180893454)', () => {
+  const activeLeader = {
+    disposition: { kind: 'is-leader' as const },
+    allowLeadershipWrites: true,
+    hasFleetRecord: true,
+    ownerId: 'leader-1',
+  };
+
+  it('does not repair a winding-down leader after loop:end', () => {
+    expect(
+      shouldRefreshLeaderControlForBrief({ ...activeLeader, controlState: 'active' }),
+    ).toBe(true);
+    expect(
+      shouldRefreshLeaderControlForBrief({ ...activeLeader, controlState: 'winding-down' }),
+    ).toBe(false);
+  });
+
+  it('keeps the write disabled for read-only viewers and missing fleet records', () => {
+    expect(
+      shouldRefreshLeaderControlForBrief({
+        ...activeLeader,
+        allowLeadershipWrites: false,
+        controlState: 'active',
+      }),
+    ).toBe(false);
+    expect(
+      shouldRefreshLeaderControlForBrief({
+        ...activeLeader,
+        hasFleetRecord: false,
+        controlState: 'active',
+      }),
+    ).toBe(false);
+  });
+});
 
 describe('fleet:leader-brief — ambient workspace transaction safety (EI-20192040030675541)', () => {
   it('opts out because the supervision read never uses ctx.tx', () => {
