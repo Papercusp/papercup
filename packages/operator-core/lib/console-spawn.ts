@@ -2003,7 +2003,7 @@ function buildScopedSpawnArgv(
         `--unit=${unitName}`,
         `--slice=${sliceName}`,
         ...(memoryMaxBytes && memoryMaxBytes > 0
-          ? [`--property=MemoryMax=${Math.floor(memoryMaxBytes)}`, '--property=MemorySwapMax=0']
+          ? [`--property=MemoryMax=${Math.floor(memoryMaxBytes)}`]
           : []),
         '--',
         bin,
