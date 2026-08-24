@@ -38,7 +38,7 @@
  * fold → insertGoalRow / property-schema validation; one writer seam, no
  * drift — D-005 §1).
  */
-import { runOrchestrationScript, type ToolFacade } from '@papercusp/tooldef';
+import { runOrchestrationScript, type OrchestrationInputs, type ToolFacade } from '@papercusp/tooldef';
 import type { GoalPackageTripwire } from '../cupboard/goal-package-store';
 
 /** Wall-clock budget for ONE constructor run (two runs happen per start). A
@@ -216,7 +216,9 @@ export async function runPackageConstructor(
       timeoutMs,
       maxOldGenerationSizeMb: opts.maxOldGenerationSizeMb ?? CONSTRUCT_MAX_HEAP_MB,
       maxLogLines: 20,
-      inputs: (typedInputs ?? {}) as Record<string, unknown>,
+      // Safe narrowing: typed inputs already passed the P-021 JSON-schema gate,
+      // and the runner re-verifies JSON-purity (jsonInputError) at the boundary.
+      inputs: (typedInputs ?? {}) as OrchestrationInputs,
     });
 
   const first = await runOnce();

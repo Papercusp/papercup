@@ -102,6 +102,14 @@ function makeDeps(overrides: Partial<StartGoalFromPackageDeps> = {}) {
   });
   const deps: StartGoalFromPackageDeps = {
     resolvePackage: vi.fn(() => pkg()),
+    // P-022 defaults: a STATIC package (no construct.js); the runner mock
+    // builds nothing so a test that never expects it can assert not-called.
+    readConstructScript: vi.fn(() => null),
+    runConstructor: vi.fn(async () => ({
+      ok: true as const,
+      spec: {},
+      overriddenKeys: [] as string[],
+    })),
     readInstances: vi.fn(async () => [] as Stub[]),
     adoptStub: vi.fn(async () => {}),
     restoreStub: vi.fn(async () => {}),
@@ -432,5 +440,97 @@ describe('startGoalFromPackage — post-start stamps are fail-soft', () => {
     const res = await run(deps);
     expect(res).toMatchObject({ ok: true, drainFleet: null });
     expect(res.ok && res.warnings.some((w) => w.includes('drain-fleet auto-mint failed'))).toBe(true);
+  });
+});
+
+describe('startGoalFromPackage — the P-022 constructor wiring', () => {
+  const SCRIPT = 'return { title: "Built title", budgetCents: 500 };';
+  const CONSTRUCT_DECL = { version: 1, properties: { focus: { datatype: 'string', editable_by: 'owner' } } };
+
+  it('merges the constructed spec over static content and stamps + discloses the keys (mint path)', async () => {
+    const { deps } = makeDeps({
+      readConstructScript: vi.fn(() => SCRIPT),
+      runConstructor: vi.fn(async () => ({
+        ok: true as const,
+        spec: { title: 'Built title', budgetCents: 500 },
+        overriddenKeys: ['budgetCents', 'title'],
+      })),
+    });
+    const res = await run(deps, { harness: 'papercusp' });
+    expect(res).toMatchObject({ ok: true, adopted: false, constructedKeys: ['budgetCents', 'title'] });
+    expect(vi.mocked(deps.runConstructor).mock.calls[0][0]).toBe(SCRIPT);
+    const mint = vi.mocked(deps.mintRow).mock.calls[0][1];
+    expect(mint.content.title).toBe('Built title');
+    expect(mint.content.budgetCents).toBe(500);
+    // unspecified fields fall through from the static package
+    expect(mint.content.body).toBe('Steward the whole backlog.');
+    expect(mint.metadata.packageConstructedKeys).toEqual(['budgetCents', 'title']);
+  });
+
+  it('surfaces a constructor refusal verbatim — nothing minted, adopted, or started', async () => {
+    const { deps, startById } = makeDeps({
+      readConstructScript: vi.fn(() => 'return { title: Math.random() };'),
+      runConstructor: vi.fn(async () => ({
+        ok: false as const,
+        reason: 'construct-nondeterministic' as const,
+        detail: 'two runs over identical inputs produced different specs',
+      })),
+    });
+    const res = await run(deps, { harness: 'papercusp' });
+    expect(res).toMatchObject({ ok: false, reason: 'construct-nondeterministic' });
+    expect(deps.mintRow).not.toHaveBeenCalled();
+    expect(deps.adoptStub).not.toHaveBeenCalled();
+    expect(startById).not.toHaveBeenCalled();
+  });
+
+  it('never runs the constructor for a static package, and discloses no constructed keys', async () => {
+    const { deps } = makeDeps({ readInstances: vi.fn(async () => [stubRow()]) });
+    const res = await run(deps);
+    expect(res).toMatchObject({ ok: true, constructedKeys: [] });
+    expect(deps.runConstructor).not.toHaveBeenCalled();
+    const adopt = vi.mocked(deps.adoptStub).mock.calls[0][1];
+    expect(adopt.constructedContent).toBeNull();
+    expect(adopt.metadata.packageConstructedKeys).toBeUndefined();
+  });
+
+  it('adopt path: rewrites the stub content and validates a CONSTRUCTED propertySchema', async () => {
+    const { deps } = makeDeps({
+      readInstances: vi.fn(async () => [stubRow()]),
+      readConstructScript: vi.fn(() => SCRIPT),
+      runConstructor: vi.fn(async () => ({
+        ok: true as const,
+        spec: { title: 'Built title', propertySchema: CONSTRUCT_DECL },
+        overriddenKeys: ['propertySchema', 'title'],
+      })),
+    });
+    const res = await run(deps);
+    expect(res).toMatchObject({ ok: true, adopted: true, constructedKeys: ['propertySchema', 'title'] });
+    // A constructed declaration never saw the install-seed gate — it validates
+    // here even on the adopt path (a static stub's declaration does not).
+    expect(deps.validatePropertySchema).toHaveBeenCalledWith(
+      SQL,
+      expect.objectContaining({ doc: CONSTRUCT_DECL }),
+    );
+    const adopt = vi.mocked(deps.adoptStub).mock.calls[0][1];
+    expect(adopt.constructedContent?.title).toBe('Built title');
+    expect(adopt.constructedContent?.propertySchema).toEqual(CONSTRUCT_DECL);
+    expect(adopt.metadata.packageConstructedKeys).toEqual(['propertySchema', 'title']);
+  });
+
+  it('a constructed-invalid propertySchema refuses the adopt before any write', async () => {
+    const { deps, startById } = makeDeps({
+      readInstances: vi.fn(async () => [stubRow()]),
+      readConstructScript: vi.fn(() => SCRIPT),
+      runConstructor: vi.fn(async () => ({
+        ok: true as const,
+        spec: { propertySchema: CONSTRUCT_DECL },
+        overriddenKeys: ['propertySchema'],
+      })),
+      validatePropertySchema: vi.fn(async () => ({ ok: false as const, issues: ['unknown datatype'] })),
+    });
+    const res = await run(deps);
+    expect(res).toMatchObject({ ok: false, reason: 'property-schema-invalid' });
+    expect(deps.adoptStub).not.toHaveBeenCalled();
+    expect(startById).not.toHaveBeenCalled();
   });
 });
