@@ -25,7 +25,10 @@ function item(over: Partial<WorkItemLifecycleRow> & { workItemId: string }): Wor
 }
 
 function claim(over: Partial<FirstClaimRow> & { workItemId: string }): FirstClaimRow {
-  return { firstWonAtMs: T0, lastWonAtMs: T0, ...over };
+  // Defaults describe a single, once-claimed item — the shape the ledger actually produces for
+  // an item claimed exactly once. A typed literal (not a cast) so a future required field breaks
+  // this file loudly instead of letting the fixture go quietly vacuous.
+  return { firstWonAtMs: T0, lastWonAtMs: T0, wonClaimCount: 1, distinctClaimants: 1, ...over };
 }
 
 function plan(over: Partial<PlanAdoptionRow> & { planSlug: string }): PlanAdoptionRow {

@@ -115,7 +115,9 @@ describe('computeSpecEnforcementLatency — claim instant provenance', () => {
     const ledger = await computeSpecEnforcementLatency(
       deps({
         items: [item({ workItemId: 'WI-1', takenAtMs: T0 + 60 * MIN, closedAtMs: T0 + 90 * MIN })],
-        claims: [{ workItemId: 'WI-1', firstWonAtMs: T0, lastWonAtMs: T0 }],
+        claims: [
+          { workItemId: 'WI-1', firstWonAtMs: T0, lastWonAtMs: T0, wonClaimCount: 2, distinctClaimants: 2 },
+        ],
       }),
     );
 
