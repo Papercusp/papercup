@@ -68,6 +68,12 @@ const ALLOWLIST: Record<string, string> = {
     'refuse to revive a dead responder because some unrelated goal is full. Its own bound is upstream and ' +
     'tighter than a ceiling: the caller owns WHETHER to revive (MAX_REVIVALS_PER_CONSULT = 1 in ' +
     'consult/get-feedback-core.ts, covered by get-feedback-core.integration.test.ts); this module owns only HOW.',
+  'endpoint-route/routes/admin/attention-bulk-resolve.ts':
+    'The owner-facing Inbox action creates one short-lived resolver for the concrete items the owner ' +
+    'submitted. It creates the resolver owner id only inside this request, before any agent session or ' +
+    'goal context exists, and the resolver performs administrative inbox triage rather than goal work. ' +
+    'resolveGoalLaunch would therefore derive null and enforce no goal ceiling; wiring it here would add ' +
+    'ceremonial coupling to an unrelated goal instead of governing a goal launch.',
 };
 
 const COMPOSERS = /\b(buildAgentLaunchCommand|memberLaunchCommand)\s*\(/;
