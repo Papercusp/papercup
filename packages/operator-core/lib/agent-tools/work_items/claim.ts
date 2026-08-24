@@ -578,6 +578,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       retractionAdvisory,
       planContradiction,
       behaviorContractHint,
+      pathHintsResult,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -670,6 +671,15 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ),
         )
         .catch(() => null),
+      // EI-21267393427094356: which stored payload paths are dead at HEAD, and where each
+      // moved to. Same fail-soft seam as every sibling hint above: saying nothing asserts
+      // nothing.
+      import('../../stale-path-hints-claim-port')
+        .then(async (m) => {
+          const hints = await m.getClaimTimeStalePathHints({ payload: workItem.payload });
+          return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+        })
+        .catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
@@ -736,6 +746,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
                 behaviorContractNote: behaviorContractHint.behaviorContractNote,
               }
             : {}),
+          ...(pathHintsResult ?? {}),
         }
       : {
           ok: true,
@@ -775,6 +786,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
                 behaviorContractNote: behaviorContractHint.behaviorContractNote,
               }
             : {}),
+          ...(pathHintsResult ?? {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
