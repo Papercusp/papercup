@@ -1482,6 +1482,66 @@ async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<st
 }
 
 /**
+ * Open escalations are a separate coord surface, not messages. The materialized
+ * `coord_open_escalations` projection deliberately keeps an unresolved
+ * escalation available after its original event-log row has been pruned. A
+ * reply to that escalation is still a valid durable response marker, so
+ * related-message resolution must consider this live projection as well as the
+ * messages surface.
+ *
+ * The projection query is best-effort and fail-soft: older/dev databases may
+ * not have migration 355 yet, in which case message-only resolution retains its
+ * existing behavior. Non-PG test/dev seams fold their escalation events
+ * locally, including the resolved sibling check, so this helper has the same
+ * open-only contract on both backends.
+ */
+async function findOpenEscalationsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
+  if (!prefix || limit <= 0) return [];
+
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_open_escalations
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND starts_with(msg_id, ${prefix})
+         ORDER BY msg_id
+         LIMIT ${limit}
+      `;
+      return rows
+        .map((row) => (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope)
+        .filter((row) => row?.kind === 'escalation');
+    } catch {
+      // Migration 355 may not exist yet; preserve the message-only fallback.
+      return [];
+    }
+  }
+
+  try {
+    const events = await coordLog.readEvents('escalations');
+    const resolved = new Set(
+      events
+        .filter((event) => event.kind === 'escalation_resolved')
+        .map((event) => event.related_msg_id)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    return events
+      .filter(
+        (event) =>
+          event.kind === 'escalation' &&
+          typeof event.msg_id === 'string' &&
+          event.msg_id.startsWith(prefix) &&
+          !resolved.has(event.msg_id),
+      )
+      .sort((a, b) => a.msg_id.localeCompare(b.msg_id))
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Resolve a msg_id REF (a full id, or a unique leading prefix) to its message.
  * See the WI-6725 note above for why this is three-valued rather than
  * `CoordEnvelope | null`.
@@ -1493,17 +1553,32 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   const exact = await getMessageById(msgId);
   if (exact) return { status: 'found', msgId, message: exact, resolvedFrom: 'exact' };
 
+  // EI-21271857379493174: an open escalation can outlive its original
+  // `escalations` event in the log while remaining durable in the open-set
+  // projection. Treat that live record as a valid exact/prefix target so a
+  // driver can acknowledge it through coord:send.
+  const openEscalations = await findOpenEscalationsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const exactEscalation = openEscalations.find((event) => event.msg_id === msgId);
+  if (exactEscalation) {
+    return { status: 'found', msgId, message: exactEscalation, resolvedFrom: 'exact' };
+  }
+
   // A well-formed full id that missed is a genuine not-found — no prefix scan.
   if (FULL_MSG_ID_SHAPE.test(msgId)) return { status: 'not-found', msgId, looksTruncated: false };
 
-  const candidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const messageCandidates = await findMessageIdsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const candidates = [
+    ...new Set([...messageCandidates, ...openEscalations.map((event) => event.msg_id)]),
+  ];
   if (candidates.length === 0) return { status: 'not-found', msgId, looksTruncated: true };
   if (candidates.length > 1) {
     return { status: 'ambiguous', msgId, candidates: candidates.slice(0, REF_CANDIDATE_CAP) };
   }
   const resolved = await getMessageById(candidates[0]);
-  if (!resolved) return { status: 'not-found', msgId, looksTruncated: true };
-  return { status: 'found', msgId: candidates[0], message: resolved, resolvedFrom: 'prefix' };
+  if (resolved) return { status: 'found', msgId: candidates[0], message: resolved, resolvedFrom: 'prefix' };
+  const escalation = openEscalations.find((event) => event.msg_id === candidates[0]);
+  if (!escalation) return { status: 'not-found', msgId, looksTruncated: true };
+  return { status: 'found', msgId: candidates[0], message: escalation, resolvedFrom: 'prefix' };
 }
 
 /**

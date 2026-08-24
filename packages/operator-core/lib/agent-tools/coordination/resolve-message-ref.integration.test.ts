@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import type { AgentIdentity } from './identity';
 import { sendMessage, resolveMessageRef, getMessageById } from './messages';
+import { coordWorkspaceId } from './log';
 
 let fx: BaselineCoordFixture;
 
@@ -31,10 +32,12 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await fx.admin`TRUNCATE harness_shared.coord_event_log`.catch(() => {});
+  await fx.admin`TRUNCATE harness_shared.coord_open_escalations`.catch(() => {});
   await fx.dispose();
 });
 beforeEach(async () => {
   await fx.admin`TRUNCATE harness_shared.coord_event_log`;
+  await fx.admin`TRUNCATE harness_shared.coord_open_escalations`;
 });
 
 describe('resolveMessageRef (WI-6725)', () => {
@@ -62,6 +65,39 @@ describe('resolveMessageRef (WI-6725)', () => {
     expect(res.resolvedFrom).toBe('prefix');
     expect(res.msgId).toBe(sent.msg_id);
     expect(res.message.summary).toBe('the design fork');
+  });
+
+  it('EI-21271857379493174: resolves an open escalation retained only in the projection', async () => {
+    const fullId = 'mqlfq7me-0000-18f69a47da0046dd85a61f17ff88f87f';
+    const escalation = {
+      ts: '2026-06-19T21:22:38.388Z',
+      msg_id: fullId,
+      from: ASKER.ownerId,
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'question',
+      summary: 'projection-only open escalation',
+      resolved: null,
+    };
+    const workspaceId = coordWorkspaceId();
+    await fx.admin`
+      INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+      VALUES (${workspaceId}, ${fullId}, ${escalation.ts}, ${fx.admin.json(escalation)})
+    `;
+
+    const eventRows = await fx.admin`
+      SELECT 1 FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId} AND msg_id = ${fullId}
+    `;
+    expect(eventRows).toHaveLength(0);
+
+    const res = await resolveMessageRef(fullId.split('-')[0]);
+    expect(res.status).toBe('found');
+    if (res.status !== 'found') return;
+    expect(res.resolvedFrom).toBe('prefix');
+    expect(res.msgId).toBe(fullId);
+    expect(res.message.kind).toBe('escalation');
+    expect(res.message.summary).toBe('projection-only open escalation');
   });
 
   it('a genuinely absent FULL id is not-found, and is NOT flagged as truncated', async () => {
