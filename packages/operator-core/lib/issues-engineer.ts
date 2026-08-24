@@ -2450,6 +2450,13 @@ export async function setIssueState(
      * (invisible to burn-down) rather than a rejection.
      */
     completionAuthority?: WorkItemCompletionAuthority;
+    /**
+     * Internal handoff from the unified work-items facade. That facade owns the
+     * cross-family conflict callback and may already have archived the displaced
+     * issue completion before delegating the authoritative write here. Direct
+     * callers omit this and continue through this module's own guard.
+     */
+    secondTerminalCloseHandledByUnified?: boolean;
   } = {},
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
@@ -2553,6 +2560,7 @@ export async function setIssueState(
       // record may supersede the first, but the displaced record is archived rather
       // than discarded.
       const isSecondTerminalClose =
+        !opts.secondTerminalCloseHandledByUnified &&
         !opts.force &&
         !opts.skipCompletionGate &&
         Boolean(by?.trim()) &&

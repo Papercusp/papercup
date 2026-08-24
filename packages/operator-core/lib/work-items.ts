@@ -3313,6 +3313,11 @@ export async function setWorkItemState(
       skipCompletionGate: opts.skipCompletionGate,
       completionAuthority: opts.completionAuthority,
       force: opts.force,
+      // WI-41355: the unified guard above already archives an upgraded
+      // issue-family second close before falling through to this writer. Tell
+      // the direct-writer guard not to archive that same displaced record a
+      // second time; direct setIssueState callers omit the bit and stay guarded.
+      secondTerminalCloseHandledByUnified: isSecondTerminalClose,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {
