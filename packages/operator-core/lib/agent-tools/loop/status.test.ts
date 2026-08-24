@@ -34,7 +34,9 @@ vi.mock('../../events/await/wake-reachability', () => ({
   })),
 }));
 
-vi.mock('../../events/await/store', () => ({ listWakeAwaitsForSubscriber: vi.fn(async () => []) }));
+vi.mock('../../events/await/store', () => ({
+  listWakeAwaitsForSubscriber: vi.fn(async () => ({ totalCount: 0, sample: [] })),
+}));
 
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn() }));
 
@@ -108,7 +110,7 @@ beforeEach(() => {
   _resetStoreIdentityForTests();
   getLoopStatusMock.mockReset();
   listWakeAwaitsMock.mockReset();
-  listWakeAwaitsMock.mockResolvedValue([]);
+  listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
 });
 
 describe('loop:status store-identity delivery', () => {
@@ -167,7 +169,7 @@ describe('loop:status store-identity delivery', () => {
 describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
   it('reports status:none when the caller holds no live non-inbox-wake await', async () => {
     getLoopStatusMock.mockResolvedValue(null);
-    listWakeAwaitsMock.mockResolvedValue([]);
+    listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
 
     const out = await run();
 
@@ -176,10 +178,13 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
 
   it('reports status:found with a sample of event keys when awaits are live', async () => {
     getLoopStatusMock.mockResolvedValue(null);
-    listWakeAwaitsMock.mockResolvedValue([
-      { eventKey: 'work-item:claimable', expiresTs: null, rootId: null },
-      { eventKey: 'release:green:papercusp', expiresTs: null, rootId: null },
-    ]);
+    listWakeAwaitsMock.mockResolvedValue({
+      totalCount: 2,
+      sample: [
+        { eventKey: 'work-item:claimable', expiresTs: null, rootId: null },
+        { eventKey: 'release:green:papercusp', expiresTs: null, rootId: null },
+      ],
+    });
 
     const out = await run();
 
@@ -187,6 +192,28 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
       status: 'found',
       count: 2,
       sample: ['work-item:claimable', 'release:green:papercusp'],
+    });
+  });
+
+  it('reports the uncapped total when the store returns a capped sample', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    listWakeAwaitsMock.mockResolvedValue({
+      totalCount: 6,
+      sample: [
+        { eventKey: 'await:1', expiresTs: null, rootId: null },
+        { eventKey: 'await:2', expiresTs: null, rootId: null },
+        { eventKey: 'await:3', expiresTs: null, rootId: null },
+        { eventKey: 'await:4', expiresTs: null, rootId: null },
+        { eventKey: 'await:5', expiresTs: null, rootId: null },
+      ],
+    });
+
+    const out = await run();
+
+    expect(out.pendingAwaits).toEqual({
+      status: 'found',
+      count: 6,
+      sample: ['await:1', 'await:2', 'await:3', 'await:4', 'await:5'],
     });
   });
 
@@ -201,7 +228,10 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
 
   it('is computed even when no loop is armed (a bare events:await with no loop still deserves this answer)', async () => {
     getLoopStatusMock.mockResolvedValue(null);
-    listWakeAwaitsMock.mockResolvedValue([{ eventKey: 'lock:grant:t1', expiresTs: null, rootId: null }]);
+    listWakeAwaitsMock.mockResolvedValue({
+      totalCount: 1,
+      sample: [{ eventKey: 'lock:grant:t1', expiresTs: null, rootId: null }],
+    });
 
     const out = await run();
 
@@ -232,7 +262,7 @@ describe('loop:status declared-vs-actual envelope (EI-21197839138727609)', () =>
       fireCount: 3,
       firesSinceArm: 3,
     });
-    listWakeAwaitsMock.mockResolvedValue([]);
+    listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
 
     const out = await run();
 
