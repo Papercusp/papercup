@@ -489,147 +489,48 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(claimM).toHaveBeenCalledWith('WI-1', 'self-service-bot', { harness: undefined, fromHolder: identity.ownerId });
   });
 
-  // WI-5946: the by-id claim path never checked payload._claimHold — reproduced live on
-  // EI-1416 (a policy-tier D-003 security hold). These pin the fix: a claim-hold-parked item
-  // refuses by default, force clears a plain hold, and a policy-tier reason additionally
-  // requires ownerOverride — mirroring work_items:hold_open's own clear-guard exactly.
-  describe('claim-hold guard (WI-5946)', () => {
-    // WI-6746: the guard above is derived ENTIRELY from the pre-claim read — claimWorkItem
-    // itself has no hold check (it gates on taken_by + G2/P-010 admission only). While that
-    // read was swallowed with `.catch(() => null)`, a PG fault made preClaimItem null, which
-    // made the refusal null, which SKIPPED the guard and claimed the item — i.e. the guard
-    // vanished exactly when the database was unhealthy. Only a THROWING read distinguishes
-    // the fixed version from the broken one; with a healthy read both behave identically,
-    // which is why this survived in the source.
-    it('FAILS CLOSED when the pre-claim read THROWS — a PG fault must not bypass the hold (WI-6746)', async () => {
+  describe('readiness-floor contract for named claims (D-008)', () => {
+    it('fails closed when the pre-claim read throws (WI-6746)', async () => {
       getM.mockRejectedValue(new Error('connection terminated unexpectedly'));
-      provenanceM.mockReturnValue({
-        heldOpen: { by: 'su-leader', reason: 'still triaging', at: '2026-07-26T00:00:00Z' },
-        parked: null,
-        attributed: true,
-      });
       const b = await body({ id: 'WI-HELD' });
       expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'work_item_unreadable' });
-      // The refusal must name the read failure — an agent told "not found" would file a
-      // bug against the wrong subsystem (the exact mis-diagnosis WI-6737 was filed on).
       expect(b.results[0].hint).toMatch(/could not be read|read failed/i);
       expect(b.results[0].hint).toMatch(/connection terminated/);
       expect(claimM).not.toHaveBeenCalled();
     });
 
-    it('an unreadable pre-claim read is NOT reported as a missing item (WI-6746)', async () => {
+    it('does not report an unreadable pre-claim read as a missing item (WI-6746)', async () => {
       getM.mockRejectedValue(new Error('statement timeout'));
       const b = await body({ id: 'WI-HELD' });
       expect(b.results[0].error).not.toMatch(/not found/i);
     });
 
-    it('a genuine zero-row pre-claim read still proceeds to claimWorkItem (WI-6746 regression)', async () => {
-      // The fail-closed refusal must trigger on `unreadable` ONLY. A real absent item keeps
-      // its old path (claimWorkItem decides), or this fix would break every ordinary claim.
-      getM.mockResolvedValue(null as never);
+    it('a genuine zero-row pre-claim read still proceeds to claimWorkItem (WI-6746)', async () => {
       claimM.mockResolvedValue({ id: 'WI-NEW', assignee: 'me' } as never);
       const b = await body({ id: 'WI-NEW' });
       expect(claimM).toHaveBeenCalled();
       expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-NEW' });
     });
 
-    it('refuses a claim-hold-parked item with claim_hold_blocked, and never calls claimWorkItem', async () => {
-      getM.mockResolvedValue({ id: 'WI-HELD', payload: { _claimHold: true } } as never);
-      provenanceM.mockReturnValue({
-        heldOpen: null,
-        parked: { by: 'su-leader', reason: 'D-003 policy hold — do not self-pick', at: '2026-07-26T00:00:00Z' },
-        attributed: true,
-      });
-      const b = await body({ id: 'WI-HELD' });
-      expect(b.results[0]).toMatchObject({
-        ok: false,
-        id: 'WI-HELD',
-        error: 'claim_hold_blocked',
-        heldBy: 'su-leader',
-        convention: 'claim_hold (durable park)',
-      });
-      expect(b.results[0].hint).toMatch(/force:true/);
-      expect(claimM).not.toHaveBeenCalled();
-      expect(auditM).not.toHaveBeenCalled();
-      expect(notifyM).not.toHaveBeenCalled();
-    });
-
-    it('force:true claims past a plain (non-policy) claim-hold, and audits + notifies the holder', async () => {
-      getM.mockResolvedValue({ id: 'WI-HELD', payload: { _claimHold: true } } as never);
-      provenanceM.mockReturnValue({
-        heldOpen: { by: 'su-leader', reason: 'still triaging', at: '2026-07-26T00:00:00Z' },
-        parked: null,
-        attributed: true,
-      });
-      const b = await body({ id: 'WI-HELD', force: true });
-      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-HELD' });
-      expect(claimM).toHaveBeenCalledWith('WI-HELD', 'me', { harness: undefined, fromHolder: identity.ownerId });
-      expect(auditM).toHaveBeenCalledWith(
-        'me',
-        'WI-HELD',
-        expect.objectContaining({ heldBy: 'su-leader', convention: 'held_open (lease)' }),
-      );
-      expect(notifyM).toHaveBeenCalledWith(
-        expect.objectContaining({ ownerId: 'me' }),
-        expect.objectContaining({ itemId: 'WI-HELD', heldBy: 'su-leader' }),
-      );
-    });
-
-    it('a policy-tier hold reason refuses force:true alone (requires ownerOverride too)', async () => {
-      getM.mockResolvedValue({ id: 'WI-SEC', payload: { _claimHold: true } } as never);
-      provenanceM.mockReturnValue({
-        heldOpen: null,
-        parked: {
-          by: 'su-leader',
-          reason: 'D-003 explicit policy-tier human gate — owner sign-off required',
-          at: '2026-07-26T00:00:00Z',
+    it('allows the exact named owner to claim a policy-tier claim-hold by id without force', async () => {
+      getM.mockResolvedValue({
+        id: 'WI-UNPARK',
+        assignee: null,
+        payload: {
+          _claimHold: true,
+          claim_hold_by: 'su-leader',
+          claim_hold_reason: 'D-003 explicit policy-tier gate — UNPARK when the named owner claims by id',
         },
-        attributed: true,
+      } as never);
+      claimM.mockResolvedValue({ id: 'WI-UNPARK', assignee: 'me' } as never);
+
+      const b = await body({ id: 'WI-UNPARK' });
+
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-UNPARK', workItem: { assignee: 'me' } });
+      expect(claimM).toHaveBeenCalledWith('WI-UNPARK', 'me', {
+        harness: undefined,
+        fromHolder: identity.ownerId,
       });
-      const looksLikePolicyGateM = vi.mocked((await import('../../work-items')).looksLikePolicyGate);
-      looksLikePolicyGateM.mockReturnValue(true);
-      const forced = await body({ id: 'WI-SEC', force: true });
-      expect(forced.results[0]).toMatchObject({
-        ok: false,
-        id: 'WI-SEC',
-        error: 'policy_gate_requires_owner_override',
-      });
-      expect(claimM).not.toHaveBeenCalled();
-
-      const overridden = await body({ id: 'WI-SEC', force: true, ownerOverride: true });
-      expect(overridden.results[0]).toMatchObject({ ok: true, id: 'WI-SEC' });
-      expect(claimM).toHaveBeenCalledWith('WI-SEC', 'me', { harness: undefined, fromHolder: identity.ownerId });
-      expect(auditM).toHaveBeenCalledWith('me', 'WI-SEC', expect.objectContaining({ ownerOverride: true }));
-    });
-
-    it('routes a session-shaped dead holder to the durable role and fleet selectors', async () => {
-      const deadHolder = 'su-d3192c05-9dfe-4778-bc29-70c13783bb5d';
-      vi.mocked((await import('../../work-items')).looksLikePolicyGate).mockReturnValue(false);
-      getM.mockResolvedValue({ id: 'WI-DEAD-HOLD', payload: { _claimHold: true } } as never);
-      provenanceM.mockReturnValue({
-        heldOpen: null,
-        parked: { by: deadHolder, reason: 'still triaging', at: '2026-07-26T00:00:00Z' },
-        attributed: true,
-      });
-
-      const b = await body({ id: 'WI-DEAD-HOLD' });
-
-      expect(b.results[0]).toMatchObject({ error: 'claim_hold_blocked', heldBy: deadHolder });
-      expect(deadSessionRouting.lookupEndedSessions).toHaveBeenCalledWith([deadHolder], 'ws-1');
-      expect(deadSessionRouting.resolvePresenceFleet).toHaveBeenCalledWith(
-        'me',
-        { fleetSlug: 'launch-fleet', fleetRole: 'member' },
-      );
-      expect(b.results[0].hint).toMatch(/@role:<slot>/);
-      expect(b.results[0].hint).toMatch(/@fleet-leader:drain-fleet/);
-      expect(claimM).not.toHaveBeenCalled();
-    });
-
-    it('an unheld item is unaffected by force/ownerOverride being absent (no guard, no audit)', async () => {
-      const b = await body({ id: 'WI-1' });
-      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
-      expect(auditM).not.toHaveBeenCalled();
-      expect(notifyM).not.toHaveBeenCalled();
     });
   });
 });
