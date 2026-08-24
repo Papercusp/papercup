@@ -28,6 +28,7 @@
  * The predicate and real-tree scanner are exported + unit-tested in
  * `packages/operator-core/lib/agent-tools/no-raw-harness-sentinel-guard.test.ts`.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -233,16 +234,46 @@ export function findRawHarnessSentinelUses(text, fileName = 'source.ts') {
 }
 
 /**
+ * Every possible source candidate, narrowed by Git's native literal search.
+ *
+ * The detector cannot match a file that does not contain `harnessSlug`, so
+ * reading and comment-stripping every tracked source file first is pure waste.
+ * On this tree that meant parsing thousands of irrelevant files inside the full
+ * pure lane and repeatedly crossing the guard's 120-second timeout. Keep
+ * `listTrackedFiles` as the coverage authority, intersect Git's result with it,
+ * and fail back to the complete list on any Git error other than the ordinary
+ * no-match status. The optimization can disappear; coverage cannot.
+ */
+export function rawHarnessCandidateFiles(tracked, cwd = ROOT) {
+  try {
+    const output = execFileSync(
+      'git',
+      ['grep', '-l', '-z', '--recurse-submodules', '-e', 'harnessSlug', '--'],
+      { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    );
+    const trackedSet = new Set(tracked);
+    return output.split('\0').filter((file) => file && trackedSet.has(file));
+  } catch (err) {
+    // `git grep` status 1 means the tracked tree contains no match. Returning an
+    // empty set remains fail-closed here: every non-empty baseline row becomes
+    // stale. Infrastructure/usage failures fall back to the original full scan.
+    if (Number(err?.status) === 1) return [];
+    return tracked;
+  }
+}
+
+/**
  * Scan the tracked tree. The result keeps coverage separate from findings so
  * an incomplete submodule enumeration cannot be reported as a repo-wide pass.
  */
 export function findOffenders() {
   const { files: tracked, unscanned } = listTrackedFiles(ROOT);
+  const candidates = rawHarnessCandidateFiles(tracked);
   const offenders = [];
   const observedBaseline = new Set();
   let scanned = 0;
 
-  for (const f of tracked) {
+  for (const f of candidates) {
     if (isExcluded(f) || ALLOWLIST.has(f)) continue;
     let text;
     try {
@@ -259,7 +290,7 @@ export function findOffenders() {
   }
 
   const staleBaseline = [...BASELINE].filter((key) => !observedBaseline.has(key));
-  return { offenders, staleBaseline, scanned, unscanned };
+  return { offenders, staleBaseline, scanned, tracked: tracked.length, unscanned };
 }
 
 export function formatFinding(finding) {
@@ -294,7 +325,7 @@ function main() {
     console.error(`\n  ${scan.offenders.length + scan.staleBaseline.length} finding(s). Use --list for the measured candidate set.`);
     process.exit(1);
   }
-  console.log(`✓ no NEW raw ctx.harnessSlug identity uses (${scan.scanned} files scanned; ${BASELINE.size} baseline candidate(s)).${describeUnscanned(scan.unscanned)}`);
+  console.log(`✓ no NEW raw ctx.harnessSlug identity uses (${scan.scanned} candidate files scanned from ${scan.tracked} tracked paths; ${BASELINE.size} baseline candidate(s)).${describeUnscanned(scan.unscanned)}`);
   process.exit(0);
 }
 
