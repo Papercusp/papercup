@@ -86,6 +86,8 @@ export interface WorkflowAgentPanelProps {
   armed: boolean | null;
   /** The node the operator clicked in the topology pane, so the chat has visible context. */
   selectedNode: WorkflowGraphNode | null;
+  /** Immediate acknowledgement for the last test queued from this panel. */
+  lastTestRunId?: string | null;
   busy: 'arm' | 'test' | null;
   onToggleArm: () => void;
   onTest: () => void;
@@ -98,6 +100,7 @@ export default function WorkflowAgentPanel({
   binding,
   armed,
   selectedNode,
+  lastTestRunId = null,
   busy,
   onToggleArm,
   onTest,
@@ -195,11 +198,16 @@ export default function WorkflowAgentPanel({
             type="button"
             className="pc-workflow-agent__btn"
             onClick={onTest}
-            disabled={busy !== null}
+            disabled={binding === null || busy !== null}
           >
             {busy === 'test' ? 'Testing…' : 'Test with last event'}
           </button>
         </div>
+        {lastTestRunId ? (
+          <p className="pc-workflow-agent__note" role="status">
+            Test run {lastTestRunId.slice(0, 8)} queued from the last provider event. Activity will show its live outcome.
+          </p>
+        ) : null}
         <p className="pc-workflow-agent__note">Structural edits go through the agent · arm/disarm stays yours</p>
       </footer>
     </section>

@@ -7,7 +7,13 @@ import type { AutomationCatalog, AutomationRoutine } from '@papercusp/operator-c
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
 
 const H = vi.hoisted(() => ({
-  runTool: vi.fn<(name: string, args: Record<string, unknown>) => Promise<{ ok: boolean; message?: string }>>(
+  runTool: vi.fn<
+    (name: string, args: Record<string, unknown>) => Promise<{
+      ok: boolean;
+      message?: string;
+      data?: Record<string, unknown>;
+    }>
+  >(
     async () => ({ ok: true }),
   ),
   invalidates: [] as string[],
@@ -205,6 +211,20 @@ describe('<AdvWorkflowsTab>', () => {
     expect(await screen.findByText('Workspace spend · 7 days')).toBeTruthy();
     expect(screen.getByText('doc-steward')).toBeTruthy();
     expect(screen.getByText('$2.40')).toBeTruthy();
+  });
+
+  it('confirms and queues a distinct last-event run from the workflow detail', async () => {
+    const runId = '33333333-3333-4333-8333-333333333333';
+    H.runTool.mockResolvedValueOnce({ ok: true, data: { ok: true, run: { id: runId } } });
+    renderTab({ wfId: 'plan:papercusp:customer-digest' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Test with last event' }));
+    await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('triggers:run-with-last-event', {
+      bindingId: '11111111-1111-4111-8111-111111111111',
+      confirm: true,
+    }));
+    expect((await screen.findByRole('status')).textContent).toContain(
+      'Test run 33333333 queued from the last provider event',
+    );
   });
 
   it('toggles an external binding through the audited trigger admin route', async () => {

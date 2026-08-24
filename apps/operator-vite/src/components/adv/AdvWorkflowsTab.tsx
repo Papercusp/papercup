@@ -219,6 +219,7 @@ export default function AdvWorkflowsTab() {
   const [, setCalendarPlan] = useQueryState('calPlan', parseAsString);
   const { confirm, element: confirmElement } = useConfirmDialog();
   const [busy, setBusy] = useState<string | null>(null);
+  const [lastTestRun, setLastTestRun] = useState<{ workflowId: string; runId: string } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   // Mid-edit draft handed over from the landing's agent composer (D-018 region 2),
   // so the operator's sentence survives the hop into the creation flow instead of
@@ -381,6 +382,39 @@ export default function AdvWorkflowsTab() {
     }
   }, [refreshAll]);
 
+  const runWithLastEvent = useCallback(async (
+    workflowId: string,
+    workflowLabel: string,
+    bindingId: string,
+  ) => {
+    if (!(await confirm({
+      title: `Test ${workflowLabel} with its last event?`,
+      body: 'This queues a new plan run from the last settled provider event. The workflow may perform its configured provider write, such as creating a Gmail draft or posting a Slack thread reply. The source event itself is not re-ingested.',
+      confirmLabel: 'Queue test run',
+    }))) return;
+    setBusy(`run:${workflowId}`);
+    try {
+      const result = await runScheduleTool('triggers:run-with-last-event', {
+        bindingId,
+        confirm: true,
+      });
+      if (!result.ok) throw new Error(result.message ?? 'Run with last event failed');
+      const run = result.data?.run;
+      const runId = run && typeof run === 'object' && !Array.isArray(run)
+        && typeof (run as { id?: unknown }).id === 'string'
+        ? (run as { id: string }).id
+        : null;
+      if (!runId) throw new Error('Run with last event returned no trigger-run id');
+      setLastTestRun({ workflowId, runId });
+      toast.success('Test run queued', { description: `Trigger run ${runId.slice(0, 8)} is visible in Activity.` });
+      refreshAll();
+    } catch (error) {
+      toast.error('Workflow test failed', { description: errorMessage(error) });
+    } finally {
+      setBusy(null);
+    }
+  }, [confirm, refreshAll]);
+
   const toggleRoutine = useCallback(async (item: AutomationItem) => {
     const routine = item.routine;
     if (!routine || !routine.controllable) return;
@@ -505,16 +539,16 @@ export default function AdvWorkflowsTab() {
           // component renders "pending" rather than "unwired" off this.
           bindingLoaded={external !== null}
           lastFiredLabel={openedWorkflow.lastAt == null ? null : `last fired ${relativeTime(openedWorkflow.lastAt)}`}
+          lastTestRunId={lastTestRun?.workflowId === openedWorkflow.id ? lastTestRun.runId : null}
           busy={armBusyKey !== null && busy === armBusyKey
             ? 'arm'
             : busy === `run:${openedWorkflow.id}` ? 'test' : null}
           onBack={() => void setWfId(null)}
           onToggleArm={() => openedBinding && void setBindingArmed(openedBinding.id, !openedBinding.armed)}
-          onTest={() => openedWorkflow.planSlug && void invoke(
-            `run:${openedWorkflow.id}`,
-            'plans:run-now',
-            { slug: openedWorkflow.planSlug, ...(openedWorkflow.harness ? { harness: openedWorkflow.harness } : {}) },
-            `${openedWorkflow.label} started`,
+          onTest={() => openedBinding && void runWithLastEvent(
+            openedWorkflow.id,
+            openedWorkflow.label,
+            openedBinding.id,
           )}
         />
       </section>
