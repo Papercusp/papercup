@@ -1,12 +1,15 @@
 import {
   computePlanSpecCoverage,
+  type BehaviorClassCoverage,
   type PlanSpecCoverageAggregate,
   type PlanSpecCoverageDeps,
 } from './plan-spec-coverage-gate';
+import type { SpecBehaviorClass } from './spec-clauses-store';
+import type { SpecEvidenceKind } from './spec-evidence-store';
 import {
-  adoptionOf,
-  laneOf,
+  enforcementEligibility,
   type AdoptionState,
+  type EnforcementEligibility,
   type PlanAdoptionRow,
   type ReconciliationLane,
 } from './spec-enforcement-eligibility';
@@ -111,11 +114,25 @@ export interface ReconciliationAction {
   specIds?: string[];
 }
 
+/** The reason a plan's clauses may not refuse. Mirrors the gates' own reason vocabulary. */
+export type NotEnforcingReason = Extract<EnforcementEligibility, { enforcing: false }>['reason'];
+
 export interface SpecReconciliationRow {
   planSlug: string;
   status: string;
   lane: ReconciliationLane;
   adoption: AdoptionState;
+  /**
+   * P-013 — whether this plan's clauses may actually REFUSE right now, and if not, why.
+   *
+   * Not a third classification: it is `enforcementEligibility(lane, adoption)`, the exact
+   * function both enforcement gates call, so a plan's reported enforcement status here
+   * cannot disagree with what the gate does to it. That identity is the point — lane and
+   * adoption used to be derived here by two separate calls and composed into a verdict by
+   * each reader independently, which is how a ledger comes to describe an enforcement
+   * regime the gates are no longer running.
+   */
+  eligibility: EnforcementEligibility;
   /** Populated only for `adopted` plans — the SHIP GATE's own census, never a re-count. */
   coverage: PlanSpecCoverageAggregate | null;
   /** Set when the census could not run. The plan still appears; it is never dropped. */
@@ -129,6 +146,46 @@ export interface SpecReconciliationRollup {
   byLane: Record<ReconciliationLane, number>;
   /** Adoption partition over NON-HISTORICAL plans only — the population enforcement hits. */
   byAdoption: Record<AdoptionState, number>;
+  /**
+   * P-013 instrumentation — GATE REASONS at census scope.
+   *
+   * The single most important number this ledger produces, and the one `byLane` and
+   * `byAdoption` cannot state between them: how many plans can a clause gate actually
+   * refuse for, and for each of the rest, WHY not. A reader has to cross-multiply two
+   * partitions to get it otherwise, and cross-multiplying them wrongly is exactly how
+   * "enforcement is on" gets asserted about a corpus where it refuses for nothing.
+   *
+   * `notEnforcing` is keyed by the gates' own reason vocabulary and is exhaustive over
+   * it (`satisfies Record<NotEnforcingReason, number>`), so a newly added reason breaks
+   * the build here rather than silently vanishing from the census — the same guarantee
+   * NOT_ENFORCED_BECAUSE gives at the work-item gate.
+   *
+   * ⚠ Counted over ALL plans considered, historical included, because "enforcement does
+   * not reach 1,290 plans" is the finding. Restricting it to the non-historical subset
+   * the way `byAdoption` does would quietly drop the largest term.
+   */
+  byEnforcement: {
+    enforcing: number;
+    notEnforcing: Record<NotEnforcingReason, number>;
+  };
+  /**
+   * P-013 — clause coverage partitioned by behavior class, summed over ADOPTED plans.
+   *
+   * Absent class ⇒ no plan in the corpus declares a clause of that class. On a corpus
+   * this is a stronger statement than it is per-plan: it means the fleet has never
+   * written down a promise about, say, concurrency anywhere. Read an absence here as an
+   * un-surveyed area, never as a clean one.
+   */
+  byBehaviorClass: Partial<Record<SpecBehaviorClass, BehaviorClassCoverage>>;
+  /** P-013 — evidence composition and worst-case staleness across ADOPTED plans. */
+  evidence: {
+    byKind: Partial<Record<SpecEvidenceKind, number>>;
+    currentByKind: Partial<Record<SpecEvidenceKind, number>>;
+    /** The WORST revision lag observed on any single clause in the corpus. */
+    maxRevisionLag: number;
+    /** The oldest evidence row anywhere still being counted as a current-revision proof. */
+    oldestCurrentProofAt: string | null;
+  };
   /** Totals over ADOPTED plans only. Zero here means "nothing adopted", not "all clean". */
   clauses: { total: number; enforceable: number; falsifierDeclared: number };
   coverage: { proven: number; staleProof: number; unproven: number };
@@ -273,10 +330,28 @@ export async function computeSpecReconciliationLedger(
   const clauses = { total: 0, enforceable: 0, falsifierDeclared: 0 };
   const coverageTotals = { proven: 0, staleProof: 0, unproven: 0 };
   const adequacyTotals = { graded: 0, ungraded: 0 };
+  // P-013 instrumentation accumulators.
+  const notEnforcing = {
+    historical: 0,
+    'pre-enforcement': 0,
+    'not-yet-reconciled': 0,
+  } satisfies Record<NotEnforcingReason, number>;
+  let enforcingCount = 0;
+  const byBehaviorClass: Partial<Record<SpecBehaviorClass, BehaviorClassCoverage>> = {};
+  const evidenceByKind: Partial<Record<SpecEvidenceKind, number>> = {};
+  const evidenceCurrentByKind: Partial<Record<SpecEvidenceKind, number>> = {};
+  let maxRevisionLag = 0;
+  let oldestCurrentProofAt: string | null = null;
 
   for (const planRow of planRows) {
-    const lane = laneOf(planRow.status);
-    const adoption = adoptionOf(planRow);
+    // ONE classification call, whose result is both reported on the row and counted in the
+    // rollup. Deriving lane and adoption separately here (as this loop used to) let a
+    // reader compose them into an enforcement verdict that the gates did not share.
+    const eligibility = enforcementEligibility(planRow);
+    const lane = eligibility.lane;
+    const adoption = eligibility.adoption;
+    if (eligibility.enforcing) enforcingCount += 1;
+    else notEnforcing[eligibility.reason] += 1;
     byLane[lane] += 1;
     // Historical plans are carried for visibility but excluded from the adoption partition:
     // enforcement never reaches them, so counting them would dilute the population that
@@ -289,6 +364,7 @@ export async function computeSpecReconciliationLedger(
         status: planRow.status,
         lane,
         adoption,
+        eligibility,
         coverage: null,
         coverageUnavailableReason: null,
         // A historical plan is visible but never actionable.
@@ -314,6 +390,7 @@ export async function computeSpecReconciliationLedger(
         status: planRow.status,
         lane,
         adoption,
+        eligibility,
         coverage: null,
         coverageUnavailableReason: unavailable ?? 'census-returned-nothing',
         actions: [],
@@ -334,11 +411,46 @@ export async function computeSpecReconciliationLedger(
     adequacyTotals.graded += aggregate.adequacy.graded;
     adequacyTotals.ungraded += aggregate.adequacy.ungraded;
 
+    // P-013 — fold this plan's partitions into the corpus ones. Summed from the SAME
+    // aggregate the flat totals above are summed from, so the two cannot disagree.
+    for (const [behaviorClass, slice] of Object.entries(aggregate.byBehaviorClass)) {
+      if (!slice) continue;
+      const key = behaviorClass as SpecBehaviorClass;
+      const target = (byBehaviorClass[key] ??= {
+        total: 0,
+        enforceable: 0,
+        proven: 0,
+        staleProof: 0,
+        unproven: 0,
+        falsifierDeclared: 0,
+      });
+      target.total += slice.total;
+      target.enforceable += slice.enforceable;
+      target.proven += slice.proven;
+      target.staleProof += slice.staleProof;
+      target.unproven += slice.unproven;
+      target.falsifierDeclared += slice.falsifierDeclared;
+    }
+    for (const [kind, count] of Object.entries(aggregate.evidence.byKind)) {
+      const key = kind as SpecEvidenceKind;
+      evidenceByKind[key] = (evidenceByKind[key] ?? 0) + (count ?? 0);
+    }
+    for (const [kind, count] of Object.entries(aggregate.evidence.currentByKind)) {
+      const key = kind as SpecEvidenceKind;
+      evidenceCurrentByKind[key] = (evidenceCurrentByKind[key] ?? 0) + (count ?? 0);
+    }
+    maxRevisionLag = Math.max(maxRevisionLag, aggregate.evidence.staleness.maxRevisionLag);
+    const planOldest = aggregate.evidence.staleness.oldestCurrentProofAt;
+    if (planOldest && (oldestCurrentProofAt === null || planOldest < oldestCurrentProofAt)) {
+      oldestCurrentProofAt = planOldest;
+    }
+
     rows.push({
       planSlug: planRow.planSlug,
       status: planRow.status,
       lane,
       adoption,
+      eligibility,
       coverage: aggregate,
       coverageUnavailableReason: null,
       actions: lane === 'historical' ? [] : actionsForCensus(aggregate),
@@ -353,6 +465,14 @@ export async function computeSpecReconciliationLedger(
       plansConsidered: planRows.length,
       byLane,
       byAdoption,
+      byEnforcement: { enforcing: enforcingCount, notEnforcing },
+      byBehaviorClass,
+      evidence: {
+        byKind: evidenceByKind,
+        currentByKind: evidenceCurrentByKind,
+        maxRevisionLag,
+        oldestCurrentProofAt,
+      },
       clauses,
       coverage: coverageTotals,
       adequacy: adequacyTotals,

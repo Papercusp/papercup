@@ -36,8 +36,8 @@
  * so refusing on one would manufacture a false stale verdict.
  */
 import { listScorecards, type ScorecardRow } from '../../scorecards';
-import { listSpecClauses, type SpecClauseRevision } from './spec-clauses-store';
-import { listSpecEvidence } from './spec-evidence-store';
+import { listSpecClauses, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
+import { listSpecEvidence, type SpecEvidenceKind } from './spec-evidence-store';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF } from './spec-test-adequacy';
 import { enforcementEligibility } from './spec-enforcement-eligibility';
 import { listPlanStatuses, type PlanStatusReader } from './plan-status-read';
@@ -65,6 +65,70 @@ export interface StaleProofClause {
   currentRevision: number;
   /** The superseded revision(s) the existing evidence was bound to. */
   provenRevisions: number[];
+}
+
+/**
+ * P-013 instrumentation — one behavior class's slice of a plan's coverage.
+ *
+ * WHY THIS PARTITION AND NOT ANOTHER. A single plan-wide "18 of 20 proven" is the
+ * number most likely to be read as reassurance and most likely to be wrong about the
+ * thing that matters: the two unproven clauses are not interchangeable with the
+ * eighteen proven ones. `authorization`, `concurrency`, `lifecycle` and
+ * `migration-data-integrity` are already singled out as high-risk by the adequacy
+ * grader (HIGH_RISK_BEHAVIOR_CLASSES in spec-test-adequacy.ts), which raises their
+ * required proof floor. Coverage that is 90% overall but 0% on the authorization
+ * clauses is a materially different situation from the same 90% spread evenly, and
+ * the flat count cannot tell those apart. This partition is what makes the difference
+ * legible without a second census.
+ *
+ * Every field is a strict subset relationship with the flat aggregate: summing any
+ * field across all present classes reproduces the corresponding flat total exactly.
+ * That is asserted in the tests rather than merely intended — a partition that does
+ * not reconcile with the total it partitions is a second, quietly diverging census,
+ * which this module's header forbids.
+ */
+export interface BehaviorClassCoverage {
+  /** Every CURRENT clause of this class, whatever its lifecycle status. */
+  total: number;
+  /** accepted | active — the enforceable promises of this class. */
+  enforceable: number;
+  /** Enforceable clauses of this class with evidence at the CURRENT revision. */
+  proven: number;
+  /** Enforceable clauses of this class with evidence, but none current. */
+  staleProof: number;
+  /** Enforceable clauses of this class with no evidence at all. */
+  unproven: number;
+  /** D-016: how many of this class's enforceable clauses declare a falsifier. */
+  falsifierDeclared: number;
+}
+
+/**
+ * P-013 instrumentation — how STALE this plan's proof is, beyond the binary
+ * `staleProof` count the gate already refuses on.
+ *
+ * The count answers "is anything stale". These answer "how badly, and since when",
+ * which is what distinguishes a clause revised an hour ago and not yet re-proven
+ * (routine, self-correcting) from one whose only proof is eleven revisions and three
+ * months behind (a promise whose meaning has drifted away from its evidence). Both
+ * render identically as `staleProof: 1` today.
+ *
+ * ⚠ Ages are read from `observedAt` on the evidence row, NOT from any clock this
+ * module keeps. A caller comparing them to "now" must use its own now — these are
+ * timestamps, never durations, precisely so a stored value cannot silently age.
+ */
+export interface SpecCoverageStaleness {
+  /**
+   * Largest `currentRevision - provenRevision` gap over stale-proof clauses, using each
+   * clause's NEWEST proven revision (its best case). 0 when nothing is stale.
+   */
+  maxRevisionLag: number;
+  /**
+   * The OLDEST evidence row backing a current-revision proof — the weakest link in what
+   * currently reads as proven. null when nothing is proven at its current revision.
+   */
+  oldestCurrentProofAt: string | null;
+  /** The newest evidence row read for this plan at all. null when there is no evidence. */
+  newestProofAt: string | null;
 }
 
 export interface PlanSpecCoverageAggregate {
@@ -98,6 +162,37 @@ export interface PlanSpecCoverageAggregate {
     graded: number;
     ungraded: number;
     ungradedSpecIds: string[];
+  };
+  /**
+   * P-013 — the same coverage, partitioned by behavior class.
+   *
+   * A class with ZERO clauses on this plan is ABSENT, not zero-filled. That is
+   * deliberate and is the honest encoding: nine zero-filled rows on every plan would
+   * make "this plan declares nothing about authorization" look identical to "this
+   * plan's authorization clauses are all accounted for and there happen to be none" —
+   * and the first of those is the silent waiver this whole module exists to surface.
+   * Absence here means the plan never spoke to that class; read it as a gap to
+   * investigate, never as coverage.
+   */
+  byBehaviorClass: Partial<Record<SpecBehaviorClass, BehaviorClassCoverage>>;
+  /**
+   * P-013 — evidence LEVEL: what KIND of proof is actually backing this plan.
+   *
+   * `proven` counts clauses, not proof strength, so eight clauses proven by a `manual`
+   * attestation and eight proven by `mutation` evidence produce the identical number.
+   * They are not the identical claim. This block reports the composition so the
+   * difference is visible without inventing a strength ordering — deliberately NOT
+   * collapsed into a single "level" score, because any such ranking would be a
+   * curated judgement dressed as a derived measure, and readers would then compare
+   * scores across plans as though the ranking were a fact.
+   */
+  evidence: {
+    /** Evidence rows read for this plan, by kind. Absent kind ⇒ zero rows of it. */
+    byKind: Partial<Record<SpecEvidenceKind, number>>;
+    /** The subset of `byKind` bound to a clause's CURRENT revision — the proof that still counts. */
+    currentByKind: Partial<Record<SpecEvidenceKind, number>>;
+    /** How stale the proof is, beyond the binary count the gate refuses on. */
+    staleness: SpecCoverageStaleness;
   };
   /**
    * Boundedness of the measurement itself, carried ON the aggregate so a floor can
@@ -247,16 +342,48 @@ export async function computePlanSpecCoverage(
   const staleProofClauses: StaleProofClause[] = [];
   const unprovenSpecIds: string[] = [];
   let proven = 0;
+  // P-013 instrumentation. Accumulated in the SAME pass as the flat counts above,
+  // deliberately: a partition computed by a second walk (or a second query) is a
+  // second census, and two censuses of one population drift precisely when they
+  // disagree about something that matters. Sharing the loop makes the partition
+  // reconcile with the total by construction rather than by assertion.
+  const byBehaviorClass: Partial<Record<SpecBehaviorClass, BehaviorClassCoverage>> = {};
+  const classSlot = (behaviorClass: SpecBehaviorClass): BehaviorClassCoverage => {
+    const existing = byBehaviorClass[behaviorClass];
+    if (existing) return existing;
+    const fresh: BehaviorClassCoverage = {
+      total: 0,
+      enforceable: 0,
+      proven: 0,
+      staleProof: 0,
+      unproven: 0,
+      falsifierDeclared: 0,
+    };
+    byBehaviorClass[behaviorClass] = fresh;
+    return fresh;
+  };
+  // `total` spans EVERY current clause, not just the enforceable ones, so a class whose
+  // clauses are all draft or exempt still appears — with enforceable 0. That is the
+  // reading the flat `clauses.total` already takes, and the partition must match it.
+  for (const clause of clauses) classSlot(clause.behaviorClass).total += 1;
+
   for (const clause of enforceable) {
+    const slot = classSlot(clause.behaviorClass);
+    slot.enforceable += 1;
+    if (clause.falsifier != null) slot.falsifierDeclared += 1;
+
     const revisions = revisionsBySpecId.get(clause.specId);
     if (!revisions || revisions.size === 0) {
       unprovenSpecIds.push(clause.specId);
+      slot.unproven += 1;
       continue;
     }
     if (revisions.has(clause.revision)) {
       proven += 1;
+      slot.proven += 1;
       continue;
     }
+    slot.staleProof += 1;
     staleProofClauses.push({
       specId: clause.specId,
       planItemId: clause.planItemId,
@@ -264,6 +391,38 @@ export async function computePlanSpecCoverage(
       provenRevisions: [...revisions].sort((a, b) => a - b),
     });
   }
+
+  // P-013 — evidence composition and staleness, derived from the rows the census has
+  // ALREADY read. No extra query: the cost of this instrumentation is one pass over an
+  // array that is in memory either way.
+  const evidenceByKind: Partial<Record<SpecEvidenceKind, number>> = {};
+  const evidenceCurrentByKind: Partial<Record<SpecEvidenceKind, number>> = {};
+  const currentRevisionBySpecId = new Map(enforceable.map((c) => [c.specId, c.revision]));
+  let oldestCurrentProofAt: string | null = null;
+  let newestProofAt: string | null = null;
+  for (const row of evidence) {
+    const kind = row.evidenceKind as SpecEvidenceKind;
+    evidenceByKind[kind] = (evidenceByKind[kind] ?? 0) + 1;
+    if (row.observedAt && (newestProofAt === null || row.observedAt > newestProofAt)) {
+      newestProofAt = row.observedAt;
+    }
+    // "Current" is judged against the clause's revision as THIS census read it, never
+    // against the row's own `currentRevision` column: the two can disagree mid-write,
+    // and the clause read is the one every other count in this aggregate is built on.
+    if (currentRevisionBySpecId.get(row.specId) !== row.specRevision) continue;
+    evidenceCurrentByKind[kind] = (evidenceCurrentByKind[kind] ?? 0) + 1;
+    if (row.observedAt && (oldestCurrentProofAt === null || row.observedAt < oldestCurrentProofAt)) {
+      oldestCurrentProofAt = row.observedAt;
+    }
+  }
+
+  // Lag uses each stale clause's BEST (newest) proven revision — its most favourable
+  // reading. A max over the worst case would inflate every gap by however many old
+  // revisions happen to still be on file, which measures record-keeping, not staleness.
+  const maxRevisionLag = staleProofClauses.reduce((worst, clause) => {
+    const best = clause.provenRevisions[clause.provenRevisions.length - 1] ?? 0;
+    return Math.max(worst, clause.currentRevision - best);
+  }, 0);
 
   // The adequacy leg is a per-subject read, like every other adequacy consumer. Bounded
   // by clause count so a pathological plan cannot turn one gate into hundreds of reads.
@@ -305,6 +464,12 @@ export async function computePlanSpecCoverage(
       graded,
       ungraded: ungradedSpecIds.length,
       ungradedSpecIds: ungradedSpecIds.sort(),
+    },
+    byBehaviorClass,
+    evidence: {
+      byKind: evidenceByKind,
+      currentByKind: evidenceCurrentByKind,
+      staleness: { maxRevisionLag, oldestCurrentProofAt, newestProofAt },
     },
     bounded: {
       evidenceCensusLimit: SPEC_EVIDENCE_CENSUS_LIMIT,
