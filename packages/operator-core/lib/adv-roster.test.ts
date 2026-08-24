@@ -793,12 +793,25 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     expect(none.nativeSession).toBeNull();
   });
 
-  it('surfaces backend-neutral Codex and OMP handles from adv_sessions rows', () => {
-    const [codex] = mergeRosterEntries(
-      [presence({ ownerId: 'codex-owner' })],
-      new Map([['codex-owner', adv({ id: 9, agent: 'codex', coordOwnerId: 'codex-owner' })]]),
+  it('keeps the legacy sessionId alias Claude-only while surfacing backend-neutral Codex and OMP handles', () => {
+    const [claude] = mergeRosterEntries(
+      [presence({ ownerId: 'claude-owner' })],
+      new Map([['claude-owner', adv({ agent: 'claude', coordOwnerId: 'claude-owner', sessionId: 'claude-session' })]]),
       NOW,
     );
+    expect(claude.sessionId).toBe('claude-session');
+
+    const [codex] = mergeRosterEntries(
+      [presence({ ownerId: 'codex-owner' })],
+      new Map([['codex-owner', adv({
+        id: 9,
+        agent: 'codex',
+        coordOwnerId: 'codex-owner',
+        sessionId: '01a032b7-147a-7cc2-8411-e59c26bb6a02',
+      })]]),
+      NOW,
+    );
+    expect(codex.sessionId).toBeNull();
     expect(codex.nativeSession).toMatchObject({
       backend: 'codex',
       source: 'adv_sessions',
@@ -809,9 +822,15 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
 
     const [omp] = mergeRosterEntries(
       [presence({ ownerId: 'omp-owner' })],
-      new Map([['omp-owner', adv({ agent: 'omp', coordOwnerId: 'omp-owner', ompThreadId: 'omp-thread' })]]),
+      new Map([['omp-owner', adv({
+        agent: 'omp',
+        coordOwnerId: 'omp-owner',
+        sessionId: 'opaque-omp-session-id',
+        ompThreadId: 'omp-thread',
+      })]]),
       NOW,
     );
+    expect(omp.sessionId).toBeNull();
     expect(omp.nativeSession).toMatchObject({
       backend: 'omp',
       source: 'adv_sessions',

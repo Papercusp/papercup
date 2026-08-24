@@ -703,11 +703,12 @@ export function mergeRosterEntries(
           { pidHint: p.pid },
         )
         : spawnedHandleOrSessionId;
-    const sessionId =
-      spawnedNativeSession?.backend === 'claude'
-        ? spawnedNativeSession.sessionId
-        : adv?.sessionId ?? null;
     const nativeSession = spawnedNativeSession ?? (adv ? nativeSessionHandleForAdvSession(adv) : null);
+    // `sessionId` is the legacy CLAUDE-only compatibility field. The canonical
+    // backend-neutral handle above owns every runtime's native identity; deriving
+    // this alias from its discriminant prevents Codex rollout ids (and OMP
+    // compatibility ids) from masquerading as Claude transcript ids downstream.
+    const sessionId = nativeSession?.backend === 'claude' ? nativeSession.sessionId : null;
     return {
       ownerId: p.ownerId,
       label: p.ownerLabel,
