@@ -776,7 +776,7 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats).toMatchObject({ claimed: 2, cancelled: 1, delivered: 1 });
   });
 
-  it('reopens ordinary event deliveries when Codex exits 0 without turn.completed', async () => {
+  it('reopens ordinary event deliveries but not terminal timeout deliveries after detached death', async () => {
     const first = workRow({
       id: 90,
       subscriberId: 'su-a',
@@ -789,6 +789,7 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
       id: 91,
       subscriberId: 'su-a',
       eventKey: 'green-checkpoint:red:papercusp',
+      payload: { timeout: true },
       source: null,
       attempts: 2,
       createdAt: new Date(2000).toISOString(),
@@ -815,17 +816,32 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(91, 'resume-headless', 2);
     expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledWith([90], 91);
     await vi.waitFor(() => {
-      expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledTimes(2);
+      expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledTimes(1);
     });
     expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledWith(
       expect.objectContaining({ id: 90, error: 'resume-turn-death:malformed_output', maxAttempts: 8 }),
     );
-    expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 91, error: 'resume-turn-death:malformed_output', maxAttempts: 8 }),
-    );
+    expect(h.store.reopenDeliveredAfterResumeDeath).not.toHaveBeenCalledWith(expect.objectContaining({ id: 91 }));
     expect(h.store.markDeliveryDelivered.mock.invocationCallOrder[0]).toBeLessThan(
       h.store.reopenDeliveredAfterResumeDeath.mock.invocationCallOrder[0],
     );
+  });
+
+  it('does not reopen a timeout-only delivery after detached death', async () => {
+    const timeout = workRow({ id: 93, payload: { timeout: true }, attempts: 2 });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([timeout]);
+    h.executeWake.mockImplementationOnce(
+      async (d: DeliveryWork, deps: { onResumeTurnExit?: (d: DeliveryWork, exit: unknown) => void }) => {
+        deps.onResumeTurnExit?.(d, { exitCode: 1, signal: null, stdoutTail: '', stderrTail: 'crashed' });
+        return { kind: 'delivered', channel: 'resume-headless' };
+      },
+    );
+
+    await pumpWakeDeliveries('ws-test');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(93, 'resume-headless', 1);
+    expect(h.store.reopenDeliveredAfterResumeDeath).not.toHaveBeenCalled();
   });
 
   it('does not reopen loop deliveries because their circuit handler owns retry semantics', async () => {
