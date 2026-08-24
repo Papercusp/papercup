@@ -27,6 +27,7 @@ import { resolveAgentIdentity } from "../coordination/identity";
 import { captureWakeHandleForOwner } from "../../events/await/handle";
 import {
   registerAwait,
+  cancelAwait,
   cancelAwaitsForSubscribersOnKeys,
   FLEET_BENCH_NOTE_PREFIX,
 } from "../../events/await/store";
@@ -45,6 +46,7 @@ import { checkpointProducerCertificate } from "../../events/await/checkpoint-ver
 import type { ProducerHealthCertificate } from "../../events/await/verified-wait";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { resolveConcreteHarnessSlug } from "../_harness-scope";
+import { probeNamedService, type ProbeResult } from "../../service-health";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -154,6 +156,24 @@ async function armAwaits(
     advice:
       "Registered. End your turn now — you are re-invoked when it fires (or at the deadline). Do not poll.",
   };
+}
+
+/**
+ * A service-up key is an EDGE, so it cannot satisfy a waiter when the service
+ * is already healthy. Probe only the named service at arm time, with a short
+ * fail-open budget: an unreadable/slow probe must preserve the normal wait
+ * rather than manufacture an all-clear.
+ */
+const SERVICE_AWAIT_UP_PROBE_TIMEOUT_MS = 1_500;
+
+async function probeServiceUp(name: string): Promise<ProbeResult | null> {
+  const probe = await withBoundedTimeout(() => probeNamedService(name), {
+    fallback: null,
+    timeoutMs: SERVICE_AWAIT_UP_PROBE_TIMEOUT_MS,
+    label: "service-await-up:healthLatch",
+  });
+  const result = probe.value;
+  return result && result.up && result.present !== false ? result : null;
 }
 
 /**
@@ -697,7 +717,7 @@ defineTool({
 defineTool({
   name: "service:await-up",
   description:
-    "Sleep until a monitored service transitions back to HEALTHY (service:up:<name>) instead of re-polling dev:service_health. Then END YOUR TURN.",
+    "Sleep until a monitored service transitions back to HEALTHY (service:up:<name>) instead of re-polling dev:service_health. If it is already healthy, return immediately instead of arming a dead edge wait. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "A service you depend on is down and you need it back before proceeding — arm this and end your turn instead of re-polling dev:service_health.",
@@ -729,14 +749,65 @@ defineTool({
     timeout_sec: timeoutArg,
   }),
   async handler(args, ctx) {
-    return reply(
-      await armAwaits(
-        ctx,
-        [buildKey("service-up", { name: args.name })],
-        args.note ?? `service:await-up ${args.name}`,
-        args.timeout_sec,
-      ),
+    const event = buildKey("service-up", { name: args.name });
+    const alreadyUp = await probeServiceUp(args.name);
+    if (alreadyUp) {
+      return reply({
+        ok: true,
+        already_up: true,
+        service: args.name,
+        event,
+        health: {
+          status: alreadyUp.status,
+          url: alreadyUp.url,
+          note: alreadyUp.note,
+        },
+        advice: `Service "${args.name}" is already healthy according to a fresh probe. Do not wait on "${event}"; proceed now.`,
+      });
+    }
+
+    const armed = await armAwaits(
+      ctx,
+      [event],
+      args.note ?? `service:await-up ${args.name}`,
+      args.timeout_sec,
     );
+
+    // Close the registration-window race: a service can recover after the
+    // pre-arm probe but before the row is registered (or while registration is
+    // in flight). Cancel only this caller's row, and only while it is still
+    // pending; if the transition already won the race, its durable wake wins.
+    const recoveredDuringRegistration = await probeServiceUp(args.name);
+    const awaitId = armed.await_ids[0];
+    if (recoveredDuringRegistration && awaitId != null) {
+      let retired = false;
+      try {
+        retired = await cancelAwait({
+          awaitId,
+          subscriberId: resolveAgentIdentity(ctx).ownerId,
+        });
+      } catch {
+        // Fail-soft: if the reconciliation write is unavailable, keep the
+        // registration response honest and let the normal await path proceed.
+      }
+      if (retired) {
+        return reply({
+          ...armed,
+          already_up: true,
+          reconciled_after_register: true,
+          service: args.name,
+          event,
+          health: {
+            status: recoveredDuringRegistration.status,
+            url: recoveredDuringRegistration.url,
+            note: recoveredDuringRegistration.note,
+          },
+          advice: `Service "${args.name}" was already healthy when the wait was registered. The still-pending "${event}" await was retired; proceed now.`,
+        });
+      }
+    }
+
+    return reply(armed);
   },
 });
 

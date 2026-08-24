@@ -51,8 +51,13 @@ vi.mock("../../events/await/store", () => ({
     expiresTs: "2030-01-01",
     timeoutBehavior: i.timeoutBehavior,
   })),
+  cancelAwait: vi.fn(async () => true),
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
   FLEET_BENCH_NOTE_PREFIX: "[fleet:bench] ",
+}));
+
+vi.mock("../../service-health", () => ({
+  probeNamedService: vi.fn(async () => null),
 }));
 
 vi.mock("../../events/await/engine", () => ({ startAwaitSweeper: vi.fn() }));
@@ -118,7 +123,8 @@ vi.mock("../../work-items-events", () => ({
 
 await import("./sugar");
 
-import { registerAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
+import { registerAwait, cancelAwait, cancelAwaitsForSubscribersOnKeys } from "../../events/await/store";
+import { probeNamedService, type ProbeResult } from "../../service-health";
 import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
 import { gitPipelineSnapshot } from "../../git-pipeline-stats";
@@ -145,6 +151,8 @@ it("opts checkpoint:await out of the ambient workspace transaction", () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(probeNamedService).mockResolvedValue(null);
+  vi.mocked(cancelAwait).mockResolvedValue(true);
 });
 
 describe("checkpoint:await sugar", () => {
@@ -809,5 +817,79 @@ describe("work-item:await registration latches (EI-13095 — the sugar used to b
     expect(liveBlockedState).not.toHaveBeenCalled();
     expect(out.ok).toBe(true);
     expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:status:WI-10");
+  });
+});
+
+describe("service:await-up state-aware registration latch (EI-21308013234701667)", () => {
+  const serviceTool = definedTools.find((tool) => tool.name === "service:await-up");
+  if (!serviceTool) throw new Error("service:await-up tool was not registered");
+  const callService = async (args: Record<string, unknown>) => {
+    const res = await serviceTool.handler(args as never, ctx);
+    return JSON.parse(res.content[0].text);
+  };
+
+  const up = (name = "staging-api"): ProbeResult => ({
+    name,
+    up: true,
+    status: 200,
+    latencyMs: 2,
+    url: "http://127.0.0.1:3170/api/desktop/version",
+  });
+  const down = (name = "staging-api"): ProbeResult => ({
+    name,
+    up: false,
+    status: null,
+    latencyMs: 2,
+    url: "http://127.0.0.1:3170/api/desktop/version",
+  });
+
+  it("returns already_up without registering when a fresh probe is healthy", async () => {
+    vi.mocked(probeNamedService).mockResolvedValueOnce(up());
+
+    const out = await callService({ name: "staging-api" });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_up: true,
+      service: "staging-api",
+      event: "service:up:staging-api",
+    });
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(cancelAwait).not.toHaveBeenCalled();
+  });
+
+  it("registers normally when the named service is currently down", async () => {
+    vi.mocked(probeNamedService).mockResolvedValueOnce(down()).mockResolvedValueOnce(down());
+
+    const out = await callService({ name: "staging-api", timeout_sec: 30 });
+
+    expect(out.events).toEqual(["service:up:staging-api"]);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(cancelAwait).not.toHaveBeenCalled();
+  });
+
+  it("cancels only the still-pending row when recovery wins during registration", async () => {
+    vi.mocked(probeNamedService).mockResolvedValueOnce(down()).mockResolvedValueOnce(up());
+
+    const out = await callService({ name: "staging-api" });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_up: true,
+      reconciled_after_register: true,
+      event: "service:up:staging-api",
+    });
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: "su-awaiter" });
+  });
+
+  it("fails open when the current probe is unreadable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(probeNamedService).mockRejectedValueOnce(new Error("health probe unavailable"));
+
+    const out = await callService({ name: "staging-api" });
+
+    expect(out.events).toEqual(["service:up:staging-api"]);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });

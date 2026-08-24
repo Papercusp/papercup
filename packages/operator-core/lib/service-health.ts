@@ -1158,6 +1158,35 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   return [...http, desktop, bgHostTicker, bgHostCode, substrateSidecar, embedSidecar];
 }
 
+/**
+ * Probe one named service using the same implementations as `probeAll`.
+ *
+ * This is intentionally a fail-open lookup: callers that name an event-only or
+ * otherwise unknown service get `null` and can retain the edge-triggered wait,
+ * while known monitored services get a fresh authoritative reading without
+ * paying for unrelated probes. `present:false` remains part of the result so
+ * callers do not mistake an absent/disabled optional service for HEALTHY.
+ */
+export async function probeNamedService(name: string): Promise<ProbeResult | null> {
+  const endpoint = resolveHealthEndpoints().find((spec) => spec.name === name);
+  if (endpoint) return probeEndpoint(endpoint);
+
+  switch (name) {
+    case PORTLESS_PROBE_NAMES.desktop:
+      return probeDesktop();
+    case PORTLESS_PROBE_NAMES.bgHostTicker:
+      return probeBgHostTicker();
+    case PORTLESS_PROBE_NAMES.bgHostCode:
+      return probeBgHostCodeDrift();
+    case PORTLESS_PROBE_NAMES.substrateSidecar:
+      return probeSubstrateSidecar();
+    case PORTLESS_PROBE_NAMES.embedSidecar:
+      return probeEmbedSidecar();
+    default:
+      return null;
+  }
+}
+
 export interface HealthTransition {
   name: string;
   to: 'up' | 'down';
