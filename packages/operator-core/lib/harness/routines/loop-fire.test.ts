@@ -663,7 +663,7 @@ describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
       expect(out).toContain(`Loop wake #${fireNumber} — short form`);
       expect(out).not.toContain('Each wake:');
       expect(out).toContain('## Next action');
-      expect(out).toContain('refresh loop:checkpoint { did, left, insight, next }, then END YOUR TURN');
+      expect(out).toContain('refresh loop:checkpoint { did, left, insight, next }; END YOUR TURN');
       // P-017 (fleet-lead-instrumentation-audit-2026-08-09): the contract is POSITIONAL,
       // not lexical — the wake must LEAD with what is always true and must NOT lead with
       // the arm-time goal, which is frozen and routinely names torn-down PIDs/run-ids.
