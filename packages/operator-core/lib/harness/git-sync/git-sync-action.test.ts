@@ -194,10 +194,10 @@ vi.mock('../../agent-tools/coordination/messages', () => ({
 // Lazily imported by the action (best-effort doc-freshness sweep) — mock so the
 // dynamic import never pulls the real docs machinery.
 const captureHeadShaMock = vi.fn(async (_slug: string): Promise<string | null> => 'prev-sha-000');
-const runDocSweepMock = vi.fn(async (_input: Record<string, unknown>): Promise<null> => null);
+const enqueueDocSweepMock = vi.fn((_input: Record<string, unknown>): void => {});
 vi.mock('../docs/sweep-after-sync', () => ({
   captureHeadSha: (...a: unknown[]) => captureHeadShaMock(a[0] as string),
-  runDocFreshnessSweepAfterSync: (...a: unknown[]) => runDocSweepMock(a[0] as Record<string, unknown>),
+  enqueueDocFreshnessSweepAfterSync: (...a: unknown[]) => enqueueDocSweepMock(a[0] as Record<string, unknown>),
 }));
 
 // --- fake PG: the org `sql` is used as a tagged template (reads) + `.unsafe` (writes).
@@ -439,7 +439,7 @@ beforeEach(() => {
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
   captureHeadShaMock.mockReset();
-  runDocSweepMock.mockReset();
+  enqueueDocSweepMock.mockReset();
   getFlagMock.mockReset();
   // content-guard defaults ON; derived-attribution (P-004) defaults OFF — mirror the real
   // defaults so the runGitSync-opts assertions don't see a loadRoster added.
@@ -1044,8 +1044,12 @@ describe('P-008 runtime eligibility gate (action half)', () => {
 });
 
 describe('clean sync outcome', () => {
-  it('records routine metadata, logs a git_sync event, clears BOTH escalation kinds, sweeps docs', async () => {
+  it('records routine metadata, clears BOTH escalation kinds, and queues docs only after terminal activity', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let activityAtDocEnqueue: Record<string, unknown> | undefined;
+    enqueueDocSweepMock.mockImplementation(() => {
+      activityAtDocEnqueue = gitSyncActivityPatches().at(-1);
+    });
 
     await action(ctx);
 
@@ -1123,14 +1127,16 @@ describe('clean sync outcome', () => {
     expect(loopbackFetchMock).not.toHaveBeenCalled();
     expect(sendMessageMock).not.toHaveBeenCalled();
 
-    // P-003 doc-freshness sweep rides a real sync, with the pre-sync HEAD
-    expect(runDocSweepMock).toHaveBeenCalledExactlyOnceWith({
+    // P-003 doc-freshness sweep is queued only after every Git post-leg and the
+    // terminal activity write, with the pre-sync HEAD preserved for its diff.
+    expect(enqueueDocSweepMock).toHaveBeenCalledExactlyOnceWith({
       harnessSlug: 'papercup',
       workspaceId: 'ws-42',
       repoRoot: repoDir,
       prevSha: 'prev-sha-000',
       headSha: 'abc123def456',
     });
+    expect(activityAtDocEnqueue).toMatchObject({ active: false, phase: 'complete' });
 
     expect(gitSyncActivityPatches()).toEqual([
       expect.objectContaining({ active: true, phase: 'local-sync', outcome_status: null }),
@@ -1155,7 +1161,7 @@ describe('clean sync outcome', () => {
     expect(patch).not.toHaveProperty('local_sync_head_sha');
     // + the strand clear on its own phase (measured-clean census, not counter-gated).
     expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
-    expect(runDocSweepMock).not.toHaveBeenCalled();
+    expect(enqueueDocSweepMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'git_sync', status: 'nothing' }));
   });
@@ -1193,7 +1199,7 @@ describe('clean sync outcome', () => {
       status: 'skipped-locked',
       detail: expect.objectContaining({ skippedPaths }),
     }));
-    expect(runDocSweepMock).not.toHaveBeenCalled();
+    expect(enqueueDocSweepMock).not.toHaveBeenCalled();
   });
 
   it('maps the routine trigger_config onto the pipeline config', async () => {

@@ -31,6 +31,7 @@ import {
   type OkfExpiryScan,
 } from './okf-expiry';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
+import { trackDetached } from '../../detached-imports';
 
 const DOCS_IDENTITY: AgentIdentity = {
   ownerId: 'system:doc-freshness',
@@ -110,6 +111,109 @@ export interface SweepAfterSyncInput {
   prevSha?: string;
   /** HEAD after the sync. */
   headSha?: string;
+}
+
+type DocFreshnessSweepRunner = (input: SweepAfterSyncInput) => Promise<SweepResult | null>;
+
+interface DocFreshnessSweepQueueState {
+  current: SweepAfterSyncInput;
+  pending: SweepAfterSyncInput | null;
+  run: DocFreshnessSweepRunner;
+}
+
+/**
+ * Per-process, per-harness single-flight for the post-sync corpus sweep.
+ *
+ * The sweep is intentionally advisory, but a large tracked corpus can take minutes:
+ * every candidate recomputes its Git baseline and persists its result sequentially.
+ * Awaiting it inside `git-sync:record` used to hold GitHub/P2P publication behind
+ * unrelated documentation work. Detach it from the git action while keeping at most
+ * one sweep live per harness; later syncs coalesce into one follow-up range instead of
+ * piling up overlapping 983-row corpus scans.
+ */
+const queuedDocFreshnessSweeps = new Map<string, DocFreshnessSweepQueueState>();
+
+function queueKey(input: SweepAfterSyncInput): string {
+  return `${input.workspaceId}\u0000${input.harnessSlug}`;
+}
+
+/** Preserve every not-yet-swept commit when several syncs arrive during one run. */
+function coalesceQueuedSweep(
+  prior: SweepAfterSyncInput | null,
+  next: SweepAfterSyncInput,
+  current: SweepAfterSyncInput,
+): SweepAfterSyncInput {
+  if (!prior) {
+    const followsCurrent =
+      current.repoRoot === next.repoRoot &&
+      Boolean(current.headSha) &&
+      current.headSha === next.prevSha;
+    return { ...next, prevSha: followsCurrent ? next.prevSha : undefined };
+  }
+  const contiguous =
+    prior.repoRoot === next.repoRoot &&
+    Boolean(prior.prevSha) &&
+    Boolean(prior.headSha) &&
+    prior.headSha === next.prevSha;
+  return {
+    ...next,
+    // A discontinuity cannot safely drop either diff. Omitting prevSha makes the
+    // existing sweep recompute all anchored docs, the conservative/idempotent fallback.
+    prevSha: contiguous ? prior.prevSha : undefined,
+  };
+}
+
+export interface EnqueueDocFreshnessSweepDeps {
+  /** Test seam; production reuses the existing sweep implementation. */
+  run?: DocFreshnessSweepRunner;
+}
+
+/**
+ * Queue the post-sync docs sweep without making git publication wait for it.
+ * Returns synchronously; tracked detached work is drained by the Vitest harness.
+ */
+export function enqueueDocFreshnessSweepAfterSync(
+  input: SweepAfterSyncInput,
+  deps: EnqueueDocFreshnessSweepDeps = {},
+): void {
+  const key = queueKey(input);
+  const existing = queuedDocFreshnessSweeps.get(key);
+  if (existing) {
+    existing.pending = coalesceQueuedSweep(existing.pending, input, existing.current);
+    return;
+  }
+
+  const state: DocFreshnessSweepQueueState = {
+    current: input,
+    pending: null,
+    run: deps.run ?? runDocFreshnessSweepAfterSync,
+  };
+  queuedDocFreshnessSweeps.set(key, state);
+
+  const drain = async (): Promise<void> => {
+    let current: SweepAfterSyncInput | null = input;
+    try {
+      while (current) {
+        state.current = current;
+        try {
+          await state.run(current);
+        } catch (error) {
+          console.warn(
+            `[doc-freshness] ${current.harnessSlug}: post-sync sweep failed: ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        current = state.pending;
+        state.pending = null;
+      }
+    } finally {
+      queuedDocFreshnessSweeps.delete(key);
+    }
+  };
+
+  // Start on the next microtask so even a runner with substantial synchronous setup
+  // cannot leak latency back into the git-sync action that only enqueues it.
+  void trackDetached(Promise.resolve().then(drain)).catch(() => {});
 }
 
 /**

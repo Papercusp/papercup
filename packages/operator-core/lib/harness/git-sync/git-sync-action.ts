@@ -1874,9 +1874,11 @@ async function handleGitSync(
 
   // Capture HEAD before the sync so the doc-freshness sweep (P-003) can diff the
   // exact paths this tick moved. Best-effort — never gate the sync on it.
+  let docFreshnessModule: typeof import('../docs/sweep-after-sync') | null = null;
   let prevHeadSha: string | null = null;
   try {
-    prevHeadSha = await (await import('../docs/sweep-after-sync')).captureHeadSha(slug, workspaceId, repoPath);
+    docFreshnessModule = await import('../docs/sweep-after-sync');
+    prevHeadSha = await docFreshnessModule.captureHeadSha(slug, workspaceId, repoPath);
   } catch {
     /* best-effort */
   }
@@ -1976,8 +1978,6 @@ async function handleGitSync(
         prevContentTicks: prev.contentTicks,
         prevOversizedKeys: prev.oversizedKeys,
         cfgBranch: cfg.branch,
-        prevHeadSha,
-        repoPath,
         attributionOn,
         pushMode: effectivePushMode,
       }));
@@ -2108,6 +2108,32 @@ async function handleGitSync(
     completed_at: completedAt,
     outcome_status: outcome.status,
   });
+
+  // P-003/D-004: documentation freshness is advisory follow-up work, not part of
+  // Git publication. A 983-record Papercusp corpus sweep updated 175 rows over
+  // ~8m17s while this call sat inside `git-sync:record`, delaying the GitHub bridge
+  // and leaving the activity marker falsely looking stuck in local-sync. Queue the
+  // same idempotent sweep only AFTER every Git post-leg and the terminal activity
+  // write; its per-harness single-flight coalesces later commits while it runs.
+  if (outcome.status === 'synced') {
+    try {
+      const docs = docFreshnessModule ?? await import('../docs/sweep-after-sync');
+      docs.enqueueDocFreshnessSweepAfterSync({
+        harnessSlug: slug,
+        workspaceId,
+        repoRoot: repoPath,
+        prevSha: prevHeadSha ?? undefined,
+        headSha: outcome.headSha,
+      });
+    } catch (error) {
+      // Best-effort still means observable: a silent enqueue failure permanently
+      // drops this commit's doc-drift range while Git publication appears healthy.
+      console.warn(
+        `[git-sync] ${slug}: failed to queue post-sync doc freshness: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   return outcome;
 }
 
@@ -4409,8 +4435,6 @@ async function recordAndEscalateTick(a: {
   prevContentTicks: number;
   prevOversizedKeys: string[];
   cfgBranch: string | undefined;
-  prevHeadSha: string | null;
-  repoPath: string | null;
   attributionOn: boolean;
   /** EI-18812945811758018: 'push' | 'commit-only:<reason>' for THIS tick. */
   pushMode: string;
@@ -4538,23 +4562,6 @@ async function recordAndEscalateTick(a: {
     await clearGitSyncEscalation(slug, [STRAND_KIND], STRAND_ESCALATION_PHASE);
   }
 
-  // P-003/D-004: after a real sync, sweep this harness's docs for drift — flip
-  // status, enqueue documenter regenerations, flag manual re-verifies. Best-effort
-  // + lazily imported so it never wedges or slows git-sync.
-  if (outcome.status === 'synced') {
-    try {
-      const { runDocFreshnessSweepAfterSync } = await import('../docs/sweep-after-sync');
-      await runDocFreshnessSweepAfterSync({
-        harnessSlug: slug,
-        workspaceId,
-        repoRoot: a.repoPath,
-        prevSha: a.prevHeadSha ?? undefined,
-        headSha: outcome.headSha,
-      });
-    } catch {
-      /* best-effort — doc drift never gates git-sync */
-    }
-  }
   // status === 'error' (no conflict): leave any open conflict escalation untouched;
   // errors aren't merge conflicts and shouldn't trigger/clear the resolver.
 
