@@ -1133,6 +1133,136 @@ export const AGENTIC_WEBAPP_TEMPLATE: TemplateManifest = {
   ],
 };
 
+/**
+ * App: THE whole-app root (plan unified-app-template-2026-08-23, D-001).
+ *
+ * The four previous roots (papercusp-webapp, papercusp-desktop-app, and their
+ * two agentic twins) were the cross-product of two booleans — which chassis,
+ * and whether the agent plane joins. Measured, web and desktop shared 15 of 15
+ * paths with 11 byte-identical and zero code divergence. This root carries the
+ * invariant half (data + UI) in `requires` and moves the chassis onto
+ * `target.selects`, because `requires` is a static pin and cannot express a
+ * choice. `composeTemplates` enforces the selection structurally, so nothing
+ * is weakened by the collapse.
+ */
+export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
+  id: "papercusp-app",
+  version: "0.1.0",
+  scope: "app",
+  category: "app",
+  summary:
+    "The one whole-app root — a THIN pure composition of papercusp-data-layer (app-owned Postgres, " +
+    "connection discovery, typed-contract write gates) and papercusp-ui (headless primitives, data grids, " +
+    "dock workbench, brand lexicon) as hard requires, plus a `target` decision point that selects the " +
+    "chassis: papercusp-tauri-desktop-shell for desktop, papercusp-web-host for the browser, or BOTH from " +
+    "one codebase. The data and UI closure is identical either way — that is why one root serves both. No " +
+    "own components; an app built from it must pass the UNION of its closure's checks, so a dual-target " +
+    "build inherits both chassis suites and is opt-in, never the default.",
+  components: [],
+  contracts: [],
+  decisionPoints: [
+    // ANSWERED FIRST — it selects the chassis, and every chassis-level decision
+    // point arrives with whichever one is chosen.
+    {
+      id: "target",
+      prompt:
+        "Which runtime target does this app ship — desktop (the Tauri chassis: thin Tauri host, Node/Hono " +
+        "sidecar, release pipeline), web (the Next.js standalone host, auth seam, deploy skeleton), or BOTH " +
+        "from one codebase? Answer this FIRST: it selects the chassis aspect, and the chassis brings its own " +
+        "decision points with it. Choosing both is deliberate, never the default — the composed app must pass " +
+        "the UNION of both chassis check suites on every build, which is the real recurring cost of a " +
+        "dual-target app (the code is already shared; the checks are what double).",
+      selects: {
+        arity: "one-or-more",
+        options: [
+          {
+            value: "desktop",
+            summary:
+              "The Tauri chassis — thin Tauri host to a Node/Hono sidecar, with the release pipeline and an " +
+              "embedded per-install Postgres.",
+            templates: [{ id: "papercusp-tauri-desktop-shell", version: "0.1.0" }],
+          },
+          {
+            value: "web",
+            summary:
+              "The Next.js standalone host — auth seam, discovery on boot, the Dockerfile builder layer, and " +
+              "the tenancy fork it declares.",
+            templates: [{ id: "papercusp-web-host", version: "0.1.0" }],
+          },
+        ],
+      },
+    },
+    {
+      id: "domain",
+      prompt:
+        "What is the app's domain — the noun its data layer ledgers and its UI surfaces? Drives every " +
+        "aspect-level decision point (schema, searchable surfaces, panels, lexicon terms).",
+    },
+    {
+      id: "optional-planes",
+      prompt:
+        "Beyond the required closure, does the app need live UI state sync (compose papercusp-data-sync) or " +
+        "search over its data (compose papercusp-search)? Add them to the composition now if so — both are " +
+        "designed to drop onto either chassis.",
+    },
+  ],
+  composesWith: [
+    "papercusp-tauri-desktop-shell",
+    "papercusp-web-host",
+    "papercusp-data-layer",
+    "papercusp-ui",
+    "papercusp-data-sync",
+    "papercusp-search",
+  ],
+  // The INVARIANT half of the closure. The chassis is deliberately NOT here —
+  // it is selected by `target`, and composeTemplates enforces that selection
+  // with the same force a hard pin would.
+  requires: [
+    { id: "papercusp-data-layer", version: "0.1.0" },
+    { id: "papercusp-ui", version: "0.1.0" },
+  ],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/restart-webapp-audit-papercusp-webapp-template",
+  ],
+  checks: [
+    {
+      id: "composition-integrity",
+      run: "checks/composition-integrity.test.ts",
+      summary:
+        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope, every selecting decision point satisfied) and the union of checks is what CI runs",
+    },
+  ],
+  musts: [
+    {
+      id: "thin-app-template",
+      rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "answer-target-first",
+      rule: "`target` is answered BEFORE any other decision point — it selects the chassis, and the chassis's own decision points (tenancy, hosting-target, auth-strategy) only appear once it is chosen",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "full-union-green",
+      rule: "The composed app passes the FULL union of the closure checks — the chassis's boot/contract checks, components-integrated, composition-integrity",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "dual-target-is-opt-in",
+      rule: "target: both is chosen deliberately and never by default — it doubles the chassis check suites the app must pass on every build, and that cost is stated in the ship disclosure",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "no-agent-surfaces",
+      rule: "No hives and no seam in an app built from this template unless papercusp-ops-pots is explicitly added to the composition — the agent plane is never implicit",
+      enforcedBy: "prose-only",
+    },
+  ],
+};
+
 /** Aspect: the portable Rust/UniFFI/config/token contract shared by Android and iPhone. */
 export const PAPERCUSP_MOBILE_BASE_TEMPLATE: TemplateManifest = {
   id: "papercusp-mobile-base",
@@ -1558,6 +1688,7 @@ export const PAPERCUSP_IPHONE_APP_TEMPLATE: TemplateManifest = {
 
 /** The reference template set — validateTemplateSet(REFERENCE_TEMPLATES) must stay green. */
 export const REFERENCE_TEMPLATES: TemplateManifest[] = [
+  PAPERCUSP_APP_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   TAURI_DESKTOP_SHELL_TEMPLATE,
   AGENTIC_DESKTOP_APP_TEMPLATE,
