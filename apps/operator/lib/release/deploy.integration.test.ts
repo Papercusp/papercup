@@ -112,6 +112,9 @@ function makeDeps(health: () => Promise<{ healthy: boolean; attempts: number; el
       calls.push(`runSetup:${sha.slice(0, 7)}`);
       await runSetup(sha);
     },
+    bundleHost: async () => {
+      calls.push('bundleHost');
+    },
     migrate: async () => {
       calls.push('migrate');
       return applyStagedMigrations({ sqlDir: join(release, 'libs/papercusp/libs/db/sql'), dbUrl, log: () => {} });
@@ -120,6 +123,7 @@ function makeDeps(health: () => Promise<{ healthy: boolean; attempts: number; el
       calls.push('restart');
     },
     health,
+    servingSha: async () => ({ reachable: true, sha: c2.slice(0, 10) }),
     verifyPaths: async () => ({ ok: true, failures: [] }),
     preflight: async () => {
       calls.push('preflight');

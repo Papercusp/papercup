@@ -152,12 +152,17 @@ export interface DeployDeps {
    *  sync is the setup script's own on-disk decision (`--node-modules auto`); the old
    *  git-based lockfile signal was structurally blind and is removed (P-015). */
   runSetup(targetSha: string): Promise<void>;
+  /** Build the release checkout's untracked host bundle. Fail-loud: a stale
+   *  last-known-good fallback is not a successful deploy (WI-41242). */
+  bundleHost(): Promise<void>;
   /** Apply staged migrations to the operator DB, fail-loud (D-007). */
   migrate(): Promise<MigrateResult>;
   /** Restart the operator (systemctl) so it boots the release checkout. */
   restart(): Promise<void>;
   /** Poll /api/health until healthy or timeout. */
   health(): Promise<HealthResult>;
+  /** Read the SHA reported by the process that is actually serving traffic. */
+  servingSha(): Promise<ServingShaProbe>;
   /** Confirm every runtime read resolves under the release checkout. */
   verifyPaths(): Promise<{ ok: boolean; failures: string[] }>;
   /** PRE-CUTOVER boot check (mcp-host-availability-resilience-2026-06-22 P-001):
@@ -334,7 +339,8 @@ export interface ExecuteOpts {
 
 /**
  * Execute the deploy mechanics in order, inside the drain, with rollback on any
- * failure of swap/migrate/restart/health/verify. Pure orchestration over deps.
+ * failure of swap/bundle/migrate/restart/health/serving-sha/verify. Pure
+ * orchestration over deps.
  */
 export async function executeDeploy(
   cfg: ReleaseConfig,
@@ -411,6 +417,11 @@ export async function executeDeploy(
       } else {
         await step('swap', () => deps.runSetup(plan.targetSha));
       }
+      // dist-host/hono-host.mjs is deliberately UNTRACKED, so swapping the git
+      // checkout cannot update the code the operator actually executes. Build
+      // it explicitly before preflight/cutover; bundle-host fails non-zero when
+      // it had to retain stale bytes (WI-41242).
+      await step('bundle-host', () => deps.bundleHost());
       // PRE-CUTOVER boot check (P-001): confirm the swapped checkout can load its
       // module graph BEFORE touching live :3070. If a botched swap left node_modules
       // incomplete (→ MODULE_NOT_FOUND), we catch it here while the OLD process is
@@ -428,6 +439,13 @@ export async function executeDeploy(
 
       const health = await step('health', () => deps.health());
       if (!health.healthy) throw new Error(`health probe failed after restart: ${health.error ?? 'unhealthy'}`);
+      const serving = await step('serving-sha', () => deps.servingSha());
+      if (!serving.reachable || !serving.sha || !plan.targetSha.startsWith(serving.sha)) {
+        throw new Error(
+          `serving process sha mismatch after restart: expected ${short(plan.targetSha)}, got ${serving.sha ?? 'unavailable'}` +
+            (serving.error ? ` (${serving.error})` : ''),
+        );
+      }
       const verify = await step('verify-paths', () => deps.verifyPaths());
       if (!verify.ok) throw new Error(`release-path verify failed: ${verify.failures.join('; ')}`);
 
@@ -513,6 +531,10 @@ export async function executeDeploy(
         try {
           // Always revert the on-disk tree to the prior (consistent) sha.
           await step('rollback-code', () => deps.runSetup(prevReleaseSha));
+          // The host bundle is untracked too. Reverting source without rebuilding
+          // would leave the failed target's bundle behind and make the rollback
+          // only cosmetic.
+          await step('rollback-bundle-host', () => deps.bundleHost());
           // DB restore only when migrations were actually APPLIED — a pre-cutover
           // failure (e.g. preflight) aborts before `migrate`, so the schema is
           // unchanged and a (destructive) workspace restore must be skipped.

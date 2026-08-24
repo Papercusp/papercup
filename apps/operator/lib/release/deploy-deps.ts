@@ -37,7 +37,7 @@ import { toolingRoot, type ReleaseConfig } from './release-config';
 import { VERIFY_RESULT_MARKER } from './verify-release-paths';
 import type { DeployDeps, SnapshotInfo } from './deploy';
 import { applyStagedMigrations } from './migrate';
-import { probeHealth } from './health-probe';
+import { fetchServingSha, probeHealth } from './health-probe';
 
 // EI-13729: this MUST be per-PROCESS-unique, generated ONCE at module load —
 // NOT a shared static string. resource-lock-store.ts's exclusive-acquire check
@@ -390,6 +390,15 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       return applyStagedMigrations({ releaseRoot: cfg.releaseRoot, log: (s) => log(`migrate: ${s}`) });
     },
 
+    async bundleHost(): Promise<void> {
+      const script = path.join(cfg.releaseRoot, 'apps/operator/bin/bundle-host.sh');
+      await run('bash', [script], {
+        cwd: path.join(cfg.releaseRoot, 'apps/operator'),
+        timeoutMs: 10 * 60_000,
+      });
+      log('host bundle rebuilt from the release checkout');
+    },
+
     async restart(): Promise<void> {
       if (!allowRestart) {
         throw new Error('restart withheld — set PAPERCUSP_ALLOW_DEV_RESTART=1 to enable the real deploy restart');
@@ -411,6 +420,10 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
         probeMemoryCanary: cfg.memoryCanaryPolicy !== 'off',
         memoryCanaryPolicy: cfg.memoryCanaryPolicy === 'block' ? 'block' : 'report',
       });
+    },
+
+    async servingSha() {
+      return fetchServingSha(cfg.operatorHealthUrl);
     },
 
     async verifyPaths() {

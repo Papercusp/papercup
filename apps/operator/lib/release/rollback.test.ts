@@ -23,11 +23,13 @@ function deps(over: Partial<DeployDeps> = {}): { deps: DeployDeps; calls: string
     runSetup: async (sha) => {
       calls.push(`setup:${sha.slice(0, 4)}`);
     },
+    bundleHost: async () => {},
     migrate: async () => ({ appliedCount: 0, totalKnown: 0, applied: [], sqlDir: '' }),
     restart: async () => {
       calls.push('restart');
     },
     health: async () => ({ healthy: true, attempts: 1, elapsedMs: 1 }),
+    servingSha: async () => ({ reachable: true, sha: '11111111' }),
     verifyPaths: async () => ({ ok: true, failures: [] }),
     restoreSnapshot: async () => {
       calls.push('restore');

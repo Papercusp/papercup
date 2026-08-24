@@ -58,9 +58,11 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
       }),
     snapshot: () => rec('snapshot', { snapshotId: 1, kopiaSnapshotId: 'kopia-abc' } as SnapshotInfo),
     runSetup: (sha) => rec(`runSetup:${sha.slice(0, 4)}`, undefined).then(() => undefined),
+    bundleHost: () => rec('bundleHost', undefined).then(() => undefined),
     migrate: () => rec('migrate', { appliedCount: 1, totalKnown: 5, applied: ['200-x.sql'], sqlDir: '/x' }),
     restart: () => rec('restart', undefined).then(() => undefined),
     health: () => rec('health', { healthy: true, attempts: 1, elapsedMs: 10 }),
+    servingSha: () => rec('servingSha', { reachable: true, sha: 'abcdef12' }),
     verifyPaths: () => rec('verifyPaths', { ok: true, failures: [] }),
     preflight: () => rec('preflight', { ok: true }),
     restoreSnapshot: () => rec('restoreSnapshot', undefined).then(() => undefined),
@@ -144,14 +146,46 @@ describe('executeDeploy — happy path', () => {
     expect(calls[0]).toBe('drain:acquire');
     expect(calls.indexOf('releaseTriggerControl')).toBeLessThan(calls.indexOf('snapshot'));
     expect(calls.indexOf('snapshot')).toBeLessThan(calls.indexOf('runSetup:abcd'));
-    // P-001: preflight runs AFTER the swap but strictly BEFORE migrate + the live restart.
-    expect(calls.indexOf('runSetup:abcd')).toBeLessThan(calls.indexOf('preflight'));
+    // WI-41242: the untracked host bundle is rebuilt after swap and before the
+    // preflight/migration/live cutover.
+    expect(calls.indexOf('runSetup:abcd')).toBeLessThan(calls.indexOf('bundleHost'));
+    expect(calls.indexOf('bundleHost')).toBeLessThan(calls.indexOf('preflight'));
     expect(calls.indexOf('preflight')).toBeLessThan(calls.indexOf('migrate'));
     expect(calls.indexOf('migrate')).toBeLessThan(calls.indexOf('restart'));
     expect(calls.indexOf('restart')).toBeLessThan(calls.indexOf('health'));
+    expect(calls.indexOf('health')).toBeLessThan(calls.indexOf('servingSha'));
     expect(calls).toContain('broadcast:ok');
     expect(calls).toContain('recordEvent:ok'); // the deploy reports its own outcome
     expect(calls[calls.length - 1]).toBe('drain:release');
+  });
+
+  it('WI-41242: a host-bundle build failure aborts before migration or restart and rebuilds the rollback bundle', async () => {
+    let bundleCalls = 0;
+    const { deps, calls } = makeDeps({
+      bundleHost: () => {
+        bundleCalls++;
+        calls.push('bundleHost');
+        return bundleCalls === 1 ? Promise.reject(new Error('stale bundle fallback')) : Promise.resolve();
+      },
+    });
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(res).toMatchObject({ ok: false, rolledBack: true });
+    expect(res.error).toMatch(/stale bundle fallback/);
+    expect(calls).not.toContain('migrate');
+    expect(calls).not.toContain('restart');
+    expect(calls).toContain('runSetup:1111');
+    expect(bundleCalls).toBe(2); // failed target build + successful previous-sha rebuild
+    expect(res.steps.some((s) => s.name === 'rollback-bundle-host')).toBe(true);
+  });
+
+  it('WI-41242: a healthy process reporting the wrong SHA fails the deploy loudly', async () => {
+    const { deps } = makeDeps({
+      servingSha: () => Promise.resolve({ reachable: true, sha: 'deadbeef' }),
+    });
+    const res = await executeDeploy(cfg, plan, deps);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/serving process sha mismatch/);
+    expect(res.steps).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'serving-sha', ok: true })]));
   });
 
   it('re-reads a post-launch pause inside the drain and refuses before every mutation without rollback', async () => {
@@ -277,12 +311,13 @@ describe('executeDeploy — restartOnly (WI-5864)', () => {
     noop: false,
   };
 
-  it('skips runSetup (swap) entirely, still runs preflight/migrate/restart/health/verify-paths', async () => {
+  it('skips runSetup (swap), but still rebuilds the host bundle before preflight/cutover', async () => {
     const { deps, calls } = makeDeps();
     const res = await executeDeploy(cfg, restartOnlyPlan, deps);
     expect(res.ok).toBe(true);
     expect(calls.some((c) => c.startsWith('runSetup:'))).toBe(false);
     expect(calls).toContain('snapshot');
+    expect(calls).toContain('bundleHost');
     expect(calls).toContain('preflight');
     expect(calls).toContain('migrate');
     expect(calls).toContain('restart');
