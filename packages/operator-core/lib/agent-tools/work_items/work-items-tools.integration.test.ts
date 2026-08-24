@@ -470,11 +470,33 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(relates.ok).toBe(true);
     expect((relates.results as { rel: string }[])[0]!.rel).toBe('relates');
 
-    // the edges are real and distinct
+    // Work-item blocks are canonical in work_item_deps; the polymorphic relation remains in coord_links.
     const links = await db.sql<{ rel: string }[]>`
       SELECT rel FROM harness_shared.coord_links
        WHERE src_kind = 'issue' AND src_ref = ${bugId} ORDER BY rel`;
-    expect(links.map((l) => l.rel)).toEqual(['blocks', 'relates']);
+    expect(links.map((l) => l.rel)).toEqual(['relates']);
+    expect(await db.sql`
+      SELECT blocker_kind, blocker_ref, blocked_kind, blocked_ref, dep_type
+        FROM harness_shared.work_item_deps`).toEqual([
+      {
+        blocker_kind: 'issue',
+        blocker_ref: bugId,
+        blocked_kind: 'feature',
+        blocked_ref: `papercup#${featId}`,
+        dep_type: 'blocks',
+      },
+    ]);
+
+    const removed = await call(linkTool, {
+      id: bugId,
+      rel: 'blocks',
+      target_id: featId,
+      target_harness: 'papercup',
+      remove: true,
+    });
+    expect(removed.ok).toBe(true);
+    expect(await db.sql`SELECT 1 FROM harness_shared.work_item_deps`).toEqual([]);
+    expect(await db.sql`SELECT rel FROM harness_shared.coord_links`).toEqual([{ rel: 'relates' }]);
   });
 
   it('link: accepts the investigation/causal rels (investigates, about, caused-by) incl. a polymorphic event target (WI-3956)', async () => {
