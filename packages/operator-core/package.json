@@ -64,6 +64,13 @@
     "typecheck": "bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.111",
+    "@ai-sdk/google": "^3.0.111",
+    "@ai-sdk/groq": "^3.0.60",
+    "@ai-sdk/mistral": "^3.0.59",
+    "@ai-sdk/openai": "^3.0.99",
+    "@ai-sdk/provider": "^3.0.15",
+    "@ai-sdk/xai": "^3.0.124",
     "@huggingface/transformers": "^4.2.0",
     "@iarna/toml": "^2.2.5",
     "@mdx-js/mdx": "^3.1.1",
