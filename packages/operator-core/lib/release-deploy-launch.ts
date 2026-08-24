@@ -556,7 +556,14 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
   // The release status surface is explicitly a liveness diagnostic.  It must
   // opt into the live run-lock probe, otherwise a long-running checkpoint has
   // no chance to clear the age-only fire-stale alarm until it finishes.
-  const load = deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { includeActiveRun: true }));
+  // This is a liveness diagnostic, not an agent-spawn path.  The host-wide
+  // spawner sidecar is enabled on production operators, but routing these
+  // short local git reads through it can wedge the status call behind its IPC
+  // queue until the tool's 20s outer timeout (EI-21307371780991377).  Keep the
+  // diagnostic fork-free and let the small local git children finish promptly.
+  const load =
+    deps.loadSnapshot ??
+    (() => gitPipelineSnapshot(undefined, { includeActiveRun: true, useSpawnerSidecar: false }));
   const loadInFlight = deps.loadInFlight ?? (() => readDeployInFlight());
   const [snap, inFlight] = await Promise.all([
     load(),

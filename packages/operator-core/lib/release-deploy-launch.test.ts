@@ -10,7 +10,13 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const gitPipelineSnapshotM = vi.hoisted(() => vi.fn());
+vi.mock('./git-pipeline-stats', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./git-pipeline-stats')>()),
+  gitPipelineSnapshot: gitPipelineSnapshotM,
+}));
 import {
   computeDeployStatus,
   computeDeployInFlight,
@@ -890,6 +896,20 @@ describe('EI-18724155280048738: an in-flight deploy must be distinguishable from
 });
 
 describe('readDeployStatus wiring', () => {
+  it('keeps the live diagnostic git reads off the spawner sidecar', async () => {
+    gitPipelineSnapshotM.mockReset();
+    gitPipelineSnapshotM.mockResolvedValue(mkSnap({}, { deployedBehindGreenPin: 2 }));
+    const inFlight = computeDeployInFlight({ props: null, logPath: '/l', logMtimeMs: null });
+
+    const s = await readDeployStatus({ loadInFlight: async () => inFlight });
+
+    expect(s.state).toBe('green-deployable');
+    expect(gitPipelineSnapshotM).toHaveBeenCalledWith(undefined, {
+      includeActiveRun: true,
+      useSpawnerSidecar: false,
+    });
+  });
+
   it('populates deployInFlight from the probe and lets it drive the state', async () => {
     const s = await readDeployStatus({
       loadSnapshot: async () => mkSnap({}, { deployedBehindGreenPin: 2 }),
