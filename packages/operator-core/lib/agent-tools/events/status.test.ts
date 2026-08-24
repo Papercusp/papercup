@@ -60,6 +60,10 @@ beforeEach(() => {
 });
 
 describe('events:status projection', () => {
+  it('opts out of the ambient workspace transaction for concurrent projected reads', () => {
+    expect(status.skipWorkspaceTx).toBe(true);
+  });
+
   it('projects await rows to await_id/event/policy/note/expires_ts/on_timeout/created_at', async () => {
     const out = await call({});
     expect(out.active_awaits[0]).toEqual({

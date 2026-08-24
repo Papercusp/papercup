@@ -171,6 +171,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES],
   args: z.object({
     meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
