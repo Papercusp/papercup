@@ -4,11 +4,14 @@ import {
   resolveWorkerParityRoute,
   runWorkerParityCohort,
   workerParityArmConfig,
+  workerParityArmEnv,
   workerParityPrompt,
   type GatewayEnvResolver,
 } from './worker-parity-runner';
 
-const gatewayResolver = (): GatewayEnvResolver => vi.fn(async (input) => {
+const gatewayResolver = (): GatewayEnvResolver => vi.fn(async (
+  input: Parameters<GatewayEnvResolver>[0],
+): Promise<Record<string, string>> => {
   if (input.backend === 'omp') {
     return {
       PAPERCUSP_OMP_MODEL_SELECTOR: `papercusp-gateway/${input.model}`,
@@ -70,7 +73,7 @@ describe('resolveWorkerParityRoute — D-027 non-generation proof', () => {
   });
 
   it('fails closed when either route is not the local managed gateway', async () => {
-    const resolveGatewayEnv: GatewayEnvResolver = async (input) => input.backend === 'omp'
+    const resolveGatewayEnv: GatewayEnvResolver = async (input): Promise<Record<string, string>> => input.backend === 'omp'
       ? {
           PAPERCUSP_OMP_MODEL_SELECTOR: 'papercusp-gateway/claude-haiku-4-5',
           PAPERCUSP_OMP_MODELS_YML: '# BEGIN PAPERCUSP_OMP_GATEWAY\n    baseUrl: "https://api.anthropic.com"',
@@ -108,6 +111,13 @@ describe('paired invocation contract', () => {
     });
     expect(loop.aiBackend.default.extraArgs).toEqual(['--existing']);
     expect(loop.dept).toBe('engineering');
+  });
+
+  it('normalizes the subprocess-only sandbox out of the engine comparison', () => {
+    expect(workerParityArmEnv({ PAPERCUSP_OMP_MODEL_SELECTOR: 'gateway/model' })).toEqual({
+      PAPERCUSP_OMP_MODEL_SELECTOR: 'gateway/model',
+      PAPERCUSP_FLEET_SANDBOX: '0',
+    });
   });
 
   it('runs every pair through both arms with byte-identical prompts and deterministic run ids', async () => {

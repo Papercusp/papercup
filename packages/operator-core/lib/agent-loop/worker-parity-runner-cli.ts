@@ -15,6 +15,7 @@ import {
   resolveWorkerParityRoute,
   runWorkerParityCohort,
   workerParityArmConfig,
+  workerParityArmEnv,
   type WorkerParityArm,
   type WorkerParityArmInput,
   type WorkerParityArmResult,
@@ -115,15 +116,17 @@ function assertArmRoute(arm: WorkerParityArm, model: string): void {
 }
 
 async function runIsolatedArm(args: CliArgs): Promise<void> {
-  const [orchestrator, dbOrg, harnessPaths, headless, pipelineEnv, flagStore] = await Promise.all([
+  // Install the runtime flag store BEFORE importing the agent-tool graph: that
+  // graph has boot checks which call getFlag during module evaluation.
+  const flagStore = await import('../flag-override-store');
+  flagStore.installFlagOverrideStore();
+  const [orchestrator, dbOrg, harnessPaths, headless, pipelineEnv] = await Promise.all([
     import('@papercusp/orchestrator'),
     import('@papercusp/db-org'),
     import('@papercusp/harness/paths'),
     import('./headless-invoke'),
     import('../dbos/orchestrator-spawn-env'),
-    import('../flag-override-store'),
   ]);
-  flagStore.installFlagOverrideStore();
   const arm = args.arm;
   if (!arm) throw new Error('internal arm invocation did not name an arm');
   const model = requiredEnv(MODEL_ENV);
@@ -177,7 +180,7 @@ async function runIsolatedArm(args: CliArgs): Promise<void> {
 async function spawnArmProcess(input: WorkerParityArmInput, args: CliArgs, baseConfig: Record<string, unknown>, projectDir: string): Promise<WorkerParityArmResult> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    ...input.routeEnv,
+    ...workerParityArmEnv(input.routeEnv),
     [ROUTE_PROOF_ENV]: '1',
     [ARM_ENV]: input.arm,
     [MODEL_ENV]: input.model,
@@ -237,14 +240,14 @@ async function spawnArmProcess(input: WorkerParityArmInput, args: CliArgs, baseC
 }
 
 async function runMain(args: CliArgs): Promise<void> {
-  const [workspaceRegistry, harnessCore, harnessConfig, flagStore, dbOrg] = await Promise.all([
+  const flagStore = await import('../flag-override-store');
+  flagStore.installFlagOverrideStore();
+  const [workspaceRegistry, harnessCore, harnessConfig, dbOrg] = await Promise.all([
     import('../workspace-registry'),
     import('../harness-core'),
     import('../harness-effective-config'),
-    import('../flag-override-store'),
     import('@papercusp/db-org'),
   ]);
-  flagStore.installFlagOverrideStore();
   if (!args.workspaceId) args.workspaceId = workspaceRegistry.activeWorkspaceId();
   if (!Number.isSafeInteger(args.pairs) || args.pairs < 1 || args.pairs > 100) {
     throw new Error(`--pairs must be an integer in [1,100], got ${args.pairs}`);

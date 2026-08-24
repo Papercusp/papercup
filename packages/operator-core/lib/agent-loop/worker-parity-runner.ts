@@ -215,6 +215,19 @@ export function workerParityArmConfig(
   } as HarnessConfig;
 }
 
+/**
+ * Per-process benchmark env. The engine comparison deliberately disables the
+ * subprocess-only OS sandbox: the owned-loop arm never enters that sandbox, so
+ * enabling it only on OMP would add a second experimental variable. Both arms
+ * still expose only the read-only canary task and capability-gated tool surface.
+ */
+export function workerParityArmEnv(routeEnv: Record<string, string>): Record<string, string> {
+  return {
+    ...routeEnv,
+    PAPERCUSP_FLEET_SANDBOX: '0',
+  };
+}
+
 /** One distinct, read-only tool-bearing task; byte-identical across its pair. */
 export function workerParityPrompt(pairIndex: number): string {
   if (!Number.isSafeInteger(pairIndex) || pairIndex < 1) {
