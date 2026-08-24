@@ -67,8 +67,16 @@ import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
  * tool's declared timeout so process-group settlement, the ledger write, and MCP
  * serialization cannot lose a race to the transport deadline.
  */
-export const SCORECARD_EMIT_TIMEOUT_SEC = 180;
-export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 120_000;
+/**
+ * scorecards:emit accepts deterministic checks spanning up to 50 files. A real
+ * 16-file Papercusp acceptance batch takes roughly four minutes, so the old
+ * two-minute inner budget rejected a fully green run before it could be filed.
+ * Scale that observed batch to the schema cap (12.5 minutes), round up to 13,
+ * and keep two more minutes outside the runner for process-group settlement,
+ * the ledger write, and MCP serialization.
+ */
+export const SCORECARD_EMIT_TIMEOUT_SEC = 15 * 60;
+export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 13 * 60_000;
 
 export const scorecardEmitArgs = z
   .object({

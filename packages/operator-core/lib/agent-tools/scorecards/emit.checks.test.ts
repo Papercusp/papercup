@@ -201,9 +201,17 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
 });
 
 describe('scorecards:emit deterministic-check transport budget', () => {
-  it('declares enough outer headroom for test cleanup, the write, and serialization', () => {
+  it('covers the 50-file contract and keeps outer headroom for cleanup + persistence', () => {
+    // WI-41341: a measured 16-file acceptance batch takes about four minutes.
+    // Linear capacity at the 50-file schema cap is 12.5 minutes, rounded up.
+    const measuredBatchMs = 4 * 60_000;
+    const measuredFiles = 16;
+    const maxFiles = 50;
+    const scaledContractMs = Math.ceil((measuredBatchMs * maxFiles) / measuredFiles);
+
+    expect(SCORECARD_TEST_CHECK_TIMEOUT_MS).toBeGreaterThanOrEqual(scaledContractMs);
     expect(scorecardEmitTool.timeoutSec).toBe(SCORECARD_EMIT_TIMEOUT_SEC);
     expect(SCORECARD_EMIT_TIMEOUT_SEC * 1_000 - SCORECARD_TEST_CHECK_TIMEOUT_MS)
-      .toBeGreaterThanOrEqual(60_000);
+      .toBeGreaterThanOrEqual(2 * 60_000);
   });
 });
