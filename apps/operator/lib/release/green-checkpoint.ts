@@ -139,6 +139,9 @@ export interface CheckpointExecutionContext {
   affectedTestProofGroup?: string;
 }
 
+/** Provenance for a run that is intentionally diagnostic rather than a gate observation. */
+export type CheckpointDiagnostic = "candidate-pinned";
+
 export interface CheckpointDeps {
   /**
    * Report forward progress from the real checkpoint process. This is deliberately
@@ -659,6 +662,8 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
+  /** Explicit provenance for a diagnostic run; absent means a normal gate observation. */
+  diagnostic?: CheckpointDiagnostic;
   reason:
     | "up-to-date"
     | "not-fast-forward"
@@ -5596,6 +5601,8 @@ export function summarizeSuiteOutput(fullOutput: string): string {
 export interface CheckpointOpts {
   /** Override the candidate (default: integration-branch HEAD). */
   candidate?: string;
+  /** Mark this explicitly pinned candidate as diagnostic; do not infer from `candidate`. */
+  diagnostic?: CheckpointDiagnostic;
   /** Don't push `ready` to origin (local-only). */
   noPush?: boolean;
   /** How many of this run's auto-refires were CHARGED — i.e. how many rescues FAILED (the same
