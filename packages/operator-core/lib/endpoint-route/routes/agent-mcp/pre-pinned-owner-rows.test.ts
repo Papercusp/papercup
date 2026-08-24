@@ -4,7 +4,6 @@ import {
   classifyPrePinnedOwnerRows,
   describePrePinnedConflicts,
   resolvePrePinnedOwnerLiveness,
-  describePrePinnedConflicts,
   type PrePinnedOwnerRow,
 } from './pre-pinned-owner-rows';
 
