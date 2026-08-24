@@ -1349,7 +1349,13 @@ export function stdoutDeliveryError() {
   return null;
 }
 
-/** Print the result of a tools/call, or its error. Returns the exit code. */
+/** Print the result of a tools/call, or its error. Returns the exit code.
+ * WI-39692: the @param types are LOAD-BEARING — ptool.d.mts is generated from
+ * this JSDoc, and without them tsc infers the options shape from the defaults
+ * alone (dropping `raw` entirely, which strands every typed caller).
+ * @param {unknown} result
+ * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null) }} [options]
+ */
 export function printResult(result, { raw, deliveryProbe = stdoutDeliveryError } = {}) {
   const text = resultToText(result, { raw });
   if (!text.trim()) {
@@ -1367,6 +1373,13 @@ export function printResult(result, { raw, deliveryProbe = stdoutDeliveryError }
     return 1;
   }
   console.log(raw ? safeText : prettyText(safeText));
+  const delivery = deliveryProbe();
+  if (delivery) {
+    console.error(
+      `ptool: result was produced but stdout delivery FAILED (${delivery.code || delivery.message}) — the consumer of stdout went away, so the caller saw nothing. Treat this invocation as failed and re-run. (EI-21250765620092599)`,
+    );
+    return 1;
+  }
   return 0;
 }
 
@@ -1603,6 +1616,18 @@ const isMain = (() => {
   }
 })();
 if (isMain) {
+  // EPIPE backstop (EI-21250765620092599): an EPIPE can surface on the tick
+  // AFTER printResult's synchronous probe, so re-check at exit and refuse to
+  // report success when the result never reached the consumer. stderr is a
+  // separate pipe and usually still deliverable when stdout's consumer died.
+  process.on('exit', (code) => {
+    if (code === 0 && stdoutDeliveryError()) {
+      process.stderr.write(
+        'ptool: exiting after a swallowed stdout delivery failure (EPIPE) — the result never reached the consumer; treating this invocation as FAILED (EI-21250765620092599)\n',
+      );
+      process.exitCode = 1;
+    }
+  });
   main().catch((e) => {
     // @inquirer throws ExitPromptError on Ctrl+C — treat as a clean cancel.
     if (e && (e.name === 'ExitPromptError' || /force closed/i.test(e.message || ''))) {
