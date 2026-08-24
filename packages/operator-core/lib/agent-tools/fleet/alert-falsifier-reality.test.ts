@@ -2,7 +2,8 @@
  * EI-19313376980892266 item C — the RECURRENCE GUARD for "every alert carries its
  * falsifier".
  *
- * Modelled on `cell-falsifier-reality.test.ts`, which exists because a falsifier
+ * Modelled on the cell falsifier-reality suite (replaced at P-004 by
+ * `cell-assessment-reality.test.ts`), which existed because a falsifier
  * whose `field` names a path no resolver produces is WORSE than no falsifier: it
  * wears the contract's badge while being unrunnable. The same failure is available
  * here in three flavours, and every one of them looks fine in review:

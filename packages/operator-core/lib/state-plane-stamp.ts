@@ -44,8 +44,9 @@
  *    value is null — i.e. when the door could not determine the deployed sha, the gate
  *    verdict, the candidate. That is precisely the reading a caller must NOT transcribe,
  *    so the feature would vanish in the case that motivates it. `cell-read.ts` (503-515)
- *    and `cell-falsifier-reality.test.ts` (23) both already draw this line; production
- *    had no own-key walker, only a copy inside that test file. `pathExists` below is it.
+ *    already draws this line; production had no own-key walker of its own, only a copy
+ *    inside the cell falsifier-reality suite (deleted at P-004). `pathExists` below is
+ *    it, and `cell-assessment-reality.test.ts` IMPORTS it instead of re-copying it.
  *
  * 2. A CALLER-RELATIVE CELL NEEDS THE CALLER'S SUBJECT, OR IT ANSWERS A DIFFERENT
  *    QUESTION.

@@ -975,7 +975,7 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
       'the newest perf-signals-v1 capture via readLatestPerfSignals(), evaluated by the same evaluateMemoryPressure() branch consumed by the infra-liveness perf verdict; free-memory falsifier via getHostSnapshot()',
     liveExercised: true,
     evidence:
-      'host:memory_pressure run against the live 2026-08-14 perf capture returned a timestamped memory verdict with both PSI units, the exact PERF_BUDGETS thresholds, and an independently-sampled host.memFreePct; cell-falsifier-reality exercises the real handler so shape drift cannot hide behind fixtures.',
+      'host:memory_pressure run against the live 2026-08-14 perf capture returned a timestamped memory verdict with both PSI units, the exact PERF_BUDGETS thresholds, and an independently-sampled host.memFreePct; cell-assessment-reality exercises the real handler so shape drift cannot hide behind fixtures.',
   },
 
   resolver:

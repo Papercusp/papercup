@@ -556,7 +556,7 @@ describe('WI-6506 — the falsifier rides the SAME dispatch to the reader', () =
     // `cur == null` at EVERY segment, so a null `serving.nested` and a genuinely
     // missing `serving.nested.leaf` key both read as `undefined` through it — byte-
     // identical to the healthy "measured null" case. This is precisely what bit
-    // `agent.goal`'s `goal.agreement` (P-011, cell-falsifier-reality.test.ts): the
+    // `agent.goal`'s `goal.agreement` (P-011, cell-assessment-reality.test.ts): the
     // own-key walk must tell them apart instead of silently agreeing with the wrong
     // one of the two.
     registerCell(spec({ falsifier: { field: 'serving.nested.leaf', measurement: 'x', kills: 'y' } }));

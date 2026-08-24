@@ -311,7 +311,7 @@ export interface CellFalsifierRead {
   kills: string;
   /** True ⇒ the declared field path was absent from the resolver payload: registration
    *  drift, NOT a measured null. Mirrors `CellHoist.drifted`, for the identical MISSING
-   *  ≠ NULL reason `cell-falsifier-reality.test.ts` documents — own-key path EXISTENCE,
+   *  ≠ NULL reason `state-plane-stamp.ts`'s `pathExists` documents — own-key path EXISTENCE,
    *  not `valueAtPath`, decides this, because `valueAtPath` collapses a legitimately
    *  null intermediate segment to the SAME `undefined` a missing key produces. */
   drifted?: true;
@@ -929,7 +929,7 @@ function sourceFrom(payload: unknown, spec: CellHeadlineSource): CellSourceRead 
 /**
  * WI-6506 — own-key path walk: does EVERY segment actually exist in the object
  * graph, independent of what value is found there? Mirrors
- * `cell-falsifier-reality.test.ts`'s `pathExists` exactly (own-key check via `in`,
+ * `state-plane-stamp.ts`'s exported `pathExists` exactly (own-key check via `in`,
  * not `valueAtPath`'s `cur == null` short-circuit).
  *
  * The distinction is load-bearing here in a way it is not for `hoistFrom`/`material`
@@ -990,9 +990,9 @@ function falsifierFrom(payload: unknown, f: { field: string; kills: string }): C
  * `falsifierPathExists` below. Same own-key discipline, but that one is TOTAL — a
  * throwing getter or a hostile proxy reports as missing rather than propagating out
  * to the caller's catch and blacking out an otherwise-good read. `falsifierFrom` is
- * deliberately left on the local copy: `falsifier` is deleted wholesale at P-006, and
- * changing its behaviour now would risk a red in `cell-falsifier-reality.test.ts` for
- * a field with weeks to live. P-006 removes the local copy with the field it serves.
+ * deliberately left on the local copy: `falsifier` is deleted wholesale at P-006, so
+ * changing its behaviour now would churn a field with weeks to live for no reader's
+ * benefit. P-006 removes the local copy with the field it serves.
  */
 function assessmentFrom(payload: unknown, spec: CellAssessmentSpec): CellAssessmentRead {
   const path = spec.path;
