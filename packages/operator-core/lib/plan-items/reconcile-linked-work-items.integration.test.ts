@@ -1048,9 +1048,19 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
 
   it('repairs a false owner park while preserving an independent runtime blocker', async () => {
     await edge({ plan: 'pactionable', item: 'P-001', srcRef: 'WI-false-human' });
+    // EI-21274031426739947: a FALSE owner park is one whose capability an agent can
+    // actually supply. This fixture used capability:'credential' — a capability the
+    // policy marks requiresOwnerCapability:true — so it asserted that the sync clears
+    // a real, unsatisfied prerequisite. The case is about the human/runtime split, so
+    // it keeps that and uses a genuinely auto-clearable human blocker.
     const human = updateExternalBlockerHistory(
       {},
-      { kind: 'human', capability: 'credential', ref: 'credential:prod', summary: 'credential needed' },
+      {
+        kind: 'human',
+        capability: 'approval-auto-clearable',
+        ref: 'approval:ship-it',
+        summary: 'standing approval',
+      },
       'su-a',
     );
     const both = updateExternalBlockerHistory(
@@ -1074,6 +1084,41 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       (blocker) => blocker.status === 'active',
     );
     expect(active.map((blocker) => blocker.kind)).toEqual(['runtime']);
+  });
+
+  // EI-21274031426739947 — end-to-end guard for the WI-1439 recurrence. The pure
+  // decision is unit-tested in plan-item-lane-sync.test.ts; this proves the APPLY path
+  // leaves the row genuinely parked: the prerequisite stays active, the needs-human
+  // signal survives, and the state is never restored to a claimable one. Without this,
+  // an actionable lane cleared the owner-at-mic blocker and the scheduler handed the
+  // item to an agent that structurally could not perform it, over and over.
+  it('never clears an unsatisfied owner-capability prerequisite on an actionable lane', async () => {
+    await edge({ plan: 'pactionable', item: 'P-001', srcRef: 'WI-owner-mic' });
+    const { blockers } = updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'physical-device',
+        ref: 'owner-microphone-acceptance',
+        summary: 'owner must accept at the mic',
+      },
+      'su-a',
+    );
+    const row = stub({
+      id: 'WI-owner-mic', state: 'needs-human', family: 'issue',
+      payload: { externalBlockers: blockers, needsOwnerAction: true, needsHuman: true },
+    });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-001', status: 'todo', blockedBy: [] }] });
+
+    const result = await resyncPlanItemLaneNow('pactionable', 'P-001', null);
+
+    expect(result?.ungated ?? []).not.toContain('WI-owner-mic');
+    expect(row.state).toBe('needs-human');
+    expect(row.payload).toHaveProperty('needsOwnerAction');
+    const active = (row.payload?.externalBlockers as Array<{ ref: string; status: string }>).filter(
+      (blocker) => blocker.status === 'active',
+    );
+    expect(active.map((blocker) => blocker.ref)).toEqual(['owner-microphone-acceptance']);
   });
 
   it('a terminal dependency edge opens only dependents whose full blocker set is resolved', async () => {

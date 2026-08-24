@@ -151,9 +151,19 @@ describe('decideLaneGate — UN-GATE (plan lane actionable again) [EI-14699]', (
   });
 
   it('repairs the human portion even when an independent nonhuman blocker must remain parked', () => {
+    // EI-21274031426739947: the repairable human blocker must be an AUTO-CLEARABLE one.
+    // This case previously used capability:'credential' — which is exactly a blocker the
+    // sync may NOT clear (policy: autoClearable:false, requiresOwnerCapability:true), so
+    // it asserted the defect below as correct behaviour. The intent of the case is the
+    // human/nonhuman split, so it keeps that and drops the capability confusion.
     const human = updateExternalBlockerHistory(
       {},
-      { kind: 'human', capability: 'credential', ref: 'credential:prod', summary: 'credential needed' },
+      {
+        kind: 'human',
+        capability: 'approval-auto-clearable',
+        ref: 'approval:ship-it',
+        summary: 'standing approval',
+      },
       'su-a',
     );
     const both = updateExternalBlockerHistory(
@@ -164,6 +174,63 @@ describe('decideLaneGate — UN-GATE (plan lane actionable again) [EI-14699]', (
     expect(
       decideLaneGate(wi({ state: 'needs-human', payload: { externalBlockers: both.blockers } }), 'actionable', REF),
     ).toEqual({ op: 'repair-needs-human' });
+  });
+
+  // EI-21274031426739947 — THE REGRESSION GUARD. An actionable plan lane used to be
+  // treated as proof that any `kind:'human'` blocker was stale owner-park residue, so
+  // the repair path cleared it and handed the row back to the claim pool. For a
+  // capability no authority can conjure that is fabricated readiness: WI-1439's
+  // owner-at-mic acceptance was cleared at 2026-08-23T19:31Z with no accept/reject
+  // evidence and re-claimed at 19:37Z, then again and again — every claim burning a
+  // fresh agent's context on work it structurally cannot perform.
+  describe('an unsatisfied owner-capability prerequisite is never repaired away', () => {
+    for (const capability of ['credential', 'physical-device', 'external-service-action', 'product-decision'] as const) {
+      it(`leaves a ${capability} human blocker parked on an actionable lane`, () => {
+        const { blockers } = updateExternalBlockerHistory(
+          {},
+          { kind: 'human', capability, ref: `${capability}:thing`, summary: `${capability} required` },
+          'su-a',
+        );
+        expect(
+          decideLaneGate(wi({ state: 'needs-human', payload: { externalBlockers: blockers } }), 'actionable', REF),
+        ).toEqual({ op: 'noop', reason: 'no-lane-blocker' });
+      });
+    }
+
+    it('does not let a legacy needsOwnerAction flag override a live physical-device prerequisite', () => {
+      // The flag alone IS repairable residue (asserted above). It must not become a
+      // side door that clears a typed prerequisite sitting right beside it.
+      const { blockers } = updateExternalBlockerHistory(
+        {},
+        {
+          kind: 'human',
+          capability: 'physical-device',
+          ref: 'owner-microphone-acceptance',
+          summary: 'owner must accept at the mic',
+        },
+        'su-a',
+      );
+      expect(
+        decideLaneGate(
+          wi({ state: 'open', payload: { needsOwnerAction: true, externalBlockers: blockers } }),
+          'actionable',
+          REF,
+        ),
+      ).toEqual({ op: 'noop', reason: 'no-lane-blocker' });
+    });
+
+    it('classifies an UNTYPED legacy human blocker as owner-gated, not clearable', () => {
+      // inferExternalBlockerCapability('human') === 'product-decision' (autoClearable:false),
+      // so a row predating the capability field fails SAFE rather than being erased.
+      const { blockers } = updateExternalBlockerHistory(
+        {},
+        { kind: 'human', ref: 'owner:decide', summary: 'owner decision required' },
+        'su-a',
+      );
+      expect(
+        decideLaneGate(wi({ state: 'needs-human', payload: { externalBlockers: blockers } }), 'actionable', REF),
+      ).toEqual({ op: 'noop', reason: 'no-lane-blocker' });
+    });
   });
 
   it('a DIFFERENT plan item\'s lane blocker does not match this item id', () => {

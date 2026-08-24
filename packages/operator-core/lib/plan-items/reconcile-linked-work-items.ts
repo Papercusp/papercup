@@ -571,7 +571,7 @@ function hasNeedsHumanResidue(wi: Pick<WorkItem, 'state' | 'payload'>): boolean 
       : {};
   // EI-21274031426739947: a blocker naming a capability NO amount of plan truth or
   // agent authority can supply (credential / physical-device / external-service-action
-  // / product-decision — every capability whose policy is `autoClearable: false`) is
+  // / product-decision — the capabilities the policy marks `requiresOwnerCapability`) is
   // not owner-park RESIDUE, it is an unsatisfied PREREQUISITE. Plan status cannot
   // testify about it: whether the owner has spoken into a microphone is simply not a
   // fact a plan item knows. Clearing one fabricates readiness, and the row goes
@@ -598,7 +598,15 @@ function hasNeedsHumanResidue(wi: Pick<WorkItem, 'state' | 'payload'>): boolean 
  */
 export function requiresOwnerCapability(blocker: ExternalBlockerRecord): boolean {
   const capability = blocker.capability ?? inferExternalBlockerCapability(blocker.kind);
-  return !externalBlockerCapabilityPolicy(capability).autoClearable;
+  // `requiresOwnerCapability`, NOT `!autoClearable` — they are different questions and
+  // 'live-dependency' is exactly where they diverge (autoClearable:false, but
+  // requiresOwnerCapability:false, because a stalled dependency is owned by the
+  // dependency-owner, not a person holding a device). Keying on !autoClearable made an
+  // ordinary runtime blocker suppress a legitimate owner-park repair — caught by the
+  // pre-existing 'independent nonhuman blocker' case. The four capabilities this must
+  // protect (credential, physical-device, external-service-action, product-decision)
+  // are precisely the ones the policy marks requiresOwnerCapability:true.
+  return externalBlockerCapabilityPolicy(capability).requiresOwnerCapability;
 }
 
 /**
