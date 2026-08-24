@@ -152,4 +152,18 @@ describe('reclaimExpiredPlanItemClaims (EI-179 plan-item lease GC)', () => {
     expect(r.released.map((x) => x.item_id).sort()).toEqual(['P-010', 'P-011', 'P-012']);
     expect(await present('P-013')).toBe(true);
   });
+
+  it('can target exactly one stale claim without sweeping its siblings', async () => {
+    for (const id of ['P-020', 'P-021']) {
+      await claim(id, `dead-${id}`);
+      await lapse(id, 4000);
+    }
+    const r = await reclaimExpiredPlanItemClaims(db.sql, {
+      graceMs: GRACE,
+      key: { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-020' },
+    });
+    expect(r.released.map((x) => x.item_id)).toEqual(['P-020']);
+    expect(await present('P-020')).toBe(false);
+    expect(await present('P-021')).toBe(true);
+  });
 });

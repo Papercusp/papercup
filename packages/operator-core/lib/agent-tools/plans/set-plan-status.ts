@@ -274,13 +274,13 @@ export async function launchAcceptanceGraderForGate(
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
-    "Flip a plan's lifecycle status (draft→ready approve, ready→draft demote, →shipped = mark COMPLETE/FINISHED/archive it, →superseded reject). draft→ready/active is refused until `plans:audit { phase:'activation' }` records the complete source-conversation audit. Plan-level frontmatter, not an item's status. Also the Mug↔Scout DEPRECATE handler: pass `learnings` with status='superseded' to also emit a salvage observation into Scout's digest (no dead ends) — see guidance.",
+    "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`. This is plan frontmatter, not item status. For Mug↔Scout deprecation, status='superseded' plus `learnings` emits a salvage observation.",
   guidance: {
-    when: "Moving a whole plan through its lifecycle. Before draft→ready/active, re-read the COMPLETE plan-related conversation (not memory/summary), map every requirement, constraint, correction, rejected alternative, decision, acceptance condition, open question, and follow-up; repair omissions; then record `plans:audit { phase:'activation' }`. Other moves: demote ready→draft, ship after completion, or reject →superseded. DEPRECATING a Mug↔Blender draft: status='superseded' + `learnings:{tried,stalled,salvageable}`.",
+    when: "Use for a plan lifecycle change. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), map requirements, constraints, corrections, rejected alternatives, decisions, acceptance conditions, open questions, and follow-ups; repair omissions; record `plans:audit { phase:'activation' }`. Other moves: ready→draft, ship after completion, or supersede. Mug↔Blender draft deprecation: status='superseded' + `learnings:{tried,stalled,salvageable}`.",
     notWhen:
-      "Flipping a P-NNN item's status — use plans:set-status. Legacy plan without frontmatter — plans:set-frontmatter first (refused with no_status_line). `learnings` on a non-superseded status is ignored (deprecate-only). ⚠ 'shipped' refuses without a peer-graded acceptance rubric.",
+      "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded. ⚠ `shipped` requires a peer-graded acceptance rubric.",
     chaining:
-      "Activation: sessions:search/read → repair draft → plans:audit { phase:'activation' } → plans:set-plan-status { slug, status:'ready', expectedCurrent:'draft' }. A post-audit edit response's activationAudit metadata names audited/current revisions: re-audit for semantic changes; not for spelling/formatting/cosmetic-only edits. Starting a draft auto-approves through the same gate. Deprecate: plans:set-plan-status { slug, status:'superseded', learnings:{…} }.",
+      "Activation: sessions:search/read → repair draft → `plans:audit { phase:'activation' }` → set status ready with `expectedCurrent:'draft'`. Re-audit after semantic edits; cosmetic-only edits do not need it. Starting a draft uses the same gate. Deprecate with status='superseded' + `learnings`.",
   },
   capability: 'plans:write',
   requirePrincipal: false,

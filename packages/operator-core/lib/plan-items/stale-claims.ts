@@ -73,6 +73,13 @@ export interface PlanClaimSweepResult {
   released: ReleasedPlanClaim[];
 }
 
+export interface PlanClaimSweepKey {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  itemId: string;
+}
+
 /**
  * Delete every plan-item claim whose lease lapsed > grace ago AND whose holder
  * is dead per the alias-aware liveness rule. One atomic statement; returns the
@@ -80,9 +87,10 @@ export interface PlanClaimSweepResult {
  */
 export async function reclaimExpiredPlanItemClaims(
   sql: Db,
-  opts: { graceMs?: number } = {},
+  opts: { graceMs?: number; key?: PlanClaimSweepKey } = {},
 ): Promise<PlanClaimSweepResult> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_PLAN_CLAIM_GRACE_MS) / 1000));
+  const key = opts.key;
   const rows = await sql<ReleasedPlanClaim[]>`
     WITH live_holder AS (
       -- Mig-225 alias-aware liveness: fresh presence rows…
@@ -104,9 +112,13 @@ export async function reclaimExpiredPlanItemClaims(
       SELECT c.workspace_id, c.harness_slug, c.plan_slug, c.item_id,
              c.owner AS former_owner,
              EXTRACT(EPOCH FROM (clock_timestamp() - c.expires_ts))::float8 AS lapsed_secs
-        FROM harness_shared.plan_item_claims c
+       FROM harness_shared.plan_item_claims c
        WHERE c.expires_ts < clock_timestamp() - make_interval(secs => ${graceSec})
          AND NOT EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = c.owner)
+         AND (${key?.workspaceId ?? null}::text IS NULL OR c.workspace_id = ${key?.workspaceId ?? null})
+         AND (${key?.harnessSlug ?? null}::text IS NULL OR c.harness_slug = ${key?.harnessSlug ?? null})
+         AND (${key?.planSlug ?? null}::text IS NULL OR c.plan_slug = ${key?.planSlug ?? null})
+         AND (${key?.itemId ?? null}::text IS NULL OR c.item_id = ${key?.itemId ?? null})
          FOR UPDATE OF c SKIP LOCKED
     )
     DELETE FROM harness_shared.plan_item_claims c

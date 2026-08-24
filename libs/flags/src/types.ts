@@ -128,6 +128,10 @@ export const FLAGS = {
   // replyToAttentionItem), so asker-wake, provenance and triage-audit parity hold.
   // OFF ⇒ the strip does not render and the pane is byte-identical to before.
   INBOX_BULK_RESOLVE: "papercusp-inbox-bulk-resolve",
+  // cleanup-report-flows-2026-08-24: Plans-pane cleanup run + grouped review.
+  // DEFAULT ON (derived FLAG_DEFAULTS) — finished additive surface; OFF removes
+  // the strip and revokes already-launched resolver authority at its tool seam.
+  PLAN_CLEANUP: "papercusp-plan-cleanup",
   // papercusp-self-improvement-loop-2026-06-04 Phase 3 (D-004/D-006/D-008): the
   // master switch for AUTO-implementing captured improvements. When OFF (default),
   // the improvement-implement routine is a no-op — capture (Phase 1) + triage

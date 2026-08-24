@@ -122,7 +122,8 @@ export interface CleanupFindingOutcomeReport {
 export type CleanupFindingWriteRefusal =
   | { reason: 'run_not_found'; phase: null }
   | { reason: 'run_wrong_kind'; phase: BulkRunPhase }
-  | { reason: 'run_authority_revoked'; phase: BulkRunPhase };
+  | { reason: 'run_authority_revoked'; phase: BulkRunPhase }
+  | { reason: 'finding_not_in_run'; phase: BulkRunPhase };
 
 function iso(v: Date | string | null | undefined): string | null {
   if (v == null) return null;
@@ -297,6 +298,78 @@ export async function seedFindings(input: {
       if (inserted[0]) rows.push(mapFinding(inserted[0]));
     }
     return { findings: rows, refused: null };
+  });
+}
+
+/**
+ * Execute one cleanup mutation while holding the run row as the revocable
+ * authority token. This is the plan-cleanup counterpart of
+ * `executeBulkRunAction`: Stop/settle and the mutation serialize on the SAME
+ * row lock, the finding is locked before the callback starts, and the outcome
+ * plus counters commit before authority is released.
+ *
+ * The callback must dispatch through the canonical plan/claim write seam. It
+ * deliberately receives the locked snapshot so a caller cannot accidentally
+ * target a different finding after acquiring authority.
+ */
+export async function executeCleanupFindingAction<T>(input: {
+  runId: string;
+  findingId: string;
+  workspaceId?: string;
+  execute: (finding: CleanupRunFindingRow) => Promise<T>;
+}): Promise<{
+  actionResult: T | null;
+  finding: CleanupRunFindingRow | null;
+  run: BulkRunRow | null;
+  refused: CleanupFindingWriteRefusal | null;
+}> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+
+  return await sql.begin(async (tx) => {
+    const { phase, refused } = await lockLiveCleanupRun(tx, input.runId, ws);
+    if (refused) return { actionResult: null, finding: null, run: null, refused };
+
+    const findingRows = await tx<RawFindingRow[]>`
+      SELECT ${tx.unsafe(FINDING_COLUMNS)}
+        FROM harness_shared.plan_cleanup_run_findings
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+         AND finding_id = ${input.findingId}
+       FOR UPDATE
+    `;
+    const locked = findingRows[0] ? mapFinding(findingRows[0]) : null;
+    if (!locked) {
+      return {
+        actionResult: null,
+        finding: null,
+        run: null,
+        refused: { reason: 'finding_not_in_run' as const, phase },
+      };
+    }
+
+    const actionResult = await input.execute(locked);
+    const updatedRows = await tx<RawFindingRow[]>`
+      UPDATE harness_shared.plan_cleanup_run_findings
+         SET outcome = 'auto_applied',
+             error = NULL,
+             decided_at = now(),
+             updated_at = now()
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+         AND finding_id = ${input.findingId}
+      RETURNING ${tx.unsafe(FINDING_COLUMNS)}
+    `;
+    await recomputeCountersFromFindings(tx, input.runId, ws);
+    const runRows = await tx<Parameters<typeof mapRunLoose>[0][]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    return {
+      actionResult,
+      finding: updatedRows[0] ? mapFinding(updatedRows[0]) : null,
+      run: runRows[0] ? mapRunLoose(runRows[0]) : null,
+      refused: null,
+    };
   });
 }
 

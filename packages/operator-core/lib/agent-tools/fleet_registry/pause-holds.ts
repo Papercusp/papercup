@@ -94,13 +94,14 @@ function degraded(leg: 'pause' | 'resume', fleetSlug: string, err: unknown): Fle
  * so a member complying with the wind-down cue ("release your claims") cannot leak its
  * item back into the claimable pool.
  *
- * MEMBERSHIP IS READ FROM `coord_presence.fleet_slug` DIRECTLY, WITH NO LIVENESS FILTER —
- * deliberately NOT via `hostAudienceResolvers.listFleetMembers`. That resolver is the
- * DELIVERY audience: it drops muted members and stale/parked heartbeats. Both exclusions
- * are correct for sending a message and WRONG here — a muted member still holds claims,
- * and a member that has already parked in response to the pause is the very case this
- * protects. Using the delivery audience would leave exactly the compliant members' work
- * exposed, i.e. re-open the bug for the agents who obeyed fastest.
+ * MEMBERSHIP IS READ FROM THE LATEST `fleet_membership_events` FACT, WITH NO LIVENESS
+ * FILTER — deliberately NOT via `coord_presence.fleet_slug` or
+ * `hostAudienceResolvers.listFleetMembers`. The presence label is only a projection and
+ * the delivery resolver drops muted and stale/parked heartbeats. Those exclusions are
+ * correct for sending a message and WRONG here: a muted member still holds claims, and a
+ * member that has already parked in response to the pause is the very case this protects.
+ * The append-only fact is the durable current-membership source, so a reaped member is
+ * still included while an owner who has moved to another fleet is not.
  *
  * Items already claim-held are skipped, so a re-invoked pause neither double-writes nor
  * overwrites an existing deliberate park's provenance (which would then be wrongly
@@ -111,10 +112,12 @@ export async function applyFleetPauseHolds(args: {
   workspaceId: string | null;
   /** The pause invoker — recorded as the park's `claim_hold_by` provenance. */
   byOwnerId: string;
-  /** The fleet's recorded leader, unioned into membership (a leader leading several
-   *  fleets carries only its newest fleet's label on the singular `coord_presence.fleet_slug`
-   *  column, mig 407, so presence alone can silently drop it — the same union
-   *  `listFleetMembers` performs for the delivery audience). */
+  /**
+   * Registry leader retained for call-site compatibility. It is intentionally NOT unioned
+   * into the holder set: one leader can control several fleets, but a holder's work-item
+   * claim has no fleet id, so an unconditional leader union parks unrelated claims. The
+   * latest durable membership fact below is the only safe fleet-scope predicate.
+   */
   leaderOwnerId?: string | null;
   /** The control reason, appended after the marker for human triage. */
   reason?: string | null;
@@ -129,6 +132,13 @@ export async function applyFleetPauseHolds(args: {
     // against the live relation: a query naming `assignee` raises 42703, which the
     // fail-soft catch would otherwise have hidden completely.
     const rows = await sql<{ feature_id: string; harness_slug: string | null }[]>`
+      WITH current_membership AS (
+        SELECT DISTINCT ON (e.owner_id)
+               e.owner_id, e.fleet_slug
+          FROM harness_shared.fleet_membership_events e
+         WHERE e.workspace_id = ${args.workspaceId}
+         ORDER BY e.owner_id, e.id DESC
+      )
       SELECT w.feature_id, w.harness_slug
         FROM harness_shared.work_items w
        WHERE w.workspace_id = ${args.workspaceId}
@@ -137,14 +147,10 @@ export async function applyFleetPauseHolds(args: {
          AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          -- Already parked (by anyone, for any reason): leave its provenance alone.
          AND COALESCE(w.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-         AND (
-           w.taken_by IN (
-             SELECT p.owner_id
-               FROM harness_shared.coord_presence p
-              WHERE p.workspace_id = ${args.workspaceId}
-                AND p.fleet_slug = ${args.fleetSlug}
-           )
-           OR (${args.leaderOwnerId ?? null}::text IS NOT NULL AND w.taken_by = ${args.leaderOwnerId ?? null})
+         AND w.taken_by IN (
+           SELECT m.owner_id
+             FROM current_membership m
+            WHERE m.fleet_slug = ${args.fleetSlug}
          )`;
 
     return await writeHolds(rows, true, {

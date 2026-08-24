@@ -9,7 +9,7 @@
  *
  * The SQL is asserted by capturing the tagged-template the module builds. That is
  * deliberate: the membership predicate is the exact place the bug would silently
- * reappear (see the `listFleetMembers` note in pause-holds.ts), and a mock that only
+ * reappear (see the durable-membership note in pause-holds.ts), and a mock that only
  * checked the write calls would pass just as happily against a query that selects the
  * wrong rows.
  */
@@ -80,7 +80,7 @@ describe('applyFleetPauseHolds — the pause leg', () => {
     expect(holdM.mock.calls[1]![2]).not.toHaveProperty('harness');
   });
 
-  it('selects members from coord_presence WITHOUT a liveness filter, and skips already-parked rows', async () => {
+  it('uses latest durable membership, excludes a cross-fleet leader, and skips already-parked rows', async () => {
     await applyFleetPauseHolds({
       fleetSlug: 'my-fleet',
       workspaceId: 'ws-1',
@@ -89,8 +89,14 @@ describe('applyFleetPauseHolds — the pause leg', () => {
     });
 
     const { text, values } = sqlCalls[0]!;
-    expect(text).toContain('harness_shared.coord_presence');
-    expect(text).toContain('fleet_slug');
+    // Membership must come from the append-only current fact, not the ephemeral presence
+    // projection. A latest-fact join keeps a reaped member's held claim protected while
+    // excluding an owner whose current membership moved to another fleet.
+    expect(text).toContain('harness_shared.fleet_membership_events');
+    expect(text).toContain('DISTINCT ON (e.owner_id)');
+    expect(text).toContain('ORDER BY e.owner_id, e.id DESC');
+    expect(text).toContain('m.fleet_slug');
+    expect(text).not.toContain('harness_shared.coord_presence');
     // A member that has ALREADY parked in response to the pause is the very case this
     // protects, so membership must not be gated on heartbeat freshness.
     expect(text).not.toMatch(/heartbeat|stale|interval/i);
@@ -103,8 +109,29 @@ describe('applyFleetPauseHolds — the pause leg', () => {
     // NOTHING, i.e. the original bug wearing a "fixed" label. Pin both directions.
     expect(text).toContain('w.taken_by');
     expect(text).not.toContain('assignee');
-    // The registry leader is unioned in (singular coord_presence.fleet_slug, mig 407).
-    expect(values).toContain('su-leader');
+    // The registry leader is deliberately NOT interpolated as an unconditional bypass:
+    // a leader may hold claims for another fleet. The current durable membership fact is
+    // the only predicate that includes a target-fleet leader's claims.
+    expect(values).not.toContain('su-leader');
+    expect(text).not.toMatch(/OR\s*\([^)]*leaderOwnerId|w\.taken_by\s*=\s*\?/i);
+  });
+
+  it('keeps target-fleet leaders in the same current-membership predicate as members', async () => {
+    await applyFleetPauseHolds({
+      fleetSlug: 'target-fleet',
+      workspaceId: 'ws-1',
+      byOwnerId: 'su-owner',
+      leaderOwnerId: 'su-target-leader',
+    });
+
+    const { text } = sqlCalls[0]!;
+    // There is no special leader branch: when su-target-leader's latest durable event is
+    // target-fleet, the same m.fleet_slug filter includes that leader's claim; when the
+    // latest event names another fleet, it excludes it. This is the regression's key
+    // positive and negative distinction.
+    expect(text).toContain('FROM current_membership m');
+    expect(text).toContain('WHERE m.fleet_slug = ?');
+    expect(text).not.toContain('leaderOwnerId');
   });
 
   it('reports a per-item write failure without aborting the rest', async () => {

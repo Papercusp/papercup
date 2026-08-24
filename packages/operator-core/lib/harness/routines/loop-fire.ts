@@ -569,7 +569,7 @@ export function renderLoopWakeText(opts: {
     // exact line, and a reader must not be able to accept the goal before meeting it.
     ...(opts.goalStalenessNote ? [opts.goalStalenessNote] : []),
     '',
-    'When this unit settles: refresh loop:checkpoint, then END YOUR TURN. `loop:end` to stop; `loop:status` to inspect.',
+    'When this unit settles: refresh loop:checkpoint { did, left, insight, next }, then END YOUR TURN. `loop:end` to stop; `loop:status` to inspect.',
   ].join('\n');
 }
 

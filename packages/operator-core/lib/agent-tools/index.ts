@@ -1249,6 +1249,8 @@ import './plans/lint';
 import './plans/export';
 import './plans/new';
 import './plans/set-status';
+// cleanup-report-flows-2026-08-24 P-004 — resolver manifest/action/report/settle.
+import './plans/cleanup-run';
 import './plans/set-importance';
 import './plans/set-now';
 import './plans/add-decision';

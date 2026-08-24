@@ -33,6 +33,7 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
 const {
   seedFindings,
+  executeCleanupFindingAction,
   reportFindingOutcomes,
   getRunFindings,
   getPendingReviewFindings,
@@ -185,6 +186,39 @@ describe('plan-cleanup run store (real PG)', () => {
     );
   });
 
+  it('serializes one action with outcome + counters under the run authority lock', async () => {
+    const run = await createCleanupRun();
+    await seedFindings({ runId: run.runId, findings: scanFindings() });
+    let entered = false;
+    const result = await executeCleanupFindingAction({
+      runId: run.runId,
+      findingId: 'flip-to-done:papercusp/plan-a#P-001',
+      async execute(locked) {
+        entered = true;
+        expect(locked).toMatchObject({ planSlug: 'plan-a', itemId: 'P-001', outcome: 'pending' });
+        return { dispatched: 'plans:set-status' };
+      },
+    });
+    expect(entered).toBe(true);
+    expect(result.refused).toBeNull();
+    expect(result.actionResult).toEqual({ dispatched: 'plans:set-status' });
+    expect(result.finding?.outcome).toBe('auto_applied');
+    expect(result.run).toMatchObject({ autoResolved: 1, recommended: 0, skipped: 0, failed: 0 });
+  });
+
+  it('refuses a missing finding before entering its action callback', async () => {
+    const run = await createCleanupRun();
+    await seedFindings({ runId: run.runId, findings: scanFindings() });
+    const execute = vi.fn();
+    const result = await executeCleanupFindingAction({
+      runId: run.runId,
+      findingId: 'flip-to-done:papercusp/plan-a#P-999',
+      execute,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.refused).toMatchObject({ reason: 'finding_not_in_run', phase: 'pending' });
+  });
+
   it('reports outcomes, derives the run counters, and re-reporting cannot double-count', async () => {
     const run = await createCleanupRun();
     await seedFindings({ runId: run.runId, findings: scanFindings() });
@@ -276,6 +310,15 @@ describe('plan-cleanup run store (real PG)', () => {
       reports: [{ findingId: 'stale-now:papercusp/plan-a', outcome: 'skipped' }],
     });
     expect(late.refused).toMatchObject({ reason: 'run_authority_revoked', phase: 'review' });
+
+    const execute = vi.fn();
+    const lateAction = await executeCleanupFindingAction({
+      runId: run.runId,
+      findingId: 'stale-now:papercusp/plan-a',
+      execute,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(lateAction.refused).toMatchObject({ reason: 'run_authority_revoked', phase: 'review' });
   });
 
   // ── kind-aware settle + review reads ──────────────────────────────────────
