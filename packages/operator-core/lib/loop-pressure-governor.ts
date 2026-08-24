@@ -108,11 +108,15 @@ let active: LoopPressureGovernorHandle | undefined;
 export function startLoopPressureGovernor(opts: LoopPressureGovernorOpts = {}): LoopPressureGovernorHandle {
   if (active) return active;
   const intervalMs = opts.intervalMs ?? 15_000;
+  const burnIntervalMs = opts.burnIntervalMs ?? 60_000;
   const readPressure = opts.readPressure ?? loopPressure;
+  const readPoolBurn = opts.readPoolBurn ?? defaultReadPoolBurn;
   const onPenalty = opts.onPenalty ?? recordGlobalConcurrencyPenalty;
   const onClean = opts.onClean ?? recordGlobalConcurrencyClean;
   const log = opts.log ?? ((m) => console.warn(m));
   let last: LoopPressure = 'ok';
+  let lastBurn: BurnAction = 'none';
+  let burnInFlight = false;
 
   const tick = (): void => {
     const p = readPressure();
@@ -129,14 +133,52 @@ export function startLoopPressureGovernor(opts: LoopPressureGovernorOpts = {}): 
     last = p;
   };
 
+  const BURN_SEVERITY: Record<BurnAction, number> = { none: 0, throttle: 1, shed: 2 };
+
+  const tickBurn = async (): Promise<void> => {
+    if (burnInFlight) return; // a pending pool read is never doubled
+    burnInFlight = true;
+    try {
+      const { action, reason } = await readPoolBurn();
+      if (action !== lastBurn) {
+        if (BURN_SEVERITY[action] > BURN_SEVERITY[lastBurn]) {
+          // Escalation (none→throttle, none→shed, throttle→shed) — each is a new, worse
+          // episode: shed once. Debounced: a pool that STAYS throttled isn't re-penalized.
+          onPenalty();
+          log(`[loop-governor] pool burn '${action}' — shedding effective agent concurrency (WI-41147): ${reason}`);
+        } else if (action === 'none') {
+          // Fully recovered → one clean step (the AIMD +1-per-N walk continues it).
+          onClean();
+          log(`[loop-governor] pool burn recovered — ramping effective agent concurrency back up (WI-41147): ${reason}`);
+        }
+        // shed → throttle: still a degraded episode — no penalty, no clean; recovery fires at 'none'.
+        lastBurn = action;
+      }
+    } catch (e) {
+      // A failed read is NOT a verdict: keep the last state — mapping failure to 'none'
+      // here would fire a fake recovery clean mid-episode (never act on missing data).
+      log(`[loop-governor] pool burn read failed — keeping last verdict '${lastBurn}': ${String(e)}`);
+    } finally {
+      burnInFlight = false;
+    }
+  };
+
   const timer = managedSetInterval('loop-pressure-governor', intervalMs, tick, { category: 'watchdog' });
+  const burnTimer = managedSetInterval(
+    'loop-pressure-governor-burn',
+    burnIntervalMs,
+    () => void tickBurn(),
+    { category: 'watchdog' },
+  );
 
   const handle: LoopPressureGovernorHandle = {
     stop() {
       timer.stop();
+      burnTimer.stop();
       if (active === handle) active = undefined;
     },
     tick,
+    tickBurn,
   };
   active = handle;
   return handle;

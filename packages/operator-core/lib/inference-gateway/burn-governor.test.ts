@@ -18,6 +18,7 @@ import {
   BURN_EXHAUSTED_UTIL,
   DEFAULT_BURN_POLICY,
   accountBurnSamples,
+  aggregatePoolBurn,
   estimateBurnRatePerHr,
   evaluateAccountBurn,
   evaluateBurn,
@@ -541,5 +542,41 @@ describe('selectAccountForSpawn burn wiring', () => {
     const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0, priorAccountId: 'bad' });
     expect(sel.accountId).toBe('bad');
     expect(sel.pinSource).toBe('sticky');
+  });
+});
+
+describe('aggregatePoolBurn — the pool verdict for the concurrency lever (leg b)', () => {
+  it('empty pool → none (never act on missing data)', () => {
+    const agg = aggregatePoolBurn([]);
+    expect(agg.action).toBe('none');
+    expect(agg.total).toBe(0);
+    expect(agg.reason).toContain('no accounts');
+  });
+
+  it('all shed → shed (nowhere to route)', () => {
+    const agg = aggregatePoolBurn(['shed', 'shed', 'shed']);
+    expect(agg.action).toBe('shed');
+    expect(agg.counts).toEqual({ none: 0, throttle: 0, shed: 3 });
+    expect(agg.reason).toContain('nowhere to route');
+  });
+
+  it('every account throttle-or-shed (zero none) → throttle (spreading cannot relieve)', () => {
+    const agg = aggregatePoolBurn(['throttle', 'shed', 'throttle']);
+    expect(agg.action).toBe('throttle');
+    expect(agg.counts).toEqual({ none: 0, throttle: 2, shed: 1 });
+    expect(agg.reason).toContain('slow the fleet');
+  });
+
+  it('all throttle → throttle', () => {
+    const agg = aggregatePoolBurn(['throttle', 'throttle']);
+    expect(agg.action).toBe('throttle');
+    expect(agg.counts).toEqual({ none: 0, throttle: 2, shed: 0 });
+  });
+
+  it('a single none account stands the lever down — even beside universal shed', () => {
+    const agg = aggregatePoolBurn(['shed', 'shed', 'none']);
+    expect(agg.action).toBe('none');
+    expect(agg.reason).toContain('route around');
+    expect(agg.counts).toEqual({ none: 1, throttle: 0, shed: 2 });
   });
 });
