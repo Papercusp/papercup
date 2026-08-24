@@ -3566,7 +3566,7 @@ export function hostThroughPty(o) {
   // bare CR at each quiet observation in a bounded post-submit window (see
   // makeSubmitVerifier). writeCr reads the live `child` closure so it survives a
   // recycle; a fresh verifier per call keeps the human-input abort baseline fresh.
-  const verifySubmitted = async (label) => {
+  const verifySubmitted = async (label, { terminateOnExhaustion = true } = {}) => {
     const verifier = makeSubmitVerifier({
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
@@ -3591,18 +3591,25 @@ export function hostThroughPty(o) {
           /* never let a diagnostic write break the session */
         }
       },
-      onExhausted: ({ polls, resubmits, outputObservedAfterResubmit }) => {
-        terminateSubmitVerifyExhaustion({
-          label,
-          polls,
-          resubmits,
-          maxResubmits: positiveNumber(
-            env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR,
-            SUBMIT_VERIFY_MAX_RESUBMITS,
-          ),
-          outputObservedAfterResubmit,
-        });
-      },
+      // A managed session-port kickoff has a stronger, independent proof:
+      // waitForNativeTranscriptMarker below. Its target can persist the marker
+      // after the TUI goes quiet, so WI-41044's generic host teardown would race
+      // the authoritative native-persistence acknowledgement. Ordinary injected
+      // turns retain the host-fatal exhaustion behavior.
+      onExhausted: terminateOnExhaustion
+        ? ({ polls, resubmits, outputObservedAfterResubmit }) => {
+            terminateSubmitVerifyExhaustion({
+              label,
+              polls,
+              resubmits,
+              maxResubmits: positiveNumber(
+                env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR,
+                SUBMIT_VERIFY_MAX_RESUBMITS,
+              ),
+              outputObservedAfterResubmit,
+            });
+          }
+        : undefined,
     });
     return verifier.verify();
   };
@@ -3631,6 +3638,7 @@ export function hostThroughPty(o) {
     backoffMs = recycleCarryRetryBackoffMs,
     onDrop = () => {},
     requireInitialOutput = false,
+    terminateOnSubmitVerifyExhaustion = true,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
     const injectChild = child; // bail if a newer recycle supersedes this one
@@ -3706,7 +3714,9 @@ export function hostThroughPty(o) {
               if (i + 1 < chunks.length) await new Promise((r) => setTimeout(r, 0));
             }
           }
-          if (child === injectChild) await verifySubmitted(label);
+          if (child === injectChild) {
+            await verifySubmitted(label, { terminateOnExhaustion: terminateOnSubmitVerifyExhaustion });
+          }
           return { delivered: true, attempts };
         }
         // Deferred: the child is still mid-boot / mid-turn. Retry until the
@@ -3755,7 +3765,15 @@ export function hostThroughPty(o) {
   if (launchKickoff) {
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
-      const r = await injectTurnAtPrompt({ text: launchKickoff, label, requireInitialOutput: true });
+      const r = await injectTurnAtPrompt({
+        text: launchKickoff,
+        label,
+        requireInitialOutput: true,
+        // The managed kickoff's native transcript proof owns its failure
+        // timeout and child kill. Do not let the generic submit verifier tear
+        // down the host before that proof can observe a late marker.
+        terminateOnSubmitVerifyExhaustion: !managedKickoff,
+      });
       if (!managedKickoff) {
         if (!r.delivered) return;
         try {
