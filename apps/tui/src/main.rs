@@ -8,6 +8,7 @@
 //! slow (60s) safety-net refetch is the only timer, and it is a fallback — not a
 //! poll. P1 = the Create tab (Plans / Inbox / Sessions).
 
+mod agent_chats;
 mod agent_ctx;
 mod agent_pane_kind;
 mod app;

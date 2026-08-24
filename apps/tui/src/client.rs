@@ -6,6 +6,11 @@
 //! else HTTP from `operator.json`.
 #![allow(dead_code)] // some typed methods are consumed as the panels grow.
 
+use crate::agent_chats::{
+    self, AgentChat, AgentChatApprovalDecision, AgentChatApprovalsResponse, AgentChatEventStream,
+    AgentChatListOptions, AgentChatListResponse, AgentChatTurnRequest, NewAgentChat,
+    PendingAgentChatApproval,
+};
 use crate::http::HttpClient;
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models;
@@ -324,6 +329,105 @@ impl OperatorClient {
             ))
             .await?;
         serde_json::from_value::<TurnsPage>(v).context("decode earlier turns")
+    }
+
+    // ─── Native agent-chats session protocol (P-004 / D-009 / D-011) ───
+
+    /// List agent-chat sessions for one harness. The server bounds every page;
+    /// callers can request archived rows and advance with `offset`.
+    pub async fn list_agent_chats(
+        &self,
+        harness: &str,
+        options: &AgentChatListOptions,
+    ) -> Result<Vec<crate::agent_chats::AgentChatSummary>> {
+        let path = agent_chats::agent_chats_list_path(harness, options);
+        let value = self.get_json(&path).await?;
+        Ok(serde_json::from_value::<AgentChatListResponse>(value)
+            .context("decode agent-chat list")?
+            .chats)
+    }
+
+    /// Create a session on the operator-owned agent-chats store.
+    pub async fn create_agent_chat(
+        &self,
+        harness: &str,
+        request: &NewAgentChat,
+    ) -> Result<AgentChat> {
+        let body = serde_json::to_value(request).context("encode new agent chat")?;
+        let value = self
+            .post_json(
+                &agent_chats::agent_chats_list_path(harness, &AgentChatListOptions::default()),
+                body,
+            )
+            .await?;
+        serde_json::from_value(value).context("decode created agent chat")
+    }
+
+    /// Load one session including transcript and feature-lock projection.
+    pub async fn get_agent_chat(&self, harness: &str, chat_id: &str) -> Result<AgentChat> {
+        let value = self
+            .get_json(&agent_chats::agent_chat_path(harness, chat_id))
+            .await?;
+        serde_json::from_value(value).context("decode agent chat")
+    }
+
+    /// Archive one session. This intentionally does not mutate a feature lock.
+    pub async fn archive_agent_chat(&self, harness: &str, chat_id: &str) -> Result<()> {
+        self.delete_json(&agent_chats::agent_chat_path(harness, chat_id))
+            .await?;
+        Ok(())
+    }
+
+    /// Start one turn on the operator-owned loop and return typed SSE events.
+    /// The request helper pins `engine:"loop"`; no ACP/external-engine lane is
+    /// exposed through this method.
+    pub async fn start_agent_chat_turn(
+        &self,
+        harness: &str,
+        chat_id: &str,
+        request: &AgentChatTurnRequest,
+    ) -> Result<AgentChatEventStream> {
+        let body = agent_chats::loop_message_body(request);
+        let frames = self
+            .transport
+            .subscribe_sse_post(
+                &agent_chats::agent_chat_messages_path(harness, chat_id),
+                body.to_string(),
+            )
+            .await?;
+        Ok(agent_chats::decode_agent_chat_stream(frames))
+    }
+
+    /// Rehydrate unresolved HITL requests after a client reconnect.
+    pub async fn list_agent_chat_approvals(
+        &self,
+        harness: &str,
+        chat_id: &str,
+    ) -> Result<Vec<PendingAgentChatApproval>> {
+        let value = self
+            .get_json(&agent_chats::agent_chat_approvals_path(harness, chat_id))
+            .await?;
+        Ok(serde_json::from_value::<AgentChatApprovalsResponse>(value)
+            .context("decode pending agent-chat approvals")?
+            .approvals)
+    }
+
+    /// Resolve one pending HITL request. The route is PG-backed, so this works
+    /// even when the POST lands on a different operator cluster worker.
+    pub async fn resolve_agent_chat_approval(
+        &self,
+        harness: &str,
+        chat_id: &str,
+        call_id: &str,
+        decision: &AgentChatApprovalDecision,
+    ) -> Result<()> {
+        let body = serde_json::to_value(decision).context("encode approval decision")?;
+        self.post_json(
+            &agent_chats::agent_chat_approval_path(harness, chat_id, call_id),
+            body,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn get_json(&self, path: &str) -> Result<serde_json::Value> {
@@ -1056,30 +1160,22 @@ impl OperatorClient {
     }
 
     /// The federated p2p roster — every remote hive announced into
-    /// `shared_presence`, via `coord:presence { include_stale: true }` (MCP
-    /// envelope unwrapped). Local (non-federated) session rows are dropped;
-    /// stale federated rows are KEPT — a hive that joined the swarm but is
-    /// currently quiet still lists, marked stale (pui-hives-tab-2026-06-07).
+    /// `shared_presence`, via the unified `coord:roster { view: "live" }`
+    /// lens (MCP envelope unwrapped). Local (non-federated) session rows are
+    /// dropped; stale federated rows remain in the unified active projection
+    /// and stay marked on each row (pui-hives-tab-2026-06-07).
     pub async fn federated_hives(&self) -> Result<Vec<crate::models::PresenceRow>> {
+        let (path, body) = federated_hives_request();
         let env = self
-            .post_json(
-                "/api/agent-tools/coord/presence",
-                serde_json::json!({ "include_stale": true }),
-            )
+            .post_json(path, body)
             .await?;
         let text = env
             .get("content")
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("text"))
             .and_then(|t| t.as_str())
-            .context("coord:presence: missing content[0].text")?;
-        let p: crate::models::PresencePayload =
-            serde_json::from_str(text).context("parse presence payload")?;
-        Ok(p.active
-            .into_iter()
-            .chain(p.stale)
-            .filter(|r| r.federated)
-            .collect())
+            .context("coord:roster: missing content[0].text")?;
+        parse_federated_hives(text)
     }
 
     /// The P2P hive directory — verified hives announced on the well-known
@@ -1959,6 +2055,26 @@ fn roster_path(workspace: Option<&str>) -> String {
     }
 }
 
+/// Build the unified roster request used by the Hives tab. Keep this separate
+/// from the transport method so the retired presence stale-roster argument
+/// cannot quietly return in a future client edit.
+fn federated_hives_request() -> (&'static str, serde_json::Value) {
+    (
+        "/api/agent-tools/coord/roster",
+        serde_json::json!({ "view": "live" }),
+    )
+}
+
+fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> {
+    let payload: crate::models::PresencePayload =
+        serde_json::from_str(text).context("parse coord:roster payload")?;
+    Ok(payload
+        .active
+        .into_iter()
+        .filter(|row| row.federated)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1971,6 +2087,33 @@ mod tests {
         );
         assert_eq!(urlencode("a b.md"), "a%20b.md");
         assert_eq!(urlencode("x?y&z"), "x%3Fy%26z");
+    }
+
+    #[test]
+    fn federated_hives_uses_unified_roster_without_retired_presence_arg() {
+        let (path, body) = federated_hives_request();
+        assert_eq!(path, "/api/agent-tools/coord/roster");
+        assert_eq!(body, serde_json::json!({ "view": "live" }));
+        assert!(body.get("include_stale").is_none());
+    }
+
+    #[test]
+    fn parse_federated_hives_filters_unified_active_roster() {
+        let text = serde_json::json!({
+            "view": "live",
+            "active": [
+                { "ownerId": "fed:1@box-a", "federated": true },
+                { "ownerId": "su-local", "federated": false },
+                { "ownerId": "fed:2@box-b", "federated": true, "stale": true }
+            ]
+        })
+        .to_string();
+        let rows = parse_federated_hives(&text).expect("parses unified roster");
+        assert_eq!(
+            rows.iter().map(|row| row.owner_id.as_str()).collect::<Vec<_>>(),
+            ["fed:1@box-a", "fed:2@box-b"]
+        );
+        assert!(rows[1].stale);
     }
 
     #[test]
