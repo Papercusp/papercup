@@ -232,10 +232,35 @@ const HEALTHY_PENDING_REGISTRATION_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(?:status|state)\s*[:=]\s*pending\b[^\n.!?]{0,120}\b(?:event[-\s]?await|await|watch|subscription)\b[^\n.!?]{0,120}\b(?:registered|registration|armed|active|live)\b/i,
 ];
 
+/**
+ * Explicit non-admission language makes a pending rerun/verification a supporting
+ * measurement rather than unresolved evidence. Keep this vocabulary narrow: a
+ * generic negative word elsewhere must not hide an actually pending verdict.
+ */
+const NON_ADMISSION_ASSERTION_PATTERN =
+  /\b(?:non[-\s]?(?:admitting|admission|admitted)|unadmitted|not\s+(?:yet\s+)?(?:admitting|admitted))\b/i;
+const PENDING_MEASUREMENT_SUBJECT_PATTERN =
+  /\b(?:re[-\s]?run|rerun|retest|verification|validation|probe|measurement|test|check|sample)\b/i;
+
 /** Return true when a pending/awaiting marker describes a healthy registration. */
 function isHealthyPendingRegistration(text: string, match: RegExpExecArray): boolean {
   if (!/\b(?:pending|awaiting|awaits?)\b/i.test(match[0])) return false;
   return HEALTHY_PENDING_REGISTRATION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Return true when a pending status is the measurement supporting an explicit
+ * non-admission assertion in the same or immediately preceding clause.
+ */
+function isNegativeAdmissionMeasurement(text: string, match: RegExpExecArray): boolean {
+  const before = text.slice(Math.max(0, match.index - 240), match.index);
+  const clauses = before.split(/[.!?;\n]/).map((clause) => clause.trim()).filter(Boolean);
+  const currentClause = clauses.at(-1) ?? '';
+  const previousClause = clauses.at(-2) ?? '';
+  return (
+    PENDING_MEASUREMENT_SUBJECT_PATTERN.test(currentClause) &&
+    (NON_ADMISSION_ASSERTION_PATTERN.test(currentClause) || NON_ADMISSION_ASSERTION_PATTERN.test(previousClause))
+  );
 }
 
 /**
@@ -244,6 +269,8 @@ function isHealthyPendingRegistration(text: string, match: RegExpExecArray): boo
  * the common boolean/status suffixes after it before downgrading the evidence.
  */
 function isNegatedVerificationConflict(text: string, match: RegExpExecArray): boolean {
+  if (isNegativeAdmissionMeasurement(text, match)) return true;
+
   const before = text.slice(Math.max(0, match.index - 120), match.index);
   const boundary = Math.max(...['.', '!', '?', ';', '\n'].map((mark) => before.lastIndexOf(mark)));
   const clause = before.slice(boundary + 1).trim();
