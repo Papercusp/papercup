@@ -17,6 +17,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { TaskTerminalProvenance } from './types';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -157,6 +158,141 @@ describe('agent-session native-id binding (EI-21268871278252116)', () => {
       'late-enrolment': 'native-newest-open',
       'other-owner-task': null,
     });
+  });
+});
+
+describe('P-012 terminal provenance writer', () => {
+  async function liveTask(
+    taskId: string,
+    input: { memoryMaxBytes?: number | null; peakMemoryBytes?: number | null } = {},
+  ) {
+    const row = await store.registerTask(
+      {
+        class: 'bash-job',
+        title: taskId,
+        argv: ['/bin/bash'],
+        launchedBy: 'test',
+        memoryMaxBytes: input.memoryMaxBytes ?? null,
+      },
+      { taskId, workspaceId: WS, reserveScope: true, unitKind: 'service' },
+    );
+    await store.markSpawned(taskId, {
+      pid: 42,
+      processIdentity: 'linux:boot:42',
+      scopeUnit: row.scopeUnit,
+      cgroupPath: `/user.slice/papercusp.slice/${row.scopeUnit}`,
+      confined: true,
+    });
+    if (input.peakMemoryBytes != null) {
+      await store.touchAlive([{ taskId, metrics: { peakMemoryBytes: input.peakMemoryBytes, lastMemoryBytes: 1 } }]);
+    }
+    return (await store.getTask(taskId))!;
+  }
+
+  function terminal(
+    scopeUnit: string,
+    over: Partial<TaskTerminalProvenance> = {},
+  ) {
+    return {
+      capturedAt: '2026-08-24T16:00:00.000Z',
+      scopeUnit,
+      cgroupPath: null,
+      invocationId: 'terminal-invocation',
+      loadState: 'loaded',
+      activeState: 'failed',
+      serviceResult: 'oom-kill',
+      execMainCode: 2,
+      execMainStatus: 9,
+      memoryMaxBytes: 32 * 1024 * 1024,
+      peakMemoryBytes: 32 * 1024 * 1024,
+      peakMemorySource: 'systemd' as const,
+      ...over,
+    };
+  }
+
+  it("records a cgroup-cap OOM as killed/137/exit_reason='oom-kill' with its exact unit identity", async () => {
+    const max = 32 * 1024 * 1024;
+    const row = await liveTask('oomtask', { memoryMaxBytes: max });
+
+    await expect(
+      store.closeTask('oomtask', {
+        state: 'exited',
+        exitCode: 1,
+        terminalProvenance: terminal(row.scopeUnit!),
+      }),
+    ).resolves.toBe(true);
+
+    const [stored] = await db.sql`
+      SELECT state, exit_code, exit_reason, memory_max_bytes::text,
+             peak_memory_bytes::text, detail
+        FROM harness_shared.task_ledger WHERE task_id = 'oomtask'
+    `;
+    expect(stored).toMatchObject({
+      state: 'killed',
+      exit_code: 137,
+      exit_reason: 'oom-kill',
+      memory_max_bytes: String(max),
+      peak_memory_bytes: String(max),
+    });
+    expect(stored!.detail.terminalProvenance).toMatchObject({
+      scopeUnit: row.scopeUnit,
+      cgroupPath: `/user.slice/papercusp.slice/${row.scopeUnit}`,
+      invocationId: 'terminal-invocation',
+      serviceResult: 'oom-kill',
+      peakMemorySource: 'systemd',
+    });
+    expect((await store.getTask('oomtask'))?.terminalProvenance?.serviceResult).toBe('oom-kill');
+  });
+
+  it('distinguishes timeout, ordinary exit 1, manual kill, and uncapped host/ancestor OOM', async () => {
+    const timeout = await liveTask('timeouttask', { memoryMaxBytes: 64 * 1024 * 1024 });
+    await store.closeTask('timeouttask', {
+      state: 'killed',
+      exitReason: 'signal SIGTERM',
+      terminalProvenance: terminal(timeout.scopeUnit!, {
+        serviceResult: 'timeout',
+        execMainStatus: 15,
+        memoryMaxBytes: 64 * 1024 * 1024,
+        peakMemoryBytes: 2 * 1024 * 1024,
+      }),
+    });
+
+    await liveTask('exit1task');
+    await store.closeTask('exit1task', { state: 'exited', exitCode: 1 });
+
+    await liveTask('manualtask');
+    await store.closeTask('manualtask', { state: 'killed', exitReason: 'scope kill SIGTERM' });
+
+    const host = await liveTask('hostoomtask');
+    await store.closeTask('hostoomtask', {
+      state: 'killed',
+      terminalProvenance: terminal(host.scopeUnit!, {
+        memoryMaxBytes: null,
+        peakMemoryBytes: 8 * 1024 * 1024,
+      }),
+    });
+
+    const rows = await db.sql`
+      SELECT task_id, state, exit_code, exit_reason
+        FROM harness_shared.task_ledger ORDER BY task_id
+    `;
+    expect(Object.fromEntries(rows.map((row) => [row.task_id, row]))).toMatchObject({
+      timeouttask: { state: 'timed_out', exit_code: 143, exit_reason: 'timeout' },
+      exit1task: { state: 'exited', exit_code: 1, exit_reason: null },
+      manualtask: { state: 'killed', exit_code: null, exit_reason: 'scope kill SIGTERM' },
+      hostoomtask: { state: 'killed', exit_code: 137, exit_reason: 'host-oom' },
+    });
+  });
+
+  it('refuses to attach terminal evidence from a different scope identity', async () => {
+    const row = await liveTask('identitytask', { memoryMaxBytes: 32 * 1024 * 1024 });
+    await expect(
+      store.closeTask('identitytask', {
+        state: 'killed',
+        terminalProvenance: terminal('pc-other.service'),
+      }),
+    ).resolves.toBe(false);
+    expect((await store.getTask(row.taskId))?.state).toBe('running');
   });
 });
 
