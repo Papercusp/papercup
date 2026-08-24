@@ -29,7 +29,10 @@
  *
  * Exit codes:
  *   0 — no required-field additions, or advisory mode, or --typecheck found nothing
- *   1 — --typecheck confirmed type errors in the workspace(s) the addition touched
+ *       ATTRIBUTED TO THE CALLER (peer live-edits and standing committed reds are
+ *       labelled by lint:tsc's --files attribution and never trip this exit)
+ *   1 — --typecheck confirmed type errors attributed to the caller's files or to files
+ *       referencing their exported types (the stranded-site population)
  */
 
 import { execFileSync } from 'node:child_process';
@@ -550,14 +553,57 @@ function main() {
     if (!json) console.log('\n--typecheck: automated run covers packages/operator-core only; run the commands above.');
     process.exit(0);
   }
-  if (!json) console.log('\n--typecheck: running lint:tsc over packages/operator-core …');
+  // EI-21186968326903578 / EI-21288330711276964: a BARE lint-tsc run here is the whole-tree
+  // CI gate (scope=all), so on this shared checkout its exit 1 was routinely a PEER's
+  // in-flight edit or a standing committed red — reported under a "✗ … after a
+  // required-field addition" headline that invited the causal reading and sent authors off
+  // to debug (or un-require) a clean change. lint-tsc's `--files=` mode already solves the
+  // exact attribution this leg needs: it fails ONLY on the named files PLUS files
+  // referencing the named files' exported type names (`filesReferencingTypeNames` — i.e.
+  // the stranded-dependent population this guard exists for), and labels every other red
+  // as a peer live-edit or an already-recorded standing red that stays green. So forward
+  // the caller's operator-core set instead of re-deriving a worse partition here.
+  //
+  // Which set: in --files= (declared) mode, the caller's WHOLE declared operator-core set —
+  // their change, including construction-site fixes in files beyond the finding ones. In
+  // inferred mode, ONLY the finding files: the inferred candidate set is every agent's
+  // uncommitted edits (see the warning printed above), and forwarding all of it would
+  // re-import the very peer-misattribution this fix removes.
+  const ocFiles = [
+    ...new Set(
+      (declaredFiles ?? findings.map((f) => f.file)).filter((f) =>
+        f.startsWith('packages/operator-core'),
+      ),
+    ),
+  ];
+  if (!json) {
+    console.log(
+      `\n--typecheck: running lint:tsc --files=<${ocFiles.length} file(s)> — verdict scoped to YOUR files`,
+    );
+    console.log('  plus files referencing their exported types (the stranded-site population);');
+    console.log('  peer live-edits and standing committed reds are labelled and stay green.');
+  }
   let out = '';
   try {
-    out = execFileSync('node', ['scripts/lint-tsc.mjs'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    out = execFileSync('node', ['scripts/lint-tsc.mjs', `--files=${ocFiles.join(',')}`], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
   } catch (err) {
     out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
     if (!json) console.log(out);
-    console.error('\n✗ typecheck reported errors above baseline after a required-field addition.');
+    console.error(
+      '\n✗ typecheck reported errors ATTRIBUTED TO YOUR CHANGE — in the file(s) you named,',
+    );
+    console.error(
+      '  or in files that reference their exported types (likely stranded construction',
+    );
+    console.error(
+      '  sites of the new required field). Peer/standing reds do NOT trip this verdict;',
+    );
+    console.error('  see the lint:tsc attribution output above for exactly which files are yours.');
+    console.error('  Do NOT make the new field optional just to silence these.');
     // NOT process.exit(): `out` holds up to 64MB of captured tsc output and exit() does
     // not drain an async pipe write, so piping this would cut the error list — which
     // reads as FEWER type errors. See scripts/check-undrained-stdout-exit.mjs.
