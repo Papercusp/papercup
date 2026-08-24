@@ -345,9 +345,16 @@ export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, c
 export function listAllTools(client: any, { timeoutMs }?: {
     timeoutMs?: number | undefined;
 }): Promise<any[]>;
+/** The live stdout delivery-failure probe (injectable in printResult for tests).
+ *  Node SWALLOWS EPIPE on process.stdout by design: when the consumer of a
+ *  captured/piped stdout dies mid-invocation (a wake-harness capture, `| head`),
+ *  every later write is silently dropped and the process still exits 0 — which
+ *  is exactly the "completed successfully but emitted no JSON or text" shape
+ *  filed as EI-21250765620092599. `stream.errored` exposes the swallowed error. */
+export function stdoutDeliveryError(): Error | null;
 /** Print the result of a tools/call, or its error. Returns the exit code. */
-export function printResult(result: any, { raw }: {
-    raw: any;
+export function printResult(result: any, { raw, deliveryProbe }?: {
+    deliveryProbe?: typeof stdoutDeliveryError | undefined;
 }): 0 | 1;
 /**
  * A result-door truncation only tells ptool that the operator's reply is not
