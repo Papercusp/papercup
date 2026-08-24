@@ -125,6 +125,37 @@ describe('preExistingChangedPathsInCompletion', () => {
 
       expect(result?.paths).toEqual([{ path: 'packages/old.ts', lastCommitAt: BEFORE }]);
     });
+
+    /**
+     * PERMANENT NEGATIVE CONTROL. A guard test that has never failed is a guard nobody has
+     * tested, and proving falsifiability by mutating the shared tree is unsafe here (git-sync
+     * sweeps the whole tree on a schedule and can commit the mutant). So the pre-fix predicate
+     * lives here verbatim, forever, and the contrast re-proves itself on every run instead of
+     * once. If someone restores an audit verb to PATH_CLAIM_ALL_RE, the second assertion fails.
+     */
+    describe('pre-fix predicate (control — never used in production)', () => {
+      const PRE_FIX_PATH_CLAIM_ALL_RE =
+        /\b(?:all|every|each|both|named)\b[\s\S]{0,100}\b(?:path|paths|file|files|site|sites|target|targets)\b[\s\S]{0,100}\b(?:changed|fixed|updated|remediated|correct|verified|covered|replaced|removed)\b/i;
+
+      it('calibration: the control still matches a genuine change claim', () => {
+        // Proves the control is wired correctly — a control that never matches proves nothing.
+        expect(PRE_FIX_PATH_CLAIM_ALL_RE.test('All 12 files were updated.')).toBe(true);
+      });
+
+      it('the control DID match the audit prose — that is the defect being fixed', () => {
+        expect(PRE_FIX_PATH_CLAIM_ALL_RE.test(MEASURED_AUDIT_PROSE)).toBe(true);
+      });
+
+      it('the shipped detector no longer flags that same prose', () => {
+        expect(
+          preExistingChangedPathsInCompletion(
+            item,
+            { summary: MEASURED_AUDIT_PROSE },
+            { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+          ),
+        ).toBeUndefined();
+      });
+    });
   });
 
   it('stays silent when the path was committed after the item', () => {
