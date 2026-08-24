@@ -96,6 +96,49 @@ export async function recoverHarnessFromSlugs(
 }
 
 /**
+ * Return the exact plan slugs carried by a plans:get argument object.
+ *
+ * This is deliberately limited to the identity fields that plans:get itself
+ * accepts. Transport scope recovery must never infer a plan from free text or
+ * from a result-shaped argument: the caller has to name the row it is asking
+ * to read. `slug` and `slugs` use the same merge semantics as the handler, with
+ * stable de-duplication so the index lookup remains one bounded query.
+ */
+export function exactPlanSlugsFromArgs(args: unknown): string[] {
+  if (!args || typeof args !== 'object') return [];
+  const value = args as { slug?: unknown; slugs?: unknown };
+  const requested = [
+    ...(typeof value.slug === 'string' ? [value.slug] : []),
+    ...(Array.isArray(value.slugs) ? value.slugs.filter((slug): slug is string => typeof slug === 'string') : []),
+  ];
+  return [...new Set(requested.map((slug) => slug.trim()).filter(Boolean))];
+}
+
+/**
+ * Verify a cross-hive plans:get rebind against the PG-canonical exact-slug
+ * index. A failed lookup is unverified (and therefore not a bypass), while a
+ * missing slug or an owner mismatch is simply false. The explicit harness is
+ * checked against every requested slug so a multi-slug read cannot widen its
+ * scope through one matching row.
+ */
+export async function verifyExplicitPlanHarness(
+  ctx: unknown,
+  explicitHarness: string,
+  args: unknown,
+): Promise<boolean> {
+  const slugs = exactPlanSlugsFromArgs(args);
+  if (slugs.length === 0 || !explicitHarness.trim()) return false;
+  try {
+    const rowsBySlug = await planHarnessesForSlugs(callerWorkspaceId(ctx), slugs);
+    return slugs.every((slug) => rowsBySlug.get(slug)?.includes(explicitHarness) === true);
+  } catch {
+    // The transport clamp must never turn an index outage into a cross-hive
+    // read. The caller can retry once the workspace-scoped lookup recovers.
+    return false;
+  }
+}
+
+/**
  * The fail-loud error result for the non-resolved outcomes — same envelope
  * convention as `_harness-scope.ts`'s harnessRequiredResult. Each names what
  * was searched and what was found, so the caller never has to guess the next
