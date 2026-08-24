@@ -131,6 +131,33 @@ export interface BulkRunFilterSnapshot {
   shownCount?: number | null;
 }
 
+/**
+ * The effective resolver launch settings AS LAUNCHED, captured once when the run
+ * row is created (migration 943).
+ *
+ * This is deliberately a snapshot rather than a join to the owner's stored
+ * per-kind profile: `resolverProfiles` is mutable, so re-reading it would render
+ * last week's run with today's defaults — the same drift `filterSnapshot`
+ * already prevents for membership.
+ *
+ * `backend` is the CLI backend derived from `model` at click time. Recording it
+ * does not contradict the rule that backend is derived from the model and never
+ * a second independently editable truth: that governs the mutable PROFILE, while
+ * this row is an immutable record of what actually ran.
+ *
+ * Every field is optional because a run created before 943 — or by an older
+ * deployed release that does not post launch settings — stores `{}`. Readers
+ * MUST treat an absent field as "inherit the launcher default", never as an
+ * assertion that the run used `null`.
+ */
+export interface BulkRunLaunchSnapshot {
+  model?: string | null;
+  effort?: ModelEffort | null;
+  account?: string | null;
+  carry?: BulkResolverCarryMode | null;
+  backend?: LaunchAgentBackend | null;
+}
+
 /** One item as the client was displaying it at click time. */
 export interface BulkRunSeedItem {
   itemId: string;
@@ -155,6 +182,9 @@ export interface BulkRunRow {
    *  'plan-cleanup', the plan slugs the pane was rendering. '[]' for inbox. */
   seedRefs: string[];
   filterSnapshot: BulkRunFilterSnapshot;
+  /** Click-time snapshot of the effective launch settings (migration 943).
+   *  `{}` for runs created before 943 or by a release that posts no settings. */
+  launchSnapshot: BulkRunLaunchSnapshot;
   totalItems: number;
   autoResolved: number;
   recommended: number;
@@ -249,6 +279,7 @@ interface RawRunRow {
   run_kind: BulkRunKind | null;
   seed_refs: unknown;
   filter_snapshot: unknown;
+  launch_snapshot: unknown;
   total_items: number | string;
   auto_resolved: number | string;
   recommended: number | string;
@@ -272,6 +303,7 @@ function mapRun(r: RawRunRow): BulkRunRow {
     runKind: r.run_kind ?? DEFAULT_RUN_KIND,
     seedRefs: asStringArray(r.seed_refs),
     filterSnapshot: asObject(r.filter_snapshot) as BulkRunFilterSnapshot,
+    launchSnapshot: asObject(r.launch_snapshot) as BulkRunLaunchSnapshot,
     totalItems: Number(r.total_items ?? 0),
     autoResolved: Number(r.auto_resolved ?? 0),
     recommended: Number(r.recommended ?? 0),
@@ -326,7 +358,7 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
 }
 
 const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
-                     run_kind, seed_refs, filter_snapshot,
+                     run_kind, seed_refs, filter_snapshot, launch_snapshot,
                      total_items, auto_resolved, recommended, skipped, failed,
                      error, created_at, updated_at, started_at, finished_at`;
 
@@ -487,6 +519,10 @@ export async function createRun(input: {
    *  slugs the pane was rendering). Ignored for 'inbox-resolve', whose
    *  membership is the `items` snapshot. */
   seedRefs?: string[];
+  /** The effective launch settings this run was started with (migration 943).
+   *  Optional so every existing call site is unchanged: omitting it stores `{}`,
+   *  which readers render as "launcher default", exactly as before. */
+  launchSnapshot?: BulkRunLaunchSnapshot;
 }): Promise<BulkRunRow> {
   const runKind = input.runKind ?? DEFAULT_RUN_KIND;
   const items = input.items ?? [];
@@ -540,10 +576,11 @@ export async function createRun(input: {
       const inserted = await tx<RawRunRow[]>`
         INSERT INTO harness_shared.attention_bulk_runs
           (workspace_id, run_id, harness_slug, requested_by, phase, run_kind, seed_refs,
-           filter_snapshot, total_items)
+           filter_snapshot, launch_snapshot, total_items)
         VALUES (${ws}, ${runId}, ${input.harnessSlug ?? null}, ${input.requestedBy ?? null},
                 'pending', ${runKind}, ${JSON.stringify(seedRefs)}::jsonb,
-                ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb, ${totalItems})
+                ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb,
+                ${JSON.stringify(input.launchSnapshot ?? {})}::jsonb, ${totalItems})
         RETURNING ${tx.unsafe(RUN_COLUMNS)}
       `;
 

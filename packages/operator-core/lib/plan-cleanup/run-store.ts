@@ -179,7 +179,7 @@ const FINDING_COLUMNS = `workspace_id, run_id, finding_id, finding_kind, plan_sl
                          outcome, error, decided_at`;
 
 const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
-                     run_kind, seed_refs, filter_snapshot,
+                     run_kind, seed_refs, filter_snapshot, launch_snapshot,
                      total_items, auto_resolved, recommended, skipped, failed,
                      error, created_at, updated_at, started_at, finished_at`;
 
@@ -517,6 +517,7 @@ function mapRunLoose(r: {
   run_kind: string | null;
   seed_refs: unknown;
   filter_snapshot: unknown;
+  launch_snapshot: unknown;
   total_items: number | string;
   auto_resolved: number | string;
   recommended: number | string;
@@ -538,6 +539,7 @@ function mapRunLoose(r: {
     runKind: (r.run_kind ?? 'inbox-resolve') as BulkRunRow['runKind'],
     seedRefs: Array.isArray(r.seed_refs) ? (r.seed_refs as string[]) : [],
     filterSnapshot: (r.filter_snapshot ?? {}) as BulkRunRow['filterSnapshot'],
+    launchSnapshot: (r.launch_snapshot ?? {}) as BulkRunRow['launchSnapshot'],
     totalItems: Number(r.total_items ?? 0),
     autoResolved: Number(r.auto_resolved ?? 0),
     recommended: Number(r.recommended ?? 0),
