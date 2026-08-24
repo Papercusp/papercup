@@ -24,6 +24,7 @@ import {
   registerAwait,
   retireLifecycleBoundWatches,
 } from '../../events/await/store';
+import type { AwaitRow } from '../../events/await/types';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import {
@@ -275,6 +276,22 @@ function payloadFilterMatches(actual: unknown | null | undefined, expected: unkn
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
+/**
+ * Identify rows owned by fleet-leader control, including rows written by the
+ * pre-profile armer before lifecycle bindings were added.  The legacy note is
+ * deliberately exact to this machinery so a leader's unrelated manual await
+ * on the same transition key is never retired during reconciliation.
+ */
+function isFleetLeaderControlAwait(row: AwaitRow, fleetSlug: string): boolean {
+  if (row.boundTo?.kind === 'fleet-leadership' && row.boundTo.ref === fleetSlug) return true;
+  if (row.policy !== 'wake' || row.once !== false) return false;
+  const note = row.note?.trim() ?? '';
+  return (
+    note.startsWith(`standing fleet leader transition watch (${fleetSlug})`) ||
+    note.startsWith('fleet-leader auto-arm (')
+  );
+}
+
 export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlInput): Promise<LeaderControlOutcome> {
   const errors: string[] = [];
   let repaired = false;
@@ -491,9 +508,22 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     watches.wakeReachable = handle != null;
     const retainedAwaitIds = new Set<number>();
     const cancelledAwaitIds = new Set<number>();
+    const cancelControlAwait = async (row: AwaitRow): Promise<void> => {
+      if (retainedAwaitIds.has(row.id) || cancelledAwaitIds.has(row.id)) return;
+      if (await cancelAwait({ awaitId: row.id, subscriberId: input.ownerId })) watches.removed += 1;
+      cancelledAwaitIds.add(row.id);
+    };
 
     for (const target of resolution.targets) {
-      if (target.kind === 'event' && suppressedEventKeys.has(target.eventKey)) continue;
+      if (target.kind === 'event' && suppressedEventKeys.has(target.eventKey)) {
+        for (const row of current.filter(
+          (candidate) =>
+            candidate.eventKey === target.eventKey && isFleetLeaderControlAwait(candidate, input.fleetSlug),
+        )) {
+          await cancelControlAwait(row);
+        }
+        continue;
+      }
       let eventKey: string;
       let predicateExists = true;
       if (target.kind === 'event') {
@@ -530,14 +560,19 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
         watches.active.push(target.label);
         watches.awaitIds.push(healthy.id);
         retainedAwaitIds.add(healthy.id);
+        // A legacy/unbound armer may have left a second standing row for the
+        // same key. Keep the correctly-bound row and retire only control-owned
+        // duplicates; manual waits on that key remain untouched.
+        for (const row of rows.filter(
+          (candidate) => candidate.id !== healthy.id && isFleetLeaderControlAwait(candidate, input.fleetSlug),
+        )) {
+          await cancelControlAwait(row);
+        }
         continue;
       }
-      const staleBoundRows = rows.filter(
-        (row) => row.boundTo?.kind === binding.kind && row.boundTo.ref === binding.ref,
-      );
-      for (const row of staleBoundRows) {
-        await cancelAwait({ awaitId: row.id, subscriberId: input.ownerId });
-        cancelledAwaitIds.add(row.id);
+      const staleControlRows = rows.filter((row) => isFleetLeaderControlAwait(row, input.fleetSlug));
+      for (const row of staleControlRows) {
+        await cancelControlAwait(row);
       }
       const row = await registerAwait({
         subscriberId: input.ownerId,
@@ -579,22 +614,21 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
       watches.active.push(target.label);
       watches.awaitIds.push(row.id);
       retainedAwaitIds.add(row.id);
-      if (staleBoundRows.length > 0) watches.repaired.push(target.label);
+      if (staleControlRows.length > 0) watches.repaired.push(target.label);
       else watches.added.push(target.label);
       repaired = true;
       if (row.wakeHandle == null) watches.wakeReachable = false;
     }
 
-    // Reconcile profile removals as well as additions. This is what retires the old
-    // hard-coded fleet:item-completed await without touching manual awaits on that key.
+    // Reconcile profile removals as well as additions. This retires old
+    // hard-coded/legacy control awaits without touching manual awaits on the key.
     for (const row of current) {
       if (
-        row.boundTo?.kind === binding.kind &&
-        row.boundTo.ref === binding.ref &&
+        isFleetLeaderControlAwait(row, input.fleetSlug) &&
         !retainedAwaitIds.has(row.id) &&
         !cancelledAwaitIds.has(row.id)
       ) {
-        if (await cancelAwait({ awaitId: row.id, subscriberId: input.ownerId })) watches.removed += 1;
+        await cancelControlAwait(row);
       }
     }
     repaired ||= watches.removed > 0;
