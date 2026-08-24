@@ -14,6 +14,9 @@ import {
   overrideIntentStaleForSessionState,
   PRESENCE_DEAD_MS,
   isConfirmedWakeAttemptMiss,
+  isActivityDead,
+  ACTIVITY_DEAD_MS,
+  WARM_IDLE_ACTIVITY_MS,
 } from './presence-wakeability';
 
 describe('deriveSessionState', () => {
@@ -108,6 +111,70 @@ describe('deriveSessionState', () => {
       expect(
         deriveSessionState({ stale: false, wakeable: true, liveTurn: false, wakeAttemptMiss: undefined }),
       ).toBe('parked');
+    });
+  });
+
+  // EI-21356812816484561 — the ACTIVITY-clock ceiling, for the wedged owner
+  // NOBODY has tried to wake (so there is no miss to observe).
+  describe('activityDead: the ACTIVITY-clock counterpart to hardStale', () => {
+    it('heartbeat-fresh + wakeable + no turn past the ceiling → ended, not parked', () => {
+      expect(
+        deriveSessionState({ stale: false, wakeable: true, liveTurn: false, activityDead: true }),
+      ).toBe('ended');
+    });
+
+    it('CONTROL — identical row below the ceiling stays parked', () => {
+      expect(
+        deriveSessionState({ stale: false, wakeable: true, liveTurn: false, activityDead: false }),
+      ).toBe('parked');
+    });
+
+    it('a live turn still wins (never declare a working agent dead)', () => {
+      expect(
+        deriveSessionState({ stale: false, wakeable: true, liveTurn: true, activityDead: true }),
+      ).toBe('live');
+    });
+
+    it('claims held → suspect, mirroring hardStale', () => {
+      expect(
+        deriveSessionState({
+          stale: false,
+          wakeable: true,
+          liveTurn: false,
+          activityDead: true,
+          claimsHeld: true,
+        }),
+      ).toBe('suspect');
+    });
+  });
+
+  describe('isActivityDead', () => {
+    const now = 1_000_000_000_000;
+
+    it('true only once the last turn is older than ACTIVITY_DEAD_MS', () => {
+      expect(isActivityDead(now - (ACTIVITY_DEAD_MS + 1), now)).toBe(true);
+      expect(isActivityDead(now - (ACTIVITY_DEAD_MS - 1), now)).toBe(false);
+    });
+
+    it('the measured 21h-silent incident owner is activity-dead', () => {
+      // pid alive 22h54m, heartbeat 7s fresh, last turn 21h25m ago — the shape
+      // that was being handed consult work as the top-scored candidate.
+      expect(isActivityDead(now - 21.4 * 60 * 60 * 1000, now)).toBe(true);
+    });
+
+    it('is conservative on missing/unparseable data (never force-ends on absence)', () => {
+      // A brand-new session with no activity row yet looks identical to a
+      // silent one through this lens, so absence must never mean dead.
+      expect(isActivityDead(null, now)).toBe(false);
+      expect(isActivityDead(undefined, now)).toBe(false);
+      expect(isActivityDead(Number.NaN, now)).toBe(false);
+    });
+
+    it('the ceiling is far above the warm-idle band, not equal to it', () => {
+      // Deliberate: warm-idle is reported, activity-dead is fatal. An owner
+      // parked 45 minutes must NOT be declared dead.
+      expect(ACTIVITY_DEAD_MS).toBeGreaterThan(WARM_IDLE_ACTIVITY_MS);
+      expect(isActivityDead(now - (WARM_IDLE_ACTIVITY_MS + 60_000), now)).toBe(false);
     });
   });
 
