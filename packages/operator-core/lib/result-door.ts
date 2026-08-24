@@ -1024,16 +1024,16 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // to infer it. Both are paid for by tightening the trailing sentence
               // — this pointer is NET SHORTER than the ambiguous version it
               // replaced, which is the only reason it clears WI-5656 below.
-              `Call capability:read with _projection.cursor.args, base64-decode response.data, then follow ` +
-              `next_cursor until eof to ` +
+              `Use capability:read with _projection.cursor.args; file_path is an encoded ` +
+              `scratch-reference, not JSON. Decode response.data; follow next_cursor; ` +
               (partialJsonBody
                 ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The tool marked ` +
                   `${innerTruncationMarkers.join(', ')}; this JSON is partial (bodyComplete:false) and ` +
                   `paging cannot recover omitted fields. Re-call ${opts.toolName} with a wider per-field limit.`
-                : `recover the exact spill bytes. Plaintext; ` +
+                : `recover spill; ` +
                   (parsedJsonBody
-                    ? `skip cursor.bodyOffsetInPayload bytes of response.data for JSON.`
-                    : `it opens with a text header.`)) +
+                    ? `JSON starts after cursor.bodyOffsetInPayload in response.data.`
+                    : `the spill opens with a text header.`)) +
               // Keep the established JSON recovery pointer deliberately terse. The
               // payload projector budgets the pointer together with the retained
               // JSON preview; expanding it here can evict coord:orient's recovery

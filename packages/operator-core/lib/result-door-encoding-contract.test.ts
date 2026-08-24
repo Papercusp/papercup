@@ -157,12 +157,17 @@ function spillRawBytes(): Buffer {
 
 describe('EI-20685195115158619: spill cursor encoding contract', () => {
   it('binds the encoding key to the field it describes, not to the file', () => {
-    const { cursor } = doorOversizedResult();
+    const { cursor, next } = doorOversizedResult();
 
     expect(cursor.dataEncoding).toBe('base64');
     // The exact field that caused the misread: unscoped, and adjacent to
     // `file_path`, it reads as a property of the file. It must not come back.
     expect(cursor).not.toHaveProperty('encoding');
+    // EI-21349944846228401: the path is a self-describing scratch reference,
+    // not the raw JSON payload. Say that at the recovery decision point so a
+    // caller does not feed the manifest-bearing file to jq/JSON.parse directly.
+    expect(next).toContain('file_path is an encoded scratch-reference, not JSON.');
+    expect(next).toContain('Use capability:read with _projection.cursor.args');
   });
 
   it('still LOCATES a tool-internally clipped body, and marks it incomplete (P-005; supersedes the EI-21185758364267344 withholding)', () => {
@@ -286,7 +291,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // precisely the defect, so asserting only one would not catch it.
     expect(cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
     expect(cursor.bodyOffsetInFile).toEqual(expect.any(Number));
-    expect(next).toContain('skip cursor.bodyOffsetInPayload bytes of response.data for JSON.');
+    expect(next).toContain('JSON starts after cursor.bodyOffsetInPayload in response.data.');
 
     // A complete body must NOT carry the incompleteness marker.
     expect(cursor.bodyComplete).toBeUndefined();
