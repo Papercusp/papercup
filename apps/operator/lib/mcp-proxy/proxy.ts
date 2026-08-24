@@ -261,6 +261,18 @@ export function injectCurrentSuperuserBearer(
   return { ...withoutAuthorization, authorization: `Bearer ${token.trim()}` };
 }
 
+/**
+ * `Connection` is hop-by-hop metadata for the client→proxy socket. Forwarding a client
+ * `Connection: close` to the upstream makes the capped control-plane agent queue requests
+ * onto sockets that are already closing; :3070 can then answer the queued request with an
+ * empty 400. Let Node derive the upstream connection policy from its own agent instead.
+ */
+export function stripClientConnectionHeader(headers: http.IncomingHttpHeaders): http.IncomingHttpHeaders {
+  const forwarded = { ...headers };
+  delete forwarded.connection;
+  return forwarded;
+}
+
 export function staticMcpProxyTarget(host: string, port: number): McpProxyTarget {
   return { host, port, source: 'static' };
 }
@@ -571,6 +583,12 @@ function forwardOnce(
       if (timer) clearTimeout(timer);
       resolve(o);
     };
+    const forwardedHeaders = stripClientConnectionHeader(
+      injectCurrentSuperuserBearer(reqUrl, headers, {
+        tokenPath: opts.superuserTokenPath,
+        readToken: opts.readSuperuserToken,
+      }),
+    );
     const upstream = http.request(
       {
         host: target.host,
@@ -580,10 +598,7 @@ function forwardOnce(
         // WI-41045: this is deliberately inside forwardOnce, not outside the
         // retry loop. A token can rotate between a reset and its replay.
         headers: {
-          ...injectCurrentSuperuserBearer(reqUrl, headers, {
-            tokenPath: opts.superuserTokenPath,
-            readToken: opts.readSuperuserToken,
-          }),
+          ...forwardedHeaders,
           host: `${target.host}:${target.port}`,
         },
         // W1.3: fresh socket per forward — never reuse a pooled keep-alive socket the :3070

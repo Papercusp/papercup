@@ -29,6 +29,7 @@ import {
   shouldSkipDefaultFailureLog,
   shouldRotateFailureLog,
   injectCurrentSuperuserBearer,
+  stripClientConnectionHeader,
   type McpProxyTarget,
 } from './proxy';
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -143,6 +144,16 @@ describe('WI-41045 — refresh the superuser bearer at the proxy boundary', () =
       tokenPath: '/tmp/test-superuser-token',
       readToken: () => 'must-not-be-read',
     })).toBe(headers);
+  });
+});
+
+describe('upstream hop-by-hop headers', () => {
+  it('strips the client Connection header without mutating the client headers', () => {
+    const headers = { connection: 'close', accept: 'application/json' };
+    const forwarded = stripClientConnectionHeader(headers);
+
+    expect(forwarded).toEqual({ accept: 'application/json' });
+    expect(headers.connection).toBe('close');
   });
 });
 
@@ -364,6 +375,48 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     const r = await request(port(proxy));
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":"ok"}');
+  });
+
+  it('does not forward a client Connection: close to the capped control-plane agent', async () => {
+    const seenConnections: Array<string | undefined> = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        seenConnections.push(req.headers.connection);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+    const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: '127.0.0.1',
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        controlPlaneAgent,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    try {
+      const body = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}';
+      const headers = {
+        connection: 'close',
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(body)),
+      };
+      const results = await Promise.all(
+        Array.from({ length: 4 }, () => request(port(proxy), body, '/api/mcp?superuser=1', headers)),
+      );
+
+      expect(results.every((result) => result.status === 200)).toBe(true);
+      expect(seenConnections).toHaveLength(4);
+      expect(seenConnections.every((connection) => connection !== 'close')).toBe(true);
+    } finally {
+      controlPlaneAgent.destroy();
+    }
   });
 
   it('does not accumulate connect listeners when a keep-alive upstream socket is reused', async () => {
