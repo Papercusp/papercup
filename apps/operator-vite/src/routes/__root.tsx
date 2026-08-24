@@ -1,94 +1,94 @@
-import { createRootRoute, Outlet } from "@tanstack/react-router";
-import { Suspense, useEffect, type ReactNode } from "react";
+import { createRootRoute, Outlet } from '@tanstack/react-router';
+import { Suspense, useEffect, type ReactNode } from 'react';
 // Boot-critical shell chunks (LeftSidebar, the dev rail) load via lazyWithRetry,
 // not bare React.lazy: on the packaged WebKitGTK desktop a first-boot dynamic
 // import can transiently fail while the self-hosting operator is busy, and bare
 // lazy escalates that straight to the fatal route error boundary (WI-2902).
-import { lazyWithRetry as lazy } from "@papercusp/operator-core/lib/lazy-with-retry";
-import { Toaster } from "sonner";
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
+import { Toaster } from 'sonner';
 // Custom nuqs adapter (NOT nuqs/adapters/tanstack-router): the stock adapter
 // rebuilds the URL from only nuqs-watched keys, dropping TanStack-native typed
 // search params (?dock, ?switch) on every nuqs write. Ours merges over the full
 // current search. See ../lib/nuqs-tanstack-router-adapter.
-import { NuqsAdapter } from "../lib/nuqs-tanstack-router-adapter";
-import * as Tooltip from "@radix-ui/react-tooltip";
-import { RootSyncProvider } from "@/app/_components/RootSyncProvider";
-import { OperatorConversationProvider } from "@/app/_components/OperatorConversationProvider";
-import { PostHogProvider } from "@/app/_components/PostHogProvider";
-import WslOnboardingGate from "@/app/_components/WslOnboardingGate";
-import { useWslGateBlocking } from "@/app/_components/useWslGateBlocking";
-import GlobalShortcutDispatcher from "@/app/_components/GlobalShortcutDispatcher";
-import GlobalNavShortcuts from "@/app/_components/GlobalNavShortcuts";
-import GlobalCommandPalette from "@/app/_components/GlobalCommandPalette";
-import GlobalShortcutsHelp from "@/app/_components/GlobalShortcutsHelp";
-import GlobalAppShortcuts from "@/app/_components/GlobalAppShortcuts";
-import GlobalVoiceShortcuts from "@/app/_components/GlobalVoiceShortcuts";
-import GlobalSearchDialog from "@/app/_components/GlobalSearchDialog";
-import PresenceRail from "@/app/_components/PresenceRail";
+import { NuqsAdapter } from '../lib/nuqs-tanstack-router-adapter';
+import * as Tooltip from '@radix-ui/react-tooltip';
+import { RootSyncProvider } from '@/app/_components/RootSyncProvider';
+import { OperatorConversationProvider } from '@/app/_components/OperatorConversationProvider';
+import { PostHogProvider } from '@/app/_components/PostHogProvider';
+import WslOnboardingGate from '@/app/_components/WslOnboardingGate';
+import { useWslGateBlocking } from '@/app/_components/useWslGateBlocking';
+import GlobalShortcutDispatcher from '@/app/_components/GlobalShortcutDispatcher';
+import GlobalNavShortcuts from '@/app/_components/GlobalNavShortcuts';
+import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
+import GlobalShortcutsHelp from '@/app/_components/GlobalShortcutsHelp';
+import GlobalAppShortcuts from '@/app/_components/GlobalAppShortcuts';
+import GlobalVoiceShortcuts from '@/app/_components/GlobalVoiceShortcuts';
+import GlobalSearchDialog from '@/app/_components/GlobalSearchDialog';
+import PresenceRail from '@/app/_components/PresenceRail';
 // Side effect: register the browser voice controls into operator-core's
 // voice-control bridge so voice.* commands reach the UI voice engine without a
 // core→@/app back-edge (operator-core stays headless/UI-free).
-import "@/lib/commands/voice-controls-entry";
-import GlobalFindInPage from "@/app/_components/GlobalFindInPage";
-import RouteTransitionProvider from "@/app/_components/RouteTransitionProvider";
-import ExternalLinkProvider from "@/app/_components/ExternalLinkProvider";
-import { ToasterSelectionFix } from "@/app/_components/ToasterSelectionFix";
-import { ToastHistoryRecorder } from "@/app/_components/ToastHistoryRecorder";
-import { PotThemeBridge } from "@/app/_components/PotThemeBridge";
-import DesktopAttentionNotifier from "@/app/_components/DesktopAttentionNotifier";
-import DesktopConsoleLaunchBridge from "@/app/_components/DesktopConsoleLaunchBridge";
-import FlagStreamSubscriber from "@/app/_components/FlagStreamSubscriber";
-import TerminalDivider from "@/app/_components/TerminalDivider";
-import NativeTerminalGate from "@/app/_components/NativeTerminalGate";
-import { UiPresenceProvider } from "@/app/_components/UiPresenceProvider";
-import DevReloadGate from "@/app/_components/DevReloadGate";
-import PerfObserverProvider from "@/app/admin/testing/_components/PerfObserverProvider";
+import '@/lib/commands/voice-controls-entry';
+import GlobalFindInPage from '@/app/_components/GlobalFindInPage';
+import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
+import ExternalLinkProvider from '@/app/_components/ExternalLinkProvider';
+import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
+import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
+import { PotThemeBridge } from '@/app/_components/PotThemeBridge';
+import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
+import DesktopConsoleLaunchBridge from '@/app/_components/DesktopConsoleLaunchBridge';
+import FlagStreamSubscriber from '@/app/_components/FlagStreamSubscriber';
+import TerminalDivider from '@/app/_components/TerminalDivider';
+import NativeTerminalGate from '@/app/_components/NativeTerminalGate';
+import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
+import DevReloadGate from '@/app/_components/DevReloadGate';
+import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
 // Universal in-app perf-recorder host (channel/storage-compatible with the
 // operator's _lib — same CHANNEL_NAME + localStorage key). Activates only when
 // ?perf-recorder=1 is set (the chaos-desktop recorder window). Phase 6 of
 // universal-testing-domains-generic-2026-06-03.
-import { RecorderHost } from "@papercusp/testing-shell";
-import { FLAGS } from "@papercusp/flags";
-import { useFlag } from "@papercusp/flags/client";
-import ChromeShellWithChatFaces from "../components/chat-faces/ChatFacesHost";
-import ChatRefPopupHost from "@/app/_components/chat/ChatRefPopupHost";
-import PlanDashboardHost from "@/app/_components/plans/PlanDashboardHost";
-import PlanCleanupReportHost from "@/app/_components/plans/PlanCleanupReportHost";
-import InboxBulkReportHost from "@/app/_components/inbox/InboxBulkReportHost";
-import { usePathname } from "@/lib/router-compat/navigation";
-import { isChromelessPath } from "@papercusp/operator-core/lib/chromeless-routes";
+import { RecorderHost } from '@papercusp/testing-shell';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@papercusp/flags/client';
+import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
+import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
+import PlanDashboardHost from '@/app/_components/plans/PlanDashboardHost';
+import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
+import InboxBulkReportHost from '@/app/_components/inbox/InboxBulkReportHost';
+import { usePathname } from '@/lib/router-compat/navigation';
+import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
 // (desktop UI part A). Mounted here — inside RootSyncProvider, at the router
 // root — so it can read the `hiveFromRepo.progress` sync rows and overlay EVERY
 // route (it self-hides when the flow is ready / has no rows). Non-blocking:
 // position:fixed at the top, routes scroll underneath.
-import { DogfoodBootstrapBanner } from "@/app/_components/DogfoodBootstrapBanner";
-import { ProgressProvider } from "@bprogress/react";
-import NotFound from "../components/NotFound";
-import { NavigationProgress } from "../components/NavigationProgress";
-import ChunkReloadPrompt from "../components/ChunkReloadPrompt";
-import OfflineIndicator from "../components/OfflineIndicator";
-import ServerConnectionGate from "../components/ServerConnectionGate";
-import StaleOperatorIndicator from "../components/StaleOperatorIndicator";
-import VersionBadge from "../components/VersionBadge";
+import { DogfoodBootstrapBanner } from '@/app/_components/DogfoodBootstrapBanner';
+import { ProgressProvider } from '@bprogress/react';
+import NotFound from '../components/NotFound';
+import { NavigationProgress } from '../components/NavigationProgress';
+import ChunkReloadPrompt from '../components/ChunkReloadPrompt';
+import OfflineIndicator from '../components/OfflineIndicator';
+import ServerConnectionGate from '../components/ServerConnectionGate';
+import StaleOperatorIndicator from '../components/StaleOperatorIndicator';
+import VersionBadge from '../components/VersionBadge';
 // Cross-platform env switcher top bar (dogfood-silent-canonical-hive-join P-013/P-014/
 // P-017). The data-driven, public-shippable twin of the Linux-only native GTK dev bar;
 // ungated (P-013) but self-hides unless ≥2 envs are reachable.
-import EnvSwitcherBar from "../components/env-switcher/EnvSwitcherBar";
-import RouteErrorBoundary from "../components/RouteErrorBoundary";
-import "@/app/globals.css";
+import EnvSwitcherBar from '../components/env-switcher/EnvSwitcherBar';
+import RouteErrorBoundary from '../components/RouteErrorBoundary';
+import '@/app/globals.css';
 // App-wide command-palette chrome (⌘K / Ctrl+P). The palette markup uses
 // `.h-cmd*` classes that used to live in harness.css; they now live here.
-import "@/app/command-palette.css";
+import '@/app/command-palette.css';
 // App-wide find-in-page (Ctrl/⌘+F): the ::highlight() rules for the CSS
 // Custom Highlight API + the `.pc-find*` find-bar chrome.
-import "@/app/find-in-page.css";
+import '@/app/find-in-page.css';
 // Harness panel styles (the `h-*` classes). The legacy /harness page loaded
 // these via HarnessDashboard; now that /adv tabs render harness panel
 // components directly (prs/settings/insights — see
 // AdvHarnessPanelPage), the shell must load the stylesheet so those panels
 // keep their styling without mounting the whole dashboard.
-import "@/app/harness/harness.css";
+import '@/app/harness/harness.css';
 
 /**
  * Root route — the app shell. Translated from `apps/operator/app/layout.tsx`
@@ -148,19 +148,16 @@ import "@/app/harness/harness.css";
 // false), but it is FETCHED only when the gate is true at runtime — a real
 // production run (no wrapper, MODE==='production') never loads it.
 const DevAdminRail =
-  import.meta.env.MODE !== "production" ||
-  (typeof window !== "undefined" &&
-    (window as { __PAPERCUSP_DEV_WRAPPER__?: boolean })
-      .__PAPERCUSP_DEV_WRAPPER__ === true)
-    ? lazy(() => import("../components/dev-admin-rail/DevAdminRail"))
+  import.meta.env.MODE !== 'production' ||
+  (typeof window !== 'undefined' &&
+    (window as { __PAPERCUSP_DEV_WRAPPER__?: boolean }).__PAPERCUSP_DEV_WRAPPER__ === true)
+    ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
     : null;
 
 // Left sidebar (left-sidebar-tauri-2026-06-07) — the Swarm / Voice / Hives
 // rail, the desktop twin of the pui dock's retired main pane. First-class app
 // chrome (NOT dev-gated); lazy so the shell paint doesn't pay for its panels.
-const LeftSidebar = lazy(
-  () => import("../components/left-sidebar/LeftSidebar"),
-);
+const LeftSidebar = lazy(() => import('../components/left-sidebar/LeftSidebar'));
 // NOTE: the operator-voice controls (PapercupVoiceBar) used to mount here as a
 // top strip; they now live at the TOP of the left rail (LeftSidebar), always
 // visible on every tab (owner request 2026-06-22).
@@ -183,14 +180,14 @@ function RootComponent() {
   // Real production (no wrapper, MODE==='production') leaves voice-mode lazy.
   useEffect(() => {
     if (!DevAdminRail) return;
-    void import("@/app/_components/voice/voice-mode");
+    void import('@/app/_components/voice/voice-mode');
   }, []);
 
   // Chromeless routes (the Quick Panel popup, iframe/embedded targets) render
   // the bare route with NO global chrome — no env bar, ChromeShell header+chat,
   // or presence rail. Providers still wrap <Outlet/> (the panel uses sync +
   // nuqs); only the VISIBLE chrome is gated. See lib/chromeless-routes.
-  const pathname = usePathname() ?? "";
+  const pathname = usePathname() ?? '';
   const chromeless = isChromelessPath(pathname);
 
   // WI-2749 item #2: LeftSidebar (z-index 1290) and PresenceRail (z-index
