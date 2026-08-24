@@ -885,6 +885,16 @@ export const PAPERCUSP_WEB_HOST_TEMPLATE: TemplateManifest = {
   components: [{ id: "next-standalone-host", version: "0.0.1" }],
   contracts: [],
   decisionPoints: [
+    // Declared HERE, not on an app root: tenancy is a web-chassis concern, so
+    // it appears exactly when this chassis is in the closure (composition tags
+    // every decision point with the template that owns it — no conditionals).
+    {
+      id: "tenancy",
+      prompt:
+        "Single-user local install (papercusp-style, embedded PG per install) or multi-user server " +
+        "deployment (one PG, real auth, sessions)? The web chassis serves both, but auth-strategy, data-layer " +
+        "connection resolution, and the hosting target all fork on this answer — decide it FIRST.",
+    },
     {
       id: "hosting-target",
       prompt:
@@ -996,13 +1006,9 @@ export const PAPERCUSP_WEBAPP_TEMPLATE: TemplateManifest = {
         "What is the app's domain — the noun its data layer ledgers and its UI surfaces? Drives every " +
         "aspect-level decision point (schema, searchable surfaces, panels, lexicon terms).",
     },
-    {
-      id: "tenancy",
-      prompt:
-        "Single-user local install (papercusp-style, embedded PG per install) or multi-user server " +
-        "deployment (one PG, real auth, sessions)? The web chassis serves both, but auth-strategy, data-layer " +
-        "connection resolution, and the hosting target all fork on this answer — decide it FIRST.",
-    },
+    // `tenancy` is NOT declared here: it is a web-CHASSIS concern and lives on
+    // papercusp-web-host, which this template hard-requires — so it still
+    // reaches every builder through the closure.
     {
       id: "optional-planes",
       prompt:
@@ -1054,11 +1060,9 @@ export const PAPERCUSP_WEBAPP_TEMPLATE: TemplateManifest = {
       rule: "No hives and no seam in an app built from this template — if agents appear mid-build, add papercusp-ops-pots to the composition explicitly",
       enforcedBy: "prose-only",
     },
-    {
-      id: "auth-before-exposure",
-      rule: "The web-host auth placeholders are replaced before any non-local exposure",
-      enforcedBy: "prose-only",
-    },
+    // `auth-before-exposure` is NOT restated here: papercusp-web-host declares
+    // it (in its stronger "BOTH placeholders" form) and this template
+    // hard-requires that chassis, so it reaches the app through the closure.
   ],
 };
 

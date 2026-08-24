@@ -27,13 +27,10 @@ decisionPoints:
       What is the app's domain — the noun its data layer ledgers and its UI
       surfaces? Drives every aspect-level decision point (schema, searchable
       surfaces, panels, lexicon terms).
-  - id: tenancy
-    prompt: >-
-      Single-user local install (papercusp-style, embedded PG per install)
-      or multi-user server deployment (one PG, real auth, sessions)? The web
-      chassis serves both, but auth-strategy, data-layer connection
-      resolution, and the hosting target all fork on this answer — decide it
-      FIRST.
+  # `tenancy` is NOT declared here: it is a web-CHASSIS concern and lives on
+  # papercusp-web-host, which this template hard-requires — so it still reaches
+  # every builder through the closure, and it no longer has to be restated by
+  # each root that happens to use the web chassis.
   - id: optional-planes
     prompt: >-
       Beyond the required closure, does the app need live UI state sync
@@ -69,9 +66,9 @@ musts:
   - id: full-union-green
     rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity"
     enforcedBy: prose-only
+  # `auth-before-exposure` is NOT restated here: papercusp-web-host declares it
+  # (in its stronger "BOTH placeholders" form) and this template hard-requires
+  # that chassis, so the MUST reaches the composed app through the closure.
   - id: no-agent-surfaces
     rule: "No hives and no seam in an app built from this template — if agents appear mid-build, add papercusp-ops-pots to the composition explicitly"
-    enforcedBy: prose-only
-  - id: auth-before-exposure
-    rule: "The web-host auth placeholders are replaced before any non-local exposure"
     enforcedBy: prose-only

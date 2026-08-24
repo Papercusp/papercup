@@ -35,10 +35,12 @@ seam convention, a deploy step — do NOT guess:
 
 ## How to build from this (orientation)
 
-1. **Answer `tenancy` FIRST** — single-user local install (papercusp-style,
-   embedded PG per install) vs multi-user server deployment (one PG, real
-   auth, sessions). Auth strategy, connection resolution, and the hosting
-   target all fork here; every later decision assumes this one.
+1. **Answer the chassis's `tenancy` fork FIRST** — single-user local install
+   (papercusp-style, embedded PG per install) vs multi-user server deployment
+   (one PG, real auth, sessions). It is declared on `papercusp-web-host`, which
+   this template requires, so it reaches you through the closure. Auth
+   strategy, connection resolution, and the hosting target all fork here;
+   every later decision assumes this one.
 2. **Answer `domain`** — the noun the app ledgers and surfaces. Every
    aspect-level decision point (schema, panels, lexicon terms, searchable
    surfaces) derives from it.
