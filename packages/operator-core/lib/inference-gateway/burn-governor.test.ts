@@ -7,6 +7,7 @@ import {
   HISTORY_7D_MAX_SAMPLES,
   HISTORY_7D_MIN_SPACING_MS,
   accountBurnAction,
+  accountBurnTransition,
   accountBurnVerdict,
   appendUtilization7dSample,
   recordAccountWindow,
@@ -542,6 +543,49 @@ describe('selectAccountForSpawn burn wiring', () => {
     const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0, priorAccountId: 'bad' });
     expect(sel.accountId).toBe('bad');
     expect(sel.pinSource).toBe('sticky');
+  });
+});
+
+describe('lastBurnAction stamping + accountBurnTransition — the leg-c write seam', () => {
+  function poolWith(id: string): AccountPool {
+    return registerAccount({ accounts: [] }, { id, credentialRef: `cred-${id}` }, T0 - HR);
+  }
+
+  it('recordAccountWindow stamps the verdict action the fresh reading implies', () => {
+    let pool = poolWith('a1');
+    pool = recordAccountWindow(pool, 'a1', { utilization7d: 0.4, windowResetAt7d: T0 + 24 * HR }, T0);
+    expect(pool.accounts[0]!.rate.lastBurnAction).toBe('none'); // one sample — no rate yet
+    pool = recordAccountWindow(pool, 'a1', { utilization7d: 0.7 }, T0 + HR);
+    // +0.3/hr at u=0.7 → exhausts in ~1h, before the reset and inside the imminent horizon.
+    expect(pool.accounts[0]!.rate.lastBurnAction).toBe('shed');
+  });
+
+  it('first-ever stamp of none is NOT a transition; an escalation is, with the reason', () => {
+    const before = poolWith('a1'); // unstamped → reads as none
+    const flat = recordAccountWindow(before, 'a1', { utilization7d: 0.4, windowResetAt7d: T0 + 24 * HR }, T0);
+    expect(accountBurnTransition(before, flat, 'a1', T0)).toBeNull();
+    const burning = recordAccountWindow(flat, 'a1', { utilization7d: 0.7 }, T0 + HR);
+    const tr = accountBurnTransition(flat, burning, 'a1', T0 + HR);
+    expect(tr).toEqual(expect.objectContaining({ accountId: 'a1', from: 'none', to: 'shed' }));
+    expect(tr!.reason).toContain('exhausts');
+  });
+
+  it('unchanged action and unknown ids → null', () => {
+    let pool = poolWith('a1');
+    pool = recordAccountWindow(pool, 'a1', { utilization7d: 0.4, windowResetAt7d: T0 + 24 * HR }, T0);
+    const again = recordAccountWindow(pool, 'a1', { utilization7d: 0.4 }, T0 + HR); // flat — none→none
+    expect(accountBurnTransition(pool, again, 'a1', T0 + HR)).toBeNull();
+    expect(accountBurnTransition(pool, again, 'ghost', T0 + HR)).toBeNull();
+  });
+
+  it('a decaying reading transitions shed → none (recovery edge)', () => {
+    let pool = poolWith('a1');
+    pool = recordAccountWindow(pool, 'a1', { utilization7d: 0.4, windowResetAt7d: T0 + 24 * HR }, T0);
+    pool = recordAccountWindow(pool, 'a1', { utilization7d: 0.7 }, T0 + HR); // shed
+    const recovered = recordAccountWindow(pool, 'a1', { utilization7d: 0.3 }, T0 + 2 * HR); // decay outpaces spend
+    expect(accountBurnTransition(pool, recovered, 'a1', T0 + 2 * HR)).toEqual(
+      expect.objectContaining({ from: 'shed', to: 'none' }),
+    );
   });
 });
 
