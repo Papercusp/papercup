@@ -270,7 +270,7 @@ describe('computePlanSpecCoverage — the aggregate', () => {
       deps({ listClauses: vi.fn(async () => [clause()]), listEvidence }),
     );
     expect(listEvidence).toHaveBeenCalledWith(
-      expect.objectContaining({ planSlug: PLAN, limit: SPEC_EVIDENCE_CENSUS_LIMIT }),
+      expect.objectContaining({ planSlugs: [PLAN], limit: SPEC_EVIDENCE_CENSUS_LIMIT }),
     );
   });
 });
