@@ -4,6 +4,7 @@ import {
   TERMINAL_TASK_STATES,
   isTerminalState,
   isLiveOwnedState,
+  isAutoReapExempt,
   newTaskId,
   isValidTaskId,
   serviceUnitForTask,
@@ -15,6 +16,7 @@ import {
   sliceCgroupPath,
   scopeCgroupRelPath,
   deriveUserManagerRoot,
+  type TaskRow,
 } from './types';
 
 describe('task id + scope unit naming', () => {
@@ -194,5 +196,43 @@ describe('state algebra', () => {
     expect(isLiveOwnedState('foreign')).toBe(false);
     expect(isLiveOwnedState('running')).toBe(true);
     expect(isLiveOwnedState('pending')).toBe(true);
+  });
+});
+
+/**
+ * `isAutoReapExempt` is the single predicate carrying an OWNER RULING — enrolled
+ * terminal-launched sessions are visible only and must never be auto-reaped (plan
+ * terminal-psu-session-enrolment-2026-08-24, D-001). A false from it closes a
+ * terminal window and takes the live agent inside it with it, so it is worth
+ * pinning here rather than only exercising it through the adopter's suite.
+ *
+ * The cases below are chosen for the ways an "is it exempt?" check goes wrong in
+ * practice: a truthy-but-not-true marker, a stringly-typed "true", and a row whose
+ * detail is absent entirely. Each must read as NOT exempt, because the ruling is a
+ * deliberate opt-IN — a row nobody stamped is an ordinary reapable row.
+ */
+describe('auto-reap exemption (owner-ruled)', () => {
+  it('is exempt ONLY on a literal boolean true', () => {
+    expect(isAutoReapExempt({ detail: { autoReapExempt: true } })).toBe(true);
+    expect(isAutoReapExempt({ detail: { autoReapExempt: false } })).toBe(false);
+  });
+
+  it('never infers exemption from a truthy or stringly value', () => {
+    // A JSONB round-trip or a hand-written row can produce these. Reading any of
+    // them as exempt would silently exclude ordinary rows from the reaper.
+    expect(isAutoReapExempt({ detail: { autoReapExempt: 'true' } })).toBe(false);
+    expect(isAutoReapExempt({ detail: { autoReapExempt: 1 } })).toBe(false);
+    expect(isAutoReapExempt({ detail: { autoReapExempt: {} } })).toBe(false);
+  });
+
+  it('treats an unstamped row as reapable, not as exempt', () => {
+    // The failure direction that matters for the OTHER side of the ruling: if an
+    // absent detail read as exempt, the reaper would stop reaping anything.
+    expect(isAutoReapExempt({ detail: {} })).toBe(false);
+    // `TaskRow.detail` is typed as required, but the predicate optional-chains it
+    // and a row read back from PG can carry a null. The cast models that runtime
+    // shape deliberately — remove the `?.` in the source and this line throws.
+    expect(isAutoReapExempt({ detail: undefined } as unknown as Pick<TaskRow, 'detail'>)).toBe(false);
+    expect(isAutoReapExempt({ detail: { launchSurface: 'terminal' } })).toBe(false);
   });
 });
