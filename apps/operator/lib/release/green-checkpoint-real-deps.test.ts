@@ -34,6 +34,8 @@ import {
   checkNpmScript,
   hasNpmScript,
   realCheckpointDeps,
+  startMaterializationHeartbeat,
+  writeCheckpointRunPhase,
   resolveWorkspaceFileTestInvocation,
   resolveWorkspaceTestInvocation,
   CONCURRENT_CONFIRM_TIMEOUT_MS,
@@ -2222,6 +2224,57 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     await realCheckpointDeps(cfg, exec2).push("ready");
     for (const call of mockCreateWorkflowDispatch.mock.calls) {
       expect(call[0]).not.toHaveProperty("inputs");
+    }
+  });
+});
+
+describe("materialization phase heartbeat — EI-21357012876642589", () => {
+  it("refreshes a silent phase marker, stops at the hard bound, and can be stopped early", () => {
+    vi.useFakeTimers();
+    const lockDirs: string[] = [];
+    try {
+      const lockDir = mkdtempSync(join(tmpdir(), "green-checkpoint-heartbeat-"));
+      lockDirs.push(lockDir);
+      writeCheckpointRunPhase(lockDir, "materializing");
+      const initial = readFileSync(join(lockDir, "phase.json"), "utf8");
+
+      const stop = startMaterializationHeartbeat(lockDir, {
+        intervalMs: 100,
+        maxDurationMs: 250,
+      });
+      vi.advanceTimersByTime(99);
+      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(initial);
+      vi.advanceTimersByTime(1);
+      const firstRefresh = readFileSync(join(lockDir, "phase.json"), "utf8");
+      expect(firstRefresh).not.toBe(initial);
+      vi.advanceTimersByTime(100);
+      const secondRefresh = readFileSync(join(lockDir, "phase.json"), "utf8");
+      expect(secondRefresh).not.toBe(firstRefresh);
+
+      // The deadline tick only stops the heartbeat; it must not write a refresh at
+      // or after the hard maximum, even though the recursive timer is still pending.
+      vi.advanceTimersByTime(50);
+      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(secondRefresh);
+      vi.advanceTimersByTime(1_000);
+      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(secondRefresh);
+
+      // Normal setup completion stops the timer before its maximum as well.
+      const earlyStopDir = mkdtempSync(join(tmpdir(), "green-checkpoint-heartbeat-stop-"));
+      lockDirs.push(earlyStopDir);
+      writeCheckpointRunPhase(earlyStopDir, "materializing");
+      const stopEarly = startMaterializationHeartbeat(earlyStopDir, {
+        intervalMs: 100,
+        maxDurationMs: 1_000,
+      });
+      vi.advanceTimersByTime(100);
+      const beforeStop = readFileSync(join(earlyStopDir, "phase.json"), "utf8");
+      stopEarly();
+      vi.advanceTimersByTime(1_000);
+      expect(readFileSync(join(earlyStopDir, "phase.json"), "utf8")).toBe(beforeStop);
+      stop();
+    } finally {
+      vi.useRealTimers();
+      for (const lockDir of lockDirs) rmSync(lockDir, { recursive: true, force: true });
     }
   });
 });
