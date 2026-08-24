@@ -504,7 +504,12 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
-  it('suppresses a headless wave when protected agent scopes exhaust the host-memory budget', async () => {
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: this case USED to assert the
+  // wave was suppressed. It now asserts the opposite, deliberately: an exhausted RAM-only
+  // budget is ADVISORY and must not withhold a member. The old behaviour returned 0 for every
+  // headless launch once the live population crossed floor(usable/perScope), because it
+  // reserved each scope's full cap rather than its real usage. A worker over budget pages.
+  it('launches a headless wave anyway when the RAM-only budget is exhausted, reporting it as advisory', async () => {
     totalmemMock.mockReturnValueOnce(32 * 1024 ** 3);
     listLiveTasksMock.mockResolvedValueOnce(
       Array.from({ length: 4 }, () => ({ class: 'agent-session', memoryMaxBytes: 6 * 1024 ** 3 })),
@@ -517,16 +522,19 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     const payload = JSON.parse((res as any).content[0].text);
 
     expect(listLiveTasksMock).toHaveBeenCalledWith('ws-1');
-    expect(spawnHeadlessMock).not.toHaveBeenCalled();
-    expect(payload.hostMemorySuppressed).toBe(true);
+    // The member is opened even though the budget says there is no slot for it.
+    expect(spawnHeadlessMock).toHaveBeenCalled();
+    expect(payload.hostMemorySuppressed).toBe(false);
+    // The measurement is still reported — losing the observability was never the goal.
     expect(payload.hostMemoryClamp).toMatchObject({
       requestedOpenCount: 1,
-      openCount: 0,
-      clamped: true,
       activeProtectedAgentScopes: 4,
       availableProtectedAgentScopes: 0,
     });
-    expect(payload.message).toContain('host-memory admission allows 0 new headless members');
+    // ...and it must not be phrased as a limit that was applied.
+    expect(payload.hostMemoryClamp.reason).toContain('host-memory-advisory');
+    expect(payload.hostMemoryClamp.reason).toContain('does not gate the launch');
+    expect(payload.message ?? '').not.toContain('host-memory admission allows 0 new headless members');
   });
 
   it('admits a measured fleet whose aggregate peaks fit the host budget', async () => {

@@ -691,9 +691,13 @@ export function clampHeadlessLaunchToHostMemory(
     unmeasuredProtectedAgentScopes > 0
       ? `, ${unmeasuredProtectedAgentScopes} without peak metrics reserved at cap`
       : '';
+  // WI-41206: this figure is ADVISORY. The caller does NOT withhold members on it, so the
+  // wording must never imply a launch was reduced or refused — that misdirected an entire
+  // debugging session when `openCount 12→0` was read as a real limit.
+  const detail = `${active} active protected agent-session scope(s), ${reservedGiB}GiB reserved (${observedGiB}GiB observed peak${metricNote}), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB budgeted per new scope, ${availableProtectedAgentScopes} scope slot(s) within that budget. Swap is NOT counted here, and this does not gate the launch.`;
   const reason = clamped
-    ? `host-memory-clamped headless top-up ${requested}→${openCount} — ${active} active protected agent-session scope(s), ${reservedGiB}GiB reserved (${observedGiB}GiB observed peak${metricNote}), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per new scope, ${availableProtectedAgentScopes} protected scope slot(s) available`
-    : `host-memory-ok headless top-up ${requested} — ${active} active protected agent-session scope(s), ${reservedGiB}GiB reserved (${observedGiB}GiB observed peak${metricNote}), host total ${hostGiB}GiB, ${usableGiB}GiB usable after ${(reservedFraction * 100).toFixed(0)}% reserved, ${capGiB}GiB per new scope, ${availableProtectedAgentScopes} protected scope slot(s) available`;
+    ? `host-memory-advisory: headless top-up of ${requested} exceeds the ${availableProtectedAgentScopes}-slot RAM-only budget; launching all ${requested} anyway (workers page rather than being refused) — ${detail}`
+    : `host-memory-ok headless top-up ${requested} — ${detail}`;
   return {
     requestedOpenCount: requested,
     openCount,
@@ -2724,17 +2728,15 @@ export default defineTool({
       }
     }
     if (openCount <= 0) {
-      const hostMemorySuppressed = Boolean(hostMemoryAdmissionError || hostMemoryClamp?.clamped);
+      // WI-41206: host memory can no longer produce this branch. The clamp is advisory
+      // and never reduces openCount, so reaching 0 here means capacity or the live-member
+      // deficit — never memory. Reporting it as a memory suppression would send the
+      // caller to fix the wrong thing.
+      const hostMemorySuppressed = false;
       const lines = [
-        hostMemoryAdmissionError
-          ? `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but host-memory admission is unavailable, so 0 new headless members are allowed now.`
-          : hostMemoryClamp?.clamped
-            ? `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but host-memory admission allows 0 new headless members now.`
-            : `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but capacity allows 0 new member terminals now.`,
-        hostMemoryAdmissionError ?? hostMemoryClamp?.reason ?? capacityClamp?.reason ?? 'capacity report unavailable',
-        hostMemoryAdmissionError
-          ? 'NO new headless members were opened. Re-call this tool after the live task ledger recovers; the guard will re-evaluate the remaining deficit.'
-          : 'NO new terminals were opened. Re-call this tool after capacity recovers; the live-member deficit guard will still open only the remaining deficit.',
+        `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but capacity allows 0 new member terminals now.`,
+        capacityClamp?.reason ?? 'capacity report unavailable',
+        'NO new terminals were opened. Re-call this tool after capacity recovers; the live-member deficit guard will still open only the remaining deficit.',
         planSlug
           ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
           : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
@@ -3839,7 +3841,9 @@ export default defineTool({
     // Surface the capacity note when it CLAMPED (a real concurrency limit) OR when the
     // weekly-token-budget is merely tight (utilizationTight — advisory; members still launch).
     if (capacityClamp && (capacityClamp.clamped || capacityClamp.utilizationTight)) lines.push(capacityClamp.reason);
-    if (hostMemoryClamp?.clamped) lines.push(hostMemoryClamp.reason);
+    // WI-41206: hostMemoryClamp is ADVISORY — it no longer withholds any member, so its
+    // reason string is deliberately NOT surfaced here as if it had limited the wave. The
+    // full figures remain on the structured result for anyone who wants them.
     if (hostMemoryAdmissionError) lines.push(hostMemoryAdmissionError);
     // #3 failsafe report: tell the leader if the launch had to backstop a missing
     // plans:start, or if promotion was refused by the spec-triad gate. The latter
@@ -3868,19 +3872,13 @@ export default defineTool({
       attempted: openCount,
       opened: opened.length,
       noun: args.headless ? 'HEADLESS member' : 'member',
-      limitedBy: hostMemoryClamp?.clamped
-        ? 'host-memory'
-        : capacityClamp?.clamped
-          ? 'capacity'
-          : topUpWave.waveCapped
-            ? 'wave'
-            : undefined,
+      // WI-41206: hostMemoryClamp is advisory and never limits the wave, so it is no
+      // longer a `limitedBy` cause — attributing a shortfall to it would be false.
+      limitedBy: capacityClamp?.clamped ? 'capacity' : topUpWave.waveCapped ? 'wave' : undefined,
     });
-    const clampSuffix = hostMemoryClamp?.clamped
-      ? `; the deficit was host-memory-clamped ${hostMemoryClamp.requestedOpenCount}→${hostMemoryClamp.openCount}`
-      : capacityClamp?.clamped
-        ? `; the deficit was capacity-clamped ${requestedOpenCount}→${openCount}`
-        : '';
+    const clampSuffix = capacityClamp?.clamped
+      ? `; the deficit was capacity-clamped ${requestedOpenCount}→${openCount}`
+      : '';
     lines.push(
       opened.length
         ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${fill.clause}${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${clampSuffix}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
@@ -4075,6 +4073,11 @@ export default defineTool({
         fleetComplete: fill.complete,
         capacityClamp,
         hostMemoryClamp,
+        // WI-41206: always present and always false on this path. Host memory is advisory
+        // and never withholds a member, but the field must still EXIST here — a caller that
+        // reads `hostMemorySuppressed` cannot distinguish "not suppressed" from "field
+        // missing on the success payload", and undefined reads as falsy by luck, not design.
+        hostMemorySuppressed: false,
         hostMemoryAdmissionError,
         sizingAdvisory,
         // EI-20362893066852316: non-null when the codex model preflight could not get a
