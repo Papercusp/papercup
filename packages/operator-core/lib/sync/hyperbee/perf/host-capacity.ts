@@ -113,8 +113,11 @@ export function perPeerBytesFor(peers: number): number {
 export const DEFAULT_AVAILABLE_FRACTION = 0.5;
 
 export interface MeshCapacityDecision {
+  /** WI-41206: always true. Kept so callers compile unchanged, but memory never refuses a
+   *  run any more — a caller must not reintroduce a `if (!ok) return` on this field. */
   ok: boolean;
-  /** Human-readable refusal, present only when `ok` is false. */
+  /** Human-readable ADVISORY, present when the mesh exceeds the RAM-only budget. Its presence
+   *  means "this result may be unquotable if it swaps", NOT "the run was refused". */
   reason?: string;
   projectedBytes: number;
   budgetBytes: number;
@@ -151,21 +154,32 @@ export function decideMeshCapacity(input: {
   if (projectedBytes <= budgetBytes) return { ok: true, projectedBytes, budgetBytes };
 
   const gb = (b: number) => `${(b / 1e9).toFixed(1)}GB`;
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: ADVISORY, never a refusal.
+  //
+  // This guard used to return ok:false here. Its own header already recorded that a stale
+  // calibration made it refuse meshes the host could comfortably run, and that the refusal
+  // was then misread as a substrate bug — the failure mode of a memory guard that says NO is
+  // that people debug the wrong thing. The caller decides; we only tell it what we measured.
+  //
+  // The warning below is still worth printing, and is a genuinely different claim from the
+  // launch clamp's: a perf mesh that swaps produces an UNQUOTABLE convergence number, so the
+  // risk here is a worthless RESULT, not a dead process. That is a reason to distrust the
+  // verdict, not a reason to withhold the run.
   return {
-    ok: false,
+    ok: true,
     projectedBytes,
     budgetBytes,
     reason:
-      `host cannot fit a ${input.peers}-peer proc mesh: needs ~${gb(projectedBytes)} ` +
-      `(${input.peers} x ~${gb(perPeer)}/peer at this peer count${
+      `ADVISORY (not a refusal — the run proceeds): a ${input.peers}-peer proc mesh needs ` +
+      `~${gb(projectedBytes)} (${input.peers} x ~${gb(perPeer)}/peer at this peer count${
         input.perPeerBytes === undefined && input.peers > 64 ? ', EXTRAPOLATED past the 64-peer measurement envelope' : ''
       }) but only ` +
-      `${gb(budgetBytes)} is safely claimable (${(fraction * 100).toFixed(0)}% of ` +
-      `MemAvailable ${gb(input.availableBytes)}). Running anyway would swap, and a ` +
-      `swapped reader misses the convergence budget for reasons that have NOTHING to ` +
-      `do with this substrate — the resulting verdict would be unquotable. ` +
-      `Re-run on a quieter/larger host, or override with ` +
-      `PERF_MESH_AVAILABLE_FRACTION / PERF_MESH_PER_PEER_BYTES if you know better.`,
+      `${gb(budgetBytes)} is within the RAM-only budget (${(fraction * 100).toFixed(0)}% of ` +
+      `MemAvailable ${gb(input.availableBytes)}; swap is not counted). If this mesh swaps, a ` +
+      `swapped reader can miss the convergence budget for reasons that have NOTHING to do ` +
+      `with this substrate — so treat a MISS from this run as suspect rather than as a ` +
+      `substrate verdict, and re-run on a quieter/larger host before quoting it. Tune with ` +
+      `PERF_MESH_AVAILABLE_FRACTION / PERF_MESH_PER_PEER_BYTES.`,
   };
 }
 
