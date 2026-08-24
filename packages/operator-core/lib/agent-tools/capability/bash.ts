@@ -100,6 +100,33 @@ export function resolveBashDefaultCwd(baseDir: string): string {
   return realpathSoft(integrationRoot);
 }
 
+/**
+ * Node reports a nonexistent child cwd as an ENOENT on the BINARY
+ * (`spawn /usr/bin/bash ENOENT`), which reads as "bash is missing" and has
+ * been misdiagnosed that way (EI-21357058090189702, via code:run on a harness
+ * whose registered repo root does not exist). Check the final cwd before any
+ * spawn and fail with the real cause and the concrete fix instead.
+ */
+export function missingBashCwdError(cwd: string, explicitCwd: boolean): string | null {
+  try {
+    if (statSync(cwd).isDirectory()) return null;
+    return (
+      `capability:bash cwd '${cwd}' exists but is not a directory — the child process cannot start there. ` +
+      `Pass an existing directory as cwd.`
+    );
+  } catch {
+    // Missing (or unreadable) — fall through to the explanatory error below.
+  }
+  return explicitCwd
+    ? `capability:bash cwd '${cwd}' does not exist — the child process cannot start. ` +
+        `(Node would report this as a misleading "spawn /usr/bin/bash ENOENT".) ` +
+        `Pass an existing directory as cwd.`
+    : `capability:bash implicit cwd '${cwd}' (this context's project dir) does not exist, and no existing ` +
+        `PAPERCUSP_INTEGRATION_ROOT was available to recover to — the harness registry likely points at a ` +
+        `stale or phantom repo root. Pass cwd explicitly (an absolute path to an existing directory). ` +
+        `(Node would otherwise report this as a misleading "spawn /usr/bin/bash ENOENT".)`;
+}
+
 export interface BashTaskProvenance {
   launchedBy: string;
   sessionId: string | null;
@@ -245,6 +272,11 @@ export default defineTool({
         ? args.cwd
         : resolve(baseDir, args.cwd)
       : resolveBashDefaultCwd(baseDir);
+    // Preflight the FINAL cwd (explicit or recovered-implicit) before either
+    // spawn path, so a missing directory fails with its real cause instead of
+    // the child's misleading `spawn /usr/bin/bash ENOENT`.
+    const cwdError = missingBashCwdError(cwd, Boolean(args.cwd));
+    if (cwdError) throw new Error(cwdError);
     // WI-6677: the default depends on the MODE. A background job is contractually
     // meant to outlive this call, so it must not inherit the short foreground
     // default — that made the tool SIGKILL exactly the long jobs it exists for.

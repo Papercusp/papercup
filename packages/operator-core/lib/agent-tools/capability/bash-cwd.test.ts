@@ -6,7 +6,7 @@
  * existing integration root, because node's child_process spawn rejects a
  * missing cwd before the command can run.
  */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,6 +22,11 @@ vi.mock('./bash-jobs', async (importOriginal) => ({
     totalBytes: 0,
     logPath: '/tmp/capability-bash-cwd-test.log',
   })),
+  // The missing-cwd preflight must reject BEFORE either spawn path; mock the
+  // background launcher too so a regression cannot start a real job from a test.
+  startBackground: vi.fn(() => {
+    throw new Error('startBackground must not be reached in bash-cwd tests');
+  }),
 }));
 
 vi.mock('./exec-sandbox', async (importOriginal) => ({
@@ -29,7 +34,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
   capabilityExecSandboxEnabled: vi.fn(async () => false),
 }));
 
-import bashTool, { resolveBashDefaultCwd } from './bash';
+import bashTool, { missingBashCwdError, resolveBashDefaultCwd } from './bash';
 import { runForeground } from './bash-jobs';
 
 type Tool = {
@@ -100,6 +105,9 @@ describe('capability:bash — stale implicit cwd recovery', () => {
     expect(vi.mocked(runForeground).mock.calls[0]?.[0]).toMatchObject({ cwd: explicitDir });
 
     vi.mocked(runForeground).mockClear();
+    // The relative form resolves against the base dir with no recovery rerouting;
+    // the resolved target must exist to clear the missing-cwd preflight.
+    mkdirSync(resolve(staleProjectDir, 'relative-child'), { recursive: true });
     await bash.handler({ command: 'true', cwd: 'relative-child' }, makeCtx(staleProjectDir));
     expect(vi.mocked(runForeground).mock.calls[0]?.[0]).toMatchObject({
       cwd: resolve(staleProjectDir, 'relative-child'),
@@ -111,5 +119,74 @@ describe('capability:bash — stale implicit cwd recovery', () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = join(root, 'missing-integration-root');
 
     expect(resolveBashDefaultCwd(staleProjectDir)).toBe(staleProjectDir);
+  });
+});
+
+/**
+ * The missing-cwd preflight (EI-21357058090189702): a nonexistent final cwd
+ * must fail with its real cause BEFORE any spawn — Node's own failure for it
+ * is a misleading ENOENT naming the BINARY (`spawn /usr/bin/bash ENOENT`),
+ * which reads as "bash is missing" and was misdiagnosed exactly that way.
+ */
+describe('capability:bash — missing-cwd preflight', () => {
+  let root: string;
+  let originalIntegrationRoot: string | undefined;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'capability-bash-cwd-preflight-'));
+    originalIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    vi.mocked(runForeground).mockClear();
+  });
+
+  afterEach(() => {
+    if (originalIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = originalIntegrationRoot;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('rejects an unrecoverable implicit cwd with the real cause, before any spawn', async () => {
+    const phantomProjectDir = join(root, 'phantom-repo-root');
+    process.env.PAPERCUSP_INTEGRATION_ROOT = join(root, 'also-missing');
+
+    await expect(bash.handler({ command: 'printf ok' }, makeCtx(phantomProjectDir))).rejects.toThrow(
+      /implicit cwd '.*phantom-repo-root' \(this context's project dir\) does not exist/,
+    );
+    await expect(bash.handler({ command: 'printf ok' }, makeCtx(phantomProjectDir))).rejects.toThrow(
+      /spawn \/usr\/bin\/bash ENOENT/,
+    );
+    expect(vi.mocked(runForeground)).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicit missing cwd with the real cause, in background mode too', async () => {
+    const goodProjectDir = join(root, 'project');
+    mkdirSync(goodProjectDir);
+    const missingExplicit = join(root, 'no-such-dir');
+
+    await expect(
+      bash.handler({ command: 'printf ok', cwd: missingExplicit }, makeCtx(goodProjectDir)),
+    ).rejects.toThrow(/cwd '.*no-such-dir' does not exist/);
+    await expect(
+      bash.handler(
+        { command: 'printf ok', cwd: missingExplicit, run_in_background: true },
+        makeCtx(goodProjectDir),
+      ),
+    ).rejects.toThrow(/does not exist/);
+    expect(vi.mocked(runForeground)).not.toHaveBeenCalled();
+  });
+
+  it('rejects a cwd that exists but is not a directory', async () => {
+    const goodProjectDir = join(root, 'project');
+    mkdirSync(goodProjectDir);
+    const filePath = join(root, 'a-file');
+    writeFileSync(filePath, 'not a dir\n');
+
+    await expect(bash.handler({ command: 'printf ok', cwd: filePath }, makeCtx(goodProjectDir))).rejects.toThrow(
+      /exists but is not a directory/,
+    );
+  });
+
+  it('missingBashCwdError returns null for an existing directory', () => {
+    expect(missingBashCwdError(root, false)).toBeNull();
+    expect(missingBashCwdError(root, true)).toBeNull();
   });
 });
