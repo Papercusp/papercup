@@ -10,6 +10,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { COORD_ACK_ACCEPTED_KEYS } from './ack-keys';
+
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('../messages', () => ({ appendAck: vi.fn(), getMessageById: vi.fn() }));
 
@@ -53,5 +55,41 @@ describe('coord:ack handler (bulk keyed-array)', () => {
     expect(b.results[1]).toMatchObject({ ok: false, msg_id: 'M-404', error: 'unknown_msg_id' });
     // the unknown one was NOT acked
     expect(appendM).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * EI-21329316352681219 — half 1 of the two-hop pin. COORD_ACK_ACCEPTED_KEYS is what
+ * control-core.test.ts checks generated cue text against; if it could drift from the
+ * real schema, that guard would police a stale list. So pin it to the tool itself here,
+ * where the real tool is already imported.
+ */
+describe('coord:ack accepted-key pin (EI-21329316352681219)', () => {
+  const argShapeKeys = (schema: unknown): string[] => {
+    const s = schema as {
+      shape?: Record<string, unknown>;
+      _def?: {
+        shape?: Record<string, unknown>;
+        schema?: { shape?: Record<string, unknown> };
+        innerType?: { shape?: Record<string, unknown> };
+      };
+    };
+    const shape = s?.shape ?? s?._def?.shape ?? s?._def?.schema?.shape ?? s?._def?.innerType?.shape;
+    return shape ? Object.keys(shape) : [];
+  };
+
+  it('the constant equals the tool\'s real arg schema keys', () => {
+    const keys = argShapeKeys(tool.args);
+    // POSITIVE CONTROL: a reflection that stops working must FAIL here rather than
+    // silently pass with [], which would make every downstream subset check vacuous.
+    expect(keys.length).toBeGreaterThan(0);
+    expect([...keys].sort()).toEqual([...COORD_ACK_ACCEPTED_KEYS].sort());
+  });
+
+  it('carries no free-text field — the arg the wind-down cue used to promise', () => {
+    const keys = argShapeKeys(tool.args);
+    expect(keys).not.toContain('summary');
+    expect(keys).not.toContain('note');
+    expect(keys).not.toContain('disposition');
   });
 });

@@ -7,6 +7,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { COORD_ACK_ACCEPTED_KEYS, coordAckArgNamesIn } from '../coordination/tools/ack-keys';
+
 const callerRef = { ownerId: 'su-4c85f9d7-aaaa-bbbb-cccc-ddddeeee0001' };
 
 vi.mock('./_shared', () => ({
@@ -168,6 +170,73 @@ describe('fleetControlCueText (pure)', () => {
     expect(fleetControlCueText('wind-down', 'backend', null, '4c85f', 'm-cue').body).toContain(
       "coord:ack { msg_id: 'm-cue' }",
     );
+  });
+
+  /**
+   * EI-21329316352681219 — half 2 of the two-hop pin (half 1 lives in ack.test.ts, which
+   * keeps COORD_ACK_ACCEPTED_KEYS equal to the tool's real schema).
+   *
+   * The cue used to read "…coord:ack { msg_id: 'X' } to send your one-line disposition to
+   * the leader", attaching a free-text purpose to a receipt that carries none. A member who
+   * followed it literally called coord:ack { msg_id, summary } and was refused invalid_args
+   * while trying to wind down. This makes that class a BUILD failure: any argument the cue
+   * names inside a coord:ack { … } snippet must be one the tool actually accepts.
+   */
+  it('never names a coord:ack argument the tool would reject (EI-21329316352681219)', () => {
+    for (const cueMsgId of [undefined, 'm-cue']) {
+      const { body } = fleetControlCueText('wind-down', 'backend', 'release cut', '4c85f', cueMsgId);
+      const named = coordAckArgNamesIn(body);
+      // POSITIVE CONTROL: if the parser stops finding the call at all, the subset check
+      // below would pass vacuously — so require that it actually matched something.
+      expect(named.length).toBeGreaterThan(0);
+      for (const key of named) expect(COORD_ACK_ACCEPTED_KEYS).toContain(key);
+    }
+  });
+
+  it('routes the one-line disposition to coord:send, not onto the ack (EI-21329316352681219)', () => {
+    const { body } = fleetControlCueText('wind-down', 'backend', null, '4c85f', 'm-cue');
+    expect(body).toContain("coord:send { expects:'none', summary:'…' }");
+    expect(body).toMatch(/carries no free text/i);
+    // The disposition must not be described as something the ack itself transmits.
+    expect(body).not.toMatch(/coord:ack \{[^}]*\}\s*to send your one-line disposition/i);
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL. The two guards above pass today; that alone proves nothing
+   * about whether they can FAIL. Note in particular that the subset guard would NOT have
+   * caught the original defect — the pre-fix cue named only `msg_id`, and the member
+   * invented `summary` from the surrounding prose — so the prose guard is the one doing
+   * the real work here, and it is the one that must be shown to discriminate.
+   *
+   * Rather than mutate the shared tree (git-sync would happily commit the mutant), the
+   * pre-fix cue body is frozen here as a permanent negative control, per the repo's
+   * "keep a deliberately-wrong implementation in the test file" tier.
+   */
+  const PRE_FIX_CUE_BODY =
+    'Fleet backend is WINDING DOWN. This is a TYPED, BINDING control cue ' +
+    '[system-derived:fleet-control] (registry control_state=winding-down). ' +
+    'Finish only the atomic step in hand, then: work_items:checkpoint + release your claims ' +
+    '(or complete with evidence), release your file locks, loop:end any armed loop, and ack this ' +
+    "exact cue with coord:ack { msg_id: 'm-cue' } " +
+    'to send your one-line disposition to the leader. This lifecycle ack is recorded without ' +
+    're-invoking the wound-down leader.';
+
+  it('the guards REJECT the pre-fix cue body (negative control)', () => {
+    // Each assertion the live cue satisfies must fail against the historical text —
+    // otherwise the guard is decorative.
+    expect(PRE_FIX_CUE_BODY).not.toContain("coord:send { expects:'none', summary:'…' }");
+    expect(PRE_FIX_CUE_BODY).not.toMatch(/carries no free text/i);
+    expect(PRE_FIX_CUE_BODY).toMatch(/coord:ack \{[^}]*\}\s*to send your one-line disposition/i);
+  });
+
+  it('the arg parser flags a cue that names an unaccepted arg (negative control)', () => {
+    // The regression the subset guard exists for: a future edit "fixing" this by writing
+    // the rejected key straight into the cue.
+    const named = coordAckArgNamesIn("coord:ack { msg_id, summary }");
+    expect(named).toEqual(['msg_id', 'summary']);
+    expect(named.some((k) => !(COORD_ACK_ACCEPTED_KEYS as readonly string[]).includes(k))).toBe(true);
+    // …and a quoted VALUE is never mistaken for an argument name.
+    expect(coordAckArgNamesIn("coord:ack { msg_id: 'm-cue' }")).toEqual(['msg_id']);
   });
   it('resume: lifts the wind-down, resume the pull cadence', () => {
     const { summary, body } = fleetControlCueText('resume', 'backend', null, '4c85f');
