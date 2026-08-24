@@ -132,15 +132,21 @@ describe('db:migrate — dry run', () => {
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
 
-  it('does not require the migration file to be readable for a dry run', async () => {
+  it('validates the migration file before a dry run, matching confirm resolution', async () => {
+    const relativeFile = 'libs/papercusp/libs/db/sql/922-datatype-display-spec.sql';
     h.readFileSync.mockImplementation(() => {
-      throw new Error(`ENOENT: no such file or directory, open '${FILE}'`);
+      throw new Error(`ENOENT: no such file or directory, open '${relativeFile}'`);
     });
 
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE }, CTX));
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: relativeFile }, CTX));
 
-    expect(out).toMatchObject({ ok: true, dry_run: true, would_run: expect.stringContaining(FILE) });
-    expect(h.readFileSync).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      ok: false,
+      applied: false,
+      reason: 'migration_file_unreadable',
+      file: relativeFile,
+    });
+    expect(h.readFileSync).toHaveBeenCalledWith(relativeFile, 'utf8');
     expect(h.guardResource).not.toHaveBeenCalled();
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
