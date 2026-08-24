@@ -736,7 +736,7 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
     });
   });
 
-  it('installs the ptool shim behind the same mutex before loading the MCP SDK', () => {
+  it('installs the ptool shim as a direct recovery transport', () => {
     const installer = readFileSync(
       join(process.cwd(), '../../apps/operator/scripts/install-standalone-mcp.sh'),
       'utf8',
@@ -747,12 +747,9 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
 
     expect(ptoolStart).toBeGreaterThan(-1);
     expect(ptoolEnd).toBeGreaterThan(ptoolStart);
-    expect(ptoolBlock).toContain('npm-install-safe.mjs');
-    expect(ptoolBlock).toContain('--repo-root "${REPO_ROOT}" --exec-under-lock --');
     expect(ptoolBlock).toContain('node "${PTOOL_LAUNCHER}" "\\$@"');
-    expect(ptoolBlock.indexOf('--exec-under-lock')).toBeLessThan(
-      ptoolBlock.indexOf('node "${PTOOL_LAUNCHER}"'),
-    );
+    expect(ptoolBlock).not.toContain('npm-install-safe.mjs');
+    expect(ptoolBlock).not.toContain('--exec-under-lock');
   });
 
   it('marks a guarded reader child and preserves the selected repo cwd', async () => {
