@@ -21,6 +21,12 @@ describe('set-plan-status public lifecycle guidance', () => {
   });
 });
 
+describe('set-plan-status idempotent-completion opt-in (EI-21122694679454626)', () => {
+  it('declares idempotent:true so a committed-but-slow flip is reported as success', () => {
+    expect((setPlanStatusTool as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+});
+
 // Caller-DX (watchdog P-006): plans:set-plan-status previously zod-REJECTED the
 // status words agents reach for ('active' from old plans, 'done' confused with the
 // item-status verb). Now they are accepted + mapped to the canonical settable form,

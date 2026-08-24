@@ -283,6 +283,12 @@ export default defineTool({
       "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: `plans:audit { phase:'completion', items:[...] }` → peer-graded rubric → shipped/`done`. Re-audit after semantic edits, not cosmetic ones. Start uses the same activation gate.",
   },
   capability: 'plans:write',
+  // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007):
+  // the locked frontmatter write can commit just before the transport deadline,
+  // leaving the caller with an ambiguous timeout even though a retry is safe.
+  // Opt into the dispatch abort-race reconciliation so a committed lifecycle
+  // flip is surfaced as truthful success instead of a false timeout.
+  idempotent: true,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
