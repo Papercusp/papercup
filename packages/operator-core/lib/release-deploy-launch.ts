@@ -232,7 +232,13 @@ export interface CheckpointExecutionStatus {
   /** Current execution truth. A running/paused/blocked state has no implied code verdict. */
   state: 'running' | 'paused' | 'blocked' | 'idle' | 'unknown';
   /** Which existing authority produced the state above. */
-  authority: 'manual-unit' | 'shared-run-lock' | 'routine-control' | 'live-probe' | 'unmeasured';
+  authority:
+    | 'manual-unit'
+    | 'shared-run-lock'
+    | 'process-authority'
+    | 'routine-control'
+    | 'live-probe'
+    | 'unmeasured';
   /** The run's own published phase, only while a measured run is live. */
   phase: string | null;
   /** Exact current blocker when the gate is paused/blocked/unreadable. */
@@ -395,7 +401,9 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       : { status: 'ok' as const, detail: null };
   const measuredRunActive =
     checkpointRunInFlight?.active === true &&
-    (checkpointRunInFlight.probeFailed !== true || checkpointRunInFlight.heldExternally === true);
+    (checkpointRunInFlight.probeFailed !== true ||
+      checkpointRunInFlight.heldExternally === true ||
+      checkpointRunInFlight.preLockAuthority !== undefined);
   const terminalFailure =
     checkpointRunInFlight?.active === false &&
     checkpointRunInFlight.terminalMarker === false &&
@@ -405,7 +413,11 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   const checkpoint: CheckpointExecutionStatus = measuredRunActive
     ? {
         state: 'running',
-        authority: checkpointRunInFlight?.heldExternally ? 'shared-run-lock' : 'manual-unit',
+        authority: checkpointRunInFlight?.preLockAuthority
+          ? 'process-authority'
+          : checkpointRunInFlight?.heldExternally
+            ? 'shared-run-lock'
+            : 'manual-unit',
         phase: checkpointRunInFlight?.currentPhase ?? null,
         blocker: null,
         verdictPending: true,
