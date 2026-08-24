@@ -92,6 +92,8 @@ describe('scoped repository format check', () => {
     const result = spawnSync(process.execPath, [resolve(REPO_ROOT, 'scripts/check-format.mjs'), flag], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
     });
 
     expect(result.status).toBe(0);
