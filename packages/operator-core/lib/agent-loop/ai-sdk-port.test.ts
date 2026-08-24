@@ -1,6 +1,7 @@
 import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import { describe, expect, it } from 'vitest';
 import {
+  aiSdkWireToolName,
   buildAiSdkCallOptions,
   createAiSdkPort,
   effortProviderOptions,
@@ -85,6 +86,15 @@ describe('AI SDK v6 prompt mapping', () => {
     });
   });
 
+  it('encodes namespaced projected-tool names into stable provider-safe aliases', () => {
+    const encoded = aiSdkWireToolName('capability:read');
+    expect(encoded).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+    expect(encoded).not.toBe('capability:read');
+    expect(aiSdkWireToolName('capability:read')).toBe(encoded);
+    expect(aiSdkWireToolName('capability_read')).toBe('capability_read');
+    expect(aiSdkWireToolName('capability:write')).not.toBe(encoded);
+  });
+
   it('builds tools, abort, headers, and effort on the provider-spec call', () => {
     const signal = new AbortController().signal;
     const req: ModelRequest = {
@@ -106,7 +116,11 @@ describe('AI SDK v6 prompt mapping', () => {
       abortSignal: signal,
       headers: { 'x-test': 'yes' },
       providerOptions: { openai: { reasoningEffort: 'high' } },
-      tools: [{ type: 'function', name: 'files:read', inputSchema: { type: 'object' } }],
+      tools: [{
+        type: 'function',
+        name: aiSdkWireToolName('files:read'),
+        inputSchema: { type: 'object' },
+      }],
       toolChoice: { type: 'auto' },
     });
   });
@@ -119,7 +133,12 @@ describe('createAiSdkPort', () => {
       { type: 'stream-start', warnings: [] },
       { type: 'text-delta', id: 'text-1', delta: 'hello' },
       { type: 'reasoning-delta', id: 'reason-1', delta: 'think' },
-      { type: 'tool-call', toolCallId: 'call-2', toolName: 'files:read', input: '{"path":"b.ts"}' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-2',
+        toolName: aiSdkWireToolName('files:read'),
+        input: '{"path":"b.ts"}',
+      },
       {
         type: 'finish',
         finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
@@ -134,7 +153,11 @@ describe('createAiSdkPort', () => {
     });
 
     const events = [];
-    for await (const event of port.stream({ model: 'openai/gpt-5.4:high', messages })) {
+    for await (const event of port.stream({
+      model: 'openai/gpt-5.4:high',
+      messages,
+      tools: [{ name: 'files:read', inputSchema: { type: 'object' } }],
+    })) {
       events.push(event);
     }
 
@@ -154,6 +177,9 @@ describe('createAiSdkPort', () => {
       }),
     ]);
     expect(observed).toMatchObject({ providerOptions: { openai: { reasoningEffort: 'high' } } });
+    expect(observed).toMatchObject({
+      tools: [{ name: aiSdkWireToolName('files:read') }],
+    });
   });
 
   it('surfaces a truncated provider stream as an error instead of inventing a stop', async () => {

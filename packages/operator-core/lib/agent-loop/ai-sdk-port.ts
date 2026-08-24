@@ -6,6 +6,7 @@
  * ModelPort boundary.
  */
 import { costFromTokens } from '@papercusp/model-pricing';
+import { createHash } from 'node:crypto';
 import type {
   JSONValue,
   LanguageModelV3,
@@ -38,6 +39,41 @@ export interface AiSdkPortModel {
 
 export interface AiSdkPortOptions {
   resolveModel(req: ModelRequest): Promise<AiSdkPortModel> | AiSdkPortModel;
+}
+
+const AI_SDK_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * AI-provider function names share a conservative alphanumeric/underscore/
+ * hyphen wire contract. Papercusp's canonical projected-tool names contain a
+ * namespace colon (`capability:read`), so send a deterministic readable alias
+ * and translate it back at the ModelPort boundary. The digest makes aliases
+ * collision-resistant while the 64-char cap remains valid across providers.
+ */
+export function aiSdkWireToolName(name: string): string {
+  if (AI_SDK_TOOL_NAME_PATTERN.test(name)) return name;
+  const readable = name
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 44) || 'tool';
+  const digest = createHash('sha256').update(name).digest('hex').slice(0, 12);
+  return `pc_${readable}_${digest}`;
+}
+
+interface ToolNameCodec {
+  encode(name: string): string;
+  decode(name: string): string;
+}
+
+function toolNameCodec(req: ModelRequest): ToolNameCodec {
+  const canonicalByWire = new Map<string, string>();
+  for (const tool of req.tools ?? []) {
+    canonicalByWire.set(aiSdkWireToolName(tool.name), tool.name);
+  }
+  return {
+    encode: aiSdkWireToolName,
+    decode: (name) => canonicalByWire.get(name) ?? name,
+  };
 }
 
 function jsonValue(value: unknown): JSONValue | null {
@@ -75,6 +111,7 @@ function resultOutput(part: Extract<ModelContentPart, { type: 'tool_result' }>):
 export function toAiSdkPrompt(
   system: string | undefined,
   messages: ModelMessage[],
+  encodeToolName: (name: string) => string = (name) => name,
 ): LanguageModelV3Message[] {
   const prompt: LanguageModelV3Message[] = [];
   if (system) prompt.push({ role: 'system', content: system });
@@ -89,7 +126,7 @@ export function toAiSdkPrompt(
           content.push({
             type: 'tool-call',
             toolCallId: part.id,
-            toolName: part.name,
+            toolName: encodeToolName(part.name),
             input: part.input ?? {},
           });
         }
@@ -112,7 +149,7 @@ export function toAiSdkPrompt(
         content: results.map((part) => ({
           type: 'tool-result' as const,
           toolCallId: part.toolCallId,
-          toolName: names.get(part.toolCallId) ?? 'unknown_tool',
+          toolName: encodeToolName(names.get(part.toolCallId) ?? 'unknown_tool'),
           output: resultOutput(part),
         })),
       });
@@ -146,16 +183,17 @@ export function effortProviderOptions(
 export function buildAiSdkCallOptions(
   req: ModelRequest,
   resolved: AiSdkPortModel,
+  codec: ToolNameCodec = toolNameCodec(req),
 ): LanguageModelV3CallOptions {
   return {
-    prompt: toAiSdkPrompt(req.system, req.messages),
+    prompt: toAiSdkPrompt(req.system, req.messages, codec.encode),
     ...(req.maxTokens !== undefined ? { maxOutputTokens: req.maxTokens } : {}),
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(req.tools?.length
       ? {
           tools: req.tools.map((tool) => ({
             type: 'function' as const,
-            name: tool.name,
+            name: codec.encode(tool.name),
             ...(tool.description !== undefined ? { description: tool.description } : {}),
             // ModelPort owns JSON Schema as a provider-neutral object. AI SDK
             // consumes draft-07 here; capability schemas already use it.
@@ -209,6 +247,7 @@ function errorMessage(error: unknown): string {
 async function* readAiSdkStream(
   stream: ReadableStream<LanguageModelV3StreamPart>,
   modelId: string,
+  decodeToolName: (name: string) => string = (name) => name,
 ): AsyncGenerator<ModelStreamEvent, void, void> {
   const reader = stream.getReader();
   let finished = false;
@@ -232,7 +271,12 @@ async function* readAiSdkStream(
               input = { __unparsed: value.input };
             }
           }
-          yield { type: 'tool_call', id: value.toolCallId, name: value.toolName, input };
+          yield {
+            type: 'tool_call',
+            id: value.toolCallId,
+            name: decodeToolName(value.toolName),
+            input,
+          };
           break;
         }
         case 'finish': {
@@ -272,8 +316,9 @@ export function createAiSdkPort(opts: AiSdkPortOptions): ModelPort {
         return;
       }
       try {
-        const result = await resolved.model.doStream(buildAiSdkCallOptions(req, resolved));
-        yield* readAiSdkStream(result.stream, resolved.modelId);
+        const codec = toolNameCodec(req);
+        const result = await resolved.model.doStream(buildAiSdkCallOptions(req, resolved, codec));
+        yield* readAiSdkStream(result.stream, resolved.modelId, codec.decode);
       } catch (error) {
         if (req.signal?.aborted) {
           yield { type: 'stop', reason: 'aborted' };
