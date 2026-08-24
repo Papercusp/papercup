@@ -413,8 +413,11 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
     };
     const workload = [
-      `echo "$$" > ${JSON.stringify(workloadPidFile)}`,
       `trap 'echo terminated > ${JSON.stringify(terminatedFile)}; exit 143' TERM`,
+      // Publish readiness only after the TERM handler is installed. The hard-kill
+      // follows this file immediately; publishing the pid first leaves a real
+      // echo→trap race where correct group cleanup can beat the sentinel setup.
+      `echo "$$" > ${JSON.stringify(workloadPidFile)}`,
       'while :; do sleep 1; done',
     ].join('; ');
     const holder = spawn('bash', [PC_HEAVY, 'bash', '-c', workload], {
@@ -453,6 +456,56 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     } finally {
       killGroup(holder);
       if (barrier) killGroup(barrier);
+      if (workloadPid > 1) {
+        try { process.kill(-workloadPid, 'SIGKILL'); } catch { /* already reaped */ }
+      }
+    }
+  }, 15_000);
+
+  it('WI-41318: reaps the workload group when a caller hard-kills the outer wrapper', async () => {
+    const workloadPidFile = join(dir, 'hard-killed-workload.pid');
+    const terminatedFile = join(dir, 'hard-killed-workload.terminated');
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '1',
+      PC_HEAVY_TIMEOUT_SEC: '5',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+      PC_HEAVY_PREEMPT_GRACE_SEC: '0',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const workload = [
+      `echo "$$" > ${JSON.stringify(workloadPidFile)}`,
+      `trap 'echo terminated > ${JSON.stringify(terminatedFile)}; exit 143' TERM`,
+      'while :; do sleep 1; done',
+    ].join('; ');
+    const holder = spawn('bash', [PC_HEAVY, 'bash', '-c', workload], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let workloadPid = 0;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the hard-kill holder taking slot.0');
+      await waitFor('the hard-kill workload process starting', () => existsSync(workloadPidFile));
+      workloadPid = Number(readFileSync(workloadPidFile, 'utf8').trim());
+      expect(Number.isSafeInteger(workloadPid) && workloadPid > 1).toBe(true);
+
+      // Simulate a caller deadline that kills the outer wrapper's entire
+      // process group. The monitor must be in a separate session to survive.
+      process.kill(-(holder.pid as number), 'SIGKILL');
+      await untilStderr(
+        holder,
+        holderErr,
+        (t) => t.includes('outer slot wrapper exited'),
+        'the surviving monitor detecting outer-wrapper death',
+        5_000,
+      );
+      await waitFor('the isolated workload receiving TERM from the surviving monitor', () => existsSync(terminatedFile), 5_000);
+      await waitFor('the hard-killed workload process group being fully reaped', () => {
+        try { process.kill(-workloadPid, 0); return false; } catch { return true; }
+      }, 5_000);
+    } finally {
+      try { process.kill(-(holder.pid as number), 'SIGKILL'); } catch { /* already gone */ }
       if (workloadPid > 1) {
         try { process.kill(-workloadPid, 'SIGKILL'); } catch { /* already reaped */ }
       }
