@@ -214,6 +214,7 @@ describe('resolver launch — a real supervised headless agent, never a shell gr
 describe('plans.attentionBulkRun sync resolver', () => {
   it('returns ONE row with an explicit null run when no run exists', async () => {
     vi.doMock('../attention/bulk-run-store', () => ({
+      classifyRunLiveness: vi.fn(),
       getRun: vi.fn(),
       getLatestRun: vi.fn(async () => null),
       getRunItems: vi.fn(async () => []),
@@ -232,6 +233,7 @@ describe('plans.attentionBulkRun sync resolver', () => {
   it('degrades to the same idle row when the store THROWS', async () => {
     vi.resetModules();
     vi.doMock('../attention/bulk-run-store', () => ({
+      classifyRunLiveness: vi.fn(),
       getRun: vi.fn(),
       getLatestRun: vi.fn(async () => {
         throw new Error('pg down');
@@ -252,6 +254,7 @@ describe('plans.attentionBulkRun sync resolver', () => {
     const getRun = vi.fn(async () => ({ runId: 'run-x', phase: 'review' }));
     const getLatestRun = vi.fn();
     vi.doMock('../attention/bulk-run-store', () => ({
+      classifyRunLiveness: vi.fn(() => ({ state: 'not-executing', phase: 'review' })),
       getRun,
       getLatestRun,
       getRunItems: vi.fn(async () => [{ itemId: 'a' }]),
@@ -265,7 +268,10 @@ describe('plans.attentionBulkRun sync resolver', () => {
     // A named run must NOT fall through to "latest" — that would silently show
     // a different run than the link asked for.
     expect(getLatestRun).not.toHaveBeenCalled();
-    expect(rows[0]!.run.runId).toBe('run-x');
+    expect(rows[0]!.run).toMatchObject({
+      runId: 'run-x',
+      liveness: { state: 'not-executing', phase: 'review' },
+    });
     expect(rows[0]!.items).toHaveLength(1);
     vi.doUnmock('../attention/bulk-run-store');
     vi.resetModules();
