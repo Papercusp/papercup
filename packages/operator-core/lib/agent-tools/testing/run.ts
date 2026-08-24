@@ -239,7 +239,11 @@ function testFilesResolveAtRoot(files: string[], root: string): boolean {
   if (!hasRouter && !isVitestCheckoutRoot(root)) return false;
   const resolution = normalizeTestFilePaths(files, root);
   if (!resolution.ok) return false;
-  return resolution.files.every((file) => existsSync(isAbsolute(file) ? file : resolve(root, file)));
+  return resolution.files.every((file) => {
+    if (isAbsolute(file)) return existsSync(file);
+    const candidate = resolve(root, file);
+    return isInsideRoot(root, candidate) && existsSync(candidate);
+  });
 }
 
 /**
