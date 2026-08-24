@@ -37,6 +37,7 @@ import {
   type RubricCriterionWindow,
   type RubricCriterionCheck,
 } from './agent-tools/plans/rubric-template';
+import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activation-gate';
 import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
@@ -1470,6 +1471,14 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   );
   if (result.kind === 'busy') {
     throw new Error(`proposeRubric: plan '${input.rubricId}' is being written by another caller`);
+  }
+
+  // withPlanLock returns activation-gate refusals as typed domain values so plan
+  // tools can render them without throwing. This library API cannot return a partial
+  // Rubric, so preserve the exact refusal rather than misreporting it as a failed
+  // post-write lookup.
+  if (isConversationAuditRequiredValue(result.value)) {
+    throw new Error(`${result.value.code}: ${result.value.message}`);
   }
 
   const rubric = await getRubric(input.rubricId);

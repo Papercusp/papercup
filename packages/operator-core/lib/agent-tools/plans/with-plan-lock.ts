@@ -33,6 +33,7 @@ import {
   conversationAuditRequiredValue,
   entersActivationPlanStatus,
   evaluateConversationActivationGate,
+  isActivationAuditExemptTemplate,
 } from './plan-activation-gate';
 import {
   resolvePlanScope,
@@ -332,9 +333,12 @@ export async function withPlanLock<T>(
     // set-content/edit/frontmatter writes, and direct creation as ready/active.
     // Later edits while already ready/active are intentionally allowed (D-002).
     if (newBody !== null) {
-      const beforeStatus = cur ? deriveIndexFromContent(cur.content).status : null;
-      const afterStatus = deriveIndexFromContent(newBody).status;
-      if (entersActivationPlanStatus(beforeStatus, afterStatus)) {
+      const beforeIndex = cur ? deriveIndexFromContent(cur.content) : null;
+      const afterIndex = deriveIndexFromContent(newBody);
+      if (
+        entersActivationPlanStatus(beforeIndex?.status, afterIndex.status) &&
+        !isActivationAuditExemptTemplate(afterIndex.template)
+      ) {
         const gate = await evaluateConversationActivationGate(tx as never, {
           workspaceId,
           harnessSlug,

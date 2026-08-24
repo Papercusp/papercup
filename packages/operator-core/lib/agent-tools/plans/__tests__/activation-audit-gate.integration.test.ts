@@ -89,6 +89,20 @@ async function activationAuditAt(
 
 const flipReady = (body: string) => body.replace('status: draft', 'status: ready');
 
+const RUBRIC_DRAFT = `---
+title: Rubric activation
+slug: rubric-activation
+status: draft
+template: rubric
+created: 2026-08-24
+updated: 2026-08-24
+---
+
+# Rubric activation
+`;
+
+const activate = (body: string) => body.replace('status: draft', 'status: active');
+
 describe('conversation activation audit gate', () => {
   it('blocks a raw draft→ready content transition and leaves the row unchanged', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
@@ -141,6 +155,49 @@ describe('conversation activation audit gate', () => {
       async (current) => ({ newBody: current!.replace('prove the gate', 'prove the shared gate'), value: { ok: true } }),
     );
     expect(cosmetic).toMatchObject({ kind: 'applied', value: { ok: true } });
+  });
+
+  it('exempts a new rubric-template plan entering active without an activation audit', async () => {
+    const result = await withPlanLock<{ ok: true }>(
+      {} as never,
+      { slug: 'rubric-activation', harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test rubric activation' },
+      async () => ({ newBody: activate(RUBRIC_DRAFT), value: { ok: true } }),
+    );
+
+    expect(result).toMatchObject({ kind: 'applied', value: { ok: true } });
+    const rows = await fx.admin<Array<{ content: string }>>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = 'rubric-activation'`;
+    expect(rows[0]?.content).toContain('status: active');
+  });
+
+  it('exempts an existing proposed rubric-template plan promoted to active', async () => {
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, 'rubric-activation', RUBRIC_DRAFT);
+    const result = await withPlanLock<{ ok: true }>(
+      {} as never,
+      { slug: 'rubric-activation', harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test rubric ratification' },
+      async (current) => ({ newBody: activate(current!), value: { ok: true } }),
+    );
+
+    expect(result).toMatchObject({ kind: 'applied', value: { ok: true } });
+    const rows = await fx.admin<Array<{ content: string }>>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = 'rubric-activation'`;
+    expect(rows[0]?.content).toContain('status: active');
+  });
+
+  it('keeps the activation audit requirement for ordinary plans', async () => {
+    await seedPlan(fx.admin, fx.workspaceId, SLUG, DRAFT);
+    const result = await withPlanLock<{ ok: true }>(
+      {} as never,
+      { slug: SLUG, harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test ordinary activation' },
+      async (current) => ({ newBody: flipReady(current!), value: { ok: true } }),
+    );
+
+    expect(result).toMatchObject({
+      kind: 'applied',
+      value: { ok: false, code: 'conversation_audit_required' },
+    });
   });
 
   it('preserves the audit after cosmetic and substantive edits while surfacing exact revision/materiality guidance', async () => {

@@ -2,6 +2,8 @@
 
 type Tx = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
+import { RUBRIC_TEMPLATE_NAME } from './rubric-template';
+
 export const ACTIVATION_PLAN_STATUSES = ['ready', 'active'] as const;
 
 export function isActivationPlanStatus(status: string | null | undefined): boolean {
@@ -14,6 +16,19 @@ export function entersActivationPlanStatus(
   after: string | null | undefined,
 ): boolean {
   return !isActivationPlanStatus(before) && isActivationPlanStatus(after);
+}
+
+/**
+ * Whether a plan template is exempt from the conversation-audit activation gate.
+ *
+ * Rubric-template plans are authored through the rubric write path, whose structured
+ * document is the source of truth and whose activation is part of proposing/ratifying
+ * the rubric itself. Requiring a separate conversation audit would reject every
+ * rubric activation and leave the caller with a misleading post-write lookup error.
+ * Keep this predicate here so every plan write door shares the same exemption.
+ */
+export function isActivationAuditExemptTemplate(template: string | null | undefined): boolean {
+  return template === RUBRIC_TEMPLATE_NAME;
 }
 
 export interface ConversationActivationGateVerdict {
@@ -66,6 +81,13 @@ export function conversationAuditRequiredValue(planSlug: string): ConversationAu
     code: 'conversation_audit_required',
     message: conversationAuditRequiredMessage(planSlug),
   };
+}
+
+/** Typed guard for the non-throwing refusal returned by withPlanLock. */
+export function isConversationAuditRequiredValue(value: unknown): value is ConversationAuditRequiredValue {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<ConversationAuditRequiredValue>;
+  return candidate.ok === false && candidate.code === 'conversation_audit_required' && typeof candidate.message === 'string';
 }
 
 export function domainFailureMessage(value: unknown): string | undefined {
