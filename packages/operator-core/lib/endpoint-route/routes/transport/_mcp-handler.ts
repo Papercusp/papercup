@@ -110,6 +110,7 @@ import { getSessionBrief } from '../../../session-brief';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { isEngineeringDocsSentinel } from '../../../agent-tools/_harness-scope';
+import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
 import { evaluateAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import { DeltaProxySessionStore } from './delta-proxy-session-store';
 import {
@@ -2147,6 +2148,14 @@ const handler = createMcpHandler(
         }
 
         if (projected && spawnRes.kind === 'ok') {
+          // Normally the session harness remains authoritative for the whole
+          // request. The one narrow exception below (plans:get + an exact
+          // plan-slug owner verified against the workspace index) rebinds this
+          // effective value after the hive clamp has proved the caller named a
+          // real row. Keep this separate from spawnRes.ctx: the signed/session
+          // context is the original ambient scope, while dispatch gets the
+          // verified read target.
+          let effectiveHarnessSlug = spawnRes.ctx.harnessSlug;
           // Profile gate: power-profile callers cannot invoke Group A tools
           // even if they know the name. Mirrors the tools/list filter so
           // direct-name calls can't bypass the listing restriction.
@@ -2328,7 +2337,18 @@ const handler = createMcpHandler(
                   (argHarness === 'all' ||
                     argHarness === '*' ||
                     (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
-                if (escapes) {
+                // A resumed evidence-only monitor can retain an ambient Hive
+                // from its recovery session while naming the owning harness of
+                // one exact plan. Verify the row in this workspace BEFORE
+                // rebinding dispatch; every other tool/query keeps the normal
+                // sibling-Hive rejection.
+                const verifiedPlansGetRebind =
+                  escapes &&
+                  toolName === 'plans:get' &&
+                  (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
+                if (verifiedPlansGetRebind) {
+                  effectiveHarnessSlug = argHarness;
+                } else if (escapes) {
                   const crossHiveClaimHint =
                     toolName === 'work_items:claim'
                       ? ' For cross-Pot work, use discovery:pots → pot:request_work with an outbound work-request grant; direct work_items:claim is per-Hive.'
@@ -2540,8 +2560,14 @@ const handler = createMcpHandler(
           // workspace (tx synthesis + ALS pin below), exactly as ?workspace=X
           // would have. See effectiveDispatchWorkspace for the rationale.
           const effectiveWs = effectiveDispatchWorkspace(spawnRes.ctx, dispatchArgs);
+          const effectiveSpawnCtx =
+            effectiveHarnessSlug === spawnRes.ctx.harnessSlug
+              ? spawnRes.ctx
+              : { ...spawnRes.ctx, harnessSlug: effectiveHarnessSlug };
           const dispatchSpawnCtx =
-            effectiveWs === spawnRes.ctx.workspaceId ? spawnRes.ctx : { ...spawnRes.ctx, workspaceId: effectiveWs };
+            effectiveWs === effectiveSpawnCtx.workspaceId
+              ? effectiveSpawnCtx
+              : { ...effectiveSpawnCtx, workspaceId: effectiveWs };
           const baseCtx = await buildMcpToolContext(
             dispatchSpawnCtx,
             progressToken,
