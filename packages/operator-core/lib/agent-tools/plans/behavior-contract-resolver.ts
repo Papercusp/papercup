@@ -27,6 +27,7 @@
  */
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { listSpecClauses } from './spec-clauses-store';
+import { enforcementEligibility, type EnforcementEligibility } from './spec-enforcement-eligibility';
 import type { WorkItemSpecRevisionEdge } from './spec-evidence-store';
 import { listWorkItemSpecRevisionEdges } from './spec-evidence-store';
 
@@ -107,6 +108,20 @@ export interface BehaviorContractGroup {
    * been revised, which is exactly the case a reader must be able to see.
    */
   staleEdges: Array<{ specId: string; edgeRevision: number; currentRevision: number }>;
+  /**
+   * The namespace plan's own status. `null` when the plan could not be read — which is
+   * NOT the same as a plan with an unknown status, and the two must not collapse: an
+   * unreadable plan is treated as non-enforcing (see `eligibility`), because refusing a
+   * completion on a plan we failed to read would turn an infrastructure blip into a
+   * fleet-wide block.
+   */
+  planStatus: string | null;
+  /**
+   * P-013: whether THIS namespace's clauses may refuse, and why not when they may not.
+   * Computed once here so the completion gate and the sync-resolver view that renders it
+   * cannot drift — they previously each re-derived the enforced set independently.
+   */
+  eligibility: EnforcementEligibility;
 }
 
 export interface WorkItemBehaviorContract {
@@ -127,6 +142,16 @@ export interface WorkItemBehaviorContract {
 export interface ResolveBehaviorContractDeps {
   listEdges?: typeof listWorkItemSpecRevisionEdges;
   listClauses?: typeof listSpecClauses;
+  /**
+   * Batched plan-status read for the namespaces this contract touches. Injected for the
+   * same reason as the other two: so the resolver is testable without a database.
+   * Returns a slug->status map; a slug ABSENT from the map is an unreadable/unknown plan
+   * and is treated as non-enforcing, never as a default status.
+   */
+  listPlanStatuses?: (input: {
+    harnessSlug?: string;
+    planSlugs: string[];
+  }) => Promise<Map<string, string>>;
 }
 
 function isEnforceable(clause: SpecClauseRevision): boolean {
