@@ -32,14 +32,13 @@
  *  - `drainEnabled: false`: drain-fleet auto-mint rows are pinned by
  *    start-from-package.test.ts ("mints the drain fleet when the flag is on").
  *
- * ⚠ Fixture DDL is hand-rolled to the LIVE schema read on 2026-08-24 (dev:pg_query
- * describe harness_shared.goals / datatype_registry) — the drift trap is
- * EI-21270668928342264; goals carries every live column except `_search`.
+ * Fixture: createOrgTestDb() applies the FULL real migration set (same fixture
+ * as datatype-registry.integration.test.ts), so this file cannot fall a column
+ * behind the live schema — the hand-rolled-DDL drift trap (EI-21270668928342264,
+ * bitten twice) is structurally avoided here, not just patched.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
 
 import {
   startGoalFromPackage,
@@ -57,108 +56,26 @@ const HARNESS = 'papercusp-p016';
 const REF = 'work-on-everything';
 const HOLDER = 'su-p016-holder';
 
+const { createOrgTestDb } = await import('../../test/_org-test-db');
+
+let db: Awaited<ReturnType<typeof createOrgTestDb>>;
 let rootSql: postgres.Sql;
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `pkggoal_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // goals: every live column except _search (tsvector, untouched by this chain).
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.goals (
-      id text PRIMARY KEY,
-      install_slug text NOT NULL,
-      title text NOT NULL,
-      body text,
-      parent_id text,
-      budget_cents bigint,
-      status text NOT NULL DEFAULT 'active',
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      metadata jsonb,
-      workspace_id text NOT NULL,
-      kill_criterion text,
-      tripwires jsonb,
-      launch_settings jsonb,
-      standing boolean NOT NULL DEFAULT false,
-      budget_window_sec integer,
-      property_schema jsonb NOT NULL DEFAULT '{}'::jsonb,
-      properties jsonb NOT NULL DEFAULT '{}'::jsonb,
-      input_schema jsonb,
-      inputs jsonb,
-      output_schema jsonb,
-      outputs jsonb,
-      CONSTRAINT goals_budget_window_sec_positive
-        CHECK (budget_window_sec IS NULL OR budget_window_sec > 0)
-    )`);
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.agent_modes (
-      workspace_id text NOT NULL DEFAULT 'default',
-      owner_id text NOT NULL,
-      axis_key text NOT NULL,
-      mode text NOT NULL,
-      reason text NOT NULL DEFAULT '',
-      set_by text NOT NULL,
-      owner_directed boolean NOT NULL DEFAULT false,
-      set_at timestamptz NOT NULL DEFAULT now(),
-      subject text,
-      PRIMARY KEY (workspace_id, owner_id, axis_key)
-    )`);
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.agent_mode_changes (
-      id bigserial PRIMARY KEY,
-      workspace_id text NOT NULL,
-      owner_id text NOT NULL,
-      axis_key text NOT NULL,
-      old_mode text,
-      new_mode text,
-      reason text NOT NULL DEFAULT '',
-      set_by text NOT NULL,
-      owner_directed boolean NOT NULL DEFAULT false,
-      changed_at timestamptz NOT NULL DEFAULT now()
-    )`);
-  // datatype_registry: live columns minus embedding/title_tsv (nullable, unread here).
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.datatype_registry (
-      id text NOT NULL,
-      workspace_id text NOT NULL,
-      title text NOT NULL,
-      description text NOT NULL,
-      tier text NOT NULL DEFAULT 'generic-kind',
-      work_item_kind text,
-      payload_schema jsonb,
-      authoritative_writer text NOT NULL DEFAULT 'papercusp',
-      self_improvement jsonb,
-      status text NOT NULL DEFAULT 'active',
-      published boolean NOT NULL DEFAULT false,
-      tags text[] NOT NULL DEFAULT '{}',
-      created_by text,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      review_status text NOT NULL DEFAULT 'none',
-      pot_slug text,
-      display jsonb,
-      PRIMARY KEY (workspace_id, id)
-    )`);
+  db = await createOrgTestDb();
+  rootSql = db.adminSql;
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  await db?.cleanup();
 });
 
 beforeEach(async () => {
-  await rootSql`DELETE FROM harness_shared.agent_mode_changes`;
-  await rootSql`DELETE FROM harness_shared.agent_modes`;
-  await rootSql`DELETE FROM harness_shared.goals`;
+  // Fresh-workspace semantics: everything scoped to WS starts empty.
+  await rootSql`DELETE FROM harness_shared.agent_mode_changes WHERE workspace_id = ${WS}`;
+  await rootSql`DELETE FROM harness_shared.agent_modes WHERE workspace_id = ${WS}`;
+  await rootSql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
+  await rootSql`DELETE FROM harness_shared.datatype_registry WHERE workspace_id = ${WS}`;
 });
 
 /** The REAL deps, with only the documented seams overridden. */
@@ -207,9 +124,9 @@ describe('P-016 front half: the bundled floor in a fresh workspace', () => {
   it('resolves work-on-everything from DISK with the standing semantics intact', () => {
     const pkg = resolveLocalGoalPackage(REF);
     expect(pkg).not.toBeNull();
-    expect(pkg!.content.standing).toBe(true);
-    expect(pkg!.content.budgetWindowSec).toBe(604_800);
-    expect(pkg!.content.propertySchema).toMatchObject({
+    expect(pkg!.standing).toBe(true);
+    expect(pkg!.budgetWindowSec).toBe(604_800);
+    expect(pkg!.propertySchema).toMatchObject({
       worklist: { datatype: 'plan-ref-list' },
     });
   });
