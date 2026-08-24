@@ -36,6 +36,23 @@ import { activeWorkspaceId } from '../workspace-registry';
  *  recommendations waiting; `complete` means nothing is left to act on. */
 export type BulkRunPhase = 'pending' | 'running' | 'review' | 'complete' | 'failed';
 
+/**
+ * What KIND of bulk run this row is (migration 937, cleanup-report-flows P-002).
+ * 'inbox-resolve' is the original 912 behavior — membership in the
+ * attention_bulk_run_items snapshot. 'plan-cleanup' seeds from `seedRefs` (the
+ * plan slugs the Plans pane was rendering at click time) and records outcomes
+ * in plan_cleanup_run_findings (plan-cleanup/run-store.ts) instead of the items
+ * table. Single-flight is per (workspace, kind): one of EACH may run at once,
+ * never two of a kind.
+ */
+export type BulkRunKind = 'inbox-resolve' | 'plan-cleanup';
+
+export const BULK_RUN_KINDS: readonly BulkRunKind[] = ['inbox-resolve', 'plan-cleanup'] as const;
+
+/** The pre-937 rows' kind, and the default everywhere a caller does not say —
+ *  which is what keeps every existing inbox call site's behavior unchanged. */
+export const DEFAULT_RUN_KIND: BulkRunKind = 'inbox-resolve';
+
 /** Per-item terminal disposition. `pending` is the pre-report state — an item
  *  still carrying it when a run ends was never reached (Requirement 2 makes
  *  that visible rather than silently absent). */
@@ -75,11 +92,12 @@ export class BulkRunAlreadyActiveError extends Error {
   constructor(
     readonly activeRunId: string | null,
     readonly activePhase: BulkRunPhase | null,
+    readonly runKind: BulkRunKind = DEFAULT_RUN_KIND,
   ) {
     super(
       activeRunId
-        ? `a bulk-resolve run is already active (${activeRunId}, phase ${activePhase ?? 'unknown'})`
-        : 'a bulk-resolve run is already active in this workspace',
+        ? `a ${runKind} bulk run is already active (${activeRunId}, phase ${activePhase ?? 'unknown'})`
+        : `a ${runKind} bulk run is already active in this workspace`,
     );
     this.name = 'BulkRunAlreadyActiveError';
   }
@@ -127,6 +145,10 @@ export interface BulkRunRow {
   requestedBy: string | null;
   resolverOwner: string | null;
   phase: BulkRunPhase;
+  runKind: BulkRunKind;
+  /** Click-time membership snapshot for kinds without an items list — for
+   *  'plan-cleanup', the plan slugs the pane was rendering. '[]' for inbox. */
+  seedRefs: string[];
   filterSnapshot: BulkRunFilterSnapshot;
   totalItems: number;
   autoResolved: number;
@@ -202,6 +224,8 @@ interface RawRunRow {
   requested_by: string | null;
   resolver_owner: string | null;
   phase: BulkRunPhase;
+  run_kind: BulkRunKind | null;
+  seed_refs: unknown;
   filter_snapshot: unknown;
   total_items: number | string;
   auto_resolved: number | string;
@@ -223,6 +247,8 @@ function mapRun(r: RawRunRow): BulkRunRow {
     requestedBy: r.requested_by,
     resolverOwner: r.resolver_owner,
     phase: r.phase,
+    runKind: r.run_kind ?? DEFAULT_RUN_KIND,
+    seedRefs: asStringArray(r.seed_refs),
     filterSnapshot: asObject(r.filter_snapshot) as BulkRunFilterSnapshot,
     totalItems: Number(r.total_items ?? 0),
     autoResolved: Number(r.auto_resolved ?? 0),
