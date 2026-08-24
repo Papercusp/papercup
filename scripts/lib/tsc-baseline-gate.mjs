@@ -1640,6 +1640,112 @@ export function gateCoveringFile(gates, file) {
   return best;
 }
 
+const AUTO_TYPECHECK_ROUTE_ENV = 'PAPERCUSP_TSC_AUTO_ROUTE';
+
+/**
+ * Build the verified commands that can judge an out-of-project file set.
+ *
+ * A workspace `typecheck` script is the owning workspace's whole-project gate, while a
+ * discovered sibling `lint:tsc*` gate is an exact-file gate. The distinction matters: appending
+ * `--files` to an arbitrary workspace script is not safe, but a sibling lint gate explicitly
+ * accepts that selector. Files with neither route stay in `unknown`; callers MUST NOT execute a
+ * partial route set and then claim the original request was covered.
+ *
+ * @param {{files: Iterable<string>, suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, siblingGates?: {npmScript: string, prefixes: string[]}[]}} opts
+ * @returns {{routes: {key: string, workspaceDir?: string, npmScript?: string, files: string[], scoped: boolean, command: string, args: string[]}[], unknown: string[]}}
+ */
+export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = [] }) {
+  /** @type {Map<string, {key: string, workspaceDir?: string, npmScript?: string, files: string[], scoped: boolean}>} */
+  const grouped = new Map();
+  const unknown = [];
+
+  for (const raw of files) {
+    const file = String(raw).replace(/^\.\//, '');
+    const suggestion = suggestions?.get(file);
+    /** @type {{key: string, workspaceDir?: string, npmScript?: string, scoped: boolean} | null} */
+    let route = null;
+
+    // `suggestTypecheckGate` constructs this command from a repo-relative workspace directory.
+    // Require the directory as a separate field so callers cannot turn an arbitrary display
+    // string into a command to execute.
+    if (
+      suggestion?.command &&
+      typeof suggestion.workspaceDir === 'string' &&
+      suggestion.workspaceDir.length > 0 &&
+      !suggestion.workspaceDir.startsWith('/') &&
+      !suggestion.workspaceDir.split('/').includes('..')
+    ) {
+      route = {
+        key: `workspace:${suggestion.workspaceDir}`,
+        workspaceDir: suggestion.workspaceDir,
+        scoped: false,
+      };
+    } else {
+      const sibling = gateCoveringFile(siblingGates, file);
+      if (sibling) {
+        route = {
+          key: `sibling:${sibling.npmScript}`,
+          npmScript: sibling.npmScript,
+          scoped: true,
+        };
+      }
+    }
+
+    if (!route) {
+      unknown.push(file);
+      continue;
+    }
+    const existing = grouped.get(route.key) ?? { ...route, files: [] };
+    existing.files.push(file);
+    grouped.set(route.key, existing);
+  }
+
+  const routes = [...grouped.values()].map((route) => {
+    if (route.scoped) {
+      const filesArg = `--files=${route.files.join(',')}`;
+      return {
+        ...route,
+        command: `npm run ${route.npmScript} -- ${filesArg}`,
+        args: ['run', route.npmScript, '--', filesArg],
+      };
+    }
+    return {
+      ...route,
+      command: `npm run --workspace ${route.workspaceDir} typecheck`,
+      args: ['run', '--workspace', route.workspaceDir, 'typecheck'],
+    };
+  });
+  return { routes, unknown };
+}
+
+/**
+ * Execute an already-validated set of owning gates and return the first non-zero status.
+ *
+ * The environment marker prevents a malformed workspace script from recursively routing back
+ * into this gate forever. A routed child owns the actual verdict; this caller only aggregates its
+ * exit status. `execFile` is injectable for unit tests and never receives a shell command string.
+ *
+ * @param {{root: string, routes: {args: string[]}[], execFile?: Function}} opts
+ * @returns {number}
+ */
+export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync }) {
+  if (!Array.isArray(routes) || routes.length === 0) return 1;
+  let firstFailure = 0;
+  for (const route of routes) {
+    try {
+      execFile('npm', route.args, {
+        cwd: root,
+        stdio: 'inherit',
+        env: { ...process.env, [AUTO_TYPECHECK_ROUTE_ENV]: '1' },
+      });
+    } catch (error) {
+      const status = Number.isInteger(error?.status) && error.status > 0 ? error.status : 1;
+      if (firstFailure === 0) firstFailure = status;
+    }
+  }
+  return firstFailure;
+}
+
 /**
  * The banner for `--files=` entries this run cannot judge.
  *
@@ -1648,7 +1754,7 @@ export function gateCoveringFile(gates, file) {
  * indistinguishable from a real green, which is the same silent-zero shape `build:typecheck`
  * already refuses (it will not report a clean run that checked zero files).
  *
- * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean, siblingGates?: {npmScript: string, prefixes: string[]}[], unresolvedGates?: {npmScript: string, reason: string}[], rosterReadable?: boolean}} opts
+ * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean, autoRoute?: boolean, siblingGates?: {npmScript: string, prefixes: string[]}[], unresolvedGates?: {npmScript: string, reason: string}[], rosterReadable?: boolean}} opts
  * @returns {string[]} console lines.
  */
 export function formatUncoveredFilesBanner({
@@ -1656,6 +1762,7 @@ export function formatUncoveredFilesBanner({
   uncovered,
   suggestions,
   fatal,
+  autoRoute = false,
   siblingGates = [],
   unresolvedGates = [],
   rosterReadable = true,
@@ -1706,7 +1813,9 @@ export function formatUncoveredFilesBanner({
     // that led us here), while a workspace-owned `typecheck` command is not assumed to support
     // the same selector and must be run without an appended compiler flag.
     const scope = entry.scoped ? ` -- --files=${entry.files.join(',')}` : '';
-    lines.push(`   RUN THIS to check them:  ${command}${scope}`);
+    lines.push(
+      `   ${autoRoute ? 'AUTO-ROUTING to check them' : 'RUN THIS to check them'}:  ${command}${scope}`,
+    );
     for (const f of entry.files) lines.push(`     - ${f}`);
   }
   if (ungated.length) {
@@ -1959,7 +2068,7 @@ export function lintTscScopeFromArgv(argv) {
  * files unchecked. A run with full coverage still reports exactly `status=clean`, so this is
  * additive for every caller that was already honest.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number }} input
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number, routed?: boolean }} input
  * @returns {string}
  */
 export function formatLintTscResultMarker({
@@ -1968,6 +2077,7 @@ export function formatLintTscResultMarker({
   code,
   nothingTypechecked = false,
   filesUnchecked = 0,
+  routed = false,
 }) {
   // The refinement applies ONLY to the gate's own considered failure (exit 1). An abnormal
   // code — SIGTERM, OOM, a toolchain crash — means the run is UNMEASURED, and it must keep
@@ -1975,7 +2085,11 @@ export function formatLintTscResultMarker({
   // flag happened to be set before the process died.
   const unchecked = Number.isFinite(filesUnchecked) && filesUnchecked > 0 ? filesUnchecked : 0;
   const status =
-    code === 0
+    routed && code === 0
+      ? 'routed'
+      : routed && code === 1
+        ? 'routed-failed'
+        : code === 0
       ? // Same rule as `nothingTypechecked`, in the other direction: a coverage refinement may
         // narrow what a PASS claims, but it must never turn a pass into a failure. exit stays 0.
         unchecked > 0
@@ -2030,6 +2144,10 @@ export async function runTscBaselineGate({
   // `process.exit(1)`, so the flag and the exit it describes are the same decision. It refines
   // WHICH failure this is; it can never turn a failure into a pass (see the formatter's note).
   let nothingTypechecked = false;
+  // A fatal out-of-project run may delegate its complete file set to verified owning gates. The
+  // parent marker must say that explicitly; `status=clean` would falsely claim this gate itself
+  // compiled the named files, while `status=out-of-scope` would hide that the delegated checks ran.
+  let autoRouted = false;
   // EI-20712456514085524 — how many named files this project never compiles. Set by the SAME
   // coverage branch that sets `nothingTypechecked`, so the two can never disagree about one run;
   // it is the PARTIAL case (`fatal === false`), where the gate still exits 0 on a true verdict
@@ -2044,6 +2162,7 @@ export async function runTscBaselineGate({
         code,
         nothingTypechecked,
         filesUnchecked,
+        routed: autoRouted,
       }),
     );
   });
@@ -2086,11 +2205,22 @@ export async function runTscBaselineGate({
         // anything about coverage. Only reached on the error path, so the imports cost nothing
         // on a normal run.
         const { gates, unresolved, rosterReadable } = await discoverSiblingTypecheckGates(root);
+        const autoRoutes = collectAutoTypecheckRoutes({
+          files: uncovered,
+          suggestions,
+          siblingGates: gates,
+        });
+        const canAutoRoute =
+          fatal &&
+          process.env[AUTO_TYPECHECK_ROUTE_ENV] !== '1' &&
+          autoRoutes.unknown.length === 0 &&
+          autoRoutes.routes.length > 0;
         for (const line of formatUncoveredFilesBanner({
           label,
           uncovered,
           suggestions,
           fatal,
+          autoRoute: canAutoRoute,
           siblingGates: gates,
           unresolvedGates: unresolved,
           rosterReadable,
@@ -2100,6 +2230,10 @@ export async function runTscBaselineGate({
         // Some covered, some not: the covered verdict below is still TRUE and worth having, so
         // warn and continue. Nothing covered: there is no honest verdict to print at all.
         if (fatal) {
+          if (canAutoRoute) {
+            autoRouted = true;
+            process.exit(runAutoTypecheckRoutes({ root, routes: autoRoutes.routes }));
+          }
           // Paired with the exit on the very next line so the marker cannot claim `regressed`
           // about a run that compiled nothing (EI-20072775668558359).
           nothingTypechecked = true;

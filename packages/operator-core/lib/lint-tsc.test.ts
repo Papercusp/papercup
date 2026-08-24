@@ -76,6 +76,8 @@ import {
   resolvePinnedTscBin,
   resolvePinnedTscCommand,
   tscChildEnv,
+  collectAutoTypecheckRoutes,
+  runAutoTypecheckRoutes,
 } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 describe('typecheck mid-install diagnostics (EI-19366483607548056)', () => {
@@ -162,6 +164,27 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     expect(formatLintTscResultMarker({ label: 'x', scope: 'mine', code: 143 })).toContain(
       'status=error(143)',
     );
+  });
+
+  it('marks a delegated verdict as routed instead of falsely claiming this gate compiled the files', () => {
+    expect(
+      formatLintTscResultMarker({
+        label: 'operator-core',
+        scope: 'files',
+        code: 0,
+        filesUnchecked: 1,
+        routed: true,
+      }),
+    ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=routed filesUnchecked=1');
+    expect(
+      formatLintTscResultMarker({
+        label: 'operator-core',
+        scope: 'files',
+        code: 1,
+        filesUnchecked: 1,
+        routed: true,
+      }),
+    ).toContain('status=routed-failed');
   });
 
   it('never reports a non-zero exit as clean — the whole point of the marker', () => {
@@ -2479,6 +2502,84 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       it('returns null when nothing covers the file — and for an empty roster', () => {
         expect(gateCoveringFile(gates, 'no-such-dir-xyz/file.ts')).toBeNull();
         expect(gateCoveringFile([], 'apps/operator/x.ts')).toBeNull();
+      });
+    });
+
+    describe('safe auto-routing for fully-covered out-of-project file sets (EI-21310351524853549)', () => {
+      it('groups owning workspace routes and keeps unknown files out of an executable plan', () => {
+        const suggestions = new Map([
+          [
+            'apps/operator/scripts/ptool.test.ts',
+            {
+              workspaceDir: 'apps/operator',
+              packageName: '@papercusp/web',
+              command: 'npm run --workspace apps/operator typecheck',
+            },
+          ],
+          ['unknown/file.ts', null],
+        ]);
+        const planned = collectAutoTypecheckRoutes({
+          files: ['apps/operator/scripts/ptool.test.ts', 'unknown/file.ts'],
+          suggestions,
+          siblingGates: [],
+        });
+        expect(planned.routes).toEqual([
+          expect.objectContaining({
+            workspaceDir: 'apps/operator',
+            scoped: false,
+            command: 'npm run --workspace apps/operator typecheck',
+            args: ['run', '--workspace', 'apps/operator', 'typecheck'],
+            files: ['apps/operator/scripts/ptool.test.ts'],
+          }),
+        ]);
+        expect(planned.unknown).toEqual(['unknown/file.ts']);
+      });
+
+      it('prefers a verified sibling lint gate and preserves exact file scope', () => {
+        const file = 'apps/operator/lib/release/green-checkpoint.ts';
+        const planned = collectAutoTypecheckRoutes({
+          files: [file],
+          suggestions: new Map([[file, { workspaceDir: 'apps/operator', packageName: 'web', command: null }]]),
+          siblingGates: [{ npmScript: 'lint:tsc:operator', prefixes: ['apps/operator/'] }],
+        });
+        expect(planned.unknown).toEqual([]);
+        expect(planned.routes).toEqual([
+          expect.objectContaining({
+            command: `npm run lint:tsc:operator -- --files=${file}`,
+            args: ['run', 'lint:tsc:operator', '--', `--files=${file}`],
+            scoped: true,
+          }),
+        ]);
+      });
+
+      it('executes each validated route without a shell and returns the first child failure', () => {
+        const invocations: { file: string; args: string[]; options: Record<string, unknown> }[] = [];
+        const planned = collectAutoTypecheckRoutes({
+          files: ['apps/operator/scripts/ptool.test.ts'],
+          suggestions: new Map([
+            [
+              'apps/operator/scripts/ptool.test.ts',
+              { workspaceDir: 'apps/operator', packageName: 'web', command: 'npm run --workspace apps/operator typecheck' },
+            ],
+          ]),
+        });
+        const exit = runAutoTypecheckRoutes({
+          root: '/repo',
+          routes: planned.routes,
+          execFile: (file: string, args: string[], options: Record<string, unknown>) => {
+            invocations.push({ file, args, options });
+            const error = Object.assign(new Error('child failed'), { status: 7 });
+            throw error;
+          },
+        });
+        expect(exit).toBe(7);
+        expect(invocations).toHaveLength(1);
+        expect(invocations[0]).toMatchObject({
+          file: 'npm',
+          args: ['run', '--workspace', 'apps/operator', 'typecheck'],
+          options: { cwd: '/repo', stdio: 'inherit' },
+        });
+        expect((invocations[0].options.env as Record<string, string>).PAPERCUSP_TSC_AUTO_ROUTE).toBe('1');
       });
     });
 
