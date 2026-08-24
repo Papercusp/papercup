@@ -168,7 +168,7 @@ export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: st
     // validates and signals the wrapper-owned :3270 listener directly.
     unit: 'desktop-dev-wrapper',
     resource: DESKTOP_DEV_RESOURCE,
-    blastRadius: 'the owner-visible :3270 desktop dev operator (the wrapper respawns its listener child)',
+    blastRadius: 'the owner-visible :3270 desktop dev operator (SIGUSR2 drain + explicit exit 75; success waits for a verified wrapper respawn)',
   },
 };
 
@@ -237,7 +237,7 @@ export default defineTool({
   description:
     'Coordinated restart with drain/coalesce/audit. Targets: "dev" :3070 (default), "staging" :3170, "desktop-dev" wrapper :3270, "gateway" :8788, "bg-host" routines/git-sync, "embed-sidecar" :3384, "mcp-proxy" :9071. Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.',
   guidance: {
-    when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev kills only the verified wrapper-owned :3270 listener; its wrapper respawns it. Route: desktop → "desktop-dev"; inference-gateway → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; MCP proxy/transport → "mcp-proxy"; shared server → "staging" (probe :3170).',
+    when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev asks only the verified wrapper-owned :3270 listener for a non-zero graceful recycle and waits for a different verified listener. Route: desktop → "desktop-dev"; inference-gateway → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; MCP proxy/transport → "mcp-proxy"; shared server → "staging" (probe :3170).',
     notWhen: 'Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.',
     chaining: 'dry → review holders → { confirm:true, authorize:true, reason:"<why>", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status.',
     seeAlso: [
@@ -314,7 +314,7 @@ export default defineTool({
     // and inherits this cgroup. Do NOT "fix" this by widening the drain — a lock
     // drain cannot reach a child process. Fix the spawn site.
     const restartCmd = target === 'desktop-dev'
-      ? 'SIGKILL verified desktop-dev listener on :3270 (wrapper respawns it)'
+      ? 'SIGUSR2 recycle verified desktop-dev listener on :3270 (wait for verified wrapper respawn)'
       : `systemctl --user restart ${cfg.unit}`;
     // EI-13307: per-target, not global — computed up front so both the
     // dry-run note and the real debounce path below quote the SAME window.
@@ -342,7 +342,7 @@ export default defineTool({
             ...(listenerPreview.reason ? { reason: listenerPreview.reason } : {}),
             note: listenerPreview.note,
           },
-          note: `${listenerPreview.ok ? 'Read-only check verified' : 'Read-only check would refuse before draining/signaling'} the owner-visible :3270 listener. Pass confirm:true to acquire exclusive(desktop-dev-server), drain current users, and — only when the identity check passes — SIGKILL that child so the wrapper respawns it. The wrapper and unrelated processes are never signaled. confirm:true alone is not enough — pass authorize:true + a short reason, or set PAPERCUSP_ALLOW_DEV_RESTART=1.`,
+          note: `${listenerPreview.ok ? 'Read-only check verified' : 'Read-only check would refuse before draining/signaling'} the owner-visible :3270 listener. Pass confirm:true to acquire exclusive(desktop-dev-server), drain current users, and — only when the identity check passes — ask that child for a SIGUSR2 graceful exit-75 recycle. Success is returned only after a different wrapper-supervised listener is verified; unrelated processes are never signaled. confirm:true alone is not enough — pass authorize:true + a short reason, or set PAPERCUSP_ALLOW_DEV_RESTART=1.`,
         });
       }
       const cooldownNote = cfg.cooldownResource
@@ -642,10 +642,13 @@ export default defineTool({
             drained: true,
             restarted: true,
             listenerPid: desktopRestart.pid,
+            ...(desktopRestart.replacementPid === undefined
+              ? {}
+              : { replacementListenerPid: desktopRestart.replacementPid }),
             fence_seq: fence.seq,
             enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
             audited: true,
-            verifyWith: 'dev:listening_ports { port: 3270 } (expect a new owner-visible hono-host listener under dev-operator-ifneeded.sh)',
+            verifyWith: 'dev:listening_ports { port: 3270 } (the helper already observed a different owner-visible hono-host listener under dev-operator-ifneeded.sh; this is an independent re-check)',
             note: desktopRestart.note,
           });
         }

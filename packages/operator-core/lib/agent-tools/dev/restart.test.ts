@@ -202,7 +202,7 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target: 'desktop-dev',
-      would_run: 'SIGKILL verified desktop-dev listener on :3270 (wrapper respawns it)',
+      would_run: 'SIGUSR2 recycle verified desktop-dev listener on :3270 (wait for verified wrapper respawn)',
       listener_identity: { checked: true, verified: true, would_block: false, pid: 327001 },
     });
     expect(b.note).toMatch(/exclusive\(desktop-dev-server\)/);

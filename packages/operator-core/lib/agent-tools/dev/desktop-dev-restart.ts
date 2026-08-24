@@ -39,6 +39,8 @@ const REQUIRED_ENV: Readonly<Record<string, string>> = {
 };
 
 const MAX_PARENT_DEPTH = 24;
+const RESPAWN_POLL_MS = 500;
+const RESPAWN_MAX_POLLS = 60;
 
 export interface DesktopDevProcessMeta {
   pid: number;
@@ -61,6 +63,7 @@ export interface DesktopDevRestartDeps {
   readEnviron?: (pid: number) => Promise<string>;
   readStat?: (pid: number) => Promise<string>;
   signal?: (pid: number, signal: NodeJS.Signals) => void;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface DesktopDevListenerResult {
@@ -81,7 +84,8 @@ export interface DesktopDevListenerResult {
 export interface DesktopDevRestartResult {
   ok: boolean;
   pid?: number;
-  reason?: DesktopDevListenerResult['reason'] | 'desktop_dev_signal_failed';
+  replacementPid?: number;
+  reason?: DesktopDevListenerResult['reason'] | 'desktop_dev_signal_failed' | 'desktop_dev_respawn_timeout';
   note: string;
 }
 
@@ -255,7 +259,13 @@ export async function resolveDesktopDevListener(deps: DesktopDevRestartDeps = {}
   return { ok: true, pid, listener: { pid, cmdline, env, parentChain }, note: `Verified ${DESKTOP_DEV_WRAPPER}-supervised hono-host listener pid ${pid} on :${DESKTOP_DEV_PORT}.` };
 }
 
-/** Resolve, re-resolve, and signal only the verified desktop listener child. */
+/**
+ * Resolve, re-resolve, and request a NON-ZERO graceful recycle from only the
+ * verified desktop listener child. The Hono entrypoint owns SIGUSR2 and exits
+ * 75 after its bounded HTTP drain; dev-operator-ifneeded.sh therefore sees a
+ * non-zero command result and restarts it. Success means a DIFFERENT verified
+ * listener appeared — a delivered signal alone is not a restart verdict.
+ */
 export async function restartDesktopDev(deps: DesktopDevRestartDeps = {}): Promise<DesktopDevRestartResult> {
   const first = await resolveDesktopDevListener(deps);
   if (!first.ok || first.pid === undefined) return { ok: false, reason: first.reason, note: first.note };
@@ -271,12 +281,7 @@ export async function restartDesktopDev(deps: DesktopDevRestartDeps = {}): Promi
   }
 
   try {
-    (deps.signal ?? ((pid, signal) => process.kill(pid, signal)))(second.pid, 'SIGKILL');
-    return {
-      ok: true,
-      pid: second.pid,
-      note: `SIGKILL sent only to verified desktop-dev listener pid ${second.pid}; ${DESKTOP_DEV_WRAPPER} will respawn it.`,
-    };
+    (deps.signal ?? ((pid, signal) => process.kill(pid, signal)))(second.pid, 'SIGUSR2');
   } catch (error) {
     return {
       ok: false,
@@ -285,4 +290,25 @@ export async function restartDesktopDev(deps: DesktopDevRestartDeps = {}): Promi
       note: `Could not signal verified desktop-dev listener pid ${second.pid}: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let poll = 0; poll < RESPAWN_MAX_POLLS; poll += 1) {
+    await sleep(RESPAWN_POLL_MS);
+    const replacement = await resolveDesktopDevListener(deps);
+    if (replacement.ok && replacement.pid !== undefined && replacement.pid !== second.pid) {
+      return {
+        ok: true,
+        pid: second.pid,
+        replacementPid: replacement.pid,
+        note: `SIGUSR2 recycled verified desktop-dev listener pid ${second.pid}; ${DESKTOP_DEV_WRAPPER} respawned verified listener pid ${replacement.pid}.`,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    pid: second.pid,
+    reason: 'desktop_dev_respawn_timeout',
+    note: `SIGUSR2 reached verified desktop-dev listener pid ${second.pid}, but no different verified :${DESKTOP_DEV_PORT} listener appeared within ${Math.round((RESPAWN_POLL_MS * RESPAWN_MAX_POLLS) / 1000)}s.`,
+  };
 }

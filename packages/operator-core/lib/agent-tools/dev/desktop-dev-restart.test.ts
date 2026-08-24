@@ -31,11 +31,13 @@ const socketResult = (pid: number, ownerVisible = true) => ({
 function makeDeps(overrides: Record<string, unknown> = {}) {
   const cmdlines: Record<number, string> = {
     101: '/usr/bin/node --import tsx bin/hono-host.ts',
+    202: '/usr/bin/node --import tsx bin/hono-host.ts',
     100: 'bash bin/dev-operator-ifneeded.sh',
     99: 'bash bin/desktop-dev-nohmr',
   };
   const stats: Record<number, string> = {
     101: stat(100, 900, 900),
+    202: stat(100, 900, 900),
     100: stat(99, 900, 900),
     99: stat(1, 900, 900),
   };
@@ -86,14 +88,30 @@ describe('desktop-dev restart identity guard', () => {
     await expect(resolveDesktopDevListener(deps)).resolves.toMatchObject({ ok: false, reason: 'desktop_dev_supervisor_missing', pid: 101 });
   });
 
-  it('revalidates the listener before SIGKILL and never signals an ancestor', async () => {
-    const deps = makeDeps();
+  it('revalidates before SIGUSR2 and returns only after a different verified listener appears', async () => {
+    const deps = makeDeps({
+      listSockets: vi
+        .fn()
+        .mockResolvedValueOnce(socketResult(101))
+        .mockResolvedValueOnce(socketResult(101))
+        .mockResolvedValueOnce(socketResult(202)),
+      sleep: vi.fn(async () => {}),
+    });
     const result = await restartDesktopDev(deps);
-    expect(result).toMatchObject({ ok: true, pid: 101 });
+    expect(result).toMatchObject({ ok: true, pid: 101, replacementPid: 202 });
     expect(deps.signal).toHaveBeenCalledTimes(1);
-    expect(deps.signal).toHaveBeenCalledWith(101, 'SIGKILL');
+    expect(deps.signal).toHaveBeenCalledWith(101, 'SIGUSR2');
     expect(deps.signal).not.toHaveBeenCalledWith(100, expect.anything());
-    expect(deps.listSockets).toHaveBeenCalledTimes(2);
+    expect(deps.listSockets).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not report success when the signaled listener never changes', async () => {
+    const deps = makeDeps({ sleep: vi.fn(async () => {}) });
+
+    const result = await restartDesktopDev(deps);
+
+    expect(result).toMatchObject({ ok: false, pid: 101, reason: 'desktop_dev_respawn_timeout' });
+    expect(deps.signal).toHaveBeenCalledWith(101, 'SIGUSR2');
   });
 
   it('refuses to signal when the second identity lookup changes the pid', async () => {
