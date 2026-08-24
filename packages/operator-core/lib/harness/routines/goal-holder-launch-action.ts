@@ -26,6 +26,10 @@ export interface GoalHolderLaunchInput {
   launcherOwnerId?: string | null;
   /** Test/probe seam: record the launch without opening a process. */
   deferSpawn?: boolean;
+  /** First-turn brief for the spawned holder (launch-su `kickoff` →
+   *  PAPERCUSP_KICKOFF_PROMPT). Omitted ⇒ no kickoff; the holder re-orients
+   *  from its GOAL-mode contract (the recovery legs' behavior). */
+  kickoffPrompt?: string | null;
 }
 
 export interface GoalHolderLaunchResult {
@@ -93,6 +97,7 @@ export async function launchGoalHolderSession(
     headless: true,
     mode: 'auto',
     deferSpawn: input.deferSpawn ?? false,
+    kickoff: input.kickoffPrompt ?? null,
   });
   if (!launched.ok) {
     throw new Error(

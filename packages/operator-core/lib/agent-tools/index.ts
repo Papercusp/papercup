@@ -319,6 +319,7 @@ import './gates/degenerate-check';
 // this one cannot, because it also spawns (agent-mcp has no operator-core dep). It is
 // the only surface that can enforce GOAL mode's "kill criterion + ceiling at creation".
 import './goals/start';
+import './goals/start-from-package';
 // work-on-everything-goal-2026-08-23 P-020 (D-006 ruling 3) — scheduled goal
 // activation: author + arm a goal's recurrence (fires system:goal-start →
 // startGoalById). Arming is autonomy-gated (schedule-arm category), like plans.

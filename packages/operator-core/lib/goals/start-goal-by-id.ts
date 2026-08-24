@@ -75,6 +75,15 @@ export interface StartGoalByIdInput {
   startBlockedReason?: string | null;
   /** Test/probe seam, forwarded to the launch door: record without spawning. */
   deferSpawn?: boolean;
+  /**
+   * First-turn brief for the spawned holder, threaded to launch-su's `kickoff`
+   * (psu delivers it as the fresh CLI's first turn). Omitted ⇒ the holder
+   * re-orients from its GOAL-mode contract alone — the pre-P-017 behavior for
+   * every trigger/schedule/watchdog leg. The package start door (P-017) passes
+   * `buildGoalKickoffBrief` output here so a deliberate start briefs its agent
+   * exactly as `goals:start` does.
+   */
+  kickoffPrompt?: string | null;
 }
 
 export type StartGoalByIdRefusalReason =
@@ -235,6 +244,7 @@ export async function startGoalById(
     harnessSlug,
     launcherOwnerId: input.launcherOwnerId ?? null,
     deferSpawn: input.deferSpawn ?? false,
+    kickoffPrompt: input.kickoffPrompt ?? null,
   });
 
   const attach = await deps.attach({
