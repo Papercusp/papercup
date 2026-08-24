@@ -386,6 +386,9 @@ export type ReconcileAction =
       kind: 'report-only';
       unit: string;
       reason: 'down-report-only' | 'unit-not-found' | 'paused';
+      /** EI-21339603192900833: set when the last run ended on a graceful-stop SIGNAL rather
+       *  than a failure, so the notifier states what happened instead of alleging a failure. */
+      terminatedBySignal?: { status: number; signal: string };
       /** WI-35537: only set on `unit-not-found` — true when `LoadState=not-found` positively
        *  confirmed the unit is absent, false/undefined when we simply could not tell. */
       confirmedAbsent?: boolean;
@@ -403,12 +406,60 @@ export type ReconcileAction =
   | { kind: 'escalate-start-limit-hit'; unit: string }
   | { kind: 'escalate-give-up'; unit: string; restartsInWindow: number };
 
+/**
+ * A run that was TERMINATED BY A SIGNAL produced no verdict — it did not fail.
+ *
+ * EI-21339603192900833: an operator stopped `papercup-live-federation-gate` to swap in a new
+ * unit; systemd recorded `Result=exit-code, ExecMainStatus=143` and supervision announced
+ * "last run exited NON-ZERO (the RUN failed)". It did not fail — it was stopped on purpose.
+ *
+ * This is the same error the `exitEncodesRunOnly` and `activating` rules already guard against
+ * one level up: reading a NON-VERDICT as a verdict. A transitional state means "no result yet";
+ * a signal-terminated run means "no result, ever". Neither is a failure, and announcing one as
+ * a failure trains readers to discount the alert that does matter.
+ *
+ * Two shapes reach us, because who does the killing decides which systemd records:
+ *  - systemd kills it        → `ExecMainCode=killed`, `ExecMainStatus` = the signal number (15).
+ *  - a shell relays the kill → `ExecMainCode=exited`, `ExecMainStatus` = 128+signal (143).
+ * The 128+n form is a shell convention, not a systemd one, so both must be recognised.
+ *
+ * Deliberately NARROW: only the graceful-stop signals (SIGTERM/SIGINT/SIGHUP) count. SIGKILL
+ * (9/137) is EXCLUDED on purpose — that is the OOM killer's signature, which is a real fault
+ * and must keep alerting.
+ */
+const GRACEFUL_STOP_SIGNALS = new Map<number, string>([
+  [1, 'SIGHUP'],
+  [2, 'SIGINT'],
+  [15, 'SIGTERM'],
+]);
+
+export function signalTermination(
+  show: { result?: string; execMainCode?: string; execMainStatus?: number } | undefined,
+): { status: number; signal: string } | undefined {
+  const status = show?.execMainStatus;
+  if (status === undefined || !Number.isFinite(status)) return undefined;
+  // systemd killed it directly: status IS the signal number.
+  if (show?.execMainCode === 'killed') {
+    const signal = GRACEFUL_STOP_SIGNALS.get(status);
+    return signal ? { status, signal } : undefined;
+  }
+  // A shell relayed it: status is 128+signal. Guard the range so a genuine exit code that
+  // happens to be small can never be mistaken for a signal.
+  if (status > 128 && status < 160) {
+    const signal = GRACEFUL_STOP_SIGNALS.get(status - 128);
+    return signal ? { status, signal } : undefined;
+  }
+  return undefined;
+}
+
 export interface DecideInput {
   entry: SupervisionEntry;
   status: SystemctlUnitStatus | undefined;
-  /** `systemctl --user show <unit> -p Result,NRestarts` — only fetched/needed when we're
-   *  actually about to consider restarting (the caller may omit it otherwise). */
-  show: { result?: string; unitFileState?: string; loadState?: string } | undefined;
+  /** `systemctl --user show <unit> -p Result,NRestarts,ExecMainCode,ExecMainStatus` — only
+   *  fetched/needed when we're actually about to consider restarting (the caller may omit it). */
+  show:
+    | { result?: string; unitFileState?: string; loadState?: string; execMainCode?: string; execMainStatus?: number }
+    | undefined;
   state: UnitFlapState;
   autoRestartFlagOn: boolean;
   now: number;
@@ -527,7 +578,13 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
 
   if (!autoRestartFlagOn || !entry.autoRestart) {
     return {
-      action: { kind: 'report-only', unit: entry.name, reason: 'down-report-only', notify: justWentDown },
+      action: {
+        kind: 'report-only',
+        unit: entry.name,
+        reason: 'down-report-only',
+        notify: justWentDown,
+        terminatedBySignal: signalTermination(show),
+      },
       nextState: state,
     };
   }
@@ -914,28 +971,48 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // report-only entry (autoRestart:false) or a flag-off tick skips the call entirely (neither
     // check applies to it).
     let show:
-      | { result?: string; restart?: string; nRestarts?: number; unitFileState?: string; loadState?: string }
+      | {
+          result?: string;
+          restart?: string;
+          nRestarts?: number;
+          unitFileState?: string;
+          loadState?: string;
+          execMainCode?: string;
+          execMainStatus?: number;
+        }
       | undefined;
     // WI-35537: ALSO probe when the unit is absent from `list-units` (`!status`), regardless of
     // `autoRestart`. A disabled-and-unloaded unit never appears in the list, so without this the
     // down-path can only ever report "removed/never installed?" for it — `systemctl show` is the
     // only surface that can tell an administrative pause from a genuinely missing unit file.
-    if (entry.autoRestart || !status) {
+    // EI-21339603192900833: ALSO probe when the unit is DOWN, even for a report-only entry that
+    // is present in `list-units`. That combination — autoRestart:false AND a present status — is
+    // exactly the reported case (`papercup-live-federation-gate`), and it is the one path that
+    // skipped `show` entirely. Without this the exit status is never read on the very tick that
+    // is about to announce a failure, so the signal-vs-failure distinction below could never
+    // fire in production no matter how correct it is.
+    if (entry.autoRestart || !status || isUnitDown(status, { episodic: entry.episodic })) {
       try {
         const raw = await deps.execUser([
           'show',
           entry.unit,
           '-p',
-          'Result,NRestarts,Restart,UnitFileState,LoadState',
+          // EI-21339603192900833: ExecMainCode/ExecMainStatus are what separate a run that
+          // FAILED from one that was STOPPED. Without them the reconciler cannot tell the
+          // difference and defaults to the accusing reading.
+          'Result,NRestarts,Restart,UnitFileState,LoadState,ExecMainCode,ExecMainStatus',
         ]);
         const props = parseSystemctlShowProperties(raw);
         const nRestarts = props.NRestarts != null ? Number(props.NRestarts) : undefined;
+        const execMainStatus = props.ExecMainStatus != null ? Number(props.ExecMainStatus) : undefined;
         show = {
           result: props.Result,
           restart: props.Restart,
           nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined,
           unitFileState: props.UnitFileState,
           loadState: props.LoadState,
+          execMainCode: props.ExecMainCode,
+          execMainStatus: Number.isFinite(execMainStatus) ? execMainStatus : undefined,
         };
       } catch {
         /* best-effort — decideReconcile treats a missing `show` as "no start-limit-hit signal";
@@ -1167,9 +1244,15 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
                     // whose exit status encodes only the RUN, "is down" over-states in the same
                     // direction "recovered" did — and a reader who cannot pair the two messages
                     // cannot tell which fact each one carries.
-                    entry.exitEncodesRunOnly
-                    ? `⚠ supervision: \`${entry.unit}\` last run exited NON-ZERO (the RUN failed or reported news — read the verdict writer for the actual verdict) (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`
-                    : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
+                    // EI-21339603192900833: a run ended by a graceful-stop signal did not fail —
+                    // it was stopped. Say THAT. Reporting an operator's own `systemctl stop` as
+                    // "the RUN failed" is a false alarm, and a channel that cries failure at
+                    // intentional stops is one readers learn to skim past.
+                    action.terminatedBySignal
+                      ? `ⓘ supervision: \`${entry.unit}\` last run was STOPPED by ${action.terminatedBySignal.signal} (exit ${action.terminatedBySignal.status}) — an intentional stop/replacement, NOT a failed run; it produced no verdict (report-only)`
+                      : entry.exitEncodesRunOnly
+                        ? `⚠ supervision: \`${entry.unit}\` last run exited NON-ZERO (the RUN failed or reported news — read the verdict writer for the actual verdict) (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`
+                        : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
               category: 'supervision',
             })
             .catch(() => {});

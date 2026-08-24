@@ -7,6 +7,7 @@ import type { SupervisionGiveUpEpisode } from './give-up-ei';
 import {
   parseSystemctlListUnits,
   parseSystemctlShowProperties,
+  signalTermination,
   isUnitDown,
   isEpisodicRunInFlight,
   isSystemdTransitioning,
@@ -1934,6 +1935,86 @@ describe('EI-21232345359778222: exit 0 from a verdict-bearing unit is a complete
     // Both ends pair: the down message states the same run-level fact, not "is down".
     expect(said.some((s) => s.includes('last run exited NON-ZERO'))).toBe(true);
     expect(said.some((s) => s.includes('is down'))).toBe(false);
+  });
+
+  it('EI-21339603192900833: a SIGTERM-stopped run reports STOPPED, not "the RUN failed"', async () => {
+    // An operator ran `systemctl stop` to swap the unit. systemd recorded
+    // Result=exit-code / ExecMainStatus=143, and supervision announced a failure.
+    _resetReconcilerState();
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? `papercup-live-federation-gate.service loaded failed x Live 2-peer federation gate\n`
+          : 'Result=exit-code\nExecMainCode=exited\nExecMainStatus=143\nUnitFileState=enabled\nLoadState=loaded\n',
+      now: () => 1_000_000,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [RUN_ONLY_ENTRY],
+      log: () => {},
+    };
+
+    await reconcileTick(deps);
+
+    const said = notify.mock.calls.map((c) => c[0].summary);
+    expect(said.length).toBeGreaterThan(0);
+    // The false accusation must be gone...
+    expect(said.some((s) => s.includes('last run exited NON-ZERO'))).toBe(false);
+    expect(said.some((s) => s.includes('is down'))).toBe(false);
+    // ...replaced by what actually happened, naming the signal so a reader can verify it.
+    const stopped = said.find((s) => s.includes('STOPPED by SIGTERM'));
+    expect(stopped).toBeDefined();
+    expect(stopped).toContain('exit 143');
+    expect(stopped).toContain('NOT a failed run');
+  });
+
+  it('EI-21339603192900833: SIGKILL still alerts — the OOM signature must NOT be softened', async () => {
+    // The failure direction that would make this fix worse than the bug: muting a real fault.
+    // 137 = 128+9 is what the OOM killer leaves behind, and it must keep reading as a failure.
+    _resetReconcilerState();
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? `papercup-live-federation-gate.service loaded failed x Live 2-peer federation gate\n`
+          : 'Result=exit-code\nExecMainCode=exited\nExecMainStatus=137\nUnitFileState=enabled\nLoadState=loaded\n',
+      now: () => 1_000_000,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [RUN_ONLY_ENTRY],
+      log: () => {},
+    };
+
+    await reconcileTick(deps);
+
+    const said = notify.mock.calls.map((c) => c[0].summary);
+    expect(said.some((s) => s.includes('last run exited NON-ZERO'))).toBe(true);
+    expect(said.some((s) => s.includes('STOPPED by'))).toBe(false);
+  });
+
+  it('EI-21339603192900833: signalTermination classifies both systemd and shell kill shapes', () => {
+    // systemd killed it directly: status IS the signal number.
+    expect(signalTermination({ execMainCode: 'killed', execMainStatus: 15 })).toEqual({
+      status: 15,
+      signal: 'SIGTERM',
+    });
+    // A shell relayed it: 128+signal. This is the shape the reported bug actually produced.
+    expect(signalTermination({ execMainCode: 'exited', execMainStatus: 143 })).toEqual({
+      status: 143,
+      signal: 'SIGTERM',
+    });
+    expect(signalTermination({ execMainCode: 'exited', execMainStatus: 130 })).toEqual({
+      status: 130,
+      signal: 'SIGINT',
+    });
+
+    // NOT signals — these are ordinary failures and must stay failures.
+    expect(signalTermination({ execMainCode: 'exited', execMainStatus: 1 })).toBeUndefined();
+    expect(signalTermination({ execMainCode: 'exited', execMainStatus: 137 })).toBeUndefined(); // SIGKILL/OOM
+    expect(signalTermination({ execMainCode: 'killed', execMainStatus: 9 })).toBeUndefined(); // SIGKILL/OOM
+    expect(signalTermination({ execMainCode: 'exited', execMainStatus: 15 })).toBeUndefined(); // a real exit 15
+    expect(signalTermination(undefined)).toBeUndefined();
+    expect(signalTermination({ result: 'exit-code' })).toBeUndefined();
   });
 
   it('CALIBRATION: WITHOUT the flag the identical sequence still emits a real "recovered"', () => {
