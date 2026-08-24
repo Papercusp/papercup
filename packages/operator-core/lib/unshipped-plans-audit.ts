@@ -3,7 +3,7 @@
  *
  * The audit is deliberately split into three layers:
  *   1. canonical readers (plans, work items, blockers, rubrics, audits, presence),
- *   2. a pure classifier (classifier revision 2), and
+ *   2. a pure classifier (classifier revision 3), and
  *   3. PG-canonical text-artifact publication.
  *
  * Nothing in this module imports a lifecycle writer. The only writes are the JSON
@@ -21,7 +21,7 @@ import { saveTextArtifact } from './text-artifacts';
 import { SETTLED_WORK_ITEM_STATES } from './work-items';
 import { activeWorkspaceId } from './workspace-registry';
 
-export const UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION = 2;
+export const UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION = 3;
 export const UNSHIPPED_PLANS_AUDIT_JSON_ARTIFACT = 'reports/unshipped-plans-audit/latest.json';
 export const UNSHIPPED_PLANS_AUDIT_HTML_ARTIFACT = 'reports/unshipped-plans-audit/latest.html';
 
@@ -281,11 +281,28 @@ function textSignals(input: ClassifierInput) {
   const text = [input.plan.planSlug, input.plan.title, input.plan.nowState, input.plan.nowNext]
     .filter(Boolean)
     .join(' ');
+  // Revision 3: blocker classification is about the plan's CURRENT state, not
+  // vocabulary anywhere in its identity/history. Scanning slug/title made
+  // `abolish-human-review-*` a human blocker; matching bare `credential` made
+  // "run credential/provider probes" a human blocker even when the same Next
+  // sentence said "now unblocked". Require blocker-shaped syntax in ## Now.
+  const nowText = [input.plan.nowState, input.plan.nowNext].filter(Boolean).join(' ');
+  const human =
+    /\b(?:owner[- ]gated|owner[- ]run|needs[- ]human|owner (?:action|decision|approval|review|ratification)|human (?:action|decision|approval)|purchase required)\b/i.test(nowText) ||
+    /\b(?:blocked|waiting|awaiting|depends)\b.{0,80}\b(?:owner|human|approval|decision|review|ratification|credential|api key)\b/i.test(nowText) ||
+    /\b(?:credential|api key)\b.{0,40}\b(?:required|needed|missing|unavailable)\b/i.test(nowText) ||
+    /\b(?:provide|supply|needs?|requires?)\b.{0,40}\b(?:credential|api key)\b/i.test(nowText);
+  const external =
+    /\b(?:blocked (?:on|by|until)|waiting (?:on|for)|time[- ]gated|deploy[- ]gated|release[- ]gated|external blocker|provider blocker|remote blocker)\b/i.test(nowText) ||
+    /\b(?:release|deploy(?:ment)?) gate\b.{0,40}\b(?:red|blocked|pending|stalled|waiting)\b/i.test(nowText) ||
+    /\b(?:quota|capacity)\b.{0,30}\b(?:exhausted|walled|blocked|unavailable)\b/i.test(nowText) ||
+    /\b(?:cannot|hold|wait)\b.{0,80}\buntil\b.{0,40}\b(?:lands|ships|completes|recovers)\b/i.test(nowText) ||
+    /\b(?:once|when)\b.{0,80}\b(?:reaches|lands|ships|completes|recovers)\b/i.test(nowText);
   return {
     fixture: /(?:^|[-\s])(fixture|smoke|drill|demo|canary|heartbeat|behaviou?r[-\s]grade[-\s]run)(?:[-\s]|$)/i.test(text),
     deferred: /\b(awaiting (?:owner|review|approval)|designed[,;:]? not built|not approved|deferred|paused indefinitely|draft[,;:]? awaiting)\b/i.test(text),
-    human: /\b(owner[- ]gated|needs[- ]human|human (?:decision|approval|review)|owner (?:decision|approval|review|ratification)|credential|api key|purchase required)\b/i.test(text),
-    external: /\b(blocked on|waiting (?:on|for)|time[- ]gated|external blocker|provider blocker|quota|release gate|deploy(?:ment)? blocker|remote blocker|until .{0,40}(?:lands|ships|completes|recovers))\b/i.test(text),
+    human,
+    external,
     completion: /^(?:plan\s+)?(?:complete|completed|done|shipped)\b|\b(?:plan complete|all (?:items|work).{0,30}(?:done|complete)|shipped and (?:live|deployed))\b/i.test(
       input.plan.nowState ?? '',
     ),
@@ -686,7 +703,7 @@ export function buildUnshippedPlansAuditManifest(input: BuildManifestInput): Uns
       rule: 'Point-in-time, read-only audit. Ongoing plans are protected; no lifecycle, item, blocker, claim, assignment, or ownership state is changed.',
       classifierRevision: UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION,
       classifierCorrection:
-        'Plan-level supersession requires an explicit plan-subject assertion in the Now state; mentions of superseded decisions or sub-approaches never retire the whole plan.',
+        'Plan-level supersession requires an explicit plan-subject assertion in the Now state; prose-only blockers require blocker-shaped Now syntax, so incidental slug/title/history vocabulary is never lifecycle authority.',
     },
     summaryByCategory,
     bands,

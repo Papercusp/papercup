@@ -80,7 +80,7 @@ function input(overrides: Partial<ClassifierInput> = {}): ClassifierInput {
   };
 }
 
-describe('classifier revision 2', () => {
+describe('classifier revision 3', () => {
   it('requires an explicit plan-subject supersession assertion', () => {
     expect(hasExplicitPlanLevelSupersession('This plan is superseded by plan-b.')).toBe(true);
     expect(hasExplicitPlanLevelSupersession('Superseded: replaced by plan-b.')).toBe(true);
@@ -145,6 +145,47 @@ describe('classifier revision 2', () => {
       typedHuman: false,
       refs: ['EI-123'],
     });
+  });
+
+  it('requires blocker-shaped Now syntax instead of incidental slug/title/product vocabulary', () => {
+    const falsePositives = [
+      plan({
+        planSlug: 'abolish-human-review-agent-review-only-2026-08-02',
+        title: 'Abolish human review in favor of agent review',
+        nowState: 'Implementation is active.',
+        nowNext: 'P-006 migrates the remaining rows through agent review.',
+      }),
+      plan({
+        nowState: 'P-001 through P-004 are done.',
+        nowNext: 'P-005 (now unblocked): run live credential/provider probes and close out the plan.',
+      }),
+      plan({
+        nowState: 'Phase 1 is done.',
+        nowNext: 'Recommend the owner weighs in on one API question; P-016 is fully agent-executable.',
+      }),
+      plan({
+        planSlug: 'restore-pot-lexicon-public-release-2026-07-04',
+        title: 'Restore the Pot lexicon for public release',
+        nowState: 'Phases 1 and 2 are complete.',
+        nowNext: 'Run the Phase 3 call-site sweep.',
+      }),
+    ];
+
+    for (const candidate of falsePositives) {
+      const category = classifyUnshippedPlan(input({ plan: candidate })).category;
+      expect(category).not.toBe('text-only-human-blocker');
+      expect(category).not.toBe('text-only-external-blocker');
+    }
+
+    expect(classifyUnshippedPlan(input({
+      plan: plan({ nowNext: 'P-009 needs an OWNER decision: provide an alternate egress path.' }),
+    })).category).toBe('text-only-human-blocker');
+    expect(classifyUnshippedPlan(input({
+      plan: plan({ nowNext: 'P-009 is BLOCKED ON THE PIPELINE until the green candidate ships.' }),
+    })).category).toBe('text-only-external-blocker');
+    expect(classifyUnshippedPlan(input({
+      plan: plan({ nowNext: 'OWNER action: provide the missing signing credential.' }),
+    })).category).toBe('text-only-human-blocker');
   });
 });
 
