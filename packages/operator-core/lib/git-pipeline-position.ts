@@ -905,6 +905,11 @@ export interface PipelinePosition {
   gate: {
     stalled: boolean;
     consecutiveReds: number;
+    /**
+     * The gate writer's current actionable failing-file set. Optional for old fixtures and
+     * snapshots; an explicit empty array is distinct from an absent/unknown field.
+     */
+    failingTests?: string[];
     lastGreenAtMs: number | null;
     /** WI-282: the green-checkpoint is WEDGED / not firing (visible even at 0 reds). */
     fireStale: boolean;
@@ -2878,6 +2883,14 @@ export function computeStages(
     stages.push(off('gate'), off('main'), off('deployed'));
   } else {
     const g = p.gate;
+    // EI-21337656680788367: a red counter with an EXPLICITLY measured empty failing-file
+    // set is not an actionable code-red verdict. This is the signature produced when the
+    // gate repeatedly defers before its suite (for example, dependency materialisation
+    // cannot acquire pc-heavy): the counters remain non-zero, but there is no test to fix.
+    // Keep absent `failingTests` as UNKNOWN so older snapshots/fixtures do not gain a false
+    // materialisation diagnosis.
+    const redWithoutFailingTests =
+      g.consecutiveReds > 0 && Array.isArray(g.failingTests) && g.failingTests.length === 0;
     const gateHealth: StageHealth = g.pause
       ? 'broken'
       : g.fireStale
@@ -3020,6 +3033,8 @@ export function computeStages(
           }`
         : g.fireStale
           ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
+          : redWithoutFailingTests
+            ? `Gate counters report RED (${g.consecutiveReds} consecutive), but the same gate snapshot records zero failing tests — there is no code-red target to fix. Inspect the latest green-checkpoint run/materialisation blocker before re-firing; do not chase historical test names.`
           : gateHealth === 'stalled'
             ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
             : null;
@@ -3101,6 +3116,8 @@ export function computeStages(
                       gateAbortLever(g.inconclusive.status)
               : g.fireStale
                 ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
+                : redWithoutFailingTests
+                  ? 'inspect the latest green-checkpoint run/materialisation blocker (the gate records no failing tests to fix), then release:checkpoint-run once that blocker clears'
                 : gateHealth === 'stalled'
                   ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
                   : null
@@ -4478,6 +4495,7 @@ export async function gitPipelinePosition(
   const gate = {
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
+    failingTests: snap.gate.failingTests,
     lastGreenAtMs: snap.gate.lastGreenAtMs,
     ...(() => {
       const pauseProjection = projectGreenCheckpointPause(snap.routines?.greenCheckpoint ?? null);

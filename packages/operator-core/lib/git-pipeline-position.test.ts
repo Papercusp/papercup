@@ -2387,6 +2387,7 @@ describe('computeStages: position x health', () => {
         gate: {
           stalled: true,
           consecutiveReds: 3,
+          failingTests: ['lib/current-red.test.ts'],
           lastGreenAtMs: 1,
           fireStale: false,
           fireStaleReason: null,
@@ -2402,6 +2403,31 @@ describe('computeStages: position x health', () => {
     );
     expect(stage(s, 'gate').health).toBe('stalled');
     expect(stage(s, 'gate').detail).toMatch(/RED \(3 consecutive\)/);
+  });
+
+  it('EI-21337656680788367: a red counter with zero failing tests routes to materialisation, not test triage', () => {
+    const s = computeStages(
+      input({
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        gate: {
+          ...input().gate,
+          stalled: true,
+          consecutiveReds: 39,
+          failingTests: [],
+        },
+      }),
+    );
+    const gate = stage(s, 'gate');
+    expect(gate.health).toBe('stalled');
+    expect(gate.detail).toMatch(/zero failing tests/i);
+    expect(gate.detail).toMatch(/materialisation blocker/i);
+    expect(gate.lever).toMatch(/materialisation blocker/i);
+    expect(gate.lever).not.toMatch(/fix the reds/i);
+    expect(deriveBlocker(s)).toMatchObject({
+      blockedOn: 'gate',
+      nextAction: expect.stringMatching(/materialisation blocker/i),
+      actionOwner: 'gate',
+    });
   });
 
   /**
