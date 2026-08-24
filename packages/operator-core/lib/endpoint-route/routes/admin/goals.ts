@@ -60,7 +60,15 @@ const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
  * The `parentId` guard in `dispatchWrite` is what keeps this narrow: without it,
  * widening to `create` would quietly re-open the agentless top-level goal.
  */
-const WRITE_VERBS = new Set(['update', 'create']);
+const WRITE_VERBS = new Set(['update', 'create', 'start-from-package']);
+
+/* `start-from-package` (P-009, work-on-everything-goal-2026-08-23): the packages
+   rail's one-click start. It does NOT reopen the agentless-top-level-goal hole the
+   comment above closes: `goals:start-from-package` (P-017) converges on
+   `startGoalById`, which spawns the owning agent in the same act — it is the
+   composer's guarantee arriving through a different door, not a bypass of it. The
+   proxy also inherits this route's `goals.list`/`goals.detail` invalidations, so
+   the rail repaints from the store, never optimistically. */
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status === 200) {
