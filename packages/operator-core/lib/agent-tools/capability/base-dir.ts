@@ -98,7 +98,7 @@ function isWorkspaceRoot(dir: string): boolean {
  *  before symlink resolution. Exported for unit tests of the selection order. */
 export function pickCapabilityBaseDir(ctx: { projectDir?: string }): string {
   if (ctx.projectDir) return ctx.projectDir;
-  const integrationRoot = resolveCapabilityIntegrationRoot();
+  const integrationRoot = configuredCapabilityIntegrationRoot();
   if (integrationRoot) return integrationRoot;
   return process.cwd();
 }
@@ -112,10 +112,16 @@ export function pickCapabilityBaseDir(ctx: { projectDir?: string }): string {
  * keeps path-aware capability handlers from re-implementing the env parsing.
  */
 export function resolveCapabilityIntegrationRoot(
-  env: Pick<NodeJS.ProcessEnv, 'PAPERCUSP_INTEGRATION_ROOT'> = process.env,
+  env: { PAPERCUSP_INTEGRATION_ROOT?: string } = process.env,
 ): string | undefined {
-  const integrationRoot = env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  const integrationRoot = configuredCapabilityIntegrationRoot(env);
   return integrationRoot ? realpathSoft(integrationRoot) : undefined;
+}
+
+function configuredCapabilityIntegrationRoot(
+  env: { PAPERCUSP_INTEGRATION_ROOT?: string } = process.env,
+): string | undefined {
+  return env.PAPERCUSP_INTEGRATION_ROOT?.trim() || undefined;
 }
 
 /** `realpathSync` that never throws: an unresolvable path (missing dir) is returned
