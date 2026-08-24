@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { BehaviorContractGroup, WorkItemBehaviorContract } from '../agent-tools/plans/behavior-contract-resolver';
+import type { SpecClauseRevision } from '../agent-tools/plans/spec-clauses-store';
 
 /**
  * P-011, the rubric/testing read surface. The behaviour under test is NOT "does it return
@@ -40,7 +42,7 @@ vi.mock('../agent-tools/work_items/spec-test-adequacy-gate', () => ({
   specTestAdequacyCompletionGate: (...a: unknown[]) => gateSpy(...a),
 }));
 
-const contractSpy = vi.fn();
+const contractSpy = vi.fn<(...a: unknown[]) => Promise<WorkItemBehaviorContract>>();
 const stampSpy = vi.fn();
 vi.mock('../agent-tools/plans/behavior-contract-resolver', () => ({
   resolveWorkItemBehaviorContract: (...a: unknown[]) => contractSpy(...a),
@@ -66,16 +68,47 @@ const itemRow = {
 };
 
 /** Only the fields `requiredProofFloor` and the clause view actually read. */
-const clause = (over: Record<string, unknown> = {}) => ({
+const clause = (over: Partial<SpecClauseRevision> = {}): SpecClauseRevision => ({
+  planSlug: 'p',
   specId: 'SPEC-1',
+  sourceValId: null,
+  currentRevision: 3,
   revision: 3,
   planItemId: 'P-001',
   behavior: 'does the thing',
-  behaviorClass: 'functional',
+  behaviorClass: 'happy-path',
   lifecycleStatus: 'active',
   requiredTestLayers: ['l3'],
+  requiredEvidence: [],
   mutationRequired: false,
   falsifier: null,
+  supersedes: null,
+  exemption: null,
+  contentHash: 'a'.repeat(64),
+  createdBy: 'su-test',
+  createdAt: '2026-08-20T00:00:00.000Z',
+  acceptedBy: 'su-test',
+  acceptedAt: '2026-08-20T00:00:00.000Z',
+  acceptanceRef: null,
+  ...over,
+});
+
+const behaviorContractGroup = (over: Partial<BehaviorContractGroup> = {}): BehaviorContractGroup => ({
+  planSlug: 'p',
+  via: 'plan-stamp',
+  edges: [],
+  clauses: [clause()],
+  staleEdges: [],
+  planStatus: 'active',
+  eligibility: { enforcing: true, lane: 'enforceable', adoption: 'adopted' },
+  ...over,
+});
+
+const contract = (over: Partial<WorkItemBehaviorContract> = {}): WorkItemBehaviorContract => ({
+  workItemId: 'WI-1',
+  groups: [behaviorContractGroup()],
+  enforceable: [clause()],
+  impact: { required: true, resolved: true, report: null, reason: 'resolved' },
   ...over,
 });
 
@@ -86,11 +119,7 @@ beforeEach(() => {
   stampSpy.mockReset();
   contractSpy.mockReset();
   stampSpy.mockReturnValue({ planSlug: 'p', harnessSlug: 'papercusp' });
-  contractSpy.mockResolvedValue({
-    groups: [{ planSlug: 'p', via: 'plan-stamp', clauses: [clause()], staleEdges: [] }],
-    enforceable: [clause()],
-    impact: null,
-  });
+  contractSpy.mockResolvedValue(contract());
   gateSpy.mockResolvedValue({ ok: true, applicable: true, checked: ['SPEC-1@3'] });
 });
 
@@ -226,18 +255,12 @@ describe('resolveWorkItemSpecAdequacy — the empty cases stay distinguishable',
   });
 
   it('excludes clauses outside the ENFORCED lifecycle', async () => {
-    contractSpy.mockResolvedValue({
-      groups: [
-        {
-          planSlug: 'p',
-          via: 'plan-stamp',
-          clauses: [clause(), clause({ specId: 'SPEC-D', lifecycleStatus: 'draft' })],
-          staleEdges: [],
-        },
-      ],
-      enforceable: [],
-      impact: null,
-    });
+    contractSpy.mockResolvedValue(
+      contract({
+        groups: [behaviorContractGroup({ clauses: [clause(), clause({ specId: 'SPEC-D', lifecycleStatus: 'draft' })] })],
+        enforceable: [],
+      }),
+    );
     const out = (await resolveWorkItemSpecAdequacy({ ...BASE, classRef: 'plan-class-bugfix' })) as Array<
       Record<string, unknown>
     >;

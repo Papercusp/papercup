@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { BehaviorContractGroup, WorkItemBehaviorContract } from '../agent-tools/plans/behavior-contract-resolver';
+import type { SpecClauseRevision } from '../agent-tools/plans/spec-clauses-store';
 
 /**
  * P-011, the work-item behavior-contract read surface.
@@ -36,7 +38,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: sqlSpy }),
 }));
 
-const contractSpy = vi.fn();
+const contractSpy = vi.fn<(...a: unknown[]) => Promise<WorkItemBehaviorContract>>();
 const stampSpy = vi.fn();
 vi.mock('../agent-tools/plans/behavior-contract-resolver', () => ({
   resolveWorkItemBehaviorContract: (...a: unknown[]) => contractSpy(...a),
@@ -57,25 +59,52 @@ const itemRow = {
   source_plan_item_ids: ['P-001'],
 };
 
-function clause(over: Record<string, unknown> = {}) {
+function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
+    planSlug: 'plan-a',
     specId: 'SPEC-a',
+    sourceValId: null,
+    currentRevision: 3,
     revision: 3,
     planItemId: 'P-001',
     behavior: 'it does the thing',
-    behaviorClass: 'observable',
+    behaviorClass: 'observability',
+    requiredEvidence: [],
+    requiredTestLayers: [],
     lifecycleStatus: 'accepted',
+    supersedes: null,
+    exemption: null,
     falsifier: null,
     mutationRequired: false,
+    contentHash: 'a'.repeat(64),
+    createdBy: 'su-test',
+    createdAt: '2026-08-20T00:00:00.000Z',
+    acceptedBy: 'su-test',
+    acceptedAt: '2026-08-20T00:00:00.000Z',
+    acceptanceRef: null,
     ...over,
   };
 }
 
-function contract(over: Record<string, unknown> = {}) {
+function group(over: Partial<BehaviorContractGroup> = {}): BehaviorContractGroup {
   return {
+    planSlug: 'plan-a',
+    via: 'plan-stamp',
+    edges: [],
+    clauses: [clause()],
+    staleEdges: [],
+    planStatus: 'active',
+    eligibility: { enforcing: true, lane: 'enforceable', adoption: 'adopted' },
+    ...over,
+  };
+}
+
+function contract(over: Partial<WorkItemBehaviorContract> = {}): WorkItemBehaviorContract {
+  return {
+    workItemId: 'WI-1',
     enforceable: [clause()],
     impact: { required: true, resolved: true, report: null, reason: 'resolved' },
-    groups: [{ planSlug: 'plan-a', via: 'stamp', staleEdges: [], clauses: [clause()] }],
+    groups: [group()],
     ...over,
   };
 }
@@ -163,12 +192,7 @@ describe('P-011 behavior-contract read — a revision rides on every clause', ()
     contractSpy.mockResolvedValue(
       contract({
         groups: [
-          {
-            planSlug: 'plan-a',
-            via: 'stamp',
-            staleEdges: [],
-            clauses: [clause(), clause({ specId: 'SPEC-b', revision: 7 })],
-          },
+          group({ clauses: [clause(), clause({ specId: 'SPEC-b', revision: 7 })] }),
         ],
       }),
     );
@@ -191,17 +215,14 @@ describe('P-011 behavior-contract read — a revision rides on every clause', ()
     contractSpy.mockResolvedValue(
       contract({
         groups: [
-          {
-            planSlug: 'plan-a',
-            via: 'stamp',
-            staleEdges: [],
+          group({
             clauses: [
               clause({ specId: 'SPEC-accepted', lifecycleStatus: 'accepted' }),
               clause({ specId: 'SPEC-active', lifecycleStatus: 'active' }),
               clause({ specId: 'SPEC-draft', lifecycleStatus: 'draft' }),
               clause({ specId: 'SPEC-retired', lifecycleStatus: 'retired' }),
             ],
-          },
+          }),
         ],
       }),
     );
@@ -221,9 +242,9 @@ describe('P-011 behavior-contract read — a revision rides on every clause', ()
   });
 
   it('reports staleEdges rather than silently dropping them', async () => {
-    const staleEdges = [{ specId: 'SPEC-a', pinnedRevision: 2, currentRevision: 5 }];
+    const staleEdges = [{ specId: 'SPEC-a', edgeRevision: 2, currentRevision: 5 }];
     contractSpy.mockResolvedValue(
-      contract({ groups: [{ planSlug: 'plan-a', via: 'edge', staleEdges, clauses: [] }] }),
+      contract({ groups: [group({ via: 'edge', staleEdges, clauses: [] })] }),
     );
 
     expect((await run()).groups[0].staleEdges).toEqual(staleEdges);
@@ -235,13 +256,8 @@ describe('P-011 behavior-contract read — D-013 provenance, D-017 advisory', ()
     contractSpy.mockResolvedValue(
       contract({
         groups: [
-          { planSlug: 'plan-a', via: 'stamp', staleEdges: [], clauses: [clause()] },
-          {
-            planSlug: 'plan-OTHER',
-            via: 'edge',
-            staleEdges: [],
-            clauses: [clause({ specId: 'SPEC-x' })],
-          },
+          group({ clauses: [clause()] }),
+          group({ planSlug: 'plan-OTHER', via: 'edge', clauses: [clause({ specId: 'SPEC-x', planSlug: 'plan-OTHER' })] }),
         ],
       }),
     );
