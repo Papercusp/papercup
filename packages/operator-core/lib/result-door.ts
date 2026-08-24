@@ -519,7 +519,13 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   const evidence = detectResultEvidence(input.result.content);
   try {
     const parts = scratchParts(input.opts);
-    const basename = `result-door-${Date.now()}-${randomUUID().slice(0, 8)}.json`;
+    // EI-21282689413153947: NOT `.json` — every spill is a self-describing
+    // scratch reference (magic + manifest + payload), so a `.json` name lies
+    // about the bytes and invites a direct `jq <file>` that dies on the header
+    // ("Invalid numeric literal at line 2"). The payload INSIDE the reference
+    // stays machine-parseable JSON; recover it via parseScratchReference or the
+    // cursor recipe, never by parsing the whole file.
+    const basename = `result-door-${Date.now()}-${randomUUID().slice(0, 8)}.spill`;
     spillUri = buildScratchUri({ ...parts, basename });
     spillPath = safeScratchFilesystemPath(spillUri);
     manifest = writeScratchReference({

@@ -362,6 +362,14 @@ describe('applyResultDoor', () => {
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('trailing text fully over budget');
     expect(spill).toContain('"type":"image"');
+    // EI-21282689413153947 recurrence guards: (a) the spill NAME must not claim
+    // a strict machine format the self-describing wrapper (magic + manifest +
+    // payload) breaks — a `.json` file jq cannot parse whole was the exact
+    // reported failure; (b) the payload behind the canonical reader
+    // (parseScratchReference, applied inside readSpill) stays parseable JSON.
+    const spillDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'plans:get', RUN_ID);
+    expect(readdirSync(spillDir)[0].endsWith('.json')).toBe(false);
+    expect(() => JSON.parse(spill)).not.toThrow();
   });
 
   it('P-029: aggregate evidence is stored once and exposed as typed per-class references', () => {
