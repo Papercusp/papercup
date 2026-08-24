@@ -137,7 +137,11 @@ export function formatDivergenceAlert(d: Divergence): { summary: string; body: s
       `(call ${d.a.callId} → ${d.a.goalRef}, call ${d.b.callId} → ${d.b.goalRef}).\n\n` +
       `Peers read your declared intent to decide what NOT to pick up. When the goal moves and the ` +
       `declaration does not, that read is wrong for everyone but you. Re-declare via coord:orient { intent } ` +
-      `when you change goals — or, if this is a mis-stamp rather than real drift, say so.`,
+      `when you change to one goal. If one declaration intentionally covers several WI-/EI- work-items, ` +
+      `pass the typed refs too: coord:orient { intent, declared_goal_refs: ['WI-…', 'EI-…'] } (or the ` +
+      `same fields to coord:declare-intent). A prose-only spanning intent or items: [] does not establish ` +
+      `typed multi-goal coverage, so repeating either cannot clear this warning. If this is a mis-stamp ` +
+      `rather than real drift, say so.`,
   };
 }
 

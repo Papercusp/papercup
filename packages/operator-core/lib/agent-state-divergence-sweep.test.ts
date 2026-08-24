@@ -229,8 +229,8 @@ describe('formatDivergenceAlert', () => {
     expect(body).toContain('not an accusation');
   });
 
-  it('formats the stamped goal-drift kind differently', () => {
-    const { summary } = formatDivergenceAlert({
+  it('formats goal drift with the typed multi-goal re-declaration shape', () => {
+    const { summary, body } = formatDivergenceAlert({
       kind: 'goal-drift-within-intent',
       ownerId: 'su-a',
       intentEventId: 77,
@@ -240,6 +240,8 @@ describe('formatDivergenceAlert', () => {
     });
     expect(summary).toContain('WI-1');
     expect(summary).toContain('WI-2');
+    expect(body).toContain("declared_goal_refs: ['WI-…', 'EI-…']");
+    expect(body).toContain('A prose-only spanning intent or items: []');
   });
 });
 
