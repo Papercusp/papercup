@@ -242,6 +242,36 @@ const NON_ADMISSION_ASSERTION_PATTERN =
 const PENDING_MEASUREMENT_SUBJECT_PATTERN =
   /\b(?:re[-\s]?run|rerun|retest|verification|validation|probe|measurement|test|check|sample)\b/i;
 
+/**
+ * A conflict marker can be affirmative evidence when the claim itself is about
+ * an unresolved lifecycle state. For example, "fresh typechecks remain queued"
+ * is verified by evidence that both sessions are "still running and queued";
+ * treating the status vocabulary as a contradiction would invert the finding.
+ * Keep this allow-list narrow and require an affirmative status phrase in the
+ * claim so a claim about a completed/healthy state keeps the fail-safe warning.
+ */
+const CLAIM_UNRESOLVED_STATUS_PATTERN =
+  /\b(?:remain(?:s)?|is|are|was|were|stay(?:s)?|currently|still)\s+(?:queued|running|pending|outstanding|awaiting|in[-\s]?flight|unverified)\b/i;
+const CLAIM_NEGATION_PREFIX =
+  /\b(?:not|never|no|without|none|neither|zero|completed?|finished?|done|green|healthy|inactive|clear(?:ed)?|resolved?)\s+(?:[\w./:=()-]+\s+){0,5}$/i;
+
+/** Return true only when the claim positively asserts the same unresolved state. */
+function claimAffirmsUnresolvedStatus(claim: string | null | undefined): boolean {
+  if (typeof claim !== 'string' || !claim.trim()) return false;
+  const match = CLAIM_UNRESOLVED_STATUS_PATTERN.exec(claim);
+  if (!match) return false;
+  const status = /(?:queued|running|pending|outstanding|awaiting|in[-\s]?flight|unverified)\b/i.exec(match[0]);
+  if (!status) return false;
+  const statusOffset = match.index + match[0].indexOf(status[0]);
+  const prefix = claim.slice(0, statusOffset);
+  if (CLAIM_NEGATION_PREFIX.test(prefix)) return false;
+  const clauseEnd = claim.slice(statusOffset + status[0].length).search(/[.!?;]/);
+  const suffix = claim.slice(statusOffset + status[0].length, clauseEnd < 0 ? claim.length : statusOffset + status[0].length + clauseEnd);
+  return !/\b(?:not|never|no|without|none|neither|zero|completed?|finished?|done|green|healthy|inactive|clear(?:ed)?|resolved?)\b/i.test(
+    suffix,
+  );
+}
+
 /** Return true when a pending/awaiting marker describes a healthy registration. */
 function isHealthyPendingRegistration(text: string, match: RegExpExecArray): boolean {
   if (!/\b(?:pending|awaiting|awaits?)\b/i.test(match[0])) return false;
@@ -283,7 +313,7 @@ function isNegatedVerificationConflict(text: string, match: RegExpExecArray): bo
 }
 
 /** Return the exact contradiction phrase found in verification evidence, if any. */
-export function findVerificationConflict(evidence: string | null | undefined): string | null {
+export function findVerificationConflict(evidence: string | null | undefined, claim?: string | null): string | null {
   const text = typeof evidence === 'string' ? evidence : '';
   if (!text.trim()) return null;
   for (const pattern of VERIFICATION_CONFLICT_PATTERNS) {
@@ -291,7 +321,8 @@ export function findVerificationConflict(evidence: string | null | undefined): s
     if (
       match?.[0] &&
       !isNegatedVerificationConflict(text, match) &&
-      !isHealthyPendingRegistration(text, match)
+      !isHealthyPendingRegistration(text, match) &&
+      !claimAffirmsUnresolvedStatus(claim)
     ) {
       return match[0];
     }
@@ -656,7 +687,7 @@ export function renderCheckLine(c: CheckEntry): string {
   const recheck = (c.recheck ?? '').trim();
   const verified = (c.verified ?? '').trim();
   const contested = (c.contested ?? '').trim();
-  const conflict = findVerificationConflict(verified);
+  const conflict = findVerificationConflict(verified, c.claim);
   const evidence = contested || verified;
   const marker = contested || conflict ? '⚠' : verified ? '✓' : '?';
   const id = sanitizeCarryRowId(c.id);
@@ -706,7 +737,7 @@ export function parseCheckLine(line: string): CheckEntry | null {
   if (recheck) out.recheck = recheck;
   const verified = (m[5] ?? '').trim();
   if (verified) {
-    if (m[1] === '⚠' || findVerificationConflict(verified)) out.contested = verified;
+    if (m[1] === '⚠' || findVerificationConflict(verified, claim)) out.contested = verified;
     else out.verified = verified;
   }
   if (m[6]) {
@@ -1001,7 +1032,7 @@ export function normalizeCheckEntries(
       e.contested !== undefined ? e.contested : e.verified !== undefined ? '' : existing?.contested ?? ''
     ).trim();
     if (e.contested !== undefined) verified = '';
-    const conflict = findVerificationConflict(verified);
+    const conflict = findVerificationConflict(verified, claim);
     if (conflict) {
       contested = verified;
       verified = '';
