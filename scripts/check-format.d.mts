@@ -32,3 +32,4 @@ export function parseFormatCliArgs(args: any): {
     paths: any;
 };
 export const REPO_ROOT: string;
+export const FORMAT_USAGE: "Usage:\n  npm run format:check:scoped -- <file...>\n  npm run format:write:scoped -- <file...>\n\nCheck or write only the changed ranges of one or more explicit files in the repository.\n";
