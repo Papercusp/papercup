@@ -185,8 +185,8 @@ describe('dev:restart dry run', () => {
     expect(b.note).not.toMatch(/~2min/);
   });
 
-  it('target:gateway and target:embed-sidecar keep the generic ~2min window (unaffected by the bg-host widening)', async () => {
-    for (const target of ['gateway', 'embed-sidecar'] as const) {
+  it('target:gateway, target:embed-sidecar, and target:mcp-proxy keep the generic ~2min window (unaffected by the bg-host widening)', async () => {
+    for (const target of ['gateway', 'embed-sidecar', 'mcp-proxy'] as const) {
       const b = body(await call({ target }));
       expect(b.note).toMatch(/~2min/);
       expect(b.note).not.toMatch(/~13min/);
@@ -224,6 +224,7 @@ describe('dev:restart dry run', () => {
     ['gateway', 'papercup-inference-gateway.service', true],
     ['bg-host', 'papercup-bg-host.service', true],
     ['embed-sidecar', 'papercup-embed-sidecar.service', true],
+    ['mcp-proxy', 'papercup-mcp-proxy.service', true],
   ] as const)('target:%s dispatches to %s (coalescing note: %s)', async (target, unit, coalesces) => {
     const b = body(await call({ target }));
     expect(b).toMatchObject({ ok: true, dry_run: true, target, would_run: `systemctl --user restart ${unit}` });

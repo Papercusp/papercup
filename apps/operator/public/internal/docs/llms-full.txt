@@ -1376,7 +1376,7 @@ Every incident is also a detector failure. The claimability fix landed a tool an
 
 See also: [judging claimable work — `status='open'` is not claimability](/internal/docs/agent-insights/judging-claimable-work-not-status-open), [raw SQL plan reads need workspace+harness scope](/internal/docs/agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).
 
-# A re-firing watchdog signal whose fix is "already in the code" — check bg-host uptime first
+# A re-firing watchdog signal whose fix is \"already in the code\" — check bg-host uptime first
 
 > A self-improvement / watchdog collector fix that is committed, tested, in main, AND deployed to :3070 can STILL keep firing its own signal, because the watchdog runs in the bg-host, which loads tsx once at boot with no file-watch. Before diagnosing a re-fire as a code defect, compare bg-host uptime against the fix's commit time.
 
@@ -1413,7 +1413,7 @@ If **bg-host started before the fix commit**, the fix is simply not loaded — t
 
 [Section titled “Remediation”](#remediation)
 
-Load the already-landed code into the running watchdog by restarting the host: `dev:restart { target: 'bg-host', confirm: true }` (coordinated/drained; never a raw `systemctl restart`). Any deploy-adjacent or routine bg-host restart also activates it. This is a shared routines/DBOS host restart — outside a sandboxed runner-worker’s lane, so a worker should land the code + test and flag the restart, not perform it.
+Load the already-landed code into the running watchdog by restarting the host: `dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }` (coordinated/drained; never a raw `systemctl restart`). Any deploy-adjacent or routine bg-host restart also activates it. This is a shared routines/DBOS host restart — outside a sandboxed runner-worker’s lane, so a worker should land the code + test and flag the restart, not perform it.
 
 ## The general rule
 
@@ -2634,6 +2634,8 @@ scorecards:emit {
 ```
 
 The author owns the passing threshold; there is no universal numeric cutoff. `reject` is a real terminal judgment for that scorecard and blocks shipping until the work or grading is addressed and a newer author verdict is recorded.
+
+The author verdict is a separate newer scorecard: **do not pass `supersedes`** on this call. The independent grading must remain visible to the plan-acceptance gate; a later author verdict supersedes an earlier author verdict by being newer, not by hiding the independent card.
 
 The four first-party plan-class rubrics include a citation spot-check criterion. The independent grader should sample the implementer’s resolving audit citations rather than trusting the coverage summary alone.
 
@@ -7576,7 +7578,7 @@ async handler(args, ctx) {
 
 [Section titled “Verifying live”](#verifying-live)
 
-Restart the staging operator (`dev:restart { target: 'staging', confirm: true }` — never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce) to load your edit (no file-watch on the Hono host), then call the tool over its MCP endpoint with the superuser bearer (`~/.papercusp/superuser-token`):
+Restart the staging operator (`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` — never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce) to load your edit (no file-watch on the Hono host), then call the tool over its MCP endpoint with the superuser bearer (`~/.papercusp/superuser-token`):
 
 ```plaintext
 POST http://127.0.0.1:3170/api/mcp?superuser=1&workspace=papercusp-workspace
@@ -8966,6 +8968,30 @@ Do not tell Overwatch to `coord:send` a concrete Mug `coordOwner`. Mug sessions 
 
 Scorecard clue: Overwatch reports healthy determinism for `@role:mug` acceptance, but degraded parallel distribution or scheduler usage if the Mug is alive and still not placing enough work.
 
+# Codex exec_command one-shot calls can reap detached children
+
+> A one-shot Codex exec_command call does not guarantee nohup background children survive after the call returns; use a yielded persistent session or a durable job surface.
+
+## Observed behavior
+
+[Section titled “Observed behavior”](#observed-behavior)
+
+A one-shot Codex `exec_command` call can reap a background descendant when the call returns, even when the command uses `nohup`, redirects all streams, and runs with stdin from `/dev/null`. In a current-HEAD probe on 2026-08-24:
+
+* the call launched `nohup sh -c 'sleep 1; printf ready > result' … &` and returned a PID;
+* after the call returned, the PID was gone;
+* after two seconds, the result file was absent and the redirected log was still zero bytes.
+
+This is a native `exec_command` process-lifetime boundary, not a Papercusp work-item or server-side command implementation. `nohup` only changes SIGHUP handling; it does not make a child durable outside the client-managed execution scope.
+
+## Safe execution pattern
+
+[Section titled “Safe execution pattern”](#safe-execution-pattern)
+
+Do not use a one-shot `exec_command` call as a detached-job launcher when the child must outlive that call. Run the command in a yielded persistent exec session and retain its `session_id`; poll or write to that same session until it exits. For long or uncertain work, use the documented two-call file-capture pattern only when the process remains inside the persistent session, or use a Papercusp durable background-job surface when the task needs server-side lifecycle management.
+
+A missing output file, empty log, or dead PID after a successful one-shot launch is evidence of this carrier limitation; it is not evidence that the producer command completed successfully.
+
 # An empty Codex exec result means YIELDED, not failed
 
 > Codex exec_command yields at a 10s default, returning zero bytes and a session_id while your command keeps running. ~20 agents each misread this as a defect in whichever papercusp tool they happened to be calling. Fix: yield_time_ms: 30000 under 30s, two-call file capture above it.
@@ -10121,7 +10147,7 @@ Same machine, same Postgres, same PgBouncer, same second. The **only** variable 
 
 ```bash
 # 1. load your edit into staging (never a raw systemctl restart — the tool drains + coalesces)
-#    dev:restart { target: 'staging', confirm: true }
+#    dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }
 
 
 # 2. fire the identical call at BOTH hosts, in parallel
@@ -12490,7 +12516,7 @@ Net: the collector-in-source is fixed (0 rows), but the collector-as-running sti
 The already-correct code activates the moment the bg-host reloads:
 
 ```plaintext
-dev:restart { target: 'bg-host', confirm: true }
+dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }
 ```
 
 Do **not** author a second code fix — any new edit has the *same* activation gap and won’t clear the live signal either. Until a restart, it self-heals on the next natural bg-host restart (any deploy that bounces it).
@@ -32969,10 +32995,10 @@ The `:3055` Vite dev server (`@papercusp/operator-vite`) *does* hot-reload its o
 
 Two-port model since staging→main (2026-06-06)
 
-On the standing dev box, `:3070` (`papercup-dev-api`) is now the **GREEN/stable** operator — it runs from the **separate release checkout** (`papercupai-workspace/papercup-release/apps/operator`), pinned to the green `main` branch. **Restarting it reboots the same green snapshot; your `staging` edits are invisible to it** until the auto-serve pipeline carries them (green-checkpoint FFs `main`, then release-trigger deploys). To test a server-side `staging` edit live, restart the **staging** operator on `:3170` instead: `dev:restart { target: 'staging', confirm: true }` (that MCP tool drains concurrent `:3170` users, coalesces a restart requested within \~2min of a peer’s real one (WI-4221), and restarts `bin/hono-host.ts` from the staging tree at `papercup/apps/operator` with `PAPERCUSP_HONO_PORT=3170` — never shell out to a raw `systemctl --user restart papercup-staging-api.service`, which bypasses both), then probe `:3170`. The Tauri dev shell still spawns its own operator from the staging tree, so reloading the desktop window picks up staging edits there. See the root `CLAUDE.md` “Running the operator” section.
+On the standing dev box, `:3070` (`papercup-dev-api`) is now the **GREEN/stable** operator — it runs from the **separate release checkout** (`papercupai-workspace/papercup-release/apps/operator`), pinned to the green `main` branch. **Restarting it reboots the same green snapshot; your `staging` edits are invisible to it** until the auto-serve pipeline carries them (green-checkpoint FFs `main`, then release-trigger deploys). To test a server-side `staging` edit live, restart the **staging** operator on `:3170` instead: `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (that MCP tool drains concurrent `:3170` users, coalesces a restart requested within \~2min of a peer’s real one (WI-4221), and restarts `bin/hono-host.ts` from the staging tree at `papercup/apps/operator` with `PAPERCUSP_HONO_PORT=3170` — never shell out to a raw `systemctl --user restart papercup-staging-api.service`, which bypasses both), then probe `:3170`. The Tauri dev shell still spawns its own operator from the staging tree, so reloading the desktop window picks up staging edits there. See the root `CLAUDE.md` “Running the operator” section.
 
 * **Tauri dev shell:** reload the desktop window (it respawns the host from the staging tree), or
-* **Staging operator on the dev box:** `dev:restart { target: 'staging', confirm: true }` (that unit runs `npx tsx bin/hono-host.ts` on :3170 from the staging tree; never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce).
+* **Staging operator on the dev box:** `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (that unit runs `npx tsx bin/hono-host.ts` on :3170 from the staging tree; never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce).
 
 The unit name is this dev box’s local supervision — not a repo invariant. Other setups have the Tauri shell spawn the host; restart it however it’s supervised there.
 
@@ -36183,7 +36209,7 @@ Any in-process/UI read path that goes through the tool dispatch (not just plans)
 
 ```bash
 # after a server-side fix, restart staging via the coordinated tool (never raw systemctl):
-#   tools:invoke dev:restart { target:'staging', confirm:true }
+#   tools:invoke dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }
 curl -s ".../rest-query?name=plans.attention&args=%7B%7D" | python3 - <<'EOF'
 import json,sys; j=json.load(sys.stdin); rows=j["rows"]
 print(len(rows), sum(len(r.get("items") or []) for r in rows))
@@ -36772,7 +36798,7 @@ The blocker that never existed is the part to remember. **A partial measurement 
 
 The cheap test, worth running before you believe any check: **say out loud what would have to be true for this instrument to return this same answer while the thing you care about is broken.** If you can describe that world in one sentence, you are holding the wrong instrument.
 
-# "too many clients already" is a connection storm or pool overhang — diagnose it at the OS level, don't assume a DB outage
+# \"too many clients already\" is a connection storm or pool overhang — diagnose it at the OS level, don't assume a DB outage
 
 > Papercusp's PG is the native cluster /var/lib/postgresql/18/main on :5432 with max_connections=100 (db harness_admin; users papercusp + papercusp_su). When it exhausts, EVERY MCP/PG call wedges fleet-wide and even a direct psql fails with FATAL 'sorry, too many clients already' — which reads like a DB outage but is almost always (1) a runaway client storming connections or (2) one operator's pool sitting near the 100 ceiling. You can diagnose + fix entirely at the OS level WITHOUT a SQL connection: count the postmaster's backends, map each :5432 socket to its owning PID with ss, find the one PID holding hundreds, and kill that subtree (or restart the offending service). On 2026-06-17 a STRAY manually-launched bin/hono-host.ts (gnome-terminal child, bound to FALLBACK ports 3071/3079/... because the standard ones were taken) was storming PG with 743 ESTAB + 355 SYN-SENT (~1000 conns); killing it unwedged the whole fleet. Separately the legit staging-api.service (:3170) alone held ~70 connections — restart it to reset its pool.
 
@@ -36823,7 +36849,7 @@ A single PID holding hundreds (especially with many `SYN-SENT`) is a storm. A `g
 [Section titled “Recover (least-disruptive first)”](#recover-least-disruptive-first)
 
 * **Storming stray** → `kill -KILL` its whole subtree (the `npm exec` → `sh -c tsx` → `node` chain). It’s redundant (the real operator is elsewhere on the standard ports); killing it frees the slots immediately and it does NOT respawn (it’s not systemd).
-* **Oversized service pool** → restart just that service: `dev:restart { target: 'staging', confirm: true }` (playbook-blessed; `:3170` is the non-primary staging operator — never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce). Its pool reconnects lazily to baseline (\~18), freeing \~50 slots. Do NOT restart the whole cluster for this.
+* **Oversized service pool** → restart just that service: `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (playbook-blessed; `:3170` is the non-primary staging operator — never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce). Its pool reconnects lazily to baseline (\~18), freeing \~50 slots. Do NOT restart the whole cluster for this.
 * **Terminating idle backends** at the OS level (`kill -TERM <backend-pid>`) is safe (PG treats it like `pg_terminate_backend`) but pools just reopen — only a fix if the client count is genuinely transient; otherwise kill the source.
 
 ## Chronic note
@@ -37913,7 +37939,7 @@ SELECT op_priority FROM harness_shared.harness_plans WHERE plan_slug = <plan>
 
 Two practical notes for running this against a real operator:
 
-* **Your MCP session’s `tools:invoke` will NOT exercise your edit.** The tool catalog is served by the release checkout (`:3070`), so a staging-tree change is invisible to it. Restart the staging operator (`dev:restart { target: 'staging', confirm: true }`, which rebuilds `dist-host`) and drive **`:3170`** instead. Confirm your code is really in the bundle before believing a result — `grep -c <your new symbol> apps/operator/dist-host/hono-host.mjs`.
+* **Your MCP session’s `tools:invoke` will NOT exercise your edit.** The tool catalog is served by the release checkout (`:3070`), so a staging-tree change is invisible to it. Restart the staging operator (`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`, which rebuilds `dist-host`) and drive **`:3170`** instead. Confirm your code is really in the bundle before believing a result — `grep -c <your new symbol> apps/operator/dist-host/hono-host.mjs`.
 * **`/api/admin/plans/:verb` needs the superuser bearer.** A bare loopback curl resolves `trust: 'unverified-loopback'` and is refused (`{"error":{"code":"forbidden"}}`). Send `Authorization: Bearer $(cat ~/.papercusp/superuser-token)`. That path also synthesizes the `?superuser=1` ctx — i.e. the `'*'`/no-harness scope — which makes it the *best* live test of the resolver, not merely a convenient one.
 
 ## ⚠ Your before/after control is probably tainted
@@ -50907,7 +50933,7 @@ Rule out the two usual false leads before concluding it’s this bug:
 Once the signature is confirmed, the fix is a targeted restart of the side that has been up longest since its own presence loop last wired (its OWN `shared_presence` self-rows will be stamped only at that old wire time, not recently) — typically the tower `bg-host`, since the VM sidecar is the one that usually gets bounced during normal work. Restarting the already-fresh side again (another VM reboot) does nothing — proven: a fresh VM re-dial could not reach the stale tower `bg-host` for 6+ minutes, while a tower `bg-host` restart reconnected in \~2 minutes.
 
 ```plaintext
-dev:restart { target: 'bg-host', confirm: true }
+dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }
 ```
 
 Coordinate this restart — it freezes the coordination rails for the duration of the swarm rejoin (observed \~13 minutes in the ordinary case; see EI-13307 on the missing coalescing/debounce for repeated `bg-host` restarts, which can chain these freezes back to back if multiple agents restart it independently within that window). Announce a fleet hold before firing it, same as any other `bg-host` restart.
@@ -51428,76 +51454,70 @@ Vendored copy + runner: `~/.papercusp/bench-harnesses/tau2-bench` (`pc_run.sh`, 
 
 # tauri-agent-tools screenshot: resolve the window by --pid, not by title guessing
 
-> screenshot --pid <pid> (no --title/--window-id) used to guess the X11 window from the bridge's document.title ("Papercusp Operator"), which never matches the real X11 window title ("Papercusp") — a bare xdotool error. Local patch resolves the window (and its DISPLAY) directly from --pid instead. Also documents a second trap the patch had to solve: a Tauri app's PID commonly owns MULTIPLE X11 windows, and the naive first-match is often a tiny helper window, not the real one.
+> screenshot --pid used to fail two ways: (1) title-guessing X11 lookups that never match ("Papercusp Operator" vs "Papercusp") plus wrong-DISPLAY searches, and (2) an arg-validation rejection of pid-only invocations from the no-selector/full-window branch ("Either --selector (with bridge), --title, or --window-id is required"). The local patch resolves the window and DISPLAY directly from --pid (largest-area heuristic for multi-window PIDs) in BOTH branches.
 
-## The trap (EI-18662939265185207)
+## The traps
 
-[Section titled “The trap (EI-18662939265185207)”](#the-trap-ei-18662939265185207)
+[Section titled “The traps”](#the-traps)
 
-`tauri-agent-tools screenshot --pid <pid> --selector <css> --output <path>` — the first screenshot command an agent typically reaches for after booting an isolated headless verify instance — used to fail with a bare, unhelpful error:
+`tauri-agent-tools screenshot --pid <pid> ...` — the first screenshot command an agent typically reaches for after booting an isolated headless verify instance — has failed in TWO distinct ways:
+
+### Variant 1: title-guessing failure (EI-18662939265185207, 2026-07-25)
+
+[Section titled “Variant 1: title-guessing failure (EI-18662939265185207, 2026-07-25)”](#variant-1-title-guessing-failure-ei-18662939265185207-2026-07-25)
+
+With `--selector`, the window was found by asking the bridge for `document.title` (“Papercusp Operator”) and searching X11 for that exact name — but the Tauri **window’s** X11 title is just `"Papercusp"`, so the search could never match. Worse, `xdotool` searched whatever `DISPLAY` the *calling* CLI inherited, not the target app’s own display.
+
+### Variant 2: pid-only invocation REJECTED (EI-21270933850311524, 2026-08-24)
+
+[Section titled “Variant 2: pid-only invocation REJECTED (EI-21270933850311524, 2026-08-24)”](#variant-2-pid-only-invocation-rejected-ei-21270933850311524-2026-08-24)
 
 ```plaintext
-xdotool failed: Command failed: xdotool search --name Papercusp Operator
+tauri-agent-tools screenshot --pid <pid> --output /tmp/x.png --json
+# -> Either --selector (with bridge), --title, or --window-id is required   (exit 1)
 ```
 
-Two independent things were wrong, and the error message named neither:
-
-1. **Title mismatch.** With no `--title`/`--window-id`, `screenshot` asked the bridge for `document.title` (“Papercusp Operator”) and searched X11 for a window with that exact name. But the Tauri **window’s** X11 title is just `"Papercusp"` (`wmctrl -l` confirms). The regex search can never match, on every instance, always.
-2. **Wrong DISPLAY.** `xdotool` searches whatever `DISPLAY` the *calling* CLI process inherited — not the target app’s own display. On a multi-instance box (a headless verify run on `:90+`, a second dev shell on a different display) that’s routinely a different X server, which fails exactly the same opaque way.
-
-This was already known and documented as **EI-11084** (see `agent-e2e.mdx` §1.3’s aside) with a workaround: pass `--title Papercusp` explicitly. That workaround still works, but it’s opt-in — nothing stops the next agent from hitting the raw failure and, per the CLAUDE.md warning this doc itself exists to prevent, concluding the UI is unverifiable and skipping the gate.
+The first local patch wired pid-based resolution into the **`--selector` branch only** (`dist/commands/screenshot.js`). The **no-selector / full-window fallback** branch handled `--window-id` and `--title` but fell straight to a validation throw when only `--pid` was supplied — even though `adapter.findWindowByPid` sat unused one branch over. Reproduced live against a real desktop PID on tauri-agent-tools **0.9.1** WITH the variant-1 patch present, so this is not “the patch was lost” — it was incomplete coverage.
 
 ## The fix — resolve by `--pid` instead of guessing
 
 [Section titled “The fix — resolve by --pid instead of guessing”](#the-fix--resolve-by---pid-instead-of-guessing)
 
-`screenshot` already **requires** `--pid` for bridge discovery on every invocation. That’s enough to resolve the window directly, with no title guessing at all:
+`screenshot` already requires `--pid` for bridge discovery on every invocation. That is enough to resolve the window directly, with no title guessing:
 
 * `resolveDisplayForPid(pid)` reads `/proc/<pid>/environ` and returns the target’s own `DISPLAY`, so name/pid searches hit the right X server.
-* `X11Adapter.findWindowByPid(pid)` runs `xdotool search --pid <pid>` instead of `search --name <title>`.
-* `screenshot`’s action handler now tries this first — automatically, silently — whenever `--pid` is given and neither `--window-id` nor `--title` was passed explicitly. It falls through to the old title-guessing path on any failure, so nothing regresses for callers who already pass `--title`/`--window-id`.
+* `X11Adapter.findWindowByPid(pid)` runs `xdotool search --pid <pid>` and picks the **largest-by-area** candidate (see below).
+* The action handler uses this whenever `--pid` is given and neither `--window-id` nor `--title` was passed explicitly — in BOTH branches since EI-21270933850311524: the `--selector` DOM-crop path AND the no-selector full-window path. It falls back to the old behavior (and keeps the guidance error, now annotated with the failed pid) when the PID owns no readable X11 toplevel.
 
-### The second trap this surfaced: one PID, multiple X11 windows
+### One PID, multiple X11 windows
 
-[Section titled “The second trap this surfaced: one PID, multiple X11 windows”](#the-second-trap-this-surfaced-one-pid-multiple-x11-windows)
+[Section titled “One PID, multiple X11 windows”](#one-pid-multiple-x11-windows)
 
-A naive `ids[0]` on `xdotool search --pid <pid>`’s output is **not** reliably the app’s main window. Measured live against a real desktop instance, one PID owned three windows:
+A naive `ids[0]` on `xdotool search --pid` output picks helper/tray windows (measured: a 10×10 helper vs the real 2701×1293 main window). When a pid search returns several windows, each one’s geometry is fetched and the largest by area wins.
 
-| window id  | name                | geometry                             |
-| ---------- | ------------------- | ------------------------------------ |
-| `24117249` | `papercusp-desktop` | 10×10                                |
-| `24126502` | `papercusp-desktop` | 182×153                              |
-| `24117251` | `Papercusp`         | **2701×1293** (the real main window) |
+## Verified (2026-08-24, against two concurrent live desktop instances)
 
-`ids[0]` picked the 10×10 helper window and `import` failed with `Resource temporarily unavailable` — a second, equally opaque error. The fix: when a `--pid` search returns more than one window, fetch each one’s geometry and pick the **largest by area**. That heuristic reliably separates a real, visibly-sized app window from small IPC/tray/helper windows.
-
-## Verified
-
-[Section titled “Verified”](#verified)
+[Section titled “Verified (2026-08-24, against two concurrent live desktop instances)”](#verified-2026-08-24-against-two-concurrent-live-desktop-instances)
 
 ```sh
-tauri-agent-tools screenshot --pid <pid> --output /tmp/x.png --json
-#   -> resolves the real main window (largest-area), no --title needed
-tauri-agent-tools screenshot --pid <pid> --selector body --output /tmp/x.png --json
-#   -> the DOM-crop path (the bug's exact repro shape) also resolves correctly
-tauri-agent-tools screenshot --pid <pid> --title Papercusp --output /tmp/x.png --json
-#   -> the pre-existing explicit --title path is unchanged (no regression)
+tauri-agent-tools screenshot --pid <pidA> --output /tmp/a.png --json  # exit 0 — 461KB PNG 1632x1408, windowId resolved
+tauri-agent-tools screenshot --pid <pidB> --output /tmp/b.png --json  # exit 0 — 970KB PNG 2967x1373 (correct OTHER instance)
+tauri-agent-tools screenshot --output /tmp/n.png                      # guidance error preserved (exit 1)
+tauri-agent-tools screenshot --title Papercusp --output /tmp/t.png    # pre-existing title path unchanged (exit 0)
 ```
 
-All three produced correctly-sized, non-blank PNGs against a live bridge.
+Two instances running side by side produce DIFFERENT correctly-sized captures from their pids alone — pid-only capture also disambiguates concurrent instances, which title matching cannot.
 
 ## This is a LOCAL patch — it does not survive a reinstall
 
 [Section titled “This is a LOCAL patch — it does not survive a reinstall”](#this-is-a-local-patch--it-does-not-survive-a-reinstall)
 
-`tauri-agent-tools` is a third-party package (`github.com/cesarandreslopez/tauri-agent-tools`, installed globally via `npm i -g` under Homebrew’s node — `/home/linuxbrew/.linuxbrew/lib/node_modules/tauri-agent-tools`). This repo does not vendor its source, so the fix is patched directly into the **installed** `dist/` files:
+`tauri-agent-tools` is a third-party package (`github.com/cesarandreslopez/tauri-agent-tools`), installed globally via `npm i -g`. This repo does not vendor its source; the fix is patched into the installed `dist/` files:
 
-* `dist/platform/x11.js` (+ `.d.ts`) — adds `resolveDisplayForPid` and `X11Adapter.findWindowByPid`.
-* `dist/commands/screenshot.js` — wires pid-based resolution into the action handler ahead of the pre-existing title-guessing path.
+* `dist/platform/x11.js` (+ `.d.ts`) — `resolveDisplayForPid` + `X11Adapter.findWindowByPid`.
+* `dist/commands/screenshot.js` — pid-based resolution wired ahead of legacy paths in BOTH the selector and no-selector branches (EI-18662939265185207 + EI-21270933850311524).
 
-This follows the same pattern as an earlier local patch on the same file (the `--window-id` flag itself, `EI-18099711348898699` — see that note in `screenshot.js`’s own `--help` output). Both patches are annotated in the CLI’s own `--help` text so a future agent hitting the raw upstream failure again (post-reinstall) can immediately tell the fix was already found once and needs re-applying, not re-diagnosing from scratch.
-
-**If `tauri-agent-tools screenshot --pid <pid>` (no `--title`) starts failing with the raw `xdotool search --name` error again**, the local patch was lost (package reinstall/upgrade, a different box, a fresh Homebrew node). Check `tauri-agent-tools screenshot --help` for the `EI-18662939265185207` note — if it’s missing, the patch needs reapplying; the diff is small and this doc has the exact rationale. Filing/landing the equivalent fix upstream would make this permanent.
+Both patches are annotated in the code with their EI ids. **If pid-based screenshot starts failing again after a reinstall/upgrade**, re-check whether the failure is variant 1 (raw `xdotool search --name` error) or variant 2 (validation rejection); the diffs are small and this doc has the exact rationale. Filing/landing the equivalent fix upstream would make this permanent.
 
 # tauri-agent-tools check/wait: millisecond options collapsed to NaN, and wait's truthiness was inverted underneath it
 
@@ -55113,7 +55133,7 @@ Verified live 2026-06-11 while shipping `pot-pr-rollup-and-subharness-membership
 
 Goal: a change touching BOTH server routes and SPA components, verified through one real process, without booting a second operator stack and without touching the owner’s live window.
 
-1. **Server side lands on :3170 by restart** (documented in `CLAUDE.md`): `dev:restart { target: 'staging', confirm: true }`, probe with curl. Never a raw `systemctl restart` — it bypasses the drain + WI-4221 debounce.
+1. **Server side lands on :3170 by restart** (documented in `CLAUDE.md`): `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`, probe with curl. Never a raw `systemctl restart` — it bypasses the drain + WI-4221 debounce.
 
 2. **UI side: `:3170` serves a BUILT SPA dist, not live Vite.** Your component edits are invisible there until you rebuild: `cd apps/operator-vite && npm run build` (seconds). Confirm the served hash changed: `curl -s :3170/adv | grep -oE 'index-[A-Za-z0-9_-]+\.js'`.
 
@@ -80276,9 +80296,9 @@ Migration and runtime tests also cover workspace/user isolation, local-only embe
 
 The **agent-insights** are the fleet’s procedural runbook — one short page per hard-won, non-obvious fact (a confusing failure’s root cause, a subtle invariant, a library quirk). Written one-per-page; this is the generated landing index.
 
-**742 insights.** By status: active (627), current (24), superseded (28).
+**743 insights.** By status: active (628), current (24), superseded (28).
 
-**Top tags:** `testing` 77 · `runbook` 66 · `federation` 62 · `postgres` 52 · `desktop` 43 · `debugging` 35 · `fleet` 34 · `tauri` 32 · `vitest` 32 · `gotcha` 31 · `coordination` 29 · `green-checkpoint` 29 · `work-items` 29 · `watchdog` 28 · `inference-gateway` 27 · `mcp` 27 · `pot` 27 · `release` 27 · `memory` 25 · `git-sync` 24 · `dbos` 23 · `plans` 23 · `rate-limit` 23 · `deploy` 22 · `verification` 22
+**Top tags:** `testing` 77 · `runbook` 66 · `federation` 62 · `postgres` 52 · `desktop` 43 · `debugging` 36 · `fleet` 34 · `tauri` 32 · `vitest` 32 · `gotcha` 31 · `coordination` 29 · `green-checkpoint` 29 · `work-items` 29 · `watchdog` 28 · `inference-gateway` 27 · `mcp` 27 · `pot` 27 · `release` 27 · `memory` 25 · `git-sync` 24 · `dbos` 23 · `plans` 23 · `rate-limit` 23 · `deploy` 22 · `verification` 22
 
 ## All insights
 
@@ -80522,6 +80542,7 @@ The **agent-insights** are the fleet’s procedural runbook — one short page p
 | [code:run resolving a different claim-spec than a direct call is a RACE, not an identity bug](/internal/docs/agent-insights/code-run-does-not-diverge-scheduler-identity)                                                                                         | `runbook` `code:run` `scheduler` `claim-spec` `identity` `false-alarm`                                                                                                                                                                                          | active     | 2026-07-19 | scheduler:get\_next/get\_claim\_spec via code:run vs a direct MCP call can show a different fleetScope/specId back-to-back — verified this is NOT code:run carrying a different identity (ctx/ownerId is provably identical, regression-tested), it is the fleet leader’s concurrent claim-spec write landing between the two reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | [code:run — when to reach for it, worked exemplars, and the measured payoff](/internal/docs/agent-insights/code-run-when-and-why)                                                                                                                                 | `code-run` `tool-orchestration` `tokens` `prompts` `performance` `agent-efficiency`                                                                                                                                                                             | active     | 2026-06-20 | The code-mode rollout (B-CX-3) — collapse a multi-step tool flow into ONE code:run instead of paying an inference round-trip per call. Two before/after exemplars + a real measured token/cost saving from agent\_usage\_samples.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | [Codex chatgpt aliases and Pot wake routing](/internal/docs/agent-insights/codex-chatgpt-and-pot-wake-routing)                                                                                                                                                    | `codex` `chatgpt` `pot` `mug` `overwatch` `routing` `wake` `scorecard`                                                                                                                                                                                          | active     | 2026-06-25 | The Pot loop has three easy-to-confuse routing seams: chatgpt:\* is a Papercusp-facing model alias but Codex CLI wants gpt-\*; ChatGPT OAuth auth.json is not an OpenAI-compatible gateway bearer; and Mug nudges/wakes must use stable role-slot and single-flight routing instead of fresh session owner ids.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| [Codex exec\_command one-shot calls can reap detached children](/internal/docs/agent-insights/codex-exec-one-shot-reaps-detached-children)                                                                                                                        | `codex` `exec` `nohup` `background` `process-lifecycle` `debugging`                                                                                                                                                                                             | active     | 2026-08-24 | A one-shot Codex exec\_command call does not guarantee nohup background children survive after the call returns; use a yielded persistent session or a durable job surface.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | [Codex functions.exec is a V8 isolate: use session-preserving recovery paths](/internal/docs/agent-insights/codex-functions-exec-runtime-boundary)                                                                                                                | `codex` `capability` `mcp` `recovery`                                                                                                                                                                                                                           | active     | 2026-08-12 | Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${…} expansion and raw markdown backticks out of outer JS template literals, and use tracked-session ptool for authenticated local agent-tools verification.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | [Codex hooks are real — how to read their contract, and how to test them](/internal/docs/agent-insights/codex-hooks-are-real-and-how-to-read-their-contract)                                                                                                      | `codex` `hooks` `provenance` `wire-contract` `testing` `verification`                                                                                                                                                                                           | active     | 2026-08-09 | codex-cli 0.146.0 ships a complete, self-describing hook system. The 2026-06-21 “codex hooks are inert” verdict is refuted. How to extract the wire contract from the binary, how to test hooks when the ChatGPT quota is exhausted, and the two probes that look decisive and are not.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | [coding-pot `cup` (self-pulls a claim-spec) vs coding-factory `scoper` (gets a FEATURE\_ID pushed) — don’t conflate them](/internal/docs/agent-insights/coding-pot-cup-vs-coding-factory-scoper)                                                                  | `coding-pot` `coding-factory` `cup` `scoper` `mug` `claim-spec` `scheduler` `get_next` `fleet-spawn` `blueprint` `push-vs-pull` `role-confusion`                                                                                                                | superseded | 2026-06-23 | Papercusp has TWO distinct coding execution models that share the cup:spawn chokepoint, and agents repeatedly conflate their work units. The coding POT is a mug + self-pulling `cup`s: the Mug steers a cup with a versioned claim-spec (scheduler:set\_claim\_spec) and the cup PULLS its own next item via scheduler:get\_next. The coding-FACTORY is the OPPOSITE — a PUSH pipeline (scoper→architect→worker→validator→documenter→curator, driven by a director’s spine) where each role is HANDED a FEATURE\_ID by the orchestrator (NEXT\_SCOPER/NEXT\_ARCHITECT/… all carry extras:\[“FEATURE\_ID={feature}”]) and NEVER calls get\_next. The exact observed failure: an agent spawned role=“scoper” and set claim-specs on it to test the coding-pot handoff — but a scoper never self-pulls, so the claim-spec is INERT and (lacking a pushed FEATURE\_ID) the scoper has nothing to do. For a claim-spec self-pulling worker the role is “cup”, NEVER scoper. operator-spawn now REFUSES a factory pipeline role spawned with no pushed-feature context and points at role=“cup”; set\_claim\_spec WARNS when its beeId resolves to a non-self-pulling role.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -96816,7 +96837,7 @@ From `staging`, work reaches `main` automatically: **green-checkpoint** (hourly)
 **Server-side code has no hot-reload.** The **Hono host** (`bin/hono-host.ts` — the MCP tools, the `lib/endpoint-route` handlers, and everything in `apps/operator/lib/**` they import) runs under `tsx` with no file-watch. How an edit goes live depends on which host:
 
 * **`:3070` (`papercup-dev-api`) is the GREEN/stable operator** — it runs from the separate **release checkout** (`papercupai-workspace/papercup-release`), pinned to the green **`main` branch**. Restarting it just reboots the same green snapshot; **your `staging` edits are invisible to it** until the auto-serve pipeline carries them (green-checkpoint hourly FF, then release-trigger ≤15 min auto-deploy). A manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` still works for an immediate deploy. See `apps/operator/lib/release/README.md`.
-* **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from an ISOLATED `papercusp-staging` checkout (not the shared integration tree directly), which `papercup-staging-sync.timer` auto-fast-forwards to the latest COMMITTED `staging` HEAD roughly every 5 minutes (isolated-staging- tier-2026-06-21). To test YOUR OWN uncommitted server-side edit live: `dev:restart { target: 'staging', confirm: true }`, then probe `:3170`. **Never** a raw `systemctl --user restart papercup-staging-api.service` — on a heavily-parallel fleet that fired every \~5-6min for hours with zero coordination (WI-4221); `dev:restart` drains concurrent users first and coalesces a restart requested within \~2min of a peer’s real one.
+* **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from an ISOLATED `papercusp-staging` checkout (not the shared integration tree directly), which `papercup-staging-sync.timer` auto-fast-forwards to the latest COMMITTED `staging` HEAD roughly every 5 minutes (isolated-staging- tier-2026-06-21). To test YOUR OWN uncommitted server-side edit live: `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`, then probe `:3170`. **Never** a raw `systemctl --user restart papercup-staging-api.service` — on a heavily-parallel fleet that fired every \~5-6min for hours with zero coordination (WI-4221); `dev:restart` drains concurrent users first and coalesces a restart requested within \~2min of a peer’s real one.
   * ⚠ **`:3170` also self-restarts independently of any human/agent action, roughly every 5-7 minutes.** Whenever `staging` has advanced (true almost continuously — git-sync auto-commits the whole fleet’s work on a schedule), the sync timer rebuilds the isolated checkout and cycles the unit — outside `dev:restart`’s drain/coalesce path, so it’s a real (if brief, \~10-13s) hard-down/`ERR_CONNECTION_REFUSED` window each time (EI-13221). This is expected freshness behavior, not a crash or a load signal — a session actively probing `:3170` for more than a couple of minutes can legitimately see one. Before concluding `:3170` is down or overloaded, check **`dev:service_health`**: its `supervision` entry for `staging-api` carries `secondsSinceStart` + a `recentRestartNote` whenever the unit came up in the last \~20s, naming the sync timer as the likely cause instead of leaving you to guess. (The sync script also skips its own restart when the unit already cycled in the last \~45s, so it doesn’t compound with a concurrent `dev:restart`.)
 * **The Tauri dev shell** spawns its own operator from the integration tree — reloading the desktop shell picks up `staging` edits in that context.
 
@@ -98614,6 +98635,8 @@ This is the realistic time for one engineer to ship the full stack. Two engineer
 
 # Agent E2E playbook — driving the operator like a user
 
+> How AI agents drive the Papercusp Tauri desktop end to end, including safe staging restarts and dedicated test webviews.
+
 > **Webapp retired (2026-05-14).** Any `localhost:3055` (Vite SPA) or `localhost:3270` (the dev shell’s own working-tree Hono host) URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`. (`:3070` is the systemd-owned green release operator — a separate process the dev shell does not load.)
 
 When to use this
@@ -100280,7 +100303,7 @@ Adopted by the owner 2026-06-11 from the load-sensitivity characterization (`pap
 
   **The failure is silent and reads exactly like “my fix doesn’t work”** — the natural next move is to go re-edit already-correct code. The inverse is worse: a stale sidecar that happens to still exhibit the OLD-but-passing behavior reports a real regression as green.
 
-  **To verify a SERVER-SIDE change (a resolver, an API route, anything not purely rendering), don’t trust the shell — curl `:3170` directly** after `dev:restart { target: 'staging', confirm: true }` (see the two-port model in `/internal/docs/system/repo-conventions`). Use the Tauri shell only for what it actually proves: rendering and interaction. If you must confirm which code a given shell’s sidecar is running, fetch the same query from inside the page and diff it against a curl to `:3170` — a match means that shell’s sidecar is current; a mismatch means it predates your edit and no amount of UI-level retrying will pick up the fix.
+  **To verify a SERVER-SIDE change (a resolver, an API route, anything not purely rendering), don’t trust the shell — curl `:3170` directly** after `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (see the two-port model in `/internal/docs/system/repo-conventions`). Use the Tauri shell only for what it actually proves: rendering and interaction. If you must confirm which code a given shell’s sidecar is running, fetch the same query from inside the page and diff it against a curl to `:3170` — a match means that shell’s sidecar is current; a mismatch means it predates your edit and no amount of UI-level retrying will pick up the fix.
 
 * **Teardown hygiene: `pkill -f <pattern>` self-matches your own shell, and over-kills a shared WM.** `pkill -f "openbox"` / `pgrep -f 'Xvfb :96'` match against `/proc/<pid>/cmdline` for EVERY process — including the very shell invoking the command, if that command’s own text contains the pattern (it will; you just typed it). SIGTERM’ing your own cleanup shell mid-teardown shows up as an unexplained exit 144. Worse, `pkill -f openbox` is not scoped to *your* Xvfb session — it kills every openbox WM on the box, including a peer e2e agent’s. Kill by the **recorded PID** instead (per §15.4’s own `/tmp/tauri-xvfb.pid` / `/tmp/openbox90.pid` / `/tmp/xvfb90.pid` convention — `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid) 2>/dev/null`), or match the exact process by name + cmdline instead of a substring: `for p in $(pgrep -x Xvfb); do tr '\0' ' ' </proc/$p/cmdline | grep -q ' :96 ' && kill -TERM $p; done`. Never `pkill -f <pattern>` from a command whose own text contains `<pattern>`; never broad-match a shared WM/binary by bare name. (EI-606, 2026-06-14.)
 

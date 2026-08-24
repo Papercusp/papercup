@@ -478,6 +478,7 @@ describe('turn-start-orientation — what it says', () => {
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       }),
       executableFrontier: async () => ({ planSlug: 'one-plan', executableWidth: 2 }),
+      neverDropFacts: async () => ['guard-rail:some-settled-thing'],
     });
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
@@ -493,6 +494,7 @@ describe('turn-start-orientation — what it says', () => {
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       },
       executableFrontier: { planSlug: 'one-plan', executableWidth: 2 },
+      neverDropFacts: ['guard-rail:some-settled-thing'],
     });
   });
 
@@ -570,7 +572,9 @@ describe('never-drop facts fold', () => {
   it('surfaces the keys, and says how many it did not show', () => {
     const line = factLine({ ...base, neverDropFacts: KEYS });
     expect(line).toBeDefined();
-    expect(line).toContain('guard-rail:verifying-owner-speech-in-transcripts');
+    // Asserted on the legible HEAD, not the whole key: this one is 48 chars and
+    // is deliberately clipped to FACT_KEY_CHARS to protect the budget.
+    expect(line).toContain('guard-rail:verifying-owner-speech');
     expect(line).toContain('+1 more');
   });
 

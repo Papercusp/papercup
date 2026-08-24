@@ -469,6 +469,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // so a re-stamp or a kind change moves which clauses resolve. Same on-demand
     // mounting as priorAttempts.
     'workItems.behaviorContract',
+    // P-011: the adequacy gate reads the same provenance AND grades against scorecards,
+    // which are themselves stored as work-item rows — so a re-stamp, a kind change, or a
+    // new grading each move the verdict. Same on-demand mounting.
+    'workItems.specAdequacy',
     // P-011: adequacy SCORECARDS are stored as work-item rows, so this is the only table
     // a new grading touches. The adequacy leg is advisory-only (D-018), but a census that
     // silently under-reports a gap it claims to measure is the defect this plan exists to
@@ -587,20 +591,35 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // `plans.acceptanceGate` rides the same tables because the census is one of its five
   // check families — a clause revised after its evidence was recorded is what flips the
   // whole gate to spec_proof_stale, not just the census panel.
+  // `workItems.specAdequacy` (the rubric/testing gate read) rides every one of these: the
+  // gate selects clauses at their CURRENT revision, so a revision is what moves its verdict
+  // from checked to blocked, and an open panel that missed it would tell a human a close is
+  // clear when the gate would now refuse it.
   'harness_shared.plan_spec_clauses': [
     'workItems.behaviorContract',
+    'workItems.specAdequacy',
     'plans.specCoverage',
     'plans.acceptanceGate',
   ],
   'harness_shared.plan_spec_clause_revisions': [
     'workItems.behaviorContract',
+    'workItems.specAdequacy',
     'plans.specCoverage',
     'plans.acceptanceGate',
   ],
-  'harness_shared.work_item_spec_revision_edges': ['workItems.behaviorContract'],
+  'harness_shared.work_item_spec_revision_edges': [
+    'workItems.behaviorContract',
+    'workItems.specAdequacy',
+  ],
   // The OTHER half of the freshness verdict: recording evidence at the current revision is
   // what CLEARS a stale-proof refusal, so an open census panel must not miss it either.
-  'harness_shared.spec_evidence_bindings': ['plans.specCoverage', 'plans.acceptanceGate'],
+  // The adequacy gate reads these bindings directly to grade every criterion it rates, so
+  // recording evidence is precisely what flips its blocker to a pass.
+  'harness_shared.spec_evidence_bindings': [
+    'plans.specCoverage',
+    'plans.acceptanceGate',
+    'workItems.specAdequacy',
+  ],
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',

@@ -33,7 +33,8 @@ export function buildExactPlanClaimSpec(
   };
 }
 
-type AdmissionWorkItem = Pick<WorkItem, 'id' | 'family' | 'sourcePlanItemIds' | 'payload'>;
+type AdmissionWorkItem = Pick<WorkItem, 'id' | 'family' | 'sourcePlanItemIds' | 'payload'>
+  & Partial<Pick<WorkItem, 'assignee' | 'takenAt'>>;
 type RootClass = 'dependency' | 'sticky' | 'cycle' | 'dangling' | 'needs-human' | 'non-actionable-status';
 export type ExactPlanAdmissionReason =
   | 'ready' | 'plan-not-found' | 'no-actionable-plan-items' | 'promotion-lag'
@@ -59,6 +60,12 @@ export interface ExactPlanAdmission {
   requestedSeats: number | null;
   executableWidth: number | null;
   seatShortfall: number | null;
+  blockingRows: Array<{
+    planItemId: string;
+    workItemId: string;
+    holder: string;
+    takenAt: string | null;
+  }>;
   lane: FleetLaneHealth | null;
   message: string;
 }
@@ -102,6 +109,19 @@ function finish(
   return { ...base, ready: status === 'ready', status, reason, message };
 }
 
+function zeroClaimableLaneMessage(planSlug: string, lane: FleetLaneHealth): string {
+  const { matchedByFilter, excluded } = lane.effective;
+  const filter = `plan = '${planSlug}'`;
+  if (matchedByFilter === 0) {
+    return `The exact-plan filter (${filter}) matches no rows; no row reached the claim floors.`;
+  }
+  if (matchedByFilter != null && !Object.values(excluded ?? {}).some((count) => count > 0)) {
+    return `INTERNAL INCONSISTENCY: the exact-plan filter (${filter}) matched ${matchedByFilter} row(s) ` +
+      'and claimable=0, but every reported exclusion bucket is zero; these counters do not support a floor-gated diagnosis.';
+  }
+  return 'The exact-plan lane is structurally reachable but every matched row is excluded by claim floors.';
+}
+
 /** PURE verdict over one exact plan snapshot, its promoted rows, and lane oracle. */
 export function evaluateExactPlanAdmission(args: {
   planSlug: string; planItems: PlanItem[]; workItems: AdmissionWorkItem[];
@@ -134,6 +154,20 @@ export function evaluateExactPlanAdmission(args: {
   const seatShortfall = requestedSeats == null || executableWidth == null
     ? null
     : Math.max(0, requestedSeats - executableWidth);
+  const readyItemIds = new Set(parallelism.readyItemIds);
+  const blockingRows = executableWidth != null && parallelism.readyWidth > executableWidth
+    ? promotedRows.flatMap((row) => {
+        if (!row.assignee) return [];
+        return provenanceIds(row)
+          .filter((planItemId) => readyItemIds.has(planItemId))
+          .map((planItemId) => ({
+            planItemId,
+            workItemId: row.id,
+            holder: row.assignee as string,
+            takenAt: row.takenAt ?? null,
+          }));
+      }).sort((a, b) => a.planItemId.localeCompare(b.planItemId) || a.workItemId.localeCompare(b.workItemId))
+    : [];
   const base = {
     plan: args.planSlug,
     planItems: {
@@ -156,6 +190,7 @@ export function evaluateExactPlanAdmission(args: {
     requestedSeats,
     executableWidth,
     seatShortfall,
+    blockingRows,
     lane: args.laneHealth,
   };
 
@@ -176,7 +211,9 @@ export function evaluateExactPlanAdmission(args: {
   if (unreachable || ((featureZero || issueZero) && somePositive)) {
     return finish(base, 'refused', 'family-disagreement', 'Actionable promoted families disagree with the exact-plan lane reachability/counts.');
   }
-  if (args.laneHealth.effective.claimable === 0) return finish(base, 'refused', 'floor-gated', 'The exact-plan lane is structurally reachable but every row is excluded by claim floors.');
+  if (args.laneHealth.effective.claimable === 0) {
+    return finish(base, 'refused', 'floor-gated', zeroClaimableLaneMessage(args.planSlug, args.laneHealth));
+  }
   if (seatShortfall != null && seatShortfall > 0) {
     const edges = parallelism.blockingEdges
       .slice(0, 8)
@@ -190,6 +227,8 @@ export function evaluateExactPlanAdmission(args: {
     const nonReadySuffix = parallelism.nonReadyItems.length > 8
       ? `, … +${parallelism.nonReadyItems.length - 8} more`
       : '';
+    const heldReadyRows = blockingRows
+      .map((row) => `${row.planItemId}->${row.workItemId}(holder=${row.holder}, takenAt=${row.takenAt ?? 'unknown'})`);
     return finish(
       base,
       'refused',
@@ -197,6 +236,7 @@ export function evaluateExactPlanAdmission(args: {
       `Requested ${requestedSeats} seat(s), but the exact plan exposes executableWidth=${executableWidth} ` +
         `(readyWidth=${parallelism.readyWidth}, laneClaimable=${args.laneHealth.effective.claimable}); ` +
         `shortfall=${seatShortfall}. Ready items: ${parallelism.readyItemIds.join(', ') || 'none'}. ` +
+        `${parallelism.readyWidth > executableWidth ? `Held ready rows: ${heldReadyRows.join(', ') || 'none identified'}. ` : ''}` +
         `Blocking edges: ${edges.join(', ') || 'none'}${edgeSuffix}. ` +
         `Other non-ready items: ${nonReady.join(', ') || 'none'}${nonReadySuffix}.`,
     );

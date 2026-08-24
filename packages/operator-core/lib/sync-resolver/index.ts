@@ -161,6 +161,11 @@ import {
   planAcceptanceGateArgsSchema,
   type PlanAcceptanceGateArgs,
 } from './plan-acceptance-gate-verdict';
+import {
+  resolveWorkItemSpecAdequacy,
+  workItemSpecAdequacyArgsSchema,
+  type WorkItemSpecAdequacyArgs,
+} from './work-item-spec-adequacy';
 import { trackDetached } from '../detached-imports';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
@@ -2910,6 +2915,42 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.work_items',
       'harness_shared.plan_spec_clauses',
       'harness_shared.plan_spec_clause_revisions',
+      'harness_shared.spec_evidence_bindings',
+    ],
+  } as QueryEntry<unknown>,
+
+  // workItems.specAdequacy — P-011: the RUBRIC/TESTING surface. Which rubric governs this
+  // item's close, what its gate decides, and the EXACT blocker — without attempting the
+  // close. Runs the SAME specTestAdequacyCompletionGate the write path calls.
+  //
+  // Before this, the adequacy verdict was reachable ONLY by calling work_items:complete —
+  // a write with side effects — and the first refusal asks for a `classRef` the caller had
+  // no read to discover, so the loop was: attempt, get refused, guess a plan class, attempt
+  // again. Omitting classRef here reproduces that first refusal verbatim and harmlessly.
+  //
+  // ⚠⚠ VERDICT IS A LOWER BOUND (D-020) — the honesty rule this query lives or dies by.
+  // `freshness` is graded against fingerprints the CALLER attests at close time about its
+  // own working tree; a read cannot have them and must not invent them, so they are never
+  // supplied and currentness comes back `unknown` (deliberately NOT `stale`). An `unknown`
+  // here means "a read cannot establish this", never "this clause FAILS". Every row carries
+  // `verdictIsLowerBound: true` so the caveat travels with the data; a renderer that
+  // flattens it into a blocker shows a hard failure for evidence that may be fully current.
+  //
+  // MOUNTED ONLY ON DEMAND, like every P-011 sibling: contract resolution, then evidence,
+  // then scorecards. The consumer gates it with `useSyncQuery({ enabled })`.
+  //
+  // The clause/edge/evidence tables full-bust deliberately: revising a clause, recording
+  // evidence, or grading an adequacy scorecard (stored as a work-item row) are precisely
+  // the events that flip this verdict, and an open panel that missed them would keep
+  // asserting a close is blocked after the blocker cleared — or clear after one appeared.
+  'workItems.specAdequacy': {
+    argsSchema: workItemSpecAdequacyArgsSchema,
+    resolve: async (args) => resolveWorkItemSpecAdequacy(args as WorkItemSpecAdequacyArgs),
+    backingTables: [
+      'harness_shared.work_items',
+      'harness_shared.plan_spec_clauses',
+      'harness_shared.plan_spec_clause_revisions',
+      'harness_shared.work_item_spec_revision_edges',
       'harness_shared.spec_evidence_bindings',
     ],
   } as QueryEntry<unknown>,

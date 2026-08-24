@@ -165,6 +165,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // `useSyncQuery({ enabled })` so nothing runs until a human opens the section.
   'workItems.priorAttempts': null, // a specific work-item id (P-017 slice D)
   'workItems.behaviorContract': null, // a specific work-item id (P-011)
+  'workItems.specAdequacy': null, // a specific work-item id (P-011)
   'plans.specCoverage': null, // a specific plan slug (P-011)
   'plans.acceptanceGate': null, // a specific plan slug (P-011)
   'featuresConsolidated.detail': null, // a specific featureId

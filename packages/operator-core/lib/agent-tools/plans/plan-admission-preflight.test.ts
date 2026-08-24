@@ -50,6 +50,8 @@ const item = (
 
 const lane = (args: {
   issue?: number;
+  issueMatchedByFilter?: number;
+  issueExcluded?: Record<string, number>;
   feature?: number | null;
   issueReachable?: boolean;
   featureReachable?: boolean;
@@ -57,13 +59,15 @@ const lane = (args: {
   const issueReachable = args.issueReachable ?? true;
   const featureReachable = args.featureReachable ?? true;
   const issue = issueReachable ? (args.issue ?? 0) : 0;
+  const issueMatchedByFilter = args.issueMatchedByFilter ?? issue;
+  const issueExcluded = args.issueExcluded ?? {};
   const feature = featureReachable ? (args.feature ?? 0) : null;
   const mixed = issueReachable && featureReachable;
   return {
     claimable: issue,
-    matchedByFilter: issue,
-    excluded: {},
-    issueFamily: { claimable: issue, matchedByFilter: issue, excluded: {} },
+    matchedByFilter: issueMatchedByFilter,
+    excluded: issueExcluded,
+    issueFamily: { claimable: issue, matchedByFilter: issueMatchedByFilter, excluded: issueExcluded },
     featureFamily: featureReachable
       ? { claimable: feature, matchedByFilter: null, excluded: null }
       : null,
@@ -77,7 +81,12 @@ const lane = (args: {
       : featureReachable
         ? { claimable: feature, matchedByFilter: null, excluded: null, basis: 'feature-family' }
         : issueReachable
-          ? { claimable: issue, matchedByFilter: issue, excluded: {}, basis: 'issue-family' }
+          ? {
+              claimable: issue,
+              matchedByFilter: issueMatchedByFilter,
+              excluded: issueExcluded,
+              basis: 'issue-family',
+            }
           : { claimable: 0, matchedByFilter: 0, excluded: {}, basis: 'no-family' },
     familyReachability: { issue: issueReachable, feature: featureReachable },
     spec: {
@@ -190,6 +199,58 @@ describe('evaluateExactPlanAdmission', () => {
     });
   });
 
+  it('names the exact-plan filter when it matches no rows instead of blaming claim floors', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({ issue: 0, featureReachable: false }),
+    });
+
+    expect(verdict).toMatchObject({ ready: false, status: 'refused', reason: 'floor-gated' });
+    expect(verdict.message).toContain("exact-plan filter (plan = 'plan-a') matches no rows");
+    expect(verdict.message).toContain('no row reached the claim floors');
+    expect(verdict.message).not.toContain('every row is excluded');
+  });
+
+  it('reports internally inconsistent zero-claimable counters instead of inventing a floor cause', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({
+        issue: 0,
+        issueMatchedByFilter: 3,
+        issueExcluded: {},
+        featureReachable: false,
+      }),
+    });
+
+    expect(verdict).toMatchObject({ ready: false, status: 'refused', reason: 'floor-gated' });
+    expect(verdict.message).toContain('INTERNAL INCONSISTENCY');
+    expect(verdict.message).toContain("filter (plan = 'plan-a') matched 3 row(s)");
+    expect(verdict.message).toContain('every reported exclusion bucket is zero');
+    expect(verdict.message).toContain('do not support a floor-gated diagnosis');
+  });
+
+  it('keeps the floor-gated diagnosis when a nonzero exclusion bucket explains the zero', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({
+        issue: 0,
+        issueMatchedByFilter: 3,
+        issueExcluded: { claimHold: 3 },
+        featureReachable: false,
+      }),
+    });
+
+    expect(verdict).toMatchObject({ ready: false, status: 'refused', reason: 'floor-gated' });
+    expect(verdict.message).toContain('every matched row is excluded by claim floors');
+    expect(verdict.message).not.toContain('INTERNAL INCONSISTENCY');
+  });
+
   it('refuses when one actionable promoted family is zero while the other is claimable', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
@@ -233,6 +294,42 @@ describe('evaluateExactPlanAdmission', () => {
     });
     expect(verdict.message).toContain('P-002<-P-001(todo)');
     expect(verdict.message).toContain('P-003<-P-002(todo)');
+  });
+
+  it('emits held ready rows with their holder and claim time when the executable frontier is narrower', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001'), item('P-002')],
+      workItems: [
+        { id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null },
+        {
+          id: 'WI-2',
+          family: 'issue',
+          sourcePlanItemIds: ['P-002'],
+          payload: null,
+          assignee: 'su-holder',
+          takenAt: '2026-08-24T02:10:42.079Z',
+        },
+      ],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+      requestedSeats: 2,
+    });
+
+    expect(verdict).toMatchObject({
+      ready: false,
+      reason: 'insufficient-executable-width',
+      parallelism: { readyWidth: 2, readyItemIds: ['P-001', 'P-002'] },
+      executableWidth: 1,
+      blockingRows: [{
+        planItemId: 'P-002',
+        workItemId: 'WI-2',
+        holder: 'su-holder',
+        takenAt: '2026-08-24T02:10:42.079Z',
+      }],
+    });
+    expect(verdict.message).toContain(
+      'Held ready rows: P-002->WI-2(holder=su-holder, takenAt=2026-08-24T02:10:42.079Z).',
+    );
   });
 
   it('keeps seat diagnostics optional for existing callers', () => {

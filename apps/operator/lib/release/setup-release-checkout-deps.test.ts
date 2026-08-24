@@ -80,6 +80,36 @@ function needsCopy(integrationRoot: string, releaseRoot: string, mode = 'auto'):
   return r.status === 0;
 }
 
+function recordCopyMetadata(
+  integrationRoot: string,
+  releaseRoot: string,
+  generationId: string,
+  sourceFingerprint: string,
+): { status: number | null; stdout: string; stderr: string } {
+  const wrapper = [
+    'set -euo pipefail',
+    'log() { printf "[setup-release] %s\\n" "$*"; }',
+    'source <(sed -n "/^record_node_modules_copy_metadata()/,/^}/p" "$SETUP_SCRIPT")',
+    'record_node_modules_copy_metadata',
+  ].join('\n');
+  const r = spawnSync('bash', ['-c', wrapper], {
+    env: {
+      ...process.env,
+      SETUP_SCRIPT: SCRIPT_PATH,
+      INTEGRATION_ROOT: integrationRoot,
+      RELEASE_ROOT: releaseRoot,
+      PINNED_DEPENDENCY_GENERATION_ID: generationId,
+      DEPENDENCY_GENERATION_SOURCE_FINGERPRINT: sourceFingerprint,
+    },
+    encoding: 'utf8',
+  });
+  return {
+    status: r.status,
+    stdout: String(r.stdout ?? ''),
+    stderr: String(r.stderr ?? ''),
+  };
+}
+
 /** Create a node_modules package dir (with a package.json) under `root`. */
 function addPkg(root: string, name: string): void {
   const dir = join(root, 'node_modules', name);
@@ -173,6 +203,30 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
 
   it('mode=force always copies, even when the dep state is identical', () => {
     expect(needsCopy(int, rel, 'force')).toBe(true);
+  });
+
+  it('records an empty dependency generation when no root node_modules was copied', () => {
+    rmSync(join(rel, 'node_modules'), { recursive: true, force: true });
+    const generationId = `v1-${'e'.repeat(64)}`;
+    const sourceFingerprint = 'e'.repeat(64);
+
+    const result = recordCopyMetadata(
+      int,
+      rel,
+      generationId,
+      sourceFingerprint,
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      `DEPENDENCY_GENERATION_PIN identity=${generationId}`,
+    );
+    expect(
+      readFileSync(
+        join(rel, 'node_modules/.papercusp-dependency-generation'),
+        'utf8',
+      ),
+    ).toBe(`identity=${generationId}\nsource=${sourceFingerprint}\n`);
   });
 });
 

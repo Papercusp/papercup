@@ -121,7 +121,7 @@ const GATEWAY_COOLDOWN_SEC = 120;
  */
 const BG_HOST_COOLDOWN_SEC = 13 * 60; // 780s
 
-type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'desktop-dev';
+type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'mcp-proxy' | 'desktop-dev';
 
 /**
  * Exported for the registry-parity regression test. A target added here is
@@ -157,6 +157,12 @@ export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: st
     cooldownResource: 'embed-sidecar-cooldown',
     blastRadius: 'the shared embedding sidecar (:3384) — semantic search / memory recall degrade until it is back',
   },
+  'mcp-proxy': {
+    unit: RESTART_TARGET_UNITS['mcp-proxy'],
+    resource: 'mcp-proxy',
+    cooldownResource: 'mcp-proxy-cooldown',
+    blastRadius: 'the shared MCP proxy (:9071) — Papercusp tool calls fail until it is back',
+  },
   'desktop-dev': {
     // This is a wrapper label, not a systemd unit. The target branch below
     // validates and signals the wrapper-owned :3270 listener directly.
@@ -176,6 +182,7 @@ const COOLDOWN_SEC: Partial<Record<RestartTarget, number>> = {
   gateway: GATEWAY_COOLDOWN_SEC,
   'bg-host': BG_HOST_COOLDOWN_SEC,
   'embed-sidecar': GATEWAY_COOLDOWN_SEC,
+  'mcp-proxy': GATEWAY_COOLDOWN_SEC,
 };
 
 const json = (payload: unknown) => ({
@@ -228,9 +235,9 @@ async function writeRestartAudit(
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Coordinated restart for shared long-running host (drain/coalesce/audit). Targets: "dev" (:3070, default) · "staging" (:3170) · "desktop-dev" (wrapper-owned :3270) · "gateway" (:8788 LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384). Dry run unless confirm:true; real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or authorize:true (audited); non-dev targets debounce (~2m; bg-host ~13m).',
+    'Coordinated restart for shared long-running host (drain/coalesce/audit). Targets: "dev" (:3070, default) · "staging" (:3170) · "desktop-dev" (wrapper-owned :3270) · "gateway" (:8788 LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384) · "mcp-proxy" (:9071 MCP transport). Dry run unless confirm:true; real restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or authorize:true (audited); cooldown-bearing targets debounce (~2m; bg-host ~13m).',
   guidance: {
-    when: 'Load code edits into a long-running host. desktop-dev kills only the verified wrapper-owned :3270 listener; its wrapper respawns it. gateway/bg-host/embed-sidecar run tsx from staging (no deploy); restart loads edits. Choose: desktop session → "desktop-dev"; inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; shared server → "staging" (probe :3170).',
+    when: 'Load code edits into a long-running host. desktop-dev kills only the verified wrapper-owned :3270 listener; its wrapper respawns it. gateway/bg-host/embed-sidecar/mcp-proxy run from the integration tree (no deploy); restart loads edits. Choose: desktop session → "desktop-dev"; inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; MCP proxy/transport → "mcp-proxy"; shared server → "staging" (probe :3170).',
     notWhen: 'Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.',
     chaining: 'dry → review holders → { confirm:true, authorize:true, reason:"<why>", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status.',
     seeAlso: [
@@ -253,7 +260,7 @@ export default defineTool({
   args: z.object({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
-    target: z.enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar', 'desktop-dev']).optional(),
+    target: z.enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar', 'mcp-proxy', 'desktop-dev']).optional(),
     /** EI-18198340374286980: in-band alternative to the operator-process-env
      *  PAPERCUSP_ALLOW_DEV_RESTART=1 gate, which an agent cannot set for a
      *  server it did not itself spawn. Only takes effect with confirm:true —

@@ -16,7 +16,7 @@
  */
 
 /** A `dev:restart { target }` value. */
-export type RestartTargetName = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar';
+export type RestartTargetName = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'mcp-proxy';
 
 export const RESTART_TARGET_UNITS: Record<RestartTargetName, string> = {
   dev: 'papercup-dev-api.service',
@@ -24,4 +24,5 @@ export const RESTART_TARGET_UNITS: Record<RestartTargetName, string> = {
   gateway: 'papercup-inference-gateway.service',
   'bg-host': 'papercup-bg-host.service',
   'embed-sidecar': 'papercup-embed-sidecar.service',
+  'mcp-proxy': 'papercup-mcp-proxy.service',
 };

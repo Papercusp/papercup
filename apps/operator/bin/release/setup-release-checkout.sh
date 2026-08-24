@@ -741,6 +741,23 @@ sync_one_node_modules() {
   fi
 }
 
+# Persist which dependency state was materialized. An empty immutable generation
+# legitimately enumerates zero node_modules trees (for example, a non-Node Pot),
+# so the copy loop above may create no destination at all. Metadata recording must
+# establish its own parent instead of assuming a root dependency tree was copied.
+record_node_modules_copy_metadata() {
+  local metadata_root="$RELEASE_ROOT/node_modules"
+  mkdir -p "$metadata_root"
+  [ -f "$INTEGRATION_ROOT/package-lock.json" ] \
+    && cp "$INTEGRATION_ROOT/package-lock.json" "$metadata_root/.papercusp-source-package-lock.json"
+  if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+    printf 'identity=%s\nsource=%s\n' \
+      "$PINNED_DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+      > "$metadata_root/.papercusp-dependency-generation"
+    log "DEPENDENCY_GENERATION_PIN identity=$PINNED_DEPENDENCY_GENERATION_ID"
+  fi
+}
+
 if need_node_modules; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
@@ -766,14 +783,7 @@ if need_node_modules; then
   # Record WHICH dep state was just copied without touching pinned tracked source.
   # The marker is inside gitignored node_modules and is consumed by
   # need_node_modules() above on the next auto pass.
-  [ -f "$INTEGRATION_ROOT/package-lock.json" ] \
-    && cp "$INTEGRATION_ROOT/package-lock.json" "$RELEASE_ROOT/node_modules/.papercusp-source-package-lock.json"
-  if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
-    printf 'identity=%s\nsource=%s\n' \
-      "$PINNED_DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
-      > "$RELEASE_ROOT/node_modules/.papercusp-dependency-generation"
-    log "DEPENDENCY_GENERATION_PIN identity=$PINNED_DEPENDENCY_GENERATION_ID"
-  fi
+  record_node_modules_copy_metadata
   log "node_modules sync complete"
 else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"

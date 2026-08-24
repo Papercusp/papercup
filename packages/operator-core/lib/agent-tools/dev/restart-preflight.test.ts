@@ -41,6 +41,28 @@ describe('preflightRestartTarget — resolving the target tree', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('maps mcp-proxy to its supervised unit before preflighting the integration tree', async () => {
+    const readUnitProperty = vi.fn(async () => '/integration/apps/operator');
+    const preflight = vi.fn(() => ({
+      checked: true,
+      ok: true,
+      requestedRoot: '/integration/apps/operator',
+      lockRoot: '/integration',
+      missing: [],
+      extraneous: [],
+      note: 'clean',
+    }));
+
+    const r = await preflightRestartTarget('mcp-proxy', {
+      readUnitProperty,
+      preflight: preflight as unknown as typeof preflightTreeAt,
+    });
+
+    expect(readUnitProperty).toHaveBeenCalledWith('papercup-mcp-proxy.service', 'WorkingDirectory');
+    expect(preflight).toHaveBeenCalledWith({ rootDir: '/integration/apps/operator' });
+    expect(r.unit).toBe(RESTART_TARGET_UNITS['mcp-proxy']);
+  });
+
   // `systemctl --user show <unknown-unit>` exits 0 and prints nothing. Reading that as
   // a clean bill would silently disable this guard for a renamed/typo'd unit.
   it.each([
