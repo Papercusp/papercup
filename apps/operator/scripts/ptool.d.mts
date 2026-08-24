@@ -287,6 +287,15 @@ export function isTransportFailure(error: any): boolean;
  * operator guidance around the SDK's StreamableHTTPError.
  */
 export function isExplicitHttpConnectFailure(error: any): boolean;
+/**
+ * The initial MCP connect only performs the write-free initialize/tools-list
+ * handshake. A local resilient MCP proxy can answer that handshake with a 502
+ * after an upstream worker accepted the socket but stayed silent; that is a
+ * retryable proxy transport failure, not a terminal operator HTTP response.
+ * Keep this narrower than `isExplicitHttpConnectFailure`: auth, routing, and
+ * the proxy's exhausted refused-upstream 503 must still surface immediately.
+ */
+export function isRetryableLocalHttpConnectFailure(error: any): boolean;
 /** Preserve the proxy's HTTP status and typed JSON body in ptool's stderr. */
 export function formatOperatorConnectFailure(operatorUrl: any, error: any): string;
 /**
