@@ -1446,6 +1446,24 @@ export function extractKickoffWorkItemIds(texts: readonly (string | null | undef
   return [...ids];
 }
 
+/**
+ * Keep the durable launch transaction addressable from tool_invocations without
+ * copying its mutable outcome into telemetry. The fleet registry remains the
+ * source of truth; metadata_json supplies the join key for the sweep.
+ */
+function stampLaunchOutcome(
+  ctx: { metadata?: (data: Record<string, unknown>) => void },
+  fleet: string,
+  transaction: FleetLaunchTransaction,
+): void {
+  ctx.metadata?.({
+    launchOutcome: {
+      fleet,
+      transactionId: transaction.transactionId,
+    },
+  });
+}
+
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
@@ -3916,6 +3934,7 @@ export default defineTool({
     const launchCompletion = completeLaunch();
     const responseRace = await raceLaunchResponseWithinBudget(launchCompletion);
     if (responseRace.timedOut) {
+      stampLaunchOutcome(ctx, fleetSlug, launchTransaction);
       const completionHandle = {
         transactionId: launchTransaction.transactionId,
         fleet: fleetSlug,
@@ -4136,6 +4155,7 @@ export default defineTool({
       if (briefReadError) lines.push(briefReadError);
     }
 
+    stampLaunchOutcome(ctx, fleetSlug, launchTransaction);
     return json(
       {
         ok: launchTransaction.verifiedMemberIds.length > 0,
