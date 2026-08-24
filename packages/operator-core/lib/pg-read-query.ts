@@ -22,7 +22,13 @@
  * early error; the READ ONLY transaction is the real enforcement.
  */
 
-import { getOrgPg, getOrgPgLosslessBigint } from '@papercusp/db-org';
+import {
+  DEFAULT_TX_ACQUIRE_DEADLINE_MS,
+  DbCallDeadlineError,
+  getOrgPg,
+  getOrgPgLosslessBigint,
+  withAcquisitionDeadline,
+} from '@papercusp/db-org';
 
 /** The postgres-js client type the org handle exposes. */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
@@ -2136,6 +2142,16 @@ export const PG_READ_QUERY_DEFAULT_TIMEOUT_MS = 5000;
 export const PG_READ_QUERY_HARD_TIMEOUT_MS = 30000;
 
 /**
+ * Defaults for internal read-only transactions that need the tagged SQL
+ * client, rather than the agent-facing raw-query/result-cap surface below.
+ * Keep acquisition shorter than the generic db-org ceiling: these reads feed
+ * interactive loop status and cold-wake continuity, so a saturated pool must
+ * produce a typed failure before the MCP route gives up.
+ */
+export const PG_READ_TXN_DEFAULT_TIMEOUT_MS = PG_READ_QUERY_DEFAULT_TIMEOUT_MS;
+export const PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS = Math.min(DEFAULT_TX_ACQUIRE_DEADLINE_MS, 8_000);
+
+/**
  * Headroom added on top of `timeoutMs` for the WHOLE-call deadline
  * ({@link withCallDeadline}) — connect/acquire + the 3 `SET` statements +
  * commit round-trip, none of which are bounded by `statement_timeout` (that
@@ -2226,6 +2242,65 @@ export function callTimeoutMessage(timeoutMs: number, callDeadlineMs: number): s
  * code that legitimately wants server-local time.
  */
 export const SET_LOCAL_UTC = "SET LOCAL TIME ZONE 'UTC'";
+
+/**
+ * Run an internal query in one bounded, READ ONLY transaction.
+ *
+ * This is the shared seam for operator read paths that already use a tagged
+ * postgres client (loop status, carry-note continuity, and similar internal
+ * reads). `statement_timeout` is installed in the database transaction before
+ * the callback runs, while `withAcquisitionDeadline` covers connect + pool
+ * acquire + BEGIN + setup. The final whole-call deadline also covers a
+ * transaction/commit that fails to settle after the callback returns.
+ *
+ * Do not replace this with a JS-only Promise.race around the query: postgres-js
+ * does not cancel an in-flight statement when the timer wins. The DB-side
+ * timeout is what releases a backend stalled in a scan or lock wait.
+ */
+export async function boundedPgReadTxn<T>(
+  fn: (tx: OrgSql) => Promise<T>,
+  opts: {
+    client?: OrgSql;
+    timeoutMs?: number;
+    acquireTimeoutMs?: number;
+  } = {},
+): Promise<T> {
+  const timeoutMs = Math.max(
+    100,
+    Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(opts.timeoutMs ?? PG_READ_TXN_DEFAULT_TIMEOUT_MS)),
+  );
+  const acquireTimeoutMs = Math.max(
+    100,
+    Math.min(DEFAULT_TX_ACQUIRE_DEADLINE_MS, Math.trunc(opts.acquireTimeoutMs ?? PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS)),
+  );
+  const sql = opts.client ?? getOrgPg().sql;
+  const acquirePool = opts.client ? undefined : 'org-admin';
+  const callDeadlineMs = acquireTimeoutMs + timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
+  const work = withAcquisitionDeadline(
+    ({ disarm, expired }) =>
+      sql.begin(async (tx) => {
+        // READ ONLY must be the first transaction setting before the query.
+        await tx.unsafe('SET TRANSACTION READ ONLY');
+        await tx`SELECT set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`;
+        await tx.unsafe(SET_LOCAL_UTC);
+        // A connection can arrive after the acquisition deadline's timer wins
+        // the race. Never invoke the caller's callback in that late transaction.
+        if (expired()) {
+          throw new DbCallDeadlineError(
+            'boundedPgReadTxn:acquire(admin)',
+            acquireTimeoutMs,
+            acquireTimeoutMs,
+            acquirePool,
+          );
+        }
+        disarm();
+        return fn(tx as unknown as OrgSql);
+      }),
+    { ms: acquireTimeoutMs, label: 'boundedPgReadTxn:acquire(admin)', pool: acquirePool },
+  );
+  await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
+  return (await work) as T;
+}
 
 /**
  * Strip SQL noise a naive `;`-scan would misread as a statement separator:
