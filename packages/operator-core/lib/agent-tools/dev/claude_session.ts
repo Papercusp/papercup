@@ -28,6 +28,91 @@ import {
   allClaudeSessionMetas,
 } from '../../claude-sessions';
 
+type IndexedClaudeTurn = {
+  turn_idx: number;
+  speaker: string;
+  ts: string | null;
+  text: string;
+};
+
+/**
+ * The raw JSONL transcript is intentionally disposable: the archive/reconciler
+ * can remove it while the indexed `session_turns` rows remain readable. Keep
+ * `dev:claude_session` useful for those sessions too instead of making its
+ * session-id lookup disagree with `sessions:read`.
+ */
+async function readIndexedClaudeSession(
+  ctx: { workspaceId?: string; tx?: <T>(...args: unknown[]) => Promise<T> },
+  sessionId: string,
+  limit: number | undefined,
+): Promise<ReturnType<typeof readClaudeSession> extends Promise<infer T> ? T : never> {
+  if (!ctx.tx) return null as never;
+  const maxTurns = Math.min(Math.max(limit ?? 200, 1), 2000);
+  const workspaceId = ctx.workspaceId ?? 'default';
+  const rows = await ctx.tx<IndexedClaudeTurn[]>`
+    SELECT turn_idx, speaker, ts::text AS ts, left(text, 2000) AS text
+      FROM harness_shared.session_turns
+     WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+       AND source_kind = 'claude'
+       AND session_id = ${sessionId}
+  ORDER BY turn_idx DESC
+     LIMIT ${maxTurns + 1}
+  `;
+  if (!rows.length) return null as never;
+
+  const truncated = rows.length > maxTurns;
+  const selected = rows.slice(0, maxTurns).reverse();
+  const turns = selected
+    .filter((row) => row.speaker === 'user' || row.speaker === 'assistant')
+    .map((row, i) => ({
+      i,
+      type: row.speaker,
+      role: row.speaker,
+      ts: row.ts,
+      text: row.text,
+    }));
+  return {
+    sessionId,
+    cwd: null,
+    gitBranch: null,
+    firstTs: selected[0]?.ts ?? null,
+    lastTs: selected[selected.length - 1]?.ts ?? null,
+    totalRecords: selected.length,
+    turns,
+    truncated,
+  } as never;
+}
+
+/** Convert permanent archived turns to the same compact shape as raw reads. */
+function archivedClaudeSession(
+  sessionId: string,
+  rows: Array<{ ts: string | null; speaker: string; text: string }>,
+  limit: number | undefined,
+) {
+  const maxTurns = Math.min(Math.max(limit ?? 200, 1), 2000);
+  const truncated = rows.length > maxTurns;
+  const selected = rows.slice(-maxTurns);
+  const turns = selected
+    .filter((row) => row.speaker === 'user' || row.speaker === 'assistant')
+    .map((row, i) => ({
+      i,
+      type: row.speaker,
+      role: row.speaker,
+      ts: row.ts,
+      text: row.text,
+    }));
+  return {
+    sessionId,
+    cwd: null,
+    gitBranch: null,
+    firstTs: selected[0]?.ts ?? null,
+    lastTs: selected[selected.length - 1]?.ts ?? null,
+    totalRecords: rows.length,
+    turns,
+    truncated,
+  };
+}
+
 export default defineTool({
   name: 'dev:claude_session',
   profile: 'engineer',
@@ -58,7 +143,7 @@ export default defineTool({
     maxFilesScanned: z.number().int().positive().max(2000).optional().describe('op=search: cap files scanned, newest-first (default 400).'),
     perFileMaxBytes: z.number().int().positive().max(5_000_000).optional().describe('op=search: cap bytes read per file (default 1_000_000). When a file exceeds this, its TAIL (most recent bytes) is read, not its head, and its sessionId is listed in the result\'s filesByteCapped — a "no match" for a byte-capped file is not authoritative.'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const op = args.op ?? (args.filePath || args.sessionId ? 'read' : args.query ? 'search' : 'list');
 
     if (op === 'list') {
@@ -89,6 +174,23 @@ export default defineTool({
       const all = await allClaudeSessionMetas({});
       const found = all.find((m) => m.sessionId === args.sessionId);
       if (!found) {
+        const indexed = await readIndexedClaudeSession(ctx, args.sessionId, args.limit);
+        if (indexed) return { content: [{ type: 'text' as const, text: JSON.stringify(indexed) }] };
+
+        // The index is bounded; old sessions may only exist in the permanent
+        // archive. This is best-effort because dev:claude_session remains a
+        // local diagnostic surface and must retain its honest no-session error
+        // when neither source can resolve the id.
+        try {
+          const { readArchivedSessionTurns } = await import('../../session-archive-read');
+          const archived = await readArchivedSessionTurns(args.sessionId, 'claude');
+          if (archived) {
+            const result = archivedClaudeSession(args.sessionId, archived.turns, args.limit);
+            return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+          }
+        } catch {
+          // Archive access is advisory; preserve the existing error envelope.
+        }
         return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no session found', sessionId: args.sessionId }) }], isError: true };
       }
       filePath = found.filePath;
