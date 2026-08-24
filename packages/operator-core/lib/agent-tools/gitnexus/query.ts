@@ -35,8 +35,8 @@ import {
   gitnexusFacade,
   gitnexusRefusal,
   type GitnexusFacadeOp,
-} from '../../code-intelligence/gitnexus-facade.ts';
-import type { CodeIntelIntent } from '../../code-intelligence/contracts.ts';
+} from '../../code-intelligence/gitnexus-facade';
+import type { CodeIntelIntent } from '../../code-intelligence/contracts';
 
 // Keep the closed operation set, but also accept intents that the facade
 // deliberately refuses. That lets an agent receive the typed `useInstead`

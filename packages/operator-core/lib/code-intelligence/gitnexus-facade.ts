@@ -47,7 +47,7 @@ import {
   RIPGREP_SCOPE_GUIDANCE,
   type SymbolSite,
   toOneIndexed,
-} from './contracts.ts';
+} from './contracts';
 
 /** The read-only operations this facade exposes. */
 export type GitnexusFacadeOp =
