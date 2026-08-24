@@ -27,4 +27,26 @@ describe('transient service payload escaping', () => {
 
     expect(argv.at(-1)).toBe(command);
   });
+
+  it('retains failed task units for the ledger writer while preserving collection by default', () => {
+    const retained = buildTaskServiceArgv(['/bin/false'], {
+      ...PROPS,
+      collectFailedUnit: false,
+    });
+    expect(retained).not.toContain('--collect');
+    expect(retained).not.toContain('--property=CollectMode=inactive-or-failed');
+
+    const ordinary = buildTaskServiceArgv(['/bin/false'], PROPS);
+    expect(ordinary).toContain('--collect');
+    expect(ordinary).toContain('--property=CollectMode=inactive-or-failed');
+  });
+
+  it('enables systemd memory accounting whenever a task carries MemoryMax', () => {
+    const argv = buildTaskServiceArgv(['/bin/false'], {
+      ...PROPS,
+      memoryMaxBytes: 32 * 1024 * 1024,
+    });
+    expect(argv).toContain('--property=MemoryAccounting=yes');
+    expect(argv).toContain(`--property=MemoryMax=${32 * 1024 * 1024}`);
+  });
 });

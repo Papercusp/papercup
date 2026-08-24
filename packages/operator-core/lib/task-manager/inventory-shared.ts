@@ -44,6 +44,17 @@ export type TaskInventoryRow = {
   deadlineAt: string | null;
   exitCode: number | null;
   exitReason: string | null;
+  termination: {
+    capturedAt: string;
+    reason: string | null;
+    serviceResult: string | null;
+    scopeUnit: string;
+    cgroupPath: string | null;
+    invocationId: string | null;
+    memoryMaxBytes: number | null;
+    peakMemoryBytes: number | null;
+    peakMemorySource: 'systemd' | 'cgroup-sample' | 'unknown';
+  } | null;
   logPath: string | null;
 };
 

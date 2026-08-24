@@ -110,6 +110,19 @@ const taskResultSchema = z.object({
       deadlineAt: z.string().nullable().optional(),
       exitCode: z.number().int().nullable().optional(),
       exitReason: z.string().nullable().optional(),
+      termination: z
+        .object({
+          capturedAt: z.string(),
+          reason: z.string().nullable(),
+          serviceResult: z.string().nullable(),
+          scopeUnit: z.string(),
+          cgroupPath: z.string().nullable(),
+          invocationId: z.string().nullable(),
+          memoryMaxMb: z.number().int().nonnegative().nullable(),
+          peakRssMb: z.number().int().nonnegative().nullable(),
+          peakMemorySource: z.enum(['systemd', 'cgroup-sample', 'unknown']),
+        })
+        .nullable(),
       logPath: z.string().nullable().optional(),
     }),
   ),
@@ -295,6 +308,19 @@ export default defineTool({
                   r.exitReason == null
                     ? r.exitReason
                     : safeDiagnosticText(r.exitReason, undefined, diagnosticSecrets),
+                termination: r.terminalProvenance
+                  ? {
+                      capturedAt: r.terminalProvenance.capturedAt,
+                      reason: r.exitReason ?? null,
+                      serviceResult: r.terminalProvenance.serviceResult,
+                      scopeUnit: r.terminalProvenance.scopeUnit,
+                      cgroupPath: r.terminalProvenance.cgroupPath,
+                      invocationId: r.terminalProvenance.invocationId,
+                      memoryMaxMb: mb(r.terminalProvenance.memoryMaxBytes),
+                      peakRssMb: mb(r.terminalProvenance.peakMemoryBytes),
+                      peakMemorySource: r.terminalProvenance.peakMemorySource,
+                    }
+                  : null,
                 logPath:
                   r.logPath == null
                     ? r.logPath

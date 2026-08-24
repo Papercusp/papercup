@@ -6,7 +6,7 @@ import type { ScannedProcess } from './reconcile';
 const store = vi.hoisted(() => ({
   touched: [] as unknown[],
   stranded: [] as { taskId: string; reason: string }[],
-  endedUnobserved: [] as { taskId: string; reason: string }[],
+  endedUnobserved: [] as { taskId: string; reason: string; terminalProvenance?: unknown }[],
   upserted: [] as { taskId: string }[],
   cleared: [] as string[][],
 }));
@@ -21,7 +21,7 @@ vi.mock('./store', () => ({
     store.stranded.push(...v);
     return v.length;
   },
-  markEndedUnobserved: async (v: { taskId: string; reason: string }[]) => {
+  markEndedUnobserved: async (v: { taskId: string; reason: string; terminalProvenance?: unknown }[]) => {
     store.endedUnobserved.push(...v);
     return v.length;
   },
@@ -334,6 +334,40 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(checkScopesReleased).not.toHaveBeenCalled();
   });
 
+  it('persists and then resets a failed unit terminal snapshot in the same tick', async () => {
+    const terminal = {
+      capturedAt: '2026-08-24T16:00:00.000Z',
+      scopeUnit: 'pc-oom777.service',
+      cgroupPath: null,
+      invocationId: 'oom-invocation',
+      loadState: 'loaded',
+      activeState: 'failed',
+      serviceResult: 'oom-kill',
+      execMainCode: 2,
+      execMainStatus: 9,
+      memoryMaxBytes: 32 * 1024 * 1024,
+      peakMemoryBytes: 32 * 1024 * 1024,
+      peakMemorySource: 'systemd' as const,
+    };
+    const inspectTaskUnitTerminals = vi.fn(async () => new Map([[terminal.scopeUnit, terminal]]));
+    const resetFailedTaskUnit = vi.fn(async () => true);
+
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'oom777', scopeUnit: terminal.scopeUnit })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      inspectTaskUnitTerminals,
+      resetFailedTaskUnit,
+    });
+
+    expect(out.endedUnobservedCount).toBe(1);
+    expect(store.endedUnobserved[0]).toMatchObject({
+      taskId: 'oom777',
+      terminalProvenance: terminal,
+    });
+    expect(resetFailedTaskUnit).toHaveBeenCalledWith(terminal);
+  });
+
   it('a degraded scan skips BOTH markStranded and markEndedUnobserved', async () => {
     const checkScopesReleased = vi.fn(async (units: readonly string[]) => new Set(units));
     const out = await reconcileTick({
@@ -349,10 +383,10 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(store.endedUnobserved).toHaveLength(0);
   });
 
-  it('defaults to the real systemctl-backed checkScopesReleased when none is injected (fails soft off-Linux/CI)', async () => {
-    // No checkScopesReleased dep passed — reconcileTick falls back to the real
-    // module import, which fails soft to an empty set on any error. This just
-    // proves the tick does not throw and still produces a verdict.
+  it('defaults to the real systemctl-backed terminal inspector when none is injected (fails soft off-Linux/CI)', async () => {
+    // No release/terminal dep passed — reconcileTick falls back to the real
+    // module import, which fails soft on any error. This just proves the tick
+    // does not throw and still produces a verdict.
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'zzz777' })],
       scan: () => scanResult([]),

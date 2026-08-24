@@ -518,6 +518,19 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
       deadlineAt: r.deadlineAt ?? null,
       exitCode: r.exitCode ?? null,
       exitReason: r.exitReason ? safeDisplayText(r.exitReason, 500, diagnosticSecrets) : null,
+      termination: r.terminalProvenance
+        ? {
+            capturedAt: r.terminalProvenance.capturedAt,
+            reason: r.exitReason ? safeDisplayText(r.exitReason, 500, diagnosticSecrets) : null,
+            serviceResult: r.terminalProvenance.serviceResult,
+            scopeUnit: r.terminalProvenance.scopeUnit,
+            cgroupPath: r.terminalProvenance.cgroupPath,
+            invocationId: r.terminalProvenance.invocationId,
+            memoryMaxBytes: r.terminalProvenance.memoryMaxBytes,
+            peakMemoryBytes: r.terminalProvenance.peakMemoryBytes,
+            peakMemorySource: r.terminalProvenance.peakMemorySource,
+          }
+        : null,
       logPath: r.logPath ? safeDisplayText(r.logPath, 500, diagnosticSecrets) : null,
     }));
 

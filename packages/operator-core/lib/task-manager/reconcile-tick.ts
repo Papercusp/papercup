@@ -221,10 +221,8 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     strandedCount = await markStranded(result.stranded);
     const endedWithTerminal = result.endedUnobserved.map((verdict) => {
       const scopeUnit = byTaskId.get(verdict.taskId)?.scopeUnit;
-      return {
-        ...verdict,
-        terminalProvenance: scopeUnit ? (terminalByUnit.get(scopeUnit) ?? null) : null,
-      };
+      const terminalProvenance = scopeUnit ? (terminalByUnit.get(scopeUnit) ?? null) : null;
+      return terminalProvenance ? { ...verdict, terminalProvenance } : verdict;
     });
     endedUnobservedCount = await markEndedUnobserved(endedWithTerminal);
     // The failed unit was deliberately retained at spawn so its Result/exit
