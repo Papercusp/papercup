@@ -1047,7 +1047,14 @@ async function checkPausedGreenCheckpoint(
             JOIN harness_shared.coord_presence cp
               ON cp.workspace_id = wi.workspace_id
              AND cp.owner_id = wi.payload->>'held_open_by'
-             AND cp.revoked_at IS NULL
+             -- NO revoked_at predicate: harness_shared.coord_presence has no such
+             -- column (EI-21291109975568717). It was referenced here anyway, so this
+             -- whole statement threw every run and the caller swallowed it as
+             -- "non-fatal" -- meaning the stranded-pause guard never ran once, and a
+             -- gate paused under a dead serializer had to be found by hand. Liveness
+             -- is established by the two freshness predicates below; a presence row
+             -- is deleted, not revoked. Verify against the live schema before
+             -- re-adding any cp.* column here.
              AND cp.heartbeat_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
              AND cp.last_active_at > now() - ${`${Math.floor(LIVE_SERIALIZER_PRESENCE_STALE_MS / 1000)} seconds`}::interval
            WHERE wi.workspace_id = r.workspace_id
