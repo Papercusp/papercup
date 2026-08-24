@@ -231,6 +231,7 @@ _pc_heavy_internal_preempt_run() {
   local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}" 
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
   local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
+  local _preempt_ready_file="${PC_HEAVY_PREEMPT_READY_FILE:-}"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at='' _preempt_free_since=''
   local _preempt_now='' _preempt_start_deadline='' _preempt_term_deadline=''
   local _preempt_result_emitted=0
@@ -291,6 +292,20 @@ _pc_heavy_internal_preempt_run() {
     else
       printf '%s\n' "$_message" >&2 2>/dev/null || true
     fi
+  }
+
+  # The ordinary child owns publication, but the monitor owns the final cleanup
+  # boundary as well. A SIGTERM/SIGKILL during the affected run may prevent
+  # Node's `exit` handler from removing the marker; leaving it behind would
+  # make a later reader mistake a dead run for a live after-ready barrier.
+  _preempt_cleanup_ready_marker() {
+    if [ -n "${_preempt_ready_file:-}" ]; then
+      rm -f "${_preempt_ready_file}" 2>/dev/null || true
+    fi
+  }
+
+  _preempt_ready_is_published() {
+    [ -n "${_preempt_ready_file:-}" ] && [ -f "${_preempt_ready_file}" ]
   }
 
   # A signal can arrive in the small window after the supervisor publishes the
@@ -398,6 +413,7 @@ _pc_heavy_internal_preempt_run() {
     fi
     [ -n "${_preempt_wait_pid:-}" ] && wait "${_preempt_wait_pid:-}" 2>/dev/null || true
     [ -n "${_preempt_pid_file:-}" ] && rm -f "${_preempt_pid_file:-}" 2>/dev/null || true
+    _preempt_cleanup_ready_marker
   }
   _preempt_forward_signal() {
     local _sig="$1" _code="$2"
@@ -480,6 +496,17 @@ _pc_heavy_internal_preempt_run() {
       return 143
     fi
     if _preempt_writer_is_held; then
+      # Once the child has completed its irreversible derivation and published
+      # the marker, the exclusive materializer must wait for the whole run. The
+      # marker is deliberately checked by the monitor (rather than inferred
+      # from argv or elapsed time) so a slow derivation remains preemptible and
+      # the protected execution phase is exact.
+      if _preempt_ready_is_published; then
+        _preempt_seen_at=''
+        _preempt_free_since=''
+        sleep "$_preempt_poll"
+        continue
+      fi
       _preempt_now=$(date +%s)
       _preempt_free_since=''
       if [ -z "$_preempt_seen_at" ]; then
@@ -511,6 +538,7 @@ _pc_heavy_internal_preempt_run() {
   wait "$_preempt_wait_pid"
   local _rc=$?
   rm -f "$_preempt_pid_file" 2>/dev/null || true
+  _preempt_cleanup_ready_marker
   trap - EXIT TERM INT HUP
   return "$_rc"
 }
@@ -2053,6 +2081,35 @@ esac
 if [ "$_focused_lane" = 1 ] && [ "$_preempt_mode" = auto ]; then
   _preemptible=0
 fi
+
+# The after-ready barrier is opt-in and fail-closed. The wrapper owns only the
+# unique path; the child publishes the marker after its irreversible setup and
+# the monitor removes it at every terminal/reap boundary. Never accept a caller
+# supplied path here: accepting one would let cleanup remove an unrelated file
+# and would let two concurrent runs share a barrier.
+_preempt_after_ready="${PC_HEAVY_PREEMPT_AFTER_READY:-0}"
+case "$_preempt_after_ready" in
+  0|off|OFF|false|FALSE|no|NO)
+    unset PC_HEAVY_PREEMPT_READY_FILE
+    ;;
+  1|on|ON|true|TRUE|yes|YES)
+    _preempt_ready_dir="${PC_HEAVY_PREEMPT_READY_DIR:-${TMPDIR:-/tmp}/pc-heavy-ready}"
+    if ! mkdir -p "$_preempt_ready_dir" 2>/dev/null; then
+      echo "[pc-heavy] REFUSED after-ready barrier: cannot create marker directory $_preempt_ready_dir" >&2
+      exit 75
+    fi
+    _preempt_ready_file="$(mktemp "$_preempt_ready_dir/ready.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$_preempt_ready_file" ] || ! rm -f "$_preempt_ready_file" 2>/dev/null; then
+      echo "[pc-heavy] REFUSED after-ready barrier: cannot allocate a unique marker path" >&2
+      exit 75
+    fi
+    export PC_HEAVY_PREEMPT_READY_FILE="$_preempt_ready_file"
+    ;;
+  *)
+    echo "[pc-heavy] invalid PC_HEAVY_PREEMPT_AFTER_READY=$_preempt_after_ready; expected auto/off, 1, or 0" >&2
+    exit 75
+    ;;
+esac
 if [ "$_preemptible" = 1 ]; then
   # Keep the monitor outside the outer wrapper's process group. Do NOT use
   # `setsid --fork --wait` here: its waitable parent stays in the outer group,
