@@ -1,7 +1,7 @@
 # Agent E2E playbook — driving the operator like a user
 URL: /internal/docs/testing/agent-e2e
 
-
+How AI agents drive the Papercusp Tauri desktop end to end, including safe staging restarts and dedicated test webviews.
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` (Vite SPA) or `localhost:3270` (the dev shell's own working-tree Hono host) URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`. (`:3070` is the systemd-owned green release operator — a separate process the dev shell does not load.)
 
@@ -2203,7 +2203,7 @@ loadavg 9.5–48.6):
 
   **To verify a SERVER-SIDE change (a resolver, an API route, anything not
   purely rendering), don't trust the shell — curl `:3170` directly** after
-  `dev:restart { target: 'staging', confirm: true }` (see the two-port model
+  `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (see the two-port model
   in `/internal/docs/system/repo-conventions`). Use the Tauri shell only for
   what it actually proves: rendering and interaction. If you must confirm
   which code a given shell's sidecar is running, fetch the same query from

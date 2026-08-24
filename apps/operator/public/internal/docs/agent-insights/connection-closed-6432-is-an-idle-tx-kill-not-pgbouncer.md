@@ -101,7 +101,7 @@ gate.
 
 ```bash
 # 1. load your edit into staging (never a raw systemctl restart — the tool drains + coalesces)
-#    dev:restart { target: 'staging', confirm: true }
+#    dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }
 
 # 2. fire the identical call at BOTH hosts, in parallel
 TOK=<superuser bearer>

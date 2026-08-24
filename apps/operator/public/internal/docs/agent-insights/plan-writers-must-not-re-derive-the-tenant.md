@@ -96,7 +96,7 @@ Two practical notes for running this against a real operator:
 * **Your MCP session's `tools:invoke` will NOT exercise your edit.** The tool
   catalog is served by the release checkout (`:3070`), so a staging-tree change
   is invisible to it. Restart the staging operator
-  (`dev:restart { target: 'staging', confirm: true }`, which rebuilds
+  (`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`, which rebuilds
   `dist-host`) and drive **`:3170`** instead. Confirm your code is really in the
   bundle before believing a result — `grep -c <your new symbol> apps/operator/dist-host/hono-host.mjs`.
 * **`/api/admin/plans/:verb` needs the superuser bearer.** A bare loopback curl

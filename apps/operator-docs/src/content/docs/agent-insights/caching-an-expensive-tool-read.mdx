@@ -4,21 +4,21 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Caching an expensive read-mostly tool with cachedRead
-description: How to wrap a defineTool read in the tag-based operator cache (cachedRead) so a plan/work-item write auto-invalidates it — incl. the non-obvious gotchas (tag the change-notify table name, fold EVERY output dim into the key, NEVER cache the readiness floor, append-heavy sources rely on SWR not tags).
+title: "Caching an expensive read-mostly tool with cachedRead"
+description: "How to wrap a defineTool read in the tag-based operator cache (cachedRead) so a plan/work-item write auto-invalidates it — incl. the non-obvious gotchas (tag the change-notify table name, fold EVERY output dim into the key, NEVER cache the readiness floor, append-heavy sources rely on SWR not tags)."
+type: Insight
 discovered: 2026-06-23
-tags: [cache, performance, defineTool, agent-tools, cache-eca, plans, work_items]
+tags: ["cache", "performance", "defineTool", "agent-tools", "cache-eca", "plans", "work_items"]
 status: active
 documents:
-  - packages/operator-core/lib/cache/cached-read.ts
-  - packages/operator-core/lib/cache/instance.ts
-  - packages/operator-core/lib/events/cache-eca-rule.ts
-  - libs/generic/cache/src/cache.ts
-  - packages/operator-core/lib/agent-tools/plans/list.ts
-  - packages/operator-core/lib/agent-tools/plans/attention.ts
-  - packages/operator-core/lib/agent-tools/work_items/list.ts
-  - packages/operator-core/lib/agent-tools/work_items/get.ts
-type: Insight
+  - "packages/operator-core/lib/cache/cached-read.ts"
+  - "packages/operator-core/lib/cache/instance.ts"
+  - "packages/operator-core/lib/events/cache-eca-rule.ts"
+  - "libs/generic/cache/src/cache.ts"
+  - "packages/operator-core/lib/agent-tools/plans/list.ts"
+  - "packages/operator-core/lib/agent-tools/plans/attention.ts"
+  - "packages/operator-core/lib/agent-tools/work_items/list.ts"
+  - "packages/operator-core/lib/agent-tools/work_items/get.ts"
 generated:
   by: agent
   at: 2026-06-22
@@ -101,7 +101,7 @@ and per-tool hit/miss/stale/bypass telemetry (`snapshotCachedReadStats()`).
 
 ## Verifying live
 
-Restart the staging operator (`dev:restart { target: 'staging', confirm: true }` —
+Restart the staging operator (`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` —
 never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce)
 to load your edit (no file-watch on the Hono host), then call the tool over its MCP
 endpoint with the superuser bearer (`~/.papercusp/superuser-token`):

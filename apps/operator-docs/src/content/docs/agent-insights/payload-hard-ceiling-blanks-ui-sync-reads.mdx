@@ -4,19 +4,19 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Payload hard-ceiling force-trims UI/sync reads — an "empty" UI list over a fat shaper-tool is THIS, not missing data
+title: "Payload hard-ceiling force-trims UI/sync reads — an \"empty\" UI list over a fat shaper-tool is THIS, not missing data"
 description: "The 30KB payload-tier HARD CEILING force-applies a tool's trimmed shaper even for tier 'full' — including the in-process callPlansRead → sync-resolver path the operator UI reads. plans:attention (~1.1MB) came back as item-less group summaries, normalizeAttentionGroups dropped them, and the Queue / Overview needs-you / sidebar Inbox rendered EMPTY while 329 decisions existed. Escape hatch: an EXPLICIT per-call payloadTier:'full' (now actually honored, WI-5078)."
+type: Insight
 discovered: 2026-07-16
-tags: [payload-tier, context-trimming, sync-resolver, plans-attention, queue, inbox, tooldef]
+tags: ["payload-tier", "context-trimming", "sync-resolver", "plans-attention", "queue", "inbox", "tooldef"]
 status: active
 documents:
-  - libs/generic/tooldef/src/payload-tier.ts
-  - libs/generic/tooldef/src/define-tool.ts
-  - packages/operator-core/lib/agent-tools/plans/read-dispatch.ts
-  - packages/operator-core/lib/agent-tools/plans/attention.ts
-  - packages/operator-core/lib/agent-tools/plans/attention-shape.ts
-  - apps/operator/app/admin/plans/plans-api.ts
-type: Insight
+  - "libs/generic/tooldef/src/payload-tier.ts"
+  - "libs/generic/tooldef/src/define-tool.ts"
+  - "packages/operator-core/lib/agent-tools/plans/read-dispatch.ts"
+  - "packages/operator-core/lib/agent-tools/plans/attention.ts"
+  - "packages/operator-core/lib/agent-tools/plans/attention-shape.ts"
+  - "apps/operator/app/admin/plans/plans-api.ts"
 generated:
   by: agent
   at: 2026-07-16
@@ -94,7 +94,7 @@ a deliberate caller choice.
 
 ```bash
 # after a server-side fix, restart staging via the coordinated tool (never raw systemctl):
-#   tools:invoke dev:restart { target:'staging', confirm:true }
+#   tools:invoke dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }
 curl -s ".../rest-query?name=plans.attention&args=%7B%7D" | python3 - <<'EOF'
 import json,sys; j=json.load(sys.stdin); rows=j["rows"]
 print(len(rows), sum(len(r.get("items") or []) for r in rows))

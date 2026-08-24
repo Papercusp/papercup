@@ -79,7 +79,7 @@ and per-tool hit/miss/stale/bypass telemetry (`snapshotCachedReadStats()`).
 
 ## Verifying live
 
-Restart the staging operator (`dev:restart { target: 'staging', confirm: true }` —
+Restart the staging operator (`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` —
 never a raw `systemctl restart`, which bypasses the drain + WI-4221 debounce)
 to load your edit (no file-watch on the Hono host), then call the tool over its MCP
 endpoint with the superuser bearer (`~/.papercusp/superuser-token`):

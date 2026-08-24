@@ -4,18 +4,18 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: The :3070 operator host has no hot-reload — restart to pick up lib/** edits
-description: The Hono host on :3070 (MCP tools + endpoint-route handlers + the lib/** they import) runs under tsx with no file-watch. Server-side edits don't go live until it restarts; probe where a write lands to tell if you're on stale code.
+title: "The :3070 operator host has no hot-reload — restart to pick up lib/** edits"
+description: "The Hono host on :3070 (MCP tools + endpoint-route handlers + the lib/** they import) runs under tsx with no file-watch. Server-side edits don't go live until it restarts; probe where a write lands to tell if you're on stale code."
+type: Insight
 discovered: 2026-05-30
-tags: [operator, hono-host, dev-loop, stale-code, coord]
+tags: ["operator", "hono-host", "dev-loop", "stale-code", "coord"]
 status: active
 documents:
-  - apps/operator/bin/hono-host.ts
+  - "apps/operator/bin/hono-host.ts"
 plans:
-  - staging-branch-pipeline-2026-06-06
+  - "staging-branch-pipeline-2026-06-06"
 sidebar:
   order: 30
-type: Insight
 generated:
   by: agent
   at: 2026-05-30
@@ -50,7 +50,7 @@ branch. **Restarting it reboots the same green snapshot; your `staging` edits ar
 invisible to it** until the auto-serve pipeline carries them (green-checkpoint FFs
 `main`, then release-trigger deploys). To test a server-side `staging` edit live,
 restart the **staging** operator on `:3170` instead:
-`dev:restart { target: 'staging', confirm: true }` (that MCP tool drains
+`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (that MCP tool drains
 concurrent `:3170` users, coalesces a restart requested within ~2min of a peer's
 real one (WI-4221), and restarts `bin/hono-host.ts` from the staging tree at
 `papercup/apps/operator` with `PAPERCUSP_HONO_PORT=3170` — never shell out to a
@@ -62,7 +62,7 @@ root `CLAUDE.md` "Running the operator" section.
 
 - **Tauri dev shell:** reload the desktop window (it respawns the host from the
   staging tree), or
-- **Staging operator on the dev box:** `dev:restart { target: 'staging', confirm: true }`
+- **Staging operator on the dev box:** `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`
   (that unit runs `npx tsx bin/hono-host.ts` on :3170 from the staging tree; never a
   raw `systemctl restart`, which bypasses the drain + WI-4221 debounce).
 

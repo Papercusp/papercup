@@ -1,4 +1,4 @@
-# Payload hard-ceiling force-trims UI/sync reads — an "empty" UI list over a fat shaper-tool is THIS, not missing data
+# Payload hard-ceiling force-trims UI/sync reads — an \"empty\" UI list over a fat shaper-tool is THIS, not missing data
 URL: /internal/docs/agent-insights/payload-hard-ceiling-blanks-ui-sync-reads
 
 The 30KB payload-tier HARD CEILING force-applies a tool's trimmed shaper even for tier 'full' — including the in-process callPlansRead → sync-resolver path the operator UI reads. plans:attention (~1.1MB) came back as item-less group summaries, normalizeAttentionGroups dropped them, and the Queue / Overview needs-you / sidebar Inbox rendered EMPTY while 329 decisions existed. Escape hatch: an EXPLICIT per-call payloadTier:'full' (now actually honored, WI-5078).
@@ -75,7 +75,7 @@ a deliberate caller choice.
 
 ```bash
 # after a server-side fix, restart staging via the coordinated tool (never raw systemctl):
-#   tools:invoke dev:restart { target:'staging', confirm:true }
+#   tools:invoke dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }
 curl -s ".../rest-query?name=plans.attention&args=%7B%7D" | python3 - <<'EOF'
 import json,sys; j=json.load(sys.stdin); rows=j["rows"]
 print(len(rows), sum(len(r.get("items") or []) for r in rows))

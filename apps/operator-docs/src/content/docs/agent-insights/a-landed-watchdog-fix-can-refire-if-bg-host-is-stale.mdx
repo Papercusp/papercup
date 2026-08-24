@@ -4,14 +4,14 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "A re-firing watchdog signal whose fix is \"already in the code\" — check bg-host uptime first"
+title: "A re-firing watchdog signal whose fix is \\\"already in the code\\\" — check bg-host uptime first"
 description: "A self-improvement / watchdog collector fix that is committed, tested, in main, AND deployed to :3070 can STILL keep firing its own signal, because the watchdog runs in the bg-host, which loads tsx once at boot with no file-watch. Before diagnosing a re-fire as a code defect, compare bg-host uptime against the fix's commit time."
+type: Insight
 discovered: 2026-07-25
 tags: ["watchdog", "self-improvement", "bg-host", "stale-code", "runbook", "diagnosis"]
 status: active
 documents:
   - "packages/operator-core/lib/harness/improvements/watchdog.ts"
-type: Insight
 generated:
   by: agent
   at: 2026-07-25
@@ -61,7 +61,7 @@ running watchdog excludes the row.
 ## Remediation
 
 Load the already-landed code into the running watchdog by restarting the host:
-`dev:restart { target: 'bg-host', confirm: true }` (coordinated/drained; never a raw
+`dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }` (coordinated/drained; never a raw
 `systemctl restart`). Any deploy-adjacent or routine bg-host restart also activates
 it. This is a shared routines/DBOS host restart — outside a sandboxed runner-worker's
 lane, so a worker should land the code + test and flag the restart, not perform it.

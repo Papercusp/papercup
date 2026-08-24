@@ -1,110 +1,53 @@
 # tauri-agent-tools screenshot: resolve the window by --pid, not by title guessing
 URL: /internal/docs/agent-insights/tauri-agent-tools-screenshot-resolves-window-by-pid
 
-screenshot --pid <pid> (no --title/--window-id) used to guess the X11 window from the bridge's document.title (\"Papercusp Operator\"), which never matches the real X11 window title (\"Papercusp\") — a bare xdotool error. Local patch resolves the window (and its DISPLAY) directly from --pid instead. Also documents a second trap the patch had to solve: a Tauri app's PID commonly owns MULTIPLE X11 windows, and the naive first-match is often a tiny helper window, not the real one.
+screenshot --pid used to fail two ways: (1) title-guessing X11 lookups that never match (\"Papercusp Operator\" vs \"Papercusp\") plus wrong-DISPLAY searches, and (2) an arg-validation rejection of pid-only invocations from the no-selector/full-window branch (\"Either --selector (with bridge), --title, or --window-id is required\"). The local patch resolves the window and DISPLAY directly from --pid (largest-area heuristic for multi-window PIDs) in BOTH branches.
 
-## The trap (EI-18662939265185207)
+## The traps
 
-`tauri-agent-tools screenshot --pid <pid> --selector <css> --output <path>`
-— the first screenshot command an agent typically reaches for after booting
-an isolated headless verify instance — used to fail with a bare, unhelpful
-error:
+`tauri-agent-tools screenshot --pid <pid> ...` — the first screenshot command an agent typically reaches for after booting an isolated headless verify instance — has failed in TWO distinct ways:
+
+### Variant 1: title-guessing failure (EI-18662939265185207, 2026-07-25)
+
+With `--selector`, the window was found by asking the bridge for `document.title` ("Papercusp Operator") and searching X11 for that exact name — but the Tauri **window's** X11 title is just `"Papercusp"`, so the search could never match. Worse, `xdotool` searched whatever `DISPLAY` the *calling* CLI inherited, not the target app's own display.
+
+### Variant 2: pid-only invocation REJECTED (EI-21270933850311524, 2026-08-24)
 
 ```
-xdotool failed: Command failed: xdotool search --name Papercusp Operator
+tauri-agent-tools screenshot --pid <pid> --output /tmp/x.png --json
+# -> Either --selector (with bridge), --title, or --window-id is required   (exit 1)
 ```
 
-Two independent things were wrong, and the error message named neither:
-
-1. **Title mismatch.** With no `--title`/`--window-id`, `screenshot` asked
-   the bridge for `document.title` ("Papercusp Operator") and searched X11
-   for a window with that exact name. But the Tauri **window's** X11 title
-   is just `"Papercusp"` (`wmctrl -l` confirms). The regex search can never
-   match, on every instance, always.
-2. **Wrong DISPLAY.** `xdotool` searches whatever `DISPLAY` the *calling*
-   CLI process inherited — not the target app's own display. On a
-   multi-instance box (a headless verify run on `:90+`, a second dev shell
-   on a different display) that's routinely a different X server, which
-   fails exactly the same opaque way.
-
-This was already known and documented as **EI-11084** (see `agent-e2e.mdx`
-§1.3's aside) with a workaround: pass `--title Papercusp` explicitly. That
-workaround still works, but it's opt-in — nothing stops the next agent from
-hitting the raw failure and, per the CLAUDE.md warning this doc itself
-exists to prevent, concluding the UI is unverifiable and skipping the gate.
+The first local patch wired pid-based resolution into the **`--selector` branch only** (`dist/commands/screenshot.js`). The **no-selector / full-window fallback** branch handled `--window-id` and `--title` but fell straight to a validation throw when only `--pid` was supplied — even though `adapter.findWindowByPid` sat unused one branch over. Reproduced live against a real desktop PID on tauri-agent-tools **0.9.1** WITH the variant-1 patch present, so this is not "the patch was lost" — it was incomplete coverage.
 
 ## The fix — resolve by `--pid` instead of guessing
 
-`screenshot` already **requires** `--pid` for bridge discovery on every
-invocation. That's enough to resolve the window directly, with no title
-guessing at all:
+`screenshot` already requires `--pid` for bridge discovery on every invocation. That is enough to resolve the window directly, with no title guessing:
 
-* `resolveDisplayForPid(pid)` reads `/proc/<pid>/environ` and returns the
-  target's own `DISPLAY`, so name/pid searches hit the right X server.
-* `X11Adapter.findWindowByPid(pid)` runs `xdotool search --pid <pid>`
-  instead of `search --name <title>`.
-* `screenshot`'s action handler now tries this first — automatically,
-  silently — whenever `--pid` is given and neither `--window-id` nor
-  `--title` was passed explicitly. It falls through to the old
-  title-guessing path on any failure, so nothing regresses for callers who
-  already pass `--title`/`--window-id`.
+* `resolveDisplayForPid(pid)` reads `/proc/<pid>/environ` and returns the target's own `DISPLAY`, so name/pid searches hit the right X server.
+* `X11Adapter.findWindowByPid(pid)` runs `xdotool search --pid <pid>` and picks the **largest-by-area** candidate (see below).
+* The action handler uses this whenever `--pid` is given and neither `--window-id` nor `--title` was passed explicitly — in BOTH branches since EI-21270933850311524: the `--selector` DOM-crop path AND the no-selector full-window path. It falls back to the old behavior (and keeps the guidance error, now annotated with the failed pid) when the PID owns no readable X11 toplevel.
 
-### The second trap this surfaced: one PID, multiple X11 windows
+### One PID, multiple X11 windows
 
-A naive `ids[0]` on `xdotool search --pid <pid>`'s output is **not**
-reliably the app's main window. Measured live against a real desktop
-instance, one PID owned three windows:
+A naive `ids[0]` on `xdotool search --pid` output picks helper/tray windows (measured: a 10×10 helper vs the real 2701×1293 main window). When a pid search returns several windows, each one's geometry is fetched and the largest by area wins.
 
-| window id  | name                | geometry                             |
-| ---------- | ------------------- | ------------------------------------ |
-| `24117249` | `papercusp-desktop` | 10×10                                |
-| `24126502` | `papercusp-desktop` | 182×153                              |
-| `24117251` | `Papercusp`         | **2701×1293** (the real main window) |
-
-`ids[0]` picked the 10×10 helper window and `import` failed with
-`Resource temporarily unavailable` — a second, equally opaque error. The
-fix: when a `--pid` search returns more than one window, fetch each one's
-geometry and pick the **largest by area**. That heuristic reliably
-separates a real, visibly-sized app window from small IPC/tray/helper
-windows.
-
-## Verified
+## Verified (2026-08-24, against two concurrent live desktop instances)
 
 ```sh
-tauri-agent-tools screenshot --pid <pid> --output /tmp/x.png --json
-#   -> resolves the real main window (largest-area), no --title needed
-tauri-agent-tools screenshot --pid <pid> --selector body --output /tmp/x.png --json
-#   -> the DOM-crop path (the bug's exact repro shape) also resolves correctly
-tauri-agent-tools screenshot --pid <pid> --title Papercusp --output /tmp/x.png --json
-#   -> the pre-existing explicit --title path is unchanged (no regression)
+tauri-agent-tools screenshot --pid <pidA> --output /tmp/a.png --json  # exit 0 — 461KB PNG 1632x1408, windowId resolved
+tauri-agent-tools screenshot --pid <pidB> --output /tmp/b.png --json  # exit 0 — 970KB PNG 2967x1373 (correct OTHER instance)
+tauri-agent-tools screenshot --output /tmp/n.png                      # guidance error preserved (exit 1)
+tauri-agent-tools screenshot --title Papercusp --output /tmp/t.png    # pre-existing title path unchanged (exit 0)
 ```
 
-All three produced correctly-sized, non-blank PNGs against a live bridge.
+Two instances running side by side produce DIFFERENT correctly-sized captures from their pids alone — pid-only capture also disambiguates concurrent instances, which title matching cannot.
 
 ## This is a LOCAL patch — it does not survive a reinstall
 
-`tauri-agent-tools` is a third-party package
-(`github.com/cesarandreslopez/tauri-agent-tools`, installed globally via
-`npm i -g` under Homebrew's node — `/home/linuxbrew/.linuxbrew/lib/node_modules/tauri-agent-tools`).
-This repo does not vendor its source, so the fix is patched directly into
-the **installed** `dist/` files:
+`tauri-agent-tools` is a third-party package (`github.com/cesarandreslopez/tauri-agent-tools`), installed globally via `npm i -g`. This repo does not vendor its source; the fix is patched into the installed `dist/` files:
 
-* `dist/platform/x11.js` (+ `.d.ts`) — adds `resolveDisplayForPid` and
-  `X11Adapter.findWindowByPid`.
-* `dist/commands/screenshot.js` — wires pid-based resolution into the
-  action handler ahead of the pre-existing title-guessing path.
+* `dist/platform/x11.js` (+ `.d.ts`) — `resolveDisplayForPid` + `X11Adapter.findWindowByPid`.
+* `dist/commands/screenshot.js` — pid-based resolution wired ahead of legacy paths in BOTH the selector and no-selector branches (EI-18662939265185207 + EI-21270933850311524).
 
-This follows the same pattern as an earlier local patch on the same file
-(the `--window-id` flag itself, `EI-18099711348898699` — see that note in
-`screenshot.js`'s own `--help` output). Both patches are annotated in the
-CLI's own `--help` text so a future agent hitting the raw upstream failure
-again (post-reinstall) can immediately tell the fix was already found once
-and needs re-applying, not re-diagnosing from scratch.
-
-**If `tauri-agent-tools screenshot --pid <pid>` (no `--title`) starts
-failing with the raw `xdotool search --name` error again**, the local
-patch was lost (package reinstall/upgrade, a different box, a fresh
-Homebrew node). Check `tauri-agent-tools screenshot --help` for the
-`EI-18662939265185207` note — if it's missing, the patch needs
-reapplying; the diff is small and this doc has the exact rationale.
-Filing/landing the equivalent fix upstream would make this permanent.
+Both patches are annotated in the code with their EI ids. **If pid-based screenshot starts failing again after a reinstall/upgrade**, re-check whether the failure is variant 1 (raw `xdotool search --name` error) or variant 2 (validation rejection); the diffs are small and this doc has the exact rationale. Filing/landing the equivalent fix upstream would make this permanent.

@@ -6,13 +6,13 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A watchdog signal keeps firing after its fix deployed? The bg-host runs stale in-memory code — restart it"
 description: "When a watchdog/routine keeps emitting a signal the DEPLOYED source already suppresses, the bg-host is running a stale in-memory tsx module loaded before the fix. Verify with bg-host start time vs the fix commit; a bg-host restart activates it. Do not re-fix already-correct code."
+type: Insight
 discovered: 2026-07-25
 tags: ["runbook", "watchdog", "bg-host", "deployment", "self-improvement-loop", "tsx-no-hot-reload"]
 status: active
 documents:
   - "packages/operator-core/lib/harness/improvements/watchdog.ts"
   - "packages/operator-core/lib/harness/improvements/stalled-claim-collector.integration.test.ts"
-type: Insight
 generated:
   by: agent
   at: 2026-07-25
@@ -71,7 +71,7 @@ every tick while your source query returns 0.
 The already-correct code activates the moment the bg-host reloads:
 
 ```
-dev:restart { target: 'bg-host', confirm: true }
+dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }
 ```
 
 Do **not** author a second code fix — any new edit has the *same* activation gap and

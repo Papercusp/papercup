@@ -6,6 +6,7 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A severed hyperswarm link between hive machines does not self-heal — restart the wedged side"
 description: "After one side of a 2-machine hive restarts, the peer-log/presence-gossip swarm link can sever PERMANENTLY — neither side re-dials/re-announces. Diagnose with the 4-step evidence chain, then restart the WEDGED side (the one that has been up longest), not the fresh one."
+type: Insight
 discovered: 2026-07-17
 tags: ["p2p", "hive-federation", "swarm", "presence-gossip", "runbook", "coordination"]
 status: active
@@ -17,7 +18,6 @@ documents:
 plans:
   - "p2p-parity-closeout-lanes-2026-07-10"
   - "CUTOVER-presence-gossip-2026-07-16"
-type: Insight
 generated:
   by: agent
   at: 2026-07-17
@@ -112,7 +112,7 @@ fresh VM re-dial could not reach the stale tower `bg-host` for 6+ minutes, while
 `bg-host` restart reconnected in ~2 minutes.
 
 ```
-dev:restart { target: 'bg-host', confirm: true }
+dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }
 ```
 
 Coordinate this restart — it freezes the coordination rails for the duration of the

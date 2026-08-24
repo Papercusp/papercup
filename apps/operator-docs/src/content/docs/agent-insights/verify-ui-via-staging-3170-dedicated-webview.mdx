@@ -4,12 +4,14 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Verifying UI changes end-to-end via :3170 + a dedicated webview instance
-description: The cheap recipe for true end-to-end UI verification of staging edits — rebuild the SPA dist :3170 serves, launch the prebuilt debug desktop pinned to :3170 on a free X display, drive it with tauri-agent-tools. Plus the three traps that cost an hour.
-documents:
-  - papercusp-desktop/src-tauri/src/env_switch.rs
-  - papercusp-desktop/src-tauri/src/dev_bridge.rs
+title: "Verifying UI changes end-to-end via :3170 + a dedicated webview instance"
+description: "The cheap recipe for true end-to-end UI verification of staging edits — rebuild the SPA dist :3170 serves, launch the prebuilt debug desktop pinned to :3170 on a free X display, drive it with tauri-agent-tools. Plus the three traps that cost an hour."
 type: Insight
+discovered: 2026-08-24
+status: active
+documents:
+  - "papercusp-desktop/src-tauri/src/env_switch.rs"
+  - "papercusp-desktop/src-tauri/src/dev_bridge.rs"
 generated:
   by: agent
   at: 2026-06-11
@@ -24,7 +26,7 @@ one real process, without booting a second operator stack and without touching
 the owner's live window.
 
 1. **Server side lands on :3170 by restart** (documented in `CLAUDE.md`):
-   `dev:restart { target: 'staging', confirm: true }`, probe with curl. Never a
+   `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`, probe with curl. Never a
    raw `systemctl restart` — it bypasses the drain + WI-4221 debounce.
 2. **UI side: `:3170` serves a BUILT SPA dist, not live Vite.** Your component
    edits are invisible there until you rebuild:

@@ -56,7 +56,7 @@ every tick while your source query returns 0.
 The already-correct code activates the moment the bg-host reloads:
 
 ```
-dev:restart { target: 'bg-host', confirm: true }
+dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }
 ```
 
 Do **not** author a second code fix — any new edit has the *same* activation gap and

@@ -6,6 +6,7 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "`write CONNECTION_CLOSED 127.0.0.1:6432` is an idle-tx kill, not a PgBouncer bug — and how to prove a fix with a :3170-vs-:3070 A/B"
 description: "The :6432 in the error names the pooler, so this signature has been mis-filed as a PgBouncer problem at least three times. It is Postgres killing a backend at idle_in_transaction_session_timeout (60s) because the MCP dispatcher held a workspace tx open across slow NON-DB work. The tell is a duration of almost exactly 60000ms. Fixing the inner tool is a no-op while a DELEGATOR (tools:invoke) wraps it in its own tx. Also documents the general technique: use :3170 (your edit) vs :3070 (green release) as a controlled A/B to prove a server-side fix before it deploys."
+type: Insight
 discovered: 2026-07-27
 tags: ["mcp", "postgres", "pgbouncer", "idle-in-transaction", "tools-invoke", "two-port", "verification", "runbook"]
 status: active
@@ -14,7 +15,6 @@ documents:
   - "packages/operator-core/lib/endpoint-route/routes/transport/idle-tx-warning.ts"
   - "packages/operator-core/lib/agent-tools/tools/invoke.ts"
   - "packages/operator-core/lib/agent-tools/child-process-tools-skip-workspace-tx.test.ts"
-type: Insight
 generated:
   by: agent
   at: 2026-07-27
@@ -118,7 +118,7 @@ gate.
 
 ```bash
 # 1. load your edit into staging (never a raw systemctl restart — the tool drains + coalesces)
-#    dev:restart { target: 'staging', confirm: true }
+#    dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }
 
 # 2. fire the identical call at BOTH hosts, in parallel
 TOK=<superuser bearer>

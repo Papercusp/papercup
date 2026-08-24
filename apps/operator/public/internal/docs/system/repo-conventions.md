@@ -339,7 +339,7 @@ edit goes live depends on which host:
   directly), which `papercup-staging-sync.timer` auto-fast-forwards to the
   latest COMMITTED `staging` HEAD roughly every 5 minutes (isolated-staging-
   tier-2026-06-21). To test YOUR OWN uncommitted server-side edit live:
-  `dev:restart { target: 'staging', confirm: true }`, then probe `:3170`.
+  `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`, then probe `:3170`.
   **Never** a raw `systemctl --user restart papercup-staging-api.service` — on a
   heavily-parallel fleet that fired every \~5-6min for hours with zero
   coordination (WI-4221); `dev:restart` drains concurrent users first and

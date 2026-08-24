@@ -31,7 +31,7 @@ branch. **Restarting it reboots the same green snapshot; your `staging` edits ar
 invisible to it** until the auto-serve pipeline carries them (green-checkpoint FFs
 `main`, then release-trigger deploys). To test a server-side `staging` edit live,
 restart the **staging** operator on `:3170` instead:
-`dev:restart { target: 'staging', confirm: true }` (that MCP tool drains
+`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (that MCP tool drains
 concurrent `:3170` users, coalesces a restart requested within \~2min of a peer's
 real one (WI-4221), and restarts `bin/hono-host.ts` from the staging tree at
 `papercup/apps/operator` with `PAPERCUSP_HONO_PORT=3170` — never shell out to a
@@ -42,7 +42,7 @@ root `CLAUDE.md` "Running the operator" section.
 
 * **Tauri dev shell:** reload the desktop window (it respawns the host from the
   staging tree), or
-* **Staging operator on the dev box:** `dev:restart { target: 'staging', confirm: true }`
+* **Staging operator on the dev box:** `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`
   (that unit runs `npx tsx bin/hono-host.ts` on :3170 from the staging tree; never a
   raw `systemctl restart`, which bypasses the drain + WI-4221 debounce).
 

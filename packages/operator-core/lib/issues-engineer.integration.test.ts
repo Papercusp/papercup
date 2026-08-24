@@ -420,6 +420,37 @@ describe('engineer issues surface (real PG)', () => {
     });
   });
 
+  it('EI-21238720089733298: terminal issue transitions clear stale claim-hold metadata', async () => {
+    const { id } = await issues.createIssue({ title: 'clear terminal claim hold', createdBy: 'agA' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || ${db.sql.json({
+           _claimHold: true,
+           held_open_by: 'old-holder',
+           held_open_at: new Date(Date.now() - 60_000).toISOString(),
+           held_open_reason: 'compatibility hold',
+           claim_hold_by: 'park-owner',
+           claim_hold_at: new Date(Date.now() - 60_000).toISOString(),
+           claim_hold_reason: 'deliberate park',
+           unrelated: 'preserve me',
+         })}::jsonb
+       WHERE feature_id = ${id}`;
+
+    const resolved = await issues.setIssueState(id, 'resolved', 'agA', 'integration-test completion');
+    expect(resolved?.state).toBe('resolved');
+
+    const [row] = await db.sql<{ payload: Record<string, unknown> | null }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(row?.payload).toMatchObject({ unrelated: 'preserve me' });
+    expect(row?.payload).not.toHaveProperty('_claimHold');
+    expect(row?.payload).not.toHaveProperty('held_open_by');
+    expect(row?.payload).not.toHaveProperty('held_open_at');
+    expect(row?.payload).not.toHaveProperty('held_open_reason');
+    expect(row?.payload).not.toHaveProperty('claim_hold_by');
+    expect(row?.payload).not.toHaveProperty('claim_hold_at');
+    expect(row?.payload).not.toHaveProperty('claim_hold_reason');
+  });
+
   it('EI-20202629116790410: stale compatibility-view terminal writes are actionable, while the base writer closes', async () => {
     const { id } = await issues.createIssue({ title: 'stale writer diagnostic', createdBy: 'agA' });
 

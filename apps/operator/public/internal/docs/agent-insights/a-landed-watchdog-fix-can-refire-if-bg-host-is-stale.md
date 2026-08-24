@@ -1,4 +1,4 @@
-# A re-firing watchdog signal whose fix is \"already in the code\" — check bg-host uptime first
+# A re-firing watchdog signal whose fix is \\\"already in the code\\\" — check bg-host uptime first
 URL: /internal/docs/agent-insights/a-landed-watchdog-fix-can-refire-if-bg-host-is-stale
 
 A self-improvement / watchdog collector fix that is committed, tested, in main, AND deployed to :3070 can STILL keep firing its own signal, because the watchdog runs in the bg-host, which loads tsx once at boot with no file-watch. Before diagnosing a re-fire as a code defect, compare bg-host uptime against the fix's commit time.
@@ -47,7 +47,7 @@ running watchdog excludes the row.
 ## Remediation
 
 Load the already-landed code into the running watchdog by restarting the host:
-`dev:restart { target: 'bg-host', confirm: true }` (coordinated/drained; never a raw
+`dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }` (coordinated/drained; never a raw
 `systemctl restart`). Any deploy-adjacent or routine bg-host restart also activates
 it. This is a shared routines/DBOS host restart — outside a sandboxed runner-worker's
 lane, so a worker should land the code + test and flag the restart, not perform it.

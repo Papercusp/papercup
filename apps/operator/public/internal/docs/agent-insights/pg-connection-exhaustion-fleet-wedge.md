@@ -1,4 +1,4 @@
-# \"too many clients already\" is a connection storm or pool overhang — diagnose it at the OS level, don't assume a DB outage
+# \\\"too many clients already\\\" is a connection storm or pool overhang — diagnose it at the OS level, don't assume a DB outage
 URL: /internal/docs/agent-insights/pg-connection-exhaustion-fleet-wedge
 
 Papercusp's PG is the native cluster /var/lib/postgresql/18/main on :5432 with max_connections=100 (db harness_admin; users papercusp + papercusp_su). When it exhausts, EVERY MCP/PG call wedges fleet-wide and even a direct psql fails with FATAL 'sorry, too many clients already' — which reads like a DB outage but is almost always (1) a runaway client storming connections or (2) one operator's pool sitting near the 100 ceiling. You can diagnose + fix entirely at the OS level WITHOUT a SQL connection: count the postmaster's backends, map each :5432 socket to its owning PID with ss, find the one PID holding hundreds, and kill that subtree (or restart the offending service). On 2026-06-17 a STRAY manually-launched bin/hono-host.ts (gnome-terminal child, bound to FALLBACK ports 3071/3079/... because the standard ones were taken) was storming PG with 743 ESTAB + 355 SYN-SENT (~1000 conns); killing it unwedged the whole fleet. Separately the legit staging-api.service (:3170) alone held ~70 connections — restart it to reset its pool.
@@ -64,7 +64,7 @@ real service.
   `node` chain). It's redundant (the real operator is elsewhere on the standard ports);
   killing it frees the slots immediately and it does NOT respawn (it's not systemd).
 * **Oversized service pool** → restart just that service:
-  `dev:restart { target: 'staging', confirm: true }` (playbook-blessed; `:3170` is the
+  `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` (playbook-blessed; `:3170` is the
   non-primary staging operator — never a raw `systemctl restart`, which bypasses the
   drain + WI-4221 debounce). Its pool reconnects lazily to baseline (\~18), freeing \~50
   slots. Do NOT restart the whole cluster for this.

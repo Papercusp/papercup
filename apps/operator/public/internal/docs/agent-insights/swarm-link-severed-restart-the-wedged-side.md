@@ -92,7 +92,7 @@ fresh VM re-dial could not reach the stale tower `bg-host` for 6+ minutes, while
 `bg-host` restart reconnected in \~2 minutes.
 
 ```
-dev:restart { target: 'bg-host', confirm: true }
+dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the background host with updated code' }
 ```
 
 Coordinate this restart — it freezes the coordination rails for the duration of the
