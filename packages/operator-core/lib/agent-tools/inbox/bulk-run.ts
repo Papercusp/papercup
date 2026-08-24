@@ -221,7 +221,8 @@ async function callRequired(call: InnerCall, name: string, args: Record<string, 
   if (failure) throw failure;
 }
 
-function terminalDependencies(input: {
+/** Exported for the arg-shape contract test (WI-41370) — the inner-call names/keys here are wire contracts, not internals. */
+export function terminalDependencies(input: {
   call: InnerCall;
   workspaceId?: string;
 }): TerminalActionDependencies {
@@ -229,8 +230,15 @@ function terminalDependencies(input: {
   return {
     resolveEscalation: ({ msgId, choice }) => callRequired(call, 'coord:resolve', { msg_id: msgId, choice }),
     acknowledgeMessage: ({ msgId }) => callRequired(call, 'coord:ack', { msg_id: msgId }),
-    setPlanItemStatus: ({ slug, itemId, status }) =>
-      callRequired(call, 'plans:set-status', { slug, itemId, status }),
+    setPlanItemStatus: ({ slug, itemId, status, rationale }) =>
+      // plans:set-status takes `item` (P-NNN), NOT `itemId` — it REJECTS undeclared keys
+      // (EI-10883), and `dropped` additionally requires a nonblank rationale/note (WI-41370).
+      callRequired(call, 'plans:set-status', {
+        slug,
+        item: itemId,
+        status,
+        rationale: rationale?.trim() ? `Bulk resolve: ${rationale.trim()}` : 'Bulk resolve terminal action',
+      }),
     async wakePlanLoop({ reason }) {
       await callRequired(call, 'pot:wake', { source: 'user', reason });
     },
@@ -488,6 +496,7 @@ export const bulkRunAct = defineTool({
           const dispatched = await dispatchAttentionTerminalAction({
             item,
             actionId: args.actionId,
+            rationale,
             deps: terminalDependencies({ call, workspaceId: run.workspaceId }),
           });
           if (!dispatched.resolved) {
