@@ -154,12 +154,23 @@ export function buildScheduledCheckpointShell(
     'rm -f -- "$terminal" "$terminal.tmp.$$"',
     ': > "$log" 2>/dev/null || :',
     `printf '%s\\n' ${shellQuote(`# scheduled green-checkpoint wrapper runId=${paths.runId}`)} >> "$log" 2>/dev/null || :`,
+    // The EXIT trap also runs when the wrapper is killed before it reaches the final
+    // `exit "$status"`. In that path `$?` is only the last incidental cleanup command
+    // (historically `wait ... || :`, i.e. 0), not the gate's fate. Keep an explicit
+    // completion bit so an interrupted wrapper records an honest unknown code instead
+    // of manufacturing a clean exit. This intentionally covers signals we did not
+    // predict, rather than hard-coding TERM/INT exit codes.
+    'checkpoint_reached_exit=0',
     '_papercusp_write_checkpoint_terminal() {',
     '  ec=$?',
     '  trap - EXIT',
     '  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     '  tmp="$terminal.tmp.$$"',
-    `  printf '{"runId":%s,"logPath":%s,"exitCode":%s,"finishedAt":"%s"}\\n' ${runIdJson} ${logPathJson} "$ec" "$finished_at" > "$tmp" 2>/dev/null || :`,
+    '  if [ "$checkpoint_reached_exit" = 1 ]; then',
+    `    printf '{"runId":%s,"logPath":%s,"exitCode":%s,"finishedAt":"%s"}\\n' ${runIdJson} ${logPathJson} "$ec" "$finished_at" > "$tmp" 2>/dev/null || :`,
+    '  else',
+    `    printf '{"runId":%s,"logPath":%s,"exitCode":null,"killed":true,"finishedAt":"%s"}\\n' ${runIdJson} ${logPathJson} "$finished_at" > "$tmp" 2>/dev/null || :`,
+    '  fi',
     '  mv -f -- "$tmp" "$terminal" 2>/dev/null || :',
     '  exit "$ec"',
     '}',
@@ -173,6 +184,7 @@ export function buildScheduledCheckpointShell(
     'exec 3>&-',
     'exec 4>&-',
     'wait "$stdout_tee_pid" "$stderr_tee_pid" 2>/dev/null || :',
+    'checkpoint_reached_exit=1',
     'exit "$status"',
   ].join('\n');
 }

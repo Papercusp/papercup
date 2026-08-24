@@ -18,7 +18,7 @@ import { resolveIntegrationRoot, integrationRootEvidence } from './release-actio
 import { pipelineName } from '../../release/pipeline-name';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1360,6 +1360,46 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
           runId: 'abnormal-run',
           logPath: paths.logPath,
           exitCode: 17,
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not report a clean exit when the wrapper is SIGTERMed mid-child', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-'));
+      const paths = checkpointRunLogPaths(dir, 'killed-run', new Date('2026-08-24T15:02:00.000Z'));
+      const wrapperPath = join(dir, 'wrapper.sh');
+      const killerPath = join(dir, 'kill-wrapper.sh');
+      try {
+        writeFileSync(
+          wrapperPath,
+          buildScheduledCheckpointShell(['/bin/bash', '-c', 'sleep 30'], paths),
+          { mode: 0o700 },
+        );
+        // Run the wrapper in its own process group, matching systemd's cgroup-level
+        // stop closely enough to exercise the EXIT trap while leaving no sleeper behind.
+        writeFileSync(
+          killerPath,
+          [
+            '#!/bin/bash',
+            'set -u',
+            `wrapper=${JSON.stringify(wrapperPath)}`,
+            'setsid /bin/bash "$wrapper" &',
+            'pid=$!',
+            'sleep 0.2',
+            'kill -TERM -- "-$pid" 2>/dev/null || :',
+            'wait "$pid" 2>/dev/null || :',
+          ].join('\n') + '\n',
+          { mode: 0o700 },
+        );
+        execFileSync('/bin/bash', [killerPath], { encoding: 'utf8' });
+
+        expect(JSON.parse(readFileSync(paths.terminalPath, 'utf8'))).toMatchObject({
+          runId: 'killed-run',
+          logPath: paths.logPath,
+          exitCode: null,
+          killed: true,
         });
       } finally {
         rmSync(dir, { recursive: true, force: true });
