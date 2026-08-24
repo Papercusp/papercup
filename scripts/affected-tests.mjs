@@ -24,7 +24,13 @@
 //   real commit is ever scoped to just your paths.
 
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
-import { readFileSync, existsSync, appendFileSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  appendFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadavg, availableParallelism, tmpdir } from "node:os";
@@ -196,6 +202,48 @@ let terminalEmitted = false;
 // tests pin that absence. Exempt it rather than teaching every caller to ignore a
 // marker they were promised would not appear.
 let terminalSuppressed = false;
+// pc-heavy allocates this unique, absent path only for callers that opt into
+// the after-ready barrier. The runner publishes it after derivation and before
+// the first task starts; pc-heavy also removes it if this process is killed.
+const preemptReadyFile = process.env.PC_HEAVY_PREEMPT_READY_FILE?.trim() || null;
+let preemptReadyPublished = false;
+function cleanupPreemptReadyMarker() {
+  if (!preemptReadyPublished || !preemptReadyFile) return;
+  try {
+    unlinkSync(preemptReadyFile);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      logLine(
+        "PC_HEAVY_PREEMPT_READY cleanup failed: " +
+          String(error?.message ?? error) +
+          "\n",
+      );
+    }
+  } finally {
+    preemptReadyPublished = false;
+  }
+}
+function publishPreemptReadyMarker() {
+  if (!preemptReadyFile) return;
+  try {
+    // wx is deliberate: the wrapper owns a unique absent path. If that
+    // invariant is violated, fail closed instead of treating an unrelated
+    // marker as proof that this run is ready.
+    writeFileSync(preemptReadyFile, String(process.pid) + "\n", {
+      flag: "wx",
+      mode: 0o600,
+    });
+    preemptReadyPublished = true;
+    logLine("PC_HEAVY_PREEMPT_READY pid=" + process.pid + "\n");
+  } catch (error) {
+    errSync(
+      "[affected-tests] refusing execution phase: could not publish the " +
+        "pc-heavy after-ready marker: " +
+        String(error?.message ?? error),
+    );
+    process.exit(75);
+  }
+}
 // Counters for the abort path, read through a swappable closure because the real
 // bindings (`tasks`, `failed`, …) are declared ~1500 lines below: a closure over a
 // not-yet-initialized `let` throws a TDZ ReferenceError, and a crash INSIDE the
@@ -252,6 +300,7 @@ logLine(
 // whose main loop is genuinely async, and it must still be paired with a SIGKILL
 // escalation upstream. Check the loop before reaching for the trap.
 process.on("exit", (code) => {
+  cleanupPreemptReadyMarker();
   // Catches every remaining way out with no verdict: an uncaught exception, an
   // unhandled rejection, or an early process.exit() on a path that emits nothing
   // (e.g. the unrecognized-flag refusal). A clean path has already set the flag.
@@ -3761,6 +3810,11 @@ function emitCapturedTaskOutput(t, r, allocation, label = "initial") {
   logLine(r.stderr ?? "");
 }
 
+// This is the irreversible execution boundary: derivation, dry-run, and empty
+// task exits are all above it. Publish only now so an exclusive materializer
+// retains priority during setup but cannot destroy the once-only task run after
+// its task ledger has become authoritative.
+publishPreemptReadyMarker();
 const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   ...SCHEDULER_CONFIG,
   // EI-20801764054303492 route (a): the startup budget is sized ONCE, from a reading taken before
