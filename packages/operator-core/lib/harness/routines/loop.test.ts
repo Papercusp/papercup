@@ -1398,7 +1398,7 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
       return Promise.resolve([{ n: 1 }]);
     });
 
-    const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
+    const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: sql as any });
 
     expect(out).toBe(1);
     const rendered = calls.flatMap((call) => call.strings).join(' ');
@@ -1423,7 +1423,7 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
     });
     sql.array = array;
 
-    await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
+    await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: sql as any });
 
     const rendered = calls.flatMap((call) => call.strings).join(' ');
     expect(rendered).toContain('tool_name <> ALL');
