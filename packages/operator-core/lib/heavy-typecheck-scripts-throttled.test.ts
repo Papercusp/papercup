@@ -5,7 +5,33 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Every typecheck npm script must route through the pc-heavy slot semaphore.
+ * Every typecheck npm script must be admitted to a pc-heavy slot EXACTLY ONCE.
+ *
+ * ── WHERE ADMISSION LIVES, AND WHY IT MOVED (EI-21311288080670514) ──────────
+ *
+ * This guard originally read "every typecheck script must carry a
+ * `bash scripts/pc-heavy.sh` prefix", because typechecks were then the one heavy
+ * command running bare. Admission has since moved INWARD, and the prefix is now
+ * WRONG on the runner form:
+ *
+ *   - runner form (`node …/lint-tsc*.mjs`) — the runner reserves the slot itself,
+ *     around the COMPILE ONLY (`scripts/lib/tsc-baseline-gate.mjs`, the
+ *     `existsSync(pcHeavyPath)` branch). An outer prefix here is a SECOND, nested
+ *     reservation: the outer holder waits on a nested child that is waiting for a
+ *     slot, which deadlocks under the two-slot clamp. It also broke pc-heavy's
+ *     coalescing, because `--files=a.ts` and `--files=b.ts` present different argv
+ *     so the `(cwd, argv, tree-token)` key never matched and N identical full
+ *     compiles ran where one would do. Outer wrapper must be ABSENT.
+ *   - bare `tsc --noEmit` — reserves nothing on its own. Wrapper still REQUIRED.
+ *
+ * So the invariant is two-sided: under-admission starves the box (the original
+ * finding below), over-admission deadlocks it. Checking only one side is what let
+ * this guard contradict `lint-tsc.test.ts`'s "must not nest pc-heavy" assertion
+ * and pin the release gate red — each "fix" simply flipped which one failed.
+ *
+ * `admissionSite()` decides which side applies, and `runnerReachesSharedGate()`
+ * verifies the runner really does delegate, so 'internal' stays a fact about the
+ * file rather than a naming convention.
  *
  * ── WHY THIS GUARD EXISTS (EI-19480850505352533) ────────────────────────────
  *
@@ -144,20 +170,71 @@ export const isStandaloneBuildable = (workspaceDir: string, submodules: string[]
 export const isHeavyTypecheck = (cmd: string): boolean =>
   INVOKES_TSC_RUNNER.test(cmd) || (INVOKES_TSC_BINARY.test(cmd) && CHECKS_ONLY.test(cmd));
 
+/**
+ * WHERE a command's slot reservation lives.
+ *
+ * 'internal' — it shells out to a `lint-tsc*.mjs` runner, and the runner reserves
+ *   the slot itself, around the COMPILE ONLY
+ *   (`scripts/lib/tsc-baseline-gate.mjs`, the `existsSync(pcHeavyPath)` branch).
+ * 'external' — it calls `tsc` directly, reserves nothing, and therefore still
+ *   needs the `pc-heavy.sh` prefix in the npm script.
+ *
+ * The two forms are disjoint in practice: `INVOKES_TSC_BINARY` needs `tsc`
+ * delimited by whitespace, and in `lint-tsc-operator.mjs` it is bounded by `-`.
+ */
+export type AdmissionSite = 'internal' | 'external';
+export const admissionSite = (cmd: string): AdmissionSite =>
+  INVOKES_TSC_RUNNER.test(cmd) ? 'internal' : 'external';
+
+/** The shared module that owns the compile-scoped reservation. */
+const SHARED_GATE = 'tsc-baseline-gate';
+
+/** The runner path a command shells out to, as written in the script. */
+export const runnerPath = (cmd: string): string | null =>
+  /(\S*lint-tsc[\w-]*\.mjs)/.exec(cmd)?.[1] ?? null;
+
+/**
+ * Does this runner ACTUALLY reach the shared gate?
+ *
+ * Without this, 'internal' would be a naming convention rather than a fact, and a
+ * new `scripts/lint-tsc-whatever.mjs` that never imports the shared gate would be
+ * waved through as "admitted internally" while running wholly unadmitted — the
+ * precise hole that trusting the filename would open.
+ */
+export const runnerReachesSharedGate = (workspaceDir: string, cmd: string): boolean => {
+  const rel = runnerPath(cmd);
+  if (rel === null) return false;
+  const resolved = path.resolve(REPO_ROOT, workspaceDir, rel);
+  if (!existsSync(resolved)) return false;
+  return readFileSync(resolved, 'utf8').includes(SHARED_GATE);
+};
+
 /** Is this workspace's command held to the rule? */
 export const inScope = (workspaceDir: string, cmd: string, submodules: string[]): boolean =>
   !isStandaloneBuildable(workspaceDir, submodules) || ESCAPES_INTO_SUPERPROJECT.test(cmd);
 
-const offenders = (): string[] => {
+/**
+ * The invariant is ADMITTED EXACTLY ONCE — not "carries a wrapper".
+ * Under-admission starves the box; over-admission deadlocks it.
+ */
+export const offenders = (): string[] => {
   const submodules = submodulePaths();
   const found: string[] = [];
   for (const dir of workspaceDirs()) {
     for (const [name, cmd] of Object.entries(scriptsOf(dir))) {
       if (!isHeavyTypecheck(cmd)) continue;
       if (!inScope(dir, cmd, submodules)) continue;
-      if (ROUTES_THROUGH_PC_HEAVY.test(cmd)) continue;
       if (`${dir}:${name}` in ALLOW) continue;
-      found.push(`${dir} :: ${name} :: ${cmd}`);
+      const wrapped = ROUTES_THROUGH_PC_HEAVY.test(cmd);
+      if (admissionSite(cmd) === 'internal') {
+        if (wrapped) {
+          found.push(`${dir} :: ${name} :: DOUBLE-ADMITTED (outer wrapper nests a second slot) :: ${cmd}`);
+        } else if (!runnerReachesSharedGate(dir, cmd)) {
+          found.push(`${dir} :: ${name} :: RUNNER NEVER REACHES ${SHARED_GATE} :: ${cmd}`);
+        }
+      } else if (!wrapped) {
+        found.push(`${dir} :: ${name} :: UNADMITTED (bare tsc, no wrapper) :: ${cmd}`);
+      }
     }
   }
   return found;
@@ -175,15 +252,37 @@ const governedScripts = (): string[] => {
 };
 
 describe('typecheck scripts are admission-controlled', () => {
-  it('every in-scope typecheck script routes through pc-heavy', () => {
+  it('every in-scope typecheck script is admitted exactly once', () => {
     expect(offenders()).toEqual([]);
   });
 
-  it('detects the runner form that started this — a lint-tsc runner run bare', () => {
-    // The pre-fix root `lint:tsc` line, verbatim.
+  it('classifies the runner form as internally admitted, not as an offender', () => {
+    // The root `typecheck` line, verbatim. Before EI-21311288080670514 this guard
+    // demanded an outer wrapper here; the runner now reserves its own compile slot,
+    // so demanding one again is what NESTS the deadlocking second reservation.
     const cmd = 'node scripts/lint-tsc.mjs';
     expect(isHeavyTypecheck(cmd)).toBe(true);
+    expect(admissionSite(cmd)).toBe('internal');
     expect(ROUTES_THROUGH_PC_HEAVY.test(cmd)).toBe(false);
+  });
+
+  it('flags a runner that carries an outer wrapper — the nested-slot regression', () => {
+    // The pre-EI-21311288080670514 line, verbatim. If anyone "restores" it,
+    // this guard is what says no.
+    const cmd = 'bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc-operator.mjs';
+    expect(isHeavyTypecheck(cmd)).toBe(true);
+    expect(admissionSite(cmd)).toBe('internal');
+    expect(ROUTES_THROUGH_PC_HEAVY.test(cmd)).toBe(true);
+  });
+
+  it('treats internal admission as a fact about the runner, not about its name', () => {
+    // A real runner reaches the shared gate...
+    expect(runnerReachesSharedGate('apps/operator', 'node ../../scripts/lint-tsc-operator.mjs')).toBe(true);
+    expect(runnerReachesSharedGate('.', 'node scripts/lint-tsc.mjs')).toBe(true);
+    // ...one that does not exist cannot, so a plausible-looking name is never
+    // enough to be waved through as admitted.
+    expect(runnerReachesSharedGate('.', 'node scripts/lint-tsc-does-not-exist.mjs')).toBe(false);
+    expect(runnerPath('node ../../scripts/lint-tsc-operator.mjs')).toBe('../../scripts/lint-tsc-operator.mjs');
   });
 
   it('detects the bare-tsc form the first version of this guard was blind to', () => {
