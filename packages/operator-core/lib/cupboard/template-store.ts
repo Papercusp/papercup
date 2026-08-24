@@ -53,6 +53,20 @@ export interface LocalTemplate {
    * (WI-37781).
    */
   hasListing: boolean;
+  /**
+   * RETIRED refs this template answers to (listing.json `aliases`), so a
+   * template that absorbed others keeps their handles resolving (plan
+   * unified-app-template-2026-08-23 D-002).
+   *
+   * A ref is a durable public handle: it is what `templates:new-app` and
+   * `templates:get-guide` take, what live tool descriptions name, and what an
+   * in-flight materialize is already holding. Retiring a template therefore
+   * cannot just delete its ref — the alias is how the handle outlives the
+   * directory. An alias NEVER shadows a real ref (see the lookup order in
+   * `resolveLocalTemplateWithShadows`), so re-introducing a template with a
+   * retired name takes its handle back automatically.
+   */
+  aliases: string[];
 }
 
 export interface TemplateRoot {
@@ -130,9 +144,17 @@ export function readTemplateDir(dir: string, ref: string, layer: 'bundled' | 'us
   };
 
   const id = str(listing.id) ?? yscalar('id') ?? ref;
+  // Aliases come ONLY from listing.json — a retirement is a deliberate,
+  // reviewed act, so there is no manifest fallback that could invent one.
+  // Non-string and blank entries are dropped rather than failing the read: a
+  // malformed alias must not make an otherwise-valid template unresolvable.
+  const aliases = Array.isArray(listing.aliases)
+    ? [...new Set(listing.aliases.filter((a): a is string => typeof a === 'string' && a.trim() !== '').map((a) => a.trim()))]
+    : [];
   return {
     ref,
     id,
+    aliases,
     title: str(listing.title) ?? id,
     description: str(listing.description) ?? '',
     category: str(listing.category) ?? yscalar('category') ?? null,
@@ -216,7 +238,14 @@ export function resolveLocalTemplateWithShadows(
   const key = (idOrRef ?? '').trim();
   if (!key) return { template: null, shadows: [] };
   const { templates, shadows } = listLocalTemplatesWithShadows(roots);
-  const template = templates.find((t) => t.ref === key || t.id === key) ?? null;
+  // ORDER IS LOAD-BEARING (D-002): a real ref/id ALWAYS beats an alias, so a
+  // retired name that is later reused by a genuine template takes its handle
+  // back automatically, and no alias can ever shadow a live template. Only
+  // when nothing owns the key do we fall through to the retirement aliases.
+  const template =
+    templates.find((t) => t.ref === key || t.id === key) ??
+    templates.find((t) => t.aliases.includes(key)) ??
+    null;
   return {
     template,
     shadows: template ? shadows.filter((s) => s.ref === template.ref) : [],
