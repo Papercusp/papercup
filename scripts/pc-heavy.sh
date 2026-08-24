@@ -1810,7 +1810,12 @@ _preempt_notify_fd=''
 if [ "$_preemptible" = 1 ]; then
   if exec {_preempt_notify_fd}>&2; then
     _preempt_notify_target="$(readlink "/proc/self/fd/$_preempt_notify_fd" 2>/dev/null || true)"
-    _preempt_stderr_target="$(readlink /proc/self/fd/2 2>/dev/null || true)"
+    # `readlink /proc/self/fd/2 2>/dev/null` would inspect the readlink
+    # process's fd 2 — which is necessarily /dev/null because of that very
+    # suppression redirection — rather than this wrapper's original stderr.
+    # Resolve the outer shell's descriptor by PID so the probe can stay quiet
+    # without changing the descriptor it is validating.
+    _preempt_stderr_target="$(readlink "/proc/$$/fd/2" 2>/dev/null || true)"
     case "$_preempt_notify_fd" in
       ''|0|1|2|*[!0-9]*) _preempt_notify_fd='' ;;
       *)
