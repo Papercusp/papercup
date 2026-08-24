@@ -11216,6 +11216,8 @@ export function realCheckpointDeps(
                 "force",
                 "--node-modules-copy",
                 "copy",
+                "--node-modules-generation",
+                "required",
                 "--prepare-existing",
               ],
               {
@@ -11657,6 +11659,8 @@ export function realCheckpointDeps(
             "force",
             "--node-modules-copy",
             "copy",
+            "--node-modules-generation",
+            "required",
           ],
           {
             timeoutMs: SETUP_TREE_TIMEOUT_MS,
@@ -11667,9 +11671,18 @@ export function realCheckpointDeps(
       } finally {
         flushSetupOutput();
       }
+      const setupOutput = setup.stdout + setup.stderr;
+      const dependencyGeneration = setupOutput.match(
+        /DEPENDENCY_GENERATION_PIN identity=([^\s]+)/,
+      )?.[1];
+      if (!dependencyGeneration) {
+        throw new Error(
+          `setup-release-checkout completed without a pinned dependency-generation identity for ${ref.slice(0, 64)}`,
+        );
+      }
       return {
-        identity: `setup-release-checkout:${ref.slice(0, 64)}`,
-        output: (setup.stdout + setup.stderr).slice(-1000),
+        identity: `setup-release-checkout:${ref.slice(0, 64)}:deps=${dependencyGeneration}`,
+        output: setupOutput.slice(-1000),
       };
     },
     async runGreen(treeDir, base, execution) {
