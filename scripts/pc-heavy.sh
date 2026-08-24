@@ -759,7 +759,14 @@ _calc_slots() {
 # Detection is pure shell — no daemon, no DB, no tool call (this runs before
 # EVERY heavy command). green-checkpoint publishes a per-root run-lock DIRECTORY
 # `<logDir>/.green-checkpoint-run-<hash>.lock/` containing `owner.json` with the
-# run's pid, so liveness is a plain `kill -0`. Per-hive gates publish beneath
+# run's pid and acquisition timestamp. `kill -0` alone is not enough: after PID
+# reuse it can prove only that an unrelated process exists. When the timestamp
+# is parseable, also reject a lock beyond the writer's stale horizon or a live
+# PID whose procfs start time is newer than the lock. Unknown identity metadata
+# keeps the old liveness path (fail-open) rather than turning a diagnostic gap
+# into a false idle reading.
+#
+# Per-hive gates publish beneath
 # `<defaultLogDir>/<hive>/`; ordinary agent commands do not carry that hive's
 # `PAPERCUSP_CHECKPOINT_LOG_DIR`, so the default-root reader MUST inspect both
 # the root and its immediate per-hive children. Otherwise the materializing
@@ -769,27 +776,78 @@ _calc_slots() {
 # broader discovery can never wedge the fleet into permanent 1-slot mode.
 #
 # Fail-open on EVERY unexpected input: no dir, no lock, unparseable json,
-# non-numeric pid, dead pid, no `kill` → behave exactly as if no gate were
-# running. Worst case degrades to today's behavior.
+# non-numeric pid, unparseable timestamp, unavailable procfs, dead pid, no
+# `kill` → behave exactly as if no gate were running. A positive stale/identity
+# mismatch is the only new reason to ignore an otherwise-live PID. Worst case
+# degrades to today's behavior.
 # Escape hatch: PC_HEAVY_GATE_RESERVE=0.
+_CHECKPOINT_RUN_LOCK_STALE_SEC=$((190 * 60))
+_CHECKPOINT_PROCESS_START_TOLERANCE_SEC=5
+
+# Linux procfs start time in epoch seconds, or fail when the identity hint is
+# unavailable. `/proc/<pid>/stat` field 22 is field 20 after the final `)`; the
+# final delimiter keeps this correct for a process name containing `)`.
+_checkpoint_process_start_sec() {
+  local _pid="$1" _ticks _uptime
+  _ticks=$(sed 's/.*) //' "/proc/$_pid/stat" 2>/dev/null | awk '{print $20}') || return 1
+  case "$_ticks" in ''|*[!0-9]*) return 1 ;; esac
+  _uptime=$(awk '{print $1}' /proc/uptime 2>/dev/null) || return 1
+  case "$_uptime" in ''|*[!0-9.]*) return 1 ;; esac
+  _uptime="${_uptime%%.*}"
+  case "$_uptime" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$(( $(date +%s) - _uptime + _ticks / 100 ))"
+}
+
 _gate_reserve_active() {
   case "${PC_HEAVY_GATE_RESERVE:-1}" in
     0|off|OFF|false|FALSE|no|NO) return 1 ;;
   esac
   local _logdir="${PAPERCUSP_CHECKPOINT_LOG_DIR:-${HOME:-}/.papercusp/checkpoint-logs}"
   [ -d "$_logdir" ] || return 1
-  local _owner _pid
+  local _owner _raw _pid _started_at _started_sec _process_started_sec _now_sec
   # No nullglob: a non-matching glob yields the literal pattern, which the
   # -f test below rejects — that IS the no-gate-running path.
   for _owner in \
     "$_logdir"/.green-checkpoint-run-*.lock/owner.json \
     "$_logdir"/*/.green-checkpoint-run-*.lock/owner.json; do
     [ -f "$_owner" ] || continue
-    _pid=$(head -c 4096 "$_owner" 2>/dev/null | tr -d ' \n' \
-            | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
+    _raw=$(head -c 4096 "$_owner" 2>/dev/null | tr -d ' \n') || continue
+    _pid=$(printf '%s' "$_raw" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
     case "$_pid" in ''|*[!0-9]*) continue ;; esac
+    _started_at=$(printf '%s' "$_raw" | sed -n 's/.*"startedAt":"\([^"]*\)".*/\1/p' | head -1)
+    _started_sec=""
+    _process_started_sec=""
+    if [ -n "$_started_at" ]; then
+      # GNU date is present on the supported Linux hosts. If parsing is
+      # unavailable, preserve the pre-guard kill -0 behavior (fail-open).
+      _started_sec=$(date -d "$_started_at" +%s 2>/dev/null || true)
+      case "$_started_sec" in
+        ''|*[!0-9]*) _started_sec="" ;;
+      esac
+    fi
     # A dead pid means the run crashed and left its lock behind — ignore it.
     if kill -0 "$_pid" 2>/dev/null; then
+      if [ -n "$_started_sec" ]; then
+        _now_sec=$(date +%s)
+        # Keep this in sync with green-checkpoint.ts's CHECKPOINT_LOCK_STALE_MS.
+        # The writer reclaims at this age even when the PID still looks alive.
+        if [ "$((_now_sec - _started_sec))" -gt "$_CHECKPOINT_RUN_LOCK_STALE_SEC" ]; then
+          continue
+        fi
+
+        # A recycled PID can pass kill -0 while belonging to a process that
+        # started after this lock. Procfs is best-effort; unavailable identity
+        # data leaves the existing liveness result intact.
+        _process_started_sec=$(_checkpoint_process_start_sec "$_pid" 2>/dev/null || true)
+        case "$_process_started_sec" in
+          ''|*[!0-9]*) ;;
+          *)
+            if [ "$_process_started_sec" -gt "$((_started_sec + _CHECKPOINT_PROCESS_START_TOLERANCE_SEC))" ]; then
+              continue
+            fi
+            ;;
+        esac
+      fi
       # Remember WHICH lock dir won, so the phase read below looks at the same run.
       _gate_lockdir="${_owner%/owner.json}"
       return 0
