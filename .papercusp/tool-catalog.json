@@ -25661,7 +25661,7 @@
           "POST"
         ]
       },
-      "description": "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then re-emits with acceptance:{verdict,reasoning}. Stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.",
+      "description": "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.",
       "capabilities": [
         "coord:write"
       ],
@@ -25687,7 +25687,7 @@
       "guidance": {
         "when": "Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.",
         "notWhen": "Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.",
-        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend."
+        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; do not pass supersedes on the author acceptance."
       }
     },
     {
