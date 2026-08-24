@@ -13,7 +13,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { WorkItemSpecRevisionEdge } from './spec-evidence-store';
-import { planStampOf, resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
+import {
+  planStampOf,
+  resolveWorkItemBehaviorContract,
+  type ResolveBehaviorContractDeps,
+} from './behavior-contract-resolver';
 
 const clause = (over: Partial<SpecClauseRevision> = {}): SpecClauseRevision => ({
   planSlug: 'plan-a',
@@ -50,7 +54,24 @@ const edge = (over: Partial<WorkItemSpecRevisionEdge> = {}): WorkItemSpecRevisio
 });
 
 /** Readers that answer from fixed tables, and record how they were called. */
-function readers(opts: { edges?: WorkItemSpecRevisionEdge[]; clauses?: SpecClauseRevision[] } = {}) {
+/**
+ * ⚠ The return type is `ResolveBehaviorContractDeps`, NOT `as never`, and that is
+ * load-bearing rather than tidiness. `as never` made this helper accept any shape at all,
+ * so when the resolver grew required fields the mocks silently kept the old shape and the
+ * tests exercised a contract production can never produce — the vacuous-pass class. Typed,
+ * tsc demands each new dep here the moment it is added.
+ *
+ * `statusByPlan` defaults every namespace to `active` (enforcing) for the same reason the
+ * gate's helper does: a default that quietly exempted plans would make enforcement
+ * assertions pass without enforcing anything.
+ */
+function readers(
+  opts: {
+    edges?: WorkItemSpecRevisionEdge[];
+    clauses?: SpecClauseRevision[];
+    statusByPlan?: Record<string, string>;
+  } = {},
+): ResolveBehaviorContractDeps {
   const listEdges = vi.fn(async () => opts.edges ?? []);
   const listClauses = vi.fn(async (q: { planSlug: string; specIds?: string[]; planItemIds?: string[] }) =>
     (opts.clauses ?? []).filter(
@@ -60,7 +81,10 @@ function readers(opts: { edges?: WorkItemSpecRevisionEdge[]; clauses?: SpecClaus
         (!q.planItemIds || q.planItemIds.includes(c.planItemId)),
     ),
   );
-  return { listEdges, listClauses } as never;
+  const listPlanStatuses = vi.fn(async ({ planSlugs }: { planSlugs: string[] }) =>
+    new Map(planSlugs.map((slug) => [slug, opts.statusByPlan?.[slug] ?? 'active'])),
+  );
+  return { listEdges, listClauses, listPlanStatuses };
 }
 
 describe('resolveWorkItemBehaviorContract — D-013 applicability', () => {

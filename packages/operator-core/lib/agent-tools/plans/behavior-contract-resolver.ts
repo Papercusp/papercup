@@ -159,6 +159,33 @@ function isEnforceable(clause: SpecClauseRevision): boolean {
 }
 
 /**
+ * THE enforced set — the one definition of "which clauses may refuse this work item".
+ *
+ * ⚠ Read this before writing a `groups.filter(...)` anywhere else. Three surfaces need
+ * this answer: the completion gate that refuses, the sync-resolver view that renders what
+ * that gate will do, and any future census over the same population. They previously each
+ * re-derived it (`groups.find(g => g.planSlug === stamp.planSlug)`, copied verbatim), and
+ * two copies of a refusal rule is a defect with no failing test: a human is shown one
+ * enforced set while a DIFFERENT one refuses their completion, and nothing anywhere
+ * notices the divergence. Deriving both from this function is what makes that class
+ * impossible rather than merely absent today.
+ *
+ * `planSlugs` is returned beside the clauses because the two must travel together: the
+ * evidence read has to be scoped to exactly the namespaces being enforced, or a clause
+ * gets refused for lack of evidence the query was never allowed to see.
+ */
+export function enforcedClausesOf(contract: WorkItemBehaviorContract): {
+  planSlugs: string[];
+  clauses: SpecClauseRevision[];
+} {
+  const enforcing = contract.groups.filter((group) => group.eligibility.enforcing);
+  return {
+    planSlugs: enforcing.map((group) => group.planSlug),
+    clauses: enforcing.flatMap((group) => group.clauses).filter(isEnforceable),
+  };
+}
+
+/**
  * Default plan-status read: ONE query for every namespace in scope.
  *
  * Deliberately narrow — only `status`, because that is all eligibility needs (the other

@@ -159,16 +159,32 @@ const ATTESTATION = {
   ],
 };
 
+/**
+ * Default plan status for every namespace a test resolves.
+ *
+ * `active` is chosen so the DEFAULT is enforcing: a test that says nothing about plan
+ * status is asserting about the gate's enforcement behavior, and a default that quietly
+ * exempted every plan would make those tests pass for the wrong reason — the vacuous-pass
+ * class. Tests that care about the non-enforcing lanes override this explicitly.
+ */
+function planStatuses(byPlan: Record<string, string> = {}) {
+  return vi.fn<NonNullable<GateDeps['listPlanStatuses']>>(async ({ planSlugs }) =>
+    new Map(planSlugs.map((slug) => [slug, byPlan[slug] ?? 'active'])),
+  );
+}
+
 function passingDeps() {
   const listClauses = vi.fn<NonNullable<GateDeps['listClauses']>>(async () => [clause()]);
   const listEdges = vi.fn<NonNullable<GateDeps['listEdges']>>(async () => []);
   const listEvidence = vi.fn<NonNullable<GateDeps['listEvidence']>>(async () => [listedEvidence()]);
   const listCards = vi.fn<NonNullable<GateDeps['listCards']>>(async () => [matchingCard()]);
+  const listPlanStatuses = planStatuses();
   return {
     listClauses,
     listEdges,
     listEvidence,
     listCards,
+    listPlanStatuses,
   };
 }
 
@@ -350,8 +366,10 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
   function namespacedDeps(
     edges: Array<{ planSlug: string; specId: string; specRevision: number }>,
     clausesByPlan: Record<string, SpecClauseRevision[]>,
+    statusByPlan: Record<string, string> = {},
   ) {
     const deps = passingDeps();
+    deps.listPlanStatuses = planStatuses(statusByPlan);
     deps.listEdges.mockImplementation(async () =>
       edges.map((edge) => ({
         workItemId: 'WI-101',
@@ -382,10 +400,15 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
 
     // Before P-016 this returned from the missing plan stamp having read nothing at all.
     expect(deps.listEdges).toHaveBeenCalledWith({ harnessSlug: 'papercusp', workItemId: 'WI-101' });
-    expect(result.impactReport).toContain('other-plan/SPEC-900-01@1');
+
+    // P-013: the resolved clause is now ENFORCED, not merely reported. Carrying no plan
+    // provenance is exactly what used to buy this item an exemption from its own resolved
+    // obligations — the D-012 gap one level down — so the refusal here IS the fix.
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    if (!result.ok) expect(result.reason).toContain('SPEC-900-01@1');
   });
 
-  it('REPORTS a cross-namespace clause without enforcing it — the D-013 split', async () => {
+  it('ENFORCES a cross-namespace clause — P-013 closes the D-013 split', async () => {
     const deps = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
       'reconnect-plan': [clause()],
       'other-plan': [OTHER_PLAN_CLAUSE],
@@ -396,14 +419,70 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
       deps,
     );
 
-    // The stamped namespace's clause is the ONLY one enforced...
+    // This assertion is INVERTED from what it read under P-016, deliberately. P-016
+    // resolved cross-namespace clauses but enforced only the stamped namespace's, so this
+    // case passed with `checked: ['SPEC-003-01@1']` alone. That half-state was always
+    // scoped to end here: both namespaces are eligible, so both refuse.
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('SPEC-900-01@1');
+
+    // The evidence read must be scoped to the SAME namespaces as the enforced set. If it
+    // stayed single-plan, the cross-namespace clause would find zero rows and refuse for a
+    // reason the gate manufactured — a refusal that looks identical to a real one.
+    const evidenceCall = deps.listEvidence.mock.calls.at(-1)?.[0];
+    expect(evidenceCall?.planSlugs).toEqual(expect.arrayContaining(['reconnect-plan', 'other-plan']));
+  });
+
+  it('does NOT enforce a namespace whose plan is not yet eligible — the widening still narrows', async () => {
+    // The falsifier for the widening above. Enforcement is gated on plan ELIGIBILITY, so
+    // a plan that has shipped (historical) or is still a draft (pre-enforcement) stays
+    // report-only. Without this case, "enforces cross-namespace clauses" would pass just
+    // as happily if eligibility were ignored entirely and every plan refused — which is
+    // the fleet-wide refusal this plan's migration semantics exist to prevent.
+    const deps = namespacedDeps(
+      [{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }],
+      { 'reconnect-plan': [clause()], 'other-plan': [OTHER_PLAN_CLAUSE] },
+      { 'other-plan': 'shipped' },
+    );
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { ...WORK_ITEM, kind: 'bug' }, attestation: ATTESTATION },
+      deps,
+    );
+
+    // The eligible namespace still enforces and passes; the shipped one does not reach
+    // the verdict at all.
     expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
-    // ...while the cross-namespace one is reported, named, and explicitly deferred.
-    expect(result.impactReport).toContain('other-plan/SPEC-900-01@1');
-    expect(result.impactReport).toContain('Reported, not enforced');
-    // The falsifier for the split: the newly-visible clause must not reach the verdict.
-    expect(result.ok).toBe(true);
     if (result.ok) expect(result.checked).not.toContain('SPEC-900-01@1');
+
+    // ...and it is not silently dropped either: the report names it AND says why, so a
+    // correct permanent exemption reads differently from an unreconciled migration TODO.
+    expect(result.impactReport).toContain('other-plan/SPEC-900-01@1');
+    expect(result.impactReport).toContain('already shipped');
+
+    // The evidence read narrows with the enforced set — a shipped plan is never queried.
+    const evidenceCall = deps.listEvidence.mock.calls.at(-1)?.[0];
+    expect(evidenceCall?.planSlugs).toEqual(['reconnect-plan']);
+  });
+
+  it('does NOT enforce an active plan that has adopted no clauses — the per-plan migration lane', async () => {
+    // "Migrate active plans individually" is the other half of the scope line. An ACTIVE
+    // plan reached only by an edge, with no clause of its own adopted, must not refuse —
+    // otherwise enabling enforcement blocks every active plan at once instead of arriving
+    // per plan as each is reconciled.
+    const deps = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
+      'reconnect-plan': [clause()],
+      'other-plan': [],
+    });
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { ...WORK_ITEM, kind: 'bug' }, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    const evidenceCall = deps.listEvidence.mock.calls.at(-1)?.[0];
+    expect(evidenceCall?.planSlugs).toEqual(['reconnect-plan']);
   });
 
   it('never turns an unresolved standalone item into a refusal (enforcement is P-013)', async () => {
@@ -445,7 +524,8 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
       asDraft,
     );
     // Candidate inputs are non-enforceable until promoted (D-012), so the clause is
-    // resolved but contributes no enforceable obligation to name.
+    // resolved but contributes no enforceable obligation — no refusal, nothing to name.
+    expect(draftResult).toMatchObject({ ok: true, applicable: false, checked: [] });
     expect(draftResult.impactReport ?? '').not.toContain('other-plan/SPEC-900-01@1');
 
     const asActive = namespacedDeps([{ planSlug: 'other-plan', specId: 'SPEC-900-01', specRevision: 1 }], {
@@ -457,6 +537,13 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
     );
     // The promotion is the only difference between the two runs — a positive control,
     // without which "draft is invisible" is indistinguishable from "nothing resolves".
-    expect(activeResult.impactReport).toContain('other-plan/SPEC-900-01@1');
+    //
+    // ⚠ The control MOVED with P-013 and had to be re-pointed rather than deleted. It
+    // used to read the promoted clause out of `impactReport`; enforcement is what an
+    // eligible active clause now produces, so a clause that reaches the VERDICT is the
+    // evidence that it resolved. Left as-is, this assertion would have failed for the
+    // right reason and been indistinguishable from a regression.
+    expect(activeResult).toMatchObject({ ok: false, applicable: true, retryable: true });
+    if (!activeResult.ok) expect(activeResult.reason).toContain('SPEC-900-01@1');
   });
 });

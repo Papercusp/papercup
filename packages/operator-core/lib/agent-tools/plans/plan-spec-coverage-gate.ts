@@ -139,7 +139,13 @@ export interface PlanSpecCoverageGateVerdict {
  */
 export type SpecEvidenceCensusReader = (options: {
   harnessSlug?: string;
-  planSlug: string;
+  /**
+   * An array to stay assignable to `listSpecEvidence`, which widened to `planSlugs` in
+   * P-013 so the work-item gate could scope evidence to every namespace it enforces. A
+   * plan census still passes exactly one slug — the narrowing is in the CALL, not the
+   * type, so the real reader remains substitutable here without a wrapper.
+   */
+  planSlugs: string[];
   limit?: number;
 }) => Promise<ReadonlyArray<{ specId: string; specRevision: number }>>;
 
@@ -208,9 +214,11 @@ export async function computePlanSpecCoverage(
   const clauses = await listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug });
   const enforceable = clauses.filter(isEnforceable);
 
+  // Genuinely single-plan: this is a census of ONE plan's own coverage, unlike the
+  // work-item completion gate, whose contract spans namespaces.
   const evidence = await listEvidence({
     harnessSlug: input.harnessSlug,
-    planSlug: input.planSlug,
+    planSlugs: [input.planSlug],
     limit: SPEC_EVIDENCE_CENSUS_LIMIT,
   });
   const truncatedByLimit = evidence.length >= SPEC_EVIDENCE_CENSUS_LIMIT;

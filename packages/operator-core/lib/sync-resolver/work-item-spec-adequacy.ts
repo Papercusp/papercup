@@ -185,18 +185,19 @@ export async function resolveWorkItemSpecAdequacy(args: WorkItemSpecAdequacyArgs
   // "this item is on the hook for nothing".
   if (!gate) return empty('resolver-unavailable');
 
-  // The clause list is the ENFORCED set — the same stamped-namespace, enforceable-lifecycle
-  // selection the gate itself enforces (D-017 keeps cross-namespace clauses advisory, so
-  // they belong in impactReport, not in a column of floors that implies enforcement).
+  // The clause list is the ENFORCED set, and it is now DERIVED from the same function the
+  // gate uses (`enforcedClausesOf`) rather than re-implemented here.
+  //
+  // ⚠ Do not re-inline this selection. It used to be a verbatim copy of the gate's
+  // `groups.find(g => g.planSlug === stamp.planSlug)`, and a copy of a refusal rule is a
+  // defect that no test can catch: this view is what a human reads to learn which clauses
+  // will block their completion, so if the two ever disagree the UI confidently shows the
+  // wrong set and nothing fails. P-013 widened the gate from the stamped namespace to
+  // every ELIGIBLE one; had this stayed a copy, the widening would have silently made the
+  // displayed set wrong everywhere it is rendered.
   const contract = await contractMod.resolveWorkItemBehaviorContract(workItem).catch(() => null);
-  const stamp = contractMod.planStampOf(workItem);
-  const enforceableLifecycle = new Set(contractMod.ENFORCEABLE_LIFECYCLE_STATUSES as readonly string[]);
-  const enforcedGroup = stamp
-    ? contract?.groups.find((group) => group.planSlug === stamp.planSlug)
-    : undefined;
 
-  const clauses: SpecAdequacyClauseView[] = (enforcedGroup?.clauses ?? [])
-    .filter((clause) => enforceableLifecycle.has(clause.lifecycleStatus))
+  const clauses: SpecAdequacyClauseView[] = (contract ? contractMod.enforcedClausesOf(contract).clauses : [])
     .map((clause) => ({
       specId: clause.specId,
       revision: clause.revision,

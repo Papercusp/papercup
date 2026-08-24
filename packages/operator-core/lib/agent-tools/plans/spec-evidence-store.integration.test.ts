@@ -301,7 +301,7 @@ describe('exact spec evidence bindings', () => {
     await specs.setSpecClause(clause({ expectedRevision: 1, behavior: 'Variant with a new observable boundary.' }));
     const [row] = await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS,
-      planSlug: 'reconnect-plan',
+      planSlugs: ['reconnect-plan'],
       current: [
         {
           evidenceKind: 'counterexample',
@@ -323,7 +323,7 @@ describe('exact spec evidence bindings', () => {
 
     const [unknown] = await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS,
-      planSlug: 'reconnect-plan',
+      planSlugs: ['reconnect-plan'],
       evidenceRefs: ['counterexample:duplicate-ack'],
     });
     expect(unknown.currentness.overall).toBe('stale');
@@ -383,7 +383,7 @@ describe('exact spec evidence bindings', () => {
     await db.sql`DELETE FROM harness_shared.test_runs WHERE id = ${external.testRunId}`;
     const [historical] = await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS,
-      planSlug: 'reconnect-plan',
+      planSlugs: ['reconnect-plan'],
       current: [
         {
           evidenceKind: 'coverage-census',

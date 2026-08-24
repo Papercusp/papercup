@@ -59,7 +59,7 @@ describe('listSpecEvidence timestamp normalization', () => {
 
     const [row] = await listSpecEvidence({
       harnessSlug: 'papercusp',
-      planSlug: 'plan-one',
+      planSlugs: ['plan-one'],
       current: [
         {
           evidenceKind: 'test',

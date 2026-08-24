@@ -625,7 +625,7 @@ export async function collectPriorAttempts(
   const evidence = targetSpecIds.size
     ? await deps.evidence({
         harnessSlug: harness,
-        planSlug: options.planSlug,
+        planSlugs: [options.planSlug],
         specIds: [...targetSpecIds],
         limit: Math.max(options.maxPlanWorkItems ?? 200, 1) * 10,
       }).catch(() => [])

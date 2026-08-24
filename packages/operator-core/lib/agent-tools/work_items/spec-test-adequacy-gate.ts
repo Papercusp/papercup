@@ -7,6 +7,8 @@ import {
 } from '../plans/spec-evidence-store';
 import { listSpecClauses } from '../plans/spec-clauses-store';
 import {
+  enforcedClausesOf,
+  ENFORCEABLE_LIFECYCLE_STATUSES,
   planStampOf,
   resolveWorkItemBehaviorContract,
   type ResolveBehaviorContractDeps,
@@ -47,7 +49,13 @@ export type SpecAdequacyCompletionGateResult =
  */
 type WorkItemForSpecGate = WorkItemForContract;
 
-const ENFORCEABLE_LIFECYCLE = new Set(['active', 'accepted']);
+/**
+ * Re-exported from the resolver rather than re-declared. This was a local
+ * `new Set(['active', 'accepted'])` — a second copy of the resolver's own
+ * ENFORCEABLE_LIFECYCLE_STATUSES, silently ordered differently, which is precisely the
+ * shape that drifts without any test noticing.
+ */
+const ENFORCEABLE_LIFECYCLE = new Set<string>(ENFORCEABLE_LIFECYCLE_STATUSES);
 
 /**
  * Human-readable gloss for each machine-readable eligibility reason.
@@ -55,6 +63,8 @@ const ENFORCEABLE_LIFECYCLE = new Set(['active', 'accepted']);
  * Keyed by `EnforcementEligibility['reason']` so a new reason cannot be added there and
  * silently render as `undefined` here — the `satisfies` makes tsc demand this entry.
  */
+type NotEnforcedReason = Extract<EnforcementEligibility, { enforcing: false }>['reason'];
+
 const NOT_ENFORCED_BECAUSE = {
   historical:
     "the plan already shipped, so its clauses are carried for visibility and never block — no action needed",
@@ -62,7 +72,7 @@ const NOT_ENFORCED_BECAUSE = {
     'the plan is still a draft, so its clauses are candidate inputs until it is promoted (D-012)',
   'not-yet-reconciled':
     'the plan is active but has not adopted behavior clauses yet — reconcile that plan to enforce them',
-} satisfies Record<Extract<EnforcementEligibility, { enforcing: false }>['reason'], string>;
+} satisfies Record<NotEnforcedReason, string>;
 
 /**
  * Build the advisory report (D-013). Returns undefined when there is nothing to say, so
@@ -89,7 +99,7 @@ function advisoryImpactReport(contract: WorkItemBehaviorContract): string | unde
   // gate reasons"): `historical` is a correct permanent exemption and needs no follow-up,
   // while `not-yet-reconciled` is a migration TODO on that plan. A bare "not enforced"
   // collapses the two, and they want opposite action.
-  const byReason = new Map<string, string[]>();
+  const byReason = new Map<NotEnforcedReason, string[]>();
   for (const group of contract.groups) {
     if (group.eligibility.enforcing) continue;
     const labels = group.clauses
@@ -202,11 +212,7 @@ export async function specTestAdequacyCompletionGate(
   // a standalone bug/change whose edges reach an eligible plan's clauses is now enforced.
   // Keeping that return would have re-created the D-012 gap one level down — an item
   // escaping its own resolved obligations purely by carrying no plan provenance.
-  const enforcingGroups = contract.groups.filter((group) => group.eligibility.enforcing);
-  const enforcedPlanSlugs = enforcingGroups.map((group) => group.planSlug);
-  const clauses = enforcingGroups
-    .flatMap((group) => group.clauses)
-    .filter((clause) => ENFORCEABLE_LIFECYCLE.has(clause.lifecycleStatus));
+  const { planSlugs: enforcedPlanSlugs, clauses } = enforcedClausesOf(contract);
   if (clauses.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
 
   if (!input.attestation) {
