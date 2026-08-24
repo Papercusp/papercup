@@ -138,6 +138,84 @@ describe('processes:list structured output', () => {
     expect(structured.tasks).toHaveLength(25);
   });
 
+  it('surfaces the durable systemd reason and killed scope identity for a completed task', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const row: TaskRow = {
+      taskId: 'oom-task',
+      workspaceId: 'default',
+      rootTaskId: 'oom-task',
+      class: 'bash-job',
+      title: 'oom-task',
+      argv: [],
+      launchedBy: 'su-test',
+      confined: true,
+      state: 'killed',
+      startedAt: '2026-08-24T09:00:00.000Z',
+      endedAt: '2026-08-24T09:01:00.000Z',
+      lastSeenAt: '2026-08-24T09:01:00.000Z',
+      scopeUnit: 'pc-oom-task.service',
+      cgroupPath: '/user.slice/papercusp.slice/pc-oom-task.service',
+      memoryMaxBytes: 32 * 1024 * 1024,
+      peakMemoryBytes: 32 * 1024 * 1024,
+      exitCode: 137,
+      exitReason: 'oom-kill',
+      terminalProvenance: {
+        capturedAt: '2026-08-24T09:01:00.000Z',
+        scopeUnit: 'pc-oom-task.service',
+        cgroupPath: '/user.slice/papercusp.slice/pc-oom-task.service',
+        invocationId: 'oom-invocation',
+        loadState: 'loaded',
+        activeState: 'failed',
+        serviceResult: 'oom-kill',
+        execMainCode: 2,
+        execMainStatus: 9,
+        memoryMaxBytes: 32 * 1024 * 1024,
+        peakMemoryBytes: 32 * 1024 * 1024,
+        peakMemorySource: 'systemd',
+      },
+      detail: {},
+    };
+    vi.mocked(listTasks).mockResolvedValueOnce([row]);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { includeEnded: true },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-terminal-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(
+      (dispatched.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0],
+    ).toMatchObject({
+      state: 'killed',
+      exitCode: 137,
+      exitReason: 'oom-kill',
+      termination: {
+        reason: 'oom-kill',
+        serviceResult: 'oom-kill',
+        scopeUnit: 'pc-oom-task.service',
+        invocationId: 'oom-invocation',
+        memoryMaxMb: 32,
+        peakRssMb: 32,
+        peakMemorySource: 'systemd',
+      },
+    });
+  });
+
   it('derives current CPU busy percentage from successive cumulative samples', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     const row = (cpuUsec: number): TaskRow => ({
