@@ -31,8 +31,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 
-const { createProbeRunnerPorts, readScopePrerequisiteReadiness, allPrerequisitesSatisfied } =
-  await import('./external-prerequisite-ports');
+const {
+  createProbeRunnerPorts,
+  readScopePrerequisiteReadiness,
+  allPrerequisitesSatisfied,
+  refusePrerequisites,
+} = await import('./external-prerequisite-ports');
 const { buildAttestation } = await import('./external-prerequisites');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
@@ -219,6 +223,136 @@ describe('falsifiability control: the ::text rendering really is wrong', () => {
     // (Postgres renders a timestamptz in the session timezone, e.g.
     // "2026-08-24 11:00:00+00", which is not the ISO form and carries an offset.)
     expect(naive[0].observed_at).not.toBe(strict?.observedAt);
+  });
+});
+
+/**
+ * THE P-005 END-TO-END TEST, in the item's own words: "declare a prerequisite, probe
+ * it to ready, expire it, observe the [gate verdict] and the typed refusal."
+ *
+ * The item's third clause said "observe the scorecard criterion refresh". D-003 voided
+ * that half — the refresh port named a per-criterion scorecard write that does not
+ * exist, and the concern it addressed is met by derivation. What the item was actually
+ * protecting is asserted here instead, and more strictly: the SAME stored receipt
+ * yields ready and then expired with no write in between, so a gate cannot sit green
+ * across a window in which the external wall changed.
+ *
+ * This drives the REAL runner (runPrerequisiteProbe) through the REAL ports against
+ * REAL migrated Postgres — no seams — so the lifecycle is exercised end to end.
+ */
+describe('P-005 end-to-end lifecycle: declare -> ready -> expire -> typed refusal', () => {
+  it('walks the full lifecycle through the real runner and real store', async () => {
+    const { runPrerequisiteProbe, createProbeRegistry } = await import(
+      './external-prerequisite-probe-runner'
+    );
+
+    const emitted: { key: string; summary: string }[] = [];
+    const wakes: string[] = [];
+    // Storage is REAL; only the announce side effects are captured, because asserting
+    // on the event bus and an agent inbox is a different subsystem's job.
+    const ports = {
+      ...createProbeRunnerPorts(SCOPE),
+      async emitEvent(e: { key: string; summary: string }) {
+        emitted.push({ key: e.key, summary: e.summary });
+      },
+      async wakeLaneOwner(w: { owningWorkItem: string }) {
+        wakes.push(w.owningWorkItem);
+      },
+    };
+
+    // 1. DECLARE a prerequisite, with a probe that reports the wall standing.
+    const declared = spec({
+      key: 'e2e-stripe',
+      owningWorkItem: 'WI-e2e',
+      expirySec: 3600,
+      completionEvent: 'external-prerequisite:ready:e2e-stripe',
+    });
+    const registry = createProbeRegistry({
+      'probe:stripe-endpoint': async () => ({
+        status: 'present' as const,
+        binding: { endpointId: 'we_e2e' },
+      }),
+    });
+
+    // 2. PROBE IT TO READY — observed 11:00, so the receipt expires 12:00.
+    const readyRun = await runPrerequisiteProbe(declared, registry, ports, {
+      nowMs: Date.parse('2026-08-24T11:00:00.000Z'),
+    });
+    expect(readyRun.readiness.state).toBe('ready');
+    expect(readyRun.satisfied).toBe(true);
+    expect(readyRun.attestationWritten).toBe(true);
+    expect(readyRun.transition).toBe('became-ready');
+    // The absent->ready edge fired the spec's declared completion event.
+    expect(emitted.map((e) => e.key)).toContain('external-prerequisite:ready:e2e-stripe');
+    expect(wakes).toContain('WI-e2e');
+
+    // The gate sees it standing, and refuses nothing.
+    const whileReady = await readScopePrerequisiteReadiness(SCOPE, [declared], {
+      nowMs: Date.parse('2026-08-24T11:30:00.000Z'),
+    });
+    expect(allPrerequisitesSatisfied(whileReady)).toBe(true);
+    expect(refusePrerequisites(whileReady)).toBeNull();
+
+    // 3. EXPIRE IT — purely by moving the evaluation instant past expiry. NOTHING
+    //    writes a row to make this true, which is the derivation D-003 relies on.
+    const whileExpired = await readScopePrerequisiteReadiness(SCOPE, [declared], {
+      nowMs: Date.parse('2026-08-24T12:00:00.000Z'),
+    });
+
+    // 4. OBSERVE THE TYPED REFUSAL — named, structured, carrying the accountable lane.
+    const refusal = refusePrerequisites(whileExpired);
+    expect(refusal).not.toBeNull();
+    expect(refusal!.code).toBe('external-prerequisite-not-standing');
+    expect(refusal!.prerequisites).toEqual([
+      {
+        key: 'e2e-stripe',
+        capabilityKind: 'stripe-endpoint',
+        owningWorkItem: 'WI-e2e',
+        state: 'expired',
+        reason: 'receipt-expired',
+        expiredAt: '2026-08-24T12:00:00.000Z',
+      },
+    ]);
+    // An operator reads WHICH wall and WHOSE lane straight off the refusal.
+    expect(refusal!.summary).toContain('e2e-stripe');
+    expect(refusal!.summary).toContain('WI-e2e');
+  });
+
+  it('an INDETERMINATE probe refuses without ever writing a false absence (D-002)', async () => {
+    const { runPrerequisiteProbe, createProbeRegistry } = await import(
+      './external-prerequisite-probe-runner'
+    );
+    const ports = {
+      ...createProbeRunnerPorts(SCOPE),
+      async emitEvent() {},
+      async wakeLaneOwner() {},
+    };
+    const declared = spec({ key: 'e2e-indeterminate', owningWorkItem: 'WI-ind' });
+    const registry = createProbeRegistry({
+      'probe:stripe-endpoint': async () => ({ status: 'indeterminate' as const, reason: 'timeout' }),
+    });
+
+    const run = await runPrerequisiteProbe(declared, registry, ports, {
+      nowMs: Date.parse('2026-08-24T11:00:00.000Z'),
+    });
+    expect(run.satisfied).toBe(false);
+    expect(run.attestationWritten).toBe(false);
+
+    // The store was NOT taught "the wall is down" — there is simply no row.
+    const rows = await db.adminSql<{ n: number }[]>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.external_prerequisite_attestations
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+         AND prerequisite_key = 'e2e-indeterminate'
+    `;
+    expect(rows[0].n).toBe(0);
+
+    // And the gate still fails CLOSED, refusing with 'no-attestation' rather than the
+    // positive claim 'probe-reported-absent'.
+    const snap = await readScopePrerequisiteReadiness(SCOPE, [declared], {
+      nowMs: Date.parse('2026-08-24T11:00:00.000Z'),
+    });
+    expect(refusePrerequisites(snap)!.prerequisites[0].reason).toBe('no-attestation');
   });
 });
 
