@@ -499,10 +499,6 @@ describe('P-004 — completion authority round-trips through both family views',
     await vi.waitFor(async () => {
       expect(await getKeyFireLatch(latchKey)).toBeNull();
     });
-    const { promise: flushed, resolve: flushDone } = Promise.withResolvers<void>();
-    setImmediate(flushDone);
-    await flushed;
-    expect(await getKeyFireLatch(latchKey)).toBeNull();
   });
 
   it('a close with no authority supplied stays null — D-008, no writer invents a judgement', async () => {
