@@ -23,6 +23,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
@@ -61,6 +62,7 @@ import {
   buildIsolatedScopeArgv,
   CHECKPOINT_FORKS_BY_MODE,
   checkpointScopeMemoryMaxG,
+  escapeSystemdServiceArgument,
   SCOPE_LAUNCH_FAILURE_RE,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
 } from '../../systemd-scope';
@@ -100,6 +102,75 @@ function parseMarkerLine(stdout: string, marker: string): Record<string, unknown
   } catch {
     return null;
   }
+}
+
+/** Paths for the external evidence owned by a scheduled green-checkpoint wrapper. */
+export interface CheckpointRunLogPaths {
+  runId: string;
+  logPath: string;
+  terminalPath: string;
+}
+
+/** Build a unique per-run checkpoint log path before the suite starts. */
+export function checkpointRunLogPaths(
+  logDir: string,
+  runId: string = randomUUID(),
+  now: Date = new Date(),
+): CheckpointRunLogPaths {
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  const fileSafeRunId = runId.replace(/[^a-zA-Z0-9_-]/g, '-') || 'run';
+  const logPath = path.join(logDir, `${stamp}-scheduled-${fileSafeRunId}.log`);
+  return { runId, logPath, terminalPath: `${logPath}.terminal.json` };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `\'"\'"\'`)}'`;
+}
+
+/**
+ * Wrap one checkpoint payload in an out-of-process evidence owner.
+ *
+ * The wrapper creates the log before invoking the suite, tees stdout/stderr back through the
+ * caller's pipes while appending both streams to the log, and records its own exit in a
+ * same-directory temp file followed by rename. That last write is deliberately outside the
+ * routine parent: a scheduled systemd scope can outlive the parent that launched it.
+ */
+export function buildScheduledCheckpointShell(
+  payload: readonly string[],
+  paths: CheckpointRunLogPaths,
+): string {
+  const command = payload.map(shellQuote).join(' ');
+  const runIdJson = shellQuote(JSON.stringify(paths.runId));
+  const logPathJson = shellQuote(JSON.stringify(paths.logPath));
+  const logDir = path.dirname(paths.logPath);
+  return [
+    `log=${shellQuote(paths.logPath)}`,
+    `terminal=${shellQuote(paths.terminalPath)}`,
+    `mkdir -p -- ${shellQuote(logDir)} 2>/dev/null || :`,
+    'rm -f -- "$terminal" "$terminal.tmp.$$"',
+    ': > "$log" 2>/dev/null || :',
+    `printf '%s\\n' ${shellQuote(`# scheduled green-checkpoint wrapper runId=${paths.runId}`)} >> "$log" 2>/dev/null || :`,
+    '_papercusp_write_checkpoint_terminal() {',
+    '  ec=$?',
+    '  trap - EXIT',
+    '  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+    '  tmp="$terminal.tmp.$$"',
+    `  printf '{"runId":%s,"logPath":%s,"exitCode":%s,"finishedAt":"%s"}\\n' ${runIdJson} ${logPathJson} "$ec" "$finished_at" > "$tmp" 2>/dev/null || :`,
+    '  mv -f -- "$tmp" "$terminal" 2>/dev/null || :',
+    '  exit "$ec"',
+    '}',
+    'trap _papercusp_write_checkpoint_terminal EXIT',
+    'exec 3> >(tee -a "$log")',
+    'stdout_tee_pid=$!',
+    'exec 4> >(tee -a "$log" >&2)',
+    'stderr_tee_pid=$!',
+    `${command} >&3 2>&4`,
+    'status=$?',
+    'exec 3>&-',
+    'exec 4>&-',
+    'wait "$stdout_tee_pid" "$stderr_tee_pid" 2>/dev/null || :',
+    'exit "$status"',
+  ].join('\n');
 }
 
 /**
