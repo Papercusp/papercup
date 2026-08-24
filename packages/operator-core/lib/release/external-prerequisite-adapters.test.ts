@@ -369,7 +369,6 @@ describe('no adapter reports an absence for something it merely failed to determ
         },
         async emitEvent() {},
         async wakeLaneOwner() {},
-        async refreshScorecardCriterion() {},
       };
       const registry = createProbeRegistry({ [row.spec.probeRef]: row.probe });
       const res = await runPrerequisiteProbe(row.spec, registry, ports, { nowMs: NOW });
@@ -394,7 +393,6 @@ describe('adapters wired through the runner produce a usable receipt', () => {
       },
       async emitEvent() {},
       async wakeLaneOwner() {},
-      async refreshScorecardCriterion() {},
     };
     const probe = createStripeEndpointProbe({
       env: envAllPresent,
@@ -424,7 +422,6 @@ describe('adapters wired through the runner produce a usable receipt', () => {
       },
       async emitEvent() {},
       async wakeLaneOwner() {},
-      async refreshScorecardCriterion() {},
     };
     const probe = createAppleSigningProbe({
       source: {
