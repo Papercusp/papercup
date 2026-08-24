@@ -277,6 +277,13 @@ describe('capability:read', () => {
       }
     }
 
+    const argsSchema = readTool.args as unknown as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    expect(
+      argsSchema.safeParse({ file_path: '/tmp/checkpoint.log', evidence_class: 'event', tail: 10 }).success,
+    ).toBe(false);
+
     const f = join(DIR, 'evidence-mixed-window.json');
     writeFileSync(f, '{}');
     const mixed = (await readTool.handler!({

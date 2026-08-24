@@ -115,26 +115,8 @@ export function doorSafePageBytes(
   return Math.min(requestedBytes, fits);
 }
 
-export default defineTool({
-  name: 'capability:read',
-  description:
-    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
-  guidance: {
-    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
-    notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
-    chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
-    seeAlso: [
-      'capability:edit (exact-string edit)',
-      'capability:write (overwrite / create)',
-      'capability:bash (grep / rg to search across files)',
-    ],
-  },
-  capability: 'capability:fs-read',
-  requirePrincipal: false,
-  // Evidence-only acceptance judges may read cited files, but remain outside every
-  // fs-write/bash tool allowlist and capability grant.
-  agentRoles: [...AGENT_ROLES, 'judge'],
-  args: z.object({
+const readArgs = z
+  .object({
     file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
     uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
     offset: z.number().int().nonnegative().optional().describe(`1-based line to start from. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -174,7 +156,45 @@ export default defineTool({
     evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).optional().describe(
       `For a stable result-door reference, resolve only the JSON values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
     ),
-  }),
+  })
+  .superRefine((args, refinementCtx) => {
+    if (
+      args.evidence_class &&
+      (args.content_indexes ||
+        args.byte_offset !== undefined ||
+        args.byte_limit !== undefined ||
+        args.offset !== undefined ||
+        args.limit !== undefined ||
+        args.tail !== undefined)
+    ) {
+      refinementCtx.addIssue({
+        code: 'custom',
+        path: ['evidence_class'],
+        message: 'evidence_class cannot be combined with content, line, or byte windows.',
+      });
+    }
+  });
+
+export default defineTool({
+  name: 'capability:read',
+  description:
+    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
+  guidance: {
+    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
+    notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
+    chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
+    seeAlso: [
+      'capability:edit (exact-string edit)',
+      'capability:write (overwrite / create)',
+      'capability:bash (grep / rg to search across files)',
+    ],
+  },
+  capability: 'capability:fs-read',
+  requirePrincipal: false,
+  // Evidence-only acceptance judges may read cited files, but remain outside every
+  // fs-write/bash tool allowlist and capability grant.
+  agentRoles: [...AGENT_ROLES, 'judge'],
+  args: readArgs,
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
     const filePath = args.file_path ?? args.uri;
