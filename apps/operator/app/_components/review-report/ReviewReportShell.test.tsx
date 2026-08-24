@@ -72,8 +72,8 @@ function renderShell(over: Partial<Parameters<typeof ReviewReportShell>[0]> = {}
 }
 
 const applyBtn = () => screen.getByTestId('review-report-apply') as HTMLButtonElement;
-const groupCheck = (id: string) => screen.getByTestId(`review-group-check-${id}`) as HTMLInputElement;
-const rowCheck = (id: string) => screen.getByTestId(`review-row-check-${id}`) as HTMLInputElement;
+const groupCheck = (id: string) => screen.getByTestId(`review-group-check-${id}`) as HTMLButtonElement;
+const rowCheck = (id: string) => screen.getByTestId(`review-row-check-${id}`) as HTMLButtonElement;
 
 describe('rendering', () => {
   it('renders title, subtitle, groups, rows, evidence and confidence flags', () => {
@@ -135,24 +135,21 @@ describe('tri-state group checkbox', () => {
   it('reflects all → indeterminate → none, and toggles its pending rows as a block', () => {
     renderShell();
     const check = groupCheck('flip-to-done');
-    expect(check.checked).toBe(true);
-    expect(check.indeterminate).toBe(false);
+    expect(check.getAttribute('aria-checked')).toBe('true');
 
     fireEvent.click(rowCheck('f2'));
-    expect(groupCheck('flip-to-done').checked).toBe(false);
-    expect(groupCheck('flip-to-done').indeterminate).toBe(true);
+    expect(groupCheck('flip-to-done').getAttribute('aria-checked')).toBe('mixed');
 
     // some → select ALL pending in the group
     fireEvent.click(groupCheck('flip-to-done'));
-    expect(groupCheck('flip-to-done').checked).toBe(true);
+    expect(groupCheck('flip-to-done').getAttribute('aria-checked')).toBe('true');
     expect(applyBtn().textContent).toContain('(3)');
 
     // all → clear the group (other groups untouched)
     fireEvent.click(groupCheck('flip-to-done'));
-    expect(groupCheck('flip-to-done').checked).toBe(false);
-    expect(groupCheck('flip-to-done').indeterminate).toBe(false);
+    expect(groupCheck('flip-to-done').getAttribute('aria-checked')).toBe('false');
     expect(applyBtn().textContent).toContain('(1)');
-    expect(rowCheck('o2').checked).toBe(true);
+    expect(rowCheck('o2').getAttribute('aria-checked')).toBe('true');
   });
 
   it('only counts pending rows — a group of applied rows renders its checkbox disabled', () => {

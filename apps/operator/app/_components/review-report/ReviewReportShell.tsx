@@ -27,6 +27,7 @@
  * live (selection self-intersects with what is still pending).
  */
 import { useMemo, useState, type ReactNode } from 'react';
+import { Checkbox } from '../../harness/Checkbox';
 import './review-report.css';
 
 export type ReviewRowConfidence = 'provable' | 'recommended';
@@ -186,15 +187,11 @@ export default function ReviewReportShell({
         return (
           <section key={group.id} className="review-report__group" data-testid={`review-group-${group.id}`}>
             <header className="review-report__group-head">
-              <input
-                type="checkbox"
-                className="review-report__group-check"
-                data-testid={`review-group-check-${group.id}`}
-                aria-label={`Select all in ${group.title}`}
+              <Checkbox
+                dataTestId={`review-group-check-${group.id}`}
+                ariaLabel={`Select all in ${group.title}`}
                 checked={groupState === 'all'}
-                ref={(el) => {
-                  if (el) el.indeterminate = groupState === 'some';
-                }}
+                indeterminate={groupState === 'some'}
                 disabled={busy || groupPending.length === 0}
                 onChange={() => toggleGroup(group)}
               />
@@ -230,10 +227,9 @@ export default function ReviewReportShell({
                     >
                       <span className="review-report__row-check-slot">
                         {selectable ? (
-                          <input
-                            type="checkbox"
-                            data-testid={`review-row-check-${row.id}`}
-                            aria-label={`Select ${row.title}`}
+                          <Checkbox
+                            dataTestId={`review-row-check-${row.id}`}
+                            ariaLabel={`Select ${row.title}`}
                             checked={liveSelected.has(row.id)}
                             disabled={busy}
                             onChange={() => toggleRow(row.id)}
