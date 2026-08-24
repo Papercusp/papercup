@@ -650,6 +650,40 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
     expect(s.recommendation).toMatch(/Do NOT run `release:checkpoint-run` again/);
   });
 
+  it('P-009 reports pre-lock materialization as running under process authority, never idle', () => {
+    const snap = mkSnap(
+      { consecutiveReds: 2, failingTests: ['historical-red.test.ts'] },
+      { deployedBehindGreenPin: 0 },
+    );
+    snap.activeRun = {
+      active: true,
+      preLockAuthority: {
+        workspace: 'papercusp-workspace',
+        harness: 'papercusp',
+        cgroupPath: '/user.slice/run-u42.scope',
+        pid: 4242,
+      },
+      candidate: null,
+      startedAtMs: 1,
+      progressAtMs: 1,
+      currentPhase: 'materializing',
+      elapsedSec: 3,
+    };
+
+    const s = computeDeployStatus(snap);
+    expect(s.checkpoint).toEqual({
+      state: 'running',
+      authority: 'process-authority',
+      phase: 'materializing',
+      blocker: null,
+      verdictPending: true,
+      probe: { status: 'ok', detail: null },
+    });
+    expect(s.gate.failingTests).toEqual([]);
+    expect(s.recommendation).toMatch(/ACTIVE/);
+    expect(s.recommendation).toMatch(/Do NOT run `release:checkpoint-run` again/);
+  });
+
   it('P-009 distinguishes a measured idle probe from a deliberate routine pause', () => {
     const idle = mkSnap({}, {});
     idle.routines.greenCheckpoint = {
