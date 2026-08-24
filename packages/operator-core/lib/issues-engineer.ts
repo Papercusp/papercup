@@ -48,8 +48,13 @@ import { createBugFreshnessEnvelope } from './work-item-claim-freshness';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
-import { TERMINAL_COMPLETION_EVIDENCE_KEY, terminalPayloadMergeJson } from './coord-lifecycle/records';
-import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
+import {
+  COMPLETION_ATTESTATIONS_KEY,
+  TERMINAL_COMPLETION_EVIDENCE_KEY,
+  readStoredAssumptions,
+  terminalPayloadMergeJson,
+} from './coord-lifecycle/records';
+import type { CompletionAttestation, StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import {
   auditPredicateSql,
   auditPredicateSqlFor,
@@ -59,6 +64,7 @@ import {
 import { dedupSignature } from './harness/improvements/digest';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import {
+  isSufficientEvidence,
   isWorkItemCompletionAuthority,
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
@@ -459,6 +465,28 @@ function threadId(id: string): string {
 }
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
+  let obj = payload;
+  if (typeof obj === 'string') {
+    try {
+      obj = JSON.parse(obj) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null;
+  let value = (obj as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  return value as CompletionVerificationEvidence;
 }
 
 export interface IssueRowDb {
@@ -2495,19 +2523,84 @@ export async function setIssueState(
   // system paths without adding a trigger bypass.
   let priorAssignee: string | null = null;
   let terminalWriteSucceeded = false;
+  let terminalWriteWasAttested = false;
   const rows = await boundedOrgTxn(async (tx) => {
     if (isTerminal) {
       // Read the holder in the SAME transaction as the terminal UPDATE. The
       // cached goal must be cleared for the holder that this write actually
       // released, not for the completion actor (which may be a system path).
-      const prior = await tx<{ taken_by: string | null }[]>`
-        SELECT taken_by
+      const prior = await tx<{
+        taken_by: string | null;
+        status: string;
+        payload: unknown;
+        terminal_owner: string | null;
+        terminal_completion_ref: string | null;
+        authority: string | null;
+      }[]>`
+        SELECT taken_by, status, payload, terminal_owner, terminal_completion_ref, authority
           FROM harness_shared.work_items
          WHERE workspace_id = ${ws} AND feature_id = ${id}
            AND item_kind IN ('bug', 'change', 'task')
            AND origin <> 'remote'
          FOR UPDATE`;
-      priorAssignee = prior[0]?.taken_by ?? null;
+      const priorRow = prior[0];
+      priorAssignee = priorRow?.taken_by ?? null;
+
+      // EI-21351699305761113 / EI-18736669939338784: direct issue callers bypass
+      // work-items.ts's second-terminal-close guard. Preserve the first completion
+      // record here while the row lock is held, so a stale peer cannot overwrite
+      // terminal credit, state, or structured evidence. A strictly richer incoming
+      // record may supersede the first, but the displaced record is archived rather
+      // than discarded.
+      const isSecondTerminalClose =
+        !opts.force &&
+        !opts.skipCompletionGate &&
+        Boolean(by?.trim()) &&
+        Boolean(priorRow?.terminal_owner) &&
+        by !== priorRow?.terminal_owner &&
+        ISSUE_TERMINAL_STATUSES.has(priorRow?.status ?? '') &&
+        ISSUE_TERMINAL_STATUSES.has(state);
+      if (isSecondTerminalClose && priorRow) {
+        const existingEvidence = extractTerminalCompletionEvidence(priorRow.payload);
+        const incomingEvidence = opts.completionEvidence ?? null;
+        const existingSufficient = isSufficientEvidence(existingEvidence);
+        const incomingSufficient = isSufficientEvidence(incomingEvidence);
+        const upgrade = incomingSufficient && !existingSufficient;
+        const existingAuthority = isWorkItemCompletionAuthority(priorRow.authority)
+          ? priorRow.authority
+          : null;
+        const attestation: CompletionAttestation = {
+          at: new Date().toISOString(),
+          by: upgrade ? priorRow.terminal_owner : (by ?? null),
+          state: upgrade ? priorRow.status : state,
+          completionRef: upgrade ? priorRow.terminal_completion_ref : (completionRef ?? null),
+          completionAuthority: upgrade ? existingAuthority : (opts.completionAuthority ?? null),
+          evidence: upgrade ? existingEvidence : incomingEvidence,
+          assumptions: upgrade ? readStoredAssumptions(priorRow.payload) : (opts.assumptions ?? null),
+          outcome: upgrade ? 'superseded' : 'attested',
+        };
+        const existingAttestations =
+          (priorRow.payload as Record<string, unknown> | null)?.[COMPLETION_ATTESTATIONS_KEY];
+        const priorAttestations = Array.isArray(existingAttestations) ? existingAttestations : [];
+        const mergedAttestations = JSON.stringify({
+          [COMPLETION_ATTESTATIONS_KEY]: [...priorAttestations.slice(-4), attestation],
+        });
+        await tx`
+          UPDATE harness_shared.work_items
+             SET payload = COALESCE(payload, '{}'::jsonb) || ${mergedAttestations}::text::jsonb,
+                 updated_ts = (extract(epoch FROM now()) * 1000)::bigint
+           WHERE workspace_id = ${ws} AND feature_id = ${id}
+             AND item_kind IN ('bug', 'change', 'task')
+             AND origin <> 'remote'`;
+        if (!upgrade) {
+          terminalWriteWasAttested = true;
+          return await tx<IssueRowDb[]>`
+            SELECT ${tx.unsafe(ISSUE_COLS)}
+              FROM harness_shared.engineer_issues
+             WHERE workspace_id = ${ws} AND issue_id = ${id} AND origin <> 'remote'
+             ORDER BY updated_at DESC NULLS LAST`;
+        }
+      }
       const updated = await tx<{ feature_id: string }[]>`
         UPDATE harness_shared.work_items
          SET status = ${state}, origin = 'local', updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
@@ -2613,7 +2706,9 @@ export async function setIssueState(
   // work-item-status-full-unify: classify via the (transitionally-widened) terminal set so a
   // unified `done`/`dropped` write still delivers the 'resolved' event kind, not 'updated'.
   const resolved = ISSUE_TERMINAL_STATUSES.has(state);
-  await deliver(issue, resolved ? 'resolved' : 'updated', `issue ${id} → ${state}: ${issue.title}`, by ?? 'substrate');
+  if (!terminalWriteWasAttested) {
+    await deliver(issue, resolved ? 'resolved' : 'updated', `issue ${id} → ${state}: ${issue.title}`, by ?? 'substrate');
+  }
   return issue;
 }
 

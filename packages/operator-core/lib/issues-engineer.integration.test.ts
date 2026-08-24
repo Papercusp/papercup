@@ -388,6 +388,46 @@ describe('engineer issues surface (real PG)', () => {
     }
   });
 
+  it('EI-21351699305761113: direct setIssueState preserves the first cross-owner terminal completion', async () => {
+    const rich = {
+      verifiedHow: 'integration' as const,
+      testsRun: 'npm run test:file -- issues-engineer.integration.test.ts',
+      testResult: 'focused regression green',
+    };
+    const thin = { verifiedHow: 'unit' as const };
+    const { id } = await issues.createIssue({ title: 'direct duplicate close', createdBy: 'agA' });
+
+    await issues.setIssueState(id, 'resolved', 'agA', 'owner A verified completion', {
+      completionEvidence: rich,
+    });
+    const second = await issues.setIssueState(id, 'closed', 'agB', 'owner B stale duplicate', {
+      completionEvidence: thin,
+    });
+
+    expect(second?.state).toBe('resolved');
+    expect(second?.terminalOwner).toBe('agA');
+    expect(second?.terminalCompletionRef).toBe('owner A verified completion');
+    expect(second?.payload).toMatchObject({ _completionEvidence: rich });
+    const payload = second?.payload as Record<string, unknown>;
+    expect(payload._completionAttestations).toEqual([
+      expect.objectContaining({ by: 'agB', outcome: 'attested', state: 'closed', evidence: thin }),
+    ]);
+
+    const [row] = await db.sql<{
+      status: string;
+      terminal_owner: string | null;
+      terminal_completion_ref: string | null;
+      payload: Record<string, unknown> | null;
+    }[]>`
+      SELECT status, terminal_owner, terminal_completion_ref, payload
+        FROM harness_shared.work_items
+       WHERE feature_id = ${id}`;
+    expect(row?.status).toBe('resolved');
+    expect(row?.terminal_owner).toBe('agA');
+    expect(row?.terminal_completion_ref).toBe('owner A verified completion');
+    expect(row?.payload).toMatchObject({ _completionEvidence: rich });
+  });
+
   it('terminal issue transitions clear the progress anchor with the released claim', async () => {
     const { id } = await issues.createIssue({ title: 'clear progress on close', createdBy: 'agA' });
     await issues.claimIssue(id, 'agB');
