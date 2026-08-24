@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -176,6 +177,40 @@ describe('immutable dependency generation', () => {
     expect(selected.stdout).toContain(
       `path=${join(generationRoot, identity)}`,
     );
+  });
+
+  it('replaces a corrupt same-identity generation instead of trusting its marker', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    const identity = publishedIdentity(first.stdout);
+    const publishedFile = join(generation, 'tree/node_modules/pkg/index.js');
+
+    // Preserve the identity/snapshot marker while corrupting the tree. The next
+    // publisher's initial full validation fails, it builds a valid replacement,
+    // then reaches the publish-lock race where a marker-only check used to
+    // discard that replacement as "reused" and leave this corruption in place.
+    chmodSync(publishedFile, 0o644);
+    writeFileSync(publishedFile, 'corrupt\n');
+
+    const repaired = publish(integration);
+    expect(repaired.status, repaired.stderr).toBe(0);
+    expect(repaired.stdout).toContain('reused=false');
+    expect(publishedPath(repaired.stdout)).toBe(generation);
+    expect(readFileSync(publishedFile, 'utf8')).toBe('root-v1\n');
+    expect(repaired.stderr).toContain('quarantined invalid generation');
+    expect(
+      readdirSync(join(integration, '.papercusp/dependency-generations')).some(
+        (entry) => entry.startsWith(`.invalid-${identity}-`),
+      ),
+    ).toBe(true);
+
+    const selected = selectGeneration(
+      join(integration, '.papercusp/dependency-generations'),
+      identity,
+    );
+    expect(selected.status, selected.stderr).toBe(0);
   });
 
   it('rejects a malformed explicit identity before it can escape the generation root', () => {

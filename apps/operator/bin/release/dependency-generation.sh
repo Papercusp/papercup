@@ -424,11 +424,16 @@ dependency_generation_ensure() {
   }
   # Keep the build-owner marker until the short publish lock is held; otherwise
   # a concurrent cleanup can mistake this complete-but-not-yet-published tree
-  # for an abandoned build. A generation that appeared since our full validation
-  # was atomically published by a competing builder, so the marker check here is
-  # intentionally O(1) and keeps the publish lock short.
+  # for an abandoned build. A generation may have appeared since our initial
+  # validation, but its marker alone is not proof that the published tree is
+  # still valid. A stale/corrupt tree can retain the expected identity and
+  # snapshot fields; accepting that marker would discard this fully-validated
+  # replacement and leave exact-id consumers pinned to the corrupt tree.
+  # Re-validate the competing generation under the publish lock so that the
+  # decision and any quarantine/replacement remain one serialized operation.
+  # The expensive branch is limited to a same-identity race or repair.
   rm -f -- "$build/.papercusp-generation-writer"
-  if dependency_generation_marker_matches "$generation" "$identity"; then
+  if dependency_generation_is_valid "$generation" "$identity"; then
     dependency_generation_remove_build "$build"
     DEPENDENCY_GENERATION_REUSED='true'
   else
