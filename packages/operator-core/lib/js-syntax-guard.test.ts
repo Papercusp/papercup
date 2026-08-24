@@ -99,13 +99,64 @@ describe('check-js-syntax scope', () => {
   });
 });
 
+/**
+ * WI-41180 — EVERY `execFileSync` IN THIS FILE MUST CARRY THIS TIMEOUT.
+ *
+ * `execFileSync` is SYNCHRONOUS: it blocks the worker's event loop inside libuv's
+ * `uv_spawn_sync`, which polls the child's stdout/stderr pipes. While that loop is blocked
+ * NO JS TIMER CAN FIRE, so vitest's `testTimeout` (60s) and `hookTimeout` (60s) are powerless
+ * BY CONSTRUCTION — they are implemented as timers. An unbounded sync spawn is therefore the
+ * one shape of test hang that the test framework cannot interrupt at all.
+ *
+ * This file runs in the PURE lane (`isolate: false`, ~2,740 operator-core files sharing a
+ * fork), so a block here does not stall one file — it stalls every co-resident file in that
+ * fork. MEASURED on 2026-08-24 (run 3882365-cd0504e1): captured output froze at 522,385 bytes
+ * between elapsed 120s and 180s and never moved again; `@papercusp/operator-core ::
+ * test:lane-pure` was SIGKILLed by the batch watchdog at its 2700s floor, 2,731 of 2,740 files
+ * done. This file was the ONLY pre-incident pure-lane file that never reported completion.
+ * Cost: 45 minutes per whole-radius affected run, with lane-pure coverage unmeasured.
+ *
+ * The bound is deliberately generous — the full-tree scan measures ~1.8s (3 runs, host load
+ * ~51) — because the failure it must convert is "blocks forever", not "is slow". Anything far
+ * below the 2700s watchdog floor turns a silent 45-minute wedge into a named failure.
+ */
+const GUARD_TIMEOUT_MS = 120_000;
+
+/**
+ * Normalise a spawn failure, and make a TIMEOUT loud rather than letting it masquerade as an
+ * ordinary non-zero exit. On timeout `execFileSync` kills the child and throws with
+ * `status === null` (plus `signal` set / `code === 'ETIMEDOUT'`), which a bare `status ?? -1`
+ * would silently flatten into "exit -1" — reporting a wedged guard as a normal assertion
+ * failure and hiding the very defect this timeout exists to surface.
+ */
+const classifySpawnFailure = (e: unknown, what: string) => {
+  const err = e as { status?: number | null; stdout?: string; stderr?: string; code?: string; signal?: string };
+  if (err.status == null) {
+    throw new Error(
+      `${what} did not exit normally within ${GUARD_TIMEOUT_MS}ms ` +
+        `(code=${err.code ?? 'none'} signal=${err.signal ?? 'none'}). ` +
+        `A synchronous spawn cannot be interrupted by vitest's timeouts, so this would otherwise ` +
+        `have wedged the whole pure lane until the 2700s batch watchdog (WI-41180).\n` +
+        `${err.stdout ?? ''}${err.stderr ?? ''}`,
+    );
+  }
+  return { code: err.status, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+};
+
 describe('check-js-syntax CLI', () => {
   const run = (args: string[]) => {
     try {
-      return { code: 0, out: execFileSync(process.execPath, [GUARD, ...args], { encoding: 'utf8', cwd: ROOT }) };
+      return {
+        code: 0,
+        out: execFileSync(process.execPath, [GUARD, ...args], {
+          encoding: 'utf8',
+          cwd: ROOT,
+          timeout: GUARD_TIMEOUT_MS,
+          killSignal: 'SIGKILL',
+        }),
+      };
     } catch (e) {
-      const err = e as { status?: number; stdout?: string; stderr?: string };
-      return { code: err.status ?? -1, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+      return classifySpawnFailure(e, 'check-js-syntax (scoped)');
     }
   };
 
@@ -130,11 +181,19 @@ describe('check-js-syntax — live verdict over the real tree', () => {
     let out: string;
     let code = 0;
     try {
-      out = execFileSync(process.execPath, [GUARD], { encoding: 'utf8', cwd: ROOT });
+      // The full-tree scan: enumerates via `git ls-files --recurse-submodules` (which can block
+      // on .git/index.lock while git-sync commits this shared tree) and then spawns `node --check`
+      // per tracked .mjs. Both legs are unbounded without this timeout — see GUARD_TIMEOUT_MS.
+      out = execFileSync(process.execPath, [GUARD], {
+        encoding: 'utf8',
+        cwd: ROOT,
+        timeout: GUARD_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      });
     } catch (e) {
-      const err = e as { status?: number; stdout?: string; stderr?: string };
-      code = err.status ?? -1;
-      out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
+      const r = classifySpawnFailure(e, 'check-js-syntax (full tree)');
+      code = r.code;
+      out = r.out;
     }
     // Assert the DENOMINATOR before the verdict. A guard enumerating via git ls-files
     // returns nothing for a checkout it cannot read, and its ✓ then means "scanned
