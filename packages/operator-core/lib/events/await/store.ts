@@ -2129,6 +2129,27 @@ export async function getKeyFireLatch(eventKey: string): Promise<KeyFireRow | nu
   return rows.length > 0 ? mapKeyFire(rows[0]) : null;
 }
 
+/** EI-21342578761370279: drop the fire latch for `eventKey`. Used when a
+ *  work-item REOPENS: its previous terminal cycle's `work-item:done:<id>`
+ *  latch is obsolete against the live item and misreports `fired_undeclared`
+ *  to events:status readers. `firedBefore` bounds the delete to latches
+ *  recorded before that epoch-ms, so a clear racing a fresh re-settle cannot
+ *  erase the NEW cycle's row. The next real emit re-upserts via
+ *  `recordKeyFire`. Best-effort at the call site. */
+export async function clearKeyFire(
+  eventKey: string,
+  opts?: { firedBefore?: number },
+): Promise<void> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const before = new Date(opts?.firedBefore ?? 0);
+  await sql`
+    DELETE FROM harness_shared.event_key_fires
+     WHERE workspace_id = ${ws} AND event_key = ${eventKey}
+       AND last_fired_at < ${before}
+  `;
+}
+
 /**
  * EI-18676056143796303 — EMITTER EVIDENCE for the EI-10870 orphan-await guard.
  *
