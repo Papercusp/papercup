@@ -176,6 +176,13 @@ export async function registerAwait(input: {
   producerHealthCertificate?: ProducerHealthCertificate | null;
   /** Lifecycle owner for auto/suggested-armed rows. Manual awaits omit it. */
   boundTo?: LifecycleBinding | null;
+  /** Retire this owner's pending exact-key rows atomically with the replacement insert. */
+  supersedePending?: {
+    /** Preserve rows owned by a different coordination surface. */
+    excludeNotePrefix?: string;
+    /** Restrict cancellation to one coordination surface (used by re-stage). */
+    includeNotePrefix?: string;
+  };
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -190,6 +197,60 @@ export async function registerAwait(input: {
     // ISO text, not a raw Date — the live org postgres-js client throws on
     // Date binding (the repo's known quirk); PG casts text→timestamptz.
     input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null;
+  if (input.supersedePending) {
+    return boundedOrgTxn(async (tx) => {
+      // Serialize only the exact subscriber/key pair. Every superseding
+      // registration retires the prior pending row(s) and inserts its own
+      // replacement before releasing the lock, so concurrent retries cannot
+      // leave multiple active awaits behind.
+      const lockKey = `event-await:${ws}:${input.subscriberId}:${input.eventKey}`;
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+      const noteFilter =
+        input.supersedePending?.includeNotePrefix != null
+          ? tx`AND note LIKE ${input.supersedePending.includeNotePrefix + '%'}`
+          : input.supersedePending?.excludeNotePrefix != null
+            ? tx`AND (note IS NULL OR note NOT LIKE ${input.supersedePending.excludeNotePrefix + '%'})`
+            : tx``;
+      await tx`
+        UPDATE harness_shared.event_awaits
+           SET cancelled_at = now()
+         WHERE workspace_id = ${ws}
+           AND subscriber_id = ${input.subscriberId}
+           AND event_key = ${input.eventKey}
+           AND policy <> 'announce'
+           AND fired_at IS NULL AND cancelled_at IS NULL
+           ${noteFilter}
+      `;
+      const rows = input.boundTo
+        ? await tx`
+            INSERT INTO harness_shared.event_awaits
+              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
+               expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health, bound_to)
+            VALUES
+              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+               ${input.urgency ?? false},
+               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
+               ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
+            RETURNING *
+          `
+        : await tx`
+            INSERT INTO harness_shared.event_awaits
+              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
+            VALUES
+              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+               ${input.urgency ?? false},
+               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
+            RETURNING *
+          `;
+      return mapAwait(rows[0]);
+    });
+  }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
   // supplied. Besides preserving manual-watch semantics, this lets older
   // hand-rolled test fixtures keep exercising the unbound path honestly.

@@ -887,6 +887,9 @@ export default defineTool({
       timeoutSec: effectiveTimeoutSec,
       payloadFilter: effectivePayloadFilter,
       producerHealthCertificate,
+      supersedePending: {
+        excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+      },
     });
 
     // ── EI-21124063749265204: close the registration-window race for the dynamic
