@@ -30,12 +30,10 @@ import {
 import {
   buildResolverLaunchCommand,
   preflightResolverLaunch,
+  resolvePersistedResolverLaunch,
   resolverSpawnOutcome,
 } from './attention-bulk-resolve';
-import {
-  resolveBulkResolverLaunch,
-  type EffectiveBulkResolverLaunch,
-} from '../../../agent-config-constants';
+import type { EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
 
 export const MAX_RUN_PLANS = 200;
 
@@ -164,7 +162,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
           { status: restarted.reason === 'run_not_found' ? 404 : 409 },
         );
       }
-      const launch = resolveBulkResolverLaunch(restarted.run.launchSnapshot);
+      const launch = resolvePersistedResolverLaunch(restarted.run.launchSnapshot);
       if (!launch.ok || !launch.effective) {
         await setRunPhase({
           runId,

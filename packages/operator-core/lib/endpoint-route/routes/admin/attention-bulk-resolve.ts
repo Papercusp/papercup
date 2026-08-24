@@ -57,6 +57,7 @@ import {
   markItemAccepted,
   setRunPhase,
   settleRunPhase,
+  type BulkRunLaunchSnapshot,
   type BulkRunSeedItem,
 } from '../../../attention/bulk-run-store';
 import { notifyBulkRunChanged } from '../../../attention/bulk-run-sync';
@@ -213,6 +214,18 @@ export function preflightResolverLaunch(
     };
   }
   return { ok: true, launch: resolved.effective };
+}
+
+/** Rehydrate the exact click-time profile for restart. `backend` is derived
+ * again from the persisted model (D-002); nullable legacy fields inherit the
+ * same defaults the original start route used. */
+export function resolvePersistedResolverLaunch(snapshot: BulkRunLaunchSnapshot) {
+  return resolveBulkResolverLaunch({
+    model: snapshot.model ?? null,
+    effort: snapshot.effort ?? null,
+    account: snapshot.account ?? 'default',
+    carry: snapshot.carry ?? 'warm',
+  });
 }
 
 export type ResolverSpawnOutcome =
@@ -388,7 +401,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
           { status: restarted.reason === 'run_not_found' ? 404 : 409 },
         );
       }
-      const launch = resolveBulkResolverLaunch(restarted.run.launchSnapshot);
+      const launch = resolvePersistedResolverLaunch(restarted.run.launchSnapshot);
       if (!launch.ok || !launch.effective) {
         await setRunPhase({
           runId,
