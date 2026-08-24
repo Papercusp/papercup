@@ -20,6 +20,7 @@ vi.mock('../../db-boot-migrate', () => ({
 
 vi.mock('../../release/checkpoint-serializer-authority', () => ({
   readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'routine-not-paused' })),
+  armPausedCheckpointTransition: vi.fn(async () => ({ status: 'unreadable', error: 'not configured in this test' })),
 }));
 
 const MAKE_CTX = (role = 'operator') =>
@@ -80,6 +81,7 @@ beforeEach(() => {
   // no-serializer baseline before every import so later tests never open live PG.
   vi.doMock('../../release/checkpoint-serializer-authority', () => ({
     readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'routine-not-paused' })),
+    armPausedCheckpointTransition: vi.fn(async () => ({ status: 'unreadable', error: 'not configured in this test' })),
   }));
   // Keep the broad handler suite hermetic: queue-specific cases below opt into the real
   // helper after installing their routine/DB mocks.
@@ -117,6 +119,8 @@ afterEach(() => {
   vi.doUnmock('@papercusp/db-org');
   vi.doUnmock('../../release/checkpoint-required-ancestor');
   vi.doUnmock('../../release/checkpoint-serializer-authority');
+  vi.doUnmock('../../work-items');
+  vi.doUnmock('../work_items/release-force-guard');
 });
 
 /**
@@ -1792,7 +1796,8 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       claimState: 'held',
       unknown: null,
       takenBy: 'su-live-holder',
-      takenAt: '2026-08-12T02:00:00.000Z',
+      takenAt: new Date().toISOString(),
+      lastProgressAt: new Date().toISOString(),
       expiresAt: null,
       holderSessionState: 'live',
       duplicates: [],
@@ -1837,7 +1842,8 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       claimState: 'held',
       unknown: null,
       takenBy: 'su-ambiguous-holder',
-      takenAt: '2026-08-12T02:00:00.000Z',
+      takenAt: new Date().toISOString(),
+      lastProgressAt: new Date().toISOString(),
       expiresAt: null,
       holderSessionState: 'suspect',
       duplicates: [],
@@ -1897,7 +1903,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     });
   });
 
-  it('EI-20209536730887204: a missed required wake fails open and records the ambiguous launch', async () => {
+  it('P-008: a missed required wake transfers ownership and does not launch', async () => {
     const launchSpy = mockLaunch();
     const ownership = {
       eventKey: 'gate-red-streak:papercusp',
@@ -1905,7 +1911,8 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       claimState: 'held',
       unknown: null,
       takenBy: 'su-ambiguous-holder',
-      takenAt: '2026-08-12T02:00:00.000Z',
+      takenAt: new Date().toISOString(),
+      lastProgressAt: new Date().toISOString(),
       expiresAt: null,
       holderSessionState: 'draining',
       duplicates: [],
@@ -1929,6 +1936,24 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       fanoutCapped: [],
     }));
     vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+    const claimWorkItem = vi.fn(async () => ({ id: 'WI-38026', harness: 'papercusp' }));
+    vi.doMock('../../work-items', async () => {
+      const actual = await vi.importActual<typeof import('../../work-items')>('../../work-items');
+      return { ...actual, claimWorkItem };
+    });
+    const assessForceRelease = vi.fn(async () => ({
+      allowed: true,
+      basis: 'holder-wake-missed' as const,
+      holderLiveness: {},
+    }));
+    const recordForceTransitionAudit = vi.fn(async () => {});
+    const notifyForceTransition = vi.fn(async () => {});
+    vi.doMock('../work_items/release-force-guard', async () => {
+      const actual = await vi.importActual<typeof import('../work_items/release-force-guard')>(
+        '../work_items/release-force-guard',
+      );
+      return { ...actual, assessForceRelease, recordForceTransitionAudit, notifyForceTransition };
+    });
 
     const { default: tool } = await import('./checkpoint-run');
     const metadata = vi.fn();
@@ -1944,12 +1969,152 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     const b = parse((await tool.handler({}, ctx)) as never);
 
     expect(wakeRecipients).toHaveBeenCalledTimes(1);
-    expect(launchSpy).toHaveBeenCalledTimes(1);
-    expect(b).toMatchObject({ ok: true, launched: true });
+    expect(claimWorkItem).toHaveBeenCalledWith('WI-38026', 'su-caller', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-ambiguous-holder',
+    });
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      launched: false,
+      scheduled: false,
+      ownership_transferred: true,
+      reason: 'condition_ownership_transferred',
+      transfer_basis: 'holder-wake-missed',
+    });
     expect(metadata).toHaveBeenCalledTimes(1);
-    expect(metadata.mock.calls[0][0]).toMatchObject({
-      ownershipLivenessAmbiguous: true,
-      preLaunchExclusion: 'passed',
+    expect(metadata).toHaveBeenCalledWith({
+      standDown: 'condition_ownership_transferred',
+      standDownWorkItem: 'WI-38026',
+      standDownTakenBy: 'su-ambiguous-holder',
+      standDownTransferBasis: 'holder-wake-missed',
+      standDownWakeCount: 0,
+    });
+  });
+
+  it('P-008: an expired critical progress lease transfers despite a live, wakeable holder', async () => {
+    const launchSpy = mockLaunch();
+    const staleProgress = new Date(Date.now() - 31 * 60_000).toISOString();
+    const ownership = {
+      eventKey: 'gate-red-streak:papercusp',
+      workItem: 'WI-38026',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-live-elsewhere',
+      takenAt: staleProgress,
+      lastProgressAt: staleProgress,
+      expiresAt: null,
+      holderSessionState: 'live',
+      duplicates: [],
+      thread: { recent: [], total: 0 },
+    };
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ownership),
+      shouldStandDownForLivePeer: vi.fn(() => true),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => null),
+      ownershipContradicted: vi.fn(() => false),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
+    }));
+    const wakeRecipients = vi.fn(async () => ({
+      targets: ['su-live-elsewhere'],
+      keys: ['coord:inbox-wake:su-live-elsewhere'],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+    }));
+    vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+    const claimWorkItem = vi.fn(async () => ({ id: 'WI-38026', harness: 'papercusp' }));
+    vi.doMock('../../work-items', async () => {
+      const actual = await vi.importActual<typeof import('../../work-items')>('../../work-items');
+      return { ...actual, claimWorkItem };
+    });
+    const assessForceRelease = vi.fn(async () => {
+      throw new Error('critical progress expiry must not depend on session liveness');
+    });
+    const recordForceTransitionAudit = vi.fn(async () => {});
+    const notifyForceTransition = vi.fn(async () => {});
+    vi.doMock('../work_items/release-force-guard', async () => {
+      const actual = await vi.importActual<typeof import('../work_items/release-force-guard')>(
+        '../work_items/release-force-guard',
+      );
+      return { ...actual, assessForceRelease, recordForceTransitionAudit, notifyForceTransition };
+    });
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, {
+      ...MAKE_CTX(),
+      uiClientId: 'su-caller',
+      workspaceId: 'papercusp-workspace',
+      metadata: vi.fn(),
+    } as never)) as never);
+
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(assessForceRelease).not.toHaveBeenCalled();
+    expect(claimWorkItem).toHaveBeenCalledTimes(1);
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      launched: false,
+      ownership_transferred: true,
+      transfer_basis: 'critical-claim-progress-expired',
+    });
+  });
+
+  it('P-008: terminal prerequisites atomically arm the routine and never spawn a detached duplicate', async () => {
+    const launchSpy = mockLaunch();
+    const armPausedCheckpointTransition = vi.fn(async () => ({
+      status: 'armed' as const,
+      gateWorkItemId: 'WI-40086',
+      prerequisiteWorkItems: ['WI-41117'],
+      armedAtMs: 123,
+    }));
+    vi.doMock('../../release/checkpoint-serializer-authority', () => ({
+      readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'pause-not-quiescence' })),
+      armPausedCheckpointTransition,
+    }));
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ({
+        eventKey: 'gate-red-streak:papercusp',
+        workItem: 'WI-40086',
+        claimState: 'held',
+        takenBy: 'su-caller',
+      })),
+      shouldStandDownForLivePeer: vi.fn(() => false),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => null),
+      ownershipContradicted: vi.fn(() => false),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({
+      resumePausedRoutine: true,
+      prerequisiteWorkItems: ['WI-41117'],
+      reason: 'repairs terminal',
+    }, {
+      ...MAKE_CTX(),
+      uiClientId: 'su-caller',
+      workspaceId: 'papercusp-workspace',
+      metadata: vi.fn(),
+    } as never)) as never);
+
+    expect(armPausedCheckpointTransition).toHaveBeenCalledWith({
+      callerOwnerId: 'su-caller',
+      gateWorkItemId: 'WI-40086',
+      prerequisiteWorkItems: ['WI-41117'],
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      launched: false,
+      scheduled: true,
+      reason: 'serializer_transition_armed',
+      work_item: 'WI-40086',
     });
   });
 

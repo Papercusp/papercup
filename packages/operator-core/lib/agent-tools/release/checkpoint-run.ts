@@ -63,6 +63,7 @@ import {
 } from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
+import { assessCriticalClaimProgressLease } from '../work_items/release-force-guard';
 import { clampText, LIMITS, softText } from '../limits';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
 import {
@@ -564,9 +565,6 @@ export default defineTool({
     // behaviour. It records WHY the launch was allowed past a still-`held` claim, which is
     // otherwise indistinguishable from "no claim at all" in the metadata.
     let ownershipAbandoned = false;
-    let ownershipTransferred = false;
-    let ownershipTransferBasis: string | null = null;
-    let ownershipTransferWorkItem: string | null = null;
     if (!args.force) {
       const ownership = await readGateOwnership();
       // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
@@ -590,6 +588,10 @@ export default defineTool({
         ownership.takenBy !== callerOwnerId;
       ownershipLivenessAmbiguous = ownershipNeedsLivenessConfirmation(ownership) === true;
       ownershipAbandoned = ownershipContradicted(ownership);
+      const criticalProgressLease = assessCriticalClaimProgressLease({
+        takenAt: ownership.takenAt,
+        lastProgressAt: ownership.lastProgressAt,
+      });
 
       // P-008 direct-wake escalation. Parked/recorded owners are alive but not
       // currently executing, and draining/suspect owners are ambiguous. A
@@ -599,7 +601,8 @@ export default defineTool({
       let wakeCount = 0;
       const shouldWakeOwner =
         peerHeld &&
-        (ownershipLivenessAmbiguous ||
+        (criticalProgressLease.expired ||
+          ownershipLivenessAmbiguous ||
           ownership.holderSessionState === 'parked' ||
           ownership.holderSessionState === 'recorded');
       if (shouldWakeOwner && ownership.takenBy) {
@@ -611,7 +614,7 @@ export default defineTool({
           workspaceId: callerWorkspaceId,
         });
         wakeCount = wake.woken;
-        if (wakeCount > 0) {
+        if (wakeCount > 0 && !criticalProgressLease.expired) {
           ctx.metadata?.({
             standDown: 'condition_claimed_liveness_confirmed',
             standDownWorkItem: ownership.workItem,
@@ -649,30 +652,39 @@ export default defineTool({
       // lastProgressAt. Only liveness/progress bases auto-transfer here; fleet
       // authority bases still require an explicit force claim.
       if (peerHeld && callerOwnerId && ownership.takenBy && ownership.workItem) {
-        const [{ assessForceRelease, recordForceTransitionAudit, notifyForceTransition }, { claimWorkItem }] =
-          await Promise.all([
-            import('../work_items/release-force-guard'),
-            import('../../work-items'),
-          ]);
-        const recovery = await assessForceRelease({
-          callerOwnerId,
-          holderOwnerId: ownership.takenBy,
-          workspaceId: callerWorkspaceId ?? '',
-          itemLastProgressAt: ownership.lastProgressAt,
-        });
-        const automaticBasis =
-          recovery.allowed &&
-          recovery.basis &&
-          [
-            'holder-not-live',
-            'holder-warm-idle',
-            'holder-shutdown-accepted',
-            'holder-session-ended',
-            'holder-wake-missed',
-          ].includes(recovery.basis)
+        const livePeerStandDown = shouldStandDownForLivePeer(ownership, callerOwnerId);
+        const needsSharedRecoveryRead = !criticalProgressLease.expired && (!livePeerStandDown || shouldWakeOwner);
+        const recoveryModule = needsSharedRecoveryRead
+          ? await import('../work_items/release-force-guard')
+          : null;
+        const recovery = recoveryModule
+          ? await recoveryModule.assessForceRelease({
+              callerOwnerId,
+              holderOwnerId: ownership.takenBy,
+              workspaceId: callerWorkspaceId ?? '',
+              itemLastProgressAt: ownership.lastProgressAt,
+            })
+          : null;
+        const automaticBasis = criticalProgressLease.expired
+          ? 'critical-claim-progress-expired' as const
+          : recovery?.allowed &&
+              recovery.basis &&
+              [
+                'holder-not-live',
+                'holder-warm-idle',
+                'holder-shutdown-accepted',
+                'holder-session-ended',
+                'holder-wake-missed',
+              ].includes(recovery.basis)
             ? recovery.basis
             : null;
         if (automaticBasis) {
+          const [{ claimWorkItem }, forceTransition] = await Promise.all([
+            import('../../work-items'),
+            recoveryModule
+              ? Promise.resolve(recoveryModule)
+              : import('../work_items/release-force-guard'),
+          ]);
           const transferred = await claimWorkItem(ownership.workItem, callerOwnerId, {
             harness: operatorHomeHarnessSlug(),
             expectedAssignee: ownership.takenBy,
@@ -702,14 +714,14 @@ export default defineTool({
           const takeoverReason =
             `release:checkpoint-run self-healing transfer after ${automaticBasis}; ` +
             `required wake count=${wakeCount}, prior session=${ownership.holderSessionState ?? 'unknown'}`;
-          await recordForceTransitionAudit(callerOwnerId, ownership.workItem, 'claim', {
+          await forceTransition.recordForceTransitionAudit(callerOwnerId, ownership.workItem, 'claim', {
             holder: ownership.takenBy,
             basis: automaticBasis,
             reason: takeoverReason,
             harness: transferred.harness ?? operatorHomeHarnessSlug(),
             replacementAssignee: callerOwnerId,
           });
-          await notifyForceTransition({ ownerId: callerOwnerId }, {
+          await forceTransition.notifyForceTransition({ ownerId: callerOwnerId }, {
             itemId: ownership.workItem,
             holder: ownership.takenBy,
             basis: automaticBasis,
@@ -718,17 +730,40 @@ export default defineTool({
             operation: 'claim',
             replacementAssignee: callerOwnerId,
           });
-          ownershipTransferred = true;
-          ownershipTransferBasis = automaticBasis;
-          ownershipTransferWorkItem = ownership.workItem;
-          ownershipAbandoned = true;
+          ctx.metadata?.({
+            standDown: 'condition_ownership_transferred',
+            standDownWorkItem: ownership.workItem,
+            standDownTakenBy: ownership.takenBy,
+            standDownTransferBasis: automaticBasis,
+            standDownWakeCount: wakeCount,
+            ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+          });
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: true,
+                launched: false,
+                scheduled: false,
+                ownership_transferred: true,
+                reason: 'condition_ownership_transferred',
+                work_item: ownership.workItem,
+                prior_holder: ownership.takenBy,
+                taken_by: callerOwnerId,
+                transfer_basis: automaticBasis,
+                progress_lease: criticalProgressLease,
+                note:
+                  'Ownership transferred by expected-holder CAS, but NO checkpoint was launched. Finish and terminally verify the named repairs, then call release:checkpoint-run with resumePausedRoutine:true and prerequisiteWorkItems; only that atomic transition may schedule the routine.',
+              }),
+            }],
+          };
         }
       }
 
       // The decision is PURE and lives in gate-ownership.ts so it is testable without firing a
       // ~55min detached suite. A live/progressing peer remains authoritative;
       // the branch above is the only automatic transfer path.
-      if (!ownershipTransferred && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
+      if (shouldStandDownForLivePeer(ownership, callerOwnerId)) {
         const said = ownership.thread.recent.at(-1);
         // EI-20208253097914491. WI-37618 added the launch stamp below expressly because "a refusal
         // was indistinguishable in the ledger from a call that spent a ~55min suite" — but it was
@@ -782,7 +817,7 @@ export default defineTool({
           ],
         };
       }
-      if (!ownershipTransferred && ownershipLivenessAmbiguous && peerHeld) {
+      if (ownershipLivenessAmbiguous && peerHeld) {
         ctx.metadata?.({
           standDown: 'condition_claimed_unconfirmed',
           standDownWorkItem: ownership.workItem,
@@ -894,13 +929,6 @@ export default defineTool({
       // Same ride-the-stamp reason. Selects the launches that proceeded past a claim whose
       // holder was CONFIRMED dead — the signal that a work-item is orphaned, not unclaimed.
       ...(ownershipAbandoned ? { ownershipAbandoned: true } : {}),
-      ...(ownershipTransferred
-        ? {
-            ownershipTransferred: true,
-            ownershipTransferBasis,
-            ownershipTransferWorkItem,
-          }
-        : {}),
       preLaunchExclusion: preflight.refuse
         ? waitReceipt
           ? 'scheduled'

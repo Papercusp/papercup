@@ -7,7 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  assessCriticalClaimProgressLease,
   assessForceRelease,
+  CRITICAL_CLAIM_PROGRESS_LEASE_MS,
   forceRefusalHint,
   WARM_IDLE_ACTIVITY_STALE_MS,
   type ForceReleaseDeps,
@@ -18,6 +20,45 @@ const min = (n: number) => 60_000 * n;
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 
 const base = { callerOwnerId: 'su-caller', holderOwnerId: 'su-holder', workspaceId: 'ws1' };
+
+describe('P-008 critical-claim progress lease', () => {
+  it('expires from item progress alone even when the holder may be active elsewhere', () => {
+    const verdict = assessCriticalClaimProgressLease({
+      takenAt: iso(min(90)),
+      lastProgressAt: iso(CRITICAL_CLAIM_PROGRESS_LEASE_MS + min(1)),
+      nowMs: NOW,
+    });
+    expect(verdict).toMatchObject({
+      expired: true,
+      ageMs: CRITICAL_CLAIM_PROGRESS_LEASE_MS + min(1),
+      leaseMs: CRITICAL_CLAIM_PROGRESS_LEASE_MS,
+    });
+  });
+
+  it('uses fresh item progress as the renewal even when takenAt is old', () => {
+    const verdict = assessCriticalClaimProgressLease({
+      takenAt: iso(min(180)),
+      lastProgressAt: iso(min(2)),
+      nowMs: NOW,
+    });
+    expect(verdict).toMatchObject({ expired: false, ageMs: min(2) });
+  });
+
+  it('anchors a new claim at takenAt until its first progress checkpoint', () => {
+    const verdict = assessCriticalClaimProgressLease({
+      takenAt: iso(min(3)),
+      lastProgressAt: null,
+      nowMs: NOW,
+    });
+    expect(verdict).toMatchObject({ expired: false, ageMs: min(3) });
+  });
+
+  it('fails closed when neither progress nor claim time is readable', () => {
+    expect(
+      assessCriticalClaimProgressLease({ takenAt: null, lastProgressAt: null, nowMs: NOW }),
+    ).toMatchObject({ expired: false, anchorMs: null, ageMs: null });
+  });
+});
 
 type Pres = { heartbeatAt: string; lastActiveAt: string | null; agentRole: string | null };
 const deps = (over: {
