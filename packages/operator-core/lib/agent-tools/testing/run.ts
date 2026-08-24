@@ -58,6 +58,8 @@ import {
   type DistilledTestRun,
 } from '../../testing-run-store';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { REPO_ROOT } from '../docs/_repo-paths';
+import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -219,6 +221,56 @@ export function discoverKnownHiveCheckoutRoots(
     }
   }
   return [...roots];
+}
+
+export type TestFileRootSource =
+  | 'requested'
+  | 'absolute-file-checkout'
+  | 'hive-checkout'
+  | 'canonical-repo';
+
+export interface SelectedTestFileRoot {
+  root: string;
+  source: TestFileRootSource;
+}
+
+function testFilesResolveAtRoot(files: string[], root: string): boolean {
+  const hasRouter = existsSync(join(root, 'scripts', 'test-files.mjs'));
+  if (!hasRouter && !isVitestCheckoutRoot(root)) return false;
+  const resolution = normalizeTestFilePaths(files, root);
+  if (!resolution.ok) return false;
+  return resolution.files.every((file) => existsSync(isAbsolute(file) ? file : resolve(root, file)));
+}
+
+/**
+ * WI-41400 — select the direct testing:run handler's tree before the core's loud
+ * invalid-root pre-flight. A valid requested checkout stays authoritative. A stale
+ * phantom root may fall back to exactly one discovered Hive checkout, then to the
+ * canonical repo only when there was no discovered match. Ambiguity preserves the
+ * requested root so the core refuses loudly instead of choosing an arbitrary tree.
+ */
+export function selectTestFileRoot(
+  files: string[],
+  requested: string,
+  opts: {
+    discoveredRoots?: readonly string[];
+    canonicalRepoRoot?: string;
+  } = {},
+): SelectedTestFileRoot {
+  const preferredRoot = checkoutRootForTestFiles(files, requested);
+  const preferredSource: TestFileRootSource = resolve(preferredRoot) === resolve(requested)
+    ? 'requested'
+    : 'absolute-file-checkout';
+  const selected = selectUnambiguousEvidenceRoot<TestFileRootSource>({
+    preferred: { root: preferredRoot, source: preferredSource },
+    candidates: (opts.discoveredRoots ?? discoverKnownHiveCheckoutRoots()).map((root) => ({
+      root,
+      source: 'hive-checkout',
+    })),
+    fallback: { root: opts.canonicalRepoRoot ?? REPO_ROOT, source: 'canonical-repo' },
+    resolvesEvery: (root) => testFilesResolveAtRoot(files, root),
+  });
+  return selected ?? { root: preferredRoot, source: preferredSource };
 }
 
 /**
@@ -668,7 +720,7 @@ export default defineTool({
     // `resolveCapabilityBaseDir` is the same projectDir → PAPERCUSP_INTEGRATION_ROOT
     // → cwd resolver every capability tool (read/write/edit/bash/inspect) already
     // uses, so this tool now reads the same tree those tools write.
-    const root = resolveAgentWorkspaceRoot(ctx);
+    const rootSelection = selectTestFileRoot(args.files, resolveAgentWorkspaceRoot(ctx));
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
     // suite slower than that had the call killed before the core's `error:'timeout'` branch could
@@ -678,22 +730,23 @@ export default defineTool({
     const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const result = await runTestFilesCore({
       files: args.files,
-      root,
+      root: rootSelection.root,
       timeoutMs,
       signal: ctx.signal,
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
+    const surfacedResult = { ...result, rootSource: rootSelection.source };
     if (result.ok === false && result.error === 'timeout') {
       return {
         data: {
-          ...result,
+          ...surfacedResult,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
             detachedTestTimeoutHint(args.files),
         },
       };
     }
-    return { data: result };
+    return { data: surfacedResult };
   },
 });

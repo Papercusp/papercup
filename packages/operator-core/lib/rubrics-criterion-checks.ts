@@ -26,6 +26,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { normalizeTestFilePaths, runTestFilesCore, type TestFilesCoreResult } from './agent-tools/testing/run';
+import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import type {
   ScorecardCheckRun,
@@ -178,14 +179,22 @@ export function selectCriterionCheckRoot(
   requested: string,
   canonicalRepoRoot: string = REPO_ROOT,
 ): SelectedCriterionCheckRoot {
-  const requestedV = validateCriterionCheckPaths(criteria, { root: requested });
-  if (requestedV.failures.length === 0 || resolve(requested) === resolve(canonicalRepoRoot)) {
-    return { root: requested, source: 'requested', validation: requestedV };
-  }
-  const canonicalV = validateCriterionCheckPaths(criteria, { root: canonicalRepoRoot });
-  return canonicalV.failures.length === 0
-    ? { root: canonicalRepoRoot, source: 'canonical-repo', validation: canonicalV }
-    : { root: requested, source: 'requested', validation: requestedV };
+  const validations = new Map<string, CriterionCheckPathValidation>();
+  const validationFor = (root: string): CriterionCheckPathValidation => {
+    const key = resolve(root);
+    const cached = validations.get(key);
+    if (cached) return cached;
+    const validation = validateCriterionCheckPaths(criteria, { root });
+    validations.set(key, validation);
+    return validation;
+  };
+  const selected = selectUnambiguousEvidenceRoot<CriterionCheckRootSource>({
+    preferred: { root: requested, source: 'requested' },
+    fallback: { root: canonicalRepoRoot, source: 'canonical-repo' },
+    // Scope faults are root-independent and deliberately do not choose a tree.
+    resolvesEvery: (root) => validationFor(root).failures.length === 0,
+  }) ?? { root: requested, source: 'requested' as const };
+  return { ...selected, validation: validationFor(selected.root) };
 }
 
 /**

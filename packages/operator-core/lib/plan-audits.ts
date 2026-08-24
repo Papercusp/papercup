@@ -55,6 +55,7 @@ import {
   type HarnessRegistry,
 } from './harness-registry';
 import { discoverKnownHiveCheckoutRoots } from './agent-tools/testing/run';
+import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 // The monorepo-root walk-up lives in the docs tool helper only because that is where
 // it was first needed; it is imported rather than re-derived so there stays exactly
 // ONE implementation of "where is the repo root" rather than two that can disagree.
@@ -540,31 +541,29 @@ export function selectHarnessCitationRepoRoot(
     const deps = repoCitationDeps(root);
     return verifying.every((citation) => resolveCitation(citation, deps).ok);
   };
-
-  // Preserve the registry's canonical precedence whenever it contains the cited evidence.
-  if (verifying.length === 0 || resolvesEveryCitation(canonical)) {
-    return { root: canonical, source: 'registry' };
-  }
-
   const project = reg.projects.find((entry) => entry.slug === harnessSlug);
-  if (!project || project.harness_kind !== 'hive' || project.self_repo) return null;
+  const mayFallback = Boolean(project && project.harness_kind === 'hive' && !project.self_repo);
+  const candidates: SelectedCitationRoot[] = mayFallback
+    ? [...new Set(discoveredRoots.map((root) => path.resolve(root)))]
+      .filter((root) => {
+        try {
+          // A .git pointer identifies a worktree/deploy artifact, not an independent Hive checkout.
+          return fs.statSync(path.join(root, '.git')).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .map((root) => ({ root, source: 'hive-checkout' }))
+    : [];
 
-  const candidates = [...new Set(discoveredRoots.map((root) => path.resolve(root)))].filter((root) => {
-    try {
-      // A .git pointer identifies a worktree/deploy artifact, not an independent Hive checkout.
-      return fs.statSync(path.join(root, '.git')).isDirectory();
-    } catch {
-      return false;
-    }
+  return selectUnambiguousEvidenceRoot<CitationRootSource>({
+    preferred: { root: canonical, source: 'registry' },
+    candidates,
+    ...(mayFallback
+      ? { fallback: { root: canonicalRepoRoot, source: 'canonical-repo' as const } }
+      : {}),
+    resolvesEvery: resolvesEveryCitation,
   });
-  const matches = candidates.filter((root) => resolvesEveryCitation(root));
-  if (matches.length === 1) return { root: matches[0]!, source: 'hive-checkout' };
-  // Two resolving hive checkouts remain an ambiguous tie — the canonical repo must never
-  // break that tie, or a citation becomes evidence from an arbitrary tree.
-  if (matches.length > 1) return null;
-  return resolvesEveryCitation(canonicalRepoRoot)
-    ? { root: canonicalRepoRoot, source: 'canonical-repo' }
-    : null;
 }
 
 /** Citation context shared by audit-write and ship-time revalidation.

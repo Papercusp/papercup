@@ -22,13 +22,18 @@
  * worth it: the failure projection is exhaustively unit-tested, and the glue
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
-import runTool, { detachedTestTimeoutHint, discoverKnownHiveCheckoutRoots, normalizeTestFilePaths } from '../run';
+import runTool, {
+  detachedTestTimeoutHint,
+  discoverKnownHiveCheckoutRoots,
+  normalizeTestFilePaths,
+  selectTestFileRoot,
+} from '../run';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -52,6 +57,7 @@ interface RunResult {
   ok: boolean;
   runId?: string;
   root?: string;
+  rootSource?: string;
   error?: string;
   hint?: string;
   routerOutput?: string;
@@ -96,6 +102,70 @@ const CROSS_WORKSPACE_GREEN_TARGET = 'apps/operator/lib/verify-tauri-headless-po
 const SIDESTAGE_HIVE_ROOT = discoverKnownHiveCheckoutRoots().find(
   (root) => root.endsWith('/sidestage') && existsSync(join(root, 'apps/web/src/auction.test.tsx')),
 );
+
+const selectorRoots: string[] = [];
+const selectorPhantom = join(tmpdir(), 'papercusp-testing-run-selector-phantom-does-not-exist');
+let selectorCanonical = '';
+let selectorRequested = '';
+
+async function makeScratchTestCheckout(prefix: string, file = 'packages/x/real.test.ts'): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  selectorRoots.push(root);
+  await mkdir(join(root, '.git'));
+  await mkdir(dirname(join(root, file)), { recursive: true });
+  await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+  await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
+  await writeFile(join(root, file), 'export {};\n');
+  return root;
+}
+
+beforeAll(async () => {
+  selectorCanonical = await makeScratchTestCheckout('papercusp-testing-run-selector-canonical-');
+  selectorRequested = await makeScratchTestCheckout('papercusp-testing-run-selector-requested-');
+  await rm(selectorPhantom, { recursive: true, force: true });
+});
+
+afterAll(async () => {
+  await Promise.all(selectorRoots.map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
+  const files = ['packages/x/real.test.ts'];
+
+  it('falls back to the canonical repo when the requested root is invalid and the canonical repo resolves every file', () => {
+    expect(selectTestFileRoot(files, selectorPhantom, { discoveredRoots: [], canonicalRepoRoot: selectorCanonical }))
+      .toEqual({ root: selectorCanonical, source: 'canonical-repo' });
+  });
+
+  it('keeps a valid requested checkout authoritative even when the canonical repo also resolves every file', () => {
+    expect(selectTestFileRoot(files, selectorRequested, { discoveredRoots: [], canonicalRepoRoot: selectorCanonical }))
+      .toEqual({ root: selectorRequested, source: 'requested' });
+  });
+
+  it('selects exactly one resolving discovered Hive checkout before the canonical repo', async () => {
+    const discovered = await makeScratchTestCheckout('papercusp-testing-run-selector-discovered-');
+    expect(selectTestFileRoot(files, selectorPhantom, {
+      discoveredRoots: [discovered],
+      canonicalRepoRoot: selectorCanonical,
+    })).toEqual({ root: discovered, source: 'hive-checkout' });
+  });
+
+  it('refuses a discovered-root tie instead of letting the canonical repo break the ambiguity', async () => {
+    const first = await makeScratchTestCheckout('papercusp-testing-run-selector-tie-a-');
+    const second = await makeScratchTestCheckout('papercusp-testing-run-selector-tie-b-');
+    expect(selectTestFileRoot(files, selectorPhantom, {
+      discoveredRoots: [first, second],
+      canonicalRepoRoot: selectorCanonical,
+    })).toEqual({ root: selectorPhantom, source: 'requested' });
+  });
+
+  it('preserves the requested root when no valid checkout resolves every file', () => {
+    expect(selectTestFileRoot(['packages/x/missing.test.ts'], selectorPhantom, {
+      discoveredRoots: [],
+      canonicalRepoRoot: selectorCanonical,
+    })).toEqual({ root: selectorPhantom, source: 'requested' });
+  });
+});
 
 /**
  * Every process in a `testing:run` invocation's tree (the router + the vitest
@@ -167,6 +237,17 @@ describe('testing:run (integration)', () => {
       () => null,
     );
     expect(routerScript).not.toBeNull();
+  }, 180_000);
+
+  it('runs a repo-resolving file from a phantom handler root through the canonical repo and surfaces the source', async () => {
+    const phantom = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-handler-phantom-'));
+    await rm(phantom, { recursive: true, force: true });
+    const out = await body(call({ files: [GREEN_TARGET] }, { projectDir: phantom }));
+
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.rootSource).toBe('canonical-repo');
+    expect(out.root).not.toBe(phantom);
+    expect(existsSync(join(out.root as string, GREEN_TARGET))).toBe(true);
   }, 180_000);
 
   it('keeps the admin test-run ledger reporter alongside machine-readable JSON output', async () => {
