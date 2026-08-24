@@ -945,9 +945,17 @@ describe('looksLikeInlineLaunchContextText (EI-19276371920501216)', () => {
   });
 
   it('treats a single-line value implausibly long for a filename as inline TEXT (true)', () => {
-    expect(looksLikeInlineLaunchContextText('x'.repeat(1001))).toBe(true);
-    // just under the threshold, still a "path" by this heuristic
-    expect(looksLikeInlineLaunchContextText('x'.repeat(1000))).toBe(false);
+    // Linux NAME_MAX is 255 bytes; the reported 800-character single-line brief
+    // must never reach readFileSync as a path (EI-21278091632127108).
+    expect(looksLikeInlineLaunchContextText('x'.repeat(800))).toBe(true);
+    expect(looksLikeInlineLaunchContextText('x'.repeat(256))).toBe(true);
+    // Exactly one valid ASCII filename component remains path-shaped.
+    expect(looksLikeInlineLaunchContextText('x'.repeat(255))).toBe(false);
+  });
+
+  it('uses UTF-8 byte length for the filesystem component limit', () => {
+    expect(looksLikeInlineLaunchContextText('é'.repeat(127))).toBe(false);
+    expect(looksLikeInlineLaunchContextText('é'.repeat(128))).toBe(true);
   });
 });
 
