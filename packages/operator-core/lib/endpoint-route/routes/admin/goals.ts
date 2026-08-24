@@ -10,7 +10,10 @@
  * state decides whether a fleet runs — the exact fork the repo's reuse-first rule names
  * as the top review smell. So this dispatches the real tool in-process via
  * `handleHttpToolRequest`, byte-identical to what an agent calling `goals:update` gets,
- * and the UI inherits every future fix to it for free.
+ * and the UI inherits every future fix to it for free. `start-existing` is the
+ * one composed verb: it first dispatches that same goals:update transition and
+ * then invokes the canonical startGoalById existing-goal activation primitive.
+ * It does not implement either half itself.
  *
  * Ported wholesale from admin/mode.ts, including its AUTH reasoning: the packaged Tauri
  * webview fetches the operator /api directly with no cookie or bearer, so it resolves
@@ -32,14 +35,21 @@ import { handleHttpToolRequest } from '@papercusp/agent-mcp';
 import '../../../agent-tools/index';
 import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
 import { notifySyncInvalidate } from '../../../sync-sse';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import {
+  startGoalById,
+  type StartGoalByIdInput,
+  type StartGoalByIdResult,
+} from '../../../goals/start-goal-by-id';
 
 const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
 
 /**
- * `update`, plus `create` RESTRICTED TO SUBDIRECTIVES (P-017).
+ * `update`, `start-existing`, plus `create` RESTRICTED TO SUBDIRECTIVES (P-017).
  *
  * `goals:propose` still stays out, and so does creating a TOP-LEVEL goal: P-022's
  * kickoff is a CONVERSATIONAL flow the owner finishes in the composer, not a form
@@ -59,8 +69,10 @@ const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
  *
  * The `parentId` guard in `dispatchWrite` is what keeps this narrow: without it,
  * widening to `create` would quietly re-open the agentless top-level goal.
+ * `start-existing` closes that exact gap: it can only act on an already-registered
+ * id and pairs the active transition with a canonical holder launch.
  */
-const WRITE_VERBS = new Set(['update', 'create', 'start-from-package']);
+const WRITE_VERBS = new Set(['update', 'create', 'start-from-package', 'start-existing']);
 
 /* `start-from-package` (P-009, work-on-everything-goal-2026-08-23): the packages
    rail's one-click start. It does NOT reopen the agentless-top-level-goal hole the
@@ -101,7 +113,148 @@ function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
   return sp;
 }
 
-async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
+type GoalToolResult = Awaited<ReturnType<typeof handleHttpToolRequest>>;
+
+function toolTextPayload(toolResult: GoalToolResult): unknown {
+  if (toolResult.status !== 200) return toolResult.body;
+  const body = toolResult.body as { content?: Array<{ type: string; text?: string }> };
+  const text = body.content?.find((c) => c.type === 'text')?.text;
+  if (text === undefined) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+function recordPayload(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function invalidateGoalReads(): void {
+  // Both readers must observe the SAME post-activation state. In particular,
+  // invalidate only after startGoalById has attached the GOAL-mode row: firing
+  // after the status write but before attachment lets goals.detail re-pull the
+  // transient agent-less state and keep the conversation blank.
+  void notifySyncInvalidate('goals.list', {}).catch(() => {});
+  void notifySyncInvalidate('goals.detail', {}).catch(() => {});
+}
+
+export interface StartExistingGoalDeps {
+  updateGoal: (body: Record<string, unknown>) => Promise<GoalToolResult>;
+  startGoal: (
+    sql: Parameters<typeof startGoalById>[0],
+    input: StartGoalByIdInput,
+  ) => Promise<StartGoalByIdResult>;
+  sql: () => Parameters<typeof startGoalById>[0];
+  workspaceId: () => string;
+  invalidate: () => void;
+}
+
+/**
+ * Turn an EXISTING goal into a running, HUD-addressable goal.
+ *
+ * This is deliberately composition, not a second launcher: goals:update owns
+ * the status transition + placement fan-out, while startGoalById owns every
+ * launch/readiness/idempotence/mode-attachment decision. The route joins those
+ * two existing seams because a terminal goal must be active before the latter
+ * will launch it.
+ */
+export async function startExistingGoal(
+  body: Record<string, unknown>,
+  deps: StartExistingGoalDeps,
+): Promise<Response> {
+  const goalId = typeof body.id === 'string' ? body.id.trim() : '';
+  if (!goalId) {
+    return Response.json(
+      { error: { code: 'goal_id_required', message: 'id is required to start an existing goal' } },
+      { status: 400 },
+    );
+  }
+
+  const transitionResult = await deps.updateGoal({
+    id: goalId,
+    status: 'active',
+    reason: 'HUD existing-goal start/reopen: activate status before launching its holder',
+  });
+  if (transitionResult.status !== 200) return unwrap(transitionResult);
+
+  const transition = recordPayload(toolTextPayload(transitionResult));
+  let activation: StartGoalByIdResult;
+  try {
+    activation = await deps.startGoal(deps.sql(), {
+      workspaceId: deps.workspaceId(),
+      goalId,
+      launcherOwnerId: ADMIN_UI_CLIENT_ID,
+      ...(body.startBlocked === true ? { startBlocked: true } : {}),
+      ...(typeof body.startBlockedReason === 'string'
+        ? { startBlockedReason: body.startBlockedReason }
+        : {}),
+    });
+  } catch (error) {
+    // The status transition committed before the external spawn began. Never
+    // flatten that partial success into a generic 500: the UI must say that the
+    // goal is active but still lacks the promised holder.
+    deps.invalidate();
+    return Response.json(
+      {
+        error: {
+          code: 'goal_holder_launch_failed',
+          message: error instanceof Error ? error.message : String(error),
+          statusChanged: true,
+        },
+        transition,
+      },
+      { status: 500 },
+    );
+  }
+
+  deps.invalidate();
+
+  if (!activation.ok) {
+    // A stale/double click can race another successful launch. The canonical
+    // primitive refuses the duplicate; for the HUD the requested end state is
+    // already satisfied, so treat only this refusal as idempotent success.
+    if (activation.reason === 'already-held') {
+      return Response.json({
+        data: transition.data ?? null,
+        transition,
+        activation,
+        alreadyHeld: true,
+        ...(transition.degraded === true ? { degraded: true } : {}),
+        ...(Array.isArray(transition.degradedReasons)
+          ? { degradedReasons: transition.degradedReasons }
+          : {}),
+      });
+    }
+    return Response.json(
+      {
+        error: {
+          code: `goal_activation_${activation.reason}`,
+          message: activation.detail,
+          statusChanged: true,
+        },
+        transition,
+        activation,
+      },
+      { status: 409 },
+    );
+  }
+
+  return Response.json({
+    data: transition.data ?? null,
+    transition,
+    activation,
+    ...(transition.degraded === true ? { degraded: true } : {}),
+    ...(Array.isArray(transition.degradedReasons)
+      ? { degradedReasons: transition.degradedReasons }
+      : {}),
+  });
+}
+
+export async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
   const csrf = requireAllowedOriginOr403(req);
   if (csrf) return csrf;
 
@@ -150,6 +303,26 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   }
 
   const url = new URL(req.url);
+  if (verb === 'start-existing') {
+    return startExistingGoal(body, {
+      updateGoal: (updateBody) =>
+        handleHttpToolRequest(
+          {
+            method: 'POST',
+            pathname: '/api/agent-tools/goals/update',
+            searchParams: adminSearchParams(url.searchParams),
+            headers: collectHeaders(req),
+            body: updateBody,
+          },
+          HOST_EXTRAS,
+        ),
+      startGoal: startGoalById,
+      sql: () => getOrgPg().sql,
+      workspaceId: activeWorkspaceId,
+      invalidate: invalidateGoalReads,
+    });
+  }
+
   const result = await handleHttpToolRequest(
     {
       method: 'POST',
@@ -169,8 +342,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   // Fire-and-forget AFTER the write has committed, never gated on it: a failed
   // invalidate must not turn a successful status change into an error reply.
   if (result.status === 200) {
-    void notifySyncInvalidate('goals.list', {}).catch(() => {});
-    void notifySyncInvalidate('goals.detail', {}).catch(() => {});
+    invalidateGoalReads();
   }
 
   return unwrap(result);
