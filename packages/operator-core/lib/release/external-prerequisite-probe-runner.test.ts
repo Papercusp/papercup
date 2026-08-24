@@ -45,7 +45,6 @@ interface Recorded {
   saved: ExternalPrerequisiteAttestation[];
   emitted: { key: string; summary: string; payload: Record<string, unknown> }[];
   wakes: { owningWorkItem: string; summary: string }[];
-  refreshes: { prerequisiteKey: string; satisfied: boolean; readiness: PrerequisiteReadiness }[];
 }
 
 function makePorts(
@@ -56,7 +55,7 @@ function makePorts(
     failEmit?: boolean;
   } = {},
 ): { ports: ProbeRunnerPorts; rec: Recorded } {
-  const rec: Recorded = { saved: [], emitted: [], wakes: [], refreshes: [] };
+  const rec: Recorded = { saved: [], emitted: [], wakes: [] };
   const ports: ProbeRunnerPorts = {
     async loadAttestation() {
       if (opts.failLoad) throw new Error('db down');
@@ -72,13 +71,6 @@ function makePorts(
     },
     async wakeLaneOwner(w) {
       rec.wakes.push(w);
-    },
-    async refreshScorecardCriterion(r) {
-      rec.refreshes.push({
-        prerequisiteKey: r.prerequisiteKey,
-        satisfied: r.satisfied,
-        readiness: r.readiness,
-      });
     },
   };
   return { ports, rec };
@@ -313,8 +305,15 @@ describe('runPrerequisiteProbe — failing closed on infrastructure failure', ()
   });
 });
 
-describe('the scorecard criterion is refreshed on EVERY run', () => {
-  it('refreshes even when nothing transitioned, so the criterion cannot go stale', async () => {
+// D-003: these two assertions previously read a `refreshScorecardCriterion` port
+// recording. That port was removed (it named a per-criterion scorecard write that
+// does not exist, and pushed a value the store already owns). The INVARIANT it was
+// protecting is unchanged and still asserted here — readiness is freshly resolved on
+// EVERY run, including a run that transitioned nothing, and an indeterminate run is
+// never satisfied — but it is now read off the returned ProbeRunResult, which is the
+// derived verdict the gate itself consumes.
+describe('readiness is re-resolved on EVERY run, so a verdict cannot go stale', () => {
+  it('reports a fresh satisfied verdict even when nothing transitioned', async () => {
     const { ports, rec } = makePorts({ stored: readyAttestation() });
     const res = await runPrerequisiteProbe(
       spec(),
@@ -324,20 +323,22 @@ describe('the scorecard criterion is refreshed on EVERY run', () => {
     );
     expect(res.transition).toBe('none');
     expect(rec.emitted).toEqual([]);
-    expect(rec.refreshes).toHaveLength(1);
-    expect(rec.refreshes[0].satisfied).toBe(true);
+    expect(res.satisfied).toBe(true);
+    expect(res.readiness.state).toBe('ready');
   });
 
-  it('refreshes with satisfied:false on an indeterminate run', async () => {
-    const { ports, rec } = makePorts();
-    await runPrerequisiteProbe(
+  it('reports satisfied:false on an indeterminate run', async () => {
+    const { ports } = makePorts();
+    const res = await runPrerequisiteProbe(
       spec(),
       registryReturning({ status: 'indeterminate', reason: 'nope' }),
       ports,
       { nowMs: NOW },
     );
-    expect(rec.refreshes).toHaveLength(1);
-    expect(rec.refreshes[0].satisfied).toBe(false);
+    expect(res.satisfied).toBe(false);
+    // D-002: an indeterminate run writes NOTHING — it must not be recorded as a probe
+    // that determined the wall was down.
+    expect(res.attestationWritten).toBe(false);
   });
 });
 
