@@ -95,6 +95,12 @@ const BLOCKING_PREDICATE_ALLOWLIST: ReadonlyMap<string, string> = new Map([
       'reconciliation and wake decisions, not scheduler self-selection. It needs edge rows and ' +
       'therefore cannot use the shared exclusion fragment.',
   ],
+  [
+    'dependency-traversal.ts',
+    'The cross-store dependency graph read — enumerates blocks edges for traversal and rendering, '
+      + 'never decides claimability. It needs the edge rows themselves, so the shared exclusion '
+      + 'fragment is not an equivalent query.',
+  ],
 ]);
 
 /** Files whose `lane`/DDL text mentions the table but which are fixtures, not live readers. */
