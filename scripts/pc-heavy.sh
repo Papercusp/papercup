@@ -337,7 +337,7 @@ _guard_typecheck_cgroup_headroom() {
   fi
 
   echo "[pc-heavy] REFUSED typecheck: caller cgroup has ${_headroom} MiB headroom, below the ${_needed} MiB compiler floor (${_heap} MiB configured V8 heap + ${_overhead} MiB agent/wrapper overhead)." >&2
-  echo "[pc-heavy] This is the EI-212067 memcg-OOM class, not a TypeScript verdict. Run the check outside the agent-session cgroup with tools:invoke { name: \"capability:inspect\", args: { check: \"typecheck\", package: \"<package>\", onlyPaths: [\"<changed file>\"], run_in_background: true } }, or use build:typecheck for a bounded foreground check." >&2
+  echo "[pc-heavy] This is the EI-212067 memcg-OOM class, not a TypeScript verdict. Run the check outside the agent-session cgroup with tools:invoke { name: \"capability:inspect\", args: { check: \"typecheck\", package: \"packages/<workspace>\", onlyPaths: [\"<changed file>\"], run_in_background: true } }; package is a repository-relative directory path (not an npm package name), or use build:typecheck for a bounded foreground check." >&2
   return 75
 }
 

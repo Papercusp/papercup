@@ -883,6 +883,8 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
     expect(r.stderr).toContain('5376 MiB headroom');
     expect(r.stderr).toContain('9216 MiB compiler floor');
     expect(r.stderr).toContain('capability:inspect');
+    expect(r.stderr).toContain('package: "packages/<workspace>"');
+    expect(r.stderr).toContain('repository-relative directory path (not an npm package name)');
     expect(existsSync(slots)).toBe(false); // refused before coalescing/slot acquisition
   });
 
