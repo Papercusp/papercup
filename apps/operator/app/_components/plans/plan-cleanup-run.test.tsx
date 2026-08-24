@@ -14,6 +14,34 @@ const H = vi.hoisted(() => ({
   syncArgs: [] as Array<Record<string, unknown>>,
   syncData: { value: undefined as unknown },
   fetch: vi.fn(),
+  resolverProfile: {
+    model: "sol",
+    effort: "xhigh" as const,
+    account: "pool-a",
+    carry: "cold" as const,
+  },
+}));
+
+vi.mock("../bulk-resolver/bulk-resolver-settings", () => ({
+  loadResolverLaunchProfile: async () => H.resolverProfile,
+  useBulkResolverSettings: () => ({
+    profile: H.resolverProfile,
+    loading: false,
+    saving: false,
+    error: null,
+    validationError: null,
+    ready: true,
+    updateProfile: vi.fn(),
+    retry: vi.fn(),
+  }),
+}));
+vi.mock("../bulk-resolver/BulkResolverSettingsControl", () => ({
+  default: ({ kind, effective }: { kind: string; effective?: unknown }) => (
+    <div
+      data-testid={`${kind}-settings-control`}
+      data-effective={effective ? JSON.stringify(effective) : undefined}
+    />
+  ),
 }));
 
 vi.mock("@papercusp/sync", () => ({
@@ -178,6 +206,25 @@ describe("usePlanCleanupRun", () => {
 });
 
 describe("usePlanCleanupOps", () => {
+  it("uses the saved Plans profile for start callers without an inline settings control", async () => {
+    H.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, runId: "run-single", launched: true }),
+    });
+    const { result } = renderHook(() => usePlanCleanupOps());
+
+    await result.current.start(["p-one"], { scope: "single-plan" });
+
+    // loadResolverLaunchProfile is stubbed at the module boundary above; this
+    // pins the consumer branch and the start-route payload, while the real GET
+    // + normalization is covered in BulkResolverSettingsControl.test.tsx.
+    expect(H.fetch.mock.calls[0][0]).toBe("/api/admin/plan-cleanup");
+    expect(JSON.parse(H.fetch.mock.calls[0][1].body as string)).toMatchObject({
+      planSlugs: ["p-one"],
+      launch: H.resolverProfile,
+    });
+  });
+
   it("records one owner acceptance through the plan-cleanup route", async () => {
     H.fetch.mockResolvedValueOnce({
       ok: true,
@@ -216,6 +263,7 @@ describe("PlansCleanupStrip", () => {
       op: "start",
       planSlugs: ["p-two", "p-one"],
       filter: { query: null, shownCount: 2 },
+      launch: H.resolverProfile,
     });
     expect(p.onRunStarted).toHaveBeenCalledWith("run-new");
   });
@@ -237,15 +285,41 @@ describe("PlansCleanupStrip", () => {
     );
   });
 
+  it("treats a deterministic no-resolver finish as success", async () => {
+    H.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        runId: "run-deterministic",
+        phase: "complete",
+        launched: false,
+        resolverNeeded: false,
+        deterministic: { applied: 2, skipped: 0, failed: 0 },
+      }),
+    });
+    const p = props();
+    render(<PlansCleanupStrip {...p} />);
+    fireEvent.click(screen.getByTestId("plans-cleanup-start"));
+    await waitFor(() => expect(p.onRunStarted).toHaveBeenCalledWith("run-deterministic"));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("renders finding progress and lets Stop revoke the current run", async () => {
     const findings = [
       finding({ findingId: "done", outcome: "auto_applied" }),
       finding({ findingId: "review", outcome: "recommended" }),
       finding({ findingId: "left", outcome: "pending" }),
     ];
+    const launched = {
+      model: "sol",
+      effort: "xhigh" as const,
+      backend: "codex" as const,
+      account: "pool-a",
+      carry: "cold" as const,
+    };
     render(
       <PlansCleanupStrip
-        {...props({ run: run(), findings, isRunning: true })}
+        {...props({ run: run({ launchSnapshot: launched }), findings, isRunning: true })}
       />,
     );
     expect(screen.getByTestId("plans-cleanup-counts").textContent).toContain(
@@ -256,6 +330,9 @@ describe("PlansCleanupStrip", () => {
     );
     expect(screen.getByTestId("plans-cleanup-counts").textContent).toContain(
       "1 left",
+    );
+    expect(screen.getByTestId("plan-cleanup-settings-control").getAttribute("data-effective")).toBe(
+      JSON.stringify(launched),
     );
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe(
       "67",

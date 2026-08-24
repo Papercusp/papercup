@@ -20,9 +20,8 @@ import {
   type BulkRunRow,
 } from '../../attention/bulk-run-store';
 import { notifyPlanCleanupRunChanged } from '../../attention/bulk-run-sync';
-import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
-import { gatherCleanupInputs } from '../../plan-cleanup/gather';
-import { scanForCleanupFindings, type CleanupFinding, type CleanupEvidenceRef } from '../../plan-cleanup/scanner';
+import { scanCleanupRun } from '../../plan-cleanup/deterministic-runner';
+import type { CleanupEvidenceRef } from '../../plan-cleanup/scanner';
 import {
   executeCleanupFindingAction,
   getRunFindings,
@@ -43,16 +42,6 @@ async function resolveRunId(runId?: string): Promise<string | null> {
 
 function isExecuting(run: BulkRunRow): boolean {
   return run.phase === 'pending' || run.phase === 'running';
-}
-
-async function currentScan(run: BulkRunRow, planSlugs = run.seedRefs): Promise<CleanupFinding[]> {
-  const harnessSlug = run.harnessSlug ?? operatorHomeHarnessSlug();
-  const inputs = await gatherCleanupInputs({
-    workspaceId: run.workspaceId,
-    harnessSlug,
-    planSlugs,
-  });
-  return scanForCleanupFindings(inputs, { nowMs: Date.now() });
 }
 
 function toolJson(value: unknown) {
@@ -85,7 +74,7 @@ export const cleanupManifest = defineTool({
       return toolJson({ ok: false, error: 'run_wrong_kind', runId, runKind: run.runKind });
     }
 
-    const scan = await currentScan(run);
+    const scan = await scanCleanupRun(run);
     let rows = await getRunFindings(runId, run.workspaceId);
     let seedRefused: string | null = null;
     if (rows.length === 0 && isExecuting(run)) {
@@ -172,7 +161,7 @@ export const cleanupAct = defineTool({
         findingId: args.findingId,
         workspaceId: run.workspaceId,
         async execute(locked) {
-          const fresh = (await currentScan(run, [locked.planSlug])).find(
+          const fresh = (await scanCleanupRun(run, [locked.planSlug])).find(
             (finding) => finding.findingId === locked.findingId,
           );
           if (!fresh) throw new Error(`${locked.findingId}: finding is no longer present at current state`);

@@ -16,6 +16,8 @@ import {
   X,
 } from "lucide-react";
 import { formatRunElapsed } from "../review-report/bulk-run-time";
+import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
+import { useBulkResolverSettings } from "../bulk-resolver/bulk-resolver-settings";
 import {
   derivePlanCleanupCounts,
   usePlanCleanupOps,
@@ -58,22 +60,31 @@ export default function PlansCleanupStrip({
   onRunCleared,
 }: PlansCleanupStripProps) {
   const { start, stop, dismiss } = usePlanCleanupOps();
+  const resolverSettings = useBulkResolverSettings("plan-cleanup");
   const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const counts = derivePlanCleanupCounts(findings);
 
   const onStart = useCallback(async () => {
-    if (planSlugs.length === 0 || starting) return;
+    if (planSlugs.length === 0 || starting || !resolverSettings.ready) return;
     setStarting(true);
     setNotice(null);
     try {
-      const result = await start(planSlugs, filterSnapshot);
+      const result = await start(
+        planSlugs,
+        filterSnapshot,
+        null,
+        resolverSettings.profile,
+      );
       if (!result.ok) {
         setNotice(result.error ?? "could not start the clean-up run");
         return;
       }
       if (result.runId) onRunStarted(result.runId);
+      // No LLM is a SUCCESS when the fixed-point deterministic pass cleared
+      // every provable finding and no recommendation work remained.
+      if (result.resolverNeeded === false && !result.launchError) return;
       // The request succeeds once the run is durable even when its supervised
       // resolver did not boot. Surface that persisted failure instead of
       // leaving a run that can never move looking live.
@@ -85,7 +96,7 @@ export default function PlansCleanupStrip({
     } finally {
       setStarting(false);
     }
-  }, [planSlugs, starting, start, filterSnapshot, onRunStarted]);
+  }, [planSlugs, starting, start, filterSnapshot, onRunStarted, resolverSettings]);
 
   const onStop = useCallback(async () => {
     if (!run || busy) return;
@@ -121,6 +132,11 @@ export default function PlansCleanupStrip({
         className="op-inbox__bulk op-inbox__bulk--running"
         data-testid="plans-cleanup-running"
       >
+        <BulkResolverSettingsControl
+          kind="plan-cleanup"
+          settings={resolverSettings}
+          effective={run.launchSnapshot ?? {}}
+        />
         <div className="op-inbox__bulk-head">
           <span className="op-inbox__bulk-spin" aria-hidden="true">
             <Loader2 size={15} />
@@ -201,6 +217,11 @@ export default function PlansCleanupStrip({
         className="op-inbox__bulk op-inbox__bulk--review"
         data-testid="plans-cleanup-review"
       >
+        <BulkResolverSettingsControl
+          kind="plan-cleanup"
+          settings={resolverSettings}
+          effective={run.launchSnapshot ?? {}}
+        />
         <div className="op-inbox__bulk-head">
           <span
             className="op-inbox__bulk-icon op-inbox__bulk-icon--review"
@@ -260,11 +281,12 @@ export default function PlansCleanupStrip({
   const count = planSlugs.length;
   return (
     <div className="op-inbox__bulk-slot" data-testid="plans-cleanup-idle">
+      <BulkResolverSettingsControl kind="plan-cleanup" settings={resolverSettings} />
       <button
         type="button"
         className="op-inbox__bulk-start"
         data-testid="plans-cleanup-start"
-        disabled={count === 0 || starting}
+        disabled={count === 0 || starting || !resolverSettings.ready}
         aria-label={`Clean up ${count} shown plan${count === 1 ? "" : "s"}`}
         onClick={() => void onStart()}
       >

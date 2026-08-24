@@ -9,6 +9,11 @@
  */
 import { useCallback, useMemo } from "react";
 import { useSyncQuery } from "@papercusp/sync";
+import type {
+  BulkResolverLaunchProfile,
+  EffectiveBulkResolverLaunch,
+} from "@papercusp/operator-core/lib/agent-config-constants";
+import { loadResolverLaunchProfile } from "../bulk-resolver/bulk-resolver-settings";
 
 export type PlanCleanupPhase =
   | "pending"
@@ -36,6 +41,8 @@ export interface PlanCleanupRun {
   skipped: number;
   failed: number;
   error: string | null;
+  /** Exact settings persisted at click time; empty only on legacy rows. */
+  launchSnapshot?: Partial<EffectiveBulkResolverLaunch>;
   filterSnapshot?: Record<string, unknown>;
   createdAt: string | null;
   startedAt: string | null;
@@ -74,6 +81,13 @@ export interface PlanCleanupStartResult {
   ok: boolean;
   runId?: string;
   launched?: boolean;
+  /** False means the deterministic pass finished the run without an LLM. */
+  resolverNeeded?: boolean;
+  deterministic?: {
+    applied: number;
+    skipped: number;
+    failed: number;
+  };
   launchError?: string;
   error?: string;
 }
@@ -203,6 +217,7 @@ export function usePlanCleanupOps(): {
     planSlugs: readonly string[],
     filter: Record<string, unknown>,
     harness?: string | null,
+    launch?: BulkResolverLaunchProfile,
   ) => Promise<PlanCleanupStartResult>;
   stop: (runId: string) => Promise<void>;
   dismiss: (runId: string) => Promise<void>;
@@ -217,19 +232,40 @@ export function usePlanCleanupOps(): {
       rawPlanSlugs: readonly string[],
       filter: Record<string, unknown>,
       harness?: string | null,
+      launch?: BulkResolverLaunchProfile,
     ): Promise<PlanCleanupStartResult> => {
       const planSlugs = snapshotPlanSlugs(rawPlanSlugs);
       try {
+        const clickTimeLaunch = launch ?? await loadResolverLaunchProfile("plan-cleanup");
         const json = await postOp({
           op: "start",
           planSlugs,
           filter,
+          launch: clickTimeLaunch,
           ...(harness ? { harness } : {}),
         });
         return {
           ok: true,
           runId: typeof json.runId === "string" ? json.runId : undefined,
           launched: json.launched === true,
+          resolverNeeded:
+            typeof json.resolverNeeded === "boolean"
+              ? json.resolverNeeded
+              : undefined,
+          deterministic:
+            json.deterministic && typeof json.deterministic === "object"
+              ? {
+                  applied: Number(
+                    (json.deterministic as Record<string, unknown>).applied ?? 0,
+                  ),
+                  skipped: Number(
+                    (json.deterministic as Record<string, unknown>).skipped ?? 0,
+                  ),
+                  failed: Number(
+                    (json.deterministic as Record<string, unknown>).failed ?? 0,
+                  ),
+                }
+              : undefined,
           launchError:
             typeof json.launchError === "string" ? json.launchError : undefined,
         };

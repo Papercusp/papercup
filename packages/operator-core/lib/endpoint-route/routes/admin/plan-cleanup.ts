@@ -23,6 +23,10 @@ import { notifyPlanCleanupRunChanged } from '../../../attention/bulk-run-sync';
 import { markCleanupFindingAccepted } from '../../../plan-cleanup/run-store';
 import { buildCleanupResolverBrief } from '../../../plan-cleanup/resolver-brief';
 import {
+  buildPlanCleanupSystemCall,
+  runDeterministicPlanCleanup,
+} from '../../../plan-cleanup/deterministic-runner';
+import {
   buildResolverLaunchCommand,
   preflightResolverLaunch,
   resolverSpawnOutcome,
@@ -175,7 +179,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
   }
 }
 
-export async function planCleanupHandler(req: Request, _ctx: RouteContext): Promise<Response> {
+export async function planCleanupHandler(req: Request, ctx: RouteContext): Promise<Response> {
   const csrf = requireAllowedOriginOr403(req);
   if (csrf) return csrf;
 
@@ -232,6 +236,50 @@ export async function planCleanupHandler(req: Request, _ctx: RouteContext): Prom
       requestedBy: 'owner',
       harnessSlug: harness,
     });
+    // P-008 — deterministic first. Scanner-authorized findings run through the
+    // SAME run-row authority + canonical plan/claim dispatcher as
+    // plans:cleanup-act. Re-scan to a fixed point before deciding whether any
+    // judgment work remains; only that residue earns an LLM process.
+    const deterministic = await runDeterministicPlanCleanup({
+      run,
+      call: buildPlanCleanupSystemCall({
+        workspaceId: run.workspaceId,
+        harnessSlug: harness,
+        runId: run.runId,
+        signal: ctx.signal,
+      }),
+    });
+    if (deterministic.fatalError) {
+      const failed = await setRunPhase({
+        runId: run.runId,
+        phase: 'failed',
+        error: deterministic.fatalError,
+      });
+      await invalidateCleanupRun();
+      return Response.json({
+        ok: true,
+        runId: run.runId,
+        phase: failed?.phase ?? 'failed',
+        totalPlans: run.totalItems,
+        launched: false,
+        resolverNeeded: false,
+        deterministic,
+        launchError: deterministic.fatalError,
+      });
+    }
+    if (!deterministic.needsResolver) {
+      await invalidateCleanupRun();
+      return Response.json({
+        ok: true,
+        runId: run.runId,
+        phase: deterministic.phase,
+        totalPlans: run.totalItems,
+        launched: false,
+        resolverNeeded: false,
+        deterministic,
+      });
+    }
+
     const launched = await launchCleanupResolver(run.runId, planSlugs, harness, preflight.launch);
     if (launched.ok) {
       await setRunPhase({
@@ -253,6 +301,8 @@ export async function planCleanupHandler(req: Request, _ctx: RouteContext): Prom
       phase: launched.ok ? 'running' : 'failed',
       totalPlans: run.totalItems,
       launched: launched.ok,
+      resolverNeeded: true,
+      deterministic,
       ...(launched.ok ? {} : { launchError: launched.error }),
     });
   } catch (error) {
@@ -280,6 +330,7 @@ const route = defineTool({
   method: 'POST',
   path: '/admin/plan-cleanup',
   auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
+  timeoutSec: 300,
   handler: planCleanupHandler,
 });
 

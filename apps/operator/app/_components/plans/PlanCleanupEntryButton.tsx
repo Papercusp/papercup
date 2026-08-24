@@ -58,6 +58,15 @@ export default function PlanCleanupEntryButton({
       }
 
       onRunStarted(result.runId);
+      if (result.resolverNeeded === false && !result.launchError) {
+        const applied = result.deterministic?.applied ?? 0;
+        toast.success(
+          applied > 0
+            ? `Clean-up finished deterministically for “${title}” · ${applied} fix${applied === 1 ? '' : 'es'} applied.`
+            : `“${title}” is already clean — no resolver needed.`,
+        );
+        return;
+      }
       if (!result.launched) {
         toast.error(
           `Clean-up run saved, but its resolver could not start${result.launchError ? `: ${result.launchError}` : '.'}`,
