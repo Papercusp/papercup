@@ -87,6 +87,6 @@ export default defineTool({
       detail: `[${actorId}] goal package '${applied.ref}' ${applied.fromVersion} → ${applied.toVersion} applied (${applied.mode}): ${applied.applied.join(', ')}`,
     });
 
-    return text({ ok: true, ...applied });
+    return text(applied);
   },
 });

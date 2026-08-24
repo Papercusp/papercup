@@ -28,7 +28,13 @@ export type PlanEventType =
    *  OWNING SUBJECT's key — a plan slug or a goal id — deliberately riding
    *  this one rail (D-005 §2: no parallel channel); `detail` carries the
    *  rendered delta line (`worklist: +"docs sweeps" −"perf"`). */
-  | 'property_changed';
+  | 'property_changed'
+  /** A goal-package contract update applied to a live/stub goal instance
+   *  (goals:apply-package-update, work-on-everything-goal-2026-08-23 P-018).
+   *  Same D-005 §2 one-rail convention as property_changed: `plan_slug`
+   *  carries the GOAL ID; `before`/`after` carry the package versions;
+   *  `detail` names the mode + fields applied. */
+  | 'package_updated';
 
 export interface ReadPlanEventsOpts {
   since_ts?: string;
