@@ -753,6 +753,7 @@ async function promoteToolFailureProbation(
   const promotedAt = new Date().toISOString();
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, {
     lane: null,
+    ...(input.paths?.length ? { paths: input.paths } : {}),
     toolFailureProbation: {
       ...priorProbation,
       ...incomingProbation,
@@ -985,6 +986,7 @@ async function coalesceWatchdogWinner(args: {
     repeatCount,
     lastSeenAt: new Date().toISOString(),
   };
+  if (input.paths?.length) mergePatch.paths = input.paths;
   if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
   if (priorProbation && incomingProbation) {
     mergePatch.toolFailureProbation = {
@@ -1181,6 +1183,7 @@ export async function captureImprovement(
         repeatCount,
         lastSeenAt: new Date().toISOString(),
       };
+      if (input.paths?.length) mergePatch.paths = input.paths;
       if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
       if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
       if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;

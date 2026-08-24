@@ -290,6 +290,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         kind: 'change',
         lane: 'observation',
         watchdogKey: key,
+        paths: ['packages/operator-core/lib/agent-tools/coordination/tools/send.ts'],
         createdBy: 'su-b',
         payloadExtra: { toolFailureProbation: probation('su-b') },
       },
@@ -299,6 +300,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.created).toHaveLength(0);
     expect(mergedPatches[0]).toMatchObject({
       lane: null,
+      paths: ['packages/operator-core/lib/agent-tools/coordination/tools/send.ts'],
       toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
     });
     expect(tags).toEqual([IMPROVEMENT_TOPIC]);
@@ -1811,12 +1813,15 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
 
   it('re-firing a keyed detector twice yields ONE open row — 2nd call coalesces (repeatCount 2, title refreshed)', async () => {
     const d = keyDeps();
+    const firstPaths = ['packages/operator-core/lib/issues-engineer.ts'];
+    const latestPaths = ['packages/operator-core/lib/harness/improvements/capture-core.ts'];
     const first = await captureImprovement(
       {
         title: 'Gym champion promoted: judge@h-pao cycle 4 — consider generalizing',
         kind: 'change',
         lane: 'improvement',
         watchdogKey: 'gym-champion:h-pao:judge',
+        paths: firstPaths,
       },
       d,
     );
@@ -1830,6 +1835,7 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
         kind: 'change',
         lane: 'improvement',
         watchdogKey: 'gym-champion:h-pao:judge',
+        paths: latestPaths,
       },
       d,
     );
@@ -1838,6 +1844,7 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
     expect(d.created).toHaveLength(1); // ONE open item — the WI-39594 acceptance
     expect(d.store).toHaveLength(1);
     expect((d.store[0].payload as Record<string, unknown>).repeatCount).toBe(2);
+    expect((d.store[0].payload as Record<string, unknown>).paths).toEqual(latestPaths);
     expect(d.store[0].title).toBe('Gym champion promoted: judge@h-pao cycle 5 — consider generalizing');
     expect(second.issue?.id).toBe(first.issue?.id);
     expect(second.coalescedOnto).toMatchObject({ id: first.issue?.id, repeatCount: 2 });
@@ -1973,19 +1980,26 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
       occurrences,
     };
 
-    const input = {
+    const leftInput = {
       title: 'prompt weight catalog registration is red',
       kind: 'bug' as const,
       watchdogKey: KEY,
       scope: 'harness:papercusp',
+      paths: ['packages/operator-core/lib/issues-engineer.ts'],
     };
-    const [left, right] = await Promise.all([captureImprovement(input, d), captureImprovement(input, d)]);
+    const rightInput = {
+      ...leftInput,
+      title: 'prompt weight catalog registration is still red',
+      paths: ['packages/operator-core/lib/harness/improvements/capture-core.ts'],
+    };
+    const [left, right] = await Promise.all([captureImprovement(leftInput, d), captureImprovement(rightInput, d)]);
     const results = [left, right];
     expect(results.filter((result) => result.created)).toHaveLength(1);
     expect(results.filter((result) => result.reason === 'coalesced')).toHaveLength(1);
     expect(attempts).toHaveLength(2);
     expect(d.store).toHaveLength(1);
     expect((winner?.payload as Record<string, unknown>).repeatCount).toBe(2);
+    expect((winner?.payload as Record<string, unknown>).paths).toEqual(rightInput.paths);
     expect(occurrences.map((row) => row.reportKind).sort()).toEqual(['canonical-created', 'coalesced']);
   });
 
