@@ -637,6 +637,50 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.notes.join('\n')).not.toMatch(/CORRECTED to true by the marker/);
     });
 
+    /**
+     * WI-41208. The EI-21285379200225840 fixture directly above sets a marker-FREE
+     * baseline (`parentBlobAtTarget: 'nothing relevant here'`), so `0 < 0` is false and
+     * `strictlyRemoved` never fires — which is why that test passed while production
+     * still flipped every leg to true. The production shape differs by one word: the
+     * newest commit touching the path is an EDIT to a file that ALREADY carried the
+     * marker, so the baseline count is NON-ZERO. Each path-absent ref then measures 0,
+     * and `0 < baseline` read as a strict net-DECREASE.
+     *
+     * This test is one half of a two-sided control. Its sibling above — 'a MARKER
+     * removed by the target change CORRECTS an absent ref marker by strict count
+     * decrease' — is the calibration: it keeps `blobAtRef` set, so the ref genuinely
+     * HAS the file and the net-decrease correction must still fire. Delete the
+     * `refHasPath`/`baselineHasPath` guard and this test fails; delete `strictlyRemoved`
+     * altogether and that one does. Neither passes vacuously.
+     */
+    it('WI-41208: a NON-ZERO marker baseline never corrects a PATH-ABSENT ref by "strict net-decrease"', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [], 'origin/main': [], deployedsha0: [] },
+        // The file is NEW and unpushed: no target tree has ever carried this path.
+        // '' is the MEASURED absence, distinct from omitting the ref (a failed read).
+        newestInRef: { 'origin/staging': '', 'origin/main': '', deployedsha0: '' },
+        absentRefs: ['origin/staging', 'origin/main', 'deployedsha0'],
+        // The one difference from the fixture above — a baseline that carries the marker.
+        parentBlobAtTarget: 'function looksDeadOrStuck() {}\n',
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+
+      expect(res.positions.onStaging).toBe(false);
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positions.deployed).toBe(false);
+      for (const leg of ['onStaging', 'inMain', 'deployed'] as const) {
+        expect(res.positionsMarker?.[leg]).toMatchObject({ present: false, count: 0, pathPresent: false });
+      }
+      expect(res.notes.join('\n')).not.toMatch(/CORRECTED to true by the marker/);
+      expect(res.notes.join('\n')).not.toMatch(/strict net-decrease/);
+      // The rendered verdict is what an agent acts on — it must not read as shipped.
+      expect(res.summary).not.toMatch(/main ✓/);
+    });
+
     it('a MARKER absent from the ref confirms a GENUINE miss and does not cry newer-commit', async () => {
       const git = fakeGit({
         pathCommit: PEER,
