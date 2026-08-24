@@ -132,6 +132,45 @@ describe('boundInboxEntries (EI-1752)', () => {
   });
 });
 
+describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
+  // The missing time filter is DELIBERATE (D-002 / D-013 R1,
+  // fleet-deltas-leader-primitives-2026-07-10) — but the bare unrecognized-key
+  // rejection never said so, and "the documented since filter is missing" was
+  // filed 10+ times. The authored redirect makes the rejection itself name
+  // where a time-bounded read lives; the description steers upfront.
+  const redirectKeys = ['since', 'since_ts'] as const;
+
+  it('authors a cross-tool redirect to coord:feed for since/since_ts', () => {
+    for (const key of redirectKeys) {
+      const redirect = inboxTool.guidance?.argRedirects?.[key];
+      expect(redirect, `argRedirects.${key}`).toBeDefined();
+      expect(typeof redirect).toBe('object');
+      const call = redirect as { tool: string; args: Record<string, unknown>; note?: string };
+      expect(call.tool).toBe(feedTool.name);
+      // The ratification pointer is the load-bearing half of the note: without
+      // it the caller reads the redirect as a gap, refiles, and the cycle repeats.
+      expect(call.note).toMatch(/D-002/);
+      // Every arg the redirect teaches must exist on the target's live schema —
+      // an authored call that feed rejects is worse than no hint at all.
+      const feedShape = (feedTool.args as z.AnyZodObject).shape;
+      for (const taughtArg of Object.keys(call.args)) {
+        expect(feedShape, `coord:feed declares \`${taughtArg}\``).toHaveProperty(taughtArg);
+      }
+    }
+  });
+
+  it('keeps since/since_ts UNDECLARED on the inbox schema (redirects fire only for unknown keys)', () => {
+    const shape = (inboxTool.args as z.AnyZodObject).shape;
+    for (const key of redirectKeys) {
+      expect(shape, `inbox must not declare \`${key}\``).not.toHaveProperty(key);
+    }
+  });
+
+  it('steers time-bounded reads to coord:feed in the description upfront', () => {
+    expect(String(inboxTool.description)).toMatch(/time bounds \(`since`\)[^.]*coord:feed/);
+  });
+});
+
 describe('coord:thread', () => {
   it('documents that an inbox msg_id is passed as root_msg_id', () => {
     const guidance = `${String(threadTool.description)} ${JSON.stringify(threadTool.guidance ?? {})}`;

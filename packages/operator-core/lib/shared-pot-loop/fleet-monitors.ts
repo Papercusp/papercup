@@ -418,6 +418,32 @@ export interface PeerFederationHealth {
    * "there is nothing to fold". This is the number that separates them.
    */
   admittedRemoteLogs: number | null;
+  /**
+   * EI-21322935352272541: whether THIS HOST admits any remote log in ANY booted
+   * scope. `null` ⇒ unmeasured (never spelled the same as a determined `false`).
+   *
+   * `admittedRemoteLogs === 0` alone cannot tell a scope-local peer departure
+   * ("our peers here went away") from a host-wide admission outage ("this host
+   * admits nothing anywhere"), because the scan reads only its own scope. That
+   * unmeasured distinction collapsed to the first branch, so ONE host-wide
+   * condition was reported as N scope-local peer stories — measured on this host
+   * 2026-08-24: `admittedLogCount` was min=1 max=1 across 101 booted scopes (own
+   * log only, zero remote admitted anywhere) while 45 scopes held durable remote
+   * cursors, i.e. 45 latent per-scope majors for one condition. Worse, WHICH of
+   * them alarmed was decided by the unrelated `scope-dormant` guard — whether we
+   * happened to have written locally in the last SLO window — so the alarming set
+   * was arbitrary with respect to the fault.
+   */
+  hostAdmitsAnyRemoteLog: boolean | null;
+  /**
+   * The host-wide breach, kept OUT of `breaches` on purpose: it is NOT a fact
+   * about this scope, so scoping it to this harness is the very error above. The
+   * caller files it under a non-harness-scoped watchdog key (the same idiom
+   * `monitor-scope-empty` already uses), which collapses N per-scope dedup
+   * buckets into one. `null` when the host does admit remote logs somewhere, or
+   * when admission is unmeasured.
+   */
+  hostWideAdmissionBreach: string | null;
 }
 
 /**
@@ -446,9 +472,22 @@ export function judgePeerFederationSilence(
      * ignorance must not be spelled the same as a determined zero (WI-39489).
      */
     admittedLogKeysHex?: readonly string[];
+    /**
+     * EI-21322935352272541: the HOST-WIDE admission reading — how many remote
+     * logs this host admits across EVERY booted scope, not just this one.
+     * `undefined` ⇒ unmeasured, reported as `hostAdmitsAnyRemoteLog: null` and
+     * changing no verdict (the same ignorance-is-not-a-fact rule as above).
+     *
+     * Read from the SAME snapshot as `admittedLogKeysHex` by the caller: two
+     * reads could straddle a boot and disagree about whether admission exists,
+     * which would be this defect's own shape one level up.
+     */
+    hostAdmission?: { remoteLogsAdmitted: number; scopesMeasured: number };
   },
 ): PeerFederationHealth {
   const admittedSet = opts.admittedLogKeysHex ? new Set(opts.admittedLogKeysHex) : null;
+  const hostAdmitsAnyRemoteLog =
+    opts.hostAdmission == null ? null : opts.hostAdmission.remoteLogsAdmitted > 0;
   if (rows.length === 0) {
     return {
       totalLogs: 0,

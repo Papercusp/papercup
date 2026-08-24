@@ -719,6 +719,14 @@ export interface RepoError {
 export interface OversizedFile {
   path: string;
   sizeBytes: number;
+  /**
+   * Which byte guard caused this file to be left out of the commit. Per-file
+   * exclusions predate this field and intentionally omit it; absence means the
+   * per-file guard for backwards-compatible result shapes. The cumulative guard
+   * sets `cumulative-limit` so alarms do not misattribute a small file to GitHub's
+   * individual-blob ceiling.
+   */
+  exclusionReason?: 'cumulative-limit';
 }
 /** An oversized file, qualified by which repo it sits in. */
 export interface ScopedOversized extends OversizedFile {
@@ -2141,7 +2149,7 @@ export async function findBulkDirtyExcess(
   const excluded: OversizedFile[] = [];
   for (const f of sized) {
     if (total <= maxTotalBytes) break;
-    excluded.push(f);
+    excluded.push({ ...f, exclusionReason: 'cumulative-limit' });
     total -= f.sizeBytes;
   }
   return excluded;

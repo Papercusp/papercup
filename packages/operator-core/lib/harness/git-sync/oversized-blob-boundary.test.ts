@@ -143,6 +143,7 @@ describe('findBulkDirtyExcess — the cumulative cap the per-file cap cannot see
     // The genuine source edit still commits this tick — quarantine, don't stall.
     expect(excludedPaths).not.toContain('src.ts');
     expect(excludedPaths.every((p) => p.startsWith('artifact'))).toBe(true);
+    expect(out.every((f) => f.exclusionReason === 'cumulative-limit')).toBe(true);
     const remaining = 1620 - out.reduce((n, f) => n + f.sizeBytes, 0);
     expect(remaining).toBeLessThanOrEqual(1000);
     rmSync(dir, { recursive: true, force: true });
