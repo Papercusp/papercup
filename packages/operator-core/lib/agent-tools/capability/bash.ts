@@ -20,6 +20,7 @@
  * `bash-jobs.ts` for why inheriting the foreground pair was a trap.
  */
 
+import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
@@ -44,7 +45,7 @@ import { typecheckHeapLaunchWarning } from './background-typecheck-verdict';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
-import { resolveCapabilityBaseDir } from './base-dir';
+import { realpathSoft, resolveCapabilityBaseDir } from './base-dir';
 import { maskIntegrationKey, readIntegrationKey } from '../../integration-credentials';
 import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
@@ -68,6 +69,36 @@ const MIN_TIMEOUT_MS = 1_000;
 const MIN_TIMEOUT_ERROR =
   `timeout must be at least ${MIN_TIMEOUT_MS}ms (1 second); timeout is expressed in milliseconds — ` +
   `for 20 seconds, pass 20000`;
+
+/**
+ * A stale harness registry can leave `ctx.projectDir` pointing at a directory
+ * that no longer exists. `resolveCapabilityBaseDir` intentionally preserves
+ * that path for the read/write/edit capability family, where changing the
+ * shared resolver would alter their path semantics. Bash is different: its
+ * child process cannot start with a missing cwd. For an implicit cwd only,
+ * recover to the operator's existing integration root when one is available.
+ * Explicit cwd arguments never pass through this recovery path.
+ */
+export function resolveBashDefaultCwd(baseDir: string): string {
+  try {
+    if (statSync(baseDir).isDirectory()) return baseDir;
+  } catch {
+    // Fall through to the integration-root recovery check.
+  }
+
+  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  if (!integrationRoot) return baseDir;
+
+  try {
+    if (!statSync(integrationRoot).isDirectory()) return baseDir;
+  } catch {
+    return baseDir;
+  }
+
+  // Keep the same real-path guarantee as resolveCapabilityBaseDir so the
+  // exec-sandbox's writable cwd bind follows writes through symlinks.
+  return realpathSoft(integrationRoot);
+}
 
 export interface BashTaskProvenance {
   launchedBy: string;
@@ -209,7 +240,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
-    const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
+    const cwd = args.cwd
+      ? isAbsolute(args.cwd)
+        ? args.cwd
+        : resolve(baseDir, args.cwd)
+      : resolveBashDefaultCwd(baseDir);
     // WI-6677: the default depends on the MODE. A background job is contractually
     // meant to outlive this call, so it must not inherit the short foreground
     // default — that made the tool SIGKILL exactly the long jobs it exists for.
