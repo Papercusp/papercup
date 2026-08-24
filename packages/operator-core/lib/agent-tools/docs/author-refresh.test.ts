@@ -67,6 +67,24 @@ beforeEach(() => {
 });
 
 describe('docs:author search refresh', () => {
+  it('rejects MDX-invalid prose before the canonical write', async () => {
+    const result = await callAuthor({
+      ...baseArgs,
+      slug: 'invalid-mdx-before-write',
+      body: '# Invalid MDX\n\nA list<plan-ref> appears in prose.\n',
+    });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; error?: string };
+
+    expect(result.isError).toBe(true);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain('invalid_mdx');
+    expect(payload.error).toContain('Expected a closing tag');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.invalidateEngineeringAdapter).not.toHaveBeenCalled();
+    expect(h.refreshDocPageSections).not.toHaveBeenCalled();
+  });
+
   it('invalidates the engineering adapter before refreshing the authored page', async () => {
     const result = await callAuthor(baseArgs);
     const payload = JSON.parse(result.content[0].text) as { ok: boolean };

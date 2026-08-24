@@ -35,6 +35,7 @@ import { getAuthoredDocContent } from '../../harness/docs/doc-record';
 import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scope';
 import { engineeringAdapter, invalidateEngineeringAdapter } from './_engineering-adapter';
 import { refreshDocPageSections } from '../../search/doc-embed-sync';
+import { findMdxCompileError } from '../../content-lint/mdx';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -489,6 +490,26 @@ export default defineTool({
       preservedFrontmatter: existingFrontmatter,
     };
     const content = composeDoc(fm, args.body);
+
+    // Validate the complete projected document before the canonical write. The downstream
+    // Astro build compiles this exact frontmatter + body with MDX core; accepting malformed
+    // JSX here would persist a fleet-wide docs-build blocker before any later content guard
+    // can report it (EI-21290152066377291 / EI-5861).
+    try {
+      const mdxError = await findMdxCompileError(docId, content);
+      if (mdxError) {
+        const at = mdxError.line != null ? `:${mdxError.line}${mdxError.col != null ? `:${mdxError.col}` : ''}` : '';
+        return err(
+          `invalid_mdx — ${docId}${at}: ${mdxError.reason}. ` +
+            'Fix the MDX syntax before authoring (for example, put literal angle-bracket placeholders in backticks).',
+        );
+      }
+    } catch (e) {
+      // The shared detector fails open when its optional compiler cannot load. Keep the
+      // authoring path available, but surface that validation was skipped so the caller can
+      // run lint:mdx explicitly rather than mistaking a successful write for a checked one.
+      warnings.push(`MDX validation could not run — run lint:mdx before relying on this doc (${(e as Error).message})`);
+    }
 
     // ── PG FIRST, FILE SECOND (P-008 / D-025) ──────────────────────────────────────
     // This order is the whole inversion. Postgres is canonical for authored doc prose;
