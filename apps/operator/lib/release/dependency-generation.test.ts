@@ -129,6 +129,9 @@ describe('immutable dependency generation', () => {
     });
 
     expect(result.status).toBe(75);
+    expect(result.stderr).toContain(
+      'changed input: node_modules (metadata fingerprint changed)',
+    );
     expect(result.stderr).toContain('refusing a torn snapshot');
     const entries = readdirSync(
       join(integration, '.papercusp/dependency-generations'),
