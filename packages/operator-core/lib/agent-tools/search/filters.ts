@@ -44,11 +44,31 @@ export const searchFilterArgs = {
   turn_origin: z
     .enum(['owner-typed', 'owner-dialog', 'agent-injected', 'machine-surface', 'synthetic', 'unenrolled-origin', 'not-user-turn'])
     .optional()
-    .describe('Restrict transcript hits to the persisted turn-origin verdict. Use owner-typed or owner-dialog for confirmed owner turns.'),
+    .describe(
+      "Restrict transcript hits to the PERSISTED turn-origin verdict — which is stricter than the verdict a hit DISPLAYS. " +
+      "⚠ 'owner-typed' is structurally unreachable for file-backed CLI sessions (claude/omp/codex): ingest downgrades their " +
+      "owner-typed residual to 'unenrolled-origin' because a clean CLI row proves neither owner nor machine authorship. A typed " +
+      "owner directive in a psu session is therefore stored 'unenrolled-origin', and filtering for 'owner-typed' returns zero " +
+      "rows no matter what the owner said. To find candidate owner speech use owner_candidates:true, NOT this filter.",
+    ),
   owner_only: z
     .boolean()
     .optional()
-    .describe('Restrict transcript hits to turns affirmatively typed as owner speech (owner-typed or owner-dialog).'),
+    .describe(
+      "Restrict hits to turns whose authorship is PROVEN owner speech (persisted 'owner-typed' or 'owner-dialog'). High precision, " +
+      "very low recall: in a file-backed CLI session this reaches only turn-stamped owner-dialog answers (AskUserQuestion), never a " +
+      "typed directive. A zero here is NOT evidence the owner said nothing — use owner_candidates:true for that question.",
+    ),
+  owner_candidates: z
+    .boolean()
+    .optional()
+    .describe(
+      "Restrict hits to turns that COULD be owner speech: proven owner turns PLUS 'unenrolled-origin' (a user turn carrying no " +
+      "machine-injection envelope, which is how a typed owner directive is stored in every claude/omp/codex session). This is the " +
+      "filter to use when verifying or DENYING a claimed owner directive — owner_only cannot answer that question on a CLI session. " +
+      "It excludes agent-injected, machine-surface, synthetic and assistant turns, so it still removes the loop-fire replays that " +
+      "make an unfiltered search read back an agent's own words as the owner's.",
+    ),
   session: z
     .string()
     .max(200)
@@ -70,6 +90,7 @@ export interface SearchFilterArgValues {
   speaker?: 'user' | 'assistant';
   turn_origin?: 'owner-typed' | 'owner-dialog' | 'agent-injected' | 'machine-surface' | 'synthetic' | 'unenrolled-origin' | 'not-user-turn';
   owner_only?: boolean;
+  owner_candidates?: boolean;
   session?: string;
   source_kind?: 'claude' | 'omp' | 'codex' | 'agent_chat';
   since?: string;
@@ -101,6 +122,7 @@ export async function resolveSearchFilters(
 ): Promise<ResolvedSearchFilters> {
   const anySet =
     args.owner || args.fleet || args.speaker || args.turn_origin || args.owner_only !== undefined ||
+    args.owner_candidates !== undefined ||
     args.session || args.source_kind || args.since || args.until;
   if (!anySet) return {};
 
@@ -165,6 +187,7 @@ export async function resolveSearchFilters(
   if (args.speaker) filters.speaker = args.speaker;
   if (args.turn_origin) filters.turnOrigin = args.turn_origin;
   if (args.owner_only !== undefined) filters.ownerOnly = args.owner_only;
+  if (args.owner_candidates !== undefined) filters.ownerCandidates = args.owner_candidates;
   if (sessionId && sessionId !== 'self') filters.sessionId = sessionId;
   if (args.source_kind) filters.sourceKind = args.source_kind;
   const since = isoOrUndefined(args.since);

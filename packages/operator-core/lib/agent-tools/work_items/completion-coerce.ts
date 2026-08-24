@@ -57,7 +57,9 @@ export const COMPLETION_FIELDS: readonly string[] = [...ARRAY_FIELDS, ...STRING_
 /** Exact object-form example shared by the schema error and the tool guidance. */
 export const COMPLETION_OBJECT_EXAMPLE =
   '{ summary: "what changed", testsRun: "npm run test:file -- path/to.test.ts", testResult: "passed", ' +
-  'verifiedHow: "unit", addedTests: true, filesChanged: ["path/to/file"] }';
+  'verifiedHow: "unit", addedTests: true, filesChanged: ["path/to/file"], ' +
+  'verification: { coverage: { population: ["all named items"], checked: ["all named items"], ' +
+  'notChecked: [], notApplicable: [], residue: ["none"] } } }';
 
 /** Actionable refusal for the lossy prose/string completion shape. */
 export const COMPLETION_STRING_REJECTION =
