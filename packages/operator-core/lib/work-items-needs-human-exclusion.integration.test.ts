@@ -148,11 +148,17 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
     await seedIssue('EI-claimed-human', {
       kind: 'change',
       status: 'open',
-      takenBy: 'bee-1',
       createdTs: 100,
-      payload: { humanCapability: 'credential', externalBlockers: blockers },
     });
     await seedIssue('WI-next-after-human', { createdTs: 200 });
+
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' })).toMatchObject({
+      id: 'EI-claimed-human',
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = ${db.sql.json({ humanCapability: 'credential', externalBlockers: blockers })}
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-claimed-human'`;
 
     const parked = await wi.setWorkItemStateWithAliasInfo('EI-claimed-human', 'needs-human', {
       harness: H,
@@ -171,7 +177,7 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
       last_progress_at: null,
     });
 
-    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-2' })).toMatchObject({
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' })).toMatchObject({
       id: 'WI-next-after-human',
     });
   });
