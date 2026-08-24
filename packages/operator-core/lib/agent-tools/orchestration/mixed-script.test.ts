@@ -59,6 +59,18 @@ function textEnvelope(result: ToolResult): Record<string, unknown> {
   return JSON.parse(item.text) as Record<string, unknown>;
 }
 
+async function waitForDispatchStart(started: Promise<void>, run: Promise<unknown>): Promise<void> {
+  const readiness = await Promise.race([
+    started.then(() => ({ state: 'started' as const })),
+    run.then((result) => ({ state: 'settled' as const, result })),
+  ]);
+  if (readiness.state === 'settled') {
+    throw new Error(
+      `orchestration settled before capability dispatch started: ${JSON.stringify(readiness.result)}`,
+    );
+  }
+}
+
 describe('P-012 server-side mixed capability scripts', () => {
   it('passes background and PTY task handles through one script and returns one P-006 envelope', async () => {
     const backgroundTaskId = 'task-bash-p012';
@@ -243,6 +255,18 @@ describe('P-012 server-side mixed capability scripts', () => {
     }
   });
 
+  it('fails fast with the real result when orchestration settles before dispatch starts', async () => {
+    const neverStarted = new Promise<void>(() => undefined);
+    await expect(
+      waitForDispatchStart(
+        neverStarted,
+        Promise.resolve({ ok: false, error: 'worker exited before dispatch' }),
+      ),
+    ).rejects.toThrow(
+      'orchestration settled before capability dispatch started: {"ok":false,"error":"worker exited before dispatch"}',
+    );
+  });
+
   it('propagates parent cancellation into an in-flight capability call', async () => {
     const parent = new AbortController();
     let markStarted!: () => void;
@@ -275,11 +299,15 @@ describe('P-012 server-side mixed capability scripts', () => {
         tools: [blockingBash],
         allowed: new Set(['capability:bash']),
         wrapDispatch,
-        timeoutMs: 2_000,
       },
     );
 
-    await started;
+    // This assertion is about cancellation AFTER the handler starts, not worker-boot
+    // latency. Keep the production 30s script budget and fail with the orchestration's
+    // real pre-dispatch result if it settles first. The old 2s budget + blind
+    // `await started` discarded that result and turned worker-start pressure into a
+    // misleading 60s Vitest timeout.
+    await waitForDispatchStart(started, run);
     parent.abort();
     const result = await run;
 
