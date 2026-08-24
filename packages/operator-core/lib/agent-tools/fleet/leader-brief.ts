@@ -39,6 +39,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readFleetLaneHealth } from '../../fleet/lane-health';
+import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import type { AgentIdentity } from '../coordination/identity';
@@ -183,6 +184,16 @@ export interface LeaderBriefMember {
   agentId: string;
   label: string | null;
   fleetRole: string | null;
+  /** Age of this member's current coord:declare-intent text. Null means the
+   *  roster could not resolve the declaration writer timestamp. */
+  intentAgeSec: number | null;
+  /** Canonical roster verdict: the declaration is not being actively progressed. */
+  intentStale: boolean | null;
+  /** Canonical roster verdict: activity is fresh but the declaration lags it. */
+  intentDivergent: boolean | null;
+  /** P-012: the resolving action for an intent signal. The raw booleans above
+   *  remain inspectable; this block tells a leader what to do with them. */
+  intentAttention?: LeaderBriefMemberIntentAttention;
   /** EI-19931924184335892: `'recorded'` is a LIVE verdict (session ended_at IS NULL) —
    *  it means "not coord-wakeable" (no live inbox-wake await registered), NEVER
    *  "not-live"/dead. Do not read it as evidence to reclaim a claim; cross-check
@@ -301,6 +312,66 @@ export interface LeaderBriefBenchSuggestion {
   kind: LeaderBriefBenchSuggestionKind;
 }
 
+export type LeaderBriefIntentAttentionKind = 'intent-stale' | 'intent-divergent';
+export type LeaderBriefIntentAttentionAction = 'verify-ownership-before-reclaim' | 'request-intent-refresh';
+
+export interface LeaderBriefMemberIntentAttention {
+  kind: LeaderBriefIntentAttentionKind;
+  action: LeaderBriefIntentAttentionAction;
+  reason: string;
+}
+
+/** Complete identity/action index for intent attention. The verbose member
+ * sample is byte-bounded, so a summary count without this index would tell a
+ * leader that intervention is needed while hiding the target. */
+export interface LeaderBriefIntentAttention {
+  agentId: string;
+  kind: LeaderBriefIntentAttentionKind;
+  action: LeaderBriefIntentAttentionAction;
+}
+
+/** P-012: turn the canonical roster's intent signals into one resolving action.
+ * Staleness dominates divergence because a non-progressing declaration must be
+ * verified before asking its owner to rewrite text. Unknown/false stays absent. */
+export function computeIntentAttention(input: {
+  agentId: string;
+  sessionState?: SessionState | null;
+  intentAgeSec?: number | null;
+  intentStale?: boolean | null;
+  intentDivergent?: boolean | null;
+}): LeaderBriefMemberIntentAttention | undefined {
+  if (input.intentStale === true) {
+    const age = input.intentAgeSec == null ? 'unknown age' : `${input.intentAgeSec}s old`;
+    const state = input.sessionState == null ? 'unknown session state' : `sessionState:${input.sessionState}`;
+    return {
+      kind: 'intent-stale',
+      action: 'verify-ownership-before-reclaim',
+      reason:
+        `Declared intent is unreliable (${age}; ${state}). Verify ${input.agentId}'s live assignments ` +
+        'and work-item checkpoint before reclaiming or treating the declaration as active ownership.',
+    };
+  }
+  if (input.intentDivergent === true) {
+    const age = input.intentAgeSec == null ? 'unknown age' : `${input.intentAgeSec}s old`;
+    return {
+      kind: 'intent-divergent',
+      action: 'request-intent-refresh',
+      reason:
+        `Member activity is fresh but its declared intent is ${age}. Ask ${input.agentId} to refresh ` +
+        'coord:declare-intent before using the declaration as evidence of its current lane.',
+    };
+  }
+  return undefined;
+}
+
+export function compactLeaderBriefIntentAttention(
+  members: ReadonlyArray<Pick<LeaderBriefMember, 'agentId' | 'intentAttention'>>,
+): LeaderBriefIntentAttention[] {
+  return members.flatMap(({ agentId, intentAttention }) =>
+    intentAttention == null ? [] : [{ agentId, kind: intentAttention.kind, action: intentAttention.action }],
+  );
+}
+
 /**
  * EI-20226510994156306: retain the complete member identity/verdict index even
  * when the verbose `members` rows must be bounded for the MCP/ptool transport.
@@ -341,6 +412,18 @@ export function prioritizeBenchSuggestedMembers<T extends { benchSuggestion?: un
   return [
     ...members.filter((member) => member.benchSuggestion != null),
     ...members.filter((member) => member.benchSuggestion == null),
+  ];
+}
+
+/** Put every actionable member first in the bounded detail sample. The compact
+ * identity indexes remain complete; this only makes their richer reasons likely
+ * to survive the common payload tier. */
+export function prioritizeActionableMembers<T extends { benchSuggestion?: unknown; intentAttention?: unknown }>(
+  members: readonly T[],
+): T[] {
+  return [
+    ...members.filter((member) => member.benchSuggestion != null || member.intentAttention != null),
+    ...members.filter((member) => member.benchSuggestion == null && member.intentAttention == null),
   ];
 }
 
@@ -2009,6 +2092,10 @@ export type DecoratedAgent = AgentAssignment & {
   lifecycleBackoff?: LifecycleBackoffInfo | null;
   /** Genuine-activity age from the canonical presence/turn-parts roster fold. */
   lastActiveSecAgo?: number | null;
+  /** Canonical coord-intent freshness signals from the fleet roster fold. */
+  intentAgeSec?: number | null;
+  intentStale?: boolean | null;
+  intentDivergent?: boolean | null;
 };
 
 /**
@@ -2250,10 +2337,15 @@ export function projectMember(
   // lastToolCallAgeMs:~53000 led a leader to force-release a claim the holder closed,
   // with a committed evidenced fix, 8 minutes later.
   const speakingNow = lastToolCallAgeMs != null && lastToolCallAgeMs <= VERDICT_SPEAKING_FRESH_MS;
+  const intentAttention = computeIntentAttention(a);
   return {
     agentId: a.agentId,
     label: a.label,
     fleetRole: a.fleetRole ?? null,
+    intentAgeSec: a.intentAgeSec ?? null,
+    intentStale: a.intentStale ?? null,
+    intentDivergent: a.intentDivergent ?? null,
+    ...(intentAttention ? { intentAttention } : {}),
     sessionState: a.sessionState ?? null,
     wakeable: a.wakeable ?? null,
     verdict: a.verdict ?? null,
@@ -2695,6 +2787,11 @@ export async function buildLeaderBrief(
     // leader's own cooldown/grace floors from rendering its private zero as
     // `summary.claimable_now` for the whole fleet.
   });
+  const claimableNow = buildClaimableNowAggregate({
+    fleet,
+    requestedHarness: args.harness,
+    laneHealth: fleetLaneHealth,
+  });
   const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
   const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
   const fleetLaneGating =
@@ -2807,6 +2904,9 @@ export async function buildLeaderBrief(
     high_context: members.filter((m) => m.contextPressure === 'high').length,
     critical_context: members.filter((m) => m.contextPressure === 'critical').length,
     parked: members.filter((m) => (m.parkedOn?.length ?? 0) > 0).length,
+    // P-012: raw intent signals already existed; this is the count of members
+    // with a resolving action in `intentAttention` below.
+    intent_attention: members.filter((m) => m.intentAttention != null).length,
     verified_wait_takeovers: members.reduce((count, member) => count + (member.verifiedWaitTakeovers?.length ?? 0), 0),
     // P-001 coord-deafness: live members NOT seeing their coord mail right
     // now — a coord:send to them silently queues until they settle/wake.
@@ -2841,32 +2941,10 @@ export async function buildLeaderBrief(
     // `throttled.until`, not lost; do not relaunch/reclaim solely on this, but do NOT read
     // the fleet as fully healthy either — see each member's `throttled` field for when.
     throttled: members.filter((m) => m.throttled != null).length,
-    // The live authoritative claimable total behind the two fields above (the same
-    // number work_items:claimable reports). null ⇒ could not be read on this brief —
-    // NOT zero, and never to be read as a drained lane.
-    claimable_now: fleetClaimableCount,
-    // EI-19313376980892266 fix B: WHICH scoping produced the number above. A bare
-    // count is not comparable to another surface's count — beside
-    // work_items:claimable's default-spec total this one reads as a contradiction
-    // when the two are simply different questions. null when the lane read failed
-    // (i.e. claimable_now is null too), never a fabricated scoping.
-    claimable_now_spec: fleetLaneHealth
-      ? {
-          ...fleetLaneHealth.spec,
-          families: {
-            issue: fleetLaneHealth.issueFamily,
-            feature: fleetLaneHealth.featureFamily,
-            effective: fleetLaneHealth.effective,
-          },
-          note:
-            `claimable_now (${fleetLaneHealth.effective.claimable ?? 'unknown'}) uses the ` +
-            `${fleetLaneHealth.effective.basis} verdict for rows admitted by ` +
-            `${fleetLaneHealth.spec.ref} within harness '${fleetLaneHealth.spec.harness}'. ` +
-            `work_items:claimable{harness} asks a DIFFERENT question (the default spec, ` +
-            `harness-wide) and a larger number there is expected, not a contradiction — ` +
-            `compare only against the same spec+harness.`,
-        }
-      : null,
+    // P-002 / D-004: the count and the exact population that gives it meaning
+    // are one wire value. A caller cannot retain the numeral while silently
+    // dropping its fleet/spec/harness, and null carries an in-band reason.
+    claimable_now: claimableNow,
     // WI-3818: make any incomplete canonical roster read explicit to callers
     // instead of silently presenting a partial membership list.
     degraded_roster_legs: rosterResult.degradedLegs,
@@ -3108,8 +3186,9 @@ export async function buildLeaderBrief(
   );
   const memberVerdicts = compactLeaderBriefMemberVerdicts(membersWithVerdict);
   const benchSuggestions = compactLeaderBriefBenchSuggestions(membersWithVerdict);
+  const intentAttention = compactLeaderBriefIntentAttention(membersWithVerdict);
   const boundedMembers = trimToByteBudget(
-    prioritizeBenchSuggestedMembers(membersWithVerdict),
+    prioritizeActionableMembers(membersWithVerdict),
     LEADER_BRIEF_MEMBER_DETAIL_BUDGET,
   );
   const boundedReservationMembers = trimToByteBudget(reservation.members, LEADER_BRIEF_RESERVATION_DETAIL_BUDGET);
@@ -3241,6 +3320,9 @@ export async function buildLeaderBrief(
       // EI-21242929839064139: unlike `members`, this exceptional slice is complete.
       // A leader must never see bench_suggested:N without the N target identities.
       benchSuggestions,
+      // P-012: same complete exceptional-index contract for intent actionability.
+      // A leader must never see intent_attention:N without every target + action.
+      intentAttention,
       members: boundedMembers.kept,
       ...(boundedMembers.truncated
         ? {

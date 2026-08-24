@@ -26,7 +26,23 @@ function largeBrief() {
       dead: 2,
       dead_member_ids: ['su-51', 'su-52'],
       stalled: 3,
-      claimable_now: 1432,
+      claimable_now: {
+        value: 1432,
+        population: {
+          kind: 'fleet-claim-spec',
+          fleet: 'large-fleet',
+          harness: 'papercusp',
+          spec: {
+            ref: 'large-fleet@7',
+            revision: 7,
+            matchedBy: 'fleet',
+            assigneeScoped: null,
+          },
+          basis: 'issue+feature-family',
+          matchedByFilter: 1432,
+          note: 'the fleet claim-spec population',
+        },
+      },
       population: { candidates: 63, counted: 53, withheld: 10, basis: 'x'.repeat(1000) },
       pool_capacity: { poolExhausted: false, degraded: false, factor: 1, queueDepth: 0 },
     },
@@ -76,7 +92,20 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(encoded.length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
     expect(out.ok).toBe(true);
     expect(out.blockedAt).toMatchObject({ layer: 'members' });
-    expect(out.summary).toMatchObject({ fleet: 'large-fleet', members: 53, claimable_now: 1432 });
+    expect(out.summary).toMatchObject({
+      fleet: 'large-fleet',
+      members: 53,
+      claimable_now: {
+        value: 1432,
+        population: {
+          kind: 'fleet-claim-spec',
+          fleet: 'large-fleet',
+          harness: 'papercusp',
+          spec: { ref: 'large-fleet@7', revision: 7, assigneeScoped: null },
+          basis: 'issue+feature-family',
+        },
+      },
+    });
     expect(out.summary).toMatchObject({ dead: 2, dead_member_ids: ['su-51', 'su-52'] });
     expect(out.monitoringBlindAdvisory).toMatchObject({
       line: expect.stringContaining('monitoring blind'),
@@ -227,6 +256,55 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     ]);
     expect(out.summary).toMatchObject({ bench_suggested: 3 });
     expect((out.members as Array<{ agentId: string }>).some((member) => member.agentId === 'bench-a')).toBe(false);
+  });
+
+  it('keeps every intent target and resolving action when verbose member rows are truncated', () => {
+    const members = [
+      ...Array.from({ length: 20 }, (_, index) => ({ agentId: `ordinary-${index}`, verdict: 'monitoring' })),
+      {
+        agentId: 'intent-stale',
+        intentAttention: {
+          kind: 'intent-stale',
+          action: 'verify-ownership-before-reclaim',
+          reason: 'verify current assignments and checkpoint before reclaiming',
+        },
+      },
+      {
+        agentId: 'intent-divergent',
+        intentAttention: {
+          kind: 'intent-divergent',
+          action: 'request-intent-refresh',
+          reason: 'request a fresh declaration',
+        },
+      },
+    ];
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'intent-fleet', members: members.length, intent_attention: 2 },
+        members,
+        intentAttention: [
+          {
+            agentId: 'intent-stale',
+            kind: 'intent-stale',
+            action: 'verify-ownership-before-reclaim',
+          },
+          {
+            agentId: 'intent-divergent',
+            kind: 'intent-divergent',
+            action: 'request-intent-refresh',
+          },
+        ],
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+
+    expect(out.summary).toMatchObject({ intent_attention: 2 });
+    expect(out.intentAttention).toEqual([
+      { agentId: 'intent-stale', kind: 'intent-stale', action: 'verify-ownership-before-reclaim' },
+      { agentId: 'intent-divergent', kind: 'intent-divergent', action: 'request-intent-refresh' },
+    ]);
+    expect((out.members as Array<{ agentId: string }>).some((member) => member.agentId === 'intent-stale')).toBe(false);
   });
 
   it('preserves the monitoring-blind advisory in the emergency byte-pressure projection', () => {
