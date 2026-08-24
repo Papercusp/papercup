@@ -11,6 +11,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** P-002 item d: a SUCCESSFUL create persists its candidates instead of returning
+ *  them, so the wire-in is observed at the substrate seam. */
+const dedupEdgeMocks = vi.hoisted(() => ({
+  persist: vi.fn(async (input: { candidates?: readonly { id: string }[] }) => input.candidates?.length ?? 0),
+}));
+vi.mock('./dedup-edges', () => ({ persistDedupEdges: dedupEdgeMocks.persist }));
+
 const occurrenceMocks = vi.hoisted(() => ({
   record: vi.fn(async () => null),
   readPressure: vi.fn(async (): Promise<
@@ -78,6 +85,7 @@ beforeEach(() => {
   fulltextM.mockReset();
   fulltextM.mockResolvedValue([]);
   createM.mockClear();
+  dedupEdgeMocks.persist.mockClear();
   occurrenceMocks.record.mockClear();
   occurrenceMocks.readPressure.mockReset();
   occurrenceMocks.readPressure.mockResolvedValue(null);

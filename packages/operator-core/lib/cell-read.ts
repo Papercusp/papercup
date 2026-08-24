@@ -143,6 +143,14 @@ export type CellRead =
        */
       assessment?: CellAssessmentRead;
       /**
+       * Axis 2 — WHY this headline is genuinely total. Present exactly when the
+       * spec declares `whyTotal`, which registration permits only on a
+       * non-nullable cell. This is the caller-visible twin of `unknownHoist`:
+       * nullable cells carry the measured unknown channel; total cells carry the
+       * author's attestation that their resolver cannot fail into a default.
+       */
+      totality?: { why: string };
+      /**
        * D-039 — THE HOIST. Present exactly when the spec declares `unknownHoist`,
        * which the registry allows only on a `nullable` cell (axis 2). Carries the
        * RESULT-LEVEL unknown channel the resolver already emits — `positionsUnknown[]`,
@@ -865,6 +873,7 @@ async function readCellValue(
       headline: spec.headline,
       resolver: spec.resolver,
       ...(spec.ordered === undefined ? {} : { ordered: { stages: [...spec.ordered.stages] } }),
+      ...(spec.whyTotal === undefined ? {} : { totality: { why: spec.whyTotal } }),
       // D-008/D-016 — omitted ONLY for an event-signalled cell, the one case allowed to
       // declare `assessment: null` (it has no resolver payload to read a code out of).
       // Every value-bearing cell always carries the field, reporting `unavailable`

@@ -252,6 +252,14 @@ export const DECLARED_FIELDS = [
     why: 'WI-6444 ITSELF. Declared on 6 cells and enforced at registration, but emitted by nothing — every nullable cell read as a bare `value: null` with the reason dropped. This row is the regression test for that fix: revert the cell-read.ts emission and this row MUST go red.',
   },
   {
+    id: 'CellSpec.whyTotal',
+    name: 'whyTotal',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a non-nullable cell registration attesting `whyTotal: <resolver totality argument>`',
+    consumer: 'cell-read.ts carrying that attestation into `totality.why` on every successful value read',
+    why: 'Axis 2 totality is the symmetric alternative to a nullable cell\'s unknown hoist. If the attestation is consumed only by registration validation, a caller receives a confidently two-valued headline without the author\'s reason that the resolver cannot fail into a default — the exact silent collapse this field was introduced to prevent. Projecting it makes the claim reviewable at the read boundary and keeps nullable versus total semantics visible without consulting source.',
+  },
+  {
     id: 'CellSpec.materiality',
     name: 'materiality',
     declaredIn: 'packages/operator-core/lib/cell-registry.ts',

@@ -87,6 +87,9 @@ describe('readCell — the happy path', () => {
       expect(r.value).toBe(true);
       expect(r.headline).toBe('positions.deployed');
       expect(r.resolver).toBe('git-pipeline-position.ts');
+      expect(r.totality).toEqual({
+        why: 'test fixture — the stub resolver returns a value or throws; no read can fail into a default.',
+      });
     }
     expect(dispatchReadOnlyTool).toHaveBeenCalledWith('dev:pipeline_position', {}, expect.objectContaining({ role: 'su' }));
   });
@@ -129,7 +132,10 @@ describe('readCell — the happy path', () => {
 
     const r = await readCell('test.cell', READER, ENV);
     expect(r.status).toBe('value');
-    if (r.status === 'value') expect(r.value).toBeNull();
+    if (r.status === 'value') {
+      expect(r.value).toBeNull();
+      expect(r.totality).toBeUndefined();
+    }
   });
 });
 

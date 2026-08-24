@@ -26,6 +26,7 @@ import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
 import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
+import { persistDedupEdges } from './dedup-edges';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveGoalContext } from '../../modes/goal-context';
@@ -146,7 +147,17 @@ export type CreateOneWorkItemResult =
   | {
       ok: true;
       workItem: WorkItem;
-      similarOpen?: SemanticDupeCandidate[];
+      /** P-002 (work-queue-admission-and-bulk-dedup-2026-08-24), item d: how many
+       *  prescreen similarity edges this create persisted into
+       *  `harness_shared.dedup_edges`.
+       *
+       *  This REPLACED the advisory `similarOpen` list that a SUCCESSFUL create used
+       *  to return. Under born-pending admission the caller is no longer the thing
+       *  that adjudicates duplication — the P-003 promoter is — so the candidates go
+       *  where the promoter reads them instead of into a tool result nobody acts on.
+       *  `similarOpen` remains on the REFUSAL branch below, where it is load-bearing:
+       *  it names the item the caller should work instead. */
+      dedupEdges?: number;
       /** EI-10897: set when `state` was requested but the follow-on transition did not
        *  apply. The item EXISTS (ok:true) — this reports the state write's failure loudly
        *  instead of letting it be a silent no-op. Retry with work_items:set_state. */
@@ -955,15 +966,24 @@ export async function createOneWorkItem(
             dedupCoverage,
           );
         }
+        // P-002 item d: the candidates belong to the row that SURVIVES the race, not
+        // to ours (which is now settled). Best-effort, like every decoration here.
+        const adoptedId = settled.winnerId ?? workItem.id;
+        const winnerEdges = await persistDedupEdges({
+          itemId: adoptedId,
+          harness: winner?.harness ?? harnessForItem,
+          workspaceId,
+          candidates: similarOpen,
+        }).catch(() => 0);
         return {
           ok: true,
           workItem: winner ?? workItem,
           conditionUpsert: {
             adopted: true,
-            id: settled.winnerId ?? workItem.id,
+            id: adoptedId,
             ...(settled.duplicateLeftOpen ? { duplicateLeftOpen: settled.duplicateLeftOpen } : {}),
           },
-          ...(similarOpen ? { similarOpen } : {}),
+          ...(winnerEdges > 0 ? { dedupEdges: winnerEdges } : {}),
           ...(explicitPathsWarning ? { explicitPathsWarning } : {}),
           ...(issueAdmission ? { admissionIdentity: identity, dedupCoverage } : {}),
         };
@@ -1078,12 +1098,23 @@ export async function createOneWorkItem(
         goalStampError,
       );
     }
+    // ── P-002 item d: prescreen edges → the promoter's substrate ──────────
+    // The create succeeded, so `similarOpen` stops being the caller's business and
+    // becomes the P-003 promoter's evidence: persist the cosine edges into
+    // `harness_shared.dedup_edges` instead of returning an advisory list. Cosine-only
+    // and non-fatal — see dedup-edges.ts for why the lexical legs are excluded.
+    const dedupEdges = await persistDedupEdges({
+      itemId: workItem.id,
+      harness: workItem.harness ?? harnessForItem,
+      workspaceId,
+      candidates: similarOpen,
+    }).catch(() => 0);
     return {
       ok: true,
       workItem,
       ...(goalStamp ? { goalId: goalStamp } : {}),
       ...(goalStampError ? { goalStampError } : {}),
-      ...(similarOpen ? { similarOpen } : {}),
+      ...(dedupEdges > 0 ? { dedupEdges } : {}),
       ...(issueAdmission ? { admissionIdentity: identity, dedupCoverage } : {}),
       // P-004: a goal-gated feature-family create returns its coverage verdict too.
       ...(!issueAdmission && args.goalDedupGate && dedupCoverage ? { dedupCoverage } : {}),

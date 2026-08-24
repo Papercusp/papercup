@@ -128,7 +128,11 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/gym/control-plane.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/gym/control-plane.ts:identity-field#2:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/harness-ops/proxy.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/projected-tool-deps.ts:fallback#1:input.ctx.harnessSlug ?? '',",
+  // Same baselined telemetry site, re-keyed after 02228d3eca introduced a named local
+  // so the unresolved `$VAR` rejection could inspect it before the INSERT. The raw
+  // harness relation and wildcard semantics are unchanged; this is not a new finding
+  // and does not widen the shrink-only population.
+  "packages/operator-core/lib/projected-tool-deps.ts:fallback#1:const harnessSlug = input.ctx.harnessSlug ?? '';",
 ]);
 
 /** Vendored/generated/test files are not operator source and are not scanned. */

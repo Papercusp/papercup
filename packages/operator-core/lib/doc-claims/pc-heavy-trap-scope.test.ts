@@ -13,7 +13,7 @@
  * on the normal path — which is exactly why it is easy to "clean up" later by
  * someone who reads the `:-` as noise. Hence this guard.
  *
- * SCOPE IS DELIBERATE: only the three handlers reachable from a trap are judged.
+ * SCOPE IS DELIBERATE: only handlers reachable from a trap are judged.
  * `_preempt_notify` and `_preempt_leader_alive` run solely from the main loop,
  * where the locals are always in scope, and their bare expansions are correct.
  */
@@ -26,7 +26,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const PC_HEAVY = join(ROOT, 'scripts/pc-heavy.sh');
 
 /** Handlers named by `trap '<handler> …' EXIT|TERM|INT|HUP`, plus what they call. */
-const TRAP_REACHABLE = ['_preempt_group_alive', '_preempt_reap_group', '_preempt_forward_signal'];
+const TRAP_REACHABLE = [
+  '_preempt_group_alive',
+  '_preempt_reap_group',
+  '_preempt_forward_signal',
+  '_pc_heavy_queue_abort',
+];
 
 /** Extract a shell function body by brace matching from `name() {`. */
 export function shellFunctionBody(source: string, name: string): string | null {

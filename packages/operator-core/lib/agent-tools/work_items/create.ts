@@ -518,9 +518,16 @@ export default defineTool({
           // EI-18784357226895330: filed, but the requested self-assignment was refused
           // by the fleet lane — the caller must see this on an ok:true result.
           ...fleetScopeDowngrade,
-          // P-008 soft-band advisory: created fine, but these OPEN items are
-          // semantically close — check them before splitting the work.
-          ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
+          // work-queue-admission-and-bulk-dedup-2026-08-24 P-002 (item d): the P-008
+          // soft-band advisory `similarOpen` NO LONGER comes back on a successful
+          // create. Handing a filing agent an unresolved candidate list is the exact
+          // shape this plan replaced: the item is born PENDING and the promoter
+          // adjudicates it against corpus-wide evidence 30 minutes later, so the
+          // candidates are persisted to harness_shared.dedup_edges instead. This
+          // count is what remains visible — the mechanism, not a to-do list.
+          // (`similarOpen` is still returned on the REFUSAL branch above, where it
+          // names the item the caller should work instead.)
+          ...(res.dedupEdges !== undefined ? { dedupEdges: res.dedupEdges } : {}),
           ...(res.explicitPathsWarning !== undefined ? { explicitPathsWarning: res.explicitPathsWarning } : {}),
           // EI-20075667133396690: goal attribution, and its failure. This row is
           // REBUILT from an allowlist rather than spread from `res`, so a new core
