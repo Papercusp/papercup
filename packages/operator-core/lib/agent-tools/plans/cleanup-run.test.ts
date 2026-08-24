@@ -117,7 +117,14 @@ describe('plans:cleanup-manifest', () => {
     expect(result).toMatchObject({
       ok: true,
       stopped: false,
-      findings: [expect.objectContaining({ findingId: finding.findingId, autoApply: true })],
+      findings: [
+        expect.objectContaining({
+          findingId: finding.findingId,
+          autoApply: true,
+          autoApplyBlockedBy: null,
+          current: true,
+        }),
+      ],
     });
   });
 
@@ -127,6 +134,24 @@ describe('plans:cleanup-manifest', () => {
       await cleanupManifest.handler({ runId: run.runId, includeReported: false }, {} as never),
     );
     expect(result).toMatchObject({ ok: true, featureDisabled: true, stopped: true });
+  });
+
+  it('marks only findings missing from the current scan as stale', async () => {
+    h.scanForCleanupFindings.mockReturnValue([]);
+    const result = body(
+      await cleanupManifest.handler({ runId: run.runId, includeReported: false }, {} as never),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      findings: [
+        expect.objectContaining({
+          findingId: finding.findingId,
+          autoApply: false,
+          autoApplyBlockedBy: 'stale-finding',
+          current: false,
+        }),
+      ],
+    });
   });
 });
 

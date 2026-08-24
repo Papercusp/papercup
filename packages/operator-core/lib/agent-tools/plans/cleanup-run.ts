@@ -101,7 +101,7 @@ export const cleanupManifest = defineTool({
       return {
         ...row,
         autoApply: current?.autoApply === true,
-        autoApplyBlockedBy: current?.autoApplyBlockedBy ?? 'stale-finding',
+        autoApplyBlockedBy: current ? current.autoApplyBlockedBy : 'stale-finding',
         current: Boolean(current),
       };
     });
