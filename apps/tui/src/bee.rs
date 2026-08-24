@@ -6,15 +6,16 @@
 //!     `queued` work-list from `fleet:assignments { agent }` (the externalized
 //!     per-bee TodoWrite the Queen reads).
 //!   - **Bottom 50%**, split horizontally:
-//!       - **UPPER**: the bee's coord INBOX (messages addressed TO it).
+//!       - **UPPER**: the bee's coord INBOX (messages addressed to / broadcast
+//!         at it).
 //!       - **LOWER**: the bee's coord OUTBOX (messages FROM it).
-//!     Both via `fleet:bee_mail { owner_id }`.
+//!     Both from ONE `coord:feed { owner }` read, split client-side — the old
+//!     `fleet:bee_mail` transport was retired with the bee tier (P-003
+//!     own-tui-full-divorce-2026-08-24).
 //!
-//! Selection arrives over the ephemeral in-memory relay (`fleet:selected_bee`):
-//! the swarm (Fleet) pane PUBLISHES the cursor's bee; this pane POLLs it (~1.5s,
-//! a cheap single GET) and refetches the dossier when the selection changes. The
-//! relay is NOT Postgres — it's a transport between two co-located pui processes
-//! (DB is not a transport; see fleet/selected-bee.ts for the tradeoff). Empty
+//! Selection is driven IN-PROCESS by the Fleet-tab roster cursor (the
+//! `Action::PublishBeeSelection` arm in main.rs) — the old `fleet:selected_bee`
+//! relay between co-located pui processes was retired server-side. Empty
 //! state ("select a bee in the swarm pane") shows until a bee is selected.
 //!
 //! All state + render live here; `app.rs`/`ui.rs`/`main.rs` only hold a `bee`

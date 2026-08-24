@@ -2577,7 +2577,6 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
             let action = match l.listing_kind.as_str() {
                 "harness" => "join",
                 "blueprint" => "fork (install)",
-                "snapshot" => "fork",
                 "plugin" => "install",
                 _ => "—",
             };

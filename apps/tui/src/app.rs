@@ -23,7 +23,7 @@ const NOTIF_HISTORY_CAP: usize = 50;
 
 /// The Cupboard kind-filter cycle (D-011): `f` steps through these;
 /// `cupboard_kind` indexes this array. "all" sends no `kind` param.
-pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "snapshot", "plugin"];
+pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "pack", "plugin"];
 
 /// The Conversations state-filter cycle (Brief 25): `s` steps through these;
 /// `conv_state_idx` indexes this array. "all" sends no `state` param.
