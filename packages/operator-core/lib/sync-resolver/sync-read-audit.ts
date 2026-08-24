@@ -106,6 +106,13 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'hiveRoster.byHive': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
   'insights.tokens': { harness: 'papercusp' }, // `harness`, not `harnessSlug`
   'planSessions.list': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
+  // planActivity.list (plan-visibility-revamp-2026-08-23 P-004) — the PlanDashboard
+  // "Recent activity" feed; argsSchema requires planSlug (min 1), limit clamps to
+  // 100 with default 30. Same stable-slug fixture as its planSessions sibling.
+  'planActivity.list': {
+    planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19',
+    limit: 30,
+  },
   // planLock.byPath (P-025 of semantic-search-fingerprint-coverage-2026-08-03) — the
   // plan-lock banner's read, which replaced a 30s poll of /api/admin/locks/queue.
   // Args are the workspace-relative lock path the client builds via planLockPath(),

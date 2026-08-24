@@ -101,8 +101,10 @@ describe('psu-launcher does not keep its own copy of the install-location list (
   );
 
   it('imports the shared resolver instead of declaring a second list', () => {
-    expect(launcherSrc).toContain(
-      "from '../../../packages/operator-core/lib/backend-bin-resolve.mjs'",
+    // Quote-agnostic: formatting sweeps have flipped the launcher between quote styles
+    // (single→double 2026-08-22) while the pinned property — ONE shared list — held.
+    expect(launcherSrc).toMatch(
+      /from ['"]\.\.\/\.\.\/\.\.\/packages\/operator-core\/lib\/backend-bin-resolve\.mjs['"]/,
     );
   });
 

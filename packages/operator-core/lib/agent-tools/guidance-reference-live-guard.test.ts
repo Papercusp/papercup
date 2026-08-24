@@ -21,7 +21,14 @@ type CatalogTool = {
 const TOOL_TOKEN_RE = /\b([a-z][a-z0-9_-]{1,}:[a-z][a-z0-9_-]{1,})\b/g;
 
 /** Deliberate prose placeholder, not a request to call a real tool. */
-const NON_TOOL_REFERENCES = new Set(['group:verb', 'harness:plan_reviews', 'work-item:done']);
+const NON_TOOL_REFERENCES = new Set([
+  'group:verb',
+  'harness:plan_reviews',
+  'work-item:done',
+  // Event KEY (events:await rendezvous), not a tool call — same precedent as
+  // 'work-item:done' above; referenced by fleet/bench.ts's description.
+  'work-item:claimable',
+]);
 /** Common `key:value` data literals that share the tool-token grammar. */
 const STRUCTURED_VALUES = new Set(['true', 'false', 'null', 'undefined', 'shared', 'exclusive']);
 const STRUCTURED_KEYS = new Set([

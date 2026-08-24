@@ -119,7 +119,11 @@ describe('launcher/server share ONE role list', () => {
     // that re-declares the list routes roles the server would reject (or vice
     // versa), and both directions fail quietly at launch time.
     const launcher = readFileSync(join(OPERATOR_APP_ROOT, 'scripts', 'psu-launcher.mjs'), 'utf8');
-    expect(launcher).toContain("from '../../../packages/operator-core/lib/su-tier-roles.mjs'");
+    // Quote-agnostic: formatting sweeps have flipped the launcher between quote styles
+    // (single→double 2026-08-22) while the pinned property — ONE shared role list — held.
+    expect(launcher).toMatch(
+      /from ['"]\.\.\/\.\.\/\.\.\/packages\/operator-core\/lib\/su-tier-roles\.mjs['"]/,
+    );
     expect(launcher).not.toMatch(/^\s*(const|let|var)\s+SU_TIER_ROLES\s*=/m);
   });
 });

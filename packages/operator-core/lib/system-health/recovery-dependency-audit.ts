@@ -486,6 +486,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'P-009 — opt-in lost-holder recovery. It rides the operator rather than the agent-session layer it restores, and shares the bounded flap-damping/give-up policy.',
   },
   {
+    name: 'standing-goal-boot-arm',
+    file: 'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'P-011 — bounded boot window that re-arms STANDING goals after an operator restart (self-stops after maxPasses). It rides the fresh operator, so the restart that dropped the arm cannot silence it; a dark standing goal is not a substrate failure.',
+  },
+  {
     name: 'goal-drain-fleet-watchdog',
     file: 'packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts',
     executor: 'operator-in-process-timer',
@@ -519,6 +526,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     executor: 'operator-in-process-timer',
     recovers: [],
     note: 'Sessions crossing the compaction band without flushing.',
+  },
+  {
+    name: 'mid-turn-memory-admission-heartbeat',
+    file: 'packages/operator-core/lib/memory/mid-turn-admission.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'Renews the mid-turn memory-admission lease while drained work is still active, so a slow drain is not mistaken for a dead holder. The renewable lease expiry is the correctness backstop it services; nothing in the substrate is inside the failure it targets.',
   },
   {
     name: 'carry-drill-drop-watchdog',

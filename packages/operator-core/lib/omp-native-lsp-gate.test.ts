@@ -141,7 +141,9 @@ describe('PAPERCUSP_OMP_NATIVE_LSP wiring (producers ↔ consumers)', () => {
 
   it('the launcher READS the same env at BOTH omp call sites', () => {
     const src = read(LAUNCHER);
-    const reads = src.match(new RegExp(`envelopeEnv\\?\\.${ENV} === '1'`, 'g')) ?? [];
+    // Quote-agnostic (['"]): formatting sweeps flip the launcher between quote styles
+    // (single→double 2026-08-22) while both reads stay wired — pin the WIRING, not the quotes.
+    const reads = src.match(new RegExp(`envelopeEnv\\?\\.${ENV} === ['"]1['"]`, 'g')) ?? [];
     // Exactly two: the roleLaunchArgs caller and the suLaunchArgs caller.
     expect(reads).toHaveLength(2);
   });
@@ -156,12 +158,12 @@ describe('PAPERCUSP_OMP_NATIVE_LSP wiring (producers ↔ consumers)', () => {
    */
   it('CONTROL: the wiring matchers reject a half-applied change', () => {
     const countReads = (src: string) =>
-      (src.match(new RegExp(`envelopeEnv\\?\\.${ENV} === '1'`, 'g')) ?? []).length;
+      (src.match(new RegExp(`envelopeEnv\\?\\.${ENV} === ['"]1['"]`, 'g')) ?? []).length;
     const countEmitting = (src: string) =>
       src
         .split('\n')
         .filter((l) => !/^\s*(\*|\/\/)/.test(l))
-        .filter((l) => l.includes("'--no-lsp'")).length;
+        .filter((l) => /['"]--no-lsp['"]/.test(l)).length;
 
     // HALF-APPLIED: the helper exists and ONE omp branch was converted, but the
     // other still carries the literal — exactly how the two original sites
@@ -201,7 +203,7 @@ describe('PAPERCUSP_OMP_NATIVE_LSP wiring (producers ↔ consumers)', () => {
     const emitting = src
       .split('\n')
       .filter((l) => !/^\s*(\*|\/\/)/.test(l))
-      .filter((l) => l.includes("'--no-lsp'"));
+      .filter((l) => /['"]--no-lsp['"]/.test(l));
     expect(emitting).toHaveLength(1);
     expect(emitting[0]).toContain('allowNativeLsp === true ? [] :');
 
@@ -234,13 +236,21 @@ describe('PAPERCUSP_OMP_NATIVE_LSP wiring (producers ↔ consumers)', () => {
 describe('the omp RESUME path re-applies the gate (P-023)', () => {
   const LAUNCHER = 'apps/operator/scripts/psu-launcher.mjs';
 
-  /** The `resumeArgsFor` omp branch, sliced out of the launcher source. */
+  /** The `resumeArgsFor` omp branch, sliced out of the launcher source. Quote-agnostic:
+   *  formatting sweeps flip the launcher between quote styles (single→double 2026-08-22)
+   *  while the branch's pinned properties hold — pin the STRUCTURE, not the quotes. */
   function ompResumeBranch(src: string): string {
     const start = src.indexOf('export function resumeArgsFor');
     expect(start).toBeGreaterThan(-1);
-    const branch = src.indexOf("if (session.agent === 'omp')", start);
+    const findAgentIf = (agent: string, from: number): number => {
+      const re = new RegExp(`if \\(session\\.agent === ['"]${agent}['"]\\)`, 'g');
+      re.lastIndex = from;
+      const m = re.exec(src);
+      return m ? m.index : -1;
+    };
+    const branch = findAgentIf('omp', start);
     expect(branch).toBeGreaterThan(-1);
-    const end = src.indexOf("if (session.agent === 'codex')", branch);
+    const end = findAgentIf('codex', branch);
     expect(end).toBeGreaterThan(branch);
     return src.slice(branch, end);
   }

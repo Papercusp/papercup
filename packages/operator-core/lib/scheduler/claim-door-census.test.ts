@@ -179,6 +179,17 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
 
   // ---- name-shaped, but not work-item doors -------------------------------
   [
+    'adv-sessions.ts#claimAdvSessionResume',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Claims an adv_sessions RESUME LEASE — the wake-executor single-winner race for one ' +
+        'session row (started_at bump), not a work-item. The module reads work_items for its ' +
+        'session-context queries, which is why the scan sees it; this function selects no ' +
+        'work to serve, so readiness floors are not its concern.',
+    },
+  ],
+  [
     'pot/watchdog.ts#claimWatchdogFire',
     {
       klass: 'not-a-work-item-door',

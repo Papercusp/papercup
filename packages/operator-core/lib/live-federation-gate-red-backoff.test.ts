@@ -132,10 +132,13 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
     expect(gate.match(/red_tracked=0/g) ?? []).toHaveLength(1);
   });
 
-  it('clears last-red on every non-red outcome (green, starvation, and build-lock skip)', () => {
+  it('clears last-red on every non-red outcome (green, starvation, build-lock and source-lock skip)', () => {
     // Otherwise the longer red TTL keeps governing after the state has moved on.
+    // 4 clear sites: the GREEN stamp, the starvation downgrade, the build-lock skip, and —
+    // since EI-21266997625575412 — the build-SOURCE-lock skip (an active source edit
+    // overlapped the build error: the same non-red-outcome shape as build-lock contention).
     const clears = gate.match(/rm -f[^\n]*last-red/g) ?? [];
-    expect(clears).toHaveLength(3);
+    expect(clears).toHaveLength(4);
     const green = extractLine(/^\s*echo "\$\(now_s\)" >"\$STATE_DIR\/last-green"[^\n]*$/m, 'the GREEN stamp line');
     expect(green, 'the GREEN path must clear the red backoff').toContain('last-red');
 
@@ -145,6 +148,16 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
     expect(buildLockBranch).toContain('>"$STATE_DIR/last-downgrade"');
     expect(buildLockBranch).toContain('rm -f "$STATE_DIR/last-red"');
     expect(buildLockBranch).toContain('GATE: SKIPPED-BUILD-LOCK-CONTENTION');
+
+    // The build-SOURCE-lock skip is the same non-red outcome one layer down (an active
+    // source edit overlapped the build error), so it must clear the red backoff the same
+    // way — downgrade stamped, last-red cleared, and a verdict that is not a red.
+    const sourceLockStart = gate.indexOf('if [ -n "$BUILD_SOURCE_LOCK_CONTENTION" ]; then');
+    const sourceLockEnd = gate.indexOf('\n  fi', sourceLockStart);
+    const sourceLockBranch = gate.slice(sourceLockStart, sourceLockEnd);
+    expect(sourceLockBranch).toContain('>"$STATE_DIR/last-downgrade"');
+    expect(sourceLockBranch).toContain('rm -f "$STATE_DIR/last-red"');
+    expect(sourceLockBranch).toContain('GATE: SKIPPED-BUILD-SOURCE-LOCK-CONTENTION');
 
     const starvationStart = gate.indexOf('if [ "$MATRIXFULL_RES" = SKIPPED-STARVATION ]; then');
     const starvationEnd = gate.indexOf('\n  fi', starvationStart);

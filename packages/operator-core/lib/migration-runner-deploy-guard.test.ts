@@ -40,7 +40,9 @@ describe('migration runner beforeApply guard', () => {
     expect(result).toMatchObject({
       appliedCount: 0,
       totalKnown: 1,
-      failed: [{ file: '001-guard.sql', error: 'deployed companion is absent' }],
+      // The runner wraps the guard's error with per-file context ("Migration
+      // 001-guard.sql FAILED: …"), so pin the guard's own message by containment.
+      failed: [{ file: '001-guard.sql', error: expect.stringContaining('deployed companion is absent') }],
     });
     expect(client.unsafe.mock.calls.some(([sql]) => sql.includes('BEGIN;'))).toBe(false);
   });
