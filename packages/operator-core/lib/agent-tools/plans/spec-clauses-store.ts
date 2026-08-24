@@ -20,6 +20,29 @@ export type SpecBehaviorClass = (typeof SPEC_BEHAVIOR_CLASSES)[number];
 export const SPEC_LIFECYCLE_STATUSES = ['draft', 'accepted', 'active', 'superseded', 'exempt', 'retired'] as const;
 export type SpecLifecycleStatus = (typeof SPEC_LIFECYCLE_STATUSES)[number];
 
+/**
+ * D-016: the concrete observation that proves THIS clause violated.
+ *
+ * Falsifiability was already ENFORCED here (mutationRequired proves the covering
+ * test can fail; behaviorClass forces breaking-condition clauses) but never
+ * DECLARED — no field said what a violation would actually look like. Declaring it
+ * makes adequacy mechanical (a test is adequate iff it can produce this
+ * observation) and structurally filters vacuous clauses: no falsifier can be
+ * written for "the system is robust".
+ */
+export interface SpecClauseFalsifier {
+  /** What you would SEE if the promise were broken — not a restatement of the promise. */
+  observation: string;
+  /** How to produce that observation: the probe, mutation, or input that elicits it. */
+  probeMethod?: string;
+}
+
+/** Write-side shape: JSON callers may spell an absent probeMethod as an explicit null. */
+export interface SpecClauseFalsifierWrite {
+  observation: string;
+  probeMethod?: string | null;
+}
+
 export interface SpecClauseWrite {
   harnessSlug?: string;
   planSlug: string;
@@ -35,6 +58,7 @@ export interface SpecClauseWrite {
   lifecycleStatus: SpecLifecycleStatus;
   supersedes?: { specId: string; revision: number } | null;
   exemption?: Record<string, unknown> | null;
+  falsifier?: SpecClauseFalsifierWrite | null;
   acceptanceRef?: string | null;
   actorId: string;
 }
@@ -54,6 +78,8 @@ export interface SpecClauseRevision {
   lifecycleStatus: SpecLifecycleStatus;
   supersedes: { specId: string; revision: number } | null;
   exemption: Record<string, unknown> | null;
+  /** D-016 declaration; NULL means undeclared, which is a gradeable gap — not a passing clause. */
+  falsifier: SpecClauseFalsifier | null;
   contentHash: string;
   createdBy: string;
   createdAt: string;
@@ -74,6 +100,7 @@ export type SetSpecClauseResult =
       conflictingPlanSlug: string;
       conflictingSpecId: string;
     }
+  | { status: 'falsifier_invalid'; specId: string; reason: FalsifierIssue }
   | { status: 'plan_not_found'; specId: string; planSlug: string }
   | { status: 'plan_item_not_found'; specId: string; planItemId: string }
   | { status: 'supersedes_not_found'; specId: string; supersedes: { specId: string; revision: number } };
@@ -94,7 +121,40 @@ function normalizedSet(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((v) => v.trim()).filter(Boolean))].sort();
 }
 
+export type FalsifierIssue = 'not_an_object' | 'observation_blank' | 'probe_method_blank';
+
+/**
+ * Structured refusal for a MALFORMED declaration — never for an ABSENT one.
+ *
+ * Undeclared (undefined/null) is legal and reports honestly as a gradeable gap
+ * (D-016 assigns concreteness grading to P-004, hard enforcement to P-013). But a
+ * caller who supplied an object and got it silently dropped would believe they had
+ * declared a falsifier when the row says nothing — the exact "reads as declared
+ * while saying nothing" failure the column's blank-vs-NULL rule exists to prevent.
+ * The DB CHECK is the backstop; this is the structured answer, in the same idiom as
+ * this store's other refusals rather than an opaque 23514.
+ */
+function falsifierIssueOf(value: SpecClauseWrite['falsifier']): FalsifierIssue | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) return 'not_an_object';
+  const observation = typeof value.observation === 'string' ? value.observation.trim() : '';
+  if (!observation) return 'observation_blank';
+  const probe = value.probeMethod;
+  if (probe !== undefined && probe !== null && (typeof probe !== 'string' || !probe.trim())) {
+    return 'probe_method_blank';
+  }
+  return null;
+}
+
+function normalizedFalsifier(value: SpecClauseWrite['falsifier']): SpecClauseFalsifier | null {
+  if (falsifierIssueOf(value) !== null || !value) return null;
+  const observation = value.observation.trim();
+  const probeMethod = typeof value.probeMethod === 'string' ? value.probeMethod.trim() : '';
+  return probeMethod ? { observation, probeMethod } : { observation };
+}
+
 function canonicalWrite(input: SpecClauseWrite) {
+  const falsifier = normalizedFalsifier(input.falsifier);
   return {
     planItemId: input.planItemId,
     behavior: input.behavior.trim(),
@@ -105,6 +165,13 @@ function canonicalWrite(input: SpecClauseWrite) {
     lifecycleStatus: input.lifecycleStatus,
     supersedes: input.supersedes ?? null,
     exemption: input.exemption ?? null,
+    // ABSENT when undeclared, deliberately not `falsifier: null`. A null key would
+    // change the canonical JSON of every clause written before D-016, re-hashing the
+    // whole corpus so each one's first no-op re-write returns `revised` and appends a
+    // spurious revision. Declaring one still moves the hash (absent -> present), which
+    // is the point: revising a falsifier appends a NEW immutable revision rather than
+    // mutating a standing promise in place.
+    ...(falsifier ? { falsifier } : {}),
     acceptanceRef: input.acceptanceRef?.trim() || null,
   };
 }
@@ -127,8 +194,13 @@ interface AliasIdentityRow {
 
 /** Append one immutable revision under an optimistic expectedRevision CAS. */
 export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClauseResult> {
+  const falsifierIssue = falsifierIssueOf(input.falsifier);
+  if (falsifierIssue) {
+    return { status: 'falsifier_invalid', specId: input.specId, reason: falsifierIssue };
+  }
   const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
   const normalized = canonicalWrite(input);
+  const falsifier = normalizedFalsifier(input.falsifier);
   const contentHash = specClauseContentHash(input);
 
   return withWorkspace(scope.workspaceId, async (tx) => {
@@ -282,18 +354,20 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
     const revision = actualRevision + 1;
     const accepted = normalized.lifecycleStatus === 'accepted' || normalized.lifecycleStatus === 'active';
     const exemptionJson = normalized.exemption === null ? null : JSON.stringify(canonicalJson(normalized.exemption));
+    const falsifierJson = falsifier === null ? null : JSON.stringify(canonicalJson(falsifier));
     await tx`
       INSERT INTO harness_shared.plan_spec_clause_revisions (
         workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id,
         behavior, behavior_class, required_evidence, required_test_layers,
         mutation_required, lifecycle_status, supersedes_spec_id, supersedes_revision,
-        exemption, content_hash, created_by, accepted_by, accepted_at, acceptance_ref
+        exemption, falsifier, content_hash, created_by, accepted_by, accepted_at, acceptance_ref
       ) VALUES (
         ${scope.workspaceId}, ${scope.harnessSlug}, ${input.planSlug}, ${input.specId}, ${revision},
         ${normalized.planItemId}, ${normalized.behavior}, ${normalized.behaviorClass},
         ${normalized.requiredEvidence}, ${normalized.requiredTestLayers}, ${normalized.mutationRequired},
         ${normalized.lifecycleStatus}, ${normalized.supersedes?.specId ?? null},
-        ${normalized.supersedes?.revision ?? null}, ${exemptionJson}::text::jsonb, ${contentHash},
+        ${normalized.supersedes?.revision ?? null}, ${exemptionJson}::text::jsonb,
+        ${falsifierJson}::text::jsonb, ${contentHash},
         ${input.actorId}, ${accepted ? input.actorId : null}, ${accepted ? new Date() : null},
         ${normalized.acceptanceRef}
       )`;
@@ -346,6 +420,7 @@ interface RevisionRow {
   supersedes_spec_id: string | null;
   supersedes_revision: number | null;
   exemption: Record<string, unknown> | null;
+  falsifier: SpecClauseFalsifier | null;
   content_hash: string;
   created_by: string;
   created_at: Date | string;
