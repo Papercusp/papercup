@@ -71,6 +71,7 @@ beforeEach(() => {
   mockPrevious.mockResolvedValue([]);
   mockContext.mockResolvedValue({
     repoRoot: '/repo',
+    rootSource: 'canonical-repo',
     deps: {
       statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
       readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
