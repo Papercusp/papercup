@@ -140,6 +140,29 @@ describe('immutable dependency generation', () => {
     expect(entries.filter((entry) => entry.startsWith('.build-'))).toEqual([]);
   });
 
+  it('ignores and prunes Vitest .vite-temp churn without weakening dependency drift detection', () => {
+    const integration = makeIntegration();
+    const cache = join(
+      integration,
+      'packages/a/node_modules/.vite-temp',
+    );
+    mkdirSync(cache, { recursive: true });
+    writeFileSync(join(cache, 'before.tmp'), 'ephemeral\n');
+    const result = publish(integration, {
+      DG_TEST_CACHE: cache,
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
+        'printf "churn\\n" > "$DG_TEST_CACHE/during.tmp"',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const generation = publishedPath(result.stdout);
+    expect(
+      existsSync(
+        join(generation, 'tree/packages/a/node_modules/.vite-temp'),
+      ),
+    ).toBe(false);
+  });
+
   it('reclaims a same-host dead writer before publishing', () => {
     const integration = makeIntegration();
     const generationRoot = join(

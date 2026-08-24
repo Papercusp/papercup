@@ -60,16 +60,18 @@ dependency_generation_tree_fingerprint() {
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
       && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
       LC_ALL=C find . -xdev -mindepth 1 \
-        ! -path './.papercusp-isolated-snapshot' \
+        \( -type d -name .vite-temp -prune \) -o \
+        \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
-        -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \
+        -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \) \
         | dependency_generation_sha256
     else
       # BSD/macOS find has no -printf. Keep the same identity classes with a
       # portable stat record per path. It is slower, but correctness-preserving.
       LC_ALL=C find . -xdev -mindepth 1 \
-        ! -path './.papercusp-isolated-snapshot' \
-        ! -path './.papercusp-dependency-generation' -print0 \
+        \( -type d -name .vite-temp -prune \) -o \
+        \( ! -path './.papercusp-isolated-snapshot' \
+        ! -path './.papercusp-dependency-generation' -print0 \) \
         | while IFS= read -r -d '' path; do
             local_path="${path#./}"
             if stat_record="$(stat -c '%F|%a|%U|%G|%s|%Y|%i' "$path" 2>/dev/null)"; then
@@ -248,6 +250,16 @@ dependency_generation_copy_independent() {
   cp -a "$src" "$dest"
 }
 
+dependency_generation_prune_ephemeral() {
+  local root="$1"
+  [ -d "$root" ] || return 0
+  # Vitest creates workspace-local node_modules/.vite-temp scratch directories
+  # while tests run. They are cache state, not installed dependencies; copying
+  # them can capture a partial transform and their directory mtime made an
+  # otherwise stable 13 GiB generation fail rc75 on every busy host.
+  find "$root" -type d -name .vite-temp -exec rm -rf -- {} +
+}
+
 # Materialize from an immutable generation. Same-filesystem hardlinks are safe
 # because generation files have no write bits; directories are distinct, so a
 # checkpoint may prune/add directory entries without changing the generation.
@@ -345,6 +357,7 @@ dependency_generation_ensure() {
       dependency_generation_remove_build "$build"
       return 1
     fi
+    dependency_generation_prune_ephemeral "$tree/$rel"
   done < <(dependency_generation_enumerate_node_modules "$integration_root")
 
   if [ -n "${DEPENDENCY_GENERATION_AFTER_COPY_HOOK:-}" ]; then
