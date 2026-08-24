@@ -40,6 +40,20 @@
  *     convenience for hand-written test inserts that omit them.
  */
 export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
+  -- migration 632 (event-key-fire-latch): every real awaited-event emission
+  -- upserts this per-key latch. The claim-path integration tests emit
+  -- work-item:claimed events, so omitting the table turns an unrelated
+  -- console.warn into a vitest-fail-on-console failure.
+  CREATE TABLE IF NOT EXISTS harness_shared.event_key_fires (
+    workspace_id     TEXT        NOT NULL DEFAULT 'default',
+    event_key        TEXT        NOT NULL,
+    first_fired_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_fired_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_fired_by    TEXT,
+    last_payload     JSONB,
+    fire_count       BIGINT      NOT NULL DEFAULT 1,
+    PRIMARY KEY (workspace_id, event_key)
+  );
   CREATE SEQUENCE IF NOT EXISTS harness_shared.work_item_seq;
   CREATE OR REPLACE FUNCTION harness_shared.next_work_item_id() RETURNS text LANGUAGE sql VOLATILE AS $wiid$ SELECT 'WI-' || nextval('harness_shared.work_item_seq')::text $wiid$;
   CREATE TABLE IF NOT EXISTS harness_shared.work_items (
