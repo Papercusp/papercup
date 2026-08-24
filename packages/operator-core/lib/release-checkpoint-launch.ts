@@ -336,6 +336,16 @@ export interface ActiveCheckpointCheck {
    *  long as your commit is an ancestor of whatever it judges). `current_candidate`/
    *  `candidate_stale` describe a HYPOTHETICAL fresh launch, never this in-flight run. */
   held_externally?: boolean;
+  /** P-009 / WI-41252: a checkpoint process exists before the shared run-lock and
+   * candidate markers are published. This observation is rooted in the process's
+   * gate-verdict authority stamps + exact integration-root environment + unified
+   * cgroup membership — never argv text, which may merely mention the gate. */
+  pre_lock_authority?: {
+    workspace: string;
+    harness: string;
+    cgroup_path: string;
+    pid: number;
+  };
   /** WI-6962: the `systemctl show` probe could not be TRUSTED — its exit status was non-zero
    *  or its output did not contain an `ActiveState` key at all. This is NOT the same as
    *  "nothing is running", and conflating the two is what made this detection fail OPEN.
