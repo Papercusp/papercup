@@ -59,7 +59,7 @@ export default function PlansCleanupStrip({
   onReview,
   onRunCleared,
 }: PlansCleanupStripProps) {
-  const { start, stop, dismiss } = usePlanCleanupOps();
+  const { start, stop, restart, dismiss } = usePlanCleanupOps();
   const resolverSettings = useBulkResolverSettings("plan-cleanup");
   const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -111,6 +111,28 @@ export default function PlansCleanupStrip({
     }
   }, [run, busy, stop]);
 
+  const onRestart = useCallback(async () => {
+    if (!run || busy) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await restart(run.runId);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not restart the resolver");
+      } else if (!result.launched) {
+        setNotice(
+          `resolver could not restart${result.launchError ? `: ${result.launchError}` : ""}`,
+        );
+      } else {
+        setNotice(
+          `Resolver restarted · ${result.preservedOutcomes ?? 0} completed outcome${result.preservedOutcomes === 1 ? "" : "s"} preserved`,
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [run, busy, restart]);
+
   const onDismiss = useCallback(async () => {
     if (!run || busy) return;
     setBusy(true);
@@ -136,6 +158,9 @@ export default function PlansCleanupStrip({
           kind="plan-cleanup"
           settings={resolverSettings}
           effective={run.launchSnapshot ?? {}}
+          liveness={run.liveness}
+          onRestart={() => void onRestart()}
+          restartBusy={busy}
         />
         <div className="op-inbox__bulk-head">
           <span className="op-inbox__bulk-spin" aria-hidden="true">

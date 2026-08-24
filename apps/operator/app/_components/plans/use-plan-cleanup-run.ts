@@ -13,6 +13,7 @@ import type {
   BulkResolverLaunchProfile,
   EffectiveBulkResolverLaunch,
 } from "@papercusp/operator-core/lib/agent-config-constants";
+import type { RunLiveness } from "@papercusp/operator-core/lib/attention/bulk-run-store";
 import { loadResolverLaunchProfile } from "../bulk-resolver/bulk-resolver-settings";
 
 export type PlanCleanupPhase =
@@ -47,6 +48,9 @@ export interface PlanCleanupRun {
   createdAt: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  heartbeatAt?: string | null;
+  resolverOwner?: string | null;
+  liveness?: RunLiveness;
 }
 
 export interface PlanCleanupFinding {
@@ -89,6 +93,7 @@ export interface PlanCleanupStartResult {
     failed: number;
   };
   launchError?: string;
+  preservedOutcomes?: number;
   error?: string;
 }
 
@@ -220,6 +225,7 @@ export function usePlanCleanupOps(): {
     launch?: BulkResolverLaunchProfile,
   ) => Promise<PlanCleanupStartResult>;
   stop: (runId: string) => Promise<void>;
+  restart: (runId: string) => Promise<PlanCleanupStartResult>;
   dismiss: (runId: string) => Promise<void>;
   accept: (
     runId: string,
@@ -283,6 +289,31 @@ export function usePlanCleanupOps(): {
     await postOp({ op: "stop", runId });
   }, []);
 
+  const restart = useCallback(
+    async (runId: string): Promise<PlanCleanupStartResult> => {
+      try {
+        const json = await postOp({ op: "restart", runId });
+        return {
+          ok: true,
+          runId,
+          launched: json.launched === true,
+          launchError:
+            typeof json.launchError === "string" ? json.launchError : undefined,
+          preservedOutcomes:
+            typeof json.preservedOutcomes === "number"
+              ? json.preservedOutcomes
+              : undefined,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
   const dismiss = useCallback(async (runId: string) => {
     await postOp({ op: "dismiss", runId });
   }, []);
@@ -305,5 +336,5 @@ export function usePlanCleanupOps(): {
     [],
   );
 
-  return { start, stop, dismiss, accept };
+  return { start, stop, restart, dismiss, accept };
 }
