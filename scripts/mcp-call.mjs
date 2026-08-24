@@ -97,6 +97,27 @@ export async function fetchWithConnectionRecovery(
   }
 }
 
+/**
+ * Flags are declared ONCE here, in the camelCase spelling the readers use.
+ *
+ * The command line spells the only multi-word flag kebab-cased (`--json-file`)
+ * while every reader asks for `flags.jsonFile`, so a parser that stored the
+ * raw CLI key left that flag permanently undefined — `--json-file` selected no
+ * JSON source and the call went out with EMPTY args, surfacing as a schema
+ * error about the CALLER's payload rather than a flag error (WI-41249).
+ * Normalizing here fixes the whole class rather than that one flag, and the
+ * allowlist means a mistyped or renamed flag fails loudly instead of
+ * degrading into a silently-empty payload — the same contract the operator
+ * tools enforce on undeclared args (EI-10883).
+ */
+export const BOOLEAN_FLAGS = new Set(['raw']);
+export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port']);
+
+/** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
+export function toCamelCaseFlag(key) {
+  return key.replace(/-+([a-z0-9])/gi, (_match, char) => char.toUpperCase());
+}
+
 export function parseArgs(argv) {
   const flags = {};
   const pos = [];
@@ -105,12 +126,18 @@ export function parseArgs(argv) {
     if (a.startsWith('--')) {
       const rawKey = a.slice(2);
       const equalsAt = rawKey.indexOf('=');
-      const key = equalsAt === -1 ? rawKey : rawKey.slice(0, equalsAt);
-      if (key === 'raw') {
-        if (equalsAt !== -1) throw new Error('--raw does not take a value');
-        flags.raw = true;
+      const cliKey = equalsAt === -1 ? rawKey : rawKey.slice(0, equalsAt);
+      const key = toCamelCaseFlag(cliKey);
+      if (BOOLEAN_FLAGS.has(key)) {
+        if (equalsAt !== -1) throw new Error(`--${cliKey} does not take a value`);
+        flags[key] = true;
+      } else if (VALUE_FLAGS.has(key)) {
+        const value = equalsAt === -1 ? argv[++i] : rawKey.slice(equalsAt + 1);
+        if (value === undefined) throw new Error(`--${cliKey} requires a value`);
+        flags[key] = value;
       } else {
-        flags[key] = equalsAt === -1 ? argv[++i] : rawKey.slice(equalsAt + 1);
+        const accepted = [...BOOLEAN_FLAGS, ...VALUE_FLAGS].sort().join(', ');
+        throw new Error(`unknown flag --${cliKey}; accepted flags: ${accepted}`);
       }
     } else pos.push(a);
   }

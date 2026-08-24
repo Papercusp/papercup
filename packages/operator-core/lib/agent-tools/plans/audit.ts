@@ -1,6 +1,6 @@
 /**
- * plans:audit — record a code-truth audit of a plan
- * (plan-completion-audit-and-acceptance-verdict-2026-08-13 P-002).
+ * plans:audit — record either a completion/code-truth audit or the
+ * conversation-completeness audit required before activation.
  *
  * The implementer traces every plan item to the code that implements it and CITES it,
  * before authoring the acceptance rubric (plan D-004). Citations of kind `code`/`test`
@@ -167,15 +167,15 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a CODE-TRUTH audit of a plan. Audit ONLY the items whose requirements or evidence changed: every unlisted item with a prior audit is carried forward mechanically with its ORIGINAL per-item sha/time, so it cannot be falsely re-stamped by a pass that did not inspect it. Submitted `code`/`test` citations resolve against the real tree and store the current blob sha. THE CODE IS THE ONLY SOURCE OF TRUTH — never a doc, work-item, or memory of writing it.",
+    "Record one of TWO typed audit phases on the existing plan-audit ledger. `phase:'completion'` (default) is the CODE-TRUTH audit: audit only changed items; prior entries carry with original provenance; code/test citations resolve against the tree. `phase:'activation'` is the pre-ready conversation audit: map canonical session_turn refs to current P-NNN/D-NNN/section targets; every ref resolves through sessions:read's index/archive stores; open gaps refuse; the server atomically records the exact current revision. No parallel review tool exists.",
   guidance: {
-    when: "You have finished implementing a plan and are heading for `shipped`. Compare every item to the ACTUAL CODE — not the plan text, not the work-item records, not your memory of writing it — then file what you found. Gaps inside the plan's scope get fixed or the item gets dropped with a reason; bugs outside it go in `findings` with a filed work-item ref.",
+    when: "Before ready/active, use `phase:'activation'` after reading the full source conversation and map every requirement/constraint/decision to the current plan. Before shipped, use the default completion phase and compare every item to the ACTUAL CODE — not work-item records or memory.",
     returns:
-      'Returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }. Unlisted items with a prior entry carry forward automatically; uncoveredItems therefore names only items with NO audit history. Every submitted code/test citation records a blobSha, and each submitted item records auditedSha/auditedAt/itemTextHash. `coverage.verifiedRatio` is computed over the full effective item set.',
+      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved }. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }.",
     notWhen:
-      "Mid-implementation — the audit is post-implementation by design and a mid-flight one just goes stale. Grading a plan against its acceptance rubric — that is scorecards:emit. Recording a decision — plans:add-decision.",
+      "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
     chaining:
-      'plans:audit → rubrics:propose { kind:"acceptance" } → (a NON-implementer) scorecards:emit → plans:set-plan-status { status:"shipped" }.',
+      "sessions:search/read → plans:audit { phase:'activation' } → plans:set-plan-status { status:'ready' }; completion: plans:audit → rubric/scorecard → shipped.",
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',
@@ -293,7 +293,6 @@ export default defineTool({
       });
       if (!recorded.ok) {
         return { data: {
-          ok: false as const,
           slug: args.slug,
           phase: 'activation' as const,
           ...recorded,

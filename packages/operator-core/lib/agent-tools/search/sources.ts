@@ -30,6 +30,7 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 // engine's `candidateLimit = limit * 3` asked for — measured 40 rows for a
 // 600-row request on the live 302k-row corpus.
 import { withIterativeScan } from './hnsw-iterative-scan';
+import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 
 /** Standard ts_headline options for all four surfaces. */
 const HEADLINE_OPTS =
@@ -685,6 +686,8 @@ const sessionTurnFilterSql = (p: SearchSourceParams) => {
     speaker: f.speaker ?? null,
     turnOrigin: f.turnOrigin ?? null,
     ownerOnly: f.ownerOnly ?? null,
+    ownerCandidates: f.ownerCandidates ?? null,
+    ownerCandidateVerdicts: OWNER_CANDIDATE_TURN_VERDICTS as string[],
     sessionId: f.sessionId ?? null,
     sourceKind: f.sourceKind ?? null,
     since: f.since ?? null,
@@ -721,6 +724,7 @@ const sessionTurn: SearchSource = {
          AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
          AND (${f.turnOrigin}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin})
          AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
+         AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
          AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
          AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
          AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)

@@ -36,6 +36,7 @@ import type { CoordOpCtx } from '../../coord-ops/types.js';
 import { resolveProject } from '../../harness-core.js';
 import { buildPipelineExtraEnv } from '../../dbos/orchestrator-spawn-env.js';
 import { resolveSpawnBackendModel } from '../../harness-invoke-once.js';
+import { createOperatorOwnedLoopPort } from '../../agent-loop/headless-invoke.js';
 // Side-effect: wire @papercusp/locks to the operator's embedded-pg admin URL so
 // the PG-backed SuLocksCoordinator below resolves the right `papercusp_su` DB.
 import '../../agent-tools/locks/configure.js';
@@ -136,6 +137,10 @@ export async function defaultRunWorkerChunkLoop(
     // P-020 metrics: label this run as the operator-hosted op path so the outcome
     // record (recordWorkerChunkOutcome) distinguishes it from the subprocess path.
     executionPath: 'op',
+    // P-010: make the owned loop AVAILABLE without changing the default.
+    // invoke.ts selects it only for aiBackend.{default,roles.<role>}.engine=loop;
+    // the subprocess AGENT_BACKENDS tuple remains untouched.
+    ownedLoop: createOperatorOwnedLoopPort(),
   };
 
   const lockCoordinator = await buildChunkLockCoordinator(projectDir);

@@ -315,7 +315,9 @@ export async function resolveSessionTurnRefs(
               AND t.session_id = w."sessionId"
               AND t.turn_idx = w."turnIdx"
          )`;
-  const found = new Map(indexed.map((row) => [row.ref, 'index' as const]));
+  const found = new Map<string, 'index' | 'archive'>(
+    indexed.map((row) => [row.ref, 'index' as const]),
+  );
 
   const missingBySession = new Map<string, typeof wanted>();
   for (const entry of wanted) {
