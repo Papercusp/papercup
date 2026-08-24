@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import http from 'node:http';
+import net from 'node:net';
 import {
   shouldRetry,
   createMcpProxy,
@@ -332,6 +333,57 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     const r = await request(port(proxy));
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":"ok"}');
+  });
+
+  it('does not accumulate connect listeners when a keep-alive upstream socket is reused', async () => {
+    const upstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+
+    const clientSockets: net.Socket[] = [];
+    const upstreamAgent = new http.Agent({
+      keepAlive: true,
+      maxSockets: 1,
+    });
+    const baseCreateConnection = upstreamAgent.createConnection;
+    upstreamAgent.createConnection = (options, callback) => {
+      const socket = baseCreateConnection.call(upstreamAgent, options, callback);
+      clientSockets.push(socket as net.Socket);
+      return socket;
+    };
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: '127.0.0.1',
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        upstreamAgent,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    try {
+      expect((await request(port(proxy))).status).toBe(200);
+      expect(clientSockets).toHaveLength(1);
+      const listenerCountAfterConnect = clientSockets[0].listenerCount('connect');
+
+      // Before the `s.connecting === false` guard, each reuse added a `once('connect')`
+      // listener to this already-connected socket. Twelve calls crossed Node's default
+      // warning threshold in the incident; the count must remain stable after reuse.
+      for (let i = 0; i < 12; i++) {
+        expect((await request(port(proxy))).status).toBe(200);
+      }
+      expect(clientSockets).toHaveLength(1);
+      expect(clientSockets[0].listenerCount('connect')).toBe(listenerCountAfterConnect);
+      expect(clientSockets[0].listenerCount('connect')).toBe(0);
+    } finally {
+      upstreamAgent.destroy();
+    }
   });
 
   it('P-010: ABSORBS an upstream 429 (admission shed) and returns the eventual 200 — saturation invisible', async () => {
@@ -786,8 +838,12 @@ describe('WI-6740: upstream silence — bounded + replayed for the handshake, ne
     expect(r.body).toBe('{"result":"slow-but-fine"}');
   });
 
-  it('surfaces honestly (502) rather than hanging when the stall outlives the replay budget', async () => {
-    const upstream = track(http.createServer(() => { /* silent forever */ }));
+  it('surfaces honestly (502) without falling through to post-connect replay when the stall outlives the replay budget', async () => {
+    let calls = 0;
+    const upstream = track(http.createServer(() => {
+      calls++;
+      /* silent forever */
+    }));
     await listen(upstream);
     const proxy = track(
       createMcpProxy({
@@ -799,6 +855,10 @@ describe('WI-6740: upstream silence — bounded + replayed for the handshake, ne
 
     const r = await request(port(proxy));
     expect(r.status).toBe(502); // bounded: an error the client can act on, not an infinite wait
+    // Two dedicated timeout retries produce three total attempts. The exhausted timeout must
+    // not fall through to postConnectRetryable and create a fourth attempt.
+    expect(calls).toBe(MAX_HANDSHAKE_TIMEOUT_RETRIES + 1);
+    expect(JSON.parse(r.body).attempts).toBe(MAX_HANDSHAKE_TIMEOUT_RETRIES + 1);
   });
 
   it('handshakeTimeoutRetryable — idempotent only, bounded, in-window (pure)', () => {
@@ -1025,6 +1085,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:send'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:checkpoint'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('session:request-compaction'))).toBe(true);
     expect(isReservedControlPlaneCall(call('tools:find'))).toBe(true);
     expect(isReservedControlPlaneCall(call('dev:service_health'))).toBe(true);
     expect(isReservedControlPlaneCall(call('dev:pg_query'))).toBe(true);
@@ -1123,7 +1184,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ])))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'tools:invoke → tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'session:request-compaction', 'tools:find', 'tools:invoke → tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));

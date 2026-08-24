@@ -734,6 +734,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'coord:orient',
   'coord:send',
   'loop:checkpoint',
+  'session:request-compaction',
   'tools:find',
   'dev:service_health',
   'dev:pg_query',
@@ -1138,6 +1139,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
+            // A timed-out handshake has exhausted its dedicated retry budget. Do not let it
+            // fall through to the socket-error retry budget: that would add a fourth attempt
+            // after the two allowed timeout retries and amplify the same silent upstream stall.
+            if (outcome.timedOut) break;
             // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
             if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, retryWindowMs)) {
               postConnectRetries++;
