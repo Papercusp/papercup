@@ -41,6 +41,7 @@ import {
   type ToolDispatcher,
 } from '../../../agent-loop/capability-toolset';
 import { runLoopChatTurn } from '../../../agent-loop/chat-engine';
+import { pgLoopSessionStore } from '../../../agent-loop/session-store';
 import type { LoopTool } from '../../../agent-loop/loop';
 import {
   listPendingLoopApprovals,
@@ -583,6 +584,10 @@ const messagesRoute = defineTool({
               ...(body.model ? { model: body.model } : {}),
               signal: req.signal,
               tools,
+              // P-009: resume from + persist the full ModelMessage session
+              // (tool detail survives across turns; usage/cost totals live
+              // on harness_shared.agent_loop_sessions).
+              sessions: pgLoopSessionStore(),
             });
           } finally {
             await releaseAgentChatLock(chatLock);
