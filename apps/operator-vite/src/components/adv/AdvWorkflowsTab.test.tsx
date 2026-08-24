@@ -101,6 +101,11 @@ vi.mock('@/app/harness/Select', () => ({
   ),
 }));
 vi.mock('@/app/harness/useConfirmDialog', () => ({ useConfirmDialog: () => ({ confirm: vi.fn(async () => true), element: null }) }));
+vi.mock('@/app/harness/ChatPanel', () => ({
+  default: ({ initialMessage, context }: { initialMessage?: string; context?: string }) => (
+    <div data-testid="workflow-composer-chat" data-context={context ?? ''}>{initialMessage ?? 'Empty composer chat'}</div>
+  ),
+}));
 vi.mock('./ScheduleEditor', () => ({ runScheduleTool: H.runTool }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -125,6 +130,13 @@ function renderTabOnFlows() {
   return renderTab({ wfView: 'flow' });
 }
 
+async function openAdvancedWorkflowSetup() {
+  fireEvent.click(await screen.findByRole('button', { name: 'New workflow' }));
+  const composer = await screen.findByRole('dialog', { name: 'Compose a workflow with the agent' });
+  fireEvent.click(within(composer).getByRole('button', { name: 'Advanced manual setup' }));
+  return screen.getByRole('dialog', { name: 'Create a workflow' });
+}
+
 beforeEach(() => {
   H.runTool.mockReset();
   H.runTool.mockResolvedValue({ ok: true });
@@ -132,6 +144,9 @@ beforeEach(() => {
   H.queries.length = 0;
   H.emptyData = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
+      return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
+    }
     if (init?.method === 'PATCH') {
       const request = JSON.parse(String(init.body ?? '{}')) as { op?: string; id?: string };
       if (request.op === 'attach-external') {
@@ -158,6 +173,30 @@ describe('<AdvWorkflowsTab>', () => {
     expect(screen.getByText('fires not counted')).toBeTruthy();
     // The superseded flow-row landing must NOT be what renders by default.
     expect(screen.queryByLabelText('Search trigger flows')).toBeNull();
+  });
+
+  it('opens the canonical workflow-agent composer with intent and source context, never the manual form by default', async () => {
+    renderTab();
+    const input = await screen.findByLabelText(/What should happen automatically/);
+    fireEvent.change(input, { target: { value: 'When a client email arrives, draft a concise reply' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Wire it' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Compose a workflow with the agent' });
+    expect(within(dialog).queryByLabelText('Event pattern')).toBeNull();
+    expect(within(dialog).queryByText('Automatic trigger')).toBeNull();
+    const chat = await within(dialog).findByTestId('workflow-composer-chat');
+    expect(chat.textContent).toContain('When a client email arrives, draft a concise reply');
+    const context = JSON.parse(chat.getAttribute('data-context') ?? '{}') as {
+      harness?: string;
+      sources?: Array<{ id: string; kind: string; status: string }>;
+      contract?: { autoArm?: boolean; operatorReviewsAndArmsDirectly?: boolean };
+    };
+    expect(context).toMatchObject({
+      harness: 'papercusp',
+      sources: [{ id: 'source-slack', kind: 'slack', status: 'connected' }],
+      contract: { autoArm: false, operatorReviewsAndArmsDirectly: true },
+    });
+    expect(H.runTool).not.toHaveBeenCalled();
   });
 
   it('keeps the causal trigger-flow view reachable and non-triggered routines in Catalog', async () => {
@@ -241,8 +280,7 @@ describe('<AdvWorkflowsTab>', () => {
 
   it('creates and arms a schedule in place instead of redirecting to Plans', async () => {
     renderTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'New workflow' }));
-    const dialog = screen.getByRole('dialog', { name: 'Create a workflow' });
+    const dialog = await openAdvancedWorkflowSetup();
     expect(within(dialog).getByRole('button', { name: /Schedule/ }).getAttribute('aria-pressed')).toBe('true');
     expect(within(dialog).getByRole('button', { name: 'Use an existing plan' }).getAttribute('aria-pressed')).toBe('true');
 
@@ -261,8 +299,7 @@ describe('<AdvWorkflowsTab>', () => {
 
   it('creates a plan inline, attaches an external binding, and explicitly arms it', async () => {
     renderTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'New workflow' }));
-    const dialog = screen.getByRole('dialog', { name: 'Create a workflow' });
+    const dialog = await openAdvancedWorkflowSetup();
     fireEvent.click(within(dialog).getByRole('button', { name: /External event/ }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create the plan here' }));
     fireEvent.change(within(dialog).getByLabelText('Workflow name'), { target: { value: 'Summarize support escalations' } });
@@ -294,8 +331,7 @@ describe('<AdvWorkflowsTab>', () => {
       .mockResolvedValueOnce({ ok: false, message: 'Set required plan inputs first' })
       .mockResolvedValueOnce({ ok: true });
     renderTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'New workflow' }));
-    const dialog = screen.getByRole('dialog', { name: 'Create a workflow' });
+    const dialog = await openAdvancedWorkflowSetup();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create & arm workflow' }));
 
     const alert = await within(dialog).findByRole('alert');

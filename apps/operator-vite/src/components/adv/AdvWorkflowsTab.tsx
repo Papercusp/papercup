@@ -42,6 +42,7 @@ import {
   type AutomationScheduleRow,
 } from './workflows-model';
 import WorkflowsLanding from './WorkflowsLanding';
+import WorkflowComposerDialog from './WorkflowComposerDialog';
 import WorkflowDetailView from './WorkflowDetailView';
 import { toLandingWorkflow, type NeedsYouItem } from './workflows-landing-model';
 import './adv-workflows.css';
@@ -220,10 +221,11 @@ export default function AdvWorkflowsTab() {
   const { confirm, element: confirmElement } = useConfirmDialog();
   const [busy, setBusy] = useState<string | null>(null);
   const [lastTestRun, setLastTestRun] = useState<{ workflowId: string; runId: string } | null>(null);
+  const [composerOpen, setComposerOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  // Mid-edit draft handed over from the landing's agent composer (D-018 region 2),
-  // so the operator's sentence survives the hop into the creation flow instead of
-  // making them retype it. Draft text is useState by the repo's nuqs/useState split.
+  // Mid-edit intent handed into the canonical workflow-agent conversation.
+  // The advanced manual form may reuse it only after the operator explicitly
+  // chooses that lower-level route.
   const [composerPrompt, setComposerPrompt] = useState('');
 
   const catalogQuery = useSyncQuery<AutomationCatalog>({
@@ -558,6 +560,15 @@ export default function AdvWorkflowsTab() {
   return (
     <section className="pc-workflows" aria-label="Workflows">
       {confirmElement}
+      {composerOpen ? (
+        <WorkflowComposerDialog
+          harnessSlug={creationHarness}
+          sources={external?.sources ?? []}
+          intent={composerPrompt}
+          onClose={() => { setComposerOpen(false); setComposerPrompt(''); }}
+          onAdvancedSetup={() => { setComposerOpen(false); setCreateOpen(true); }}
+        />
+      ) : null}
       {createOpen ? (
         <CreateAutomationModal
           plans={plansQuery.data ?? []}
@@ -582,7 +593,10 @@ export default function AdvWorkflowsTab() {
           <button type="button" onClick={refreshAll} aria-label="Refresh workflows">
             <span className="pc-workflows__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
-          <button type="button" className="pc-workflows__primary" onClick={() => setCreateOpen(true)}>
+          <button type="button" className="pc-workflows__primary" onClick={() => {
+            setComposerPrompt('');
+            setComposerOpen(true);
+          }}>
             <span className="pc-workflows__button-inner"><Plus size={14} aria-hidden /> New workflow</span>
           </button>
         </div>
@@ -633,13 +647,15 @@ export default function AdvWorkflowsTab() {
           onNeedsYouAction={(item: NeedsYouItem) => {
             void setView(item.kind === 'reconnect' ? 'sources' : 'activity');
           }}
-          // Workflow packs (D-014, P-012/P-021) are not built yet and there is no
-          // cupboard route in this app — creation is the real "get a new workflow"
-          // path today, so the control goes there rather than nowhere.
-          onInstallFromCupboard={() => setCreateOpen(true)}
+          // Until the pack browser lands, the agent can inspect canonical
+          // templates/tools without exposing the low-level structural form.
+          onInstallFromCupboard={() => {
+            setComposerPrompt('Help me choose and install a workflow from the Cupboard. Keep it disarmed until I review it.');
+            setComposerOpen(true);
+          }}
           onComposeWorkflow={(prompt) => {
             setComposerPrompt(prompt);
-            setCreateOpen(true);
+            setComposerOpen(true);
           }}
         />
       ) : view === 'flow' ? (
