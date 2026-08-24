@@ -57,6 +57,7 @@ import {
   foldMemberSpec,
   injectFleetArg,
   injectLaunchedByArg,
+  isStaleHeadlessAgentHost,
   memberSpecSchema,
   recordAgentLaunchResult,
   resolveResumeTarget,
@@ -511,7 +512,20 @@ export default defineTool({
         }
       }
       if (!isSuccessor) {
-        if (sourceStillLive && !fork) {
+        let staleHeadlessRecovery = false;
+        if (sourceStillLive && !fork && !args.restoreVisible && target.ownerId) {
+          const host = findLiveHost(target.ownerId);
+          if (!host) {
+            // The host can disappear between resolveResumeTarget and this check.
+            // There is then no remaining CLI to collide with, so exact-resume.
+            sourceStillLive = false;
+          } else if (isStaleHeadlessAgentHost(host)) {
+            // Keep the normal live-source fork until context pressure has passed;
+            // only then take the narrow, guarded recovery action below.
+            staleHeadlessRecovery = true;
+          }
+        }
+        if (sourceStillLive && !fork && !staleHeadlessRecovery) {
           fork = true;
           notes.push(
             `⚠ ${target.ownerId ?? 'that session'} is still LIVE — resuming it in place would open a second CLI against one transcript (WI-3882), so it was FORKED instead. The fork has a FRESH identity; the original keeps running untouched.`,
@@ -554,6 +568,29 @@ export default defineTool({
               `resume-context preflight unavailable (${(e as Error)?.message ?? e}) — proceeding without a context verdict`,
             );
           }
+        }
+        if (staleHeadlessRecovery) {
+          const shutdown = await shutdownViaPty(target.ownerId!, {
+            force: true,
+            reason: `guarded stale-headless recovery of exact native session ${target.sessionId}`,
+          });
+          if (shutdown !== 'sent') {
+            return err(
+              `Cannot recover ${target.sessionId}: the stale headless host refused or missed guarded shutdown (${shutdown}). ` +
+                'Nothing was killed and no replacement was launched.',
+            );
+          }
+          if (!(await waitForPtyHostGone(target.ownerId!))) {
+            return err(
+              `Cannot recover ${target.sessionId}: guarded shutdown was accepted but the stale headless host did not disappear within 10s. ` +
+                'No replacement was launched, preventing two CLIs on one transcript.',
+            );
+          }
+          sourceStillLive = false;
+          notes.push(
+            `✓ Guarded stale-headless recovery: ${target.ownerId} had explicit agent provenance and no measured pty activity for at least 30 minutes; ` +
+              `its host shut down before exact UUID ${target.sessionId} was relaunched in place.`,
+          );
         }
       }
     }
