@@ -545,6 +545,41 @@ export default defineTool({
       }
     };
 
+    /**
+     * EI-18713141708830049: the MIRROR of `planContradictionFor` above and deliberately
+     * disjoint from it — that one fires when the plan item is already TERMINAL, this one
+     * when the plan item is still OPEN but a settled sibling already implements it ("the
+     * tree says done"). Both directions are needed because the ledger drifts from the tree
+     * in both, and the measured cost of the un-flipped direction is an agent re-running an
+     * investigation that a peer already finished — or re-implementing it.
+     *
+     * Same fail-soft posture as every sibling helper above: a swallowed read omits the
+     * hint rather than asserting the item is clean.
+     */
+    const planItemLandedFor = async (
+      wi: {
+        id?: string;
+        payload?: unknown;
+        sourcePlanSlug?: string | null;
+        sourcePlanItemIds?: string[] | null;
+      } | null,
+    ): Promise<{ planItemLanded: unknown; planItemLandedWarning: string } | null> => {
+      if (!wi?.id) return null;
+      try {
+        const m = await import('../../work-item-plan-item-landed');
+        const hint = await m.getClaimTimePlanItemLanded({
+          workItemId: wi.id,
+          payload: wi.payload,
+          sourcePlanSlug: wi.sourcePlanSlug,
+          sourcePlanItemIds: wi.sourcePlanItemIds,
+        });
+        const warning = m.planItemLandedWarning(hint, wi.id);
+        return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
+      } catch {
+        return null;
+      }
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
@@ -569,6 +604,7 @@ export default defineTool({
         planContradictionResult,
         behaviorContractResult,
         pathHintsResult,
+        planItemLandedResult,
       ] = await Promise.all([
         planDecisionsFor(wiOf(claimed)),
         priorAttemptsFor(wiOf(claimed)),
@@ -578,6 +614,7 @@ export default defineTool({
         planContradictionFor(wiOf(claimed)),
         behaviorContractFor(wiOf(claimed)),
         pathHintsFor(wiOf(claimed)),
+        planItemLandedFor(wiOf(claimed)),
       ]);
       return {
         content: [
@@ -596,6 +633,7 @@ export default defineTool({
               ...(planContradictionResult ?? {}),
               ...(behaviorContractResult ?? {}),
               ...(pathHintsResult ?? {}),
+              ...(planItemLandedResult ?? {}),
             }),
           },
         ],
@@ -636,6 +674,7 @@ export default defineTool({
           planContradictionResult,
           behaviorContractResult,
           pathHintsResult,
+          planItemLandedResult,
         ] = await Promise.all([
           planDecisionsFor(wiOf(c)),
           priorAttemptsFor(wiOf(c)),
@@ -645,6 +684,7 @@ export default defineTool({
           planContradictionFor(wiOf(c)),
           behaviorContractFor(wiOf(c)),
           pathHintsFor(wiOf(c)),
+          planItemLandedFor(wiOf(c)),
         ]);
         return {
           ...c,
@@ -658,6 +698,7 @@ export default defineTool({
           ...(planContradictionResult ?? {}),
           ...(behaviorContractResult ?? {}),
           ...(pathHintsResult ?? {}),
+          ...(planItemLandedResult ?? {}),
         };
       }),
     );

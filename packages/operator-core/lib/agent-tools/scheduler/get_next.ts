@@ -598,6 +598,12 @@ export function assembleSchedulerClaimResult(legs: {
   authorshipRevalidationWarning?: unknown;
   planItemContradiction?: unknown;
   planItemContradictionWarning?: unknown;
+  /**
+   * EI-18713141708830049: the plan item is still OPEN while a settled sibling already
+   * implements it — the mirror of planItemContradiction above, not a duplicate of it.
+   */
+  planItemLanded?: unknown;
+  planItemLandedWarning?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
   priorAttemptBrief?: unknown;
@@ -676,6 +682,12 @@ export function assembleSchedulerClaimResult(legs: {
       ? {
           planItemContradiction: legs.planItemContradiction,
           planItemContradictionWarning: legs.planItemContradictionWarning,
+        }
+      : {}),
+    ...(legs.planItemLanded
+      ? {
+          planItemLanded: legs.planItemLanded,
+          planItemLandedWarning: legs.planItemLandedWarning,
         }
       : {}),
     ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
@@ -1418,6 +1430,14 @@ export default defineTool({
       pathHints: unknown;
       pathHintsNote: string | null;
     } | null = null;
+    // EI-18713141708830049: the OTHER direction of the same ledger/tree drift as
+    // planContradictionHint above — the plan item is still open while a settled sibling
+    // already implements it. This is the primary self-pull surface, so it is where an
+    // agent is most likely to start re-investigating (or re-implementing) landed work.
+    let planItemLandedHint: {
+      planItemLanded: unknown;
+      planItemLandedWarning: string;
+    } | null = null;
     if (res?.workItem) {
       const wi = res.workItem as {
         id?: string | null;
@@ -1428,7 +1448,7 @@ export default defineTool({
         sourcePlanSlug?: string | null;
         sourcePlanItemIds?: string[] | null;
       };
-      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint] =
+      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint] =
         await Promise.all([
           import('../../plan-decisions-claim-port')
             .then(async (m) => {
@@ -1510,6 +1530,21 @@ export default defineTool({
                 .then(async (m) => {
                   const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
                   return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+                })
+                .catch(() => null)
+            : Promise.resolve(null),
+          wi.id
+            ? import('../../work-item-plan-item-landed')
+                .then(async (m) => {
+                  const hint = await m.getClaimTimePlanItemLanded({
+                    workItemId: wi.id as string,
+                    payload: wi.payload,
+                    sourcePlanSlug: wi.sourcePlanSlug,
+                    sourcePlanItemIds: wi.sourcePlanItemIds,
+                    workspaceId: ident.workspaceId ?? undefined,
+                  });
+                  const warning = m.planItemLandedWarning(hint, wi.id as string);
+                  return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
                 })
                 .catch(() => null)
             : Promise.resolve(null),
@@ -1642,6 +1677,8 @@ export default defineTool({
           authorshipRevalidationWarning: authorshipRevalidationHint?.authorshipRevalidationWarning,
           planItemContradiction: planContradictionHint?.planItemContradiction,
           planItemContradictionWarning: planContradictionHint?.planItemContradictionWarning,
+          planItemLanded: planItemLandedHint?.planItemLanded,
+          planItemLandedWarning: planItemLandedHint?.planItemLandedWarning,
           behaviorContract: behaviorContractHint?.behaviorContract,
           behaviorContractNote: behaviorContractHint?.behaviorContractNote,
           pathHints: pathHintsHint?.pathHints,

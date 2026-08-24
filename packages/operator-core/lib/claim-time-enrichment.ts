@@ -69,6 +69,9 @@ export const CLAIM_TIME_ENRICHMENT_LEGS = [
   // EI-21267393427094356: which stored payload paths are dead at HEAD, and where
   // each moved to — a bounded git rename walk at the moment of the claim.
   'pathHints',
+  // EI-18713141708830049: the plan item is still OPEN while a settled sibling already
+  // implements it — "the tree says done", the mirror of `planContradiction` above.
+  'planItemLanded',
 ] as const;
 
 export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number];
