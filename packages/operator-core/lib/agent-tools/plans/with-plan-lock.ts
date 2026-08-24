@@ -161,6 +161,13 @@ export interface WithPlanLockOpts {
   afterWrite?: (
     writtenBody: string,
     scope: { workspaceId: string; harnessSlug: string },
+    /**
+     * The structured `template_data` value committed with this write. This is
+     * the post-write value (the existing value when the body write preserved
+     * it), so revision hooks can capture one atomic body + structured snapshot
+     * without re-reading a potentially newer concurrent revision.
+     */
+    writtenTemplateData: unknown,
   ) => Promise<void>;
 }
 
@@ -352,8 +359,13 @@ export async function withPlanLock<T>(
             version: curVersion,
             scope: { workspaceId, harnessSlug },
             writtenBody: null,
+            writtenTemplateData: cur?.template_data ?? null,
             priorBody: cur?.content ?? null,
-          } satisfies AppliedResult<T> & { writtenBody: string | null; priorBody: string | null };
+          } satisfies AppliedResult<T> & {
+            writtenBody: string | null;
+            writtenTemplateData: unknown;
+            priorBody: string | null;
+          };
         }
       }
     }
@@ -559,6 +571,13 @@ export async function withPlanLock<T>(
       }
     }
 
+    // Thread the committed structured value to afterWrite. A body-only write
+    // preserves the current template_data on conflict; a combined or
+    // structured-only write uses the mutator's patch. Revision hooks must not
+    // query this after the transaction, because another writer could commit a
+    // newer structured revision before the audit row is appended.
+    const writtenTemplateData = writesTemplateData ? templateData!.data : cur?.template_data ?? null;
+
     return {
       kind: 'applied',
       value,
@@ -566,10 +585,15 @@ export async function withPlanLock<T>(
       version: newVersion,
       scope: { workspaceId, harnessSlug },
       writtenBody,
+      writtenTemplateData,
       // P-010: the PRE-edit content, threaded to the post-commit per-part capture
       // so it can baseline (deterministic fed_ts=0) before diffing the new content.
       priorBody: cur?.content ?? null,
-    } satisfies AppliedResult<T> & { writtenBody: string | null; priorBody: string | null };
+    } satisfies AppliedResult<T> & {
+      writtenBody: string | null;
+      writtenTemplateData: unknown;
+      priorBody: string | null;
+    };
   }).then(async (result) => {
     // EI-118 (audit P-007): afterWrite (revision recording) runs AFTER the
     // withWorkspace transaction commits — never inside it. Inside, a stalled
@@ -578,12 +602,13 @@ export async function withPlanLock<T>(
     // deliberate: a failed afterWrite now loses one revision row instead of
     // rolling back the committed plan write (and instead of wedging the fleet).
     if (result.kind === 'applied') {
-      const { writtenBody, priorBody, ...applied } = result as AppliedResult<T> & {
+      const { writtenBody, writtenTemplateData, priorBody, ...applied } = result as AppliedResult<T> & {
         writtenBody: string | null;
+        writtenTemplateData: unknown;
         priorBody: string | null;
       };
       if (writtenBody !== null && opts.afterWrite) {
-        await opts.afterWrite(writtenBody, { workspaceId, harnessSlug });
+        await opts.afterWrite(writtenBody, { workspaceId, harnessSlug }, writtenTemplateData);
       }
       let activationAudit: ActivationAuditEditNotice | null = null;
       if (writtenBody !== null) {
