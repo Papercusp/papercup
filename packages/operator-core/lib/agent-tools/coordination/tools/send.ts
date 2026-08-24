@@ -312,7 +312,7 @@ const endTurnArg = z
   .boolean()
   .optional()
   .describe(
-    "ESC each addressee's CURRENT turn (mimic pressing Escape) BEFORE delivering — the dual of wake-as-Enter. Use ONLY when a recipient's turn is STUCK (e.g. wedged on an API error so a plain wake reaches nobody / typing+Enter won't start the next turn): the ESC ends the dead turn so the CLI re-arms, then (with wake) this message starts a fresh turn. Force-ESC is audited + storm-rate-limited; only end a turn you KNOW is stuck. Skips '*'/'human'/self. `ended` excludes any target confirmed dead by the same liveness check the wake leg uses — those land in `missed` instead, even if the ESC channel itself reported success.",
+    "ESC each addressee's CURRENT turn (mimic pressing Escape) BEFORE delivering — the dual of wake-as-Enter. Use ONLY when a recipient's turn is STUCK (e.g. wedged on an API error so a plain wake reaches nobody / typing+Enter won't start the next turn): the ESC ends the dead turn so the CLI re-arms, then (with wake) this message starts a fresh turn. `endTurn: true` REQUIRES an explicit wake mode: `wake: true`, `wake: 'required'`, or `wake: 'optimistic'`; omitting `wake` or passing `wake: false` is refused because it could leave the recipient idle. Force-ESC is audited + storm-rate-limited; only end a turn you KNOW is stuck. Skips '*'/'human'/self. `ended` excludes any target confirmed dead by the same liveness check the wake leg uses — those land in `missed` instead, even if the ESC channel itself reported success.",
   );
 
 const toArg = z
