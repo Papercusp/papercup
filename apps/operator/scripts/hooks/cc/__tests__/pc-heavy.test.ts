@@ -320,6 +320,66 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('lets scoped verification use the bounded focused lane while exclusive materialization owns ordinary slots', async () => {
+    const env = {
+      PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '10',
+      PC_HEAVY_FOCUSED_SLOTS: '1',
+    };
+    const barrier = spawn(
+      'bash',
+      [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'sleep 30'],
+      { env: baseEnv(env), cwd: dir, detached: true },
+    );
+    const barrierErr = createTextCollector(barrier.stderr);
+    let focused: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(
+        barrier,
+        barrierErr,
+        (t) => t.includes('exclusive materialization barrier acquired'),
+        'the materialization barrier acquiring every ordinary slot',
+      );
+      focused = spawn(
+        'bash',
+        [
+          PC_HEAVY,
+          'bash',
+          '-c',
+          'sleep 1; echo scoped-during-materialization-ok',
+          'scripts/lint-tsc.mjs',
+          '--files=packages/operator-core/lib/x.ts',
+        ],
+        {
+          env: baseEnv({ ...env, PC_HEAVY_TIMEOUT_SEC: '2' }),
+          cwd: dir,
+        },
+      );
+      const focusedProcess = focused;
+      const focusedOut = createTextCollector(focusedProcess.stdout);
+      const focusedErr = createTextCollector(focusedProcess.stderr);
+      const focusedExited = new Promise<number>((res) => focusedProcess.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(
+        focusedProcess,
+        focusedErr,
+        (t) => t.includes('slot acquired'),
+        'scoped lint:tsc taking the focused lane beside materialization',
+      );
+
+      expect(heldSlotCount(dir, 2)).toBe(2);
+      expect(heldSlotCount(join(dir, 'focused'), 1)).toBe(1);
+      expect(focusedErr.peek()).toContain('exclusive materialization barrier is active');
+      expect(await focusedExited).toBe(0);
+      expect(focusedOut.text()).toContain('scoped-during-materialization-ok');
+    } finally {
+      killGroup(barrier);
+      if (focused) {
+        try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }
+      }
+    }
+  });
+
   it('serializes concurrent exclusive materializers before either can split the slot domain', async () => {
     const env = {
       PC_HEAVY_SLOTS: '2',

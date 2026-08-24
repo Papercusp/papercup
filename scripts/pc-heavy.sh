@@ -99,11 +99,12 @@
 #                         different bound.
 #   PC_HEAVY_FOCUSED_SLOTS  concurrent focused `test:file` or explicitly scoped
 #                         `lint:tsc* --files=…` runs allowed in the separate lane
-#                         while a release-gate reserve is live (default 1). This
-#                         lane prevents the scoped verification recommended during
-#                         gate classifier phases from waiting behind the reserve's
-#                         last ordinary slot; it remains bounded so the gate still
-#                         retains host headroom.
+#                         while a release-gate reserve or exclusive materialization
+#                         barrier is live (default 1). This lane prevents the
+#                         scoped verification recommended during gate classifier
+#                         phases, or while materialization owns every ordinary
+#                         slot, from waiting behind the reserve's last slot; it
+#                         remains bounded so those critical paths retain headroom.
 #   PC_HEAVY_DIR          slot-file dir (default ${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots)
 #   PC_HEAVY_NICE         nice increment (default 10)
 #   PC_HEAVY_IONICE       ionice spec: "best-effort N" | "idle" | "" to skip
@@ -344,6 +345,9 @@ _guard_typecheck_cgroup_headroom() {
 _guard_typecheck_cgroup_headroom "$@"
 _typecheck_guard_rc=$?
 [ "$_typecheck_guard_rc" -eq 0 ] || exit "$_typecheck_guard_rc"
+
+_dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
+_exclusive_writer_path="$_dir/exclusive-materialization.lock"
 
 _cores="$(nproc 2>/dev/null || echo 8)"
 _floor=$(( _cores / 32 ))
@@ -726,14 +730,30 @@ if [ "$_gate_active" = 1 ]; then
   _gate_refuse_broad_sweep "$@"
 fi
 
+# A materialization barrier uses this flock as its writer marker before it drains
+# the ordinary slot domain. Probe the marker without creating it: a stale path is
+# fail-open, while a held flock means the barrier already owns all ordinary slots.
+# This closes the gap where no green-checkpoint run-lock is live, so the focused
+# verification lane remains available during an active exclusive materialization.
+_exclusive_materialization_active=0
+if [ "$_exclusive_all_slots" = 0 ] && [ -e "$_exclusive_writer_path" ] && command -v flock >/dev/null 2>&1; then
+  if { exec {_exclusive_probe_fd}>"$_exclusive_writer_path"; } 2>/dev/null; then
+    if ! flock -n "$_exclusive_probe_fd"; then
+      _exclusive_materialization_active=1
+    fi
+    eval "exec ${_exclusive_probe_fd}>&-" 2>/dev/null || true
+  fi
+fi
+
 # EI-20223200344608082 / EI-21239272593686546 — scoped verification is the safe
-# path during the gate's classifier phases, but the reserve clamp applies to
-# every ordinary heavy command. On a saturated host that leaves one shared slot;
-# an unrelated holder can therefore starve the exact-file test or typecheck the
-# guard just prescribed. Give test-files.mjs and explicit `lint:tsc* --files=…`
-# runs one small, independent lane while the gate reserve is live. The lane is
-# intentionally bounded (default one slot) and only exists for scoped runners;
-# broad sweeps continue to use the protected ordinary pool.
+# path during the gate's classifier phases or an exclusive materialization, but
+# the reserve clamp applies to every ordinary heavy command. On a saturated host
+# that leaves one shared slot; an unrelated holder can therefore starve the
+# exact-file test or typecheck the guard just prescribed. Give test-files.mjs and
+# explicit `lint:tsc* --files=…` runs one small, independent lane while either
+# critical path is live. The lane is intentionally bounded (default one slot) and
+# only exists for scoped runners; broad sweeps continue to use the protected
+# ordinary pool.
 _is_focused_test=0
 _is_scoped_tsc=0
 _has_explicit_scope=0
@@ -750,17 +770,21 @@ if [ "$_is_focused_test" = 1 ] || { [ "$_is_scoped_tsc" = 1 ] && [ "$_has_explic
 fi
 _focused_lane=0
 _focused_slots=0
-if [ "$_gate_active" = 1 ] && [ "$_is_focused_command" = 1 ]; then
-  _focused_lane=1
-  _focused_slots="${PC_HEAVY_FOCUSED_SLOTS:-1}"
-  case "$_focused_slots" in ''|*[!0-9]*) _focused_slots=1 ;; esac
-  [ "$_focused_slots" -ge 1 ] || _focused_slots=1
-  _slots="$_focused_slots"
+if [ "$_is_focused_command" = 1 ]; then
+  if [ "$_gate_active" = 1 ] || [ "$_exclusive_materialization_active" = 1 ]; then
+    _focused_lane=1
+    _focused_slots="${PC_HEAVY_FOCUSED_SLOTS:-1}"
+    case "$_focused_slots" in ''|*[!0-9]*) _focused_slots=1 ;; esac
+    [ "$_focused_slots" -ge 1 ] || _focused_slots=1
+    _slots="$_focused_slots"
+    if [ "$_exclusive_materialization_active" = 1 ] && [ "$_gate_active" = 0 ]; then
+      echo "[pc-heavy] exclusive materialization barrier is active — scoped verification uses the focused lane." >&2
+    fi
+  fi
 fi
 if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
   echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active phase=${_gate_phase:-none} div=$_gate_div focused=$_focused_lane" >&2
 fi
-_dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
 _slot_dir="$_dir"
 if [ "$_focused_lane" = 1 ]; then
   _slot_dir="$_dir/focused"
@@ -808,7 +832,6 @@ if [ "$_exclusive_all_slots" = 1 ]; then
   # hold-and-wait deadlock themselves. The writer lock is in the SAME runtime
   # dir, is inherited by the materialization child, and is kernel-released on
   # every exit/signal just like the slot locks below.
-  _exclusive_writer_path="$_dir/exclusive-materialization.lock"
   if ! { exec {_exclusive_writer_fd}>"$_exclusive_writer_path"; } 2>/dev/null; then
     echo "[pc-heavy] FATAL: cannot establish the exclusive materialization writer lock in $_dir" >&2
     exit 75
