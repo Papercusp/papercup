@@ -187,6 +187,52 @@ describe('events:status projection', () => {
     expect(listRecentDeliveries).not.toHaveBeenCalled();
   });
 
+  it('maps an expired current declaration to expired and preserves superseded precedence', async () => {
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [
+        {
+          id: 3,
+          causalGeneration: 3,
+          subscriberId: 'su-emitter',
+          createdAt: '2026-07-13T12:10:00.000Z',
+          note: 'current gate',
+          expectedCondition: null,
+          firedPayload: null,
+          firedAt: '2026-07-13T12:11:00.000Z',
+          firedReason: 'expired',
+          firedBy: null,
+          cancelledAt: null,
+          supersededAt: null,
+        },
+        {
+          id: 2,
+          causalGeneration: 2,
+          subscriberId: 'su-emitter',
+          createdAt: '2026-07-13T12:00:00.000Z',
+          note: 'superseded gate',
+          expectedCondition: null,
+          firedPayload: null,
+          firedAt: '2026-07-13T12:05:00.000Z',
+          firedReason: 'expired',
+          firedBy: null,
+          cancelledAt: null,
+          supersededAt: '2026-07-13T12:10:00.000Z',
+        },
+      ],
+      waiters: [],
+      deliveries: [],
+      fireLatch: null,
+    } as never);
+
+    const out = await call({ event: 'gate:expired' });
+
+    expect(out.event_inspection.current_state).toBe('expired');
+    expect(out.event_inspection.declarations).toMatchObject([
+      { generation: 3, state: 'expired' },
+      { generation: 2, state: 'superseded' },
+    ]);
+  });
+
   it('EI-13705: a bare-emitted key with no announcement but a fire latch reports fired_undeclared, not undeclared — with fire_latch + advice surfaced', async () => {
     vi.mocked(inspectEventKey).mockResolvedValueOnce({
       announcements: [],
