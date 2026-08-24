@@ -27,6 +27,8 @@ import {
 } from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-origin';
+import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
+import { FILE_BACKED_SOURCE_KINDS } from '../../search/session-ingest';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -171,6 +173,7 @@ export default defineTool({
            AND (${f.speaker ?? null}::text IS NULL OR speaker = ${f.speaker ?? null})
            AND (${f.turnOrigin ?? null}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin ?? null})
            AND (${f.ownerOnly ?? null}::boolean IS NULL OR NOT ${f.ownerOnly ?? null} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
+           AND (${f.ownerCandidates ?? null}::boolean IS NULL OR NOT ${f.ownerCandidates ?? null} OR turn_origin_verdict = ANY(${OWNER_CANDIDATE_TURN_VERDICTS as string[]}::text[]))
            AND (${f.sessionId ?? null}::text IS NULL OR session_id = ${f.sessionId ?? null})
            AND (${f.sourceKind ?? null}::text IS NULL OR source_kind = ${f.sourceKind ?? null})
            AND (${f.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since ?? null}::timestamptz)
@@ -235,7 +238,47 @@ export default defineTool({
     // caller knows a 0 here is "no match for this query", never "no history at
     // all". Best-effort only: never fail the search over this extra read.
     let zeroHitCaveat: string | undefined;
-    if (args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {
+
+    // A PROVENANCE-FILTERED ZERO IS NOT A QUERY MISS, and must never be
+    // rendered as one. `turn_origin:'owner-typed'` / `owner_only:true` filter
+    // the PERSISTED verdict, which is strictly more conservative than the
+    // verdict a hit DISPLAYS: for a file-backed CLI source, ingest rewrites the
+    // `owner-typed` residual to `unenrolled-origin` rather than assert
+    // authorship it cannot prove (`stampTurnProvenance`). So on a claude / omp /
+    // codex session those filters match NOTHING — not rarely, but by
+    // construction — while the same turns come back stamped `owner-typed` when
+    // the filter is absent.
+    //
+    // That is the exact inverse of the failure `turn-origin.ts` was written to
+    // kill. There, a loop-fire replay read as owner speech and manufactured a
+    // directive; here, a real owner directive is unreachable and its absence
+    // reads as proof it was never said. The module header names that inverse
+    // (EI-13472 / WI-37419) as its own measured failure, and the generic
+    // "QUERY-MATCH MISS ... retry with a different fragment" caveat below
+    // actively steers into it — no fragment can ever match. Measured
+    // 2026-08-24: 0 `owner-typed` rows across claude/omp/codex against 18,091
+    // `unenrolled-origin` ones; `owner_only` reached 30 rows corpus-wide.
+    const provenanceFiltered = filters?.turnOrigin != null || filters?.ownerOnly === true;
+    if (pageHits.length === 0 && provenanceFiltered) {
+      const kinds = [...FILE_BACKED_SOURCE_KINDS].sort().join('/');
+      const which = filters?.ownerOnly === true
+        ? "owner_only:true (persisted 'owner-typed' or 'owner-dialog')"
+        : `turn_origin:'${filters?.turnOrigin}'`;
+      zeroHitCaveat =
+        `0 hits, but you filtered on PERSISTED provenance (${which}) — this is NOT evidence that no such turn ` +
+        `exists, and retrying with a different query fragment will not help. Ingest cannot prove owner authorship ` +
+        `for ${kinds} sessions (no enrolment envelope is possible), so it stores a typed owner directive as ` +
+        `'unenrolled-origin'` +
+        (filters?.ownerOnly === true
+          ? ", which owner_only EXCLUDES. On a CLI session owner_only reaches only turn-stamped owner-dialog answers."
+          : ".") +
+        ` To ask whether the owner said something — including to establish that they did NOT — re-run with ` +
+        `owner_candidates:true (proven owner turns PLUS 'unenrolled-origin', still excluding agent-injected and ` +
+        `machine-surface replays). Reading THIS zero as "the owner never said it" is the documented ` +
+        `EI-13472 / WI-37419 failure.`;
+    }
+
+    if (!zeroHitCaveat && args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {
       try {
         const [row] = await ctx.tx<Array<{ session_count: string; earliest: string | null }>>`
           SELECT COUNT(DISTINCT session_id)::text AS session_count,

@@ -10,9 +10,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { stampTurnProvenance, UNENROLLED_ORIGIN_VERDICT } from './session-ingest';
+import { stampTurnProvenance, UNENROLLED_ORIGIN_VERDICT, FILE_BACKED_SOURCE_KINDS } from './session-ingest';
 import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
-import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
+import { classifyRecordedTurn, OWNER_CANDIDATE_TURN_VERDICTS } from '../turn-provenance/turn-ref';
 
 type Row = Parameters<typeof stampTurnProvenance>[0];
 
@@ -81,12 +81,56 @@ describe('stampTurnProvenance', () => {
     expect(r.turn_origin).toBeNull();
   });
 
-  it.each(['claude', 'omp', 'codex'])('does not assert owner authorship for an unenrolled %s row', (source_kind) => {
+  it.each([...FILE_BACKED_SOURCE_KINDS])('does not assert owner authorship for an unenrolled %s row', (source_kind) => {
     const r = row({ text: 'launch our windows vm please' });
     r.source_kind = source_kind;
     stampTurnProvenance(r);
     expect(r.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
     expect(r.turn_origin).toBeNull();
+  });
+
+  /**
+   * THE INGEST DECISION HAS A SEARCH-SIDE CONSEQUENCE, AND THIS IS THE ONLY
+   * THING THAT TIES THEM TOGETHER.
+   *
+   * Downgrading the residual is correct, but it silently makes
+   * `turn_origin:'owner-typed'` and `owner_only:true` UNREACHABLE for every
+   * file-backed CLI session — so the search the compaction rules prescribe for
+   * verifying a claimed owner directive returns a guaranteed zero, which reads
+   * as "the owner never said it". Measured 2026-08-24 before this guard
+   * existed: 0 `owner-typed` rows across claude/omp/codex against 18,091
+   * `unenrolled-origin` ones, and `owner_only` reachable on 30 rows in a
+   * 671,407-turn corpus.
+   *
+   * These tests fail if the two halves drift apart in EITHER direction — a
+   * renamed ingest verdict, or a candidate set that stops covering it.
+   */
+  it('keeps the verdict it downgrades to inside the owner-CANDIDATE set the search filters on', () => {
+    for (const source_kind of FILE_BACKED_SOURCE_KINDS) {
+      const r = row({ text: 'put yourself on auto mode and continue where you left off' });
+      r.source_kind = source_kind;
+      stampTurnProvenance(r);
+
+      // The residual is refused (the ingest half, restated as this test's premise) ...
+      expect(r.turn_origin_verdict).not.toBe('owner-typed');
+      // ... so the verdict it lands on MUST remain findable, or a real owner
+      // directive becomes unreachable and its absence reads as proof.
+      expect(OWNER_CANDIDATE_TURN_VERDICTS).toContain(r.turn_origin_verdict);
+    }
+  });
+
+  it('keeps machine-injected verdicts OUT of the candidate set, so widening cannot revive false confirmation', () => {
+    // The inverse failure turn-origin.ts exists to kill: a loop-fire replay
+    // reading back as owner speech. `owner_candidates` is deliberately wider
+    // than `owner_only` but must never widen this far.
+    const replay = row({ text: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\nkeep going' });
+    stampTurnProvenance(replay);
+    expect(replay.turn_origin_verdict).toBe('agent-injected');
+    expect(OWNER_CANDIDATE_TURN_VERDICTS).not.toContain(replay.turn_origin_verdict);
+
+    const assistant = row({ speaker: 'assistant', text: 'I will do that next.' });
+    stampTurnProvenance(assistant);
+    expect(OWNER_CANDIDATE_TURN_VERDICTS).not.toContain(assistant.turn_origin_verdict);
   });
 
   it('keeps the bare native-CLI machine/owner ambiguity explicit instead of using the residual', () => {
