@@ -327,8 +327,6 @@ function compactSingleRow(
   noteDroppedDetail(w ?? {}, dropped);
 
   for (const field of [
-    "threadWindow",
-    "threadWindowReadFailed",
     "lifecycle",
     "priorAttempts",
     "priorAttemptRefResolution",
@@ -341,6 +339,13 @@ function compactSingleRow(
     ok: r.ok ?? true,
     id: r.id ?? w?.id ?? null,
     workItem: projectWorkItem(r.workItem, caps, 0, dropped),
+    // `threadLimit` is an explicit bounded diagnostic request, not incidental
+    // detail. Keep it even at the exact-read floor: dropping it here turns the
+    // caller's measured recent window into silence precisely on large items.
+    ...(r.threadWindow !== undefined
+      ? { threadWindow: projectThreadWindow(r.threadWindow, tier, dropped) }
+      : {}),
+    ...(r.threadWindowReadFailed ? { threadWindowReadFailed: true } : {}),
     checkpoint: clip(checkpoint, checkpointCap),
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
