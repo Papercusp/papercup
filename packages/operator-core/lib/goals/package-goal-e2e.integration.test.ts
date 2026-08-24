@@ -82,8 +82,8 @@ beforeEach(async () => {
 function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }): StartGoalFromPackageDeps {
   return {
     ...DEFAULT_DEPS,
-    startById: async (input) =>
-      await startGoalById(input, {
+    startById: async (sql, input) =>
+      await startGoalById(sql, input, {
         launch: async (launchInput) => {
           capture.launched.push(launchInput.goalId);
           capture.kickoffPrompt = launchInput.kickoffPrompt ?? null;
