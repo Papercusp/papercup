@@ -455,8 +455,26 @@ describe('search:semantic — embedder availability', () => {
     hybridResult = { results: [], totalHits: 0, embedderAvailable: false };
     const tool = (await import('./semantic')).default;
     const res = await tool.handler({ query: 'x' } as never, CTX() as never);
+    const p = payloadOf(res as never);
     expect(hybridCalls[0].ctx.embedder).toBeNull();
-    expect(payloadOf(res as never).embedder_available).toBe(false);
+    expect(p.embedder_available).toBe(false);
+    expect(p.total_hits).toBeNull();
+    expect(p.zeroHitCaveat).toMatch(/NOT AN ABSENCE CLAIM/);
+  });
+
+  it('keeps a numeric lexical fallback count when the embedder is unavailable', async () => {
+    buildQueryEmbedder.mockResolvedValueOnce(null);
+    hybridResult = {
+      results: [{ source: 'turns', source_id: 't1', excerpt: 'e', score: 0.5 }],
+      totalHits: 1,
+      embedderAvailable: false,
+    };
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler({ query: 'x' } as never, CTX() as never);
+    const p = payloadOf(res as never);
+    expect(p.embedder_available).toBe(false);
+    expect(p.total_hits).toBe(1);
+    expect(p.zeroHitCaveat).toBeUndefined();
   });
 
   it('embedder builder throwing is NOT caught by the handler (builder is the fail-safe boundary)', async () => {

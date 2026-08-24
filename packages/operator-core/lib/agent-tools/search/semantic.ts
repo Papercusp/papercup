@@ -192,6 +192,17 @@ export default defineTool({
     // name. Zero-hit only, and derived from SEARCH_SOURCES; see ./scope-residue.
     const residue = totalHits === 0 ? scopeResidue(scope) : null;
 
+    // A zero from a real search with no query embedder is not an observed
+    // absence. In hybrid mode the lexical fallback may still produce a valid
+    // count; only suppress the count when there are no hits to report and the
+    // semantic leg could not measure the query at all. Keep invalid/empty
+    // scopes distinguishable from a degraded search that never ran.
+    const zeroHitEmbedderUnavailable = sources.length > 0 && totalHits === 0 && !embedderAvailable;
+    const zeroHitCaveat = zeroHitEmbedderUnavailable
+      ? 'total_hits is unavailable: the query embedder was unavailable, so semantic recall was not measured. ' +
+        'THIS ZERO-RESULT PAGE IS NOT AN ABSENCE CLAIM — retry when the embedder is available, or use search:fulltext for exact terms.'
+      : null;
+
     return {
       content: [{
         type: 'text',
@@ -200,7 +211,8 @@ export default defineTool({
           mode,
           embedder_available: embedderAvailable,
           scope,
-          total_hits: totalHits,
+          total_hits: zeroHitEmbedderUnavailable ? null : totalHits,
+          ...(zeroHitCaveat ? { zeroHitCaveat } : {}),
           // P-020: WHICH LEG ACTUALLY RAN AND CONTRIBUTED. This is a DIFFERENT
           // question from `coverage` below and from `embedder_available` above,
           // and it is the one that was unanswerable at every layer:
