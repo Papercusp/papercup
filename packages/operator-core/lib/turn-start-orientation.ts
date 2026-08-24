@@ -50,6 +50,7 @@
  */
 
 import type { CursorState } from './agent-tools/coordination/read-cursors';
+import type { ScoredItem } from './harness/improvements/digest';
 import { capPreservingOperativeDetailed } from './operative-clause';
 
 /** A held work-item, reduced to what the fold actually prints. */
@@ -81,10 +82,45 @@ export interface OrientationAnnouncedGate {
 export interface OrientationImprovementTriage {
   /** Untriaged rows in the same bounded window that produced `top`. */
   pending: number;
+  /** Improvement rows the bounded read actually considered. */
+  considered: number;
+  /** True when the read hit its cap, so `pending` is only a lower bound. */
+  lowerBound: boolean;
   top: {
     id: string;
     title: string;
     lane: 'human' | 'auto';
+  };
+}
+
+/**
+ * Reduce the existing triage lanes to the one row worth injecting at turn
+ * start. `humanQueue` arrives in the one ranker's order; `selectUntriaged`
+ * sorts its argument in place by the legacy triage score, so call it on copies
+ * and use only its membership result for that lane. Otherwise merely filtering
+ * lifecycle state silently destroys the ranker's order before `top` is chosen.
+ */
+export function selectOrientationImprovementTriage(
+  digest: { humanQueue: ScoredItem[]; autoEligible: ScoredItem[] },
+  selectUntriaged: (scored: ScoredItem[], max: number) => ScoredItem[],
+  population: { considered: number; lowerBound: boolean },
+): OrientationImprovementTriage | null {
+  const untriagedHumanIds = new Set(
+    selectUntriaged([...digest.humanQueue], digest.humanQueue.length).map((item) => item.id),
+  );
+  const human = digest.humanQueue.filter((item) => untriagedHumanIds.has(item.id));
+  const auto = selectUntriaged([...digest.autoEligible], digest.autoEligible.length);
+  const top = human[0] ?? auto[0];
+  if (!top) return null;
+  return {
+    pending: human.length + auto.length,
+    considered: population.considered,
+    lowerBound: population.lowerBound,
+    top: {
+      id: top.id,
+      title: top.title,
+      lane: human[0] ? 'human' : 'auto',
+    },
   };
 }
 
@@ -134,6 +170,7 @@ const CHECKPOINT_DISPLAY_CAP = 2;
 const CHECKPOINT_EXCERPT_CHARS = 150;
 const GATE_DISPLAY_CAP = 3;
 const INBOX_DISPLAY_CAP = 2;
+const IMPROVEMENT_TRIAGE_WINDOW_LIMIT = 100;
 
 /** True when there is genuinely nothing worth spending a single character on. */
 export function isEmptyOrientation(state: OrientationState): boolean {
@@ -204,7 +241,8 @@ export function fingerprintOrientation(state: OrientationState, epoch: number): 
       .join('|'),
     loop: state.loopArmed ? 1 : 0,
     triage: state.improvementTriage
-      ? `${state.improvementTriage.pending}:${state.improvementTriage.top.lane}:` +
+      ? `${state.improvementTriage.pending}:${state.improvementTriage.considered}:` +
+        `${state.improvementTriage.lowerBound ? 1 : 0}:${state.improvementTriage.top.lane}:` +
         `${state.improvementTriage.top.id}:${state.improvementTriage.top.title}`
       : '',
     epoch,
@@ -284,9 +322,12 @@ export function renderOrientationLines(state: OrientationState): string[] {
     lines.push(`- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`);
   }
   if (state.improvementTriage) {
-    const { pending, top } = state.improvementTriage;
+    const { pending, considered, lowerBound, top } = state.improvementTriage;
+    const population = lowerBound
+      ? `at least ${pending} untriaged in ${considered}-row window`
+      : `${pending} untriaged`;
     lines.push(
-      `- improvement triage: ${pending} untriaged; top ${top.id} [${top.lane}] — ${compactHeadline(top.title)}`,
+      `- improvement triage: ${population}; top ${top.id} [${top.lane}] — ${compactHeadline(top.title)}`,
     );
   }
   if (state.held.length > 0) {
@@ -507,7 +548,7 @@ export function defaultOrientationDeps(): OrientationDeps {
         import('./harness/improvements/triage-core'),
       ]);
       const [items, ownerFullAutonomy] = await Promise.all([
-        read.readImprovementItems({ state: 'open', limit: 100 }),
+        read.readImprovementItems({ state: 'open', limit: IMPROVEMENT_TRIAGE_WINDOW_LIMIT }),
         grant.readOwnerFullAutonomyGrant(workspaceId),
       ]);
       const digest = await ranker.applyHumanQueueRanking(
@@ -519,23 +560,12 @@ export function defaultOrientationDeps(): OrientationDeps {
         { candidates: items },
       );
 
-      // Preserve the one ranker's order for the human lane while reusing the
-      // scheduled triage pass's lifecycle predicate for both lanes.
-      const untriagedHumanIds = new Set(
-        triageCore.selectUntriaged(digest.humanQueue, digest.humanQueue.length).map((item) => item.id),
-      );
-      const human = digest.humanQueue.filter((item) => untriagedHumanIds.has(item.id));
-      const auto = triageCore.selectUntriaged(digest.autoEligible, digest.autoEligible.length);
-      const top = human[0] ?? auto[0];
-      if (!top) return null;
-      return {
-        pending: human.length + auto.length,
-        top: {
-          id: top.id,
-          title: top.title,
-          lane: human[0] ? ('human' as const) : ('auto' as const),
-        },
-      };
+      return selectOrientationImprovementTriage(digest, triageCore.selectUntriaged, {
+        considered: items.length,
+        // A full window may be the whole corpus or a slice; only a separate
+        // count could distinguish them, so report the conservative lower bound.
+        lowerBound: items.length === IMPROVEMENT_TRIAGE_WINDOW_LIMIT,
+      });
     },
     // P-023 / D-008. The memory ledger's own epoch reader, reused rather than
     // re-derived: `currentSessionEpoch` is already best-effort by contract

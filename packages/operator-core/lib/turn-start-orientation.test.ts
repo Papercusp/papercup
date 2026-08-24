@@ -13,9 +13,12 @@ import {
   isEmptyOrientation,
   renderOrientationLines,
   resolveOrientationState,
+  selectOrientationImprovementTriage,
   ORIENTATION_BUDGET_CHARS,
   type OrientationState,
 } from './turn-start-orientation';
+import { selectUntriaged } from './harness/improvements/triage-core';
+import type { ScoredItem } from './harness/improvements/digest';
 
 const base: OrientationState = {
   held: [],
@@ -74,7 +77,12 @@ describe('turn-start-orientation — when it speaks', () => {
       { ...withWork, inboxRecent: [{ msgId: 'm-2', from: 'su-peer', summary: 'New ask' }] },
       {
         ...withWork,
-        improvementTriage: { pending: 3, top: { id: 'EI-3', title: 'Consume me', lane: 'human' } },
+        improvementTriage: {
+          pending: 3,
+          considered: 3,
+          lowerBound: false,
+          top: { id: 'EI-3', title: 'Consume me', lane: 'human' },
+        },
       },
     ] as OrientationState[]) {
       expect(composeOrientationBlock({ state: changed, committed, epoch: EPOCH })).not.toBe('');
@@ -247,6 +255,8 @@ describe('turn-start-orientation — what it says', () => {
         ...base,
         improvementTriage: {
           pending: 6,
+          considered: 6,
+          lowerBound: false,
           top: { id: 'EI-6', title: 'Repeated coord send truncation', lane: 'human' },
         },
       },
@@ -255,6 +265,57 @@ describe('turn-start-orientation — what it says', () => {
     });
     expect(out).toContain('improvement triage: 6 untriaged');
     expect(out).toContain('top EI-6 [human] — Repeated coord send truncation');
+  });
+
+  it('labels a capped triage window as a lower bound instead of a fleet-wide total', () => {
+    const out = composeOrientationBlock({
+      state: {
+        ...base,
+        improvementTriage: {
+          pending: 80,
+          considered: 100,
+          lowerBound: true,
+          top: { id: 'EI-80', title: 'Bound the population', lane: 'human' },
+        },
+      },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out).toContain('at least 80 untriaged in 100-row window');
+    expect(out).not.toContain('triage: 80 untriaged;');
+  });
+
+  it('preserves the one human-queue ranker order while filtering untriaged rows', () => {
+    const item = (id: string, score: number): ScoredItem => ({
+      id,
+      kind: 'change',
+      title: id,
+      scope: 'operator-core',
+      tier: 'human',
+      score,
+      ageDays: 1,
+      tierReason: 'test',
+    });
+    const rankedFirst = item('EI-ranked-first', 1);
+    const legacyScoreFirst = item('EI-legacy-score-first', 100);
+    const humanQueue = [rankedFirst, legacyScoreFirst];
+
+    expect(
+      selectOrientationImprovementTriage(
+        { humanQueue, autoEligible: [] },
+        selectUntriaged,
+        { considered: 2, lowerBound: false },
+      ),
+    ).toEqual({
+      pending: 2,
+      considered: 2,
+      lowerBound: false,
+      top: { id: 'EI-ranked-first', title: 'EI-ranked-first', lane: 'human' },
+    });
+    expect(humanQueue.map((candidate) => candidate.id)).toEqual([
+      'EI-ranked-first',
+      'EI-legacy-score-first',
+    ]);
   });
 
   it('keeps no-wake and checkpoint warnings ahead of lower-priority fold content', () => {
@@ -283,6 +344,8 @@ describe('turn-start-orientation — what it says', () => {
       loopArmed: async () => true,
       improvementTriage: async () => ({
         pending: 2,
+        considered: 2,
+        lowerBound: false,
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       }),
     });
@@ -294,6 +357,8 @@ describe('turn-start-orientation — what it says', () => {
       loopArmed: true,
       improvementTriage: {
         pending: 2,
+        considered: 2,
+        lowerBound: false,
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       },
     });
