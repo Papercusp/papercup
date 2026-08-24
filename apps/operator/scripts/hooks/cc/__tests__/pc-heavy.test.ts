@@ -1095,6 +1095,46 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('EI-21361359358514189: a caller TERM while queued is retryable and reports the live holder', async () => {
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '30',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+    };
+    const ran = join(dir, 'queue-signal-ran');
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let waiter: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the queue-signal holder taking the only slot');
+
+      waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo ran > "' + ran + '"'], {
+        env: baseEnv(env), cwd: dir, detached: true,
+      });
+      const waiterErr = createTextCollector(waiter.stderr);
+      const waiterExit = new Promise<number>((res) => waiter?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(waiter, waiterErr, (t) => t.includes('queued for a heavy slot'), 'the caller entering the queue');
+
+      killGroup(waiter);
+      expect(await waiterExit).toBe(75);
+      expect(existsSync(ran)).toBe(false);
+
+      const err = waiterErr.text();
+      expect(err).toContain('QUEUE_ABORTED status=retryable reason=caller-signal signal=TERM exit=75');
+      expect(err).toContain('gate-phase=none');
+      expect(err).toContain('queued slot.0 held by:');
+      expect(err).toContain('pid ' + holder.pid);
+      expect(err).toContain('PC_HEAVY_RESULT status=retryable reason=queue-signal signal=TERM exit=75');
+      expect(err).not.toContain('slot acquired — starting real work');
+    } finally {
+      killGroup(holder);
+      if (waiter) killGroup(waiter);
+    }
+  }, 10_000);
+
   it('a waiter grabs a DIFFERENT slot that frees, instead of convoying on slot 0 alone (regression: pc-heavy slot-0 convoy)', async () => {
     // 2 slots. Holder A takes slot 0 (the natural first pick with no
     // contention) and sleeps long (30s). The ORIGINAL fallback blocked an
