@@ -998,6 +998,37 @@ export async function recordAgentLaunchResult(opts: {
 }
 
 /**
+ * Release a launch claim whose winning caller failed before it could record a
+ * successful result. This is the rollback half of `claimAgentLaunch`: without
+ * it, a validation/storage failure after the claim leaves an empty summary in
+ * the ledger for seven days and every honest retry is misclassified as an
+ * already-completed launch.
+ *
+ * A completed launch must never call this helper. Its claim is the durable
+ * replay record that prevents a later client retry from opening another
+ * window/process.
+ */
+export async function releaseAgentLaunchClaim(opts: {
+  workspaceId: string;
+  idempotencyKey: string | null | undefined;
+}): Promise<boolean> {
+  const key = opts.idempotencyKey?.trim();
+  if (!key) return false;
+  try {
+    const { sql } = getOrgPg();
+    const released = await sql<Array<{ idempotency_key: string }>>`
+      DELETE FROM harness_shared.agent_launch_idempotency
+       WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+      RETURNING idempotency_key
+    `;
+    return released.length > 0;
+  } catch (e) {
+    console.warn(`[agent-launch] idempotency claim release failed: ${(e as Error)?.message ?? e}`);
+    return false;
+  }
+}
+
+/**
  * Post-resume kickoff delivery (P-011, D-008): a resumed session boots IDLE and
  * its presence rows were reaped at death, so roster-gated coord:wake / coord:send
  * reject it (`unknown_recipient`) — nothing coord-side can deliver the first
