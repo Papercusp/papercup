@@ -38,6 +38,7 @@ import { shapePlansGet } from "./get-shape";
 import { decoratePlanNowBlock } from "./liveness-decoration";
 import { getAcceptanceRubricForPlan } from "../../rubrics";
 import { getLatestPlanAudit } from "../../plan-audits";
+import { splitPlanSections } from "./plan-sections";
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -157,42 +158,8 @@ export function boundDecisionBodies<T extends { body: string }>(
  *  blocks so headings inside ``` aren't treated as section breaks. Powers the
  *  section index (mode meta/sections) + the `heading` narrowing without pulling
  *  the full prose. */
-export function splitSections(md: string): Array<PlanSection & { body: string }> {
-  const lines = md.split("\n");
-  const out: Array<PlanSection & { body: string }> = [];
-  let cur: (PlanSection & { body: string }) | null = null;
-  let buf: string[] = [];
-  let inFence = false;
-  const flush = () => {
-    if (cur) {
-      cur.body = buf.join("\n").trim();
-      cur.chars = cur.body.length;
-      out.push(cur);
-    }
-  };
-  for (const line of lines) {
-    if (/^\s*(?:```|~~~)/.test(line)) {
-      inFence = !inFence;
-      if (cur) buf.push(line);
-      continue;
-    }
-    const m = !inFence ? /^(#{1,2})\s+(.*)$/.exec(line) : null;
-    if (m) {
-      flush();
-      buf = [];
-      cur = {
-        heading: (m[2] ?? "").trim(),
-        level: (m[1] ?? "").length,
-        chars: 0,
-        body: "",
-      };
-    } else if (cur) {
-      buf.push(line);
-    }
-  }
-  flush();
-  return out;
-}
+export const splitSections = (md: string): Array<PlanSection & { body: string }> =>
+  splitPlanSections(md) as Array<PlanSection & { body: string }>;
 
 /** Split ONE section body into its level-3 (`###`) subsections, tracking fenced
  *  code blocks so `###` lines inside ``` aren't treated as subsection breaks.

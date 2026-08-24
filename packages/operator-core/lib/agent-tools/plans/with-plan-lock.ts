@@ -24,6 +24,7 @@ import { FLAGS } from '@papercusp/flags';
 import { hashPlanContent } from './content-hash';
 import { summarizeForcedPast } from './forced-past-stamp';
 import { writePlanIndexRows } from './plan-index-rows';
+import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
 import {
   resolvePlanScope,
   syntheticPlanPath,
@@ -240,7 +241,7 @@ export async function withPlanLock<T>(
   });
   const slug = opts.slug;
   const filePath = syntheticPlanPath(harnessSlug, slug);
-  const lockKey = `${workspaceId}:${harnessSlug}:${slug}`;
+  const lockKey = planAdvisoryLockKey(workspaceId, harnessSlug, slug);
   const budgetMs = (opts.ttlSec ?? 5) * 1000;
 
   return withWorkspace(workspaceId, async (tx) => {
@@ -252,7 +253,7 @@ export async function withPlanLock<T>(
     const deadline = Date.now() + budgetMs;
     for (;;) {
       const r = await tx<{ ok: boolean }[]>`
-        SELECT pg_try_advisory_xact_lock(hashtext('harness_plans'), hashtext(${lockKey})) AS ok
+        SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}), hashtext(${lockKey})) AS ok
       `;
       if (r[0]?.ok) {
         acquired = true;
