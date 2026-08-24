@@ -1436,6 +1436,10 @@ export function buildCheckpointSystemdArgv(
     `--property=MemoryMax=${memoryMaxG}G`,
     '--property=MemorySwapMax=0',
     '--property=ManagedOOMPreference=avoid',
+    // EI-213512: ordinary user-issued StopUnit calls must not kill a live gate run. The
+    // authorized replaceStale path uses `systemctl kill` instead, after the stale/age/phase
+    // guards above have proved that replacement is allowed.
+    '--property=RefuseManualStop=yes',
     `--property=ExecStopPost=${terminalMarkerCommand}`,
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
     `--working-directory=${root}`,
@@ -1934,18 +1938,30 @@ export function renderContainmentWarning(
   return parts.join(' ');
 }
 
-/** EI-9672: best-effort `systemctl --user stop` on a checkpoint unit — the piece that was
- *  previously ONLY a manual, undocumented escape hatch ("no checkpoint cancel verb exists").
- *  Never throws; a failure just means the subsequent launch attempt sees the same collision
- *  it would have seen anyway (no regression vs today). */
-export function stopActiveCheckpointUnit(
+/** EI-213512: terminate a stale checkpoint through the authorized signal path.
+ *
+ * The transient unit refuses ordinary manual stops, so an unrelated `systemctl --user stop`
+ * cannot tear down another lane's live gate run. `replaceStale` is the narrow, already-guarded
+ * exception: it sends SIGTERM to every process in the unit, allowing green-checkpoint's existing
+ * signal handler to release the run-lock before the replacement launch. Never throws; a failure
+ * just means the subsequent launch attempt sees the same collision it would have seen anyway. */
+export function terminateActiveCheckpointUnit(
   unit: string,
   execFn: ExecSyncLike = defaultExecSync,
 ): { stopped: boolean; reason?: string } {
-  const r = execFn('systemctl', ['--user', 'stop', `${unit}.service`]);
+  const r = execFn('systemctl', [
+    '--user',
+    'kill',
+    '--signal=SIGTERM',
+    '--kill-whom=all',
+    `${unit}.service`,
+  ]);
   if (r.status === 0) return { stopped: true };
-  return { stopped: false, reason: r.stderr.trim().slice(0, 300) || `systemctl stop exited ${r.status}` };
+  return { stopped: false, reason: r.stderr.trim().slice(0, 300) || `systemctl kill exited ${r.status}` };
 }
+
+/** Backward-compatible name for callers that used the old stale-run cancellation helper. */
+export const stopActiveCheckpointUnit = terminateActiveCheckpointUnit;
 
 /** The subset of `ActiveCheckpointCheck` a displacement marker needs to describe. */
 export type CheckpointDisplacementInfo = Pick<
@@ -2182,7 +2198,7 @@ export function launchDetachedCheckpoint(
         // EI-19323010647367612: record WHY this run is dying into its own log, before the
         // SIGTERM — the only forensic trail that survives a transient unit with no journal.
         recordDisplacement(logPath, active);
-        const stop = stopActiveCheckpointUnit(unit, execFn);
+        const stop = terminateActiveCheckpointUnit(unit, execFn);
         if (stop.stopped) {
           // Re-check right before launching — a race where the run finished/advanced
           // between our stop and now is handled by the normal already_running path below

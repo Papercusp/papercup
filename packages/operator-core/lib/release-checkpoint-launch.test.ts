@@ -31,6 +31,7 @@ import {
   isCheckpointRunLockHeldCheap,
   readCheckpointRunPhaseCheap,
   stopActiveCheckpointUnit,
+  terminateActiveCheckpointUnit,
   recordCheckpointDisplacement,
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
@@ -96,6 +97,7 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(argv).toContain('--property=MemoryMax=16G');
     expect(argv).toContain('--property=MemorySwapMax=0');
     expect(argv).toContain('--property=ManagedOOMPreference=avoid');
+    expect(argv).toContain('--property=RefuseManualStop=yes');
     const stopPost = argv.find((arg) => arg.startsWith('--property=ExecStopPost='));
     expect(stopPost).toContain(GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER);
     expect(stopPost).toContain('service_result=%s exit_code=%s exit_status=%s');
@@ -1467,21 +1469,35 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
   });
 });
 
-describe('stopActiveCheckpointUnit (EI-9672: the supported cancel a stale run had none of)', () => {
-  it('reports stopped:true on a clean systemctl stop', () => {
+describe('terminateActiveCheckpointUnit (EI-213512: protected unit, authorized SIGTERM path)', () => {
+  it('reports stopped:true on a clean systemctl kill', () => {
     const execFn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
-    const r = stopActiveCheckpointUnit('papercup-green-checkpoint-manual-abc', execFn);
+    const r = terminateActiveCheckpointUnit('papercup-green-checkpoint-manual-abc', execFn);
     expect(r).toEqual({ stopped: true });
     expect(execFn).toHaveBeenCalledWith('systemctl', [
       '--user',
-      'stop',
+      'kill',
+      '--signal=SIGTERM',
+      '--kill-whom=all',
       'papercup-green-checkpoint-manual-abc.service',
     ]);
   });
 
-  it('reports stopped:false with the stderr reason on a failed stop — never throws', () => {
+  it('keeps the legacy helper name pointed at the protected kill path', () => {
+    const execFn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
+    expect(stopActiveCheckpointUnit('some-unit', execFn)).toEqual({ stopped: true });
+    expect(execFn).toHaveBeenCalledWith('systemctl', [
+      '--user',
+      'kill',
+      '--signal=SIGTERM',
+      '--kill-whom=all',
+      'some-unit.service',
+    ]);
+  });
+
+  it('reports stopped:false with the stderr reason on a failed kill — never throws', () => {
     const execFn = vi.fn(() => ({ status: 1, stdout: '', stderr: 'Unit not loaded.' }));
-    const r = stopActiveCheckpointUnit('some-unit', execFn);
+    const r = terminateActiveCheckpointUnit('some-unit', execFn);
     expect(r.stopped).toBe(false);
     expect(r.reason).toContain('Unit not loaded');
   });
@@ -1519,7 +1535,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
   /** execFn that reports an ACTIVE run judging `oldCandidate`, while the current quiet-cut
    *  candidate is `freshCandidate` (i.e. candidate_stale:true) — mirrors the
    *  "candidate_stale" checkActiveCheckpointRun test above, plus responds to the
-   *  `systemctl --user stop` call this describe block exercises. Defaults to a run OLD
+   *  `systemctl --user kill` call this describe block exercises. Defaults to a run OLD
    *  enough to pass the EI-11667 min-age guard — the wedged-salvage case.
    *
    *  ⚠ DERIVED from REPLACE_STALE_MIN_AGE_SEC, never a literal. This was hardcoded `45`
@@ -1539,7 +1555,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     return vi.fn((cmd: string, args: string[]) => {
       if (cmd === 'systemctl' && args[1] === 'show')
         return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
-      if (cmd === 'systemctl' && args[1] === 'stop')
+      if (cmd === 'systemctl' && args[1] === 'kill')
         return { status: stopStatus, stdout: '', stderr: stopStatus === 0 ? '' : 'nope' };
       if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
         return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
@@ -1571,7 +1587,13 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     child.emit('close', 0);
     const r = await p;
 
-    expect(execFn).toHaveBeenCalledWith('systemctl', ['--user', 'stop', `${checkpointUnitForRoot('/tree')}.service`]);
+    expect(execFn).toHaveBeenCalledWith('systemctl', [
+      '--user',
+      'kill',
+      '--signal=SIGTERM',
+      '--kill-whom=all',
+      `${checkpointUnitForRoot('/tree')}.service`,
+    ]);
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
     expect(r.replacedStale).toMatchObject({ active: true, candidate_stale: true, candidate: '11111111' });
@@ -1611,7 +1633,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const spawnFn = vi.fn();
     const stopCall = vi.fn();
     const execFn = vi.fn((cmd: string, args: string[]) => {
-      if (cmd === 'systemctl' && args[1] === 'stop') {
+      if (cmd === 'systemctl' && args[1] === 'kill') {
         stopCall();
         return { status: 0, stdout: '', stderr: '' };
       }
@@ -1647,7 +1669,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const spawnFn = vi.fn();
     const stopCall = vi.fn();
     const execFn = vi.fn((cmd: string, args: string[]) => {
-      if (cmd === 'systemctl' && args[1] === 'stop') {
+      if (cmd === 'systemctl' && args[1] === 'kill') {
         stopCall();
         return { status: 0, stdout: '', stderr: '' };
       }
@@ -1773,7 +1795,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const calls: string[] = [];
     const baseExecFn = staleActiveExecFn(0, WEDGED_AGE_MIN);
     const execFn = vi.fn((cmd: string, args: string[]) => {
-      if (cmd === 'systemctl' && args[1] === 'stop') calls.push('stop');
+      if (cmd === 'systemctl' && args[1] === 'kill') calls.push('kill');
       return baseExecFn(cmd, args);
     });
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
@@ -1798,7 +1820,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(recordDisplacement).toHaveBeenCalledTimes(1);
     // Written before the SIGTERM, not after — the marker must survive even if the stop's own
     // systemd bookkeeping (or a crash right after) loses everything else.
-    expect(calls).toEqual(['record', 'stop']);
+    expect(calls).toEqual(['record', 'kill']);
     expect(r.launched).toBe(true);
   });
 
