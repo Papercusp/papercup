@@ -618,6 +618,7 @@ export function WorkItemDetail({
         {showDiscussionAction ? (
           <WorkItemDiscussionSection slug={slug} workItem={workItem} />
         ) : null}
+        <PriorAttemptsSection slug={slug} workItem={workItem} />
       </div>
       {/* WorkItemDetail historically omitted this — every WI-* detail rendered
           with ZERO panel CSS (run-together label/value spans). */}
@@ -671,6 +672,202 @@ function WorkItemDiscussionSection({
         />
       ) : null}
     </>
+  );
+}
+
+/** nuqs, not useState: panel open-state is user-meaningful and must be agent-readable
+ *  (ui:get_state / ui:dispatch read the URL). Scoped ref so the section follows the
+ *  selected item, exactly like WORK_ITEM_DISCUSSION_PARAM above. */
+const WORK_ITEM_PRIOR_ATTEMPTS_PARAM = 'wipa';
+
+type PriorAttemptsBriefRecord = {
+  authority: string;
+  scope: string;
+  rawRef: string;
+  at?: string | null;
+  text: string;
+  textTruncated?: boolean;
+  fullTextChars?: number;
+};
+
+type PriorAttemptsRow = {
+  workItemId: string;
+  brief: {
+    fingerprint: string;
+    authority: PriorAttemptsBriefRecord[];
+    attempts: PriorAttemptsBriefRecord[];
+    residue: Array<{ rawRef: string; items: string[] }>;
+    omission: {
+      omittedRecords: number;
+      omittedRefs: Array<{ authority: string; scope: string; rawRef: string }>;
+      omittedRefsTruncated: boolean;
+      sourceCount: number;
+    };
+    estimatedTokens: number;
+  } | null;
+  unavailableReason:
+    | 'work-item-not-found'
+    | 'no-plan-pointer'
+    | 'collector-unavailable'
+    | null;
+};
+
+/**
+ * P-017 slice D — "Prior attempts": what was ALREADY TRIED on this item's plan lane.
+ *
+ * The brief has been computed at claim time since P-010, but it was handed to the
+ * claiming agent and then discarded, so a human (or a compacted successor) could only
+ * re-obtain it by CLAIMING the item — a write with side effects. This renders the same
+ * port read-only.
+ *
+ * Collapsed by default and gated with `enabled`: the collector is multi-table under a
+ * 2.5s budget, so nothing is computed until someone opens it.
+ */
+function PriorAttemptsSection({
+  slug,
+  workItem,
+}: {
+  slug: string;
+  workItem: WorkItemRow;
+}) {
+  const [openRef, setOpenRef] = useQueryState(
+    WORK_ITEM_PRIOR_ATTEMPTS_PARAM,
+    parseAsString,
+  );
+  const target = useMemo(() => decodeScopedRef(openRef), [openRef]);
+  const open =
+    target.id === workItem.id && (!target.harness || target.harness === slug);
+
+  const query = useSyncQuery<PriorAttemptsRow>({
+    queryName: 'workItems.priorAttempts',
+    args: { harnessSlug: slug, workItemId: workItem.id },
+    enabled: open && Boolean(slug) && Boolean(workItem.id),
+  });
+  const row = query.loading ? null : (query.data?.[0] ?? null);
+  const brief = row?.brief ?? null;
+
+  return (
+    <>
+      <div className="pc-adv-detail__section">
+        <div className="pc-adv-detail__actions">
+          <button
+            type="button"
+            data-testid="wi-detail-prior-attempts"
+            aria-expanded={open}
+            aria-controls={`work-item-prior-attempts-${workItem.id}`}
+            onClick={() =>
+              void setOpenRef(open ? null : encodeScopedRef(slug, workItem.id))
+            }
+          >
+            Prior attempts{brief ? ` (${brief.attempts.length})` : ''}
+          </button>
+        </div>
+      </div>
+      {open ? (
+        <div
+          id={`work-item-prior-attempts-${workItem.id}`}
+          className="pc-adv-detail__section"
+        >
+          {query.loading ? (
+            <div className="det-label">Compiling prior-attempt brief…</div>
+          ) : !brief ? (
+            /* NEVER render this as "nothing was tried" — the compiler returns null
+               for a missing plan pointer AND for a collector timeout alike. Say which
+               one actually happened. */
+            <div className="det-label" data-testid="wi-prior-attempts-unavailable">
+              {row?.unavailableReason === 'no-plan-pointer'
+                ? 'No plan lane on this item — there is no prior-attempt history to compile.'
+                : row?.unavailableReason === 'work-item-not-found'
+                  ? 'Work item not found in this harness.'
+                  : 'Prior-attempt brief unavailable (the collector timed out or errored). This is NOT evidence that nothing was tried.'}
+            </div>
+          ) : (
+            <>
+              {brief.authority.length > 0 ? (
+                <PriorAttemptRecordList
+                  title="Governing (current spec, decisions, retractions)"
+                  records={brief.authority}
+                />
+              ) : null}
+              {brief.attempts.length > 0 ? (
+                <PriorAttemptRecordList title="Attempts" records={brief.attempts} />
+              ) : (
+                <div className="det-label">
+                  No prior attempts recorded on this lane.
+                </div>
+              )}
+              {brief.residue.length > 0 ? (
+                <div>
+                  <div className="det-label">Residue (left behind by earlier work)</div>
+                  {brief.residue.map((r) => (
+                    <div key={r.rawRef}>
+                      {r.items.map((it, i) => (
+                        <div key={`${r.rawRef}:${i}`}>• {it}</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {/* The omission block is the point of slice A/B: history the budget
+                  dropped is NAMED, not just counted, so the reader can audit it. */}
+              {brief.omission.omittedRecords > 0 ? (
+                <div data-testid="wi-prior-attempts-omissions">
+                  <div className="det-label">
+                    {brief.omission.omittedRecords} of {brief.omission.sourceCount} record(s)
+                    omitted by the budget
+                    {brief.omission.omittedRefsTruncated
+                      ? ' — and the omitted-ref list itself was truncated'
+                      : ''}
+                  </div>
+                  {brief.omission.omittedRefs.map((o) => (
+                    <div key={o.rawRef} title={`${o.authority} · ${o.scope}`}>
+                      • {o.rawRef}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="det-label">
+                ~{brief.estimatedTokens} tokens · fingerprint {brief.fingerprint.slice(0, 12)}
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function PriorAttemptRecordList({
+  title,
+  records,
+}: {
+  title: string;
+  records: PriorAttemptsBriefRecord[];
+}) {
+  return (
+    <div>
+      <div className="det-label">{title}</div>
+      {records.map((r) => (
+        <div key={r.rawRef}>
+          <div>
+            <strong>{r.authority}</strong> · {r.scope}
+            {r.at ? ` · ${r.at}` : ''}
+          </div>
+          <div>
+            {r.text}
+            {/* A clipped body must be visibly clipped: a retraction living past the
+                cut would otherwise read as endorsement. */}
+            {r.textTruncated ? (
+              <em>
+                {' '}
+                […clipped{r.fullTextChars ? ` from ${r.fullTextChars} chars` : ''} —
+                resolve {r.rawRef} for the full text]
+              </em>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

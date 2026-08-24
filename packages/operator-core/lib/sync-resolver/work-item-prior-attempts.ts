@@ -21,7 +21,11 @@ import { z } from 'zod';
  * honest empty state instead of an implied all-clear.
  */
 export const workItemPriorAttemptsArgsSchema = z.object({
-  workspaceId: z.string().min(1),
+  // `.default('default')` matches every other workspace-scoped entry in this registry
+  // (designFeatures.detail, designSketches.byFeature): the client omits it and the
+  // single-tenant desktop build resolves to 'default'. Requiring it here would reject
+  // every call the UI actually makes.
+  workspaceId: z.string().default('default'),
   harnessSlug: z.string().min(1),
   workItemId: z.string().min(1),
   /**

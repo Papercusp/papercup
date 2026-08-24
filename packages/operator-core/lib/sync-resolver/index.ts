@@ -144,6 +144,7 @@ import { resolveGoalDetail, resolveGoalsList } from './goals';
 import {
   resolveWorkItemPriorAttempts,
   workItemPriorAttemptsArgsSchema,
+  type WorkItemPriorAttemptsArgs,
 } from './work-item-prior-attempts';
 import { trackDetached } from '../detached-imports';
 
@@ -2807,7 +2808,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // this panel exists to show.
   'workItems.priorAttempts': {
     argsSchema: workItemPriorAttemptsArgsSchema,
-    resolve: (args) => resolveWorkItemPriorAttempts(args),
+    resolve: async (args) => resolveWorkItemPriorAttempts(args as WorkItemPriorAttemptsArgs),
     backingTables: ['harness_shared.work_items', 'harness_shared.harness_plans'],
   } as QueryEntry<unknown>,
 
