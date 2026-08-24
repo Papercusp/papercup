@@ -201,10 +201,41 @@ describe('resolveInspectCommand — verb mapping', () => {
     });
   });
 
-  it('path requires a package', () => {
-    const r = resolveInspectCommand({ check: 'test', path: 'x.test.ts' }, BASE);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe('bad_args');
+  it('test with a package + integration path → uses the repository test router', () => {
+    expect(
+      resolveInspectCommand({
+        check: 'test',
+        package: 'packages/operator-core',
+        path: 'lib/events/await/await-store.integration.test.ts',
+      }, BASE),
+    ).toEqual({
+      ok: true,
+      command: 'npm run test:file -- packages/operator-core/lib/events/await/await-store.integration.test.ts',
+      cwd: BASE,
+    });
+  });
+
+  it('test with a repo-relative path and no package → runs that file from the repository root', () => {
+    expect(
+      resolveInspectCommand({ check: 'test', path: 'packages/operator-core/lib/foo.test.ts' }, BASE),
+    ).toEqual({
+      ok: true,
+      command: 'npx vitest run packages/operator-core/lib/foo.test.ts',
+      cwd: BASE,
+    });
+  });
+
+  it('test with a repo-relative layered path and no package → uses the repository test router', () => {
+    expect(
+      resolveInspectCommand({
+        check: 'test',
+        path: 'packages/operator-core/lib/events/await/await-store.integration.test.ts',
+      }, BASE),
+    ).toEqual({
+      ok: true,
+      command: 'npm run test:file -- packages/operator-core/lib/events/await/await-store.integration.test.ts',
+      cwd: BASE,
+    });
   });
 
   it('path is rejected for typecheck', () => {
@@ -216,7 +247,8 @@ describe('resolveInspectCommand — verb mapping', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.reason).toBe('bad_args');
-      expect(r.message).toContain('pass one package-relative file or directory with `path`');
+      expect(r.message).toContain('pass one test file or directory with `path`');
+      expect(r.message).toContain('repo-relative when it is omitted');
       expect(r.message).toContain('separate capability:inspect calls');
     }
   });
@@ -225,7 +257,8 @@ describe('resolveInspectCommand — verb mapping', () => {
     const shape = (inspectTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
     expect(shape.package.description).toMatch(/Repository-relative directory path \(not an npm package name\)/);
     expect(shape.onlyPaths.description).toMatch(/never pass with check:"test"/);
-    expect(shape.path.description).toMatch(/one package-relative test file\/dir/);
+    expect(shape.path.description).toMatch(/one test file\/dir/);
+    expect(shape.path.description).toMatch(/when omitted, it is repo-relative/);
     expect(shape.path.description).toMatch(/one capability:inspect call per path/);
   });
 });
@@ -278,6 +311,64 @@ describe('capability:inspect — background launch response', () => {
     expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
       expect.objectContaining({
         command: 'npm run lint:tsc -- --files=pkg/src/a.ts',
+        cwd: INSPECT_STATE,
+      }),
+      expect.any(Number),
+    );
+  });
+
+  it('routes a background integration test through the repository test router', async () => {
+    vi.mocked(startBackground).mockReturnValue({
+      id: 'bash-integration-router',
+      taskId: 'task-integration-router',
+      logPath: '/tmp/bash-integration-router.log',
+    } as never);
+
+    const result = await inspect.handler(
+      { check: 'test', package: 'pkg', path: 'src/foo.integration.test.ts', run_in_background: true },
+      inspectCtx(),
+    );
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-integration-router',
+      status: 'running',
+      command: 'npm run test:file -- pkg/src/foo.integration.test.ts',
+      cwd: INSPECT_STATE,
+    });
+    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'npm run test:file -- pkg/src/foo.integration.test.ts',
+        cwd: INSPECT_STATE,
+      }),
+      expect.any(Number),
+    );
+  });
+
+  it('launches a background repo-relative test path without a package', async () => {
+    vi.mocked(startBackground).mockReturnValue({
+      id: 'bash-repo-relative-test',
+      taskId: 'task-repo-relative-test',
+      logPath: '/tmp/bash-repo-relative-test.log',
+    } as never);
+
+    const result = await inspect.handler(
+      { check: 'test', path: 'packages/operator-core/lib/foo.test.ts', run_in_background: true },
+      inspectCtx(),
+    );
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-repo-relative-test',
+      status: 'running',
+      command: 'npx vitest run packages/operator-core/lib/foo.test.ts',
+      cwd: INSPECT_STATE,
+    });
+    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'npx vitest run packages/operator-core/lib/foo.test.ts',
         cwd: INSPECT_STATE,
       }),
       expect.any(Number),

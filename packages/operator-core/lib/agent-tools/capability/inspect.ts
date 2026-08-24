@@ -91,8 +91,14 @@ export type InspectResolution =
   | { ok: false; reason: string; message: string };
 
 const TEST_PATH_GUIDANCE =
-  '`onlyPaths` is only valid for check:"typecheck". For tests, pass one package-relative file or directory with `path`; ' +
+  '`onlyPaths` is only valid for check:"typecheck". For tests, pass one test file or directory with `path` ' +
+  '(package-relative when `package` is supplied, repo-relative when it is omitted); ' +
   'for multiple files, split them into separate capability:inspect calls (or use testing:run).';
+
+// The default package Vitest config excludes these files. Keep the resolver on
+// the repository test router for the same owning-config selection that
+// `npm run test:file` and the config's own startup guard enforce.
+const LAYERED_TEST_FILE = /\.(integration|browser)\.test\.[cm]?[jt]sx?$/i;
 
 const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
 
@@ -113,7 +119,6 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
   let pathArg = '';
   if (args.path !== undefined) {
     if (args.check !== 'test') return { ok: false, reason: 'bad_args', message: '`path` is only valid for check:"test".' };
-    if (args.package === undefined) return { ok: false, reason: 'bad_args', message: '`path` requires `package`.' };
     const v = validateRelPath(args.path, cwd);
     if (!v.ok) return { ok: false, reason: 'bad_path', message: v.reason };
     pathArg = v.rel;
@@ -132,8 +137,17 @@ export function resolveInspectCommand(args: InspectArgs, baseDir: string): Inspe
   }
 
   // check === 'test'
-  const command = args.package === undefined ? 'npm run test:affected' : `npx vitest run${pathArg ? ` ${pathArg}` : ''}`;
-  return { ok: true, command, cwd };
+  if (args.package === undefined && !pathArg) return { ok: true, command: 'npm run test:affected', cwd };
+
+  if (pathArg && LAYERED_TEST_FILE.test(pathArg)) {
+    // `test:file` owns config discovery and must run from the repository root.
+    // Convert the package-relative path back to a root-relative spelling so
+    // the router can select the integration/browser Vitest project.
+    const repoRelativePath = relative(baseDir, resolve(cwd, pathArg));
+    return { ok: true, command: `npm run test:file -- ${repoRelativePath}`, cwd: baseDir };
+  }
+
+  return { ok: true, command: `npx vitest run${pathArg ? ` ${pathArg}` : ''}`, cwd };
 }
 
 interface TypecheckGate {
@@ -388,7 +402,7 @@ export function filterTscOutputToPaths(
 export default defineTool({
   name: 'capability:inspect',
   description:
-    'Run a READ-ONLY code verification (typecheck or test) to confirm a claim about the code before diagnosing. Fixed safe commands only (npx tsc --noEmit, npm run test:affected, npx vitest run); never an arbitrary shell command. Use this — not capability:bash — to verify.',
+    'Run a READ-ONLY code verification (typecheck or test) to confirm a claim about the code before diagnosing. Fixed safe commands only (npx tsc --noEmit, npm run test:affected, package-local npx vitest run, or the repository test:file router for layered tests); never an arbitrary shell command. Use this — not capability:bash — to verify.',
   guidance: {
     when: 'VERIFY a code claim before you report or diagnose: typecheck a package after a suspected type error, or run a package / test-file suite to confirm a failure actually reproduces. This is the sanctioned read-only exec for confined fleet agents (capability:bash is gated for them).',
     notWhen:
@@ -415,7 +429,7 @@ export default defineTool({
   args: z.object({
     check: z
       .enum(['typecheck', 'test'])
-      .describe('typecheck = `npx tsc --noEmit` in the package; test = the package suite (`npx vitest run`) or, with no package, the repo `npm run test:affected`.'),
+      .describe('typecheck = `npx tsc --noEmit` in the package; test = the package suite (`npx vitest run`), the repository `npm run test:file -- <path>` router for `.integration.test.*`/`.browser.test.*`, or, with no package, the repo `npm run test:affected`.'),
     package: z
       .string()
       .optional()
@@ -427,8 +441,9 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'test only: one package-relative test file/dir to narrow the run (e.g. "lib/foo.test.ts"). Requires package. ' +
-          'For multiple files, use testing:run or make one capability:inspect call per path.',
+        'test only: one test file/dir to narrow the run (e.g. "lib/foo.test.ts"). When `package` is supplied, ' +
+          'the path is package-relative; when omitted, it is repo-relative. Layered `.integration.test.*`/`.browser.test.*` ' +
+          'files are routed through the repository `test:file` command automatically. For multiple files, use testing:run or make one capability:inspect call per path.',
       ),
     onlyPaths: z
       .array(z.string().min(1).max(300))
