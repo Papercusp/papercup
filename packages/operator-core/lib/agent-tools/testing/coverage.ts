@@ -226,7 +226,35 @@ export interface CoverageRawInput {
 
 export type TestingCensusPopulationAssessment = 'no-providers' | 'census-not-run' | 'empty-measured' | 'populated';
 
-export type TestingCoverageFloorAssessment = 'not-measured' | 'meets-floor' | 'below-floor' | 'measured-with-waivers';
+/**
+ * ⚠ `no-population`, NOT `not-measured` — and the rename is load-bearing, not cosmetic
+ * (cell-assessment P-004, D-012).
+ *
+ * D-010's truth table named this code `not-measured`, which is ALSO a `CellUnknownCode`
+ * — the read-HEALTH vocabulary (`not-applicable | resolver-failed | not-measured |
+ * insufficient-data`). D-008 forbids that overlap and the registry enforces it
+ * (`assessment-code-collides-with-unknown`), so the declaration this producer feeds
+ * could not have been registered at all: declaring the colliding code is refused, and
+ * omitting it makes every empty-census read fail as an undeclared code. The collision
+ * was invisible until a cell actually declared an assessment.
+ *
+ * The rule is right and this is its clearest instance. An empty census is a MEASURED
+ * FINDING ABOUT THE SUBJECT — the census ran and enumerated zero surfaces, so a ratio
+ * would be vacuous — whereas `not-measured` as a read-health code means the apparatus
+ * did not produce a value. Spelling them the same way makes "there is nothing to
+ * measure" and "we failed to measure" one token, which is precisely the conflation this
+ * whole contract exists to remove.
+ *
+ * The fix belongs HERE rather than in the declaration, per cell-registrations.ts's
+ * twice-stated precedent: when a declaration cannot be written honestly, the resolver is
+ * what changes. The sibling `verdict: 'measured' | 'not-measured'` field is UNTOUCHED —
+ * it is not an assessment code and carries no such collision.
+ */
+export type TestingCoverageFloorAssessment =
+  | 'no-population'
+  | 'meets-floor'
+  | 'below-floor'
+  | 'measured-with-waivers';
 
 /** PURE. Numeric zero is interpreted only with its population provenance. */
 export function assessTestingCensusPopulation(input: {
@@ -246,7 +274,7 @@ export function assessTestingCoverageFloor(input: {
   below: number;
   belowUnwaived: number;
 }): TestingCoverageFloorAssessment {
-  if (input.verdict === 'not-measured' || input.surfaces === 0) return 'not-measured';
+  if (input.verdict === 'not-measured' || input.surfaces === 0) return 'no-population';
   if (input.belowUnwaived > 0) return 'below-floor';
   if (input.below > 0) return 'measured-with-waivers';
   return 'meets-floor';

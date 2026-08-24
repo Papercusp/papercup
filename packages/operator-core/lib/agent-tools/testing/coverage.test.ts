@@ -93,8 +93,12 @@ describe('testing assessment truth tables', () => {
   });
 
   it.each([
-    [{ verdict: 'not-measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'not-measured'],
-    [{ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'not-measured'],
+    // ⚠ The CODE is `no-population` while the sibling VERDICT field stays `not-measured`
+    // (D-012): the verdict is not an assessment code, so only the code had to move off the
+    // CellUnknownCode vocabulary. Both rows below are the empty-population case reached by
+    // its two different routes, and both must yield the same code.
+    [{ verdict: 'not-measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'no-population'],
+    [{ verdict: 'measured', surfaces: 0, below: 0, belowUnwaived: 0 }, 'no-population'],
     [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 2 }, 'below-floor'],
     [{ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }, 'measured-with-waivers'],
     [{ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0 }, 'meets-floor'],
@@ -106,7 +110,7 @@ describe('testing assessment truth tables', () => {
     const r = assembleCoverage(input());
     expect(r.assessments).toEqual({
       censusPopulation: 'no-providers',
-      coverageFloor: 'not-measured',
+      coverageFloor: 'no-population',
     });
   });
 });

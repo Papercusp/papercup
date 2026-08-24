@@ -38,6 +38,39 @@
 import { registerCell, type CellSpec } from './cell-registry';
 import { AGENT_GOAL_CELL_ID } from './agent-goal-ref';
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * cell-assessment-schema-and-falsifier-removal-2026-08-21 P-004 — EVERY CELL NOW
+ * DECLARES AN `assessment` BESIDE ITS RETIRING `falsifier`.
+ *
+ * Each block below was translated BY HAND from the P-001 truth tables (D-009 for the
+ * six pipeline/gate cells, D-010 for host/goal/testing), never derived from the
+ * `kills` prose beside it — D-011 rule 2. A `kills` sentence is a NEGATIVE claim and
+ * a `safeAction` is a POSITIVE one, so mapping one onto the other mechanically
+ * manufactures guidance nobody authored. Where a retiring falsifier's INDEPENDENT
+ * measurement still carries information it appears below as assessment EVIDENCE
+ * (D-004) — which is a different job: it substantiates the positive reading rather
+ * than refuting a wrong one.
+ *
+ * ── ⚠ WHY SOME OBVIOUS EVIDENCE PATHS ARE DELIBERATELY ABSENT ───────────────────
+ *
+ * MEASURED against the live door 2026-08-24, not inferred from the types: a
+ * `dev:pipeline_position` response bounded to its own budget DROPS `serving.*`,
+ * `positionsUnknown`, and `changeInCandidate.judgingShaSource`, and sets
+ * `projection.truncated`. `assessmentFrom` (cell-read.ts) DOWNGRADES a resolved code
+ * to `unavailable` when any declared evidence path did not arrive — so declaring
+ * `serving.startedSinceCodeChange` as evidence here, however natural it reads, would
+ * make `git.pipelinePosition` and `deploy.3070.sha` answer `unavailable` on the
+ * ordinary path, forever. That is WI-38266 one field over, and it is exactly the trap
+ * this file's own history warns about: the declaration that is LITERALLY TRUE of the
+ * shipped type is not the one that survives contact with the door.
+ *
+ * So every evidence path below was checked against a real payload before it was
+ * written, and the assessment CODE — computed inside the resolver, before any door —
+ * is what carries the distinction those dropped legs used to make. That is the
+ * contract earning its keep: an interpretation computed at the source survives
+ * shaping that its raw inputs do not.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
 /**
  * The release-pipeline resolvers below describe the operator HOME Pot's checkout,
  * gate, release process, and incident lease. Other harnesses in this workspace
@@ -82,6 +115,57 @@ export const GIT_PIPELINE_POSITION_CELL: CellSpec = {
       'live systemd start time of the serving unit (probeServiceStart) compared against codeAsOfMs — a PROCESS measurement that shares no input with any git read',
     kills:
       '"deployed ✓" read as "the running process is executing my code". The two disagree whenever the host was never restarted after the deploy, and the git fact alone cannot see it.',
+  },
+
+  /**
+   * D-009's ladder, first-match. The codes are ORDERED CLAIMS about one journey, so
+   * the safe actions differ by LEVER rather than by urgency — and two of them tell
+   * the reader to do nothing, which is the point: `awaiting-push` and
+   * `awaiting-gate` are states agents routinely mistake for something to fix.
+   *
+   * ⚠ `live` vs `restart-required` is decided by `serving.startedSinceCodeChange`,
+   * which the door drops (see the file header). The code below is the ONLY surviving
+   * carrier of that distinction — which is precisely why it must not be re-derived
+   * downstream from `positions.deployed`, the exact misreading CLAUDE.md has had
+   * filed against it four separate times.
+   */
+  assessment: {
+    path: 'assessments.pipelinePosition',
+    codes: {
+      live: {
+        meaning:
+          'The path is deployed AND the serving process started after that code last changed — the running process is executing it.',
+        safeAction: 'Exercise the behaviour through the running service; no deploy or restart step is outstanding.',
+      },
+      'restart-required': {
+        meaning:
+          'The code is deployed, but the serving process has been running since BEFORE the code changed, so it is still executing the old bytes.',
+        safeAction:
+          'Restart the serving runtime named by `serving.restartLever` (dev:restart). A further deploy will not change what is running.',
+      },
+      uncommitted: {
+        meaning: 'The edit exists only in the working tree — git-sync has not committed it yet.',
+        safeAction:
+          'Finish the atomic edit and leave it in the tree; the git-sync sweep commits it. Do not hand-commit, and do not stash or branch to isolate it.',
+      },
+      'awaiting-push': {
+        meaning: 'Committed locally, not yet on origin/staging.',
+        safeAction:
+          'Nothing to fix — or fire `git-sync:run` if you specifically need it on the REMOTE now. Note the gate cuts its candidate from LOCAL staging, so this state does not block gate entry.',
+      },
+      'awaiting-gate': {
+        meaning:
+          'On staging, not yet fast-forwarded into main: no green-checkpoint verdict has promoted a candidate containing it.',
+        safeAction:
+          'Read `gate.greenCheckpoint.verdict` before you wait — a red or non-firing gate is a lever you can act on, not a queue to sit in.',
+      },
+      'awaiting-deploy': {
+        meaning: 'In main, but the release checkout has not been moved onto it yet.',
+        safeAction:
+          "Wait for the release trigger, or expedite with release:deploy { op:'trigger', confirm:true } — which can only ship the already-green pin and refuses on a red gate.",
+      },
+    },
+    evidence: ['dirtyUncommitted', 'positions.committedLocal', 'positions.onStaging', 'positions.inMain'],
   },
 
   /**
@@ -212,6 +296,57 @@ export const GATE_VERDICT_CELL: CellSpec = {
   },
 
   /**
+   * D-009, first-match. THE ORDER IS THE CONTENT HERE: `inconclusive` and `red-stale`
+   * both outrank the red counters they sit above, because in each of those states the
+   * tally describes a run that is no longer the subject. An agent who branches on
+   * `consecutiveReds` alone cannot see either, and both send them to fix failures that
+   * belong to an abandoned candidate — the single most expensive misread on this fleet.
+   *
+   * Note `not-firing` carries a NONZERO safe action off a ZERO counter. That inversion
+   * is the whole reason this cell needed an assessment: the healthy-looking number is
+   * the one that needs an intervention.
+   */
+  assessment: {
+    path: 'assessments.gateVerdict',
+    codes: {
+      inconclusive: {
+        meaning:
+          'The newest run ended with NO verdict (cancelled, timed out, or crashed before tests ran), so the red/green counters beside it describe an OLDER run.',
+        safeAction:
+          'Follow the status-specific lever in `gate.inconclusive`. Do NOT act on the frozen red counters as though they judged the current tree.',
+      },
+      'red-stale': {
+        meaning:
+          'Reds are on record, but the verdict is stale: it judged a candidate that has since been superseded.',
+        safeAction:
+          'Verify the CURRENT candidate before fixing anything — the named failures may belong to a run that has already been abandoned.',
+      },
+      'red-current': {
+        meaning: 'The gate is red about the candidate it is judging now.',
+        safeAction:
+          'Fix the named failing tests, re-running each individually to confirm it is genuinely red at HEAD. A red gate freezes every agent\'s deploys, so this is yours to green regardless of lane.',
+      },
+      'not-firing': {
+        meaning:
+          'Zero reds — but the gate has not FIRED within its interval, so nothing is being judged at all.',
+        safeAction:
+          'Recover the green-checkpoint producer. A zero-red tally from a gate that never ran is not a pass, and waiting on it will never resolve.',
+      },
+      'passing-buffered': {
+        meaning:
+          'The gate is firing and green, and main sits behind staging — the ordinary steady state on this fleet.',
+        safeAction:
+          'Proceed. Do not read the buffer as a stall unless the separate buffer-stale evidence fires.',
+      },
+      'passing-current': {
+        meaning: 'The gate is firing and green, and main is level with staging.',
+        safeAction: 'Proceed; nothing is outstanding on the gate.',
+      },
+    },
+    evidence: ['gate.inconclusive', 'gate.verdictStale', 'gate.fireStale', 'verdictProvenance.mainBehindStaging'],
+  },
+
+  /**
    * TRUE, against the shipped type, and this is the honest answer rather than the
    * convenient one — see the block comment above on the `?? 0`.
    */
@@ -292,6 +427,50 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
       'a blob comparison of the working-tree content against the candidate commit (classifyPathsAgainstCandidate) — a CONTENT containment check, independent of which sha the gate happens to be running',
     kills:
       '"the gate is red" read as "the gate is red ABOUT MY CHANGE". The quiet-cut routinely steps the candidate back from the tip, so an in-flight run can be judging a commit that predates the fix entirely.',
+  },
+
+  /**
+   * D-009, first-match. `no-active-run` is the code worth reading twice: it is a
+   * MEASURED absence, and its safe action is deliberately not "wait". A null headline
+   * here reads as "no run in flight" to anyone who branches on the sha, which is the
+   * same reassuring-degradation trap the block comment above catalogues for the other
+   * three headlines.
+   *
+   * ⚠ `inferred-candidate` is decided by `changeInCandidate.judgingShaSource`, which
+   * the door drops (file header), so this code is its only surviving carrier. It is
+   * also the one code here that refuses an action rather than granting one — firing a
+   * manual re-run off an inferred candidate discards a live auto-refire rescue and
+   * costs a full suite.
+   */
+  assessment: {
+    path: 'assessments.gateCandidate',
+    codes: {
+      'no-active-run': {
+        meaning: 'No gate run is in flight — a measured absence, not a failed read.',
+        safeAction:
+          'Nothing to wait on. If you need a verdict now, fire release:checkpoint-run — but check for an in-flight re-triage first, which that verb now refuses on by itself.',
+      },
+      'judging-current-path': {
+        meaning: 'A run is in flight and its candidate CONTAINS the path you asked about.',
+        safeAction: 'Treat a red from this run as being about YOUR change, and own it.',
+      },
+      'judging-without-current-path': {
+        meaning: 'A run is in flight and its candidate does NOT contain your path.',
+        safeAction:
+          'Do not fix this run\'s failures as though they were yours, and do not read its verdict as a judgement on your change. Wait for a candidate that contains your path.',
+      },
+      'inferred-candidate': {
+        meaning:
+          "A candidate sha is present, but it came from a non-authoritative probe rather than the run's own published marker — on a CRON run that degrades to the checkpoint checkout's live HEAD, an inference that can change between two reads.",
+        safeAction:
+          'Treat the sha as a hint only and re-read once marker-backed provenance is available. Do NOT fire a manual re-run off it.',
+      },
+    },
+    evidence: [
+      'changeInCandidate.judgingContainsPath',
+      'changeInCandidate.missingReason',
+      'changeInCandidate.nextCandidateSha',
+    ],
   },
 
   /**
@@ -438,6 +617,58 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
   },
 
   /**
+   * D-009, first-match. This table is where the falsifier's long correction history
+   * above finally becomes BRANCHABLE: `held-live`, `held-needs-confirmation` and
+   * `held-by-ended-session` are the three readings that the single word `held` on a
+   * claim row collapses into one, and each carries a DIFFERENT action — coordinate,
+   * confirm, reclaim. D-018's sign-flip (treating `recorded` as dead) and the
+   * ambiguous case that silently lost its stand-down protection were both errors of
+   * INTERPRETATION over a correct field; a closed code map with a safe action per
+   * entry is what stops that class recurring, because there is no interpretation left
+   * for a caller to get wrong.
+   */
+  assessment: {
+    path: 'assessments.gateOwnership',
+    codes: {
+      'duplicate-owners': {
+        meaning: 'More than one work-item claims this condition.',
+        safeAction:
+          'Reconcile the duplicates to a single owning item before working it — two owners is how two agents each conclude the other has it.',
+      },
+      unowned: {
+        meaning: 'No work-item exists for this condition yet.',
+        safeAction: 'File the owning work-item and claim it before starting, so a peer can see the incident is taken.',
+      },
+      claimable: {
+        meaning: 'An owning work-item exists and nobody holds it.',
+        safeAction: 'Claim it, then work it.',
+      },
+      'lease-expired': {
+        meaning: "The claim's lease has lapsed.",
+        safeAction: "Re-claim it — the previous holder's lease no longer protects their work.",
+      },
+      'held-live': {
+        meaning: "Held, and the presence oracle positively says the holder's session is alive.",
+        safeAction:
+          'Do not take it over. Coordinate with the holder (coord:send) if you need it moved.',
+      },
+      'held-needs-confirmation': {
+        meaning:
+          "Held by a session whose liveness is AMBIGUOUS — draining, suspect, or unresolved. This is not a live holder and not a dead one.",
+        safeAction:
+          'Confirm with a required wake before acting. A delivered wake proves a coordination-live peer; a missed one does NOT prove a dead holder, so fail open rather than seizing the claim.',
+      },
+      'held-by-ended-session': {
+        meaning:
+          'Held by a session the oracle confirms has ENDED — the lease outlived its holder.',
+        safeAction:
+          'Reclaim it. This is the exact case a claim row alone reports as "someone is on it" indefinitely, suppressing the next agent who could have picked it up.',
+      },
+    },
+    evidence: ['gate.ownership.holderSessionState', 'gate.ownership.duplicates', 'gate.ownership.expiresAt'],
+  },
+
+  /**
    * TRUE, and this is the field the cell contract earned its keep on. The block
    * originally shipped (P-004) with a non-null enum that degraded to `'no-object'`
    * whenever the store was unreachable — so an unreadable store and a genuinely
@@ -492,6 +723,39 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
       'a live systemd start-time probe of the serving unit (probeServiceStart) compared against when the code last changed — a PROCESS measurement that shares no input with any git read',
     kills:
       '"deployed sha X" read as "the process is EXECUTING X". A deploy that moved the checkout without restarting the host leaves the two disagreeing, and the git fact alone cannot see it.',
+  },
+
+  /**
+   * D-009, first-match. Three codes, and the third is the one that did not exist as a
+   * readable state before: `process-unverified` says the serving probe itself did not
+   * answer, which is neither "running your sha" nor "running an old one". Collapsing
+   * it into either — the natural move when all you have is a sha and a boolean — is
+   * how a deploy gets reported live off a probe that never returned.
+   *
+   * ⚠ A null `deployedSha` is NEVER a code here. It is a FAILED READ of the release
+   * checkout's HEAD, not "nothing is deployed"; that inference is the one the resolver
+   * used to make and P-007 corrected. Absence stays `unavailable`.
+   */
+  assessment: {
+    path: 'assessments.deployedSha',
+    codes: {
+      executing: {
+        meaning:
+          'A sha is deployed and the serving process started after the code changed — the process is running that sha.',
+        safeAction: 'Exercise the deployed behaviour; nothing is outstanding.',
+      },
+      'restart-required': {
+        meaning: 'A sha is deployed, but the process predates it and is executing older code.',
+        safeAction: 'Restart the serving runtime. Another deploy will not change what is running.',
+      },
+      'process-unverified': {
+        meaning:
+          'A sha is deployed, but the serving process could not be probed — whether it is EXECUTING that sha is unestablished.',
+        safeAction:
+          'Do not conclude the deploy is live. Re-probe the serving runtime before relying on the deployed behaviour.',
+      },
+    },
+    evidence: ['positions.deployed', 'verdictUnknown'],
   },
 
   /**
@@ -572,6 +836,41 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
       '"main is behind staging, so the pipeline is stalled". A buffer of un-promoted commits is the normal steady state here and is NOT a fault; what distinguishes it from a wedged pipeline is whether the gate is still firing, which no lag figure can tell you. (The inverse misread is equally live: main behind staging with a green tally is what the mutual falsifier in `gate.greenCheckpoint.verdict` catches.)',
   },
 
+  /**
+   * D-009, first-match — and this is the table where the assessment contract most
+   * obviously beats the boolean it wraps. `mainBehindStaging: true` carries TWO
+   * opposite meanings that no amount of reading the boolean can separate:
+   * `normal-buffer` (proceed, this is the steady state) and `gate-stalled` (recover
+   * the producer). Only `gate.fireStale` tells them apart, which is why the retiring
+   * falsifier's measurement is preserved verbatim as the evidence below rather than
+   * discarded with its `kills` prose.
+   *
+   * The safe action on `normal-buffer` is deliberately a REFUSAL to escalate. This is
+   * the reading that made the deploy stage report degraded essentially always and
+   * shadowed every real downstream cause (EI-11012).
+   */
+  assessment: {
+    path: 'assessments.mainBehindStaging',
+    codes: {
+      'caught-up': {
+        meaning: 'main is level with staging — there is no un-promoted buffer.',
+        safeAction: 'Nothing outstanding on the promotion leg.',
+      },
+      'normal-buffer': {
+        meaning:
+          'main is behind staging while the gate is still FIRING — the ordinary steady state here, since git-sync commits continuously and the gate promotes only hourly and only when green.',
+        safeAction:
+          'Proceed. Do NOT report this as a stalled pipeline or open an incident for it: the lag alone is not a fault.',
+      },
+      'gate-stalled': {
+        meaning: 'main is behind staging AND the gate is not firing — the buffer is not draining.',
+        safeAction:
+          'Recover the green-checkpoint producer. This is the reading a lag figure alone can never distinguish from the normal buffer.',
+      },
+    },
+    evidence: ['gate.fireStale', 'verdictUnknown'],
+  },
+
   /** TRUE: `greenPinAtStagingHead` is null whenever the green pin or the staging head
    *  failed to resolve, and `commitRef` returns null for both "ref absent" and "git
    *  failed". The hoist names which operand was missing. */
@@ -623,6 +922,44 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
       'node:os freemem()/totalmem() sampled in-process at read time — independent of the periodic /proc/pressure PSI capture that produces the headline',
     kills:
       '"memory pressure is ok" read as "the host has abundant free RAM". A low-free-memory host can be reclaim-stable right now, while a high-free-memory reading can coexist with a transient PSI window; pressure and capacity are not the same claim.',
+  },
+
+  /**
+   * D-010. `stable-low-free` is the code this table exists for: PSI says reclaim is
+   * fine while free capacity is under the warning threshold, and BOTH halves of that
+   * are true at once. The old boolean pairing could only report one of them, so a
+   * reader got either a false alarm or a false all-clear depending on which field they
+   * happened to read. Its `meaning` names the distinction and its `safeAction` closes
+   * it with an explicit prohibition — reclaim capacity, but do NOT call this PSI
+   * pressure, because escalating it as pressure is what teaches a fleet to discount
+   * the real `warning`.
+   *
+   * ⚠ Single-purpose resolver, so the producer path is the bare `assessment` (D-008).
+   */
+  assessment: {
+    path: 'assessment',
+    codes: {
+      critical: {
+        meaning: 'PSI reports tasks stalling on memory reclaim at the critical threshold.',
+        safeAction:
+          'Stop adding load, and remove the attributed pressure source named in `memory.cgroupAttribution` rather than restarting blindly.',
+      },
+      warning: {
+        meaning: 'PSI reports reclaim stalling at the warning threshold.',
+        safeAction: 'Reduce or inspect load before starting anything new.',
+      },
+      'stable-low-free': {
+        meaning:
+          'Reclaim is STABLE, but immediately-free memory is below the declared capacity warning threshold. Both halves are true; they are different claims.',
+        safeAction:
+          'Reclaim capacity if you are about to allocate heavily — but do NOT report this as PSI memory pressure.',
+      },
+      stable: {
+        meaning: 'Reclaim is stable and free capacity is above the warning threshold.',
+        safeAction: 'No pressure action; proceed.',
+      },
+    },
+    evidence: ['host.memFreePct', 'memory.stale', 'memory.unknown'],
   },
 
   /** Missing/stale inputs that cannot establish a band yield `pressure:null`.
@@ -700,6 +1037,48 @@ export const AGENT_GOAL_CELL: CellSpec = {
       "the coord_links `implements` edge joining a held work-item to a separately-claimed plan item — a link-graph read sharing no input with work_items.taken_by or plan_item_claims",
     kills:
       '"the single ref returned IS this agent\'s goal", when the agent holds several claims naming different work and precedence picked one arbitrarily. Measured: 3 of 19 holders hold two work-items; the edge is what says which one serves the claimed lane.',
+  },
+
+  /**
+   * D-010. The three ref-bearing codes differ ONLY in how well-supported the ref is —
+   * `corroborated` (a link-graph edge agrees), `sole` (one source, nothing agrees),
+   * `divergent` (sources disagree or competing claims exist) — and they all return the
+   * SAME `goalRef`. That is the point: a caller reading the ref alone cannot tell a
+   * coin-flip from a corroborated answer, which is exactly the measured case (3 of 19
+   * holders held two work-items at once).
+   *
+   * ⚠ EVERY EVIDENCE PATH IS FLAT, and that is not a style choice. `goal` is `null` for
+   * an agent holding nothing, and `pathExists` stops at a null segment — so nesting any
+   * of these under `goal.` would make the evidence absent, downgrading the assessment to
+   * `unavailable` in THE SINGLE MOST ORDINARY CASE THERE IS. That is P-011's bug
+   * verbatim, one field over: the headline was hoisted flat to avoid it and the
+   * falsifier was not. `coord:goal` hoists all three flat precisely so this works.
+   */
+  assessment: {
+    path: 'assessment',
+    codes: {
+      'nothing-held': {
+        meaning:
+          "The agent holds no work-item, plan-item claim or fleet mission — an honest \"nothing declared\", not a failed read.",
+        safeAction: 'Treat the agent as unassigned. Do not infer a goal from its history or its last message.',
+      },
+      corroborated: {
+        meaning:
+          'A goal ref is held, an independent link-graph edge agrees it serves the claimed lane, and nothing competes with it.',
+        safeAction: 'Act on the linked ref.',
+      },
+      sole: {
+        meaning: 'A goal ref is held, but only one source names it — nothing corroborates it.',
+        safeAction: 'Use the ref, and disclose that it rests on a single source whenever you rely on it.',
+      },
+      divergent: {
+        meaning:
+          'The sources disagree, or the agent holds competing claims naming different work, and precedence picked one of them arbitrarily.',
+        safeAction:
+          'Inspect ALL the refs in `goalCompeting` before coordinating. The returned ref may not be what the agent is actually doing.',
+      },
+    },
+    evidence: ['goalAgreement', 'goalCompeting', 'goalUnknown'],
   },
 
   /**
@@ -816,6 +1195,44 @@ export const TESTING_CENSUS_POPULATION_CELL: CellSpec = {
   },
 
   /**
+   * D-010. Three of these four codes are reached with `surfaces === 0`, and they are
+   * the reason this cell has an assessment at all: the number is identical in every
+   * one, while the actions are register-a-provider, run-the-census, and trust-the-zero.
+   * A count cannot carry that, and the day the whole feature sat inert (all four census
+   * tables at 0 rows, cadence reporting healthy fires) is what a reader branching on
+   * the count alone could not see.
+   *
+   * `empty-measured` is the code that had no name before: a census that RAN and honestly
+   * found nothing. Without it, an accurate zero is indistinguishable from an unasked
+   * question, and readers learn to discount both.
+   */
+  assessment: {
+    path: 'assessments.censusPopulation',
+    codes: {
+      'no-providers': {
+        meaning:
+          'Zero surfaces AND zero registered providers — the census loop had nothing to iterate, so it could not have written a surface however healthy its fires look.',
+        safeAction:
+          "Register or enable a provider. Do NOT read the zero as \"this project has nothing to test\".",
+      },
+      'census-not-run': {
+        meaning: 'Providers are registered, but no census run has ever written a surface row for this scope.',
+        safeAction: 'Run or repair the census before quoting any population figure.',
+      },
+      'empty-measured': {
+        meaning:
+          'Providers are registered and a census HAS run — it enumerated zero matching surfaces. The zero is a measurement.',
+        safeAction: 'Trust the zero. Widen the scope or filters if you expected rows.',
+      },
+      populated: {
+        meaning: 'The census enumerated a non-empty surface population.',
+        safeAction: 'Use the count together with its fidelity and basis, which qualify what it counted.',
+      },
+    },
+    evidence: ['census.providersRegistered', 'census.lastCensusAt'],
+  },
+
+  /**
    * Axis 2. FALSE, deliberately, and the asymmetry with its sibling is the point:
    * this is a COUNT of rows, so 0 is a real measurement rather than an absent one.
    * Declaring it nullable would invent an unknown that cannot occur and teach
@@ -881,6 +1298,49 @@ export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
       'the surface population from harness_shared.testing_surfaces alone, with no join against coverage_evidence — the denominator, measured independently of the evidence that forms the numerator',
     kills:
       '"0% / 100% covered" read as a measurement when the denominator is 0 or truncated. A ratio over an empty census is not-measured, and a ratio over a census that enumerated 49 of 675 surfaces is a real number about a fake world — flattering in the direction nobody checks.',
+  },
+
+  /**
+   * D-010, with the code RENAMED to `no-population` per D-012 — the truth table called
+   * it `not-measured`, which is also a `CellUnknownCode`, and D-008 forbids a domain
+   * code that collides with the read-health vocabulary. That collision was undetectable
+   * until a cell actually declared an assessment; see the producer's own note in
+   * coverage.ts for why the fix landed there rather than here.
+   *
+   * The rule is right, and this cell is its sharpest case. An empty census is a MEASURED
+   * FINDING — the census ran and found no denominator — while read-health `not-measured`
+   * means the apparatus produced nothing. One token for both is precisely the confusion
+   * that lets "we never looked" be reported as "there is nothing there".
+   *
+   * ⚠ `coverage.pct` is the HEADLINE and appears nowhere below. D-010 is explicit that
+   * pct is evidence only and never the branch condition: the aggregate decides the code,
+   * so a limit-capped row list cannot move it.
+   */
+  assessment: {
+    path: 'assessments.coverageFloor',
+    codes: {
+      'no-population': {
+        meaning:
+          'There is no denominator — the census enumerated zero surfaces, so a ratio would be vacuous. This is a measured state of the census, NOT a failed read.',
+        safeAction:
+          'Follow `censusUnknown` to repair the census. Do NOT report 0% or 100%; neither is a measurement anyone made.',
+      },
+      'meets-floor': {
+        meaning: 'Every censused surface meets the floor, with no unwaived gaps.',
+        safeAction: 'No gap action outstanding.',
+      },
+      'below-floor': {
+        meaning: 'Surfaces sit below the floor without a waiver.',
+        safeAction: 'Work the returned unwaived gap queue.',
+      },
+      'measured-with-waivers': {
+        meaning:
+          'Nothing is below the floor UNWAIVED, but surfaces ARE below it under live waivers — the apparent pass rests on accepted exceptions.',
+        safeAction:
+          'Record that the gaps are waived rather than covered, and re-check the waivers before relying on the floor as evidence.',
+      },
+    },
+    evidence: ['census.surfaces', 'coverage.below', 'coverage.belowUnwaived', 'verdict'],
   },
 
   /**
