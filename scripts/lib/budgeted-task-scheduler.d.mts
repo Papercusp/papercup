@@ -30,6 +30,8 @@ export interface ResolvedTaskBudget {
    * this is nullable as well as optional.
    */
   memAvailableMb?: number | string | null;
+  /** Hard memory.max of the current task cgroup, when finite. */
+  taskCgroupMemoryMaxMb?: number | string | null;
 }
 
 export interface TaskAllocation {
@@ -89,6 +91,25 @@ export interface BudgetedTaskRun<Task, Value> {
   stats: TaskSchedulerStats;
 }
 
+export interface AffectedBlastRadius {
+  kind: 'scoped' | 'near-tree-wide';
+  reason: 'path-closure' | 'root-manifest-or-config' | 'all-requested' | 'derivation-degraded';
+  triggerPaths: string[];
+}
+
+export interface AffectedTaskShard<Task> {
+  index: number;
+  tasks: Task[];
+  taskKeys: string[];
+}
+
+export interface AffectedTaskShardPlan<Task> {
+  blastRadius: AffectedBlastRadius;
+  maxTasksPerShard: number;
+  taskCount: number;
+  shards: Array<AffectedTaskShard<Task>>;
+}
+
 export interface DurationHistoryEntry {
   durationMs: number;
   samples: number;
@@ -132,10 +153,38 @@ export const MEMORY_RESERVE_FRACTION: number;
 export function resolveMemoryBudgetMb(input: {
   affectedGlobalMemoryMb?: number | string;
   memAvailableMb?: number | string | null;
+  taskCgroupMemoryMaxMb?: number | string | null;
   workerBudget: number | string;
   workerMemoryMb: number | string;
   reserveFraction?: number;
+  cgroupReserveFraction?: number;
 }): number;
+
+export function readTaskCgroupMemoryMaxMb(input?: {
+  readFile?: (path: string, encoding: string) => string | Buffer;
+  procCgroupPath?: string;
+  cgroupRoot?: string;
+}): number | null;
+
+export function classifyAffectedBlastRadius(input?: {
+  changedPaths?: string[];
+  runAll?: boolean;
+  derivationDegraded?: boolean;
+}): AffectedBlastRadius;
+
+export function planAffectedTaskShards<Task>(
+  tasks: Task[],
+  options?: {
+    blastRadius?: AffectedBlastRadius;
+    maxTasksPerShard?: number | string;
+    taskKey?: (task: Task, index: number) => string | number;
+  },
+): AffectedTaskShardPlan<Task>;
+
+export function formatAffectedTaskShardMarker(
+  plan: AffectedTaskShardPlan<unknown>,
+  taskCgroupMemoryMaxMb?: number | null,
+): string;
 
 export function resolveTaskBudget(input: TaskBudgetInput): ResolvedTaskBudget;
 
@@ -167,6 +216,18 @@ export function runBudgetedTasks<Task, Value>(
   },
 ): Promise<BudgetedTaskRun<Task, Value>>;
 
+export function runBudgetedTaskShards<Task, Value>(
+  plan: AffectedTaskShardPlan<Task>,
+  options: TaskBudgetInput & {
+    estimateMs?: (task: Task, index: number) => number | null | undefined;
+    readMemAvailableMb?: () => number | null | undefined;
+    runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
+  },
+): Promise<BudgetedTaskRun<Task, Value> & {
+  shardStats: Array<TaskSchedulerStats & { index: number; taskCount: number }>;
+  shardPlan: AffectedTaskShardPlan<Task>;
+}>;
+
 export function emptyDurationHistory(): DurationHistory;
 
 export function readDurationHistory(path: string): DurationHistory;
@@ -196,4 +257,3 @@ export function formatTaskBudgetMarker(
   stats: ResolvedTaskBudget,
   prefix?: string,
 ): string;
-
