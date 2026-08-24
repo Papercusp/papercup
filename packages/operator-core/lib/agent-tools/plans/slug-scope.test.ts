@@ -121,7 +121,9 @@ describe('verifyExplicitPlanHarness', () => {
     await expect(verifyExplicitPlanHarness({ workspaceId: 'ws-123' }, 'papercusp', {})).resolves.toBe(false);
     await expect(verifyExplicitPlanHarness({ workspaceId: 'ws-123' }, '  ', { slug: 'primary-plan' })).resolves.toBe(false);
 
-    mocks.planHarnessesForSlugs.mockRejectedValue(new Error('workspace index unavailable'));
+    mocks.planHarnessesForSlugs.mockImplementation(async () => {
+      throw new Error('workspace index unavailable');
+    });
     await expect(
       verifyExplicitPlanHarness({ workspaceId: 'ws-123' }, 'papercusp', { slug: 'primary-plan' }),
     ).resolves.toBe(false);
