@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const CSS = readFileSync(resolve(process.cwd(), 'src/components/adv/adv-workflows.css'), 'utf8');
+const LANDING_CSS = readFileSync(resolve(process.cwd(), 'src/components/adv/adv-workflows-landing.css'), 'utf8');
 
 function rulesFor(selector: string): string[] {
   const rules = [...CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
@@ -20,6 +21,19 @@ function expectFontFloor(selector: string, minimum: number): void {
 }
 
 describe('Workflows legibility contract', () => {
+  it('keeps the tab and landing collision-prone class suffixes distinct', () => {
+    expect(CSS).not.toContain('pc-automations__');
+    expect(CSS).toContain('.pc-workflows__row-chips');
+    expect(CSS).toContain('.pc-workflows__list-empty');
+    expect(CSS).toContain('.pc-workflows__tab-masthead');
+    expect(CSS).not.toMatch(/\.pc-workflows__(?:chips|empty|masthead)(?:\s|[,{])/);
+
+    expect(LANDING_CSS).toContain('.pc-workflows__chips');
+    expect(LANDING_CSS).toContain('.pc-workflows__empty');
+    expect(LANDING_CSS).toContain('.pc-workflows__masthead');
+    expect(LANDING_CSS).not.toMatch(/\.pc-workflows__(?:row-chips|list-empty|tab-masthead)(?:\s|[,{])/);
+  });
+
   it('uses a plain flow-canvas surface without the distracting square grid', () => {
     const canvasRule = rulesFor('.pc-workflows__flow-canvas').join('\n');
     expect(canvasRule).toContain('background: var(--auto-panel)');
