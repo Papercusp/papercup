@@ -338,6 +338,14 @@ export interface GitPipelineSnapshot {
    *  every other snapshot read. */
   activeRun: {
     active: boolean;
+    /** The live process was found through the shared checkpoint run-lock rather than
+     * the manual systemd unit (normally the scheduled/cron runner). */
+    heldExternally?: true;
+    /** The systemd probe itself failed. When heldExternally is also true, the
+     * independent run-lock still proves a run is live; otherwise liveness is unknown. */
+    probeFailed?: true;
+    /** Exact probe failure returned by checkActiveCheckpointRun. */
+    probeDetail?: string | null;
     /** Provenance of the systemd user-manager query behind this observation. */
     systemd?: {
       scope: CheckpointSystemdProbe['scope'];
@@ -744,6 +752,9 @@ export interface GitPipelineSnapshotOpts {
  *  `activeRun` shape (systemd timestamp → epoch ms; absent fields → null). */
 export function mapActiveRun(r: {
   active: boolean;
+  held_externally?: boolean;
+  probe_failed?: boolean;
+  probe_detail?: string | null;
   systemd?: CheckpointSystemdProbe;
   terminal_marker?: boolean;
   terminal_evidence?: {
@@ -769,6 +780,10 @@ export function mapActiveRun(r: {
   const progressAtMs = r.progress_at ? Date.parse(r.progress_at) : NaN;
   return {
     active: r.active,
+    ...(r.held_externally ? { heldExternally: true as const } : {}),
+    ...(r.probe_failed
+      ? { probeFailed: true as const, probeDetail: r.probe_detail ?? null }
+      : {}),
     ...(r.systemd
       ? {
           systemd: {

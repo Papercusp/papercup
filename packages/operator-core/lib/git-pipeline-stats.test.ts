@@ -414,6 +414,24 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
     });
   });
 
+  it('preserves external run-lock and failed-probe provenance instead of collapsing both into active:true', () => {
+    expect(
+      mapActiveRun({
+        active: true,
+        held_externally: true,
+        probe_failed: true,
+        probe_detail: 'systemctl show failed; independent run lock is held',
+        current_phase: 'setup',
+      }),
+    ).toMatchObject({
+      active: true,
+      heldExternally: true,
+      probeFailed: true,
+      probeDetail: 'systemctl show failed; independent run lock is held',
+      currentPhase: 'setup',
+    });
+  });
+
   /**
    * EI-19327704778173646 / WI-7024. A single green-checkpoint run can re-candidate
    * mid-flight (in-process auto-refire onto tip), so `candidate` can legitimately differ
