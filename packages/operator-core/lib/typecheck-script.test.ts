@@ -70,9 +70,18 @@ describe('EI-6479 — typecheck script exists and runs the real baseline gate', 
 
   it('apps/operator package.json exposes its baseline-aware gate as `typecheck`', () => {
     const s = scripts('apps/operator/package.json');
-    expect(s.typecheck, 'apps/operator must not remain invisible to workspace typecheck discovery').toBe(
-      'bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc-operator.mjs',
-    );
+    // Match the WIRING, not the exact command string. This assertion used to pin
+    // the whole line including a `bash ../../scripts/pc-heavy.sh` prefix; when
+    // EI-21311288080670514 correctly moved slot admission inside the runner, that
+    // over-specification turned a deliberate fix into a red gate. Where admission
+    // happens is owned by heavy-typecheck-scripts-throttled.test.ts; this test
+    // (EI-6479) only cares that `typecheck` EXISTS and reaches the baseline gate,
+    // so `npm run typecheck --if-present` cannot silently no-op.
+    expect(
+      s.typecheck,
+      'apps/operator must not remain invisible to workspace typecheck discovery',
+    ).toBeTruthy();
+    expect(s.typecheck).toMatch(/lint-tsc-operator\.mjs/);
     expect(s.typecheck).not.toMatch(/^tsc\b/);
   });
 
