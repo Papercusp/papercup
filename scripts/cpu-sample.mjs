@@ -10,11 +10,12 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { writeFileSync } from 'node:fs';
 import { closeInspector, createCdpClient, discoverInspector } from './cdp-inspector.mjs';
+import { aggregateCpuProfile } from './lib/cpu-profile.mjs';
 
 const args = process.argv.slice(2);
 const saveIdx = args.indexOf('--save');
 const savePath = saveIdx >= 0 ? args[saveIdx + 1] : null;
-const positional = args.filter((a, i) => !a.startsWith('--') && i !== saveIdx + 1);
+const positional = args.filter((a, i) => !a.startsWith('--') && (saveIdx < 0 || i !== saveIdx + 1));
 
 const pid = Number(positional[0]);
 const durationMs = Number(positional[1] || 30000);
@@ -64,48 +65,14 @@ if (savePath) {
   console.error(`saved raw profile to ${savePath}`);
 }
 
-// 3) aggregate self-time per call frame (function@file:line), EXCLUDING the
-// profiler's own observer-effect (node:inspector / (idle) / (program) frames).
-const nodeById = new Map();
-for (const n of profile.nodes) nodeById.set(n.id, n);
-const selfUs = new Map(); // nodeId -> self time (µs)
-for (let i = 0; i < profile.samples.length; i++) {
-  const sid = profile.samples[i];
-  const dt = Math.max(0, profile.timeDeltas[i] || 0);
-  selfUs.set(sid, (selfUs.get(sid) || 0) + dt);
-}
-
-function shortUrl(u) {
-  if (!u) return '(native)';
-  u = u.replace(/^file:\/\//, '');
-  for (const m of ['/papercup/', '/papercup-release/', '/papercusp/']) {
-    const i = u.indexOf(m);
-    if (i >= 0) return u.slice(i + 1);
-  }
-  if (u.includes('/node_modules/')) return 'node_modules/' + u.split('/node_modules/').pop();
-  return u;
-}
-
-let totalUs = 0;
-let excludedUs = 0;
-const byFrame = new Map();
-for (const [nid, us] of selfUs) {
-  const n = nodeById.get(nid);
-  const cf = n?.callFrame || {};
-  const url = cf.url || '';
-  const fn = cf.functionName || '(anonymous)';
-  const isExcluded = url.includes('inspector') || fn === '(idle)' || fn === '(program)' || fn === '(garbage collector)' && false;
-  totalUs += us;
-  if (url.includes('inspector')) { excludedUs += us; continue; }
-  const key = `${fn || '(anon)'} @ ${shortUrl(url)}:${cf.lineNumber ?? '?'}`;
-  byFrame.set(key, (byFrame.get(key) || 0) + us);
-}
-
-const realUs = totalUs - excludedUs;
-const top = [...byFrame.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30);
-console.log(`\n=== TOP CPU SELF-TIME (sampled ${(durationMs/1000)|0}s, total ${(totalUs/1e6).toFixed(1)}s, profiler-excluded ${(excludedUs/1e6).toFixed(1)}s [${((excludedUs/totalUs)*100).toFixed(1)}%], real workload ${(realUs/1e6).toFixed(1)}s) ===`);
+// 3) aggregate self-time per call frame (function@file:line), excluding the
+// profiler's observer/non-work frames before ranking.
+const { totalUs, excludedUs, realUs, frames } = aggregateCpuProfile(profile);
+const excludedPct = totalUs ? ((excludedUs / totalUs) * 100).toFixed(1) : '0.0';
+const top = frames.slice(0, 30);
+console.log(`\n=== TOP CPU SELF-TIME (sampled ${(durationMs/1000)|0}s, total ${(totalUs/1e6).toFixed(1)}s, observer/non-work excluded ${(excludedUs/1e6).toFixed(1)}s [${excludedPct}%], real workload ${(realUs/1e6).toFixed(1)}s) ===`);
 for (const [site, us] of top) {
   const s = (us / 1e6).toFixed(2);
-  const pct = ((us / realUs) * 100).toFixed(1);
+  const pct = ((us / (realUs || 1)) * 100).toFixed(1);
   console.log(`${s.padStart(7)}s  ${pct.padStart(5)}%  ${site}`);
 }

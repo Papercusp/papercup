@@ -19,6 +19,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { classifyCpuFrame } from './lib/cpu-profile.mjs';
 
 const args = process.argv.slice(2);
 const topIdx = args.indexOf('--top');
@@ -114,8 +115,9 @@ for (const file of files) {
     const cf = n.callFrame;
     const url = cf.url ?? '';
     const fn = cf.functionName || '(anonymous)';
-    if (url.includes('inspector')) { profilerMs += dt / 1000; continue; } // observer-effect
-    if (fn === '(idle)' || fn === '(program)') { idleMs += dt / 1000; continue; }
+    const excludedKind = classifyCpuFrame(fn, url);
+    if (excludedKind === 'profiler') { profilerMs += dt / 1000; continue; } // observer-effect
+    if (excludedKind === 'non-work') { idleMs += dt / 1000; continue; }
     realMs += dt / 1000;
     const key = `${fn}  @ ${shortUrl(url)}:${(cf.lineNumber ?? -1) + 1}`;
     selfByFrame.set(key, (selfByFrame.get(key) ?? 0) + dt / 1000);
