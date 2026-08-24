@@ -522,6 +522,146 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(r.stderr).not.toContain('PREEMPTING');
   });
 
+  // EI-21357082020097858 — every abort before the workload can produce a
+  // verdict must leave the same machine-readable undetermined marker as the
+  // already-covered outer-wrapper abort. These tests call the internal monitor
+  // directly so each otherwise rare startup branch can be forced deterministically.
+  it('emits an undetermined marker when the child-start supervisor fails', () => {
+    const fakeBin = join(dir, 'child-start-fails');
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, 'setsid'), '#!/bin/sh\nexit 42\n', { mode: 0o755 });
+
+    const r = runSync(
+      [
+        '--pc-heavy-internal-preempt-run',
+        String(process.pid),
+        join(dir, 'intent'),
+        'bash',
+        '-c',
+        'exit 0',
+      ],
+      {
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        PC_HEAVY_PREEMPT_PID_DIR: dir,
+      },
+    );
+
+    expect(r.status).toBe(42);
+    expect(r.stderr).toContain('PC_HEAVY_RESULT status=undetermined reason=child-start-failed exit=42');
+  });
+
+  it('emits an undetermined marker when the child-start supervisor never publishes a pid', () => {
+    const fakeBin = join(dir, 'child-start-times-out');
+    mkdirSync(fakeBin);
+    // The real setsid process remains alive, but never runs the pid-file
+    // publisher. The monitor's five-second publication deadline is the branch
+    // under test; the short sleep lets its reap path finish promptly afterward.
+    writeFileSync(join(fakeBin, 'setsid'), '#!/bin/sh\nsleep 6\n', { mode: 0o755 });
+
+    const r = runSync(
+      [
+        '--pc-heavy-internal-preempt-run',
+        String(process.pid),
+        join(dir, 'intent'),
+        'bash',
+        '-c',
+        'exit 0',
+      ],
+      {
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        PC_HEAVY_PREEMPT_PID_DIR: dir,
+      },
+    );
+
+    expect(r.status).toBe(75);
+    expect(r.stderr).toContain('PC_HEAVY_RESULT status=undetermined reason=child-start-timeout exit=75');
+  }, 10_000);
+
+  it('emits an undetermined marker when the published child process-group identity is invalid', () => {
+    const fakeBin = join(dir, 'invalid-child-group');
+    mkdirSync(fakeBin);
+    // Locate the pid-file argument rather than relying on an implementation
+    // position, while still making the fixture fail loudly if the monitor stops
+    // passing one to the supervisor.
+    writeFileSync(
+      join(fakeBin, 'setsid'),
+      [
+        '#!/bin/sh',
+        'for arg in "$@"; do',
+        '  case "$arg" in',
+        '    */preemptible.*.pid) printf "%s\\n" invalid > "$arg"; exit 0 ;;',
+        '  esac',
+        'done',
+        'exit 43',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+
+    const r = runSync(
+      [
+        '--pc-heavy-internal-preempt-run',
+        String(process.pid),
+        join(dir, 'intent'),
+        'bash',
+        '-c',
+        'exit 0',
+      ],
+      {
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        PC_HEAVY_PREEMPT_PID_DIR: dir,
+      },
+    );
+
+    expect(r.status).toBe(75);
+    expect(r.stderr).toContain('PC_HEAVY_RESULT status=undetermined reason=invalid-child-process-group exit=75');
+  });
+
+  it('emits an undetermined marker when the monitor receives a signal', async () => {
+    const pidDir = join(dir, 'signal-pids');
+    mkdirSync(pidDir);
+    const terminated = join(dir, 'signal-workload-terminated');
+    const workload = [
+      `trap 'echo terminated > ${JSON.stringify(terminated)}; exit 143' TERM`,
+      'while :; do sleep 1; done',
+    ].join('; ');
+    const monitor = spawn(
+      'bash',
+      [
+        PC_HEAVY,
+        '--pc-heavy-internal-preempt-run',
+        String(process.pid),
+        join(dir, 'intent'),
+        'bash',
+        '-c',
+        workload,
+      ],
+      {
+        env: baseEnv({
+          PC_HEAVY_PREEMPT_PID_DIR: pidDir,
+          PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+          PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+        }),
+        cwd: dir,
+      },
+    );
+    const monitorErr = createTextCollector(monitor.stderr);
+    let monitorExit: Promise<number> | undefined;
+    try {
+      await waitFor(
+        'the signal-test monitor publishing a child pid',
+        () => readdirSync(pidDir).some((name) => name.startsWith('preemptible.') && name.endsWith('.pid')),
+      );
+      monitorExit = new Promise<number>((resolve) => monitor.on('exit', (code) => resolve(code ?? -1)));
+      monitor.kill('SIGTERM');
+      expect(await monitorExit).toBe(143);
+      expect(monitorErr.text()).toContain('PC_HEAVY_RESULT status=undetermined reason=signal exit=143');
+      expect(existsSync(terminated)).toBe(true);
+    } finally {
+      try { monitor.kill('SIGKILL'); } catch { /* already exited */ }
+    }
+  }, 10_000);
+
   it('keeps an explicit unpreemptible escape hatch for a caller that cannot be interrupted', async () => {
     const env = {
       PC_HEAVY_SLOTS: '1',

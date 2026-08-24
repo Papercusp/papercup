@@ -1147,6 +1147,20 @@ export function planSharedHiveCapture(
         severity: 'major',
         watchdogKey: key,
       };
+    // EI-21322935352272541 — "this host admits no remote log in ANY scope" is a
+    // fact about the HOST, exactly like `monitor-scope-empty` below is a fact
+    // about the pass, so it takes the same NON-harness-scoped key. Scoping it per
+    // harness is the defect: 45 scopes on this host held durable remote cursors
+    // while 101/101 admitted only their own log, so one condition would file up
+    // to 45 majors — and which of them fired was decided by the unrelated
+    // scope-dormancy guard, not by the fault. No scope-local action can clear any
+    // of them, because admission is not a per-scope capability.
+    case 'host-admits-no-remote-logs':
+      return {
+        title: 'shared-hive invariant: this host admits NO remote log in ANY booted scope',
+        severity: 'major',
+        watchdogKey: `shared-hive:${incident.kind}`,
+      };
     case 'monitor-scope-empty':
       // Deliberately NOT harness-scoped: "the pass resolved zero scopes" is a
       // fact about the whole pass, so there is no harness to scope it to.

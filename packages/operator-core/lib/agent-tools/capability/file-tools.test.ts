@@ -253,13 +253,43 @@ describe('capability:read', () => {
   });
 
   it('advertises and enforces evidence-class window exclusivity', async () => {
-    const shape = (readTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
-    expect(shape.evidence_class.description).toMatch(/Mutually exclusive with content_indexes/);
-    expect(shape.evidence_class.description).toMatch(/byte_offset/);
-
     const published = toJsonSchema(readTool.args as never) as {
-      properties?: Record<string, { description?: string }>;
+      anyOf?: Array<{
+        required?: string[];
+        properties?: Record<string, { description?: string; not?: unknown }>;
+      }>;
+      oneOf?: Array<{
+        required?: string[];
+        properties?: Record<string, { description?: string; not?: unknown }>;
+      }>;
     };
+    const branches = published.anyOf ?? published.oneOf ?? [];
+    expect(branches).toHaveLength(4);
+
+    const evidenceBranch = branches.find((branch) => branch.required?.includes('evidence_class'));
+    expect(evidenceBranch).toBeDefined();
+    for (const field of ['offset', 'limit', 'tail', 'byte_offset', 'byte_limit', 'content_indexes']) {
+      expect(evidenceBranch?.properties?.[field]?.not, `evidence_class branch must exclude ${field}`).toBeDefined();
+    }
+
+    const byteBranch = branches.find((branch) => branch.required?.includes('byte_offset') && branch.required?.includes('byte_limit'));
+    expect(byteBranch?.properties?.evidence_class?.not).toBeDefined();
+    expect(byteBranch?.properties?.tail?.not).toBeDefined();
+
+    const contentBranch = branches.find((branch) => branch.required?.includes('content_indexes'));
+    expect(contentBranch?.properties?.evidence_class?.not).toBeDefined();
+    expect(contentBranch?.properties?.tail?.not).toBeDefined();
+
+    const lineBranch = branches.find((branch) => !branch.required?.length);
+    expect(lineBranch?.properties?.evidence_class?.not).toBeDefined();
+    expect(lineBranch?.properties?.byte_offset?.not).toBeDefined();
+
+    const descriptions = new Map<string, string>();
+    for (const branch of branches) {
+      for (const [field, schema] of Object.entries(branch.properties ?? {})) {
+        if (schema.description && !descriptions.has(field)) descriptions.set(field, schema.description);
+      }
+    }
     const peersByField: Record<string, string[]> = {
       offset: ['byte_offset', 'byte_limit', 'content_indexes', 'evidence_class'],
       limit: ['byte_offset', 'byte_limit', 'content_indexes', 'evidence_class'],
@@ -270,7 +300,7 @@ describe('capability:read', () => {
       evidence_class: ['offset', 'limit', 'tail', 'byte_offset', 'byte_limit', 'content_indexes'],
     };
     for (const [field, peers] of Object.entries(peersByField)) {
-      const description = published.properties?.[field]?.description;
+      const description = descriptions.get(field);
       expect(description, `${field} must be described in the published schema`).toEqual(expect.any(String));
       for (const peer of peers) {
         expect(description, `${field} description must name ${peer}`).toContain(peer);

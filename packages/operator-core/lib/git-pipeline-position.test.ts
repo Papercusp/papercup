@@ -4431,6 +4431,21 @@ describe('stage levers (P-005)', () => {
     expect(l).toBeNull();
   });
 
+  it('P-009: an ACTIVE run with no published candidate is WAIT-only and never offers a re-fire lever', () => {
+    const stages = stagesFor({
+      positions: NOT_IN_MAIN,
+      gate: { ...RED_GATE, checkpointRunInFlight: IN_FLIGHT },
+      changeInCandidate: NO_CANDIDATE,
+    });
+    const gate = stages.find((s) => s.name === 'gate');
+    expect(gate?.health).toBe('stalled');
+    expect(gate?.lever).toBeNull();
+    expect(gate?.detail).toMatch(/A gate run IS in flight/);
+    expect(gate?.detail).toMatch(/do NOT fire a second one/);
+    expect(deriveBlocker(stages).nextAction).toBeNull();
+    expect(JSON.stringify(stages)).not.toMatch(/release:checkpoint-run/i);
+  });
+
   it('EI-18797292094433710: an in-flight run whose candidate merely PREDATES the newest edit offers NO lever — never a re-fire', () => {
     // The old behaviour routed this to "wait out the quiet-cut window, then
     // release:checkpoint-run". That is the single most expensive wrong lever this
@@ -5599,6 +5614,30 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
       expect(out?.startedAtMs).toBe(NOW - 720_000);
     });
 
+    it('P-009: pre-lock process authority overturns idle without inventing a candidate', () => {
+      const processAuthority = {
+        workspace: 'papercusp-workspace',
+        harness: 'papercusp',
+        cgroupPath: '/user.slice/run-u42.scope',
+        pid: 4242,
+      };
+      const out = mapCheckpointRunInFlight(staleIdle, NOW, null, {
+        held: true,
+        elapsedSec: 45,
+        startedAtMs: NOW - 45_000,
+        source: 'process-authority',
+        processAuthority,
+      });
+      expect(out).toMatchObject({
+        active: true,
+        activeSource: 'process-authority',
+        candidate: null,
+        elapsedSec: 45,
+        startedAtMs: NOW - 45_000,
+        processAuthority,
+      });
+    });
+
     it('⭐ a NOT-HELD lock overturns a stale cached "active" — a run that ended hours ago must not read as in flight', () => {
       const out = mapCheckpointRunInFlight(staleActive, NOW, null, { held: false, elapsedSec: null });
       expect(out?.active).toBe(false);
@@ -5826,6 +5865,38 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
     expect(res.gate.checkpointRunInFlight?.active).toBe(true);
     expect(res.gate.checkpointRunInFlight?.activeSource).toBe('run-lock');
     expect(res.notes.join(' ')).toMatch(/GATE RUN IN FLIGHT/);
+  });
+
+  it('P-009: pre-lock process authority reaches the candidate assessment as WAIT, never no-active-run', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap({ consecutiveReds: 5, stalled: true }),
+        readCheckpointRunSnapshot: async () => null,
+        readCheckpointRunLock: async () => ({
+          held: true,
+          elapsedSec: 45,
+          startedAtMs: Date.now() - 45_000,
+          source: 'process-authority',
+          processAuthority: {
+            workspace: 'papercusp-workspace',
+            harness: 'papercusp',
+            cgroupPath: '/user.slice/run-u42.scope',
+            pid: 4242,
+          },
+        }),
+      },
+    );
+    expect(res.gate.checkpointRunInFlight).toMatchObject({
+      active: true,
+      activeSource: 'process-authority',
+      candidate: null,
+    });
+    expect(res.assessments.gateCandidate).toBe('candidate-not-yet-published');
+    expect(res.nextAction ?? '').not.toMatch(/release:checkpoint-run/i);
   });
 
   it('⭐ a HELD live lock overturns a STALE cached idle — the reading that used to send callers to fire into a live run', async () => {
@@ -6316,6 +6387,15 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
       name: 'measured no-active-run',
       input: { judgingSha: null, verdictUnknownLegs: [] },
       expected: 'no-active-run',
+    },
+    {
+      name: 'active run whose candidate is not yet published',
+      input: {
+        judgingSha: null,
+        verdictUnknownLegs: [],
+        checkpointRunInFlight: { active: true },
+      },
+      expected: 'candidate-not-yet-published',
     },
     {
       name: 'judging-current-path',

@@ -416,6 +416,12 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
         safeAction:
           'Nothing to wait on. If you need a verdict now, fire release:checkpoint-run — but check for an in-flight re-triage first, which that verb now refuses on by itself.',
       },
+      'candidate-not-yet-published': {
+        meaning:
+          'A gate run is authoritatively active, but setup has not published the candidate sha yet. This is a live pre-candidate phase, not an idle gate.',
+        safeAction:
+          'WAIT for this run to publish its candidate or verdict. Do NOT fire release:checkpoint-run: that would collide with or replace the live singleton.',
+      },
       'judging-current-path': {
         meaning: 'A run is in flight and its candidate CONTAINS the path you asked about.',
         safeAction: 'Treat a red from this run as being about YOUR change, and own it.',

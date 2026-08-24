@@ -307,6 +307,14 @@ const CONTROLS: Record<string, readonly Control[]> = {
   'gate.greenCheckpoint.candidate': [
     { label: 'no run in flight', expect: assessGateCandidate({ judgingSha: null, verdictUnknownLegs: [] }) },
     {
+      label: 'run active before its candidate is published',
+      expect: assessGateCandidate({
+        judgingSha: null,
+        verdictUnknownLegs: [],
+        checkpointRunInFlight: { active: true },
+      }),
+    },
+    {
       label: 'a candidate read from a non-authoritative probe',
       expect: assessGateCandidate({ judgingSha: 'abc', judgingShaSource: 'run-probe', verdictUnknownLegs: [] }),
     },
@@ -541,6 +549,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   ],
   'gate.greenCheckpoint.candidate': [
     'no-active-run',
+    'candidate-not-yet-published',
     'inferred-candidate',
     'judging-current-path',
     'judging-without-current-path',

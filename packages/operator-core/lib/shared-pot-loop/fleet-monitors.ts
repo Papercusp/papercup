@@ -501,6 +501,8 @@ export function judgePeerFederationSilence(
       liveApplyBinding: null,
       ownLogSilentForMs: null,
       admittedRemoteLogs: admittedSet ? 0 : null,
+      hostAdmitsAnyRemoteLog,
+      hostWideAdmissionBreach: null,
       // Deliberately NOT a breach: "no remote logs" is the honest shape of a
       // host that has never federated. It is reported as UNMEASURED so a caller
       // that knows federation IS in use (outbox rows exist) can escalate it,
@@ -531,6 +533,8 @@ export function judgePeerFederationSilence(
       liveApplyBinding: null,
       ownLogSilentForMs: null,
       admittedRemoteLogs: admittedSet ? 0 : null,
+      hostAdmitsAnyRemoteLog,
+      hostWideAdmissionBreach: null,
     };
   }
   // EI-20617273180156712: a cursor only means anything under the `apply_binding`
@@ -576,6 +580,8 @@ export function judgePeerFederationSilence(
       totalLogs: underLiveBinding.length,
       measured: false,
       unmeasuredReason: 'own-log-unknown',
+      hostAdmitsAnyRemoteLog,
+      hostWideAdmissionBreach: null,
       silent: [],
       freshestAdvanceMs: null,
       allSilent: false,
@@ -617,6 +623,8 @@ export function judgePeerFederationSilence(
       liveApplyBinding,
       ownLogSilentForMs,
       admittedRemoteLogs,
+      hostAdmitsAnyRemoteLog,
+      hostWideAdmissionBreach: null,
     };
   }
 
@@ -640,6 +648,8 @@ export function judgePeerFederationSilence(
       liveApplyBinding,
       ownLogSilentForMs,
       admittedRemoteLogs,
+      hostAdmitsAnyRemoteLog,
+      hostWideAdmissionBreach: null,
     };
   }
   const ages = judged.map((r) => Math.max(0, opts.nowMs - r.updatedAtMs));
@@ -664,6 +674,18 @@ export function judgePeerFederationSilence(
     strandedCursors > 0
       ? ` (${strandedCursors} further cursor(s) ignored: stranded under a superseded apply_binding — schema residue, not peers)`
       : '';
+  // EI-21322935352272541: the host-wide breach is computed BEFORE the per-scope
+  // ladder and deliberately does not enter `breaches` — see the field's doc. When
+  // this host admits no remote log in ANY scope, "this scope's peers are absent"
+  // is a true sentence about a false subject: the subject is the host.
+  let hostWideAdmissionBreach: string | null = null;
+  if (admittedRemoteLogs === 0 && hostAdmitsAnyRemoteLog === false && unadmittedSilent != null && unadmittedSilent.length > 0) {
+    const scopes = opts.hostAdmission?.scopesMeasured ?? 0;
+    hostWideAdmissionBreach =
+      `HOST ADMITS NO REMOTE LOGS: this host admits 0 remote log(s) across ALL ${scopes} booted scope(s) — its OWN log is the only member of every admitted set. ` +
+      `The ${unadmittedSilent.length} silent durable cursor(s) here are therefore NOT a scope-local peer departure; every scope holding durable cursors reports this SAME condition, and which of them alarms is decided by whether we happened to write locally inside the SLO window, not by the fault. ` +
+      `ONE host-wide condition: suspect the announce/admission path (no swarm announce frame has been admitted, and no seed log key was resolved) or this host having no reachable peers at all. Do NOT chase it per scope.${strandedNote}`;
+  }
   if (admittedRemoteLogs != null && admittedSilent != null && unadmittedSilent != null) {
     // EI-20666095916420554: once admission is measured, it — not every durable
     // cursor — defines the positive-control population. WI-39489 corrected only
@@ -674,9 +696,27 @@ export function judgePeerFederationSilence(
     // logs. A cursor outlives admission, so conflating these populations makes a
     // permanent false major after ordinary peer churn.
     if (admittedRemoteLogs === 0 && unadmittedSilent.length > 0) {
-      breaches.push(
-        `NO PEER ADMITTED: ${unadmittedSilent.length} of ${judged.length} durable remote cursor(s) have exceeded the ${opts.silentAfterMs}ms silence SLO, and NONE is in this scope's admitted set. The peers are ABSENT, not slow — nothing current can be folded. Suspect the announce/admission path or peer liveness, NOT this host's merge loop.${strandedNote}`,
-      );
+      // EI-21322935352272541: this per-scope reading is only MEANINGFUL when the
+      // host admits remote logs SOMEWHERE — that is what makes "our peers here
+      // went away" a claim about this scope rather than about the host. When the
+      // host admits none anywhere, `hostWideAdmissionBreach` above carries it
+      // instead, unscoped and once; emitting both would re-file the same
+      // condition in N per-harness dedup buckets, which is the defect.
+      //
+      // ⚠ Three-way, not two: `hostAdmitsAnyRemoteLog === null` is UNMEASURED and
+      // must NOT borrow the `true` wording. Claiming "this host admits peers
+      // elsewhere" from an absent measurement is the same ignorance-as-fact error
+      // the `null`-vs-`0` split above exists to prevent, so the unmeasured case
+      // keeps the original text, which asserts nothing host-wide.
+      if (hostWideAdmissionBreach == null) {
+        const elsewhere =
+          hostAdmitsAnyRemoteLog === true
+            ? ` This host DOES admit remote log(s) in other scope(s), so admission itself works and the absence is scope-local.`
+            : '';
+        breaches.push(
+          `NO PEER ADMITTED: ${unadmittedSilent.length} of ${judged.length} durable remote cursor(s) have exceeded the ${opts.silentAfterMs}ms silence SLO, and NONE is in this scope's admitted set. The peers are ABSENT, not slow — nothing current can be folded. Suspect the announce/admission path or peer liveness, NOT this host's merge loop.${elsewhere}${strandedNote}`,
+        );
+      }
     } else if (admittedRemoteLogs > 0 && admittedSilent.length === admittedRemoteLogs) {
       const freshestAdmittedAdvanceMs = admittedSilent[admittedSilent.length - 1]!.silentForMs;
       const absentNote =
@@ -726,6 +766,8 @@ export function judgePeerFederationSilence(
     liveApplyBinding,
     ownLogSilentForMs,
     admittedRemoteLogs,
+    hostAdmitsAnyRemoteLog,
+    hostWideAdmissionBreach,
   };
 }
 
@@ -751,6 +793,10 @@ export async function scanPeerFederationSilence(
       measured: false,
       unmeasuredReason: 'scan-failed',
       scanError: err instanceof Error ? err.message : String(err),
+      // The scan threw, so admission was never read at ANY scope: unmeasured,
+      // never a determined "this host admits nothing".
+      hostAdmitsAnyRemoteLog: null,
+      hostWideAdmissionBreach: null,
       silent: [],
       freshestAdvanceMs: null,
       allSilent: false,
@@ -824,14 +870,36 @@ async function readAndJudgePeerSilence(
   // predicate plus another without — keeps both readings from the SAME snapshot;
   // two reads could straddle a boot and report an own log that is not in the
   // admitted set they are compared against.
-  const admittedRows = await sql<Array<{ key_hex: string; is_own: boolean | null }>>`
-    SELECT pl->>'keyHex' AS key_hex, (pl->>'isOwn')::boolean AS is_own
+  //
+  // EI-21322935352272541: the scope predicate is applied in JS, not SQL, so the
+  // SAME result set also answers the HOST-WIDE question ("does this host admit
+  // ANY remote log, in ANY scope?"). Two queries could straddle a boot and
+  // disagree about whether admission exists at all — and a scope reading compared
+  // against a host reading from a different snapshot is precisely the
+  // cross-population conflation this monitor keeps being bitten by. One read, one
+  // snapshot, both readings. `perLog` is one row per admitted log per scope
+  // (~101 rows on this host), so the widened read stays trivial.
+  const allAdmittedRows = await sql<
+    Array<{ key_hex: string; is_own: boolean | null; harness_slug: string }>
+  >`
+    SELECT pl->>'keyHex' AS key_hex, (pl->>'isOwn')::boolean AS is_own,
+           ls->>'harnessSlug' AS harness_slug
       FROM harness_shared.substrate_booted_handles_status s,
            LATERAL jsonb_array_elements(s.payload->'healthInputs'->'logStats') ls,
            LATERAL jsonb_array_elements(ls->'perLog') pl
      WHERE s.workspace_id = ${opts.workspaceId}
-       AND ls->>'workspaceId' = ${opts.workspaceId}
-       AND ls->>'harnessSlug' = ${opts.harness}`;
+       AND ls->>'workspaceId' = ${opts.workspaceId}`;
+  const admittedRows = allAdmittedRows.filter((r) => r.harness_slug === opts.harness);
+  // NO published boot status ANYWHERE ⇒ host-wide admission is UNKNOWN, not zero
+  // — the same distinction the per-scope reading makes just below. Only a
+  // measurement that actually saw scopes may report a determined `false`.
+  const hostAdmission =
+    allAdmittedRows.length > 0
+      ? {
+          remoteLogsAdmitted: allAdmittedRows.filter((r) => r.is_own !== true).length,
+          scopesMeasured: new Set(allAdmittedRows.map((r) => r.harness_slug)).size,
+        }
+      : undefined;
   const ownLog = admittedRows.find((r) => r.is_own === true);
   // NO rows at all ⇒ this scope has no published boot status, so the admitted set
   // is UNKNOWN, not empty. Passing [] here would assert a determined "no peer is
@@ -854,6 +922,7 @@ async function readAndJudgePeerSilence(
       localActivityAgeMs: newestLocal == null ? null : Math.max(0, nowMs - newestLocal),
       ownLogKeyHex: ownLog?.key_hex,
       admittedLogKeysHex,
+      hostAdmission,
     },
   );
 }
@@ -944,6 +1013,11 @@ export interface MonitorIncident {
     // EI-20579195481991931: a PEER stopped federating to us (or our own fold
     // wedged — the report says which).
     | 'peer-federation-silence'
+    // EI-21322935352272541: this host admits NO remote log in ANY booted scope.
+    // Deliberately its own kind rather than a per-scope `peer-federation-silence`:
+    // it is a fact about the HOST, and filing it per harness re-files one
+    // condition into N dedup buckets that no scope-local action can ever clear.
+    | 'host-admits-no-remote-logs'
     // EI-20579195481991931: the monitor resolved ZERO scopes on a host that is
     // demonstrably federating — i.e. it did not actually run. Filed LOUDLY,
     // because the failure mode being closed is a monitor whose silence was
@@ -1034,6 +1108,16 @@ export async function runSharedHiveMonitorPass(opts: {
   });
   for (const b of peers.breaches) {
     incidents.push({ kind: 'peer-federation-silence', title: b, detail: peers });
+  }
+  // EI-21322935352272541: emitted per scope like everything else in this pass,
+  // but filed under a NON-harness-scoped watchdog key, so the N scopes that all
+  // observe this one host-wide condition dedup into a single item instead of N.
+  if (peers.hostWideAdmissionBreach) {
+    incidents.push({
+      kind: 'host-admits-no-remote-logs',
+      title: peers.hostWideAdmissionBreach,
+      detail: peers,
+    });
   }
 
   if (opts.presence && opts.liveLeases) {

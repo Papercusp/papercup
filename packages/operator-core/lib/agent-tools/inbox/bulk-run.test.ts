@@ -345,3 +345,31 @@ describe('inbox:bulk-run-act authority boundary', () => {
     });
   });
 });
+
+// WI-41370 — the plan-item terminal actions failed live because this wiring passed
+// `itemId` to plans:set-status (which accepts only `item` and REJECTS undeclared keys,
+// EI-10883) and `dropped` additionally requires a nonblank rationale. Pin the wire
+// contract so a key rename or a dropped-reason regression fails here, not in the field.
+describe('terminalDependencies plan-item wire contract (WI-41370)', () => {
+  it('setPlanItemStatus calls plans:set-status with item (never itemId) and threads the rationale', async () => {
+    const { terminalDependencies } = await import('./bulk-run');
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const call = async (name: string, args: Record<string, unknown>) => {
+      calls.push({ name, args });
+      return { ok: true };
+    };
+    const deps = terminalDependencies({ call: call as never });
+
+    await deps.setPlanItemStatus({ slug: 'a-plan', itemId: 'P-010', status: 'dropped', rationale: 'why it is moot' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.name).toBe('plans:set-status');
+    expect(calls[0]!.args).toMatchObject({ slug: 'a-plan', item: 'P-010', status: 'dropped' });
+    expect(calls[0]!.args).not.toHaveProperty('itemId');
+    expect(String(calls[0]!.args.rationale)).toContain('why it is moot');
+
+    // `dropped` REQUIRES a nonblank reason server-side: the wiring must supply a
+    // fallback even when the caller omitted one.
+    await deps.setPlanItemStatus({ slug: 'a-plan', itemId: 'P-011', status: 'done' });
+    expect(String(calls[1]!.args.rationale ?? '').trim()).not.toBe('');
+  });
+});

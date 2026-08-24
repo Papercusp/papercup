@@ -221,6 +221,7 @@ _pc_heavy_internal_preempt_run() {
   local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at='' _preempt_free_since=''
   local _preempt_now='' _preempt_start_deadline='' _preempt_term_deadline=''
+  local _preempt_result_emitted=0
 
   # Coalescing leaders route stdout/stderr through FIFOs whose readers belong
   # to the outer wrapper. If that wrapper is hard-killed, a diagnostic write to
@@ -280,6 +281,59 @@ _pc_heavy_internal_preempt_run() {
     fi
   }
 
+  # A signal can arrive in the small window after the supervisor publishes the
+  # child pid but before the polling loop below copies it into the local. Read
+  # the durable publication before deciding that there is no group to reap;
+  # otherwise the signal trap waits on the supervisor while the workload keeps
+  # running (and the terminal marker never reaches the caller).
+  _preempt_refresh_child_pid() {
+    local _candidate=''
+    if [ -z "${_preempt_child_pid:-}" ] && [ -s "${_preempt_pid_file:-}" ]; then
+      _candidate=$(head -1 "${_preempt_pid_file:-}" 2>/dev/null || true)
+      case "$_candidate" in
+        ''|*[!0-9]*) ;;
+        *) _preempt_child_pid="$_candidate" ;;
+      esac
+    fi
+  }
+
+  # Signal delivery is allowed to race child startup. Give the publisher a
+  # short, bounded chance to finish so cleanup can still target the isolated
+  # process group; a failed supervisor is handled by the caller below.
+  _preempt_wait_for_child_pid() {
+    local _deadline=''
+    _preempt_refresh_child_pid
+    [ -n "${_preempt_child_pid:-}" ] && return 0
+    [ -n "${_preempt_wait_pid:-}" ] || return 1
+    _deadline=$(( $(date +%s) + 1 ))
+    while [ -z "${_preempt_child_pid:-}" ] && kill -0 "${_preempt_wait_pid:-}" 2>/dev/null; do
+      _preempt_refresh_child_pid
+      [ -n "${_preempt_child_pid:-}" ] && return 0
+      [ "$(date +%s)" -ge "$_deadline" ] && break
+      sleep "${_preempt_poll:-0.1}"
+    done
+    _preempt_refresh_child_pid
+    [ -n "${_preempt_child_pid:-}" ]
+  }
+
+  # A preemptible monitor can be the only process left after the outer wrapper
+  # or its child-start path aborts. Emit one machine-readable terminal result
+  # for those paths so callers can distinguish "could not measure" from a test
+  # command that measured and failed. Route it through the preserved notify fd
+  # so coalescing leaders do not lose the marker with their capture FIFO.
+  _preempt_emit_result() {
+    local _status="$1" _reason="$2" _exit_code="${3:-}"
+    if [ "${_preempt_result_emitted:-0}" = 1 ]; then return 0; fi
+    _preempt_result_emitted=1
+    if [ -n "$_exit_code" ]; then
+      _preempt_notify "PC_HEAVY_RESULT status=$_status reason=$_reason exit=$_exit_code"
+    else
+      # Preserve the established preemption marker byte-for-byte; downstream
+      # readers already key on its status/reason pair.
+      _preempt_notify "PC_HEAVY_RESULT status=$_status reason=$_reason"
+    fi
+  }
+
   # NOTE (EI-21348799817176368): every expansion in the functions reachable from
   # the traps below is `:-` defaulted. Those handlers run on EXIT/TERM/INT/HUP,
   # and a trap can fire OUTSIDE this function's dynamic extent — at which point
@@ -290,6 +344,7 @@ _pc_heavy_internal_preempt_run() {
   # the normal path and only converts that crash into the no-op the guards below
   # already handle.
   _preempt_group_alive() {
+    _preempt_refresh_child_pid
     [ -n "${_preempt_child_pid:-}" ] && kill -0 -- "-${_preempt_child_pid:-}" 2>/dev/null
   }
   _preempt_leader_alive() {
@@ -334,8 +389,16 @@ _pc_heavy_internal_preempt_run() {
   }
   _preempt_forward_signal() {
     local _sig="$1" _code="$2"
+    if ! _preempt_wait_for_child_pid; then
+      # No group identity was published and the supervisor is still alive.
+      # Stop that supervisor so the trap cannot wait forever for a child that
+      # failed before publication; when a pid was published, the normal group
+      # reap below remains the authoritative cleanup boundary.
+      [ -n "${_preempt_wait_pid:-}" ] && kill -TERM "${_preempt_wait_pid:-}" 2>/dev/null || true
+    fi
     [ -n "${_preempt_child_pid:-}" ] && kill "-${_sig}" -- "-${_preempt_child_pid:-}" 2>/dev/null || true
     _preempt_reap_group
+    _preempt_emit_result undetermined signal "$_code"
     trap - EXIT TERM INT HUP
     exit "$_code"
   }
@@ -366,6 +429,7 @@ _pc_heavy_internal_preempt_run() {
     if ! kill -0 "$_preempt_wait_pid" 2>/dev/null; then
       wait "$_preempt_wait_pid"
       local _early_rc=$?
+      _preempt_emit_result undetermined child-start-failed "$_early_rc"
       trap - EXIT TERM INT HUP
       rm -f "$_preempt_pid_file" 2>/dev/null || true
       return "$_early_rc"
@@ -373,6 +437,7 @@ _pc_heavy_internal_preempt_run() {
     if [ "$(date +%s)" -ge "$_preempt_start_deadline" ]; then
       echo "[pc-heavy] REFUSED preemptible heavy run: child process-group identity was not published" >&2
       _preempt_reap_group
+      _preempt_emit_result undetermined child-start-timeout 75
       trap - EXIT TERM INT HUP
       return 75
     fi
@@ -383,6 +448,7 @@ _pc_heavy_internal_preempt_run() {
     ''|*[!0-9]*)
       echo "[pc-heavy] REFUSED preemptible heavy run: invalid child process-group identity" >&2
       _preempt_reap_group
+      _preempt_emit_result undetermined invalid-child-process-group 75
       trap - EXIT TERM INT HUP
       return 75
       ;;
@@ -397,6 +463,7 @@ _pc_heavy_internal_preempt_run() {
     if ! kill -0 "$_outer_pid" 2>/dev/null; then
       _preempt_notify "[pc-heavy] outer slot wrapper exited — reaping its interruptible child group"
       _preempt_reap_group
+      _preempt_emit_result undetermined outer-wrapper-exited 143
       trap - EXIT TERM INT HUP
       return 143
     fi
@@ -411,7 +478,7 @@ _pc_heavy_internal_preempt_run() {
         echo "[pc-heavy] PREEMPTING ordinary holder for exclusive materialization after ${_preempt_grace}s grace (pid=$_preempt_child_pid)" >&2
         _preempt_reap_group
         trap - EXIT TERM INT HUP
-        echo "PC_HEAVY_RESULT status=preempted reason=exclusive-materializer" >&2
+        _preempt_emit_result preempted exclusive-materializer
         return 75
       fi
     elif [ -n "$_preempt_seen_at" ]; then

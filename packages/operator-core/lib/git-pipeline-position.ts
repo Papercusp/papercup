@@ -718,6 +718,7 @@ export type GateVerdictAssessment =
   | 'passing-current';
 export type GateCandidateAssessment =
   | 'no-active-run'
+  | 'candidate-not-yet-published'
   | 'judging-current-path'
   | 'judging-without-current-path'
   | 'inferred-candidate';
@@ -802,8 +803,14 @@ export function assessGateCandidate(input: {
   judgingShaSource?: ChangeInCandidate['judgingShaSource'];
   judgingContainsPath?: boolean | null;
   verdictUnknownLegs: readonly string[];
+  checkpointRunInFlight?: Pick<NonNullable<PipelinePosition['gate']['checkpointRunInFlight']>, 'active'> | null;
 }): GateCandidateAssessment | null {
   if (input.judgingSha === null) {
+    // P-009 / WI-41252: candidate publication trails process liveness during setup.
+    // An authoritative active reading with no sha is therefore a live run whose
+    // candidate is NOT YET PUBLISHED, never a measured absence. Returning
+    // `no-active-run` here handed callers permission to fire into that setup window.
+    if (input.checkpointRunInFlight?.active === true) return 'candidate-not-yet-published';
     return input.verdictUnknownLegs.includes('changeInCandidate.judgingSha') ? null : 'no-active-run';
   }
   if (input.judgingShaSource !== 'retriage-marker' && input.judgingShaSource !== 'in-flight-candidate')
@@ -1011,14 +1018,25 @@ export interface PipelinePosition {
        *
        *  - `'run-lock'` — read LIVE on this call from the run lock, liveness-verified via
        *    `kill(pid,0)`. `active` is true AS OF NOW, for both origins (manual and cron).
-       *    This is the only reading that earns the word "measured".
+       *  - `'process-authority'` — the pre-lock process was identified from its gate
+       *    authority env, exact integration root, and unified cgroup. Also measured live;
+       *    unlike argv matching, prompt text cannot manufacture it.
        *  - absent — the cached derived-read answered. `active` is only as good as
        *    `asOfAgeMs`, which can be arbitrarily large (measured: 7h). Treat an old
        *    cache-backed reading as a HINT, not a measurement, in EITHER direction.
        *
-       * Emitted only when the lock answered, so the cache-only reply shape is unchanged.
+       * Emitted only when a live authority answered, so the cache-only reply shape is unchanged.
        */
-      activeSource?: 'run-lock';
+      activeSource?: 'run-lock' | 'process-authority';
+      /** P-009: the run is in the pre-lock startup/materialization interval and was
+       * identified from its gate authority stamps, exact integration-root env, and
+       * unified cgroup. Present only with activeSource='process-authority'. */
+      processAuthority?: {
+        workspace: string;
+        harness: string;
+        cgroupPath: string;
+        pid: number;
+      };
       /** Best-effort candidate sha the live run is judging.
        *
        * EI-19327704778173646 — this used to say "from its log head", which was the bug: a
@@ -2964,7 +2982,8 @@ export function computeStages(
      *   active === true   a suite really is running — a verdict IS coming.
      *   active === false  idle — nothing is coming on its own. ⚠ EI-19395922387569240:
      *                     this only earns the word MEASURED when
-     *                     `activeSource === 'run-lock'`. Without it the reading came from
+     *                     `activeSource === 'run-lock'`. A process-authority source is
+     *                     emitted only for active:true; without either source the reading came from
      *                     a cache of unbounded age (measured: 7h), and a stale `false`
      *                     routes this very lever to "fire release:checkpoint-run" — into
      *                     a run that may be live. `livenessNote` says which one it is.
@@ -2980,6 +2999,10 @@ export function computeStages(
      * that fix was reaching for when it reached for `judgingSha`.
      */
     const runInFlight = g.checkpointRunInFlight?.active === true;
+    // P-009 / WI-41252: liveness is published before the candidate during setup.
+    // This is a deliberate WAIT state. Until the live run publishes its sha there
+    // is no honest containment verdict, and every re-fire lever is unsafe.
+    const candidateNotYetPublished = runInFlight && cic.judgingSha === null;
     const runInFlightUnknown = g.checkpointRunInFlight == null;
     const gateBlocked = gateHealth === 'stalled' || gateHealth === 'broken';
     /**
@@ -3069,10 +3092,12 @@ export function computeStages(
       lever: staleVerdictSafeLever(
         g.verdictStaleReasonCode,
         !p.positions.inMain
-          ? notInCandidate
-            ? cic.missingReason === 'uncommitted' || cic.missingReason === 'absent'
-              ? 'git-sync:run (the judged candidate does not contain your change yet)'
-              : // EI-18797292094433710: 'newer-commit' with a run ALREADY IN FLIGHT must
+          ? candidateNotYetPublished
+            ? null
+            : notInCandidate
+              ? cic.missingReason === 'uncommitted' || cic.missingReason === 'absent'
+                ? 'git-sync:run (the judged candidate does not contain your change yet)'
+                : // EI-18797292094433710: 'newer-commit' with a run ALREADY IN FLIGHT must
                 // not route to a re-fire. The file merely moved since the cut — a peer's
                 // edit does that too — so the in-flight candidate may already carry the
                 // change, and a re-fire would throw away a verdict that is minutes from
@@ -3085,10 +3110,10 @@ export function computeStages(
                 // falls through to the lever deliberately: the caller is told the truth by
                 // `livenessNote`, and `release:checkpoint-run` REFUSES a second fire anyway,
                 // so a needless fire attempt is cheap while a false "wait" costs hours.
-                runInFlight
-                ? null
-                : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
-            : // A run is ALREADY IN FLIGHT judging a candidate that carries this change: a
+                  runInFlight
+                  ? null
+                  : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
+              : // A run is ALREADY IN FLIGHT judging a candidate that carries this change: a
               // verdict covering it is coming, so waiting is the correct move and there is
               // nothing to fire. Telling the caller to run release:checkpoint-run here is
               // actively wrong — the gate is a singleton, so a second fire is REFUSED, and
@@ -3441,18 +3466,53 @@ const realReadCheckpointRunSnapshot = async (): Promise<{
 interface CheckpointRunLockReading {
   held: boolean;
   elapsedSec: number | null;
+  /** Positive liveness source. Clear readings remain run-lock measurements. */
+  source?: 'run-lock' | 'process-authority';
   /** Approximate lock-owner start, derived from the same live elapsed reading. */
   startedAtMs?: number | null;
   /** Verified lock-owner PID, when the underlying probe can provide it. */
   pid?: number | null;
+  processAuthority?: {
+    workspace: string;
+    harness: string;
+    cgroupPath: string;
+    pid: number;
+  };
 }
 
 const realReadCheckpointRunLock = async (root: string): Promise<CheckpointRunLockReading | null> => {
   try {
-    const { isCheckpointRunLockHeldCheap } = await import('./release-checkpoint-launch');
+    const { isCheckpointRunLockHeldCheap, readCheckpointProcessAuthorityCheap } =
+      await import('./release-checkpoint-launch');
     const reading = isCheckpointRunLockHeldCheap(root);
+    if (!reading.held) {
+      const authority = readCheckpointProcessAuthorityCheap(root);
+      if (authority.probeFailed) return null;
+      if (
+        authority.active &&
+        authority.pid !== null &&
+        authority.cgroupPath &&
+        authority.workspace &&
+        authority.harness
+      ) {
+        return {
+          held: true,
+          elapsedSec: authority.elapsedSec,
+          startedAtMs: authority.startedAtMs,
+          pid: authority.pid,
+          source: 'process-authority',
+          processAuthority: {
+            workspace: authority.workspace,
+            harness: authority.harness,
+            cgroupPath: authority.cgroupPath,
+            pid: authority.pid,
+          },
+        };
+      }
+    }
     return {
       ...reading,
+      source: 'run-lock',
       // The lock probe computes elapsedSec from owner.json's acquisition timestamp. Preserve
       // that same identity for the mapper instead of allowing a cached systemd run's start
       // timestamp to pair with this lock's elapsed reading.
@@ -3626,7 +3686,10 @@ export function mapCheckpointRunInFlight(
       ? { terminalEvidence: cachedRun!.terminalEvidence }
       : {}),
     // Emitted only when the lock answered, so the cache-only shape is byte-identical to before.
-    ...(lockDecides ? { activeSource: 'run-lock' as const } : {}),
+    ...(lockDecides ? { activeSource: liveLock?.source ?? ('run-lock' as const) } : {}),
+    ...(active && liveLock?.source === 'process-authority' && liveLock.processAuthority
+      ? { processAuthority: liveLock.processAuthority }
+      : {}),
     // The marker is an observation the run published about ITSELF; `candidate` here is at best a
     // log read and at worst (cron) a live-worktree inference. Prefer the observation.
     candidate: marker ? marker.refiringCandidate : candMarker ? candMarker.candidate : candidate,
@@ -5065,6 +5128,7 @@ export async function gitPipelinePosition(
       judgingShaSource: changeInCandidate.judgingShaSource,
       judgingContainsPath: changeInCandidate.judgingContainsPath,
       verdictUnknownLegs,
+      checkpointRunInFlight,
     }),
     gateOwnership: gate.ownership?.assessment ?? null,
     deployedSha: assessDeployedSha({

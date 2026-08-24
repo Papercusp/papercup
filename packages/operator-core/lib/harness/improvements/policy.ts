@@ -444,6 +444,18 @@ export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' 
   if (c.watchdogKey && /^shared-hive:peer-federation-silence:/.test(c.watchdogKey)) {
     return 'shared-hive peer federation silence (peer liveness/announce-admission, not code)';
   }
+  // EI-21322935352272541: the HOST-WIDE form of the same reading — "this host
+  // admits no remote log in ANY booted scope". It is the identical
+  // announce/admission-path condition, so it must land in the identical
+  // infra-environment lane; it simply is not harness-scoped, so it carries NO
+  // trailing `:<harness>` segment and the anchored match above cannot see it.
+  // Missing this reintroduces the exact regression that match was added for:
+  // default D-005 classifies it `code-bug` -> tier=auto -> the watchdog
+  // re-dispatches an auto-implement attempt every tick at a root cause no worker
+  // can fix (measured there: repeatCount 24 before the fix).
+  if (c.watchdogKey === 'shared-hive:host-admits-no-remote-logs') {
+    return 'shared-hive host-wide admission outage (announce/admission path, not code)';
+  }
   const infraPath = (c.paths ?? []).find((p) => INFRA_PATH_PATTERNS.some((pat) => matchGlob(pat, p)));
   if (infraPath) return `path "${infraPath}"`;
   return null;

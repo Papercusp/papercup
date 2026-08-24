@@ -115,65 +115,89 @@ export function doorSafePageBytes(
   return Math.min(requestedBytes, fits);
 }
 
-const readArgs = z
-  .object({
-    file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
-    uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
-    offset: z.number().int().nonnegative().optional().describe(`1-based line to start from. ${LINE_WINDOW_EXCLUSIVITY}`),
-    limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}). ${LINE_WINDOW_EXCLUSIVITY}`),
-    tail: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .describe(`Read the LAST N lines instead of reading forward — the \`tail -n N\` equivalent. Ignores offset. ${LINE_WINDOW_EXCLUSIVITY}`),
-    raw: z
-      .boolean()
-      .optional()
-      .describe('Return the selected text window without the path header, line-number prefixes, or paging footer. Use when the result will be written back. Raw text windows are mutually exclusive with byte windows (byte_offset, byte_limit).'),
-    byte_offset: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe(`0-based byte offset for an exact base64 page. Use with byte_limit. ${BYTE_WINDOW_EXCLUSIVITY}`),
-    byte_limit: z
-      .number()
-      .int()
-      .positive()
-      .max(MAX_BYTE_PAGE)
-      .optional()
-      .describe(
-        `Bytes to return as base64 (max ${MAX_BYTE_PAGE}), an UPPER BOUND — the page is clamped to ` +
+const readPathArgs = {
+  file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
+  uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
+};
+
+const lineWindowArgs = z.object({
+  ...readPathArgs,
+  offset: z.number().int().nonnegative().optional().describe(`1-based line to start from. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}). ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(`Read the LAST N lines instead of reading forward — the \`tail -n N\` equivalent. Ignores offset. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z
+    .boolean()
+    .optional()
+    .describe('Return the selected text window without the path header, line-number prefixes, or paging footer. Use when the result will be written back. Raw text windows are mutually exclusive with byte windows (byte_offset, byte_limit).'),
+  byte_offset: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
+});
+
+const byteWindowArgs = z.object({
+  ...readPathArgs,
+  offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z.never().optional().describe('Raw text windows are mutually exclusive with byte windows (byte_offset, byte_limit).'),
+  byte_offset: z.number().int().nonnegative().describe(`0-based byte offset for an exact base64 page. Use with byte_limit. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_BYTE_PAGE)
+    .describe(
+      `Bytes to return as base64 (max ${MAX_BYTE_PAGE}), an UPPER BOUND — the page is clamped to ` +
         `fit the result door, so read byte_length and follow next_cursor. Use with byte_offset. ${BYTE_WINDOW_EXCLUSIVITY}`,
-      ),
-    content_indexes: z
-      .array(z.number().int().nonnegative())
-      .min(1)
-      .max(64)
-      .optional()
-      .describe(`For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result. ${CONTENT_INDEX_EXCLUSIVITY}`),
-    evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).optional().describe(
-      `For a stable result-door reference, resolve only the JSON values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
     ),
-  })
-  .superRefine((args, refinementCtx) => {
-    if (
-      args.evidence_class &&
-      (args.content_indexes ||
-        args.byte_offset !== undefined ||
-        args.byte_limit !== undefined ||
-        args.offset !== undefined ||
-        args.limit !== undefined ||
-        args.tail !== undefined)
-    ) {
-      refinementCtx.addIssue({
-        code: 'custom',
-        path: ['evidence_class'],
-        message: 'evidence_class cannot be combined with content, line, or byte windows.',
-      });
-    }
-  });
+  content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
+});
+
+const contentIndexArgs = z.object({
+  ...readPathArgs,
+  offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z.boolean().optional().describe('Return the selected content items without altering the stable reference selection.'),
+  byte_offset: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  content_indexes: z
+    .array(z.number().int().nonnegative())
+    .min(1)
+    .max(64)
+    .describe(`For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
+});
+
+const evidenceClassArgs = z.object({
+  ...readPathArgs,
+  offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z.boolean().optional().describe('Return the selected evidence values without altering the stable reference selection.'),
+  byte_offset: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).describe(
+    `For a stable result-door reference, resolve only the JSON values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
+  ),
+});
+
+/**
+ * Keep the mutually exclusive read modes in the published JSON Schema as well
+ * as in runtime validation. A single optional object plus superRefine only
+ * describes the conflict in prose; callers then discover it after dispatch.
+ * The `z.never().optional()` fields emit the `not` constraints that make each
+ * anyOf branch reject the other window modes.
+ */
+const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs]);
 
 export default defineTool({
   name: 'capability:read',

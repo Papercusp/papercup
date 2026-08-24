@@ -73,7 +73,8 @@ vi.mock('../../../events/await/engine', () => ({
 }));
 
 import whoamiTool from '../tools/whoami';
-import { boundInboxEntries } from '../tools/inbox';
+import inboxTool, { boundInboxEntries } from '../tools/inbox';
+import feedTool from '../tools/feed';
 import ackTool from '../tools/ack';
 import threadTool from '../tools/thread';
 import watermarkTool from '../tools/watermark';
@@ -152,7 +153,7 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
       expect(call.note).toMatch(/D-002/);
       // Every arg the redirect teaches must exist on the target's live schema —
       // an authored call that feed rejects is worse than no hint at all.
-      const feedShape = (feedTool.args as z.AnyZodObject).shape;
+      const feedShape = (feedTool.args as { shape: Record<string, unknown> }).shape;
       for (const taughtArg of Object.keys(call.args)) {
         expect(feedShape, `coord:feed declares \`${taughtArg}\``).toHaveProperty(taughtArg);
       }
@@ -160,7 +161,7 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
   });
 
   it('keeps since/since_ts UNDECLARED on the inbox schema (redirects fire only for unknown keys)', () => {
-    const shape = (inboxTool.args as z.AnyZodObject).shape;
+    const shape = (inboxTool.args as { shape: Record<string, unknown> }).shape;
     for (const key of redirectKeys) {
       expect(shape, `inbox must not declare \`${key}\``).not.toHaveProperty(key);
     }
