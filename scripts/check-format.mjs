@@ -221,10 +221,12 @@ const RANGE_CHECK_EXTENSIONS = new Set([
 ]);
 
 export const FORMAT_USAGE = `Usage:
-  npm run format:check:scoped -- <file...>
-  npm run format:write:scoped -- <file...>
+  npm run format:check:scoped -- [--new-file <file>] <file...>
+  npm run format:write:scoped -- [--new-file <file>] <file...>
 
-Check or write only the changed ranges of one or more explicit files in the repository.
+Check or write only the changed ranges of explicit files in the repository. Repeat
+--new-file for files created by the current task; those files are checked or written
+as complete files even if git-sync has already committed them.
 `;
 
 /** Validate and normalize explicit in-repository file paths. */
@@ -294,6 +296,31 @@ export function buildPrettierArgs(cli, repoPath, range, mode = "check") {
   ];
 }
 
+/** Build a whole-file Prettier invocation for an explicitly task-created file. */
+export function buildPrettierWholeFileArgs(cli, repoPath) {
+  return [cli, "--ignore-unknown", "--stdin-filepath", repoPath];
+}
+
+function formatWholeFileWithPrettier(cli, repoPath, source) {
+  const result = spawnSync(
+    process.execPath,
+    buildPrettierWholeFileArgs(cli, repoPath),
+    {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      input: source,
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      (result.stderr || `prettier failed for ${repoPath}`).trim(),
+    );
+  }
+  return result.stdout;
+}
+
 export function buildPrettierStdinArgs(cli, repoPath, range) {
   return [
     cli,
@@ -340,20 +367,74 @@ export function rangeFormattingDiffers(source, formatted, range) {
   );
 }
 
+function splitNewFileArgs(raw) {
+  const paths = [];
+  const newFilePaths = [];
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const argument = raw[index];
+    if (argument === "--new-file") {
+      const value = raw[index + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("`--new-file` requires an explicit file path");
+      }
+      newFilePaths.push(value);
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--new-file=")) {
+      const value = argument.slice("--new-file=".length);
+      if (!value) {
+        throw new Error("`--new-file` requires an explicit file path");
+      }
+      newFilePaths.push(value);
+      continue;
+    }
+    paths.push(argument);
+  }
+
+  return { paths, newFilePaths };
+}
+
 export function parseFormatCliArgs(args) {
   const raw = args[0] === "--" ? args.slice(1) : [...args];
   if (raw.includes("--help") || raw.includes("-h")) {
     return { mode: "help", paths: [] };
   }
   const write = raw[0] === "--write";
-  return {
+  const { paths: rawPaths, newFilePaths: rawNewFilePaths } = splitNewFileArgs(
+    write ? raw.slice(1) : raw,
+  );
+  if (rawPaths.length === 0 && rawNewFilePaths.length === 0) {
+    throw new Error(
+      "provide one or more explicit file paths after `npm run format:check:scoped --`",
+    );
+  }
+  const paths = rawPaths.length === 0 ? [] : normalizeScopedPaths(rawPaths);
+  const newFilePaths =
+    rawNewFilePaths.length === 0
+      ? []
+      : normalizeScopedPaths(rawNewFilePaths);
+  const pathSet = new Set(paths);
+  const duplicate = newFilePaths.find((path) => pathSet.has(path));
+  if (duplicate) {
+    throw new Error(
+      `file cannot be both range-scoped and --new-file: ${duplicate}`,
+    );
+  }
+
+  const parsed = {
     mode: write ? "write" : "check",
-    paths: normalizeScopedPaths(write ? raw.slice(1) : raw),
+    paths,
   };
+  if (newFilePaths.length > 0) parsed.newFilePaths = newFilePaths;
+  return parsed;
 }
 
 function main() {
-  const { mode, paths } = parseFormatCliArgs(process.argv.slice(2));
+  const { mode, paths, newFilePaths = [] } = parseFormatCliArgs(
+    process.argv.slice(2),
+  );
   if (mode === "help") {
     console.log(FORMAT_USAGE);
     return;
@@ -361,12 +442,15 @@ function main() {
   const label =
     mode === "write" ? "format:write:scoped" : "format:check:scoped";
   let checkedRanges = 0;
+  let checkedWholeFiles = 0;
   let failedRanges = 0;
+  let zeroRangePaths = 0;
 
   for (const repoPath of paths) {
     const source = readFileSync(resolve(REPO_ROOT, repoPath), "utf8");
     const lineRanges = changedLineRanges(repoPath, source);
     if (lineRanges.length === 0) {
+      zeroRangePaths += 1;
       console.log(`${label}: no added lines in ${repoPath}`);
       continue;
     }
@@ -417,14 +501,47 @@ function main() {
     }
   }
 
+  for (const repoPath of newFilePaths) {
+    const source = readFileSync(resolve(REPO_ROOT, repoPath), "utf8");
+    if (!RANGE_CHECK_EXTENSIONS.has(extname(repoPath))) {
+      console.log(`${label}: skipped non-code path ${repoPath}`);
+      continue;
+    }
+
+    checkedWholeFiles += 1;
+    try {
+      const formatted = formatWholeFileWithPrettier(
+        prettierCli(),
+        repoPath,
+        source,
+      );
+      if (mode === "write") {
+        writeFileSync(resolve(REPO_ROOT, repoPath), formatted, "utf8");
+      } else if (formatted !== source) {
+        failedRanges += 1;
+      }
+    } catch (error) {
+      failedRanges += 1;
+      console.error(
+        `${label}: ${repoPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  if (paths.length > 0 && zeroRangePaths === paths.length && newFilePaths.length === 0) {
+    console.warn(
+      `${label}: warning: every requested path has no added lines; if these files were authored by this task, rerun with --new-file <path> so git-sync cannot hide their formatting ranges`,
+    );
+  }
+
   if (failedRanges > 0) {
     console.error(
-      `${label}: ${failedRanges}/${checkedRanges} changed range(s) ${mode === "write" ? "failed to write" : "need formatting"}`,
+      `${label}: ${failedRanges}/${checkedRanges + checkedWholeFiles} checked unit(s) ${mode === "write" ? "failed to write" : "need formatting"}`,
     );
     process.exitCode = 1;
   } else {
     console.log(
-      `${label}: ${checkedRanges} changed range(s) ${mode === "write" ? "written" : "checked"}`,
+      `${label}: ${checkedRanges} changed range(s), ${checkedWholeFiles} whole file(s) ${mode === "write" ? "written" : "checked"}`,
     );
   }
 }
