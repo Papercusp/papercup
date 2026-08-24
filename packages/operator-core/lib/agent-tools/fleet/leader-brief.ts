@@ -52,6 +52,7 @@ import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
 import {
   ensureFleetLeaderControl,
   resolveFleetLeaderTransitionEventKeys,
+  shouldMaintainFleetLeaderControl,
   type LeaderControlOutcome,
 } from '../fleet_registry/leader-control';
 import {
@@ -2800,7 +2801,8 @@ export async function buildLeaderBrief(
       allowLeadershipWrites &&
       fleetRecord &&
       agentIdentity &&
-      ownerId
+      ownerId &&
+      shouldMaintainFleetLeaderControl(fleetRecord.controlState)
     ) {
       const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId, {
         harnessSlug: args.harness,
@@ -2816,7 +2818,13 @@ export async function buildLeaderBrief(
             ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
             : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
       };
-    } else if (disposition.kind === 'is-leader' && allowLeadershipWrites && fleetRecord && ownerId) {
+    } else if (
+      disposition.kind === 'is-leader' &&
+      allowLeadershipWrites &&
+      fleetRecord &&
+      ownerId &&
+      shouldMaintainFleetLeaderControl(fleetRecord.controlState)
+    ) {
       // Also a WRITE (it refreshes the leader's control row), so it is gated
       // too — a viewer reading a leader's brief must not touch that leader's
       // control state.
