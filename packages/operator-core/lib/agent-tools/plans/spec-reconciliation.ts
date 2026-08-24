@@ -50,6 +50,33 @@ import {
  * defect the whole `bounded` convention exists to prevent.
  */
 
+/**
+ * Detects a legacy VAL-* reference in a plan's prose or items.
+ *
+ * ⚠ THIS PATTERN IS LOAD-BEARING AND ITS OBVIOUS FORM IS WRONG IN BOTH DIRECTIONS.
+ *
+ * The first cut was `VAL-[0-9]`, which fails asymmetrically and silently:
+ *
+ *   · TOO NARROW — it requires a DIGIT after the dash, so it misses every plan-scoped id
+ *     (`VAL-production-readiness-acceptance-2026-06-10-001`), whose next char is a letter.
+ *     Measured 2026-08-24: that hid `universal-schema-2026-05-30` — an ACTIVE plan with
+ *     zero clauses that DOES carry plan-scoped VAL text. It rendered as
+ *     `no-behavior-declared` ("a plan that promised nothing") instead of as backfill work.
+ *     That is precisely the silent waiver this module's header says it exists to prevent,
+ *     reintroduced one layer down in the detector itself.
+ *
+ *   · TOO BROAD — a bare `VAL-` substring also matches inside `EVAL-`, `RETRIEVAL-`, and
+ *     any other word ending in VAL, which would manufacture legacy signal from unrelated
+ *     prose. (No such false positive exists in the corpus today, which is exactly why a
+ *     naive widening would look safe and land unnoticed.)
+ *
+ * `\m` is a Postgres word-START anchor, so `VAL-` matches only where a word begins there:
+ * it admits `VAL-028`, `VAL-007-01` and the plan-scoped ids, and rejects `EVAL-1` and
+ * `RETRIEVAL-2`. Both directions are pinned in spec-reconciliation.test.ts — widen or
+ * narrow this only with those cases updated alongside.
+ */
+export const LEGACY_VAL_TEXT_PATTERN = '\\mVAL-[A-Za-z0-9]';
+
 /** Terminal statuses: visible, never blocking (P-012 rollout rule). */
 const HISTORICAL_STATUSES = new Set(['shipped', 'superseded']);
 /** Candidate inputs — reported, but never enforceable until promotion (D-012). */
@@ -372,7 +399,8 @@ async function defaultListPlanAdoption(input: {
                WHERE c.workspace_id = p.workspace_id
                  AND c.harness_slug = p.harness_slug
                  AND c.plan_slug    = p.plan_slug) AS clause_count,
-             (p.content ~ 'VAL-[0-9]' OR p.items::text ~ 'VAL-[0-9]'
+             (p.content ~ ${LEGACY_VAL_TEXT_PATTERN}
+                OR p.items::text ~ ${LEGACY_VAL_TEXT_PATTERN}
                 OR p.items::text ~ 'coversVALs') AS legacy_val
         FROM harness_shared.harness_plans p
        WHERE p.workspace_id = ${scope.workspaceId}
