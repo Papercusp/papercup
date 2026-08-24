@@ -63,11 +63,17 @@ export const searchFilterArgs = {
     .boolean()
     .optional()
     .describe(
-      "Restrict hits to turns that COULD be owner speech: proven owner turns PLUS 'unenrolled-origin' (a user turn carrying no " +
-      "machine-injection envelope, which is how a typed owner directive is stored in every claude/omp/codex session). This is the " +
-      "filter to use when verifying or DENYING a claimed owner directive — owner_only cannot answer that question on a CLI session. " +
-      "It excludes agent-injected, machine-surface, synthetic and assistant turns, so it still removes the loop-fire replays that " +
-      "make an unfiltered search read back an agent's own words as the owner's.",
+      "Widen to turns that COULD be owner speech: proven owner turns PLUS 'unenrolled-origin' — the bucket a typed owner directive " +
+      "actually lands in on every claude/omp/codex session, since those sources cannot enrol their user rows. Use it for RECALL when " +
+      "owner_only returns its structural zero. " +
+      "⚠ CANDIDATES, NOT PROOF, and the gap is large: 'unenrolled-origin' means only 'no machine envelope was found', which is also " +
+      "true of machine text that never carried one. Measured 2026-08-24 over 13,917 real claude rows, at least 7,637 (55%) are " +
+      "machine-shaped — Kettle/Mug system prompts, '[await-event] … fired' wake injections, '/compact …' directives, harness retry " +
+      "text — sitting beside genuine owner turns. So a hit here is a CANDIDATE to read, never evidence on its own, and a NON-empty " +
+      "result is not confirmation any more than an empty one is denial. Read each hit's provenance and its text before attributing " +
+      "anything to the owner. What this filter does buy is real but bounded: it drops the ~112k rows PROVABLY machine (agent-injected, " +
+      "machine-surface) plus assistant turns, so the loop-fire replays that make an unfiltered search read an agent's own words back " +
+      "as the owner's are gone.",
     ),
   session: z
     .string()

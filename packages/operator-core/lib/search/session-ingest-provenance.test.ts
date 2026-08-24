@@ -124,7 +124,7 @@ describe('stampTurnProvenance', () => {
     }
   });
 
-  it('keeps machine-injected verdicts OUT of the candidate set, so widening cannot revive false confirmation', () => {
+  it('keeps ENVELOPED machine verdicts out of the candidate set — the bound on how far widening may go', () => {
     // The inverse failure turn-origin.ts exists to kill: a loop-fire replay
     // reading back as owner speech. `owner_candidates` is deliberately wider
     // than `owner_only` but must never widen this far.
@@ -136,6 +136,42 @@ describe('stampTurnProvenance', () => {
     const assistant = row({ speaker: 'assistant', text: 'I will do that next.' });
     stampTurnProvenance(assistant);
     expect(OWNER_CANDIDATE_TURN_VERDICTS).not.toContain(assistant.turn_origin_verdict);
+  });
+
+  /**
+   * WHAT THE TEST ABOVE DOES NOT BUY — pinned so nobody reads it as more.
+   *
+   * Excluding `agent-injected` bounds the widening at ENVELOPED machine turns
+   * only. Machine text that never carried an envelope lands in
+   * `unenrolled-origin` right beside genuine owner speech, so the candidate set
+   * is a mixed bucket by construction, not by accident.
+   *
+   * This was measured against production, and it is the hole the unit fixtures
+   * could not show: of 13,917 real `unenrolled-origin` claude rows on
+   * 2026-08-24, at least 7,637 (55%) were machine-shaped — Kettle/Mug system
+   * prompts, `[await-event] … fired` wake injections, `/compact …` directives,
+   * harness retry text. A fixture cannot surface that, because the author who
+   * invents the fixture text has the same blind spot as the code.
+   *
+   * Hence `owner_candidates` is a RECALL aid whose hits must be read, never
+   * authorship evidence — and this test fails if that framing is ever quietly
+   * upgraded by folding the candidate set into a proof-shaped one.
+   */
+  it('does not let an un-enveloped machine turn be distinguishable from owner speech by verdict alone', () => {
+    const machine = row({ source_kind: 'claude', text: '[await-event] coord:inbox-wake:su-1 fired — 🔁 Loop wake' });
+    const owner = row({ source_kind: 'claude', text: 'put yourself on auto mode and continue where you left off' });
+    stampTurnProvenance(machine);
+    stampTurnProvenance(owner);
+
+    // Both land in the candidate bucket: the verdict CANNOT separate them.
+    expect(OWNER_CANDIDATE_TURN_VERDICTS).toContain(machine.turn_origin_verdict);
+    expect(OWNER_CANDIDATE_TURN_VERDICTS).toContain(owner.turn_origin_verdict);
+    expect(machine.turn_origin_verdict).toBe(owner.turn_origin_verdict);
+
+    // So the candidate set must stay strictly WIDER than the proven-owner set —
+    // if it ever equals it, someone has turned candidates into a proof claim.
+    expect(OWNER_CANDIDATE_TURN_VERDICTS).toContain(UNENROLLED_ORIGIN_VERDICT);
+    expect(OWNER_CANDIDATE_TURN_VERDICTS.length).toBeGreaterThan(2);
   });
 
   it('keeps the bare native-CLI machine/owner ambiguity explicit instead of using the residual', () => {

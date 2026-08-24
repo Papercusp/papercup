@@ -272,10 +272,11 @@ export default defineTool({
         (filters?.ownerOnly === true
           ? ", which owner_only EXCLUDES. On a CLI session owner_only reaches only turn-stamped owner-dialog answers."
           : ".") +
-        ` To ask whether the owner said something — including to establish that they did NOT — re-run with ` +
-        `owner_candidates:true (proven owner turns PLUS 'unenrolled-origin', still excluding agent-injected and ` +
-        `machine-surface replays). Reading THIS zero as "the owner never said it" is the documented ` +
-        `EI-13472 / WI-37419 failure.`;
+        ` For RECALL, re-run with owner_candidates:true (adds 'unenrolled-origin', still excluding agent-injected and ` +
+        `machine-surface replays) — but READ the hits: that bucket means "no machine envelope found", which is also true of ` +
+        `machine text that never carried one (measured: ~55% of it is machine-shaped), so it yields candidates to inspect, ` +
+        `never proof. No filter can settle authorship here; only reading the turn can. Reading THIS zero as "the owner never ` +
+        `said it" is the documented EI-13472 / WI-37419 failure.`;
     }
 
     if (!zeroHitCaveat && args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {
