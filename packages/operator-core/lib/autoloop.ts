@@ -122,6 +122,52 @@ export function evaluateFireGate(state: FireState | null, now: Date = new Date()
   };
 }
 
+/**
+ * WI-41224 (loop-wake-reliability-2026-08-24 P-001, ruling D-006) — an OWNER-LOOP's
+ * identity is its `role` alone.
+ *
+ * This table serves TWO populations and only one of them wants `harness_slug` in its key:
+ *  - HARNESS-ROLES (`engineer`, `reviewer`, …): genuinely per-harness. Harness X's
+ *    `engineer` IS a different thing from harness Y's, so (workspace, harness, role) is
+ *    the CORRECT identity and is left untouched.
+ *  - OWNER-LOOPS (`loop-su-<uuid>`): per-agent. The uuid is globally unique, so BOTH
+ *    `harness_slug` and `workspace_id` are redundant — workspace is DERIVABLE from the
+ *    owner rather than independent of it. The owner-loop was bolted onto a table keyed
+ *    for harness-roles and inherited a scope it does not have.
+ *
+ * MEASURED 2026-08-24: 1,353 rows for 1,261 distinct owner-loops — 92 duplicates, every
+ * one splitting on `harness_slug` and NONE on `workspace_id`. A split row wedges the
+ * circuit permanently: the gate evaluates one row while `recordFire('ok')` stamps the
+ * other, so `consecutive_errors` can never be cleared by a successful fire. One loop sat
+ * at "consecutive_errors=1, retry in ~1s" for 90 minutes and fired 7 times against 111
+ * expected.
+ *
+ * The same asymmetry is ALREADY known one function down: `pruneStaleFireState` class 3
+ * matches loop rows "by workspace + role rather than `harness_slug`". It was never
+ * carried into the gate.
+ *
+ * ⚠ `workspace_id` stays in the PREDICATE even though it leaves the IDENTITY. It cannot
+ * discriminate (a globally-unique owner lives in exactly one workspace), but this schema
+ * is genuinely multi-tenant and dropping tenant predicates from queries is a different,
+ * worse bug. Identity and filtering are separate questions.
+ */
+const OWNER_LOOP_ROLE_PREFIX = 'loop-su-';
+
+/** True for a per-AGENT loop row, whose identity is `role` alone (D-006). */
+export function isOwnerLoopRole(role: string): boolean {
+  return role.startsWith(OWNER_LOOP_ROLE_PREFIX);
+}
+
+/**
+ * The identity predicate for one fire-state row. Owner-loops match on (workspace, role);
+ * every other role keeps its per-harness identity unchanged.
+ */
+function fireStateWhere(ws: string, slug: string, role: string) {
+  return isOwnerLoopRole(role)
+    ? and(eq(at.workspaceId, ws), eq(at.role, role))
+    : and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug), eq(at.role, role));
+}
+
 /** Read the fire-state row for (active workspace, slug, role), or null. */
 export async function readFireState(slug: string, role: string): Promise<FireState | null> {
   const { db } = getOrgPg();
@@ -129,7 +175,15 @@ export async function readFireState(slug: string, role: string): Promise<FireSta
   const rows = await db
     .select({ last_fired_at: at.lastFiredAt, consecutive_errors: at.consecutiveErrors })
     .from(at)
-    .where(and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug), eq(at.role, role)));
+    .where(fireStateWhere(ws, slug, role))
+    // ⚠ ORDER BY is load-bearing WHILE DUPLICATES EXIST (until the P-002 collapse +
+    // partial unique index land). Widening the owner-loop predicate to (workspace, role)
+    // makes it match EVERY split row, and the previous unordered `rows[0]` would then
+    // pick one NONDETERMINISTICALLY — strictly worse than the old behaviour. Preferring
+    // the most-recently-fired row makes the read deterministic and self-healing: the gate
+    // converges on the row the writer is actually stamping, instead of alternating.
+    // NULLS LAST so a never-fired row never shadows one with real history.
+    .orderBy(dsql`${at.lastFiredAt} DESC NULLS LAST`);
   if (rows.length === 0) return null;
   return {
     lastFiredAt: rows[0].last_fired_at ? new Date(rows[0].last_fired_at) : null,
