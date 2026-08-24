@@ -36,6 +36,10 @@ import {
 /** Mirrors `BulkRunPhase` in packages/operator-core/lib/attention/bulk-run-store.ts. */
 export type BulkRunPhase = 'pending' | 'running' | 'review' | 'complete' | 'failed';
 
+/** URL-owned run reference. It is the running-strip deep link first, then the
+ * grouped report takeover key when the persisted phase reaches `review`. */
+export const INBOX_BULK_RUN_PARAM = 'opcbr';
+
 /** Mirrors `BulkItemOutcome` in the same store. */
 export type BulkItemOutcome = 'pending' | 'auto_resolved' | 'recommended' | 'skipped' | 'failed';
 
@@ -101,6 +105,12 @@ export interface StartResult {
   launched?: boolean;
   launchError?: string;
   error?: string;
+}
+
+export interface BulkAcceptResult {
+  ok: boolean;
+  error?: string;
+  phase?: BulkRunPhase | null;
 }
 
 /** The seed one item contributes to a run — the pane's own snapshot of it. */
@@ -232,7 +242,7 @@ export function useBulkRunOps(): {
     runId: string,
     item: AttentionItem,
     rec: BulkRunItem,
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<BulkAcceptResult>;
 } {
   const start = useCallback(
     async (
@@ -292,14 +302,22 @@ export function useBulkRunOps(): {
           return { ok: false, error: 'the item did not accept that action' };
         }
 
-        await postOp({
+        const recorded = await postOp({
           op: 'accept',
           runId,
           itemId: rec.itemId,
           actionId,
           note: rec.rationale ?? null,
         });
-        return { ok: true };
+        const phase = recorded.phase;
+        return {
+          ok: true,
+          phase:
+            typeof phase === 'string' &&
+            ['pending', 'running', 'review', 'complete', 'failed'].includes(phase)
+              ? (phase as BulkRunPhase)
+              : null,
+        };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }

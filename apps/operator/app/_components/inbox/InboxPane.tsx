@@ -76,7 +76,13 @@ import {
 import { effectiveTier, scopeInboxItems, useInboxAttention } from './use-inbox-pending';
 import InboxBulkStrip from './InboxBulkStrip';
 import InboxBulkRecommendation from './InboxBulkRecommendation';
-import { useBulkRunOps, useInboxBulkRun, type BulkRunItem } from './use-inbox-bulk-run';
+import {
+  INBOX_BULK_RUN_PARAM,
+  useBulkRunOps,
+  useInboxBulkRun,
+  type BulkRunItem,
+} from './use-inbox-bulk-run';
+import { attentionWorkItemId } from './attention-work-item-ref';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
 import SessionChatModal from '../chat/SessionChatModal';
@@ -261,26 +267,6 @@ function searchHaystack(i: AttentionItem): string {
     .toLowerCase();
 }
 
-/** The durable work-item id a source-opening action can show in the shared
- * popup. Kept conservative: an owner-wall ref that is not a WI/EI/F id falls
- * back to the full Queue rather than guessing a destination. */
-function attentionWorkItemId(i: AttentionItem): string | null {
-  const ref = i.ref as Record<string, unknown>;
-  switch (ref.kind) {
-    case 'work-item-needs-human':
-    case 'work-item-blocked':
-      return typeof ref.workItemId === 'string' ? ref.workItemId : null;
-    case 'improvement':
-      return typeof ref.issueId === 'string' ? ref.issueId : null;
-    case 'owner-wall':
-      return typeof ref.wallRef === 'string' && /^(?:WI|EI|F)-\d+$/i.test(ref.wallRef)
-        ? ref.wallRef.toUpperCase()
-        : null;
-    default:
-      return null;
-  }
-}
-
 function InboxRowIcon({ kind }: { kind: AttentionItem['kind'] }) {
   if (kind === 'plan-item') return <ClipboardList size={17} aria-hidden="true" />;
   if (kind === 'blocked-session' || kind === 'conversation') {
@@ -310,7 +296,7 @@ export default function InboxPane() {
   // In the URL like every other pane selection, so a run is deep-linkable and
   // agent-driveable; empty ⇒ the strip reads the workspace's LATEST run, which
   // is what "is there a run I should be showing?" actually means on open.
-  const [bulkRunId, setBulkRunId] = useQueryState('opcbr', parseAsString);
+  const [bulkRunId, setBulkRunId] = useQueryState(INBOX_BULK_RUN_PARAM, parseAsString);
   // The "chat-grade session context" popup (P-007): which agent's live session
   // to show, keyed by ownerAgentId.
   const [chatOwner, setChatOwner] = useQueryState('opcsession', parseAsString);
