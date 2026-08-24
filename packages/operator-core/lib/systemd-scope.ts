@@ -296,6 +296,16 @@ export interface TaskScopeProperties {
   tasksMax?: number | null;
   runtimeMaxSec?: number | null;
   /**
+   * Garbage-collect failed units immediately (default true).
+   *
+   * Task-manager callers set this false: a failed unit is the only durable
+   * source of `Result=oom-kill|timeout|exit-code`, ExecMainStatus, MemoryPeak,
+   * and InvocationID. The task writer snapshots those properties, persists them
+   * in `task_ledger`, then calls `reset-failed`, so retention is bounded by the
+   * writer rather than lost before it can observe the cause.
+   */
+  collectFailedUnit?: boolean;
+  /**
    * EI-21229453838112711 — the directory the PAYLOAD runs in. Only a transient
    * SERVICE needs this. A `--scope` payload is forked from the systemd-run
    * client and inherits its cwd, so the scope path is already correct and
@@ -315,6 +325,10 @@ export interface TaskScopeProperties {
 
 function appendTaskProperties(argv: string[], props: TaskScopeProperties): void {
   if (props.memoryMaxBytes && props.memoryMaxBytes > 0) {
+    // MemoryPeak is a terminal fact only when accounting is explicitly enabled.
+    // This is what lets the task ledger distinguish a cgroup-cap OOM from an
+    // unrelated signal after the cgroup directory itself has disappeared.
+    argv.push('--property=MemoryAccounting=yes');
     argv.push(`--property=MemoryMax=${Math.floor(props.memoryMaxBytes)}`);
     // WI-41206: defaults to 'allow'. This used to hardcode MemorySwapMax=0 on the reasoning
     // that "swap-thrash IS the event-loop freeze" — true of the bg-host ORCHESTRATOR that
@@ -406,7 +420,7 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
     '--user',
     ...(kind === 'scope' ? ['--scope'] : ['--pipe', '--wait']),
     '--quiet',
-    ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+    ...(props.collectFailedUnit === false ? [] : SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS),
     `--unit=${props.unit}`,
     `--slice=${props.slice}`,
   ];
