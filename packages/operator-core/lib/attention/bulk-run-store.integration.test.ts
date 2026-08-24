@@ -717,6 +717,71 @@ describe('attention bulk-run store (real PG)', () => {
       expect(items.filter((i) => i.outcome === 'pending')).toHaveLength(2);
     });
 
+    it('rejects every prior-owner write after restart rotates the resolver owner', async () => {
+      const run = await createRun({ items: seed('rs-owner'), runId: `rs-owner-${Date.now()}` });
+      await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-prior' });
+      expect(
+        await failRunIfExecuting({
+          runId: run.runId,
+          resolverOwner: 'su-prior',
+          error: 'prior resolver exited',
+        }),
+      ).toMatchObject({ phase: 'failed', resolverOwner: 'su-prior' });
+
+      const restarted = await restartRun({ runId: run.runId, resolverOwner: 'su-replacement' });
+      expect(restarted.ok).toBe(true);
+      if (!restarted.ok) return;
+      expect(restarted.run).toMatchObject({ phase: 'pending', resolverOwner: 'su-replacement' });
+
+      const execute = vi.fn(async () => ({ resolved: true }));
+      const audit = vi.fn(async () => undefined);
+      const action = await executeBulkRunAction({
+        runId: run.runId,
+        itemId: 'coord-escalation:rs-owner-1',
+        actionId: 'resolve',
+        rationale: 'stale resolver must not act',
+        resolverOwner: 'su-prior',
+        execute,
+        audit,
+      });
+      expect(action.refused).toEqual({ reason: 'resolver_owner_mismatch', phase: 'pending' });
+      expect(execute).not.toHaveBeenCalled();
+      expect(audit).not.toHaveBeenCalled();
+
+      const report = await reportOutcomes({
+        runId: run.runId,
+        resolverOwner: 'su-prior',
+        outcomes: [
+          {
+            itemId: 'coord-escalation:rs-owner-1',
+            outcome: 'auto_resolved',
+            actionId: 'resolve',
+          },
+        ],
+      });
+      expect(report.refused).toEqual({ reason: 'resolver_owner_mismatch', phase: 'pending' });
+      expect(report.updated).toEqual([]);
+      expect(await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-prior' })).toBeNull();
+      expect(
+        await failRunIfExecuting({
+          runId: run.runId,
+          resolverOwner: 'su-prior',
+          error: 'late prior-owner exit observer',
+        }),
+      ).toBeNull();
+      expect(await settleRunPhase({ runId: run.runId, resolverOwner: 'su-prior' })).toBeNull();
+
+      const unchanged = await getRun(run.runId, ws());
+      expect(unchanged).toMatchObject({ phase: 'pending', resolverOwner: 'su-replacement' });
+      expect(unchanged!.heartbeatAt).toBeNull();
+      expect((await getRunItems(run.runId, ws())).every((item) => item.outcome === 'pending')).toBe(true);
+
+      // CONTROL: the replacement owner can still advance the same row.
+      expect(
+        await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-replacement' }),
+      ).toMatchObject({ resolverOwner: 'su-replacement' });
+    });
+
     it('restarts a FAILED run and reuses its click-time launch snapshot rather than current defaults', async () => {
       const run = await createRun({
         items: seed('rs-failed'),

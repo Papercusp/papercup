@@ -39,9 +39,16 @@ const {
   getRunFindings,
   getPendingReviewFindings,
 } = await import('./run-store');
-const { BulkRunAlreadyActiveError, createRun, getRun, settleRunPhase } = await import(
-  '../attention/bulk-run-store'
-);
+const {
+  BulkRunAlreadyActiveError,
+  createRun,
+  getRun,
+  setRunPhase,
+  failRunIfExecuting,
+  settleRunPhase,
+  recordRunHeartbeat,
+  restartRun,
+} = await import('../attention/bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 /** Findings shaped like scanner output for two plans (deterministic ids). */
@@ -322,10 +329,80 @@ describe('plan-cleanup run store (real PG)', () => {
     expect(lateAction.refused).toMatchObject({ reason: 'run_authority_revoked', phase: 'review' });
   });
 
+  it('rejects the prior cleanup resolver after restart rotates ownership', async () => {
+    const run = await createCleanupRun();
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-prior' });
+    expect(
+      await seedFindings({
+        runId: run.runId,
+        resolverOwner: 'su-prior',
+        findings: scanFindings(),
+      }),
+    ).toMatchObject({ refused: null });
+    expect(
+      await failRunIfExecuting({
+        runId: run.runId,
+        resolverOwner: 'su-prior',
+        error: 'prior cleanup resolver exited',
+      }),
+    ).toMatchObject({ phase: 'failed', resolverOwner: 'su-prior' });
+
+    const restarted = await restartRun({ runId: run.runId, resolverOwner: 'su-replacement' });
+    expect(restarted.ok).toBe(true);
+    if (!restarted.ok) return;
+    expect(restarted.run).toMatchObject({ phase: 'pending', resolverOwner: 'su-replacement' });
+
+    const reseed = await seedFindings({
+      runId: run.runId,
+      resolverOwner: 'su-prior',
+      findings: scanFindings().map((finding) => ({ ...finding, target: 'stale rewrite' })),
+    });
+    expect(reseed.refused).toEqual({ reason: 'resolver_owner_mismatch', phase: 'pending' });
+    expect(reseed.findings).toEqual([]);
+
+    const execute = vi.fn(async () => ({ dispatched: true }));
+    const action = await executeCleanupFindingAction({
+      runId: run.runId,
+      findingId: 'flip-to-done:papercusp/plan-a#P-001',
+      resolverOwner: 'su-prior',
+      execute,
+    });
+    expect(action.refused).toEqual({ reason: 'resolver_owner_mismatch', phase: 'pending' });
+    expect(execute).not.toHaveBeenCalled();
+
+    const report = await reportFindingOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-prior',
+      reports: [
+        {
+          findingId: 'flip-to-done:papercusp/plan-a#P-001',
+          outcome: 'auto_applied',
+        },
+      ],
+    });
+    expect(report.refused).toEqual({ reason: 'resolver_owner_mismatch', phase: 'pending' });
+    expect(report.updated).toEqual([]);
+    expect(await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-prior' })).toBeNull();
+    expect(await settleRunPhase({ runId: run.runId, resolverOwner: 'su-prior' })).toBeNull();
+
+    const unchanged = await getRun(run.runId);
+    expect(unchanged).toMatchObject({ phase: 'pending', resolverOwner: 'su-replacement' });
+    expect(unchanged!.heartbeatAt).toBeNull();
+    expect((await getRunFindings(run.runId)).every((finding) => finding.outcome === 'pending')).toBe(
+      true,
+    );
+
+    // CONTROL: the replacement owner can still use the same run.
+    expect(
+      await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-replacement' }),
+    ).toMatchObject({ resolverOwner: 'su-replacement' });
+  });
+
   // ── kind-aware settle + review reads ──────────────────────────────────────
 
   it('settles a plan-cleanup run from its FINDINGS: recommended → review, all terminal → complete', async () => {
     const run = await createCleanupRun();
+    await setRunPhase({ runId: run.runId, phase: 'pending', resolverOwner: 'su-resolver' });
     await seedFindings({ runId: run.runId, findings: scanFindings() });
     await reportFindingOutcomes({
       runId: run.runId,
