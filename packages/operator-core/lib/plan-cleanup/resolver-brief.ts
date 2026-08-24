@@ -25,6 +25,8 @@ export function buildCleanupResolverBrief(runId: string, planSlugs: readonly str
     '  counters commit before Stop settles. There is no cooperative check-then-act gap.',
     '- Re-read the manifest before each batch. When stopped:true, halt immediately: take no further',
     '  action, do not report, and do not call backing verbs outside the run.',
+    '- Manifest/action/report calls refresh the current resolver owner\'s heartbeat. An',
+    '  ownershipRevoked response means a restart replaced this process; halt exactly like Stop.',
     '- An actionDispatched:true persistence failure is a reconciliation incident: do not retry it.',
     '- If abandoning the pass, call plans:cleanup-settle { failed:true, error } so nothing is stranded.',
   ].join('\n');

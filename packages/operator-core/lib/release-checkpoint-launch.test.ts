@@ -47,6 +47,7 @@ import {
   classifyReplaceRequest,
   checkpointCandidateContainsAncestor,
   checkpointCandidateContainment,
+  currentCheckpointCandidate,
   renderContainmentWarning,
   assessPreLaunchExclusion,
   renderPreLaunchRefusal,
@@ -56,6 +57,19 @@ import {
 // WI-38356: the control + calibration cases below call the underlying reads directly, to prove
 // the submodule fixture is exercising the blind spot rather than a broken fake.
 import { containingSubmodulePath, excludedCommitsTouchingPath, gitReadFromExecSync } from './candidate-contains';
+
+describe('currentCheckpointCandidate default executor (EI-21367123002341200)', () => {
+  it('supports the exported read helper without an explicit execFn', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ei-213671-current-candidate-'));
+    const result = currentCheckpointCandidate(root);
+
+    expect(result).toEqual({
+      current_head: null,
+      current_candidate: null,
+      quiet_cut_sec: null,
+    });
+  });
+});
 
 // 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —
 // re-fire — truncated the failure output that red was telling you to read. Each run now

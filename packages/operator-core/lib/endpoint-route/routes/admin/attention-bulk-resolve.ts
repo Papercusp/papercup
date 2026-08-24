@@ -53,6 +53,7 @@ import {
   BulkRunAlreadyActiveError,
   createRun,
   failRunIfExecuting,
+  restartRun,
   markItemAccepted,
   setRunPhase,
   settleRunPhase,
@@ -133,6 +134,8 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     '- If you must give up, inbox:bulk-run-settle { failed: true, error } so the owner sees why.',
     '',
     'STOPPING (WI-41022) — Stop is authoritative at the bulk-run-act boundary:',
+    '- Every manifest/action/report call refreshes this resolver owner\'s run heartbeat. Re-read the',
+    '  manifest before each batch; that is both the authority check and the liveness cadence.',
     '- The manifest carries `stopped`. Re-read the manifest before each BATCH of terminal actions,',
     '  and the moment `stopped` is true, HALT: take no further terminal action on any item, do not',
     "  report, and do not re-route the work to an item's own verb outside the run. Stopping is the",
@@ -244,7 +247,8 @@ async function launchResolver(
   runId: string,
   itemCount: number,
   harness: string | null,
-  launch: EffectiveBulkResolverLaunch | null = null,
+  launch: EffectiveBulkResolverLaunch | null,
+  resolverOwner: string,
 ): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
   try {
     const [{ buildConsoleEnvelope }, { spawnHeadless }, { activeWorkspaceId }, { resolveSpawnHostOperatorBaseUrl }] =
@@ -260,7 +264,6 @@ async function launchResolver(
     // A fresh psu launch without --harness is a plain agent (no su bootstrap or
     // inbox tools), so bind it to the workspace's canonical home harness.
     const effectiveHarness = harness?.trim() || operatorHomeHarnessSlug();
-    const resolverOwner = `su-${randomUUID()}`;
     const greetingCmd = buildResolverLaunchCommand({
       workspaceId,
       harness: effectiveHarness,
@@ -367,6 +370,69 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       return Response.json({ ok: true, runId, phase: run?.phase ?? null, dismissed: true });
     }
 
+    if (op === 'restart') {
+      const resolverOwner = `su-${randomUUID()}`;
+      const restarted = await restartRun({ runId, resolverOwner });
+      if (!restarted.ok) {
+        return Response.json(
+          {
+            error: {
+              code: restarted.reason,
+              message: restarted.reason === 'run_not_found'
+                ? `bulk-resolve run ${runId} was not found`
+                : `bulk-resolve run ${runId} is still healthy or no longer restartable`,
+              runId,
+              phase: restarted.phase,
+            },
+          },
+          { status: restarted.reason === 'run_not_found' ? 404 : 409 },
+        );
+      }
+      const launch = resolveBulkResolverLaunch(restarted.run.launchSnapshot);
+      if (!launch.ok || !launch.effective) {
+        await setRunPhase({
+          runId,
+          phase: 'failed',
+          error: launch.message ?? 'persisted launch settings are no longer valid',
+        });
+        await invalidateBulkRun();
+        return Response.json(
+          {
+            error: {
+              code: 'invalid_persisted_launch_settings',
+              message: launch.message ?? 'persisted launch settings are no longer valid',
+              runId,
+            },
+          },
+          { status: 409 },
+        );
+      }
+      const launched = await launchResolver(
+        runId,
+        restarted.run.totalItems,
+        restarted.run.harnessSlug,
+        launch.effective,
+        resolverOwner,
+      );
+      const phase = launched.ok ? 'running' : 'failed';
+      await setRunPhase({
+        runId,
+        phase,
+        resolverOwner,
+        ...(launched.ok ? {} : { error: launched.error ?? 'restart launch failed' }),
+      });
+      await invalidateBulkRun();
+      return Response.json({
+        ok: true,
+        runId,
+        phase,
+        restarted: true,
+        launched: launched.ok,
+        preservedOutcomes: restarted.preservedOutcomes,
+        ...(launched.ok ? {} : { launchError: launched.error }),
+      });
+    }
+
     if (op === 'accept') {
       const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
       const actionId = typeof body.actionId === 'string' ? body.actionId.trim() : '';
@@ -405,7 +471,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       {
         error: {
           code: 'unknown_op',
-          message: `op must be one of start | stop | accept | dismiss (got "${op}")`,
+          message: `op must be one of start | stop | restart | accept | dismiss (got "${op}")`,
         },
       },
       { status: 400 },
@@ -497,9 +563,17 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
       harnessSlug: harness,
     });
 
-    const launched = await launchResolver(run.runId, items.length, harness, preflight.launch);
+    const resolverOwner = `su-${randomUUID()}`;
+    await setRunPhase({ runId: run.runId, phase: 'pending', resolverOwner });
+    const launched = await launchResolver(
+      run.runId,
+      items.length,
+      harness,
+      preflight.launch,
+      resolverOwner,
+    );
     if (launched.ok) {
-      await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: launched.sessionId ?? null });
+      await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner });
     } else {
       // Requirement 8: a failed launch is visible as a failed run with its items
       // intact — never a click that silently did nothing.

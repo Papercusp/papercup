@@ -16,6 +16,7 @@ import {
   BulkRunAlreadyActiveError,
   createRun,
   failRunIfExecuting,
+  restartRun,
   setRunPhase,
   settleRunPhase,
 } from '../../../attention/bulk-run-store';
@@ -31,7 +32,10 @@ import {
   preflightResolverLaunch,
   resolverSpawnOutcome,
 } from './attention-bulk-resolve';
-import type { EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
+import {
+  resolveBulkResolverLaunch,
+  type EffectiveBulkResolverLaunch,
+} from '../../../agent-config-constants';
 
 export const MAX_RUN_PLANS = 200;
 
@@ -57,7 +61,8 @@ async function launchCleanupResolver(
   runId: string,
   planSlugs: string[],
   harness: string,
-  launch: EffectiveBulkResolverLaunch | null = null,
+  launch: EffectiveBulkResolverLaunch | null,
+  resolverOwner: string,
 ): Promise<{ ok: boolean; sessionId?: string; error?: string }> {
   try {
     const [{ buildConsoleEnvelope }, { spawnHeadless }, { activeWorkspaceId }, { resolveSpawnHostOperatorBaseUrl }] =
@@ -68,7 +73,6 @@ async function launchCleanupResolver(
         import('../../../mcp-base-url'),
       ]);
     const workspaceId = activeWorkspaceId();
-    const resolverOwner = `su-${randomUUID()}`;
     const envelope = await buildConsoleEnvelope({
       workspaceId,
       slug: harness,
@@ -142,6 +146,69 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       await invalidateCleanupRun();
       return Response.json({ ok: true, runId, phase: run?.phase ?? null, dismissed: true });
     }
+    if (op === 'restart') {
+      const resolverOwner = `su-${randomUUID()}`;
+      const restarted = await restartRun({ runId, resolverOwner });
+      if (!restarted.ok) {
+        return Response.json(
+          {
+            error: {
+              code: restarted.reason,
+              message: restarted.reason === 'run_not_found'
+                ? `plan clean-up run ${runId} was not found`
+                : `plan clean-up run ${runId} is still healthy or no longer restartable`,
+              runId,
+              phase: restarted.phase,
+            },
+          },
+          { status: restarted.reason === 'run_not_found' ? 404 : 409 },
+        );
+      }
+      const launch = resolveBulkResolverLaunch(restarted.run.launchSnapshot);
+      if (!launch.ok || !launch.effective) {
+        await setRunPhase({
+          runId,
+          phase: 'failed',
+          error: launch.message ?? 'persisted launch settings are no longer valid',
+        });
+        await invalidateCleanupRun();
+        return Response.json(
+          {
+            error: {
+              code: 'invalid_persisted_launch_settings',
+              message: launch.message ?? 'persisted launch settings are no longer valid',
+              runId,
+            },
+          },
+          { status: 409 },
+        );
+      }
+      const harness = restarted.run.harnessSlug ?? operatorHomeHarnessSlug();
+      const launched = await launchCleanupResolver(
+        runId,
+        restarted.run.seedRefs,
+        harness,
+        launch.effective,
+        resolverOwner,
+      );
+      const phase = launched.ok ? 'running' : 'failed';
+      await setRunPhase({
+        runId,
+        phase,
+        resolverOwner,
+        ...(launched.ok ? {} : { error: launched.error ?? 'restart launch failed' }),
+      });
+      await invalidateCleanupRun();
+      return Response.json({
+        ok: true,
+        runId,
+        phase,
+        restarted: true,
+        launched: launched.ok,
+        preservedOutcomes: restarted.preservedOutcomes,
+        ...(launched.ok ? {} : { launchError: launched.error }),
+      });
+    }
     if (op === 'accept') {
       const findingId = typeof body.findingId === 'string' ? body.findingId.trim() : '';
       if (!findingId) {
@@ -168,7 +235,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       return Response.json({ ok: true, runId, findingId, phase: run?.phase ?? null, accepted: true });
     }
     return Response.json(
-      { error: { code: 'unknown_op', message: `op must be start | stop | accept | dismiss (got "${op}")` } },
+      { error: { code: 'unknown_op', message: `op must be start | stop | restart | accept | dismiss (got "${op}")` } },
       { status: 400 },
     );
   } catch (error) {
@@ -298,12 +365,20 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
       });
     }
 
-    const launched = await launchCleanupResolver(run.runId, planSlugs, harness, preflight.launch);
+    const resolverOwner = `su-${randomUUID()}`;
+    await setRunPhase({ runId: run.runId, phase: 'pending', resolverOwner });
+    const launched = await launchCleanupResolver(
+      run.runId,
+      planSlugs,
+      harness,
+      preflight.launch,
+      resolverOwner,
+    );
     if (launched.ok) {
       await setRunPhase({
         runId: run.runId,
         phase: 'running',
-        resolverOwner: launched.sessionId ?? null,
+        resolverOwner,
       });
     } else {
       await setRunPhase({

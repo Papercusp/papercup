@@ -736,7 +736,7 @@ function pathsBetweenSync(root: string, from: string, to: string, execFn: ExecSy
  *  dependency direction — see checkpointPipelineName's comment for the same constraint). */
 export function currentCheckpointCandidate(
   root: string,
-  execFn: ExecSyncLike,
+  execFn: ExecSyncLike = defaultExecSync,
 ): {
   current_head: string | null;
   current_candidate: string | null;
