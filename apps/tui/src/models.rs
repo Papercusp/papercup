@@ -2189,7 +2189,7 @@ pub struct AgentCtxData {
 
 // ─── Hives tab (p2p swarm roster — pui-hives-tab-2026-06-07) ─────────────────
 
-/// One unified `coord:presence` row — only the fields the Hives tab reads.
+/// One unified `coord:roster` row — only the fields the Hives tab reads.
 /// Federated rows (remote peers projected from `shared_presence` announces)
 /// carry `federated: true` plus the machine/device identity; local session
 /// rows are filtered out client-side. Wire is camelCase.
@@ -2227,14 +2227,14 @@ pub struct PresenceRow {
     pub heartbeat_at: Option<String>,
 }
 
-/// Inner JSON of the `coord:presence` envelope (`content[0].text`). `stale`
-/// is only present when the call passes `include_stale: true`.
+/// Inner JSON of the unified roster envelope (`content[0].text`). The active
+/// projection is the only collection needed here; federated rows retain their
+/// per-row `stale` marker because the retired presence endpoint no longer
+/// provides a separate stale collection.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PresencePayload {
     #[serde(default)]
     pub active: Vec<PresenceRow>,
-    #[serde(default)]
-    pub stale: Vec<PresenceRow>,
 }
 
 // ─── Hive lexicon (pui-hive-lexicon-2026-06-06) ──────────────────────────────
