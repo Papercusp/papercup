@@ -324,7 +324,7 @@ export async function resolveNudgeRecipient(
     return {
       kind: 'mug',
       ownerId: opts.mugOwner,
-      why: `Mug ${opts.mugOwner} is ${verdicts.get(opts.mugOwner)?.sessionState}`,
+      why: `Mug ${opts.mugOwner} is ${verdicts.get(opts.mugOwner)?.sessionState ?? 'unknown'}`,
     };
   }
 
@@ -393,7 +393,7 @@ export async function resolveNudgeRecipient(
       ownerLabel: chosen.ownerLabel,
       why:
         `no deliverable Mug; routed to ${tierWhy} ${chosen.ownerLabel} ` +
-        `(${verdicts.get(chosen.ownerId)?.sessionState}, ${liveSu.length} su candidate(s))`,
+        `(${verdicts.get(chosen.ownerId)?.sessionState ?? 'unknown'}, ${liveSu.length} su candidate(s))`,
     };
   }
 

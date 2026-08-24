@@ -109,7 +109,24 @@ export interface LivenessSubject {
 /** The unified verdict every surface projects from. */
 export interface LivenessVerdict {
   ownerId: string;
-  sessionState: SessionState;
+  /**
+   * The verdict — or `null` when NO wakeability signal was available for this
+   * subject (EI-18771777750306094 / D-038 axis 2: an unknown is reported IN
+   * BAND, never by omission from the result map).
+   *
+   * `null` is NOT a definite state and must never be collapsed into one: it
+   * means "not measured", so `confirmLiveness` is forced true and
+   * `signalMissing` is set alongside it. `classifyReadActionability(null)`
+   * already maps it to 'unknown', which is the intended reading.
+   */
+  sessionState: SessionState | null;
+  /**
+   * Set — and only set — when this verdict carries NO wakeability signal, so
+   * its `wakeable` / `liveTurn` legs are ABSENCE OF EVIDENCE rather than
+   * measurements. Spread-when-present like `loopArmed`, so its absence means
+   * the signal WAS present: the safe reading for a caller that never checks it.
+   */
+  signalMissing?: true;
   wakeable: boolean;
   liveTurn: boolean;
   /**
@@ -323,12 +340,52 @@ export function deriveVerdict(
   };
 }
 
+/** PURE: the in-band UNKNOWN verdict for a subject carrying no wakeability
+ *  signal (EI-18771777750306094). Nothing here is INFERRED from the missing
+ *  signal:
+ *
+ *   - `heartbeatFresh` stays honest — it derives from the subject's OWN
+ *     caller-supplied heartbeat, which is not part of the wakeability leg, so
+ *     it is genuinely known even here.
+ *   - the wakeability-derived booleans are pinned to their no-evidence value
+ *     behind THREE independent markers — a null `sessionState`, `signalMissing`,
+ *     and a forced `confirmLiveness` — so a caller that reads any one of them
+ *     cannot mistake absence of evidence for evidence of absence.
+ *
+ *  Exported so the parity/boundary tests can assert the shape directly. */
+export function unknownVerdict(subject: LivenessSubject, nowMs: number): LivenessVerdict {
+  const hbMs = subject.heartbeatAt ? Date.parse(subject.heartbeatAt) : null;
+  const stale =
+    subject.stale ??
+    (hbMs != null && Number.isFinite(hbMs) ? nowMs - hbMs > PRESENCE_STALE_MS : false);
+  return {
+    ownerId: subject.ownerId,
+    sessionState: null,
+    signalMissing: true,
+    wakeable: false,
+    liveTurn: false,
+    wakeAttemptMiss: false,
+    // Never assume a subject we could not measure is safe to act on.
+    confirmLiveness: true,
+    heartbeatFresh: !stale,
+  };
+}
+
 /**
- * THE liveness oracle: batched verdicts for a set of subjects. Owners with no
- * wakeability signal (a degraded fetch) get NO entry — the caller keeps its
- * legacy "state unknown" behavior, exactly like the per-site fetches did.
- * Fail-soft is the CALLER's choice (wrap in withBoundedTimeout / .catch) so
- * reapers that must not act on partial data can propagate instead.
+ * THE liveness oracle: batched verdicts for a set of subjects.
+ *
+ * TOTAL by construction (EI-18771777750306094): EVERY subject gets an entry.
+ * A subject with no wakeability signal gets an explicit `unknownVerdict`
+ * (`sessionState: null` + `signalMissing`), never silent omission — so a
+ * missing key can only ever mean "you did not ask about this owner", which is
+ * a distinction a bare Map lookup otherwise cannot express. Before this, every
+ * caller had to re-derive its own unknown handling from an absent key, and
+ * `delegated-spawn-outcome-resolve` had to fail closed on one to stay safe.
+ *
+ * Fail-soft is still the CALLER's choice for a whole-batch failure (wrap in
+ * withBoundedTimeout / .catch): the wakeability leg deliberately has no
+ * `.catch()` here, so a fetch rejection propagates rather than quietly
+ * degrading every subject to unknown.
  */
 export async function resolveSessionStates(
   subjects: readonly LivenessSubject[],
@@ -393,7 +450,17 @@ export async function resolveSessionStates(
   };
   for (const s of hydrated) {
     const w = wakeability.get(s.ownerId);
-    if (!w) continue; // no signal (degraded fetch / federated id) — state unknown
+    if (!w) {
+      // D-038 axis 2: report the unknown IN BAND rather than dropping the
+      // subject. Not reachable through the DEFAULT fetch — `fetchWakeability`
+      // emits an entry for every requested id, and its rejection propagates
+      // instead of degrading per-subject — so this is the `fetchWakeabilityFn`
+      // DI seam's path. That is precisely why the unknown must be
+      // REPRESENTABLE: an injected partial map used to shrink the result
+      // silently, and the shrink was indistinguishable from "not asked".
+      out.set(s.ownerId, unknownVerdict(s, nowMs));
+      continue;
+    }
     out.set(
       s.ownerId,
       deriveVerdict(

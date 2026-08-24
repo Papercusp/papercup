@@ -140,7 +140,13 @@ async function defaultLoadMembers(
   const members: DelegatedSpawnMemberFacts[] = [];
   for (const r of rows) {
     const verdict = verdicts.get(r.ownerId);
-    if (!verdict) return null; // fail closed — see the doc comment
+    // EI-18771777750306094: the oracle is now TOTAL, so a missing key can only
+    // mean "not asked about". An unmeasurable member instead arrives IN BAND as
+    // a null `sessionState` — and that is the case this guard was always really
+    // defending against, since projecting an unknown as a definite state is
+    // exactly what flips `honored-live` into `no-response`. Both readings stay
+    // fail-closed.
+    if (!verdict || verdict.sessionState == null) return null; // fail closed — see the doc comment
     members.push({
       ownerId: r.ownerId,
       fleetSlug,
