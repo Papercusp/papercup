@@ -187,7 +187,7 @@ describe('conversation activation audit gate', () => {
   });
 
   it('keeps the activation audit requirement for ordinary plans', async () => {
-    await seedPlan(fx.admin, fx.workspaceId, SLUG, DRAFT);
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
     const result = await withPlanLock<{ ok: true }>(
       {} as never,
       { slug: SLUG, harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test ordinary activation' },
