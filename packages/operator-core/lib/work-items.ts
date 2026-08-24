@@ -54,6 +54,7 @@ import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import {
   autoPickableWhereSql,
+  type BornAdmission,
   isAutoPickable,
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
@@ -2061,6 +2062,22 @@ export interface CreateWorkItemInput {
    * column). Omit ⇒ unplanned/standalone work (source_plan_slug stays NULL).
    */
   sourcePlanSlug?: string | null;
+  /**
+   * ADMISSION GATE (plan work-queue-admission-and-bulk-dedup-2026-08-24, P-002) — the
+   * state this item is BORN with. 'pending' = born-pending, invisible to claim/place
+   * until the promoter judges it (duplicate screening only, never merit); 'auto' = a
+   * filing-time bypass the caller can justify (plan-promoted / critical severity).
+   * Omit ⇒ the column stays NULL, which {@link isAdmitted} reads as admitted — the
+   * pre-gate back-compat default that keeps every direct caller working unchanged.
+   *
+   * STAMPED IN THE INSERT FOR BOTH FAMILIES, never as a post-create UPDATE. A
+   * create-then-demote sequence leaves the row admitted and claimable in the gap
+   * between the two writes, which is precisely the race born-pending exists to close.
+   */
+  admission?: BornAdmission | null;
+  /** WHY it was admitted at filing time (e.g. 'bypass:source-plan-slug'). Recorded on
+   *  `admitted_by`; ignored for 'pending', which nobody has admitted yet. */
+  admittedBy?: string | null;
 }
 
 /** Fire the urgent brain wake for an urgent enqueue (P-006). Lazy import +
@@ -2179,6 +2196,12 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       assignedBy: input.assignedBy,
       parent: input.parent,
       payload: input.payload,
+      // P-002: the born-admission rides in createIssue's own INSERT (which reaches the
+      // base columns through the engineer_issues INSTEAD OF trigger as of migration
+      // 946) — never a post-create UPDATE from here, which would leave the row
+      // admitted and claimable between the two writes.
+      admission: input.admission,
+      admittedBy: input.admittedBy,
     });
     const created = issueToWorkItem(issue);
     // EI-18654138087054247: createIssue tags the coord topic store, which the
@@ -2325,6 +2348,28 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     params.push(assignTo);
     cols.push('taken_by', 'taken_at');
     vals.push(`$${params.length}::text`, 'now()');
+  }
+  // ADMISSION GATE (P-002) — stamped in THIS INSERT, for the same reason taken_by is:
+  // the row must never exist in an admitted state it is about to be demoted out of.
+  // Appended with the same params.length-computed indices as the optionals above, so
+  // it cannot collide with a positional slot regardless of which others are present.
+  // Omitted entirely when the caller passes no admission, leaving the column NULL =
+  // admitted (pre-gate back-compat) rather than writing a value nobody asked for.
+  const bornAdmission: BornAdmission | null = input.admission ?? null;
+  if (bornAdmission) {
+    params.push(bornAdmission);
+    cols.push('admission');
+    vals.push(`$${params.length}::text`);
+    // A 'pending' row has been admitted by nobody: leaving admitted_at/admitted_by
+    // NULL is what lets the promoter (and the stats ledger) tell an unjudged item
+    // apart from one a filing-time bypass already cleared.
+    if (bornAdmission !== 'pending') {
+      cols.push('admitted_at');
+      vals.push('now()');
+      params.push(input.admittedBy ?? null);
+      cols.push('admitted_by');
+      vals.push(`$${params.length}::text`);
+    }
   }
   // Always write the resolved workspace explicitly (never rely on the trigger's stale
   // 'default' fallback — see the resolution comment above).
