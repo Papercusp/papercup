@@ -41,7 +41,12 @@ import {
   readExpectedLifecycleAck,
   type CueAuthorityStamp,
 } from '../cue-authority';
-import { RELAY_PROVENANCE_FIELD, type RelayProvenanceStamp } from '../relay-provenance';
+import {
+  RELAY_PROVENANCE_FIELD,
+  UNVERIFIED_CLAIM_TAG,
+  unverifiedAuthorityClaim,
+  type RelayProvenanceStamp,
+} from '../relay-provenance';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { BODY_REFS_OPT_OUT_FIELD, GATE_REFS_FIELD } from '../ref-hydrate';
 import { resolveGateRefStamps } from '../ref-hydrate-resolve';
@@ -1553,7 +1558,33 @@ async function sendOne(
     }
   }
 
-  const cellHint = cellTranscriptionHint([msg.summary, msg.body].filter(Boolean).join('\n'));
+  // `bodyText`, not `msg.body`: the body is ALWAYS an array of sections (a plain
+  // string is refused by `messageBodyArg`), so the previous
+  // `[msg.summary, msg.body].join('\n')` handed this detector the literal
+  // "[object Object]" and it could only ever see the summary. Same class as the
+  // claim bug below — a detector reading the wrong text reports a confident
+  // clean.
+  const sentText = [msg.summary, bodyText].filter(Boolean).join('\n');
+  const cellHint = cellTranscriptionHint(sentText);
+
+  // WI-41323 — the SENDER-side half of EI-21333824056510800. That item fixed what
+  // the RECEIVER sees: an unbacked "OWNER-VERIFIED DIRECTIVE" now renders prefixed
+  // `[UNVERIFIED authority claim]`. But nothing told the SENDER, so the one agent
+  // who could stop writing unbacked claims is the one party who never learns it
+  // happened — and a `ok:true` read as "delivered as written" invites the next one.
+  //
+  // FLAG AND SEND, NEVER REFUSE: the message is persisted and woken well above
+  // this line; a hit adds a string to the result and changes nothing else. Same
+  // placement contract as `cellHint` for the same reason — a detector must not be
+  // able to affect delivery.
+  //
+  // Computed on the SAME text the renderer flags on (`e.summary || e.body`) with
+  // the SAME predicate, so this PREDICTS the delivered flag instead of offering a
+  // second opinion about it.
+  const claimText = msg.summary || bodyText || '';
+  const authorityClaim = claimText
+    ? unverifiedAuthorityClaim(claimText, relayStamp, cueAuthority)
+    : null;
 
   return {
     ok: true,
@@ -1649,6 +1680,32 @@ async function sendOne(
     // adding a string the sender can read. A transcribed value is worth flagging
     // precisely because a message OUTLIVES the value it quotes.
     ...(cellHint ? { cellHint } : {}),
+    // WI-41323: what every recipient will actually read at the head of this
+    // message's inbox line. `sent:true` is stated first because the natural
+    // misread of a warning on a result is that something was withheld.
+    ...(authorityClaim
+      ? {
+          unverifiedAuthorityClaim: {
+            claim: authorityClaim,
+            sent: true as const,
+            renderedTag: UNVERIFIED_CLAIM_TAG,
+            note:
+              `This message asserts ${authorityClaim.toUpperCase()} authority that the platform could not ` +
+              `verify, so every recipient's inbox line renders it prefixed ${UNVERIFIED_CLAIM_TAG}. ` +
+              `It WAS sent — nothing was withheld or rewritten. ` +
+              (relayStamp
+                ? `You passed a relay reference, but it resolved to tier:'unverified' — that is a check ` +
+                  `that RAN AND FAILED, not a weak pass, so it grounds nothing. Re-send with a relayOf ` +
+                  `the platform can resolve.`
+                : `You passed neither relayOf nor relayQuote, so there was nothing to verify it against. ` +
+                  `To send it backed: relayOf:<the original's msg_id> (copy it from your inbox/feed line), ` +
+                  `relayOf:'owner-turn' when you are relaying the human turn you are currently answering, ` +
+                  `or relayQuote:<a verbatim snippet of those words>.`) +
+              ` If you are stating your OWN judgement rather than relaying someone's directive, say so in ` +
+              `your own voice instead — the flag fires on the claim, not on the decision.`,
+          },
+        }
+      : {}),
   };
 }
 
@@ -2241,7 +2298,44 @@ export default defineTool({
             );
           })()
         : undefined;
-    const warnedEnv = bodyDeliveryWarning ? { ...env, bodyDeliveryWarning } : env;
+    // WI-41323: hoist the unverified-authority-claim flag to the ENVELOPE for the
+    // same reason bodyDeliveryWarning is hoisted — a sender reads the top level,
+    // and a single send still comes back as results[0], one level down. The
+    // per-message object stays where it is; this is the line that gets READ.
+    const claimed = env.results.filter(
+      (result) =>
+        result.ok &&
+        typeof (result as { unverifiedAuthorityClaim?: unknown }).unverifiedAuthorityClaim ===
+          'object' &&
+        (result as { unverifiedAuthorityClaim?: unknown }).unverifiedAuthorityClaim !== null,
+    );
+    const authorityClaimWarning =
+      claimed.length > 0
+        ? (() => {
+            const kinds = [
+              ...new Set(
+                claimed.map(
+                  (result) =>
+                    (result as { unverifiedAuthorityClaim: { claim: string } })
+                      .unverifiedAuthorityClaim.claim,
+                ),
+              ),
+            ].join('/');
+            return (
+              `coord:send delivered ${claimed.length} message${claimed.length === 1 ? '' : 's'} ` +
+              `asserting ${kinds} authority with no verified relay provenance — each renders to its ` +
+              `recipients prefixed ${UNVERIFIED_CLAIM_TAG}. They WERE sent; nothing was withheld. ` +
+              `Read results[].unverifiedAuthorityClaim.note for how to send the claim backed ` +
+              `(relayOf / relayQuote), or restate it in your own voice if it is your judgement ` +
+              `rather than someone else's directive.`
+            );
+          })()
+        : undefined;
+    const warnedEnv = {
+      ...env,
+      ...(bodyDeliveryWarning ? { bodyDeliveryWarning } : {}),
+      ...(authorityClaimWarning ? { authorityClaimWarning } : {}),
+    };
     const failed = env.results.filter((result) => !result.ok);
     if (failed.length > 0) {
       const errors = failed

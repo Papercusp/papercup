@@ -35,15 +35,14 @@ import {
   type RecipientCueScope,
 } from './agent-tools/coordination/cue-authority';
 import {
-  detectAuthorityClaim,
   hasSelfReportedConfidence,
-  isRelayVerified,
   readEvidence,
   readRelayProvenance,
   renderEvidenceTag,
   renderRelayQuoteSuffix,
   SELF_REPORTED_CONFIDENCE_TAG,
   UNVERIFIED_CLAIM_TAG,
+  unverifiedAuthorityClaim,
 } from './agent-tools/coordination/relay-provenance';
 import {
   detectEntryBodyRefs,
@@ -391,11 +390,13 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // position with only a trailing `↪ UNVERIFIED relay` to contradict it. The
     // precedence rule is `isRelayVerified`, shared with resolveClaimProvenance
     // so the renderer and the claim-provenance resolver cannot disagree.
-    const claim = isRelayVerified(relay) ? null : detectAuthorityClaim(raw);
-    const claimFlag =
-      claim === 'owner' || (claim === 'queen' && stamp?.authority !== 'hive-queen')
-        ? `${UNVERIFIED_CLAIM_TAG} `
-        : '';
+    //
+    // WI-41323: that precedence now lives in ONE predicate
+    // (`unverifiedAuthorityClaim`) because coord:send's sender-side warning has
+    // to predict THIS flag exactly — two hand-copies of the rule would drift
+    // into a sender told one thing and a reader shown another.
+    const claim = unverifiedAuthorityClaim(raw, relay, stamp);
+    const claimFlag = claim ? `${UNVERIFIED_CLAIM_TAG} ` : '';
     // coord-authority-hardening P-005: a reply / escalation resolution quotes the
     // message it answers — the delivery seam resolved related_msg_id into a
     // verbatim hydration (relatedQuotes); render it as an inline `⤷ re` suffix so

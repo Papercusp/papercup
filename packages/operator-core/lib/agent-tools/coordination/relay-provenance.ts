@@ -182,6 +182,37 @@ export function detectAuthorityClaim(text: string): 'owner' | 'queen' | null {
   return null;
 }
 
+/**
+ * WOULD A READER SEE THE UNVERIFIED-CLAIM FLAG ON THIS TEXT? The ONE place that
+ * precedence lives — `detectAuthorityClaim` answers "does this text CLAIM
+ * authority", this answers "does that claim ship UNBACKED".
+ *
+ * Two call sites depend on agreeing exactly: the delivery renderer
+ * (`coord-schema`, which prefixes `UNVERIFIED_CLAIM_TAG`) and the SENDER-side
+ * warning on `coord:send`'s result (WI-41323). A sender warned about a flag the
+ * reader does not render — or, worse, NOT warned about one the reader does — is
+ * the same defect class as EI-21333824056510800 one level up: two copies of a
+ * precedence rule drifting apart. Hence one predicate, two callers.
+ *
+ * Precedence, in order:
+ *  - a VERIFIED relay tier answers the claim ⇒ no flag. `isRelayVerified`, never
+ *    `stamp != null`: an `unverified` stamp is a check that RAN AND FAILED.
+ *  - an OWNER claim has no platform-derived stamp that can vouch for it, so it
+ *    always needs a relay tier ⇒ flag.
+ *  - a QUEEN claim on a line whose cueAuthority stamp IS `hive-queen` is already
+ *    platform-verified ⇒ no flag.
+ */
+export function unverifiedAuthorityClaim(
+  text: string,
+  relay: RelayProvenanceStamp | null | undefined,
+  cueAuthority?: { authority?: string } | null,
+): 'owner' | 'queen' | null {
+  const claim = isRelayVerified(relay) ? null : detectAuthorityClaim(text);
+  if (claim === 'owner') return 'owner';
+  if (claim === 'queen' && cueAuthority?.authority !== 'hive-queen') return 'queen';
+  return null;
+}
+
 /** The renderer's prefix tag for a claim the platform could not verify. */
 export const UNVERIFIED_CLAIM_TAG = '[UNVERIFIED authority claim]';
 
