@@ -50,6 +50,7 @@ import {
 } from './scoring';
 import { insertAblationRun, lastAblatedAtByRule, type InsertAblationRunInput } from './store';
 import { resolveLearningPotSlug } from '../learning/pot-scope';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 /** The repo-relative playbook identity recorded on every run row. */
 export const SU_PLAYBOOK_REPO_PATH = 'apps/operator/prompts/papercusp-su-engineer.tools.md';
@@ -247,7 +248,17 @@ export async function runAblationCycle(
 
   const runArm = async (scenario: Scenario, variant: ScenarioVariant): Promise<ArmMetrics> => {
     try {
-      const report = await run(scenario, { forceRepeat: repeat, variant }, runnerDeps);
+      const report = await run(
+        scenario,
+        {
+          forceRepeat: repeat,
+          variant,
+          sutModel: LEARNING_MODEL_SPEC,
+          judgeModel: LEARNING_MODEL_SPEC,
+          simModel: LEARNING_MODEL_SPEC,
+        },
+        runnerDeps,
+      );
       costUsd += reportCostUsd(report);
       return armMetrics(report);
     } catch (err) {

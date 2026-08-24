@@ -44,6 +44,9 @@ const SCENARIOS = [{ id: 's1' }, { id: 's2' }] as unknown as Scenario[];
 interface CallLog {
   scenarioId: string;
   variant: ScenarioVariant | undefined;
+  sutModel?: string;
+  judgeModel?: string;
+  simModel?: string;
 }
 
 function makeDeps(opts: {
@@ -57,8 +60,19 @@ function makeDeps(opts: {
   const deps: Parameters<typeof runAblationCycle>[1] = {
     loadBody: () => BODY,
     scenarios: () => SCENARIOS,
-    runScenarioFn: (async (scenario: Scenario, runnerOpts: { variant?: ScenarioVariant }) => {
-      calls.push({ scenarioId: scenario.id, variant: runnerOpts.variant });
+    runScenarioFn: (async (scenario: Scenario, runnerOpts: {
+      variant?: ScenarioVariant;
+      sutModel?: string;
+      judgeModel?: string;
+      simModel?: string;
+    }) => {
+      calls.push({
+        scenarioId: scenario.id,
+        variant: runnerOpts.variant,
+        sutModel: runnerOpts.sutModel,
+        judgeModel: runnerOpts.judgeModel,
+        simModel: runnerOpts.simModel,
+      });
       return fakeReport(scenario.id, behavior(scenario.id, runnerOpts.variant?.id ?? 'none'));
     }) as never,
     runnerDeps: {} as never,
@@ -96,6 +110,13 @@ describe('runAblationCycle', () => {
     );
 
     expect(calls).toHaveLength(4); // 2 scenarios × 2 arms
+    for (const call of calls) {
+      expect(call).toMatchObject({
+        sutModel: 'gpt-5.6-sol:xhigh',
+        judgeModel: 'gpt-5.6-sol:xhigh',
+        simModel: 'gpt-5.6-sol:xhigh',
+      });
+    }
     const baseline = calls[0]!.variant!;
     const ablated = calls[1]!.variant!;
     expect(baseline.id).toBe(SNAPSHOT_BASELINE_VARIANT);

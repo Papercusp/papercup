@@ -229,6 +229,30 @@ describe('classifyImprovement — infra-environment never auto (EI-408 / D-002 /
     expect(d.protectedHit).toMatch(/stalled-feature/);
     expect(infraEnvironmentHit({ watchdogKey: 'stalled-feature:stalled:some-harness' })).toMatch(/stalled-feature/);
   });
+  it('the HOST-WIDE admission outage takes the same infra lane (EI-21322935352272541 — its key has no :<harness> segment, so the anchored peer-federation-silence match cannot see it)', () => {
+    // Same announce/admission-path condition as its per-scope sibling above, so
+    // the same owner-escalate lane. It is NOT harness-scoped (the whole point:
+    // one host-wide fact, one dedup bucket), which is exactly why the sibling's
+    // `/^shared-hive:peer-federation-silence:/` match misses it. Left unmatched,
+    // D-005 defaults it to code-bug -> tier=auto and the watchdog re-dispatches
+    // an auto-implement attempt every tick at a root cause no worker can fix —
+    // the precise regression EI-20983096990125721 was filed for.
+    const key = 'shared-hive:host-admits-no-remote-logs';
+    expect(infraEnvironmentHit({ watchdogKey: key })).toMatch(/host-wide admission outage/);
+    const d = classifyImprovement(
+      cand({
+        id: 'i8b',
+        kind: 'bug',
+        title: 'shared-hive invariant: this host admits NO remote log in ANY booted scope',
+        watchdogKey: key,
+      }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.tier).not.toBe('auto');
+    // FALSIFIABILITY: the sibling's anchored pattern genuinely does not cover it,
+    // so this branch is load-bearing rather than belt-and-braces.
+    expect(/^shared-hive:peer-federation-silence:/.test(key)).toBe(false);
+  });
   it('shared-hive peer-federation-silence is infra too (EI-20983096990125721: peer liveness/announce, not code — sibling shared-hive kinds like double-completion stay code-bug)', () => {
     const d = classifyImprovement(
       cand({

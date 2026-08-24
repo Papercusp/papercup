@@ -58,6 +58,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { resolveGymAccountWorkspace } from './account-workspace';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
@@ -157,7 +158,7 @@ export interface RunOneAutoloopCycleOptions {
   port?: number;
   /** Real-mode agent command (default env GYM_LOOP_AGENT_CMD / claude sonnet). */
   agentCmd?: string;
-  /** Proposer model — decorrelated from the judge per D-015 (default env / sonnet). */
+  /** Proposer model (default: the canonical learning model). */
   proposerModel?: string;
   /** QD novelty weight ∈ [0,1] (P-011/D-008; default env GYM_LOOP_NOVELTY_WEIGHT / 0.3). */
   noveltyWeight?: number;
@@ -185,11 +186,6 @@ export async function runOneAutoloopCycle(
   slug: string,
   opts: RunOneAutoloopCycleOptions = {},
 ): Promise<AutoloopCycleOutcome> {
-  // The gym judge + agents use the CODE backend (the `claude` CLI), not anthropic-direct — it paces
-  // against the subscription session rather than hammering api.anthropic.com. Set before the
-  // lazy llm-client import below (TEST_BACKEND is read at that module's init). Overridable.
-  process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
-
   const FAKE = opts.fake ?? process.env.GYM_LOOP_FAKE === '1';
   // Explicit pin (opts.port or GYM_LOOP_PORT) always wins; otherwise probe a genuinely-free
   // ephemeral port so concurrent/manual cycles on this box never collide (see
@@ -225,7 +221,7 @@ export async function runOneAutoloopCycle(
           ? null
           : 50;
   const REAL_AGENT_CMD = opts.agentCmd ?? process.env.GYM_LOOP_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
-  const PROPOSER_MODEL = opts.proposerModel ?? process.env.GYM_LOOP_PROPOSER_MODEL ?? 'claude-sonnet-4-6';
+  const PROPOSER_MODEL = opts.proposerModel ?? process.env.GYM_LOOP_PROPOSER_MODEL ?? LEARNING_MODEL_SPEC;
   const NOVELTY_WEIGHT = Math.min(1, Math.max(0, opts.noveltyWeight ?? Number(process.env.GYM_LOOP_NOVELTY_WEIGHT ?? 0.3)));
   const manageRow = opts.manageAutoloopRow ?? true;
   const log = opts.log ?? ((m: string) => process.stdout.write(`[gym-loop] ${m}\n`));

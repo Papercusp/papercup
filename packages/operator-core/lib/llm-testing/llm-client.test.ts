@@ -52,8 +52,12 @@ describe('backendForLlmCall', () => {
     expect(backendForLlmCall(undefined)).toBe('anthropic-direct');
   });
 
-  it('an explicit backend override wins regardless of the model string', () => {
-    expect(backendForLlmCall('gpt-5.5', 'claude-code')).toBe('claude-code');
+  it('a Codex model stays on Responses even when a stale Claude backend override is present', () => {
+    expect(backendForLlmCall('gpt-5.6-sol:xhigh', 'claude-code')).toBe('codex');
+  });
+
+  it('an explicit backend override still wins for a non-Codex model', () => {
+    expect(backendForLlmCall('claude-sonnet-4-6', 'claude-code')).toBe('claude-code');
   });
 });
 

@@ -53,6 +53,12 @@ import type {
 } from '@papercusp/testing-shell/llm';
 
 import { buildCatalog, type BuiltCatalog } from './su-catalog';
+import {
+  callCodexResponsesTurn,
+  isCodexResponsesModel,
+  messagesToResponsesInput,
+  type ResponsesInputItem,
+} from './codex-responses-tool-loop';
 import { renderCoordLegend } from '../../coord-schema';
 import { COORD_LEGEND_MARKER } from '../../desktop-install/splice-tooling-overlay';
 
@@ -74,6 +80,11 @@ const PRICES: Record<string, { in: number; out: number }> = {
   'claude-opus-4-8': { in: 15.0, out: 75.0 },
 };
 function priceFor(model: string): { in: number; out: number } {
+  // Official 5.6 pricing was unavailable during this migration. Do not apply
+  // the unrelated Sonnet fallback price to Codex usage; the shared Responses
+  // bridge likewise leaves unknown-model cost at zero until canonical pricing
+  // metadata is available.
+  if (isCodexResponsesModel(model)) return { in: 0, out: 0 };
   if (PRICES[model]) return PRICES[model];
   const prefix = Object.keys(PRICES).find((m) => model.startsWith(m));
   return prefix ? PRICES[prefix] : { in: 3.0, out: 15.0 };
@@ -387,6 +398,8 @@ export interface SuTargetOpts {
   /** System-prompt loader override (default: the engineer playbook). Returns
    *  the FULL framed prompt text; called lazily per send like loadPlaybook. */
   loadSystemPrompt?: () => string;
+  /** Injectable Responses transport for hermetic target tests. */
+  codexFetch?: typeof fetch;
 }
 
 export class SuTarget implements ChatTarget {
@@ -400,6 +413,7 @@ export class SuTarget implements ChatTarget {
   readonly toolNames: readonly string[];
   private readonly catalog: BuiltCatalog;
   private readonly loadSystemPrompt: () => string;
+  private readonly codexFetch?: typeof fetch;
 
   constructor(opts: SuTargetOpts = {}) {
     this.id = opts.id ?? 'su';
@@ -407,6 +421,7 @@ export class SuTarget implements ChatTarget {
     this.catalog = opts.catalog ?? buildCatalog();
     this.toolNames = [...this.catalog.canonicalBySanitized.values()];
     this.loadSystemPrompt = opts.loadSystemPrompt ?? loadPlaybook;
+    this.codexFetch = opts.codexFetch;
   }
 
   async open(opts: SessionOptions): Promise<ChatSession> {
@@ -423,7 +438,8 @@ export class SuTarget implements ChatTarget {
         : this.loadSystemPrompt,
       override: opts.dispatchOverride,
       ...(opts.variant?.promptOverlay ? { promptOverlay: opts.variant.promptOverlay } : {}),
-      ...(delta.sutModel ? { modelOverride: delta.sutModel } : {}),
+      modelOverride: delta.sutModel ?? opts.sutModel,
+      codexFetch: this.codexFetch,
     });
   }
 }
@@ -437,6 +453,7 @@ interface SessionState {
   promptOverlay?: string;
   /** Variant configDelta.sutModel (P-001) — overrides the env/default model. */
   modelOverride?: string;
+  codexFetch?: typeof fetch;
 }
 
 class SuSession implements ChatSession {
@@ -456,6 +473,10 @@ class SuSession implements ChatSession {
 
   async send(input: TurnInput): Promise<TurnResult> {
     const startMs = performance.now();
+    const model = this.state.modelOverride ?? sutModel();
+    if (isCodexResponsesModel(model)) {
+      return this.sendViaCodex(input, model, startMs);
+    }
     const result: TurnResult = {
       assistantText: '',
       toolCalls: [],
@@ -498,7 +519,6 @@ class SuSession implements ChatSession {
       });
     };
 
-    const model = this.state.modelOverride ?? sutModel();
     const price = priceFor(model);
     const cache = promptCacheEnabled();
     // First system block MUST be the Claude Code identifier (auth framing for the
@@ -595,6 +615,81 @@ class SuSession implements ChatSession {
       clearTimeout(killer);
     }
 
+    result.rawSseTape.push(sse('done', { costUsd: result.costUsd }));
+    result.latencyMs = performance.now() - startMs;
+    return result;
+  }
+
+  /**
+   * Tool-capable GPT path over Responses. Every completed output item is
+   * replayed before the next function result, including encrypted reasoning
+   * requested by the transport helper; no Chat Completions request is used.
+   */
+  private async sendViaCodex(input: TurnInput, model: string, startMs: number): Promise<TurnResult> {
+    const result: TurnResult = {
+      assistantText: '',
+      toolCalls: [],
+      cards: [],
+      controlTags: [],
+      costUsd: 0,
+      latencyMs: 0,
+      finishReason: 'done',
+      rawSseTape: [],
+    };
+    const instructions = [this.state.loadSystemPrompt(), this.state.promptOverlay]
+      .filter((part): part is string => Boolean(part))
+      .join('\n\n');
+    const replay: ResponsesInputItem[] = messagesToResponsesInput(input.messages);
+    const ctrl = new AbortController();
+    const turnCapMs = 240_000;
+    const killer = setTimeout(() => ctrl.abort(new Error(`su Codex turn timed out after ${turnCapMs}ms`)), turnCapMs);
+    killer.unref?.();
+    const price = priceFor(model);
+    try {
+      for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+        let turn: Awaited<ReturnType<typeof callCodexResponsesTurn>>;
+        try {
+          turn = await callCodexResponsesTurn({
+            model,
+            instructions,
+            input: replay,
+            catalog: this.state.catalog,
+            maxOutputTokens: 4096,
+            signal: ctrl.signal,
+            fetchImpl: this.state.codexFetch,
+          });
+        } catch (err) {
+          result.finishReason = 'error';
+          result.error = `model call failed: ${(err as Error).message}`;
+          break;
+        }
+        result.costUsd +=
+          (turn.inputTokens * price.in + turn.outputTokens * price.out) / 1_000_000;
+        if (turn.text) {
+          result.assistantText += turn.text;
+          result.rawSseTape.push(sse('delta', { text: turn.text }));
+        }
+        replay.push(...turn.outputItems);
+        if (turn.toolCalls.length === 0) break;
+
+        const outputs: ResponsesInputItem[] = [];
+        for (const call of turn.toolCalls) {
+          const canonical = this.state.catalog.canonicalBySanitized.get(call.name) ?? call.name;
+          const event: ToolCallEvent = { name: canonical, input: call.input };
+          result.toolCalls.push(event);
+          result.rawSseTape.push(sse('tool_call', event));
+          const toolResult = await this.resolveToolResult(canonical, call.input);
+          outputs.push({
+            type: 'function_call_output',
+            call_id: call.callId,
+            output: toolResult.text,
+          });
+        }
+        replay.push(...outputs);
+      }
+    } finally {
+      clearTimeout(killer);
+    }
     result.rawSseTape.push(sse('done', { costUsd: result.costUsd }));
     result.latencyMs = performance.now() - startMs;
     return result;

@@ -46,8 +46,8 @@ describe('rubricHash', () => {
 });
 
 describe('GYM_JUDGE_RUBRIC_V1', () => {
-  it('pins the frozen Opus judge model and a primary-weighted D1', () => {
-    expect(GYM_JUDGE_RUBRIC_V1.model).toBe('claude-opus-4-8');
+  it('pins the canonical Sol xhigh judge model and a primary-weighted D1', () => {
+    expect(GYM_JUDGE_RUBRIC_V1.model).toBe('gpt-5.6-sol:xhigh');
     const { d1, d2, d3 } = GYM_JUDGE_RUBRIC_V1.weights;
     expect(d1 + d2 + d3).toBeCloseTo(1, 6);
     expect(d1).toBeGreaterThan(d2); // D1 (intent & spec fidelity) is primary

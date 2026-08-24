@@ -677,7 +677,14 @@ describe('buildReleaseTrace', () => {
               },
             },
           }),
-          gate: redGate({ state: 'owner-gone', covered: false, label: 'obsolete fixer gone' }),
+          gate: redGate({
+            state: 'owner-gone',
+            covered: false,
+            spawnId: 'obsolete-fixer',
+            ownerSignature: 'x.test.ts',
+            ageMs: 90 * 60_000,
+            label: 'obsolete fixer gone',
+          }),
         }),
       );
       expect(out.gate.redOwner).toMatchObject({ state: 'owned-live', covered: true });

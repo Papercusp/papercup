@@ -442,7 +442,8 @@ export interface CellSpec {
    *
    * Justified by TWO shipped instances, not speculative generality:
    * `checkpointRunInFlight.candidateSource` ('retriage-marker' authoritative vs 'run-probe'
-   * inferred) and `checkpointRunInFlight.activeSource` ('run-lock' authoritative vs absent).
+   * inferred) and `checkpointRunInFlight.activeSource` ('run-lock' / 'process-authority'
+   * authoritative vs absent).
    */
   headlineSource?: CellHeadlineSource;
   /**

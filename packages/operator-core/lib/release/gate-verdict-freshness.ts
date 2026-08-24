@@ -234,7 +234,7 @@ export interface GateVerdictFreshness {
  */
 export interface CheckpointRunLivenessReading {
   active: boolean;
-  activeSource?: 'run-lock';
+  activeSource?: 'run-lock' | 'process-authority';
 }
 
 /**
@@ -254,7 +254,7 @@ export function reconcileGateVerdictFreshnessWithCheckpointRun(
   if (
     freshness.reasonCode !== 'writer-starved' ||
     measuredActive?.active !== true ||
-    measuredActive.activeSource !== 'run-lock'
+    (measuredActive.activeSource !== 'run-lock' && measuredActive.activeSource !== 'process-authority')
   ) {
     return freshness;
   }
@@ -263,7 +263,7 @@ export function reconcileGateVerdictFreshnessWithCheckpointRun(
     ...freshness,
     reason:
       `the recorded red is unverified because a green-checkpoint run is IN FLIGHT (measured live ` +
-      `via the run lock), so its verdict is pending — do NOT fire release:checkpoint-run or fix ` +
+      `${measuredActive.activeSource === 'run-lock' ? 'via the run lock' : 'via gate authority environment + cgroup'}), so its verdict is pending — do NOT fire release:checkpoint-run or fix ` +
       `the named tests while it runs; wait for this active run's verdict`,
     reasonCode: 'run-in-flight',
   };

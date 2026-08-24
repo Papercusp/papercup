@@ -31,6 +31,7 @@ import {
   type RatePauseDeps,
   type Subject,
 } from '@papercusp/eval-battery';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import { divergenceSignals, type DivergenceSignals } from './divergence';
 import { cutTranscript, intentFromTranscript, renderTurns } from './transcript';
 import {
@@ -50,10 +51,10 @@ export const REPLAY_BASELINE_VARIANT: ReplayVariant = {
   policy: {},
 };
 
-/** The frozen replay rubric (same judge family as the gym's V1). */
+/** The frozen replay rubric (same canonical judge policy as the gym's V1). */
 export const DEFAULT_REPLAY_RUBRIC: BatteryRubric = {
   version: 'replay-v1',
-  model: 'claude-opus-4-8',
+  model: LEARNING_MODEL_SPEC,
   temperature: 0,
   thinkingBudgetTokens: 32_000,
   weights: { d1: 0.5, d2: 0.3, d3: 0.2 },

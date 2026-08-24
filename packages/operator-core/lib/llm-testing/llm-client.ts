@@ -43,23 +43,23 @@ function providerForBackend(backend: AgentBackend): TurnProvider {
 }
 
 /**
- * Backend for the sim-user + judge calls. Defaults to `anthropic-direct`
- * (Claude Max OAuth session, stateless HTTP) but is overridable to any agent
- * backend — set `LLM_TEST_BACKEND=claude-code` to route through the claude
- * CLI instead (e.g. to draw from the CLI's separate rate bucket, paired with
- * a lighter model via LLM_TEST_SIM_MODEL / LLM_TEST_JUDGE_MODEL).
+ * Backend for the sim-user + judge calls. A Codex model id is authoritative:
+ * it always selects the Responses bridge, even when a stale process-wide
+ * `LLM_TEST_BACKEND` still names a Claude transport. Non-Codex models retain
+ * the historical explicit-backend override and otherwise use
+ * `anthropic-direct`.
  */
 const TEST_BACKEND = process.env.LLM_TEST_BACKEND as AgentBackend | undefined;
 const CODEX_GATEWAY_AUTH = 'papercusp-gateway';
 
-function isCodexModel(model: string | undefined): boolean {
+export function isCodexModel(model: string | undefined): boolean {
   const m = model?.trim().toLowerCase() ?? '';
   return /^(chatgpt:|gpt-|openai-codex\/)/.test(m);
 }
 
 export function backendForLlmCall(model: string | undefined, explicitBackend: AgentBackend | undefined = TEST_BACKEND): AgentBackend {
-  if (explicitBackend) return explicitBackend;
-  return isCodexModel(model) ? 'codex' : 'anthropic-direct';
+  if (isCodexModel(model)) return 'codex';
+  return explicitBackend ?? 'anthropic-direct';
 }
 
 /** Map Papercusp's Codex-facing aliases to the bare ids the Codex CLI accepts. */
@@ -263,7 +263,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
           .map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
           .join('\n\n');
 
-  if (backend === 'codex' && TEST_BACKEND === undefined) {
+  if (backend === 'codex') {
     return llmCallViaCodexGateway(opts, model, promptText);
   }
 

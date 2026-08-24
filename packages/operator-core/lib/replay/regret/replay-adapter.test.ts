@@ -13,7 +13,11 @@ import { cutTranscript, parseTranscriptJsonl } from '../transcript';
 import type { ReplayRunner, ReplayStore } from '../types';
 import { parseTranscript } from './transcript-core';
 import type { CandidateChange } from './counterfactual-core';
-import { governedRegretRunner, mapDivergenceTurnToReplayIndex } from './replay-adapter';
+import {
+  DEFAULT_REGRET_REPLAY_MODEL,
+  governedRegretRunner,
+  mapDivergenceTurnToReplayIndex,
+} from './replay-adapter';
 
 const CANDIDATE: CandidateChange = {
   id: 'stop-retry-ladder',
@@ -137,6 +141,10 @@ const priceReq = {
 };
 
 describe('governedRegretRunner.priceFinding', () => {
+  it('pins replay continuations to the canonical learning model', () => {
+    expect(DEFAULT_REGRET_REPLAY_MODEL).toBe('gpt-5.6-sol:xhigh');
+  });
+
   it('prices candidates vs the baseline echo: improvement = Δcomposite / 10', async () => {
     const { runner, recordSpend } = makeRunner();
     const pricing = await runner.priceFinding(priceReq);

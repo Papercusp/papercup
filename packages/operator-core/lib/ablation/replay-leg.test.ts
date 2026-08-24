@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../replay/transcript', () => ({ parseTranscriptJsonl: vi.fn() }));
 
-import { makeAblationReplayLeg, ABLATION_FULL_VARIANT, ABLATION_ABLATED_VARIANT } from './replay-leg';
+import {
+  makeAblationReplayLeg,
+  ABLATION_FULL_VARIANT,
+  ABLATION_ABLATED_VARIANT,
+  DEFAULT_ABLATION_REPLAY_MODEL,
+} from './replay-leg';
 import { parseTranscriptJsonl } from '../replay/transcript';
 
 const mockedParse = vi.mocked(parseTranscriptJsonl);
@@ -31,6 +36,10 @@ const legArg = {
 
 describe('makeAblationReplayLeg', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('pins replay continuations to the canonical learning model', () => {
+    expect(DEFAULT_ABLATION_REPLAY_MODEL).toBe('gpt-5.6-sol:xhigh');
+  });
 
   it('skips with no-cases when no transcript clears the byte floor', async () => {
     const runReplay = vi.fn();

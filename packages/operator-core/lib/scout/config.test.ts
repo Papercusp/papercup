@@ -50,11 +50,7 @@ describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', 
     expect(DEFAULT_SCOUT_CONFIG.novelty.decidedPenalty).toBe(0.15);
     expect(DEFAULT_SCOUT_CONFIG.routing.defaultRail).toBe('improvement');
     expect(DEFAULT_SCOUT_CONFIG.federatedPriming).toEqual({ foreignElites: 3, crowded: 5, empty: 5 });
-    // Anthropic id required — gpt-5.6 is rejected by the ChatGPT-subscription
-    // codex credential (see models.ts); a codex default here bricks ideation.
-    // claude-opus-5: owner mandate 2026-08-16 (P-010 blender-loop-repair-and-opus5-xhigh),
-    // RAW API id only — live-probed on the stateless path before this pin.
-    expect(DEFAULT_SCOUT_CONFIG.models.ideator).toBe('claude-opus-5');
+    expect(DEFAULT_SCOUT_CONFIG.models.ideator).toBe('gpt-5.6-sol:xhigh');
   });
 });
 

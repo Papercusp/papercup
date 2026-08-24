@@ -75,9 +75,9 @@ describe('makeSpend — hard cap', () => {
 });
 
 describe('buildRubric / buildManifest', () => {
-  it('rubric pins opus-4-8, temp 0, d1/d2/d3 weights summing to 1', () => {
+  it('rubric pins canonical Sol xhigh, temp 0, d1/d2/d3 weights summing to 1', () => {
     const r = buildRubric() as unknown as { model: string; temperature: number; weights: Record<string, number> };
-    expect(r.model).toBe('claude-opus-4-8');
+    expect(r.model).toBe('gpt-5.6-sol:xhigh');
     expect(r.temperature).toBe(0);
     expect(r.weights.d1 + r.weights.d2 + r.weights.d3).toBeCloseTo(1);
   });
@@ -86,7 +86,7 @@ describe('buildRubric / buildManifest', () => {
     const m = buildManifest('ws-x');
     expect(m.manifest.instanceId).toContain('ws-x');
     expect(m.manifest.workspaceId).toBe('ws-x');
-    expect(m.instanceUrl).toContain('opus-4-8-xhigh');
+    expect(m.instanceUrl).toContain('gpt-5.6-sol:xhigh');
     expect(m.manifest.createdAt).toBeInstanceOf(Date);
   });
 });

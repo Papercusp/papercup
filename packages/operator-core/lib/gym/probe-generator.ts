@@ -5,7 +5,8 @@
  * area the work touches, plus a detection signature — so the `planted_bug_caught`
  * deterministic guardrail (P-003) is not vacuous. It is a cheap, near-un-gameable
  * MONITOR (the optimizer can't touch the planted defect), not an optimization
- * target (D-011). Generator model is decorrelated from the judge (D-015).
+ * target (D-011). Generator and judge remain distinct calls even under the
+ * owner-directed uniform learning-model policy.
  */
 import { tryParseJson } from './parse-json';
 import { parseGeneratedTask, type GymLlmCall } from './task-generator';
@@ -90,11 +91,6 @@ export async function generateProbeTask(
   input: GenerateProbeInput,
   deps: { llmCall: GymLlmCall },
 ): Promise<GeneratedProbeRecord> {
-  if (input.generatorModel === input.judgeModel) {
-    throw new Error(
-      `probe generator model must differ from the judge model for decorrelation (D-015); both are "${input.judgeModel}"`,
-    );
-  }
   const { system, user } = buildProbePrompt(input);
   const res = await deps.llmCall({
     model: input.generatorModel,

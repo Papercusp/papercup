@@ -53,6 +53,7 @@ import { buildDigest, type ScoredItem } from '../improvements/digest';
 import { triageIdea } from '../improvements/triage';
 import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type ApplyTriageResult } from '../improvements/triage-core';
 import { runInvalidArgsMinerTick } from '../improvements/invalid-args-miner';
+import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
 export const IMPROVEMENT_RUNNER_ASSIGNEE = 'improvement-runner';
@@ -412,9 +413,10 @@ const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candid
       // Correlation for the worker-exit back-edge (EI-404): the /invoke route records
       // the worker's death on THIS ledger row at close time (visible in seconds, vs
       // the 2h orphan threshold) and rolls back the attempt on an env-failure (EI-406).
-      bodyExtra: dispatchId
-        ? { improvementDispatch: { dispatchId, itemId: candidate.id, attempt } }
-        : undefined,
+      bodyExtra: {
+        spawnModel: LEARNING_MODEL_SPEC,
+        ...(dispatchId ? { improvementDispatch: { dispatchId, itemId: candidate.id, attempt } } : {}),
+      },
     },
     idempotencyKey,
   );

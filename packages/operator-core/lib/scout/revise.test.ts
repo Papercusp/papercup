@@ -155,15 +155,7 @@ describe('runScoutRevisionCycle (P-001 targeted revision)', () => {
 
 describe('revise helpers', () => {
   it('DEFAULT_REVISION_MODEL is the synthesis-tier model', () => {
-    // P-020's gpt-5.6 CANNOT apply to scout: the ChatGPT-subscription codex
-    // credential rejects it outright (see models.ts) — scout stays anthropic.
-    // That anthropic-only property is what this test exists to hold, so assert it
-    // by SHAPE: it survives a deliberate model flip instead of going red on one.
-    expect(DEFAULT_REVISION_MODEL).toMatch(/^claude-/);
-    // The exact id rides the owner mandate in models.ts (2026-08-16, P-010
-    // blender-loop-repair-and-opus5-xhigh: every scout role runs claude-opus-5).
-    // Pinned so an UNINTENDED drift still fails; update here + models.ts together.
-    expect(DEFAULT_REVISION_MODEL).toBe('claude-opus-5');
+    expect(DEFAULT_REVISION_MODEL).toBe('gpt-5.6-sol:xhigh');
   });
 
   it('looksLikePlanMarkdown requires frontmatter + the slug', () => {

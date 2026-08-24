@@ -2,10 +2,10 @@
  * Intent-first synthetic task generator (P-005, D-004).
  *
  * Generates the high-level INTENT first, then derives a deliberately-realistic,
- * mildly-underspecified spec — so spec-gaps exist for the judge's D1 to find. The
- * generator runs on a model DISTINCT from the judge (D-015) to avoid correlated
- * bias (a gap the generator plants being one the judge is primed to reward). LLM
- * injected so build → call → parse → assemble is unit-tested without the network.
+ * mildly-underspecified spec — so spec-gaps exist for the judge's D1 to find.
+ * Generator and judge remain separate calls with separate prompts and provenance;
+ * the owner-directed uniform learning-model policy permits the same model on both.
+ * LLM injected so build → call → parse → assemble is unit-tested without the network.
  */
 import { tryParseJson } from './parse-json';
 
@@ -30,9 +30,9 @@ export interface GenerateTaskInput {
   repoCommit: string;
   /** A grounding summary of the substrate repo (what it is, key surfaces). */
   repoContext: string;
-  /** Model that generates the task — MUST differ from judgeModel (D-015). */
+  /** Model that generates the task. */
   generatorModel: string;
-  /** The frozen judge model, for the decorrelation guard. */
+  /** The frozen judge model, retained in the input for provenance. */
   judgeModel: string;
   /** Optional steer toward a part of the repo. */
   focusArea?: string;
@@ -94,11 +94,6 @@ export async function generateGymTask(
   input: GenerateTaskInput,
   deps: { llmCall: GymLlmCall },
 ): Promise<GeneratedTaskRecord> {
-  if (input.generatorModel === input.judgeModel) {
-    throw new Error(
-      `gym task generator model must differ from the judge model for decorrelation (D-015); both are "${input.judgeModel}"`,
-    );
-  }
   const { system, user } = buildTaskGenPrompt(input);
   const res = await deps.llmCall({
     model: input.generatorModel,

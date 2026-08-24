@@ -355,6 +355,18 @@ describe('system:improvement-implement — defaultFire idempotencyKey (EI-181177
     vi.mocked(readImprovementItems).mockResolvedValue(items as never);
   };
 
+  it('pins the learning worker through bodyExtra.spawnModel without losing dispatch correlation', async () => {
+    arm(cand({ id: 'EI-SOL', attempts: 0 }));
+    await run();
+    const input = vi.mocked(buildLaunchSpawnRequest).mock.calls[0]![1] as {
+      bodyExtra?: { spawnModel?: string; improvementDispatch?: { itemId?: string } };
+    };
+    expect(input.bodyExtra).toMatchObject({
+      spawnModel: 'gpt-5.6-sol:xhigh',
+      improvementDispatch: { itemId: 'EI-SOL' },
+    });
+  });
+
   it('two dispatches of the SAME item with a STUCK attempts counter get DISTINCT idempotency keys', async () => {
     // Root-cause repro: payload.implementAttempts pinned at 0 across two separate
     // ticks (the EI-406 worker-exit rollback makes this routine, not hypothetical —

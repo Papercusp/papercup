@@ -10,8 +10,7 @@ import {
 /**
  * Intent-first synthetic task generator (P-005, D-004/D-015). Generates a
  * high-level intent then a deliberately-realistic, mildly-underspecified spec so
- * spec-gaps exist for the judge's D1 to find. The generator model must differ
- * from the judge model (D-015) to avoid correlated bias. LLM injected.
+ * spec-gaps exist for the judge's D1 to find. LLM injected.
  */
 const input: GenerateTaskInput = {
   taskId: 'task-1',
@@ -81,9 +80,11 @@ describe('generateGymTask', () => {
     expect(seen.responseFormat).toBe('json');
   });
 
-  it('refuses to generate with the judge model (decorrelation, D-015)', async () => {
-    await expect(
-      generateGymTask({ ...input, generatorModel: 'claude-opus-4-8' }, { llmCall: fakeLlm({ intent: 'i', spec: 's' }) }),
-    ).rejects.toThrow(/decorrel|judge|same model/i);
+  it('allows the owner-directed uniform generator/judge model while preserving provenance', async () => {
+    const task = await generateGymTask(
+      { ...input, generatorModel: 'gpt-5.6-sol:xhigh', judgeModel: 'gpt-5.6-sol:xhigh' },
+      { llmCall: fakeLlm({ intent: 'i', spec: 's' }) },
+    );
+    expect(task.generatedBy).toBe('gpt-5.6-sol:xhigh');
   });
 });

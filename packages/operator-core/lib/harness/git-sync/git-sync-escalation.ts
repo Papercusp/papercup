@@ -15,7 +15,12 @@
  * Deliberately PG-free: `git-sync-action.ts` reads the previous counters from
  * the routine metadata, calls this, and applies the side effects.
  */
-import type { RepoError, ScopedOversized } from './run-git-sync';
+import {
+  DEFAULT_MAX_BLOB_BYTES,
+  DEFAULT_MAX_COMMIT_TOTAL_BYTES,
+  type RepoError,
+  type ScopedOversized,
+} from './run-git-sync';
 
 /** Consecutive error ticks before the failure escalates (3 ticks ≈ 30 min).
  *  NOTE the name is historical: this counts ANY failing leg, not just pushes
@@ -89,6 +94,10 @@ export interface EscalationInput {
    *  classification, so no existing caller or fixture has to change. */
   pushMode?: string | null;
   oversized: ScopedOversized[];
+  /** Effective per-file dirty-byte limit used by this git-sync tick. */
+  maxBlobBytes: number;
+  /** Effective cumulative dirty-set limit used by this git-sync tick. */
+  maxCommitTotalBytes: number;
   /** `scope:path` keys reported oversized on the PREVIOUS tick (from metadata). */
   prevOversizedKeys: string[];
 }
@@ -105,6 +114,9 @@ export interface EscalationDecision {
    *  new oversized file appeared), never on a persisting condition. */
   broadcast: string | null;
 }
+
+const formatMegabytes = (bytes: number): string =>
+  Number.isFinite(bytes) ? `${(bytes / 1048576).toFixed(1)}MB` : 'an unknown byte limit';
 
 export const oversizedKey = (f: ScopedOversized): string => `${f.scope}:${f.path}`;
 
@@ -131,8 +143,24 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
       .map((f) => `${f.scope === 'superproject' ? '' : `${f.scope}/`}${f.path} (${(f.sizeBytes / 1048576).toFixed(1)}MB)`)
       .join(', ')
       .slice(0, 400);
+    const perFile = newOversized.filter((f) => f.exclusionReason !== 'cumulative-limit');
+    const cumulative = newOversized.filter((f) => f.exclusionReason === 'cumulative-limit');
+    const guards: string[] = [];
+    if (perFile.length > 0) {
+      guards.push(
+        `${perFile.length} file(s) exceeded the configured per-file limit of ${formatMegabytes(i.maxBlobBytes)} ` +
+          `(GitHub's individual-blob ceiling is 100MB)`,
+      );
+    }
+    if (cumulative.length > 0) {
+      guards.push(
+        `the dirty set exceeded the configured cumulative limit of ${formatMegabytes(i.maxCommitTotalBytes)} ` +
+          `(${cumulative.length} file(s) peeled; GitHub's 100MB ceiling applies to individual blobs, not this guard)`,
+      );
+    }
     parts.push(
-      `⚠ git-sync on ${i.installSlug} EXCLUDED oversized file(s) from the auto-commit — they will never push (GitHub 100MB limit); gitignore or remove them: ${list}`,
+      `⚠ git-sync on ${i.installSlug} EXCLUDED file(s) from the auto-commit — ${guards.join('; ')}; ` +
+        `gitignore or remove them: ${list}`,
     );
   }
 

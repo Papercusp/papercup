@@ -75,9 +75,11 @@ describe('generateProbeTask', () => {
     expect(task.generatedBy).toBe('claude-sonnet-4-6');
   });
 
-  it('refuses the judge model (decorrelation, D-015)', async () => {
-    await expect(
-      generateProbeTask({ ...input, generatorModel: 'claude-opus-4-8' }, { llmCall: fakeLlm(validRaw) }),
-    ).rejects.toThrow();
+  it('allows the owner-directed uniform generator/judge model while preserving provenance', async () => {
+    const task = await generateProbeTask(
+      { ...input, generatorModel: 'gpt-5.6-sol:xhigh', judgeModel: 'gpt-5.6-sol:xhigh' },
+      { llmCall: fakeLlm(validRaw) },
+    );
+    expect(task.generatedBy).toBe('gpt-5.6-sol:xhigh');
   });
 });

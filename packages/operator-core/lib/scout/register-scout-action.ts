@@ -57,6 +57,7 @@ import {
   type MugNotifyMessage,
   type MugNotifyPorts,
 } from './mug-notify';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 /**
  * Placeholder gym-QD archive used when the real archive can't be built (PG down /
@@ -74,15 +75,7 @@ export type ScoutArchiveBuilder = (scope: { workspaceId: string; harnessSlug: st
 
 const defaultArchiveBuilder: ScoutArchiveBuilder = (scope) => buildScoutArchivePort(scope);
 const DEFAULT_ARCHIVE_RESOLVE_TIMEOUT_MS = 10_000;
-// ⚠ `:low` reasoning effort is LOAD-BEARING, not a tuning nicety. The gateway's
-// codex CLI bridge DROPS the request's max_output_tokens and defaults the effort
-// to `medium` (parseBridgeModel). On the huge scout ideator prompt, medium-effort
-// reasoning burns the backend's own output cap (~4096) before any agent_message
-// is emitted, and the bridge returns 200 with EMPTY text → the ideator parses
-// zero ideas with ok:true — a fully SILENT no-ideas streak (the 2026-07-16
-// tick-ledger signature: outputTokens 4096, textLen 0). Low effort answers
-// directly and fits under the cap (probed live 2026-07-16).
-const DEFAULT_SCOUT_CODEX_FALLBACK_MODEL = 'chatgpt:5.5:low';
+const DEFAULT_SCOUT_CODEX_FALLBACK_MODEL = LEARNING_MODEL_SPEC;
 const SCOUT_PROVIDER_CAPACITY_CACHE_MS = 1_000;
 
 let activeArchiveBuilder: ScoutArchiveBuilder = defaultArchiveBuilder;
@@ -146,7 +139,12 @@ export function resetScoutProviderCapacityCache(): void {
   scoutProviderCapacityRequest = undefined;
 }
 
-/** Pure Scout provider selection: preserve Claude whenever it has capacity; otherwise use Codex. */
+/**
+ * Pure Scout provider selection. A requested Codex model is authoritative and
+ * is never rewritten back to Claude. A legacy Claude override may still run
+ * while that pool is healthy; when it is unavailable, the fallback is the same
+ * canonical Sol xhigh policy as every other Scout phase.
+ */
 export function resolveScoutModel(
   requestedModel: string | undefined,
   capacity: ScoutProviderCapacity,
@@ -154,7 +152,8 @@ export function resolveScoutModel(
   claudeModel: string,
 ): string | undefined {
   if (!capacity.claudeAvailable && capacity.codexAvailable) return SCOUT_CODEX_FALLBACK_MODEL;
-  return backendForModel(requestedModel) === 'codex' ? claudeModel : requestedModel;
+  if (backendForModel(requestedModel) === 'codex') return requestedModel;
+  return requestedModel ?? claudeModel;
 }
 
 /**

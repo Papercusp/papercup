@@ -3,9 +3,9 @@
  * (Apiary `apiary-generation-0-battery` P-004 / P-003 / P-005 / P-006).
  *
  * Replaces the PART-B stub (random scores, ephemeral getTestPg). This wires the REAL battery:
- *   - solver bees (opus-4-8 @ xhigh — pinned via AGENT_MODELS) administer one corpus case each (P-001);
+ *   - solver bees (gpt-5.6-sol @ xhigh — pinned via AGENT_MODELS) administer one corpus case each (P-001);
  *   - their REAL transcripts + signals are distilled + collected (P-002 / D-004);
- *   - a REAL opus-4-8 judge scores each run (P-003);
+ *   - a REAL Sol xhigh judge scores each run (P-003);
  *   - everything persists to the LIVE org PG via BeekeeperStorePg + iq_battery_metrics (D-005);
  *   - a hard total-$spend cap + a cost-estimate preamble + a --dry-run (skip-judge) mode (P-005).
  *
@@ -37,12 +37,13 @@ import { makeBeeCollectAndDistill } from './bee-trace';
 import type { GymJudgeRubric } from '../gym/judge-scoring';
 import type { JudgeLlmCall } from '../gym/judge';
 import type { InstanceBootSpec } from './instance-manifest';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 const VARIANTS: TaskVariant[] = ['fix-injected-bug', 'build-spec', 'find-the-flaw', 'answer-from-colony-memory'];
 
 /** Conservative per-call estimates for the pre-flight cost preamble + the pre-emptive cap check. */
-const JUDGE_COST_ESTIMATE_USD = 0.5; // 1 opus-4-8 judge call (~32k thinking + ~5k trace)
-const SOLVER_COST_ESTIMATE_USD = 1.5; // 1 opus-4-8-xhigh solver bee solving one case
+const JUDGE_COST_ESTIMATE_USD = 0.5; // conservative fixed preflight estimate retained across migration
+const SOLVER_COST_ESTIMATE_USD = 1.5; // conservative fixed preflight estimate retained across migration
 
 // ───────────────────────────── pure, unit-tested pieces ─────────────────────────────
 
@@ -124,11 +125,11 @@ export function makeSpend(capUsd: number): Spend {
   };
 }
 
-/** The committed gen-0 GYM judge rubric (opus-4-8, deterministic). */
+/** The committed gen-0 GYM judge rubric (canonical Sol xhigh, deterministic settings). */
 export function buildRubric(): GymJudgeRubric {
   return {
     version: 'gen0-v1',
-    model: 'claude-opus-4-8',
+    model: LEARNING_MODEL_SPEC,
     temperature: 0,
     thinkingBudgetTokens: 32_000,
     weights: { d1: 0.5, d2: 0.25, d3: 0.25 },
@@ -155,7 +156,7 @@ export function buildManifest(workspaceId: string): InstanceBootSpec {
       codeSha,
       createdAt: new Date(),
     },
-    instanceUrl: `solver://bee/opus-4-8-xhigh@${codeSha}`,
+    instanceUrl: `solver://bee/${LEARNING_MODEL_SPEC}@${codeSha}`,
   };
 }
 
@@ -293,7 +294,7 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
   const workspaceId = args.workspaceId ?? activeWorkspaceId();
   if (!args.harness) throw new Error('--harness=<slug> is required (the harness the solver bees spawn into)');
 
-  // Pin solver bees to opus-4-8 @ xhigh deterministically (bees have no committed ROLE_MODEL_DEFAULTS
+  // Pin solver bees to the canonical Sol xhigh model deterministically (bees have no committed ROLE_MODEL_DEFAULTS
   // floor), and ENABLE the shared AIMD governor so a bee 429 halves the effective concurrency cap
   // (the "lower cap" half of the hit-limit → lower-cap → relaunch loop).
   const priorEnv = {
@@ -303,18 +304,10 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
     LLM_TEST_BACKEND: process.env.LLM_TEST_BACKEND,
   };
   try {
-    const merged = { ...(priorEnv.AGENT_MODELS ? safeJson(priorEnv.AGENT_MODELS) : {}), bee: 'opus:xhigh' };
+    const merged = { ...(priorEnv.AGENT_MODELS ? safeJson(priorEnv.AGENT_MODELS) : {}), bee: LEARNING_MODEL_SPEC };
     process.env.AGENT_MODELS = JSON.stringify(merged);
     process.env.PAPERCUSP_AGENT_GOVERNOR = '1';
     process.env.PAPERCUSP_AGENT_GOVERNOR_PG = '1';
-    // The judge is an IN-PROCESS llmCall on THIS box; llm-client's default anthropic-direct
-    // backend rides the owner's volatile ~/.claude session and shares its rate bucket. Route the
-    // judge through the claude CLI on the same clean OAuth token the bees already use
-    // (CLAUDE_CODE_OAUTH_TOKEN), unless the caller explicitly set a backend. (Originally also
-    // dodged the pre-EI-399 default that pointed at the dead :3456 router and wedged the
-    // sequential battery in an endless retry loop.)
-    process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
-
     const { sql } = getOrgPg();
     await assertSchema(sql);
     await seedCorpus(sql);
@@ -339,7 +332,7 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
     const totalRuns = corpus.length * args.repeats;
     const estMax = totalRuns * (SOLVER_COST_ESTIMATE_USD + (args.dryRun ? 0 : JUDGE_COST_ESTIMATE_USD));
     console.log('=== Apiary generation-0 IQ battery ===');
-    console.log(`workspace=${workspaceId} harness=${args.harness} solver=opus-4-8@xhigh`);
+    console.log(`workspace=${workspaceId} harness=${args.harness} solver=${LEARNING_MODEL_SPEC}`);
     console.log(`corpus=${corpus.length} cases × ${args.repeats} repeat(s) = ${totalRuns} runs`);
     console.log(`mode=${args.dryRun ? 'DRY-RUN (judge skipped)' : 'LIVE'}  cap=$${args.capUsd}  est-max≈$${estMax.toFixed(2)}`);
     if (estMax > args.capUsd) {
@@ -363,11 +356,11 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
       beeDeps,
     );
 
-    // Real judge (opus-4-8) unless dry-run; wrapped to pre-check + charge judge cost.
+    // Real canonical judge unless dry-run; wrapped to pre-check + charge judge cost.
     const realJudge: JudgeLlmCall = (await import('../llm-testing/llm-client')).llmCall;
     // Bound each judge llmCall so a stuck/slow judge (e.g. an unreachable backend's internal retry
     // loop) errors only THIS case (battery → status 'errored', continues) instead of wedging the
-    // whole sequential run. A real opus-4-8 judge returns in <2min; 4min is a generous ceiling.
+    // whole sequential run. Preserve the existing four-minute compatibility ceiling.
     const JUDGE_TIMEOUT_MS = 240_000;
     const judge: JudgeLlmCall = args.dryRun
       ? dryRunJudge

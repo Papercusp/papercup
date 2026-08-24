@@ -48,6 +48,7 @@ describe('parseBridgeModel', () => {
   it('strips a recognised :effort suffix', () => {
     expect(parseBridgeModel('gpt-5.4:high')).toEqual({ id: 'gpt-5.4', effort: 'high' });
     expect(parseBridgeModel('gpt-5.4:xhigh')).toEqual({ id: 'gpt-5.4', effort: 'xhigh' });
+    expect(parseBridgeModel('gpt-5.6-sol:xhigh')).toEqual({ id: 'gpt-5.6-sol', effort: 'xhigh' });
   });
   it('preserves the owner-requested Codex max effort', () => {
     expect(parseBridgeModel('gpt-5.4:max')).toEqual({ id: 'gpt-5.4', effort: 'max' });

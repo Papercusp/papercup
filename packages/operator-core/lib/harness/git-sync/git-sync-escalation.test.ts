@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { classifyGitSyncFailingLeg, decideGitSyncEscalation, oversizedKey, PUSH_FAILURE_ESCALATION_TICKS } from './git-sync-escalation';
-import type { ScopedOversized } from './run-git-sync';
+import {
+  DEFAULT_MAX_BLOB_BYTES,
+  DEFAULT_MAX_COMMIT_TOTAL_BYTES,
+  type ScopedOversized,
+} from './run-git-sync';
 
 const big: ScopedOversized = { scope: 'superproject', path: 'apps/tui/target/huge.rlib', sizeBytes: 200 * 1048576 };
 
@@ -10,6 +14,8 @@ const base = {
   consecutiveErrorTicks: 0,
   errors: [],
   oversized: [],
+  maxBlobBytes: DEFAULT_MAX_BLOB_BYTES,
+  maxCommitTotalBytes: DEFAULT_MAX_COMMIT_TOTAL_BYTES,
   prevOversizedKeys: [],
 };
 
@@ -73,6 +79,25 @@ describe('decideGitSyncEscalation (EI-18)', () => {
     expect(d.broadcast).toContain('git-sync on papercusp');
     expect(d.broadcast).toContain('apps/tui/target/huge.rlib');
     expect(d.broadcast).toContain('200.0MB');
+    expect(d.broadcast).toContain('configured per-file limit of 95.0MB');
+    expect(d.broadcast).toContain("GitHub's individual-blob ceiling is 100MB");
+  });
+
+  it('a cumulative-guard exclusion names the dirty-set limit, not GitHub’s per-blob ceiling', () => {
+    const d = decideGitSyncEscalation({
+      ...base,
+      oversized: [
+        {
+          scope: 'superproject',
+          path: 'apps/operator/public/internal/docs/llms-full.txt',
+          sizeBytes: 11.7 * 1048576,
+          exclusionReason: 'cumulative-limit',
+        },
+      ],
+    });
+    expect(d.broadcast).toContain('configured cumulative limit of 250.0MB');
+    expect(d.broadcast).toContain('individual blobs, not this guard');
+    expect(d.broadcast).not.toContain('they will never push (GitHub 100MB limit)');
   });
 
   it('a PERSISTING oversized file (same key as last tick) → escalate, but NO repeat broadcast', () => {

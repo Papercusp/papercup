@@ -279,14 +279,18 @@ function canonicalRedOwner(input: ReleaseTraceInput): GateRedOwnership | null {
   const canonicalHolderLive =
     ownership?.eventKey.startsWith('gate-red-streak:') === true && ownershipHeldByLiveHolder(ownership);
   const checkpointRun = input.position.gate.checkpointRunInFlight;
-  const checkpointRunLive = checkpointRun?.active === true && checkpointRun.activeSource === 'run-lock';
+  const checkpointRunLive =
+    checkpointRun?.active === true &&
+    (checkpointRun.activeSource === 'run-lock' || checkpointRun.activeSource === 'process-authority');
   if (!canonicalHolderLive && !checkpointRunLive) return null;
 
   const ownerText = canonicalHolderLive
     ? `canonical gate singleton ${ownership?.workItem ?? '(work-item unavailable)'} is held by live ${
         ownership?.takenBy ?? 'owner'
       }`
-    : 'the live checkpoint run-lock is held by the canonical gate executor';
+    : checkpointRun?.activeSource === 'process-authority'
+      ? 'the gate-authorized checkpoint process is live in its cgroup before candidate publication'
+      : 'the live checkpoint run-lock is held by the canonical gate executor';
   const runText = checkpointRunLive
     ? `; checkpoint run is active${checkpointRun?.candidate ? ` on ${checkpointRun.candidate}` : ''}`
     : '';

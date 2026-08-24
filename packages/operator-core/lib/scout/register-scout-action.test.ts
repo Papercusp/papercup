@@ -110,22 +110,22 @@ describe('register-scout-action (Scout production runner provider)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('uses Codex only when Claude capacity is empty, preserving the historical Claude pin otherwise', () => {
-    const backend = (model: string | undefined) => (model?.startsWith('chatgpt:') ? 'codex' : 'anthropic-direct');
+  it('preserves an explicit Codex model and uses the canonical fallback only when a legacy Claude lane is empty', () => {
+    const backend = (model: string | undefined) => (/^(chatgpt:|gpt-)/.test(model ?? '') ? 'codex' : 'anthropic-direct');
 
     expect(resolveScoutModel('claude-opus-4-8', { claudeAvailable: false, codexAvailable: true }, backend, 'claude-opus-4-8'))
       .toBe(SCOUT_CODEX_FALLBACK_MODEL);
     expect(resolveScoutModel('claude-opus-4-8', { claudeAvailable: true, codexAvailable: true }, backend, 'claude-opus-4-8'))
       .toBe('claude-opus-4-8');
-    expect(resolveScoutModel('chatgpt:5.5', { claudeAvailable: true, codexAvailable: true }, backend, 'claude-opus-4-8'))
-      .toBe('claude-opus-4-8');
+    expect(resolveScoutModel('gpt-5.6-sol:xhigh', { claudeAvailable: true, codexAvailable: true }, backend, 'claude-opus-4-8'))
+      .toBe('gpt-5.6-sol:xhigh');
     expect(resolveScoutModel('claude-opus-4-8', { claudeAvailable: false, codexAvailable: false }, backend, 'claude-opus-4-8'))
       .toBe('claude-opus-4-8');
   });
 });
 
 describe('withCodexCapacityFallback — one Codex retry on an ATTESTED mid-cycle capacity denial (WI-5391 item 3)', () => {
-  const backend = (model: string | undefined) => (model?.startsWith('chatgpt:') ? 'codex' : 'anthropic-direct');
+  const backend = (model: string | undefined) => (/^(chatgpt:|gpt-)/.test(model ?? '') ? 'codex' : 'anthropic-direct');
   const attestedDenial = (via: 'governor' | 'http-429', reason = 'provider-429') =>
     Object.assign(new Error('capacity walled'), { admissionDenial: { reason, via } });
 

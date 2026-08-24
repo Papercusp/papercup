@@ -9,6 +9,7 @@
  * gym's modules + the (still-live) apiary keep importing it unchanged.
  */
 import type { BatteryRubric } from '@papercusp/eval-battery';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 export {
   rubricHash,
@@ -20,10 +21,10 @@ export {
   type BatteryRubric as GymJudgeRubric,
 } from '@papercusp/eval-battery';
 
-/** The gym's frozen Opus judge rubric — its coding-harness dimension definitions. */
+/** The gym's frozen rubric — its coding-harness dimension definitions. */
 export const GYM_JUDGE_RUBRIC_V1: BatteryRubric = {
   version: 'v1',
-  model: 'claude-opus-4-8',
+  model: LEARNING_MODEL_SPEC,
   temperature: 0,
   thinkingBudgetTokens: 32_000,
   // D1 is primary (the layer the harness's own tests don't cover).

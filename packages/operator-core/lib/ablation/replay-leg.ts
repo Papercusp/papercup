@@ -36,10 +36,12 @@ import { readSelectionRows, readTranscriptBody } from '../replay/regret/store';
 import { parseTranscriptJsonl } from '../replay/transcript';
 import type { ReplayCase, ReplayRunner, ReplayVariant } from '../replay/types';
 import { SU_PLAYBOOK_FRAMING } from '../llm-testing/targets/su';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import type { AblationCycleDeps } from './runner';
 
 export const ABLATION_FULL_VARIANT = 'playbook-full';
 export const ABLATION_ABLATED_VARIANT = 'playbook-ablated';
+export const DEFAULT_ABLATION_REPLAY_MODEL = LEARNING_MODEL_SPEC;
 
 /** What lands in prompt_ablation_runs.replay_leg. */
 export interface AblationReplayLegResult {
@@ -62,7 +64,7 @@ export interface AblationReplayLegOptions {
   windowDays?: number;
   /** High-water replay spend per cycle (default $3; the governor still clamps). */
   maxSpendUsd?: number;
-  /** Continuation model (default LLM_TEST_SUT_MODEL or sonnet — the scenario legs' SUT default). */
+  /** Continuation model (default: the canonical learning policy). */
   model?: string;
 }
 
@@ -77,7 +79,7 @@ export interface AblationReplayLegDeps {
 }
 
 function continuationModel(opts: AblationReplayLegOptions): string {
-  return opts.model ?? process.env.LLM_TEST_SUT_MODEL?.trim() ?? 'claude-sonnet-4-6';
+  return opts.model ?? DEFAULT_ABLATION_REPLAY_MODEL;
 }
 
 /** One-shot continuation runner: system = the (full|ablated) framed playbook. */

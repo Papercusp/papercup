@@ -158,6 +158,8 @@ import { appendPipelineEvent } from './pipeline-events';
 import {
   runGitSync,
   runGitBounded,
+  DEFAULT_MAX_BLOB_BYTES,
+  DEFAULT_MAX_COMMIT_TOTAL_BYTES,
   gitTimeoutMsFor,
   discoverSubmodulesRecursive,
   listStashEntries,
@@ -401,6 +403,8 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigge
       branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
       remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
       maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
+      maxCommitTotalBytes:
+        typeof triggerConfig.max_commit_total_bytes === 'number' ? triggerConfig.max_commit_total_bytes : undefined,
     },
     extraLockResources: extras,
   };
@@ -1978,6 +1982,8 @@ async function handleGitSync(
         prevContentTicks: prev.contentTicks,
         prevOversizedKeys: prev.oversizedKeys,
         cfgBranch: cfg.branch,
+        maxBlobBytes: cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES,
+        maxCommitTotalBytes: cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES,
         attributionOn,
         pushMode: effectivePushMode,
       }));
@@ -4435,6 +4441,8 @@ async function recordAndEscalateTick(a: {
   prevContentTicks: number;
   prevOversizedKeys: string[];
   cfgBranch: string | undefined;
+  maxBlobBytes: number;
+  maxCommitTotalBytes: number;
   attributionOn: boolean;
   /** EI-18812945811758018: 'push' | 'commit-only:<reason>' for THIS tick. */
   pushMode: string;
@@ -4575,6 +4583,8 @@ async function recordAndEscalateTick(a: {
     consecutiveErrorTicks: errTicks,
     errors: 'errors' in outcome ? outcome.errors : [],
     oversized: outcome.oversized,
+    maxBlobBytes: a.maxBlobBytes,
+    maxCommitTotalBytes: a.maxCommitTotalBytes,
     prevOversizedKeys: a.prevOversizedKeys,
   });
   if (decision.escalate) {

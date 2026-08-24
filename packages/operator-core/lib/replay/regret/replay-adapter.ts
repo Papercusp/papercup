@@ -23,6 +23,7 @@
  */
 
 import { BASELINE_ID } from '@papercusp/eval-battery';
+import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 import { REPLAY_BASELINE_VARIANT } from '../battery';
 import { runGovernedReplay, type ReplayGlueDeps } from '../governed';
 import { parseTranscriptJsonl } from '../transcript';
@@ -92,7 +93,7 @@ export function mapDivergenceTurnToReplayIndex(
 }
 
 export interface GovernedRegretRunnerOptions {
-  /** Model for the replayed continuation. Default claude-sonnet-4-6. */
+  /** Model for the replayed continuation. Defaults to the canonical learning policy. */
   replayModel?: string;
   /** Output cap per replayed continuation. Default 1500. */
   maxOutputTokens?: number;
@@ -104,6 +105,8 @@ export interface GovernedRegretRunnerOptions {
   glue?: ReplayGlueDeps;
   log?: (message: string) => void;
 }
+
+export const DEFAULT_REGRET_REPLAY_MODEL = LEARNING_MODEL_SPEC;
 
 /** The replayed-continuation runner: one LLM call continuing from the cut. */
 function llmReplayRunner(model: string, maxTokens: number): ReplayRunner {
@@ -167,7 +170,7 @@ export function governedRegretRunner(options: GovernedRegretRunnerOptions = {}):
       const deps: ReplayBatteryDeps = {
         runner:
           options.batteryDeps?.runner ??
-          llmReplayRunner(options.replayModel ?? 'claude-sonnet-4-6', options.maxOutputTokens ?? 1500),
+          llmReplayRunner(options.replayModel ?? DEFAULT_REGRET_REPLAY_MODEL, options.maxOutputTokens ?? 1500),
         llmCall: options.batteryDeps?.llmCall ?? (await liveJudge()),
         now: options.batteryDeps?.now ?? (() => Date.now()),
         ...(options.batteryDeps?.store ? { store: options.batteryDeps.store } : {}),

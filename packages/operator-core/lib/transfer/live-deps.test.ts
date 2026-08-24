@@ -1,42 +1,51 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-const sdk = vi.hoisted(() => ({ requests: [] as unknown[] }));
+import {
+  learningDistillerLlm,
+  learningStudentRunner,
+  TRANSFER_DISTILL_MODEL,
+  TRANSFER_STUDENT_MODEL,
+} from './live-deps';
 
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: class MockAnthropic {
-    messages = {
-      create: async (request: unknown) => {
-        sdk.requests.push(request);
-        return {
-          content: [{ type: 'text', text: '[]' }],
-          usage: { input_tokens: 3, output_tokens: 2 },
-        };
-      },
-    };
-  },
-}));
+const result = {
+  text: '[]',
+  json: undefined,
+  costUsd: 0.25,
+  inputTokens: 3,
+  outputTokens: 2,
+  raw: null,
+};
 
-import { anthropicDistillerLlm } from './live-deps';
+describe('provider-neutral transfer learning LLMs', () => {
+  it('distills through the canonical Sol xhigh Responses seam without changing prompt or cap', async () => {
+    const call = vi.fn(async () => result);
+    const llm = learningDistillerLlm({ llmCall: call as never });
 
-describe('anthropicDistillerLlm', () => {
-  beforeEach(() => {
-    sdk.requests.length = 0;
-  });
-
-  it('uses the supported max effort vocabulary for claude-opus-5', async () => {
-    const llm = anthropicDistillerLlm({ apiKey: 'test-key' });
-
-    await expect(llm({ system: 'system prompt', user: 'candidate', maxTokens: 128 })).resolves.toMatchObject({
+    await expect(llm({ system: 'system prompt', user: 'candidate', maxTokens: 128 })).resolves.toEqual({
       text: '[]',
+      costUsd: 0.25,
     });
-
-    expect(sdk.requests).toHaveLength(1);
-    expect(sdk.requests[0]).toMatchObject({
-      model: 'claude-opus-5',
-      max_tokens: 128,
-      output_config: { effort: 'max' },
+    expect(TRANSFER_DISTILL_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gpt-5.6-sol:xhigh',
+      maxTokens: 128,
       system: 'system prompt',
       messages: [{ role: 'user', content: 'candidate' }],
+      priority: 'transfer',
+    }));
+  });
+
+  it('runs the replay student through the same canonical model with preserved output metadata', async () => {
+    const call = vi.fn(async () => ({ ...result, text: 'continued' }));
+    const runner = learningStudentRunner({ llmCall: call as never });
+    await expect(runner({ systemPrompt: 'system', contextText: 'context' } as never)).resolves.toMatchObject({
+      outputText: 'continued',
+      costUsd: 0.25,
+      inputTokens: 3,
+      outputTokens: 2,
+      replayed: true,
     });
+    expect(TRANSFER_STUDENT_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-sol:xhigh', maxTokens: 2_048 }));
   });
 });
