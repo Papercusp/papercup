@@ -73,7 +73,7 @@ describe("shapePlansList (P-021)", () => {
     const notice = out.plans.at(-1)!;
     expect(notice.slug).toBe("(truncated)");
     expect(notice.title).toContain(`of ${plans.length}`);
-    expect(notice.title).toContain('payloadTier:"full"');
+    expect(notice.title).toContain("tools:invoke { name:'plans:list'");
     // recency-kept: every kept row's updated >= the max dropped month bucket
     const keptUpdated = out.plans
       .slice(0, cap)
@@ -236,7 +236,7 @@ describe("shapePlansAttention (P-021)", () => {
     expect(out.top[0].id).toBe("plan-item:p1"); // the decision beats urgent activity
     expect(out.top[1].id).toBe("plan-item:p2"); // then urgent
     expect(out.top[0]).not.toHaveProperty("needsHuman");
-    expect(out.hint).toContain('payloadTier:"full"');
+    expect(out.hint).toContain("tools:invoke { name:'plans:attention'");
     const std = shapePlansAttention(data, "standard") as {
       top: Record<string, unknown>[];
     };

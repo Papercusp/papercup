@@ -14,7 +14,9 @@
  * with the escape hatches.
  */
 
-import { clipWithMarker } from "./shape-clip";
+import { clipWithMarker, payloadTierRecoveryHint } from "./shape-clip";
+
+const RECOVER_HINT = payloadTierRecoveryHint("plans:items");
 
 export const PLANS_ITEMS_TIER_CAPS = {
   trimmed: { rows: 60, text: 120, phase: 48 },
@@ -24,7 +26,7 @@ export const PLANS_ITEMS_TIER_CAPS = {
 type ItemsTier = keyof typeof PLANS_ITEMS_TIER_CAPS;
 
 const clip = (s: unknown, n: number): string | null =>
-  typeof s === "string" ? clipWithMarker(s, n) : null;
+  typeof s === "string" ? clipWithMarker(s, n, RECOVER_HINT) : null;
 
 /** True when `clip(s, n)` actually cut `s` short. EI-18762253154342502: the
  *  result-door's own `detectInnerTruncationMarkers` scans a spilled result's
@@ -123,7 +125,7 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
     rows.push({
       ...project({}),
       plan: "(truncated)",
-      text: `showing top ${c.rows} of ${items.length} by importance — narrow with status/actionable/slug, plans:get-item for detail, or payloadTier:"full"`,
+      text: `showing top ${c.rows} of ${items.length} by importance — narrow with status/actionable/slug, plans:get-item for detail, or ${RECOVER_HINT}`,
     });
   }
   return { ...(data as Record<string, unknown>), items: rows };

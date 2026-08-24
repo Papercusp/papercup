@@ -10,7 +10,7 @@
  * each projected to a one-line scalar row.
  *
  * Contract (D-004, no silent caps): `itemsTotal` + a `hint` name what was
- * collapsed and the escape hatch (payloadTier:"full"); rows keep uniform keys
+ * collapsed and the escape hatch (a full-tier `tools:invoke` dispatch); rows keep uniform keys
  * for TOON. The UI reads this tool via the HTTP/sync path (no ctx_tier →
  * full), so its grouped shape is untouched.
  */
@@ -22,10 +22,12 @@ export const ATTENTION_TIER_CAPS = {
 
 type AttentionTierName = keyof typeof ATTENTION_TIER_CAPS;
 
-import { clipWithMarker } from "./shape-clip";
+import { clipWithMarker, payloadTierRecoveryHint } from "./shape-clip";
+
+const RECOVER_HINT = payloadTierRecoveryHint("plans:attention");
 
 const clip = (s: unknown, n: number): string | null =>
-  typeof s === "string" ? clipWithMarker(s, n) : null;
+  typeof s === "string" ? clipWithMarker(s, n, RECOVER_HINT) : null;
 
 /** Most → least urgent; unknown ranks as 'normal'. */
 const IMPORTANCE_ORDER = ["urgent", "high", "normal", "low"] as const;
@@ -96,6 +98,6 @@ export function shapePlansAttention(
     itemsTotal: all.length,
     groups: groupRows,
     top,
-    hint: `group counts + top ${top.length} of ${all.length} items (decisions first) — payloadTier:"full" for bodies/actions, or act via each item id`,
+    hint: `group counts + top ${top.length} of ${all.length} items (decisions first) — ${RECOVER_HINT} for bodies/actions, or act via each item id`,
   };
 }

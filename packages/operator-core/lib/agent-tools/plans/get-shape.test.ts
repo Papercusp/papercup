@@ -57,6 +57,7 @@ describe("shapePlansGet trimmed", () => {
     expect(r.prose_truncated).toBe(true);
     expect(r.prose_full_chars).toBe(30_000);
     expect(String(r.prose_hint)).toContain("heading");
+    expect(String(r.prose_hint)).toContain("tools:invoke { name:'plans:get'");
     expect(out.payloadTier).toBe("trimmed");
   });
 

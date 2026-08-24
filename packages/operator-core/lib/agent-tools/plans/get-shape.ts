@@ -9,7 +9,8 @@
  * (trimmed) the UI decoration maps dropped with an explicit omission marker.
  *
  * Shape contract (D-004): nothing is silently dropped — every cut carries a
- * count + a fetch-pointer, and `payloadTier:'full'` restores today's body.
+ * count + a fetch-pointer, and a full-tier `tools:invoke` dispatch restores
+ * today's body.
  *
  * EI-20038981829684213: "carries a count" used to mean a SIBLING field, which a
  * `projection.pick` of the value alone strips — taking the door's marker scan
@@ -18,7 +19,12 @@
  * in records rather than chars.
  */
 
-import { clipSectionBody, clipWithMarker } from "./shape-clip";
+import {
+  clipSectionBody,
+  clipWithMarker,
+  payloadTierRecoveryHint,
+  SHAPE_RECOVER_HINT,
+} from "./shape-clip";
 
 const CAPS = {
   trimmed: {
@@ -56,7 +62,7 @@ function shapeResult(res: unknown, tier: TierName): unknown {
     out.prose_truncated = true;
     out.prose_full_chars = r.prose.length;
     out.prose_hint =
-      'read one section via plans:get { heading } (sectionIndex lists headings), or payloadTier:"full"';
+      `read one section via plans:get { heading } (sectionIndex lists headings), or ${SHAPE_RECOVER_HINT}`;
   }
 
   // Heading-narrowed reads carry one section body. This is the read that serves
@@ -118,7 +124,7 @@ function shapeResult(res: unknown, tier: TierName): unknown {
       out.decisionsTruncated = {
         total,
         shown: c.decisions,
-        more: 'payloadTier:"full" (or mode:"full") for all decisions',
+        more: `${SHAPE_RECOVER_HINT} (or mode:"full") for all decisions`,
       };
     }
   }
@@ -137,7 +143,7 @@ function shapeResult(res: unknown, tier: TierName): unknown {
     if (omitted.length > 0) {
       out.trimmedOmitted = {
         fields: omitted,
-        more: 'payloadTier:"standard" (or "full") to include them',
+        more: `${payloadTierRecoveryHint("plans:get", "standard")} (or ${SHAPE_RECOVER_HINT}) to include them`,
       };
     }
   }

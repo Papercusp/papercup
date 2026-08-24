@@ -38,7 +38,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { shapePlansGet } from "./get-shape";
-import { clipSectionBody, clipWithMarker } from "./shape-clip";
+import { clipSectionBody, clipWithMarker, SHAPE_RECOVER_HINT } from "./shape-clip";
 import { findSection, splitSections } from "./get.js";
 
 /** The implementation that shipped the bug: a bare `…`, indistinguishable from prose. */
@@ -156,7 +156,14 @@ describe("clipWithMarker / clipSectionBody", () => {
     // The recovery hint is the part that yields on a small budget.
     expect(short).not.toContain("payloadTier");
     // …but a roomy budget keeps it, so the reader is told how to recover.
-    expect(clipWithMarker("x".repeat(50_000), 6_000)).toContain('payloadTier:"full"');
+    expect(clipWithMarker("x".repeat(50_000), 6_000)).toContain(SHAPE_RECOVER_HINT);
+  });
+
+  it("uses the schema-safe nested dispatch for the reserved tier override", () => {
+    const marker = clipWithMarker("x".repeat(50_000), 6_000);
+    expect(marker).toContain("tools:invoke { name:'plans:get'");
+    expect(marker).toContain("payloadTier:'full'");
+    expect(marker).not.toContain('recover: payloadTier:"full"');
   });
 
   it("a body with NO record structure still gets an in-band char marker", () => {
@@ -181,7 +188,7 @@ describe("clipWithMarker / clipSectionBody", () => {
  *
  * This module's rule is that a pointer is advertised only if it RESOLVES: "a
  * pointer that does not resolve is worse than none, because it becomes a lie
- * the reader trusts." `payloadTier:"full"` was the only honest exit while a
+ * the reader trusts." A full-tier `tools:invoke` dispatch was the only honest exit while a
  * single record was unaddressable — but it is the wrong SIZE of answer, since
  * re-serving all N records to recover one just overflows the door again.
  *

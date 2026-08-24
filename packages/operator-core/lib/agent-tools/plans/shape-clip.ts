@@ -41,15 +41,27 @@
  * chars. A char count cannot answer "am I missing a ruling?"; a record count
  * can.
  *
- * The recovery pointer is deliberately `payloadTier:'full'` — the one exit that
- * actually resolves for this layer. (payload-tier.ts's own marker points at
- * `_projection.cursor`, which these shapers do not emit; advertising a pointer
- * that does not resolve is worse than none, because it becomes a lie the reader
- * trusts.)
+ * The recovery pointer is deliberately an executable `tools:invoke` dispatch
+ * carrying `payloadTier:'full'` — the one exit that actually resolves for this
+ * layer. A direct schema-validated call rejects this framework-reserved arg.
+ * (payload-tier.ts's own marker points at `_projection.cursor`, which these
+ * shapers do not emit; advertising a pointer that does not resolve is worse
+ * than none, because it becomes a lie the reader trusts.)
  */
 
-/** The recovery pointer these shapers can honestly offer. */
-export const SHAPE_RECOVER_HINT = 'payloadTier:"full"';
+/**
+ * Build the schema-safe recovery pointer for a plans tool's reserved tier arg.
+ * Keep the syntax in parity with payload-tier.ts's host dispatch template.
+ */
+export function payloadTierRecoveryHint(
+  toolName: string,
+  tier: "standard" | "full" = "full",
+): string {
+  return `tools:invoke { name:'${toolName}', args:{ …original args, payloadTier:'${tier}' } }`;
+}
+
+/** The recovery pointer for the default plans:get clipper. */
+export const SHAPE_RECOVER_HINT = payloadTierRecoveryHint("plans:get");
 
 /**
  * Below this cap the marker is charged against a budget small enough that the
@@ -127,8 +139,9 @@ function recordHeadingAt(body: string, offset: number): string {
 }
 
 /**
- * EI-19459526252132133: `payloadTier:"full"` is the honest exit for a clipped
- * FIELD, but for a record-structured section it is the wrong size of answer —
+ * EI-19459526252132133: a full-tier `tools:invoke` dispatch is the honest exit
+ * for a clipped FIELD, but for a record-structured section it is the wrong size
+ * of answer —
  * on the measured 98,941-char Decisions section it re-serves all 30 records to
  * recover one, which overflows the door again. Now that plans:get resolves
  * `heading` to a `### ` subsection, ONE record is addressable, so the marker

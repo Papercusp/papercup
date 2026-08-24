@@ -48,6 +48,7 @@ describe('shapePlansItems — coverageDivergence -> diverged', () => {
     const out = shapePlansItems({ items: rows }, 'trimmed') as { items: Record<string, unknown>[] };
     const placeholder = out.items[out.items.length - 1];
     expect(placeholder.plan).toBe('(truncated)');
+    expect(String(placeholder.text)).toContain("tools:invoke { name:'plans:items'");
     expect(placeholder.diverged).toBe(false);
   });
 
