@@ -202,7 +202,6 @@ const BASELINE: readonly string[] = [
   'lib/release-deploy-launch.test.ts',
   'lib/release-submodule-freshness-fail-closed.test.ts',
   'lib/release/identity-gate-archive-expansion.test.ts',
-  'lib/release/identity-gate-artifact-scan.test.ts',
   'lib/release/identity-gate-authorised-product-strings.test.ts',
   'lib/scripts-pg-url.test.ts',
   'lib/sync/pot-git/fetch-transport-idle-ceiling.test.ts',

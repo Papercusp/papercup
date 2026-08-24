@@ -69,11 +69,20 @@ function sentinelFromDenylist(): string {
 }
 
 function have(bin: string): boolean {
-  return spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status === 0;
+  return spawnSync('sh', ['-c', `command -v ${bin}`], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
+  }).status === 0;
 }
 
 function runGate(args: string[]) {
-  const r = spawnSync('python3', [GATE, ...args], { encoding: 'utf8', env: GATE_ENV });
+  const r = spawnSync('python3', [GATE, ...args], {
+    encoding: 'utf8',
+    env: GATE_ENV,
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
+  });
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -117,13 +126,17 @@ describe('release identity gate: tar OWNERSHIP fields are scanned (WI-39458)', (
       execFileSync(
         'tar',
         ['-c', '-z', '-f', tgz, `--owner=${sentinel}`, `--group=${sentinel}`, '-C', stage, '.'],
-        { stdio: 'ignore' },
+        { stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' },
       );
       rmSync(stage, { recursive: true, force: true });
 
       // PRECONDITION: gzip really does hide the header bytes, so the raw grep is
       // blind and only the expansion pass can possibly see this.
-      const raw = spawnSync('grep', ['-acF', sentinel, tgz], { encoding: 'utf8' });
+      const raw = spawnSync('grep', ['-acF', sentinel, tgz], {
+        encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
       expect(raw.stdout.trim(), 'tar headers were not actually compressed').toBe('0');
 
       const { status, out } = runGate(['--scan-dir', bundle]);
@@ -150,7 +163,7 @@ describe('release identity gate: tar OWNERSHIP fields are scanned (WI-39458)', (
         'tar',
         ['-c', '-z', '-f', path.join(bundle, 'db-seed.tar.gz'),
          '--owner=0', '--group=0', '--numeric-owner', '-C', stage, '.'],
-        { stdio: 'ignore' },
+        { stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' },
       );
       rmSync(stage, { recursive: true, force: true });
 
@@ -186,7 +199,10 @@ describe('release identity gate: --scan-artifact fails closed (WI-39458)', () =>
     try {
       // Random bytes: no extractor on any host can open this, which is the point.
       const opaque = path.join(dir, 'installer.exe');
-      execFileSync('sh', ['-c', `head -c 2000000 /dev/urandom > ${JSON.stringify(opaque)}`]);
+      execFileSync('sh', ['-c', `head -c 2000000 /dev/urandom > ${JSON.stringify(opaque)}`], {
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
 
       const { status, out } = runGate(['--scan-artifact', opaque]);
       expect(out).toMatch(/COULD NOT BE INSPECTED/);
@@ -213,11 +229,17 @@ describe('release identity gate: --scan-artifact fails closed (WI-39458)', () =>
       mkdirSync(inner, { recursive: true });
       writeFileSync(path.join(inner, 'small.txt'), 'tiny\n');
       execFileSync('sh', ['-c',
-        `cd ${JSON.stringify(inner)} && zip -q inner.zip small.txt`]);
+        `cd ${JSON.stringify(inner)} && zip -q inner.zip small.txt`], {
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
       const sfx = path.join(dir, 'spanned.zip');
       execFileSync('sh', ['-c',
         `head -c 10000000 /dev/urandom > ${JSON.stringify(sfx)} && ` +
-        `cat ${JSON.stringify(path.join(inner, 'inner.zip'))} >> ${JSON.stringify(sfx)}`]);
+        `cat ${JSON.stringify(path.join(inner, 'inner.zip'))} >> ${JSON.stringify(sfx)}`], {
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
       expect(statSync(sfx).size).toBeGreaterThan(9_000_000);
 
       const { status, out } = runGate(['--scan-artifact', sfx]);
@@ -265,11 +287,18 @@ describe('release identity gate: --scan-artifact fails closed (WI-39458)', () =>
         const tgz = path.join(dir, `${name}-seed.tar.gz`);
         execFileSync('tar', ['-c', '-z', '-f', tgz,
           `--owner=${owner}`, `--group=${owner}`,
-          ...(owner === '0' ? ['--numeric-owner'] : []), '-C', stage, '.'], { stdio: 'ignore' });
+          ...(owner === '0' ? ['--numeric-owner'] : []), '-C', stage, '.'], {
+          stdio: 'ignore',
+          timeout: 60_000,
+          killSignal: 'SIGKILL',
+        });
         rmSync(stage, { recursive: true, force: true });
         const zip = path.join(dir, `${name}.zip`);
         execFileSync('sh', ['-c',
-          `cd ${JSON.stringify(dir)} && zip -q ${JSON.stringify(zip)} ${JSON.stringify(path.basename(tgz))}`]);
+          `cd ${JSON.stringify(dir)} && zip -q ${JSON.stringify(zip)} ${JSON.stringify(path.basename(tgz))}`], {
+          timeout: 60_000,
+          killSignal: 'SIGKILL',
+        });
         return zip;
       };
 
@@ -309,10 +338,16 @@ describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
     // is that a WRAPPED installer gets expanded, not which packer made it.
     const stub = path.join(dir, `${name}_x64-setup.exe`);
     execFileSync('sh', ['-c',
-      `cd ${JSON.stringify(stageDir)} && zip -q ${JSON.stringify(stub)} pgdata.conf`]);
+      `cd ${JSON.stringify(stageDir)} && zip -q ${JSON.stringify(stub)} pgdata.conf`], {
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
     const wrapper = path.join(dir, `${name}.zip`);
     execFileSync('sh', ['-c',
-      `cd ${JSON.stringify(dir)} && zip -q ${JSON.stringify(wrapper)} ${JSON.stringify(path.basename(stub))}`]);
+      `cd ${JSON.stringify(dir)} && zip -q ${JSON.stringify(wrapper)} ${JSON.stringify(path.basename(stub))}`], {
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
     return wrapper;
   }
 
@@ -328,7 +363,11 @@ describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
       // PRECONDITION: the sentinel really is unreachable from the container's
       // raw bytes, so only expanding the WRAPPED installer can find it. Without
       // this the test could pass with the recursion disabled.
-      const raw = spawnSync('grep', ['-acF', sentinel, leakyArtifact], { encoding: 'utf8' });
+      const raw = spawnSync('grep', ['-acF', sentinel, leakyArtifact], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
       expect(raw.stdout.trim(), 'payload was not actually compressed').toBe('0');
 
       const leaky = runGate(['--scan-artifact', leakyArtifact]);
@@ -364,7 +403,7 @@ describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
        'm=importlib.util.module_from_spec(s);s.loader.exec_module(m);' +
        'print("YES" if m._looks_like_installer_stub(sys.argv[2]) else "NO")',
        GATE, name],
-      { encoding: 'utf8', env: GATE_ENV },
+      { encoding: 'utf8', env: GATE_ENV, timeout: 60_000, killSignal: 'SIGKILL' },
     );
     if (r.status !== 0) throw new Error(`predicate call failed: ${r.stderr}`);
     return r.stdout.trim() === 'YES';
