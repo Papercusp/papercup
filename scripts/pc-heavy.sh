@@ -204,15 +204,22 @@ main() {
 _pc_heavy_internal_preempt_run() {
   local _outer_pid="$1"
   shift
-  local _writer_path="$1"
+  local _intent_path="$1"
   shift
   local _preempt_grace="${PC_HEAVY_PREEMPT_GRACE_SEC:-30}"
   local _preempt_term_grace="${PC_HEAVY_PREEMPT_TERM_GRACE_SEC:-30}"
   local _preempt_poll="${PC_HEAVY_PREEMPT_POLL_SEC:-0.1}"
-  local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_writer_path")}"
+  # Hysteresis: how long the intent signal must be continuously ABSENT before a
+  # running grace clock is abandoned. Without it a single transient free poll
+  # zeroes the clock, which is the second half of the starvation bug — the grace
+  # is supposed to bound how long a materializer waits, so it must survive an
+  # instant of noise rather than restart from zero.
+  local _preempt_clear_after="${PC_HEAVY_PREEMPT_CLEAR_SEC:-5}"
+  case "$_preempt_clear_after" in ''|*[!0-9]*) _preempt_clear_after=5 ;; esac
+  local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}"
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
   local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
-  local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at=''
+  local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at='' _preempt_free_since=''
   local _preempt_now='' _preempt_start_deadline='' _preempt_term_deadline=''
 
   # Coalescing leaders route stdout/stderr through FIFOs whose readers belong
@@ -288,11 +295,22 @@ _pc_heavy_internal_preempt_run() {
   _preempt_leader_alive() {
     [ -n "$_preempt_wait_pid" ] && kill -0 "$_preempt_wait_pid" 2>/dev/null
   }
+  # EI-21355065353185484 — this probe MUST NOT perturb what it measures.
+  # It runs every _preempt_poll (0.1s default) for the whole life of a heavy job,
+  # so any lock it takes is effectively held continuously from the point of view
+  # of anything else contending for that file. Two rules keep it inert:
+  #   1. It polls the INTENT file, never the writer MUTEX. Probing the mutex
+  #      stole it from the materializer that was trying to acquire it.
+  #   2. It takes a SHARED lock (-s). A shared request still fails against the
+  #      materializer's exclusive hold — which is the signal we want — but two
+  #      concurrent probes no longer block each other, so ordinary holders cannot
+  #      manufacture a phantom "materializer is waiting" by colliding.
+  # Opened append-mode: `>` would truncate a file another process has locked, and
+  # `<` would race the `[ -e ]` guard when no materializer has ever run.
   _preempt_writer_is_held() {
     local _probe_fd=''
-    [ -e "$_writer_path" ] || return 1
-    if ! { exec {_probe_fd}>"$_writer_path"; } 2>/dev/null; then return 1; fi
-    if flock -n "$_probe_fd"; then
+    if ! { exec {_probe_fd}>>"$_intent_path"; } 2>/dev/null; then return 1; fi
+    if flock -s -n "$_probe_fd"; then
       eval "exec ${_probe_fd}>&-" 2>/dev/null || true
       return 1
     fi
@@ -384,6 +402,7 @@ _pc_heavy_internal_preempt_run() {
     fi
     if _preempt_writer_is_held; then
       _preempt_now=$(date +%s)
+      _preempt_free_since=''
       if [ -z "$_preempt_seen_at" ]; then
         _preempt_seen_at="$_preempt_now"
         echo "[pc-heavy] exclusive materializer is waiting — ordinary holder has ${_preempt_grace}s to finish" >&2
@@ -395,8 +414,17 @@ _pc_heavy_internal_preempt_run() {
         echo "PC_HEAVY_RESULT status=preempted reason=exclusive-materializer" >&2
         return 75
       fi
-    else
-      _preempt_seen_at=''
+    elif [ -n "$_preempt_seen_at" ]; then
+      # A grace clock is already running. Abandon it only after the intent signal
+      # has stayed absent for _preempt_clear_after seconds — a single free poll is
+      # noise, not evidence the materializer left.
+      _preempt_now=$(date +%s)
+      if [ -z "$_preempt_free_since" ]; then
+        _preempt_free_since="$_preempt_now"
+      elif [ $(( _preempt_now - _preempt_free_since )) -ge "$_preempt_clear_after" ]; then
+        _preempt_seen_at=''
+        _preempt_free_since=''
+      fi
     fi
     sleep "$_preempt_poll"
   done
@@ -577,6 +605,21 @@ _typecheck_guard_rc=$?
 
 _dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
 _exclusive_writer_path="$_dir/exclusive-materialization.lock"
+# EI-21355065353185484 — the INTENT lock is the signal an ordinary holder polls;
+# the writer lock above stays the MUTEX that serializes materializers. They must
+# be different files. When they were one file the observer perturbed the thing it
+# measured: the preempt probe tested the writer lock by ACQUIRING it (exclusive
+# flock) every 0.1s, so it repeatedly stole the lock from a materializer polling
+# at 0.2s. The "materializer is waiting" signal then flapped, the 30s grace clock
+# was zeroed on every transient free poll, and preemption was starved — measured
+# 465 waiting-emissions against exactly 1 preemption across a 34-minute run.
+# Intent is declared BEFORE the writer wait, so a materializer QUEUED behind
+# another materializer is visible too — under the old scheme it held nothing and
+# was therefore indistinguishable from "no materializer waiting".
+# Like every other lock here it is a kernel flock held for the process lifetime
+# and inherited through `exec`, so it needs no cleanup daemon and cannot leak the
+# way a plain marker file would (see the stale preemptible.<pid>.pid files).
+_exclusive_intent_path="$_dir/exclusive-materialization.intent"
 
 _cores="$(nproc 2>/dev/null || echo 8)"
 _floor=$(( _cores / 32 ))
@@ -1142,6 +1185,25 @@ if [ "$_exclusive_all_slots" = 1 ]; then
   # hold-and-wait deadlock themselves. The writer lock is in the SAME runtime
   # dir, is inherited by the materialization child, and is kernel-released on
   # every exit/signal just like the slot locks below.
+  # EI-21355065353185484 — DECLARE INTENT FIRST, before queuing for the writer
+  # mutex below. Ordinary holders poll this file to decide whether anyone is
+  # waiting on the barrier; declaring it here (rather than relying on the writer
+  # lock as a proxy) is what makes a materializer QUEUED BEHIND ANOTHER
+  # materializer visible at all — while it sits in the `while ! flock -n` loop it
+  # holds the writer lock precisely never, so under the old scheme it was
+  # indistinguishable from "nobody is waiting" and ordinary holders had no reason
+  # to yield. Held for this process's whole lifetime and inherited through the
+  # final `exec`, so the kernel releases it on exit/signal like every other lock
+  # here. Best-effort: if it cannot be established we still materialize — losing
+  # the yield hint is a slowdown, never a correctness failure.
+  if { exec {_exclusive_intent_fd}>>"$_exclusive_intent_path"; } 2>/dev/null; then
+    # Bounded wait: the only contenders are microsecond-long shared probes, so
+    # this returns immediately in practice. -w rather than -n so a probe that
+    # happens to hold the shared lock at this instant cannot make us skip the
+    # declaration entirely.
+    flock -w 5 "$_exclusive_intent_fd" 2>/dev/null || true
+  fi
+
   if ! { exec {_exclusive_writer_fd}>"$_exclusive_writer_path"; } 2>/dev/null; then
     echo "[pc-heavy] FATAL: cannot establish the exclusive materialization writer lock in $_dir" >&2
     exit 75
@@ -1806,7 +1868,7 @@ if [ "$_preemptible" = 1 ]; then
   # is not the existing process-group leader, so direct `setsid --wait` makes
   # the waitable monitor itself the new session leader. `_outer_pid` then lets
   # it detect wrapper death and reap the child group before returning.
-  _runner=(setsid --wait bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_writer_path" "${_runner[@]}")
+  _runner=(setsid --wait bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_intent_path" "${_runner[@]}")
 fi
 
 # Preserve the caller's original stderr for the detached monitor BEFORE the
