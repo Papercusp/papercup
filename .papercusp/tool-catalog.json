@@ -11061,7 +11061,7 @@
           "POST"
         ]
       },
-      "description": "Persist a bounded target member count and launch recipe for a fleet. The dark, routine-backed governor uses this recipe to top up missing headless members with duplicate suppression and exponential backoff.",
+      "description": "Persist a bounded target member count and canonical launch recipe for a fleet. target:null disables automatic top-up but PRESERVES the launch recipe for takeover/respawn. Existing boot-baked settings are fail-closed: pass replaceExisting:true + reason for an intentional audited replacement.",
       "capabilities": [
         "fleet:headcount-target"
       ],
@@ -11080,7 +11080,7 @@
       ],
       "guidance": {
         "when": "After a fleet:launch-on-plan wave, when the fleet should maintain a target member count across member death and operator restarts.",
-        "notWhen": "For a one-off launch wave, use fleet:launch-on-plan. Clear the governor with target:null when the fleet should stop auto-top-up."
+        "notWhen": "For a one-off launch wave, use fleet:launch-on-plan. Disable the governor with target:null; the saved launch recipe deliberately survives."
       }
     },
     {
