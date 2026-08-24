@@ -1,0 +1,166 @@
+/**
+ * tool-schema-staleness — "is the tool schema this process is serving OLDER than
+ * the tree?" (EI-21351815194031529)
+ *
+ * ## The confusion this exists to kill
+ *
+ * An agent's tool DEFINITIONS are rendered by the operator it is talking to. On
+ * the dev box that is `:3070`, which serves GREEN `main` — and the tree runs ahead
+ * of `main` routinely by hours, and with a red gate by days. So a schema constraint
+ * an agent hits at runtime may already have been REMOVED on staging.
+ *
+ * From inside the failing session those two situations are indistinguishable. Both
+ * present identically: a refused call, a schema that says the constraint is real,
+ * and a clean repro. Nothing in the refusal names the build that served it.
+ *
+ * Worse, the natural verification move resolves the ambiguity in the WRONG
+ * direction. The agent opens the source file, sees the constraint is gone, and
+ * concludes "already fixed — close it". That close is half right in the way that
+ * costs the most: the reporter is still hitting the constraint, every peer will
+ * keep hitting it, and the item that would have tracked the deploy is now closed.
+ *
+ * Measured instance: `work_items:complete` refused `verification.coverage.residue: []`
+ * because the LIVE schema carried `minItems: 1`. The tree schema had already dropped
+ * it, with tests. The fix sat committed-on-staging, not in `main`, not deployed.
+ * Establishing that took a full investigation (read the source, diff it against the
+ * served schema, run the tests, query the pipeline) to reach a one-line conclusion.
+ * Two sibling filings against the same tool's completion schema already existed, so
+ * the shape recurs.
+ *
+ * ## Why a per-FILE answer, and not "the operator is behind"
+ *
+ * The cheap version of this check — compare the running build to staging and warn
+ * whenever it is behind — fires on essentially every capture, because the operator
+ * is almost always behind staging by something. A warning that is always on is a
+ * warning nobody reads, and it would bury the rare case where the stamp is the whole
+ * answer. Scoping the question to the ONE file that defines the failing tool is what
+ * makes a positive verdict rare enough to be worth acting on.
+ *
+ * ## The verdict is three-valued, and an UNKNOWN never renders as "current"
+ *
+ * Every leg here can legitimately fail: a desktop build has no repo to read, a tool
+ * may have been registered without a readable call stack, git may be mid-rebase. The
+ * naive shape (`false` for all of those) would silently convert "I could not tell"
+ * into "your schema is current" — a false reassurance, and precisely the failure
+ * class `candidate-contains.ts` was written to avoid. So `state` is
+ * `'stale' | 'current' | 'unknown'` with an ENUMERATED `unknownReason`, and only
+ * `'stale'` ever produces a hint line.
+ *
+ * Comparison is BLOB IDENTITY via `blobAtCommit`, reusing that module's primitives
+ * rather than re-deriving them: `git rev-parse --verify <sha>:<path>` prints a sha on
+ * success and fails loudly otherwise, so an absence cannot masquerade as a match.
+ */
+
+import { blobAtCommit, type GitRead } from './candidate-contains';
+
+/** Why a verdict could not be reached. Enumerated, not prose — a caller branches on it. */
+export type StalenessUnknownReason =
+  /** The tool name did not resolve to a registered tool, or it registered without a source file. */
+  | 'tool-source-unknown'
+  /** The running process could not report its own build sha. */
+  | 'build-sha-unknown'
+  /** The tool's defining file is not inside the repo root (a node_modules copy, a bundle). */
+  | 'source-outside-repo'
+  /** A git read failed — no repo on disk, an unreachable sha, a busy index. */
+  | 'git-unreadable';
+
+export type ToolSchemaStaleness =
+  | {
+      state: 'stale';
+      /** Repo-relative path of the file defining the tool. */
+      relPath: string;
+      /** The build sha the running process is serving. */
+      deployedSha: string;
+      /** The branch the tree's current content was read from. */
+      treeRef: string;
+    }
+  | { state: 'current'; relPath: string; deployedSha: string; treeRef: string }
+  | { state: 'unknown'; reason: StalenessUnknownReason };
+
+export interface ToolSchemaStalenessDeps {
+  /** Resolve a tool name to the absolute file that defined it (tooldef's registry). */
+  sourceFileFor: (toolName: string) => string | null;
+  /** The build sha the running process was started from, or null. */
+  deployedSha: () => string | null;
+  /** Absolute repo root the relative path is computed against, and git runs in. */
+  repoRoot: string;
+  /** Git reader bound to `repoRoot`. */
+  git: GitRead;
+  /**
+   * Ref holding the tree's current content. Defaults to the LOCAL `staging` branch,
+   * deliberately: the pipeline's own candidate is cut from local `staging` and never
+   * fetches, so comparing against `origin/staging` would answer about a different
+   * object and make an un-pushed (but committed) fix read as absent.
+   */
+  treeRef?: string;
+}
+
+/**
+ * Make `absolute` repo-relative, or return null when it does not live under `root`.
+ *
+ * Path-prefix comparison is done on segment boundaries (`root` + '/') so a sibling
+ * directory that merely shares a name prefix — `papercup-release` next to
+ * `papercusp` — can never be mistaken for a path inside the root. That sibling pair
+ * genuinely exists on this box, and it is exactly the checkout a deployed operator
+ * runs from, so the naive `startsWith(root)` would misfire on the common case.
+ */
+export function relativizeToRepo(absolute: string, root: string): string | null {
+  const normalizedRoot = root.endsWith('/') ? root.slice(0, -1) : root;
+  if (absolute === normalizedRoot) return null;
+  const prefix = `${normalizedRoot}/`;
+  if (!absolute.startsWith(prefix)) return null;
+  const rel = absolute.slice(prefix.length);
+  return rel.length > 0 ? rel : null;
+}
+
+/**
+ * Does the file defining `toolName` differ between the build this process is serving
+ * and the current tree? See the module doc for why every failure is `'unknown'`.
+ */
+export async function toolSchemaStaleness(
+  toolName: string,
+  deps: ToolSchemaStalenessDeps,
+): Promise<ToolSchemaStaleness> {
+  const treeRef = deps.treeRef ?? 'staging';
+
+  const sourceFile = deps.sourceFileFor(toolName);
+  if (!sourceFile) return { state: 'unknown', reason: 'tool-source-unknown' };
+
+  const deployedSha = deps.deployedSha();
+  if (!deployedSha) return { state: 'unknown', reason: 'build-sha-unknown' };
+
+  const relPath = relativizeToRepo(sourceFile, deps.repoRoot);
+  if (!relPath) return { state: 'unknown', reason: 'source-outside-repo' };
+
+  // Both reads print a sha on success and fail loudly otherwise, so neither a
+  // missing ref nor an unreadable repo can come back looking like a match.
+  const [deployedBlob, treeBlob] = await Promise.all([
+    blobAtCommit(deps.git, deployedSha, relPath),
+    blobAtCommit(deps.git, treeRef, relPath),
+  ]);
+  if (!deployedBlob || !treeBlob) return { state: 'unknown', reason: 'git-unreadable' };
+
+  return deployedBlob === treeBlob
+    ? { state: 'current', relPath, deployedSha, treeRef }
+    : { state: 'stale', relPath, deployedSha, treeRef };
+}
+
+/**
+ * The one line stamped onto a filed tool-failure row, or `null` when there is nothing
+ * worth saying (`'current'` and `'unknown'` both render nothing — an unknown is not a
+ * finding, and saying so on every capture would be the noise this check avoids).
+ *
+ * Hedged on purpose ("may already be fixed"): a differing blob proves the file moved,
+ * not that it moved for THIS constraint. The triager still verifies — the stamp exists
+ * to make them suspect skew at all, which is the ingredient that was missing.
+ */
+export function renderStalenessHint(verdict: ToolSchemaStaleness, toolName: string): string | null {
+  if (verdict.state !== 'stale') return null;
+  return (
+    `ⓘ Possible STALE SCHEMA, not an open defect: \`${verdict.relPath}\` (defines \`${toolName}\`) ` +
+    `differs between the build serving this call (\`${verdict.deployedSha}\`) and \`${verdict.treeRef}\`. ` +
+    `The constraint reported here may already be fixed in the tree but not yet deployed. ` +
+    `Confirm with \`dev:pipeline_position { path: '${verdict.relPath}' }\` before triaging this as open — ` +
+    `and if it is skew, the useful artifact is a standing fact naming the interim workaround, not a code change.`
+  );
+}

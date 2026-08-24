@@ -117,14 +117,54 @@ interface ManifestItem {
   reported: { actionId: string | null; rationale: string | null; confidence: string | null } | null;
 }
 
+type LiveAction = { id: string; label: string; terminal: boolean };
+type LiveActionIndex = Map<string, LiveAction[]>;
+
+interface AttentionFeedItem {
+  id?: string;
+  actions?: { id?: string; label?: string }[];
+  ref?: { kind?: string; options?: unknown };
+}
+
+/** Normalize one canonical attention-feed item into the resolver's authority vocabulary. */
+function normalizeLiveActions(it: AttentionFeedItem): LiveAction[] {
+  const out: LiveAction[] = [];
+  for (const action of it.actions ?? []) {
+    if (typeof action?.id !== 'string') continue;
+    if (
+      it.ref?.kind === 'coord-escalation' &&
+      (action.id === 'resolve' || action.id === 'mark-done') &&
+      Array.isArray(it.ref.options)
+    ) {
+      for (const rawOption of it.ref.options) {
+        if (!rawOption || typeof rawOption !== 'object') continue;
+        const option = rawOption as { id?: unknown; label?: unknown };
+        if (typeof option.id !== 'string') continue;
+        out.push({
+          id: option.id,
+          label: typeof option.label === 'string' ? option.label : option.id,
+          terminal: true,
+        });
+      }
+      continue;
+    }
+    out.push({
+      id: action.id,
+      label: String(action.label ?? action.id),
+      terminal: !isNavigateAction(action.id),
+    });
+  }
+  return out;
+}
+
 /**
- * Read an item's live actions from the attention feed. Returns null when the
- * item is no longer in the feed at all — which is itself a finding (the ask went
- * away while the run was queued), not an error.
+ * Read the canonical action-bearing attention feed ONCE and index it for every
+ * run item. A max-size run contains 200 rows; re-reading the full feed per row
+ * made manifest latency O(run size) full-feed calls and could never fit the MCP
+ * deadline. Invocation-local reuse keeps membership live without creating a
+ * cross-call cache whose authority could go stale.
  */
-async function liveActionsFor(
-  itemId: string,
-): Promise<{ id: string; label: string; terminal: boolean }[] | null> {
+async function liveActionsById(): Promise<LiveActionIndex | null> {
   try {
     const { callPlansRead } = await import('../plans/read-dispatch');
     // The UI list projection deliberately DROPS `actions` to keep the ~1MB
@@ -137,47 +177,28 @@ async function liveActionsFor(
       groups?: { items?: unknown[] }[];
     };
     const groups = Array.isArray(r?.groups) ? r.groups : [];
+    const byId: LiveActionIndex = new Map();
     for (const g of groups) {
       for (const raw of g?.items ?? []) {
-        const it = raw as {
-          id?: string;
-          actions?: { id?: string; label?: string }[];
-          ref?: { kind?: string; options?: unknown };
-        };
-        if (it?.id !== itemId) continue;
-        const out: { id: string; label: string; terminal: boolean }[] = [];
-        for (const action of it.actions ?? []) {
-          if (typeof action?.id !== 'string') continue;
-          if (
-            it.ref?.kind === 'coord-escalation' &&
-            (action.id === 'resolve' || action.id === 'mark-done') &&
-            Array.isArray(it.ref.options)
-          ) {
-            for (const rawOption of it.ref.options) {
-              if (!rawOption || typeof rawOption !== 'object') continue;
-              const option = rawOption as { id?: unknown; label?: unknown };
-              if (typeof option.id !== 'string') continue;
-              out.push({
-                id: option.id,
-                label: typeof option.label === 'string' ? option.label : option.id,
-                terminal: true,
-              });
-            }
-            continue;
-          }
-          out.push({
-            id: action.id,
-            label: String(action.label ?? action.id),
-            terminal: !isNavigateAction(action.id),
-          });
-        }
-        return out;
+        const it = raw as AttentionFeedItem;
+        if (typeof it?.id !== 'string' || byId.has(it.id)) continue;
+        byId.set(it.id, normalizeLiveActions(it));
       }
     }
-    return null;
+    return byId;
   } catch {
     return null;
   }
+}
+
+/**
+ * Read one item's live actions freshly. Terminal execution deliberately keeps
+ * this separate lookup inside the run-row authority lock; manifest/report may
+ * reuse an invocation-local index, but an irreversible action may not.
+ */
+async function liveActionsFor(itemId: string): Promise<LiveAction[] | null> {
+  const byId = await liveActionsById();
+  return byId?.get(itemId) ?? null;
 }
 
 function innerFailure(name: string, result: unknown): Error | null {
@@ -288,9 +309,10 @@ export const bulkRunManifest = defineTool({
     const rows = await getRunItems(runId);
     const wanted = args.includeReported ? rows : rows.filter((r) => r.outcome === 'pending');
 
+    const liveActions = wanted.length > 0 ? await liveActionsById() : null;
     const items: ManifestItem[] = [];
     for (const r of wanted) {
-      const actions = (await liveActionsFor(r.itemId)) ?? [];
+      const actions = liveActions?.get(r.itemId) ?? [];
       items.push({
         itemId: r.itemId,
         position: r.position,
@@ -666,13 +688,17 @@ export const bulkRunReport = defineTool({
         ];
 
     // Validate each proposed action id against what the item ACTUALLY offers,
-    // before anything is written. A bad id fails only its own item.
+    // before anything is written. One invocation gets one canonical snapshot;
+    // a bad id still fails only its own item.
+    const liveActions = reports.some((report) => Boolean(report.actionId))
+      ? await liveActionsById()
+      : null;
     const accepted: BulkOutcomeReport[] = [];
     const env = await runBulk(
       reports,
       async (r) => {
         if (r.actionId) {
-          const actions = await liveActionsFor(r.itemId);
+          const actions = liveActions?.get(r.itemId) ?? null;
           if (actions && actions.length > 0) {
             const match = actions.find((a) => a.id === r.actionId);
             if (!match) {

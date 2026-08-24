@@ -93,6 +93,7 @@ beforeEach(() => {
   h.getFlag.mockResolvedValue(true);
   h.getRun.mockResolvedValue(run);
   h.getRunItems.mockResolvedValue([item]);
+  h.reportOutcomes.mockResolvedValue({ unknown: [], refused: null });
   h.callPlansRead.mockResolvedValue({
     groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
   });
@@ -141,6 +142,7 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
     );
 
     expect(h.callPlansRead).toHaveBeenCalledWith('attention', {}, { uiProjection: false });
+    expect(h.callPlansRead).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       ok: true,
       items: [
@@ -150,6 +152,85 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
         }),
       ],
     });
+  });
+
+  it('loads one canonical action snapshot for a max-size 200-item manifest', async () => {
+    const items = Array.from({ length: 200 }, (_, position) => ({
+      ...item,
+      itemId: `attention-${position + 1}`,
+      position,
+    }));
+    h.getRunItems.mockResolvedValue(items);
+    h.callPlansRead.mockResolvedValue({
+      groups: [
+        {
+          items: items.map((row) => ({
+            id: row.itemId,
+            ref: row.ref,
+            actions: [{ id: 'ack', label: 'Acknowledge' }],
+          })),
+        },
+      ],
+    });
+
+    const result = body(
+      await bulkRunManifest.handler(
+        { runId: run.runId, includeReported: false },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(h.callPlansRead).toHaveBeenCalledTimes(1);
+    expect(result.items).toHaveLength(200);
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          itemId: 'attention-200',
+          actions: [{ id: 'ack', label: 'Acknowledge', terminal: true }],
+        }),
+      ]),
+    );
+  });
+});
+
+describe('inbox:bulk-run-report live-action snapshot reuse', () => {
+  it('validates a batch from one canonical action snapshot', async () => {
+    const second = { ...item, itemId: 'attention-2', position: 1 };
+    h.callPlansRead.mockResolvedValue({
+      groups: [
+        {
+          items: [item, second].map((row) => ({
+            id: row.itemId,
+            ref: row.ref,
+            actions: [{ id: 'ack', label: 'Acknowledge' }],
+          })),
+        },
+      ],
+    });
+
+    await bulkRunReport.handler(
+      {
+        runId: run.runId,
+        items: [item, second].map((row) => ({
+          itemId: row.itemId,
+          outcome: 'recommended' as const,
+          actionId: 'ack',
+          rationale: 'The message only needs acknowledgement.',
+        })),
+      },
+      { workspaceId: run.workspaceId } as never,
+    );
+
+    expect(h.callPlansRead).toHaveBeenCalledTimes(1);
+    expect(h.reportOutcomes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: run.runId,
+        outcomes: expect.arrayContaining([
+          expect.objectContaining({ itemId: item.itemId, actionId: 'ack' }),
+          expect.objectContaining({ itemId: second.itemId, actionId: 'ack' }),
+        ]),
+      }),
+    );
   });
 });
 
