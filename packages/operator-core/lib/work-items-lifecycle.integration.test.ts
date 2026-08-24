@@ -24,7 +24,7 @@
  * tests). mintFixFeatureRow / resolveProject are mocked (per-harness legacy
  * client out of scope).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -37,6 +37,9 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables, PgLinkStore } from '@papercusp/coordination/capabilities';
+import { FLAGS } from '@papercusp/flags';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { emitFlagChange } from '@papercusp/flags/server';
 import { readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +62,16 @@ const COORD_EVENT_LOG_DDL = `
 // Canonical complete consolidated-features schema (single source of truth) — see
 // test/_work-items-schema.ts (D-014 fixture-completeness debt).
 const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
+const WORK_ITEM_CLAIMS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.work_item_claims (
+    workspace_id text NOT NULL, harness_slug text NOT NULL, work_item_id text NOT NULL,
+    pot_slug text, claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    owner text NOT NULL, owner_label text, holder_pubkey text,
+    intent text DEFAULT ''::text NOT NULL, ttl_sec integer DEFAULT 1800 NOT NULL,
+    acquired_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
+    expires_ts timestamptz NOT NULL,
+    last_activity_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT work_item_claims_pkey PRIMARY KEY (workspace_id, harness_slug, work_item_id))`;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 // A spy over the change fan-out so deliver()'s notify_kind + actor-exclusion is
@@ -100,6 +113,28 @@ vi.mock('./sync/hyperbee/fanout-projection', async () => {
 
 const wi = await import('./work-items');
 const issuesEngineer = await import('./issues-engineer');
+const { workItemClaimLeaseEnabled } = await import('./work-item-claim-lease-wiring');
+
+async function setLeaseFlag(on: boolean): Promise<void> {
+  setFlagOverridesForTest({ [FLAGS.WORKITEM_CLAIM_LEASE]: on });
+  emitFlagChange(FLAGS.WORKITEM_CLAIM_LEASE);
+  await vi.waitFor(() => expect(workItemClaimLeaseEnabled()).toBe(on));
+}
+
+async function seedClaimNextLease(workItemId: string, owner: string): Promise<void> {
+  await db.sql`
+    INSERT INTO harness_shared.work_item_claims
+      (workspace_id, harness_slug, work_item_id, owner, intent, ttl_sec, expires_ts)
+    VALUES ('default', 'papercup', ${workItemId}, ${owner}, 'work-stealing claim (claim_next)',
+            1800, clock_timestamp() + interval '1800 seconds')`;
+}
+
+async function claimNextLeaseCount(workItemId: string, owner: string): Promise<number> {
+  const rows = await db.sql`
+    SELECT 1 FROM harness_shared.work_item_claims
+     WHERE workspace_id = 'default' AND work_item_id = ${workItemId} AND owner = ${owner}`;
+  return rows.length;
+}
 
 /** The fan-out events captured by the spy: [ObjectRef, InjectEvent, opts]. */
 interface FanoutCall {
@@ -131,6 +166,7 @@ beforeAll(async () => {
     await db.sql.unsafe(readMigration(migration)).simple();
   }
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
@@ -159,9 +195,14 @@ beforeEach(async () => {
                        harness_shared.coord_event_log, harness_shared.event_awaits,
                        harness_shared.event_wake_deliveries, harness_shared.predicate_watches,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
-                       harness_shared.watchdog_ticks RESTART IDENTITY`;
+                       harness_shared.watchdog_ticks, harness_shared.work_item_claims RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
+  await setLeaseFlag(false);
   fh.spy.mockClear();
+});
+
+afterEach(async () => {
+  await setLeaseFlag(false);
 });
 
 describe('EI-728 — feature-family items honor an explicit target workspace', () => {
