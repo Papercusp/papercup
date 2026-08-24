@@ -481,9 +481,45 @@ describe('buildScopedTsconfig (scopeToFiles)', () => {
       // Without this, `files` is ADDITIVE to the inherited `include` — the run still
       // looks scoped, costs the same as project-wide, and nothing reports the loss.
       expect(cfg.include, 'inherited include globs would restore project-wide cost').toEqual([]);
-      expect(cfg.files).toHaveLength(1);
+      expect(cfg.files).toContain(realFile);
+      expect(cfg.files.every((f: string) => isAbsolute(f))).toBe(true);
     } finally {
       s.cleanup();
+    }
+  });
+
+  it('retains project-local ambient declarations without restoring source globs', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'p024-ambient-declarations-'));
+    const projectRoot = join(repoRoot, 'apps', 'operator');
+    const sourceFile = join(projectRoot, 'ReviewReportShell.tsx');
+    const rootAmbient = join(projectRoot, 'css-modules.d.ts');
+    const nestedAmbient = join(projectRoot, 'types', 'globals.d.ts');
+    const dependencyAmbient = join(projectRoot, 'node_modules', 'pkg', 'index.d.ts');
+    const projectTsconfig = join(projectRoot, 'tsconfig.json');
+    mkdirSync(dirname(sourceFile), { recursive: true });
+    mkdirSync(dirname(nestedAmbient), { recursive: true });
+    mkdirSync(dirname(dependencyAmbient), { recursive: true });
+    writeFileSync(sourceFile, 'export const shell = 1;');
+    writeFileSync(rootAmbient, "declare module '*.css';");
+    writeFileSync(nestedAmbient, 'declare const ambientGlobal: string;');
+    writeFileSync(dependencyAmbient, 'declare const dependencyGlobal: string;');
+    writeFileSync(
+      projectTsconfig,
+      JSON.stringify({ include: ['**/*.ts', '**/*.tsx'] }),
+    );
+
+    try {
+      const s = buildScopedTsconfig(repoRoot, projectTsconfig, [sourceFile]);
+      try {
+        const cfg = JSON.parse(readFileSync(s.configPath, 'utf8'));
+        expect(cfg.include).toEqual([]);
+        expect(cfg.files.sort()).toEqual([sourceFile, rootAmbient, nestedAmbient].sort());
+        expect(cfg.files).not.toContain(dependencyAmbient);
+      } finally {
+        s.cleanup();
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 
@@ -533,6 +569,28 @@ describe('buildScopedTsconfig (scopeToFiles)', () => {
       expect(s.resolvedFiles[0]).toBe(realFile);
     } finally {
       s.cleanup();
+    }
+  });
+
+  it('resolves package-relative paths when the selected project is nested under the repository root', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'p024-repo-root-'));
+    const nestedRoot = join(repoRoot, 'packages', 'operator-core');
+    const nestedFile = join(nestedRoot, 'lib', 'example.ts');
+    const nestedTsconfig = join(nestedRoot, 'tsconfig.json');
+    mkdirSync(dirname(nestedFile), { recursive: true });
+    writeFileSync(nestedFile, 'export const example = 1;');
+    writeFileSync(nestedTsconfig, '{}');
+
+    try {
+      const s = buildScopedTsconfig(repoRoot, nestedTsconfig, ['lib/example.ts']);
+      try {
+        expect(s.missing).toEqual([]);
+        expect(s.resolvedFiles).toEqual([nestedFile]);
+      } finally {
+        s.cleanup();
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 

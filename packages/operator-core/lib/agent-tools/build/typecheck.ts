@@ -533,6 +533,49 @@ export function projectDeclaresTypes(tsconfigAbs: string, depth = 0): boolean {
   return projectDeclaresTypes(withExt, depth + 1);
 }
 
+/**
+ * Find project-local ambient declaration files that the inherited `include` globs
+ * would normally add to the program. Scoped configs replace those globs with
+ * `include: []`, so an unimported declaration such as apps/operator/css-modules.d.ts
+ * otherwise disappears and side-effect CSS imports surface as TS2882.
+ *
+ * Dependency and generated trees are deliberately pruned: imported declarations are
+ * still followed by tsc, while dependency globals are restored through `typeRoots`
+ * and the explicit ambient package list above.
+ */
+const SCOPED_DECLARATION_PRUNE = new Set([
+  ...SUGGEST_PRUNE,
+  '.next',
+  '.turbo',
+  'out',
+  'target',
+]);
+
+function collectAmbientDeclarationFiles(dir: string, out: string[]): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SCOPED_DECLARATION_PRUNE.has(entry.name)) {
+        collectAmbientDeclarationFiles(fullPath, out);
+      }
+    } else if (entry.isFile() && entry.name.endsWith('.d.ts')) {
+      out.push(fullPath);
+    }
+  }
+}
+
+export function ambientDeclarationFiles(projectDir: string): string[] {
+  const files: string[] = [];
+  collectAmbientDeclarationFiles(projectDir, files);
+  return files.sort();
+}
+
 export function buildScopedTsconfig(
   root: string,
   projectTsconfigAbs: string,
@@ -541,11 +584,27 @@ export function buildScopedTsconfig(
   const resolvedFiles: string[] = [];
   const missing: string[] = [];
   for (const f of requestedFiles) {
-    const abs = isAbsolute(f) ? f : resolve(root, f);
-    if (existsSync(abs) && statSync(abs).isFile()) resolvedFiles.push(abs);
+    // Match capability:inspect's scoped path contract: callers may use a
+    // repository-relative path, a path relative to the selected project, or an
+    // absolute path. Repository-relative wins when both spellings happen to
+    // resolve, preserving the meaning of an explicit repo path while still
+    // making the common `files: ['lib/foo.ts']` package call shape work.
+    const candidates = isAbsolute(f)
+      ? [f]
+      : [resolve(root, f), resolve(dirname(projectTsconfigAbs), f)];
+    const abs = candidates.find((candidate) => {
+      try {
+        return existsSync(candidate) && statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+    if (abs) resolvedFiles.push(abs);
     else missing.push(f);
   }
 
+  const declarationFiles = ambientDeclarationFiles(dirname(projectTsconfigAbs));
+  const scopedFiles = [...new Set([...resolvedFiles, ...declarationFiles])];
   const typeRoot = join(root, 'node_modules', '@types');
   // Only repair a project that declares NO `types` — see projectDeclaresTypes for the
   // measured reason overriding a declared one is destructive.
@@ -573,7 +632,10 @@ export function buildScopedTsconfig(
           // to [] and deleting every ambient global we were trying to preserve.
           ...(ambientTypes.length > 0 ? { types: ambientTypes } : {}),
         },
-        files: resolvedFiles,
+        // `include: []` keeps the run scoped, but the original project globs also
+        // carried unimported ambient declarations. Restore only those project-local
+        // declarations; imported declarations remain in the normal import graph.
+        files: scopedFiles,
         include: [],
       },
       null,
@@ -639,7 +701,7 @@ export default defineTool({
       .describe('Allow tsc to use a warm tsconfig.tsbuildinfo. Default false — EI-487: an incremental run UNDER-reports errors in files the cache has not reindexed, which read as green for days. Only set true when you want a fast re-check and already know the tree is warm.'),
     scopeToFiles: z.boolean().optional()
       .describe(
-        'Compile ONLY `files` + their import graph instead of the whole project, so a run still fits the foreground cap under fleet load. Requires `files`. COST IS YOUR IMPORT GRAPH, NOT THE PROJECT — measured in operator-core: a leaf file (lib/tsc-diagnostics.ts) 2.6s vs a hub file (agent-tools/build/typecheck.ts) 63s, because a hub transitively pulls in most of the project. Great for a leaf, no help for a hub — a hub can still exceed the cap and time out. ⚠ NARROWER GUARANTEE: it cannot see errors your change caused in files that do NOT import yours (the classic case: adding a required field to a shared interface breaks distant fixtures). A clean scoped run means "these files and what they import compile", NOT "my change is safe" — for that verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
+        'Compile ONLY `files` + their import graph instead of the whole project, so a run still fits the foreground cap under fleet load. Requires `files`; each path may be repository-relative, relative to the selected project directory, or absolute. COST IS YOUR IMPORT GRAPH, NOT THE PROJECT — measured in operator-core: a leaf file (lib/tsc-diagnostics.ts) 2.6s vs a hub file (agent-tools/build/typecheck.ts) 63s, because a hub transitively pulls in most of the project. Great for a leaf, no help for a hub — a hub can still exceed the cap and time out. ⚠ NARROWER GUARANTEE: it cannot see errors your change caused in files that do NOT import yours (the classic case: adding a required field to a shared interface breaks distant fixtures). A clean scoped run means "these files and what they import compile", NOT "my change is safe" — for that verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
       ),
   }),
   async handler(args, ctx) {
@@ -705,7 +767,7 @@ export default defineTool({
             missing: scoped.missing,
             searchedFrom: root,
             message:
-              'None of the requested `files` exist on disk, so the scoped program would be empty and tsc would exit 0 — a clean zero that checked nothing. Paths are resolved against the repo root (or pass absolute); note this differs from the non-scoped `files` filter, which matches by path SUFFIX.',
+              'None of the requested `files` exist on disk, so the scoped program would be empty and tsc would exit 0 — a clean zero that checked nothing. Paths are resolved as repository-relative first, then relative to the selected project directory, or pass absolute; note this differs from the non-scoped `files` filter, which matches by path SUFFIX.',
           },
         };
       }
