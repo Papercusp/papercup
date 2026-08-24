@@ -293,7 +293,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results.map((r: { msg_id: string }) => r.msg_id)).toEqual(['m1', 'm2']);
   });
 
-  it('EI-21114932435630969: top-level wake defaults items, while an item override wins', async () => {
+  it('EI-21114932435630969 / EI-21336114345546510: top-level wake defaults items and preserves the legacy queue count', async () => {
     wakeM.mockResolvedValueOnce({
       targets: ['bee-1'],
       keys: [],
@@ -315,10 +315,11 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake).toMatchObject({
       mode: 'required',
       queued: 1,
-      woken: 0,
+      woken: 1,
       pickupConfirmed: false,
       wakeOutcome: 'queued',
     });
+    expect(b.results[0].wake.woken).toBe(b.results[0].wake.queued);
     expect(b.results[1].wake).toBeUndefined();
   });
 
@@ -461,7 +462,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake).toMatchObject({
       mode: 'optimistic',
       queued: 1,
-      woken: 0,
+      woken: 1,
       pickupConfirmed: false,
       wakeOutcome: 'queued',
     });
@@ -475,7 +476,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
     it("durable delivery queued (queued>0, staged:0) → wakeOutcome:'queued', not 'delivered'", async () => {
       wakeM.mockResolvedValueOnce({ targets: ['live-bee'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
       const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'required' });
-      expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 0, pickupConfirmed: false, wakeOutcome: 'queued' });
+      expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 1, pickupConfirmed: false, wakeOutcome: 'queued' });
       expect(b.results[0].wake.staged).toBeUndefined();
     });
 
@@ -507,7 +508,7 @@ describe('coord:send handler (bulk keyed-array)', () => {
         stagedTargets: ['manual-bee'],
       } as never);
       const b = await body({ to: ['live-bee', 'manual-bee'], summary: 'fyi', wake: 'required' });
-      expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 0, staged: 1, wakeOutcome: 'partial-staged' });
+      expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 1, staged: 1, wakeOutcome: 'partial-staged' });
     });
 
     it("a genuine dead-recipient miss (woken:0, staged:0) → wakeOutcome:'missed', distinguishable from staged", async () => {
@@ -675,7 +676,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).toHaveBeenCalledTimes(1);
     expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
-    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 0, pickupConfirmed: false });
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 1, pickupConfirmed: false });
   });
 
   it('expected lifecycle ack marker preserves the ack reply but suppresses only its reply-wake', async () => {
@@ -720,7 +721,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
       ['peer'],
       expect.objectContaining({ payload: { msg_id: 'm1' } }),
     );
-    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 0, pickupConfirmed: false });
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 1, pickupConfirmed: false });
     expect(b.results[0].replyWake?.suppressed).toBeUndefined();
   });
 
@@ -754,7 +755,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
       pickupConfirmed: false,
       foldedIntoDirectedWake: true,
     });
-    expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 0, pickupConfirmed: false, wakeOutcome: 'queued' });
+    expect(b.results[0].wake).toMatchObject({ queued: 1, woken: 1, pickupConfirmed: false, wakeOutcome: 'queued' });
   });
 
   it('EI-14760: a wake:true reply whose original sender is a THIRD party still fires the reply-wake (two distinct fans)', async () => {
@@ -870,7 +871,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(b.results[0].ok).toBe(true);
-    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 0, pickupConfirmed: false });
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 1, pickupConfirmed: false });
     expect(getByIdM).toHaveBeenCalledTimes(1); // one lookup, not two
   });
 
