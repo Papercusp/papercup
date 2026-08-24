@@ -258,7 +258,7 @@ describe('features:get', () => {
     // not on a role allowlist — strip the cap and the dispatcher refuses.
     const tool = lookupByMcpName('features:get')!;
     const ctx = MAKE_CTX();
-    (ctx.principal as { capabilities: Set<string> }).capabilities = new Set();
+    ctx.principal!.capabilities = new Set();
     const r = await dispatchProjectedTool(tool, 'features:get', { slug: 'h1', feature_id: 'F-1' }, ctx, {});
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('missing_capability');
