@@ -139,11 +139,14 @@ export default defineTool({
     // A diagnostic read must stay fork/sidecar-free. The default enables the
     // dev-deploy spawner sidecar, which can block this read while composing
     // release truth (EI-20264406467393669).
-    const snapshotRead = await withBoundedTimeout(() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }), {
-      fallback: null,
-      timeoutMs: RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS,
-      label: 'release:trace:pipeline-snapshot',
-    });
+    const snapshotRead = await withBoundedTimeout(
+      () => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false, includeActiveRun: true }),
+      {
+        fallback: null,
+        timeoutMs: RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS,
+        label: 'release:trace:pipeline-snapshot',
+      },
+    );
     if (snapshotRead.degraded) {
       if (snapshotRead.reason === 'error') throwReadError(snapshotRead, 'release:trace:pipeline-snapshot');
       return traceTimeoutResponse(args, 'pipeline_snapshot', RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS, snapshotRead);
@@ -184,6 +187,9 @@ export default defineTool({
         snapshot.gate.inconclusive?.status === 'repair-staging-mismatch');
     const inheritedRepairQueueFailingTests = repairQueueInconclusive ? snapshot.gate.failingTests : [];
     const deploy = computeDeployStatus(snapshot);
+    // Keep the snapshot fallback for narrow contract doubles that only provide
+    // the deploy state; production computeDeployStatus always supplies gate.
+    const deployGate = deploy.gate ?? snapshot.gate;
     const pipeline = pipelineName(snapshot.deploy.integrationRoot);
     const keys = [
       buildKey('deploy', { sha: position.targetSha ?? args.sha }),
@@ -266,8 +272,11 @@ export default defineTool({
         recordedVerdict: snapshot.gate.recordedVerdict,
         inheritedRepairQueueFailingTests,
         inheritedRepairQueueFailingTestsSource: repairQueueInconclusive ? 'prior-gate-verdict' : null,
-        fireStale: snapshot.gate.fireStale,
-        fireStaleReason: snapshot.gate.fireStaleReason,
+        // Use computeDeployStatus's active-run-aware projection. Forwarding the raw
+        // snapshot freshness here could say "not firing" while the same snapshot proves
+        // a live checkpoint is producing the next verdict (EI-21313251739637753).
+        fireStale: deployGate.fireStale,
+        fireStaleReason: deployGate.fireStaleReason,
         verdictStale: snapshot.gate.verdictStale,
         verdictStaleReason: snapshot.gate.verdictStaleReason,
         // The checkpoint judges the local integration root. Preserve the exact

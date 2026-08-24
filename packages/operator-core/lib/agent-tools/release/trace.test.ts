@@ -80,7 +80,61 @@ describe('release:trace tool contract', () => {
 
     await tool.handler({ path: 'packages/operator-core/lib/agent-tools/release/trace.ts' } as never, {} as never);
 
-    expect(mocks.gitPipelineSnapshot).toHaveBeenCalledWith(undefined, { useSpawnerSidecar: false });
+    expect(mocks.gitPipelineSnapshot).toHaveBeenCalledWith(undefined, {
+      useSpawnerSidecar: false,
+      includeActiveRun: true,
+    });
+  });
+
+  it('keeps an active checkpoint from surfacing a gate-wedged trace (EI-21313251739637753)', async () => {
+    const activeRun = {
+      active: true,
+      candidate: 'active-candidate',
+      startedAtMs: 123,
+      elapsedSec: 42,
+    };
+    const snapshot = {
+      generatedAtMs: 123,
+      activeRun,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: {
+        verdictStale: false,
+        consecutiveReds: 0,
+        failingTests: [],
+        fireStale: true,
+        fireStaleReason: 'no fresh verdict in 9h',
+      },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({
+      targetSha: 'abcd1234',
+      gate: { checkpointRunInFlight: activeRun },
+    });
+    mocks.computeDeployStatus.mockReturnValueOnce({
+      state: 'staging-buffered',
+      gate: { fireStale: false, fireStaleReason: null },
+    });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: false });
+
+    await tool.handler({ sha: 'abcd1234' } as never, {} as never);
+
+    expect(mocks.gitPipelineSnapshot).toHaveBeenCalledWith(undefined, {
+      useSpawnerSidecar: false,
+      includeActiveRun: true,
+    });
+    expect(mocks.computeDeployStatus).toHaveBeenCalledWith(expect.objectContaining({ activeRun }));
+    expect(mocks.buildReleaseTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gate: expect.objectContaining({
+          state: 'staging-buffered',
+          fireStale: false,
+          fireStaleReason: null,
+          checkpointRunInFlight: activeRun,
+        }),
+      }),
+    );
   });
 
   it('stamps the exact target SHA with a candidate-cell re-read handle', async () => {
