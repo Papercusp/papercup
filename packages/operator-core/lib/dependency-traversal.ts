@@ -17,6 +17,7 @@
  */
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
+import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 
 export type DependencyTraversalDirection = 'blockers' | 'blocked';
 
@@ -67,6 +68,37 @@ export interface DependencyTraversalResult {
   maxDepth: number;
 }
 
+export interface DependencyBottleneckCandidate {
+  key: string;
+  kind: DependencyTraversalNodeKind;
+  ref: string;
+  status: string | null;
+  title: string | null;
+  /** Work-item identities represented by this graph node (itself and/or coverage twins). */
+  workItemRefs: string[];
+  /** Distinct nonterminal plan items transitively blocked behind this node. */
+  openBlockedCount: number;
+}
+
+export interface DependencyBottleneckPopulation {
+  kind: 'exact-plan-open-roots';
+  planSlug: string;
+  harnessSlug: string;
+  basis: 'unified-dependency-graph';
+  openRoots: number;
+  candidates: number;
+  shown: number;
+  limit: number;
+  truncated: boolean;
+  depthLimited: boolean;
+  maxDepth: number;
+}
+
+export interface DependencyBottleneckResult {
+  population: DependencyBottleneckPopulation;
+  rows: DependencyBottleneckCandidate[];
+}
+
 interface DependencyTraversalRow {
   node_key: string;
   node_kind: DependencyTraversalNodeKind;
@@ -87,8 +119,27 @@ interface DependencyTraversalRow {
 
 type DependencyTraversalQuery = (
   text: string,
-  params: readonly unknown[],
+  params: Array<string | number | string[]>,
 ) => Promise<DependencyTraversalRow[]>;
+
+interface DependencyBottleneckRow {
+  row_kind: 'population' | 'bottleneck';
+  blocker_key: string | null;
+  blocker_kind: DependencyTraversalNodeKind | null;
+  blocker_ref: string | null;
+  blocker_status: string | null;
+  blocker_title: string | null;
+  work_item_refs: string[] | null;
+  open_blocked_count: number | string | null;
+  open_root_count: number | string;
+  candidate_count: number | string;
+  depth_limited: boolean;
+}
+
+type DependencyBottleneckQuery = (
+  text: string,
+  params: Array<string | number | string[]>,
+) => Promise<DependencyBottleneckRow[]>;
 
 const ISSUE_FAMILY_KINDS = ['bug', 'change', 'task'];
 const PLAN_ITEM_RE = /^P-\d{3,}$/;
@@ -137,8 +188,7 @@ export function dependencyTraversalStartKey(start: DependencyTraversalStart): st
  * retained because they are the reconciliation substrate for rows predating the
  * column/payload stamps.
  */
-const DEPENDENCY_TRAVERSAL_SQL = String.raw`
-WITH RECURSIVE
+const DEPENDENCY_GRAPH_CTES = String.raw`
 raw_plan_nodes AS (
   SELECT 0 AS source_rank,
          'plan_item:' || pi.plan_slug || '#' || pi.item_id AS node_key,
@@ -340,7 +390,12 @@ all_nodes AS (
          placeholder.status, placeholder.title, placeholder.harness_slug,
          placeholder.plan_slug, placeholder.item_id
     FROM placeholder_nodes placeholder
-),
+)
+`;
+
+const DEPENDENCY_TRAVERSAL_SQL = String.raw`
+WITH RECURSIVE
+${DEPENDENCY_GRAPH_CTES},
 walk AS (
   SELECT $4::text AS node_key,
          0 AS depth,
@@ -406,6 +461,158 @@ SELECT node.node_key,
  ORDER BY walk.depth, node.node_key, walk.edge_key NULLS FIRST
 `;
 
+/**
+ * Rank the blockers behind one exact plan in ONE query over the same graph CTE
+ * used by traverseDependencies. The population row is unconditional, so an
+ * empty measured result remains distinguishable from an unread/failed query.
+ *
+ * Parameters extend the traversal contract with $8 terminal statuses, $9 exact
+ * plan slug and $10 row limit.
+ */
+const DEPENDENCY_BOTTLENECK_SQL = String.raw`
+WITH RECURSIVE
+${DEPENDENCY_GRAPH_CTES},
+plan_roots AS (
+  SELECT node_key
+    FROM plan_nodes
+   WHERE plan_slug = $9
+     AND NOT (lower(COALESCE(status, 'todo')) = ANY($8::text[]))
+),
+candidate_blockers AS (
+  SELECT DISTINCT edge.dependency_key AS blocker_key
+    FROM all_edges edge
+    JOIN all_nodes blocker ON blocker.node_key = edge.dependency_key
+   WHERE edge.relation <> 'coverage'
+     AND (blocker.status IS NULL OR NOT (lower(blocker.status) = ANY($8::text[])))
+),
+candidate_identity AS (
+  SELECT blocker_key, blocker_key AS identity_key
+    FROM candidate_blockers
+  UNION
+  SELECT candidate.blocker_key,
+         CASE
+           WHEN edge.subject_key = candidate.blocker_key THEN edge.dependency_key
+           ELSE edge.subject_key
+         END AS identity_key
+    FROM candidate_blockers candidate
+    JOIN all_edges edge
+      ON edge.relation = 'coverage'
+     AND candidate.blocker_key IN (edge.subject_key, edge.dependency_key)
+),
+blocked_walk AS (
+  SELECT blocker_key,
+         blocker_key AS node_key,
+         0 AS depth,
+         ARRAY[blocker_key] AS path
+    FROM candidate_blockers
+  UNION ALL
+  SELECT walk.blocker_key,
+         next_step.next_key,
+         walk.depth + 1,
+         walk.path || next_step.next_key
+    FROM blocked_walk walk
+    JOIN LATERAL (
+      SELECT CASE
+               WHEN edge.relation = 'coverage' AND edge.subject_key = walk.node_key
+                 THEN edge.dependency_key
+               WHEN edge.relation = 'coverage' AND edge.dependency_key = walk.node_key
+                 THEN edge.subject_key
+               WHEN edge.dependency_key = walk.node_key
+                 THEN edge.subject_key
+             END AS next_key
+        FROM all_edges edge
+       WHERE (edge.relation = 'coverage' AND walk.node_key IN (edge.subject_key, edge.dependency_key))
+          OR (edge.relation <> 'coverage' AND edge.dependency_key = walk.node_key)
+    ) next_step ON next_step.next_key IS NOT NULL
+   WHERE walk.depth < $6
+     AND NOT next_step.next_key = ANY(walk.path)
+),
+ranked AS (
+  SELECT candidate.blocker_key,
+         blocker.node_kind AS blocker_kind,
+         blocker.ref AS blocker_ref,
+         blocker.status AS blocker_status,
+         blocker.title AS blocker_title,
+         ARRAY(
+           SELECT DISTINCT represented.ref
+             FROM candidate_identity identity
+             JOIN all_nodes represented ON represented.node_key = identity.identity_key
+            WHERE identity.blocker_key = candidate.blocker_key
+              AND represented.node_kind = 'work_item'
+            ORDER BY represented.ref
+         ) AS work_item_refs,
+         count(DISTINCT root.node_key)::int AS open_blocked_count,
+         bool_or(
+           walk.depth = $6 AND EXISTS (
+             SELECT 1
+               FROM all_edges edge
+              WHERE (
+                      (edge.relation = 'coverage' AND walk.node_key IN (edge.subject_key, edge.dependency_key))
+                   OR (edge.relation <> 'coverage' AND edge.dependency_key = walk.node_key)
+                    )
+                AND (CASE
+                       WHEN edge.relation = 'coverage' AND edge.subject_key = walk.node_key
+                         THEN edge.dependency_key
+                       WHEN edge.relation = 'coverage' AND edge.dependency_key = walk.node_key
+                         THEN edge.subject_key
+                       WHEN edge.dependency_key = walk.node_key
+                         THEN edge.subject_key
+                     END) <> ALL(walk.path)
+           )
+         ) AS depth_limited
+    FROM candidate_blockers candidate
+    JOIN all_nodes blocker ON blocker.node_key = candidate.blocker_key
+    JOIN blocked_walk walk ON walk.blocker_key = candidate.blocker_key
+    JOIN plan_roots root ON root.node_key = walk.node_key
+   WHERE NOT EXISTS (
+     SELECT 1
+       FROM candidate_identity identity
+      WHERE identity.blocker_key = candidate.blocker_key
+        AND identity.identity_key = root.node_key
+   )
+   GROUP BY candidate.blocker_key, blocker.node_kind, blocker.ref, blocker.status, blocker.title
+  HAVING count(DISTINCT root.node_key) > 0
+),
+ordered AS (
+  SELECT *, row_number() OVER (ORDER BY open_blocked_count DESC, blocker_key) AS rank
+    FROM ranked
+),
+population AS (
+  SELECT count(*)::int AS candidate_count,
+         (SELECT count(*)::int FROM plan_roots) AS open_root_count,
+         COALESCE(bool_or(depth_limited), false) AS depth_limited
+    FROM ranked
+)
+SELECT 'population'::text AS row_kind,
+       NULL::text AS blocker_key,
+       NULL::text AS blocker_kind,
+       NULL::text AS blocker_ref,
+       NULL::text AS blocker_status,
+       NULL::text AS blocker_title,
+       NULL::text[] AS work_item_refs,
+       NULL::int AS open_blocked_count,
+       population.open_root_count,
+       population.candidate_count,
+       population.depth_limited
+  FROM population
+UNION ALL
+SELECT 'bottleneck'::text AS row_kind,
+       ordered.blocker_key,
+       ordered.blocker_kind,
+       ordered.blocker_ref,
+       ordered.blocker_status,
+       ordered.blocker_title,
+       ordered.work_item_refs,
+       ordered.open_blocked_count,
+       population.open_root_count,
+       population.candidate_count,
+       population.depth_limited
+  FROM ordered
+ CROSS JOIN population
+ WHERE ordered.rank <= $10
+ ORDER BY row_kind DESC, open_blocked_count DESC NULLS LAST, blocker_key NULLS LAST
+`;
+
 export async function traverseDependencies(
   args: {
     workspaceId: string;
@@ -426,7 +633,7 @@ export async function traverseDependencies(
   const coordinationWorkspaceId = args.coordinationWorkspaceId?.trim() || DEFAULT_COORD_WORKSPACE;
   const query: DependencyTraversalQuery =
     deps.query ??
-    ((text, params) => getOrgPg().sql.unsafe<DependencyTraversalRow[]>(text, params as unknown[]));
+    ((text, params) => getOrgPg().sql.unsafe<DependencyTraversalRow[]>(text, params));
   const rows = await query(DEPENDENCY_TRAVERSAL_SQL, [
     workspaceId,
     harnessSlug,
@@ -481,5 +688,78 @@ export async function traverseDependencies(
     edges: [...edges.values()].sort((a, b) => a.key.localeCompare(b.key)),
     truncated,
     maxDepth,
+  };
+}
+
+export async function readDependencyBottlenecks(
+  args: {
+    workspaceId: string;
+    harnessSlug: string;
+    planSlug: string;
+    maxDepth?: number;
+    limit?: number;
+    coordinationWorkspaceId?: string;
+  },
+  deps: { query?: DependencyBottleneckQuery } = {},
+): Promise<DependencyBottleneckResult> {
+  const workspaceId = args.workspaceId.trim();
+  const harnessSlug = args.harnessSlug.trim();
+  const planSlug = args.planSlug.trim();
+  if (!workspaceId || !harnessSlug || !planSlug) {
+    throw new Error('dependency bottleneck read requires workspaceId, harnessSlug, and planSlug');
+  }
+  const maxDepth = Math.max(1, Math.min(256, Math.floor(args.maxDepth ?? DEFAULT_DEPENDENCY_TRAVERSAL_MAX_DEPTH)));
+  const limit = Math.max(1, Math.min(50, Math.floor(args.limit ?? 10)));
+  const coordinationWorkspaceId = args.coordinationWorkspaceId?.trim() || DEFAULT_COORD_WORKSPACE;
+  const query: DependencyBottleneckQuery =
+    deps.query ??
+    ((text, params) => getOrgPg().sql.unsafe<DependencyBottleneckRow[]>(text, params));
+  const rows = await query(DEPENDENCY_BOTTLENECK_SQL, [
+    workspaceId,
+    harnessSlug,
+    coordinationWorkspaceId,
+    '',
+    'blocked',
+    maxDepth,
+    ISSUE_FAMILY_KINDS,
+    [...ALL_TERMINAL_STATUSES].map((status) => status.toLowerCase()),
+    planSlug,
+    limit,
+  ]);
+  const populationRow = rows.find((row) => row.row_kind === 'population');
+  if (!populationRow) throw new Error('dependency bottleneck query returned no population row');
+  const candidates = Number(populationRow.candidate_count);
+  const openRoots = Number(populationRow.open_root_count);
+  const bottlenecks = rows
+    .filter((row) => row.row_kind === 'bottleneck')
+    .map((row): DependencyBottleneckCandidate => {
+      if (!row.blocker_key || !row.blocker_kind || !row.blocker_ref || row.open_blocked_count == null) {
+        throw new Error('dependency bottleneck query returned an incomplete ranked row');
+      }
+      return {
+        key: row.blocker_key,
+        kind: row.blocker_kind,
+        ref: row.blocker_ref,
+        status: row.blocker_status,
+        title: row.blocker_title,
+        workItemRefs: row.work_item_refs ?? [],
+        openBlockedCount: Number(row.open_blocked_count),
+      };
+    });
+  return {
+    population: {
+      kind: 'exact-plan-open-roots',
+      planSlug,
+      harnessSlug,
+      basis: 'unified-dependency-graph',
+      openRoots,
+      candidates,
+      shown: bottlenecks.length,
+      limit,
+      truncated: candidates > bottlenecks.length,
+      depthLimited: populationRow.depth_limited,
+      maxDepth,
+    },
+    rows: bottlenecks,
   };
 }
