@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { SESSION_TURN_REF_PREFIX } from './_shared';
 
 const h = vi.hoisted(() => ({
   identity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'ws-test' })),
@@ -62,6 +63,19 @@ beforeEach(() => {
 });
 
 describe('sessions:timeline owner resolution', () => {
+  it('uses canonical sessions:read-compatible refs for transcript turns', async () => {
+    const tx = makeTx();
+
+    await run('su-12345678-1234-4234-8234-123456789abc', tx);
+
+    const timelineQuery = tx.mock.calls.find((call) =>
+      Array.isArray(call[0]) && call[0].some((part: unknown) =>
+        typeof part === 'string' && part.includes("FROM harness_shared.session_turns"),
+      ),
+    );
+    expect(timelineQuery?.slice(1)).toContain(SESSION_TURN_REF_PREFIX);
+  });
+
   it('normalizes a unique short owner handle before constructing the history query', async () => {
     const short = 'su-peer';
     const full = 'su-12345678-1234-4234-8234-123456789abc';

@@ -15,7 +15,12 @@ import {
   resolveRecipients,
   resolveRecipientsAgainst,
 } from '../coordination/recipient-resolve';
-import { sessionSearchEnabled, disabledResult, refreshLiveSessionsBeforeRead } from './_shared';
+import {
+  SESSION_TURN_REF_PREFIX,
+  sessionSearchEnabled,
+  disabledResult,
+  refreshLiveSessionsBeforeRead,
+} from './_shared';
 import {
   decodeSessionCursor,
   encodeSessionCursor,
@@ -614,7 +619,7 @@ export default defineTool({
     const rows = await ctx.tx<TimelineEntry[]>`
       (
         SELECT 'turn' AS kind, COALESCE(ts, ingested_at)::text AS ts,
-               source_kind || ':' || session_id || ':' || turn_idx AS ref,
+               CONCAT(${SESSION_TURN_REF_PREFIX}, source_kind, ':', session_id, ':', turn_idx) AS ref,
                '[' || speaker || '] ' || left(text, 300) AS text,
                NULL::text AS tool_name, NULL::text AS status, false AS auto,
                NULL::text AS call_origin, NULL::text AS call_origin_source,

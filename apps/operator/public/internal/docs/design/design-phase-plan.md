@@ -173,7 +173,7 @@ orchestrator can override either direction.
 
 Output is a *specification*, not edited components. To enforce
 this, the runtime restricts designer commits to a per-adapter
-allowlist (default: `design/`, `content/internal-docs/design/`, sketch
+allowlist (default: `design/`, `apps/operator-docs/src/content/docs/design/`, sketch
 artifact paths). Commits outside the allowlist are rejected with a
 clear error and the designer is re-prompted, not killed.
 
@@ -198,7 +198,7 @@ Inputs:
 * `DESIGN_SPEC.md` (global rules — §5; with fallback chain)
 * Component registry (§8)
 * Token store (§9)
-* Adjacent design memos under `content/internal-docs/design/`
+* Adjacent design memos under `apps/operator-docs/src/content/docs/design/`
 * **For redesigns of existing features:** preview-adapter capture
   of the current state (screenshot or live preview URL); designer
   needs to know what exists before proposing changes
@@ -313,7 +313,7 @@ Six panes for the main column:
 
 1. **Features (mode=design)** — shared component (also lives in
    the left rail; tab repeats it for full-width view)
-2. **Design memos** — surface `content/internal-docs/design/*.mdx` as a
+2. **Design memos** — surface `apps/operator-docs/src/content/docs/design/*.mdx` as a
    working backlog with status (open / addressed / wontfix)
 3. **Component registry browser** — searchable inventory (§8);
    humans browse, agents query via MCP

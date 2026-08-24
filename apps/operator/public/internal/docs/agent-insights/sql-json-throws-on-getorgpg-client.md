@@ -1,69 +1,41 @@
-# `sql.json(object)` throws on the getOrgPg pg client — write jsonb via `JSON.stringify(x)::jsonb`
+# JSON/JSONB binding on canonical postgres-js clients — the hybrid serializer supports both shapes
 URL: /internal/docs/agent-insights/sql-json-throws-on-getorgpg-client
 
->-
+Canonical db-org clients install a sticky hybrid serializer for postgres-js JSON/JSONB OIDs: strings pass through and raw JS values are JSON.stringify'd. Both sql.json(value) and pre-stringified casts are supported; the historical getOrgPg throw is retained here as incident history, not current guidance.
 
-## Symptom
+## Current contract
 
-A jsonb write through the operator's `getOrgPg().sql` client throws, synchronously, **before** hitting Postgres:
+Canonical clients created by `buildClient` install `restoreRawJsonbSerializer` for postgres-js JSON OID 114 and JSONB OID 3802. The serializer is both **hybrid** and **sticky**:
 
-```
-The "string" argument must be of type string or an instance of Buffer or ArrayBuffer. Received an instance of Object
-```
+* a string is passed through unchanged, covering a pre-stringified `${JSON.stringify(value)}::jsonb` or `::text::jsonb` bind;
+* any other JS value is serialized once with `JSON.stringify`, covering `${sql.json(value)}`;
+* accessor-backed `get`/`set` properties prevent a later `drizzle(client)` or runtime `drizzle(tx)` wrap from replacing the hybrid serializer with drizzle's transparent serializer.
 
-…wherever the code binds an object/array with postgres-js's `sql.json(value)`:
+Therefore both binding shapes are supported on every canonical db-org client (`getOrgPg`, `getOrgPgApp`, and `getHarnessPg`). Do not rewrite a working `sql.json(value)` call merely because it uses a canonical client.
 
-```ts
-await sql`UPDATE … SET divergence = ${sql.json(obj)} …`;  // ❌ throws on getOrgPg
-```
+For code that may also run on a hand-rolled fresh `postgres()` client **without** `restoreRawJsonbSerializer`, keep the existing cross-client convention: a raw pre-stringified value should use `::text::jsonb`, while `sql.json(value)` uses postgres-js's own JSON parameter typing. The relevant question is which serializer the client installs, not whether the receiver is named `sql`.
 
-The throw is often **swallowed** by a best-effort `try/catch`, so the failure is silent — the row just never persists. Cost/result counters that read an in-memory value (not the DB) still look fine, which masks it further.
+## Historical incident
 
-## Root cause (confirmed)
+Before `restoreRawJsonbSerializer` landed, the canonical shared client could be left in a serializer state where `sql.json(object)` reached `Buffer.byteLength` as an object and threw, while a pre-stringified value could double-encode under the opposite serializer state. The old version of this document and the old `lint:no-sql-json` implementation treated that incident as a permanent ban on `sql.json`.
 
-It is **not** the client config. A fresh `postgres(url, …)` client built with the *identical* options as `getOrgPg`'s `buildClient` (`prepare:false` + the custom `bigint` type + `connection.search_path`) accepts `sql.json` without error. The difference is a **postgres-js module-instance mismatch** (a dual-package hazard): the `Parameter` wrapper `sql.json()` produces and the serializer that consumes it resolve to *different* copies of postgres-js, so the `instanceof` check fails, the wrapper is treated as a raw object, and `Buffer.byteLength`/`Buffer.from` is handed an object → the throw.
+That guidance is superseded by EI-18698602043482898. The root fix is the sticky hybrid serializer, not rewriting every consumer to one call shape.
 
-Empirical check against the real client:
+## Required wiring and recurrence guards
 
-```ts
-import { getOrgPg } from '@papercusp/db-org';
-const { sql } = getOrgPg();
-await sql`SELECT ${sql.json({a:1})}::jsonb`;            // ❌ throws
-await sql`SELECT ${JSON.stringify({a:1})}::jsonb`;      // ✅ works
-```
+* `libs/papercusp/libs/db/src/raw-serializers.ts` owns `restoreRawJsonbSerializer`.
+* `libs/papercusp/libs/db/src/connection.ts` calls it from `buildClient` before returning the canonical client.
+* `packages/operator-core/test/_org-test-db.ts` applies the same restoration so production-shaped integration fixtures do not bind JSON differently from production.
+* `libs/papercusp/libs/db/src/connection-jsonb-serializers.test.ts` pins raw JS serialization, string passthrough, both OIDs, and resistance to later drizzle mutation.
+* The compatibility-named `npm run lint:no-sql-json` no longer scans or bans consumers. It verifies the wiring and hybrid/sticky implementation above, with detector positive controls in `packages/operator-core/lib/__tests__/check-no-sql-json.test.ts`.
 
-**Exact failure point (from the throw's stack):** `Buffer.byteLength(<object>)` inside postgres-js's `Bind` → `reset.str`, in the **CJS build** (`node_modules/postgres/cjs/src/connection.js`, the `prepare:false` `ParameterDescription` path) — the `sql.json` Parameter reaches `Bind` un-serialized. getOrgPg's client resolves the **CJS** build; a fresh `import postgres from 'postgres'` resolves the **ESM** build (`src/`) and serializes the same Parameter correctly. Two builds of one version loaded together is the dual-package hazard. The "true root fix" (dedupe so getOrgPg uses a single build) is deliberately **not** pursued: `${JSON.stringify(x)}::jsonb` is universally correct and enforced by `scripts/check-no-sql-json.mjs`, so restoring `sql.json` has no upside.
+## Verification
 
-## Fix
+Run:
 
-Bind jsonb as a JSON **string** cast to jsonb — portable across every client:
-
-```ts
-// object (always present)
-SET col = ${JSON.stringify(obj)}::jsonb
-// nullable
-SET col = ${obj == null ? null : JSON.stringify(obj)}::jsonb
+```bash
+npm run lint:no-sql-json
+npm exec vitest run -- packages/operator-core/lib/__tests__/check-no-sql-json.test.ts libs/papercusp/libs/db/src/connection-jsonb-serializers.test.ts
 ```
 
-This is semantically identical to `sql.json` for jsonb and works everywhere.
-
-## Read side — `${JSON.stringify(x)}::jsonb` reads back as a STRING on the test pools
-
-A column written this way reads back as a **raw JSON string** under the testcontainer / org-test pools (and any client that doesn't auto-decode jsonb), whereas the prod getOrgPg/CJS client **auto-parses it to an object/array**. So a reader that uses the value as an object/array must decode defensively, or it silently sees a string (e.g. `row.payload.routedRef` → `undefined`, no crash, wrong result). Decode at every jsonb read boundary with the shared `coerceJson<T>(v)` (`packages/operator-core/lib/pg-jsonb.ts`) — it returns an object/array untouched and `JSON.parse`s a string. (Mirrors `coerceJsonArray`, slot-parked-store `parseEnvelope`, pg-log `parseBody`.)
-
-**Trap:** switching a write off `sql.json` UNBLOCKS the write, which can newly EXPOSE a latent read bug whose column was previously never populated (the throwing write meant nothing was ever stored to read). Always fix the write and its reads together — a green write is only half the migration.
-
-## Why tests don't catch it
-
-Integration tests use `createFreshPgDb` (`packages/operator-core/test/_pg-helpers.ts`), a **root-postgres** client that resolves the *tolerant* postgres-js instance — so `sql.json` works there and a green integration test says nothing about prod. **A passing `*.integration.test.ts` is not evidence that a `sql.json` write works in production.** The codebase already worked around this ad hoc (`dock-layouts.ts` uses a separate `db()` pool *because* "the operator getOrgPg client where sql.json throws").
-
-## Safe vs unsafe clients
-
-* **Unsafe** (throws): `getOrgPg().sql` / `getOrgPgApp().sql` / any client from `buildClient` in `libs/papercusp/libs/db/src/connection.ts`, and `getHarnessPg(slug)`.
-* **Safe** (tolerates): the root-postgres test client (`createFreshPgDb`), `dock-layouts`' `db()` pool, and a plain `postgres(uri, {prepare:false})` like the gym's `gymSql`.
-
-When in doubt, just use `JSON.stringify(x)::jsonb` — it is correct on every client.
-
-## History
-
-Same class as the experiment-ledger fix (D-018, plan `experiment-registry-invocation-api-2026-06-14`). The sweep that found it (EI-607) fixed five getOrgPg-client sites: `replay/store.ts` `finishRun` (which had broken **every** replay-harness cell's persistence in prod → 0 scored cells, masking the replay/transfer/regret frontier loops as non-functional), `slot-parked-store.ts`, `owner-preference/interactions.ts`, `change-ledger.ts`, `pot-eval/store-pg.ts`. The true root fix (deduping the postgres-js instance so `sql.json` works everywhere) + a static lint guard banning `sql.json(` in getOrgPg-client code remain open on EI-607.
+A green result establishes both halves: the static gate can detect missing production/test wiring, and the behavior suite proves the installed serializer accepts raw JS and pre-stringified values without double encoding.

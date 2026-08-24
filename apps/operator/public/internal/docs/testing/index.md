@@ -1,7 +1,7 @@
 # Testing — strategy, conventions, and OSS stack (v1.1)
 URL: /internal/docs/testing/index
 
-
+Papercusp testing strategy, conventions, and per-project runbooks.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -21,7 +21,7 @@ import { Aside } from '@astrojs/starlight/components';
 * §1.4: `@axe-core/playwright` + `vitest-axe` adopted; first coverage
   in `libs/generic/ui-primitives` (`src/a11y.test.tsx` covers StatCard,
   StatusPill, JsonTree, MarkdownView) and `apps/operator` e2e specs.
-* Phase 3: TESTING.md present in 15 packages so far — `apps/tui`,
+* Phase 3: TESTING.md present in 16 packages so far — `apps/operator`, `apps/tui`,
   `apps/pui-zellij-plugin`, `packages/operator-core`, `packages/tooldef-mcp`,
   `libs/papercusp-shared`, `libs/papercusp/packages/blueprint-distribution`,
   and most of `libs/generic/*` (`tooldef`, `tooldef-http`, `memory`,
