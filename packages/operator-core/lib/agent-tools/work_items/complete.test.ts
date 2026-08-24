@@ -3142,6 +3142,26 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(descriptions).toContain('record-only');
     });
 
+    it('documents the live-drove-ui artifact requirement in both published branches', () => {
+      const json = z.toJSONSchema(complete.args as never) as {
+        anyOf?: Array<{ properties?: Record<string, { description?: string }> }>;
+        oneOf?: Array<{ properties?: Record<string, { description?: string }> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const descriptions = branches.map((branch) => branch.properties?.completion?.description ?? '');
+
+      expect(descriptions).toHaveLength(2);
+      for (const description of descriptions) {
+        expect(description).toContain("verifiedHow:'live-drove-ui'");
+        expect(description).toContain('real artifact citation');
+        expect(description).toContain('summary');
+        expect(description).toContain('testsRun');
+        expect(description).toContain('testResult');
+        expect(description).toContain('filesChanged');
+        expect(description).toContain('tauri-agent-tools');
+      }
+    });
+
     it('accepts record-only single and bulk calls while retaining per-item close declarations', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
