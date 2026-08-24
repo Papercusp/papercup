@@ -163,7 +163,7 @@ export default defineTool({
       .optional()
       .describe('For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result.'),
     evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).optional().describe(
-      'For a stable result-door reference, resolve only the JSON values indexed for this evidence class.',
+      'For a stable result-door reference, resolve only the JSON values indexed for this evidence class. Mutually exclusive with content_indexes and all line/byte windows (offset, limit, tail, byte_offset, byte_limit).',
     ),
   }),
   async handler(args, ctx) {

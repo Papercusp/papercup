@@ -251,6 +251,23 @@ describe('capability:read', () => {
     });
   });
 
+  it('advertises and enforces evidence-class window exclusivity', async () => {
+    const shape = (readTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
+    expect(shape.evidence_class.description).toMatch(/Mutually exclusive with content_indexes/);
+    expect(shape.evidence_class.description).toMatch(/byte_offset/);
+
+    const f = join(DIR, 'evidence-mixed-window.json');
+    writeFileSync(f, '{}');
+    const mixed = (await readTool.handler!({
+      file_path: f,
+      evidence_class: 'event',
+      byte_offset: 0,
+      byte_limit: 32,
+    }, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(mixed.isError).toBe(true);
+    expect(parse(mixed).reason).toBe('mixed_window_modes');
+  });
+
   it('rejects a non-scratch URI instead of resolving it under the project directory', async () => {
     const r = (await readTool.handler!({ uri: 'papercusp://not-scratch/file', byte_offset: 0, byte_limit: 512 }, ctx)) as {
       content: Array<{ text: string }>;
