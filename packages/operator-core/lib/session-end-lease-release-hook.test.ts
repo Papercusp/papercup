@@ -50,6 +50,7 @@ beforeEach(() => {
     released: ['a.ts', 'b.ts'],
     heldBefore: 2,
     crossDomainReleased: [],
+    granularReleased: 0,
     resourcesReleased: 1,
   });
   h.releaseWorkItems.mockResolvedValue({ releasedIds: ['EI-1'], claimsCleared: 1 });
