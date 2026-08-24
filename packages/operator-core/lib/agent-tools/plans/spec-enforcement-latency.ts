@@ -120,10 +120,19 @@ export interface WorkItemLifecycleRead {
   observationsExcluded: number;
 }
 
-/** One item's first WON claim, from the append-only ledger. */
+/**
+ * One item's WON-claim envelope, from the append-only ledger.
+ *
+ * `firstWonAtMs` is what latency measures from. `lastWonAtMs` is carried on the SAME row because
+ * the defect-escape measure (`spec-enforcement-escape.ts`) needs exactly one more aggregate over
+ * exactly the same scan — one more field on an existing query rather than a second reader that
+ * would be free to drift on the outcome filter or the tenant predicate.
+ */
 export interface FirstClaimRow {
   workItemId: string;
   firstWonAtMs: number;
+  /** The LATEST won claim. Equal to `firstWonAtMs` when the item was claimed exactly once. */
+  lastWonAtMs: number;
 }
 
 export interface LatencyDistribution {
@@ -325,9 +334,10 @@ async function defaultListFirstClaims(input: {
 
   const rows = await withWorkspace(
     scope.workspaceId,
-    async (tx) => tx<{ feature_id: string; first_won_ms: string }[]>`
+    async (tx) => tx<{ feature_id: string; first_won_ms: string; last_won_ms: string }[]>`
       SELECT c.feature_id,
-             (extract(epoch FROM min(c.attempt_ts)) * 1000)::bigint AS first_won_ms
+             (extract(epoch FROM min(c.attempt_ts)) * 1000)::bigint AS first_won_ms,
+             (extract(epoch FROM max(c.attempt_ts)) * 1000)::bigint AS last_won_ms
         FROM harness_shared.claim_audit c
        WHERE c.workspace_id = ${scope.workspaceId}
          AND c.harness_slug = ${scope.harnessSlug}
@@ -337,8 +347,18 @@ async function defaultListFirstClaims(input: {
     `,
   );
 
-  return rows.map((r) => ({ workItemId: r.feature_id, firstWonAtMs: Number(r.first_won_ms) }));
+  return rows.map((r) => ({
+    workItemId: r.feature_id,
+    firstWonAtMs: Number(r.first_won_ms),
+    lastWonAtMs: Number(r.last_won_ms),
+  }));
 }
+
+/**
+ * Exported so the defect-escape census reads claims through the SAME query — same outcome
+ * filter, same tenant predicate, same units conversion.
+ */
+export { defaultListFirstClaims as listWonClaimEnvelope, defaultListWorkItemLifecycle as listWorkItemLifecycle };
 
 /** Nearest-rank percentile over an ASCENDING array. Returns null for an empty sample. */
 function percentile(sortedAsc: readonly number[], fraction: number): number | null {
