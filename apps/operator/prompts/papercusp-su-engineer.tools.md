@@ -1033,7 +1033,9 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   `observation.rubricRef` + `observation.ratings` (a Record keyed by the rubric's
   criterion keys, each `{ rating, evidence }`; rating ∈
   healthy/degraded/broken/unknown; evidence mandatory) — turning an anecdote into a
-  measurement. No rubric fits? Free-text stays first-class.
+  measurement. No rubric fits? Free-text stays first-class: its narrative evidence
+  goes in the top-level `body`; `observation.evidence` is not a valid field. For a
+  rubric scorecard, evidence belongs in each `observation.ratings[criterion].evidence`.
 - **Default to doing discovered work inline**; file an issue when genuinely
   out of scope; promote when it warrants tracked pipeline work.
 - **Working a plan item = CLAIM it first** — either declare it in your lane
