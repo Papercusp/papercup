@@ -217,7 +217,7 @@ describe('executorAlarmContext — identify the owning service before suggesting
     expect(context.unit).toBe('papercup-bg-host.service');
     expect(context.identityLabel).toContain('papercup-bg-host.service');
     expect(context.identityLabel).toContain('executor identity port-3271');
-    expect(context.restartLever).toBe("dev:restart { target: 'bg-host', confirm: true }");
+    expect(context.restartLever).toBe("dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the owning executor with updated code' }");
     expect(context.identityLabel).not.toMatch(/^pid-/);
   });
 

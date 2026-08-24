@@ -133,7 +133,7 @@ provider — so the `no-key` contract stays unambiguous.
   at all; `401` when a key is present but rejected (this still proves EL is fully
   wired — only the money is missing).
 - Server-side edits have **no hot-reload**: restart the host
-  (`dev:restart { target: 'staging', confirm: true }` for :3170 — never a raw
+  (`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }` for :3170 — never a raw
   `systemctl restart`, which bypasses the drain + WI-4221 debounce) before
   probing.
 

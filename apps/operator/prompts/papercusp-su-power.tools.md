@@ -295,7 +295,7 @@ runs from the **release checkout** (`papercup-release`), pinned to the green
 does NOT pick up a `lib/**` edit**; it just restarts the same green snapshot.
 To test a server-side edit live, use the **staging operator `:3170`**
 (`papercup-staging-api`, runs from the `staging` tree, no hot-reload):
-`dev:restart { target: 'staging', confirm: true }`, then probe `:3170`. Never a
+`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`, then probe `:3170`. Never a
 raw `systemctl --user restart papercup-staging-api.service` — on a
 heavily-parallel fleet that fired every ~5-6min for hours with zero coordination
 (WI-4221); `dev:restart` drains concurrent users first and coalesces a restart

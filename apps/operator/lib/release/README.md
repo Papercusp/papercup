@@ -105,7 +105,7 @@ operator** `papercup-staging-api.service` (`:3170`) runs from the integration
 tree (the `staging` branch, DBOS/routines disabled) so server-side edits can be
 tested live without touching the stable host:
 
-- **Test a `lib/**` edit:** `dev:restart { target: 'staging', confirm: true }`,
+- **Test a `lib/**` edit:** `dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`,
   probe `:3170`. Never a raw `systemctl --user restart papercup-staging-api.service`
   — it bypasses the drain + the WI-4221 debounce (uncoordinated raw restarts fired
   every ~5-6min for hours across the fleet).

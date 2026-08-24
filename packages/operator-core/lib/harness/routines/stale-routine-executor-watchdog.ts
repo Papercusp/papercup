@@ -108,7 +108,7 @@ export function executorAlarmContext(identity: string): ExecutorAlarmContext {
   if (known) {
     return {
       unit: known.unit,
-      restartLever: `dev:restart { target: '${known.target}', confirm: true }`,
+      restartLever: `dev:restart { target: '${known.target}', confirm: true, authorize: true, reason: 'reload the owning executor with updated code' }`,
       identityLabel: `${known.unit} (executor identity ${identity})`,
     };
   }
