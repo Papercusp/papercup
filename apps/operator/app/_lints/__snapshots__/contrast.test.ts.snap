@@ -77,7 +77,7 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.075))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.075))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.07))",
-  "operator/app/_components/plans/plans-pane.css :: .plans-pane__archive :: color:--fg-mute on background:--bg-2
+  "operator/app/_components/plans/plans-pane.css :: .plans-pane__archive, .plans-pane__cleanup :: color:--fg-mute on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))

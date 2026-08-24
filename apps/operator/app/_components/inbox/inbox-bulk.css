@@ -23,7 +23,7 @@
 .op-resolver-settings { min-width: 0; }
 .op-resolver-settings__trigger {
   width: 100%; min-width: 0; justify-content: flex-start; gap: 6px;
-  color: var(--fg-mute, #a6a6ad); background: var(--bg-3, rgba(255,255,255,0.04));
+  color: var(--fg-mute, #a6a6ad);
   border-color: var(--border, rgba(255,255,255,0.14));
 }
 .op-resolver-settings__trigger > span {
@@ -48,7 +48,7 @@
 }
 .op-resolver-settings__grid > label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .op-resolver-settings__grid > label > span {
-  font-size: 9px; font-weight: 720; letter-spacing: 0.04em; text-transform: uppercase;
+  font-size: 9px; font-weight: 720; text-transform: uppercase;
   color: var(--fg-mute, #8a8a91);
 }
 .op-resolver-settings__grid .h-combobox,
@@ -72,7 +72,7 @@
   font-size: 10px;
 }
 .op-resolver-settings__eyebrow {
-  flex: 0 0 auto; font-size: 8.5px; font-weight: 760; letter-spacing: 0.06em;
+  flex: 0 0 auto; font-size: 8.5px; font-weight: 760;
   text-transform: uppercase; color: var(--good, #6ee7b7);
 }
 .op-resolver-settings__summary {

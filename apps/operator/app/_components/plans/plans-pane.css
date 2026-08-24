@@ -196,8 +196,8 @@
   display: block;
   width: 22px; height: 22px; min-height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
   opacity: 0; pointer-events: none;
-  color: var(--fg-mute, #8a8a91); background: var(--bg-2, #17171a);
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  color: var(--fg-mute); background: var(--bg-2);
+  border: 1px solid var(--border);
   transition: opacity 90ms ease-out, color 90ms ease-out, border-color 90ms ease-out;
 }
 .plans-pane__row-action-icon {
