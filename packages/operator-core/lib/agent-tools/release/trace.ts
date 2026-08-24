@@ -186,7 +186,18 @@ export default defineTool({
       (snapshot.gate.inconclusive?.status === 'repair-in-progress' ||
         snapshot.gate.inconclusive?.status === 'repair-staging-mismatch');
     const inheritedRepairQueueFailingTests = repairQueueInconclusive ? snapshot.gate.failingTests : [];
-    const deploy = computeDeployStatus(snapshot);
+    // `gitPipelinePosition` performs the authoritative live run-lock read after the
+    // snapshot. If that read finds an active checkpoint while the snapshot's probe did
+    // not, reconcile it before computing deploy status; otherwise a stale snapshot
+    // `fireStale` survives into release:trace even though a fresh verdict is in flight.
+    const positionCheckpointRun = position.gate?.checkpointRunInFlight ?? null;
+    const checkpointRunInFlight =
+      positionCheckpointRun?.active === true && snapshot.activeRun?.active !== true
+        ? positionCheckpointRun
+        : (snapshot.activeRun ?? positionCheckpointRun);
+    const reconciledSnapshot =
+      checkpointRunInFlight === snapshot.activeRun ? snapshot : { ...snapshot, activeRun: checkpointRunInFlight };
+    const deploy = computeDeployStatus(reconciledSnapshot);
     // Keep the snapshot fallback for narrow contract doubles that only provide
     // the deploy state; production computeDeployStatus always supplies gate.
     const deployGate = deploy.gate ?? snapshot.gate;
@@ -286,7 +297,7 @@ export default defineTool({
         // Preserve the live run projection from gitPipelinePosition. The terminal
         // observedCandidate can legitimately name an older verdict while this run
         // is judging a newer candidate.
-        checkpointRunInFlight: position.gate?.checkpointRunInFlight,
+        checkpointRunInFlight,
         // EI-21103060581352507: preserve the gate's terminal no-verdict
         // authority so release:trace can refuse an await for a cancelled
         // candidate whose measured producer is already gone.

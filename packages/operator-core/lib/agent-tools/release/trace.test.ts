@@ -95,7 +95,12 @@ describe('release:trace tool contract', () => {
     };
     const snapshot = {
       generatedAtMs: 123,
-      activeRun,
+      activeRun: {
+        active: false,
+        candidate: null,
+        startedAtMs: null,
+        elapsedSec: null,
+      },
       deploy: { integrationRoot: '/workspace/papercusp' },
       gate: {
         verdictStale: false,
@@ -110,9 +115,15 @@ describe('release:trace tool contract', () => {
       targetSha: 'abcd1234',
       gate: { checkpointRunInFlight: activeRun },
     });
-    mocks.computeDeployStatus.mockReturnValueOnce({
-      state: 'staging-buffered',
-      gate: { fireStale: false, fireStaleReason: null },
+    mocks.computeDeployStatus.mockImplementationOnce((input) => {
+      const active = input.activeRun?.active === true;
+      return {
+        state: 'staging-buffered',
+        gate: {
+          fireStale: input.gate.fireStale && !active,
+          fireStaleReason: input.gate.fireStale && !active ? input.gate.fireStaleReason : null,
+        },
+      };
     });
     mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
     mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
