@@ -120,6 +120,66 @@ describe('attention bulk-run store (real PG)', () => {
     await expect(createRun({ items: [] })).rejects.toThrow(/zero items/i);
   });
 
+  // migration 943 / P-003 (D-003): the run row records the launch settings it
+  // was STARTED with. These are weighted, like the rest of this file, toward the
+  // failure that would be silent: a snapshot that reads back empty, or that is
+  // re-derived from the owner's (mutable) current profile on a later read.
+  it('persists the click-time launch snapshot and re-reads it from the row, not from a default', async () => {
+    const created = await createRun({
+      items: seed('ls'),
+      launchSnapshot: {
+        model: 'sonnet',
+        effort: 'high',
+        account: 'pool:2',
+        carry: 'cold',
+        backend: 'claude',
+      },
+    });
+
+    // Present on the INSERT ... RETURNING path.
+    expect(created.launchSnapshot).toMatchObject({
+      model: 'sonnet',
+      effort: 'high',
+      account: 'pool:2',
+      carry: 'cold',
+      backend: 'claude',
+    });
+
+    // …and on the independent SELECT path. This is the half that actually
+    // matters: RETURNING would still pass if `launch_snapshot` were missing
+    // from RUN_COLUMNS, and every later read (report, reload, restart) uses
+    // that column list rather than the insert's return value.
+    const reread = await getRun(created.runId);
+    expect(reread?.launchSnapshot).toEqual(created.launchSnapshot);
+  });
+
+  it('keeps the launch snapshot across phase transitions, so a report shows what the run launched with', async () => {
+    const run = await createRun({
+      items: seed('ls2'),
+      launchSnapshot: { model: 'opus', effort: 'max', account: 'default', carry: 'warm', backend: 'claude' },
+    });
+
+    await setRunPhase({ runId: run.runId, phase: 'running' });
+    expect((await getRun(run.runId))?.launchSnapshot.model).toBe('opus');
+
+    await setRunPhase({ runId: run.runId, phase: 'review' });
+    const settled = await getRun(run.runId);
+    // A run's launch record is immutable provenance: a later phase must not
+    // clear it or re-derive it. If this ever reads back the current default
+    // instead of 'opus', the snapshot has stopped being a snapshot.
+    expect(settled?.launchSnapshot).toMatchObject({ model: 'opus', effort: 'max', backend: 'claude' });
+  });
+
+  it('accepts a run created with NO launch settings, storing {} rather than failing (pre-943 / older-release compatibility)', async () => {
+    // The deployed release inserts runs without this column at all. The
+    // migration is only backward-compatible if that path still works AND is
+    // distinguishable from "the owner chose null" — an absent field means
+    // "inherit the launcher default", which is why {} is the recorded value.
+    const run = await createRun({ items: seed('ls3') });
+    expect(run.launchSnapshot).toEqual({});
+    expect((await getRun(run.runId))?.launchSnapshot).toEqual({});
+  });
+
   it('de-dupes repeated ids in the snapshot rather than aborting the seed', async () => {
     const dupe = seed('b');
     const run = await createRun({ items: [...dupe, dupe[0]!] });
