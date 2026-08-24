@@ -38,6 +38,11 @@
  */
 import type { Sql } from 'postgres';
 import { execFileSync } from 'node:child_process';
+// EI-21297913810967409: every `(non-fatal)` swallow below reports its outcome here, so a pass
+// that CANNOT RUN is distinguishable from a pass that ran and found nothing. Called from each
+// pass's `finally` — see recordWatchdogPassOutcome's own note on why the tail of the try is the
+// wrong place (these passes have early `return out` paths).
+import { recordWatchdogPassOutcome } from './watchdog-health';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
@@ -1022,6 +1027,7 @@ async function checkPausedGreenCheckpoint(
   nowMs: number,
 ): Promise<{ alarmed: string[]; recovered: string[] }> {
   const out = { alarmed: [] as string[], recovered: [] as string[] };
+  let passError: unknown;
   try {
     const rows = await sql<PausedGreenCheckpointRoutineRow[]>`
       SELECT r.install_slug,
@@ -1162,8 +1168,13 @@ async function checkPausedGreenCheckpoint(
     return out;
   } catch (e) {
     // A paused-gate read must never disable the existing active-stall watchdog.
+    passError = e;
     console.warn(`[green-stall-watchdog] paused green-checkpoint scan failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
+  } finally {
+    // Scans every green-checkpoint row (no install filter), so a failure means every one of
+    // them went unwatched — the marker is written just as widely.
+    await recordWatchdogPassOutcome(sql, 'paused-green-checkpoint', { routineName: 'green-checkpoint' }, passError);
   }
 }
 
@@ -1178,6 +1189,7 @@ export async function checkGreenStall(
   opts: GreenStallThresholds = {},
 ): Promise<GreenStallWatchdogResult> {
   const out: GreenStallWatchdogResult = { alarmed: [], recovered: [], suppressed: [] };
+  let passError: unknown;
   try {
     const rows = await sql<
       {
@@ -1377,8 +1389,12 @@ export async function checkGreenStall(
     }
     return out;
   } catch (e) {
+    passError = e;
     console.warn(`[green-stall-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
+  } finally {
+    // Scans every ACTIVE green-checkpoint row with no install filter — same width as the write.
+    await recordWatchdogPassOutcome(sql, 'green-stall', { routineName: 'green-checkpoint' }, passError);
   }
 }
 
@@ -1679,6 +1695,7 @@ export async function checkMainBehindStaging(
   } = {},
 ): Promise<{ alarmed: boolean; recovered: boolean }> {
   const out = { alarmed: false, recovered: false };
+  let passError: unknown;
   try {
     const root =
       opts.root ??
@@ -1810,8 +1827,19 @@ export async function checkMainBehindStaging(
     }
     return out;
   } catch (e) {
+    passError = e;
     console.warn(`[main-behind-staging-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
+  } finally {
+    // Single-install pass. `harnessSlug` is resolved inside the try, so it is re-derived here
+    // from `opts` rather than referenced — a throw before its initialiser would otherwise make
+    // this `finally` itself throw (TDZ) and replace the pass's return value.
+    await recordWatchdogPassOutcome(
+      sql,
+      'main-behind-staging',
+      { routineName: 'green-checkpoint', installSlug: opts.harnessSlug ?? 'papercusp' },
+      passError,
+    );
   }
 }
 
@@ -1934,6 +1962,7 @@ export async function checkReleaseTriggerFreeze(
   } = {},
 ): Promise<{ alarmed: boolean; recovered: boolean }> {
   const out = { alarmed: false, recovered: false };
+  let passError: unknown;
   try {
     const installSlug = opts.installSlug ?? 'papercusp';
     const rows = await sql<{ active: boolean; updated_at_ms: string | number | null; workspace_id: string }[]>`
@@ -2029,8 +2058,18 @@ export async function checkReleaseTriggerFreeze(
     }
     return out;
   } catch (e) {
+    passError = e;
     console.warn(`[release-trigger-freeze-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
+  } finally {
+    // Records on the RELEASE-TRIGGER row this pass watches, not on the gate's — an agent
+    // investigating release-trigger reads that row, and would never think to look at another.
+    await recordWatchdogPassOutcome(
+      sql,
+      'release-trigger-freeze',
+      { routineName: 'release-trigger', installSlug: opts.installSlug ?? 'papercusp' },
+      passError,
+    );
   }
 }
 
@@ -2120,6 +2159,7 @@ export async function checkReleaseTriggerFireStale(
   opts: { installSlug?: string; workspaceId?: string; thresholdMs?: number } = {},
 ): Promise<{ alarmed: boolean; recovered: boolean }> {
   const out = { alarmed: false, recovered: false };
+  let passError: unknown;
   try {
     const installSlug = opts.installSlug ?? 'papercusp';
     const rows = await sql<{ active: boolean; last_fired_ms: string | number | null; workspace_id: string }[]>`
@@ -2204,8 +2244,16 @@ export async function checkReleaseTriggerFireStale(
     }
     return out;
   } catch (e) {
+    passError = e;
     console.warn(`[release-trigger-fire-stale-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return out;
+  } finally {
+    await recordWatchdogPassOutcome(
+      sql,
+      'release-trigger-fire-stale',
+      { routineName: 'release-trigger', installSlug: opts.installSlug ?? 'papercusp' },
+      passError,
+    );
   }
 }
 

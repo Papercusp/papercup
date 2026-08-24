@@ -14,6 +14,7 @@ import { statePlaneForDoor } from '../state-plane-door';
 // Pure, import-free module (see its header) — safe to pull into a tool without dragging the
 // validator's pg/system-action-registry dependencies along.
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
+import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
 
 /**
  * The DELIBERATE-PAUSE record, read back out of `routines.metadata.pause`.
@@ -93,6 +94,16 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     // every one reporting active:true with nextFireAt advancing. Imported, not re-typed, so
     // the projection cannot drift from the writer (see the constant's own comment).
     ROUTINE_VALIDATION_METADATA_KEY,
+    // EI-21297913810967409 — the same shape as the key above, one subsystem over. The five
+    // release watchdogs (green-stall, stranded-pause, main-behind-staging, and both
+    // release-trigger guards) each swallow their own failure as a `console.warn (non-fatal)`,
+    // so a guard that CANNOT RUN and a guard that ran and found nothing are indistinguishable
+    // from outside — both are silence. One had been dead for as long as it had existed
+    // (a nonexistent column; EI-21291109975568717) with no witness but a console line.
+    // Each pass now records { lastError, lastErrorAt, consecutiveFailures } on the routine row
+    // it WATCHES and clears it on the next clean pass, so a broken watcher surfaces in the tool
+    // an agent already reaches for. Imported, not re-typed, so reader and writer cannot drift.
+    WATCHDOG_HEALTH_METADATA_KEY,
     'last_status',
     'last_error',
     'last_errors',
