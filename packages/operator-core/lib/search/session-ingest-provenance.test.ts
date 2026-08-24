@@ -106,6 +106,11 @@ describe('stampTurnProvenance', () => {
    * renamed ingest verdict, or a candidate set that stops covering it.
    */
   it('keeps the verdict it downgrades to inside the owner-CANDIDATE set the search filters on', () => {
+    // CALIBRATION: the assertion below is a loop over a set, so an empty set
+    // would pass it vacuously — which is the one way this guard could rot into
+    // proving nothing while staying green.
+    expect(FILE_BACKED_SOURCE_KINDS.size).toBeGreaterThan(0);
+
     for (const source_kind of FILE_BACKED_SOURCE_KINDS) {
       const r = row({ text: 'put yourself on auto mode and continue where you left off' });
       r.source_kind = source_kind;

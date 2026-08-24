@@ -60,6 +60,7 @@ interface ParsedResult {
   hasMore: boolean;
   nextCursor?: string;
   hint?: string;
+  zeroHitCaveat?: string;
   resultsTruncated?: { requested: number; returned: number; reason: string };
   results: unknown[];
 }
@@ -211,5 +212,65 @@ describe('sessions:search response-door shaping', () => {
       provenance: { ref: 'session_turn:claude:session-0:0', session_id: 'session-0', source_kind: 'claude' },
       readMore: { tool: 'sessions:read', args: { ref: 'session_turn:claude:session-0:0', context: 10 } },
     });
+  });
+});
+
+/**
+ * A PROVENANCE-FILTERED ZERO IS NOT A QUERY MISS.
+ *
+ * `owner_only:true` / `turn_origin:'owner-typed'` filter the PERSISTED verdict,
+ * and ingest never persists `owner-typed` for a file-backed CLI row — it
+ * downgrades that residual to `unenrolled-origin` rather than assert authorship
+ * it cannot prove. So on a claude/omp/codex session these filters match nothing
+ * BY CONSTRUCTION, and the generic "QUERY-MATCH MISS ... retry with a different
+ * fragment" caveat actively steers the caller into reading a structural zero as
+ * "the owner never said it" — the documented EI-13472 / WI-37419 failure, and
+ * the exact inverse of the false-confirmation bug turn-origin.ts exists to kill.
+ *
+ * Measured before this fix: 0 `owner-typed` rows across claude/omp/codex
+ * against 18,091 `unenrolled-origin` ones.
+ */
+describe('sessions:search — a provenance-filtered zero must not read as a query miss', () => {
+  it('explains the structural exclusion when owner_only finds nothing, and names the reachable filter', async () => {
+    const res = await callTool({ query: 'stop and hand off', owner_only: true, mode: 'verbatim', context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.total_hits).toBe(0);
+    expect(parsed.zeroHitCaveat).toBeDefined();
+    // Names the cause, the reachable alternative, and the misreading to avoid.
+    expect(parsed.zeroHitCaveat).toMatch(/unenrolled-origin/);
+    expect(parsed.zeroHitCaveat).toMatch(/owner_candidates:true/);
+    expect(parsed.zeroHitCaveat).toMatch(/NOT evidence/i);
+    // NEGATIVE CONTROL: must NOT tell the caller to retry with another query
+    // fragment — no fragment can ever match, which is what made the old caveat
+    // worse than silence here.
+    expect(parsed.zeroHitCaveat).not.toMatch(/QUERY-MATCH MISS/);
+  });
+
+  it('fires the same way for turn_origin, which has the identical structural blind spot', async () => {
+    const res = await callTool({ query: 'anything', turn_origin: 'owner-typed', mode: 'verbatim', context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.zeroHitCaveat).toBeDefined();
+    expect(parsed.zeroHitCaveat).toMatch(/owner_candidates:true/);
+  });
+
+  it('stays silent when the provenance filter actually returned hits — nothing to explain', async () => {
+    const tx = makeTx([
+      { source_kind: 'claude', session_id: 'sess-1', turn_idx: 3, speaker: 'user', owner: 'su-self', harness_slug: null, ts: null, text: 'put yourself on auto mode' },
+    ]);
+    const res = await callTool({ query: 'auto mode', mode: 'verbatim', owner_only: true, context: 0 }, tx);
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.total_hits).toBe(1);
+    expect(parsed.zeroHitCaveat).toBeUndefined();
+  });
+
+  it('does NOT fire on an ordinary unfiltered zero — that one really is a query miss', async () => {
+    const res = await callTool({ query: 'no such text', mode: 'verbatim', context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.total_hits).toBe(0);
+    expect(parsed.zeroHitCaveat ?? '').not.toMatch(/owner_candidates/);
   });
 });
