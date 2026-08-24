@@ -151,7 +151,15 @@ export async function invokeServerCapability(opts: {
       // The loopback caller IS the operator/brain — carry the brain RBAC role so a
       // `requireRoles:[BRAIN_PRINCIPAL_ROLE]` tool (the spawn-approval gate, P-006)
       // admits it (this path bypasses capability/quota but NOT role).
-      principal: { slug: 'loopback', workspaceId, capabilities: new Set(['*']), roles: new Set([BRAIN_PRINCIPAL_ROLE]) },
+      principal: {
+        kind: 'system',
+        slug: 'loopback',
+        workspaceId,
+        authMethod: 'process-internal',
+        trust: 'trusted',
+        capabilities: new Set(['*']),
+        roles: new Set([BRAIN_PRINCIPAL_ROLE]),
+      },
     };
     return dispatchProjectedToolToMcp(projected, opts.name, opts.args ?? {}, ctx, PROJECTED_DEPS);
   });

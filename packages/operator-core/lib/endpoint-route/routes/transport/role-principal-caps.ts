@@ -1,6 +1,7 @@
 import type { Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import type { Principal } from '@papercusp/agent-mcp';
 
 /**
  * Capabilities granted to **blueprint-declared roles** — agents a blueprint spawns
@@ -353,6 +354,32 @@ export function dispatchNeedsTx(spawnCtx: { workspaceId: string }): boolean {
 }
 
 /**
+ * Build the transport-auth principal used by contexts that do not need a
+ * workspace transaction. Dispatch-time synthesis below enriches this with
+ * role capabilities when a transaction is available; this lightweight form
+ * keeps telemetry provenance present on the no-tx path too.
+ */
+export function synthesizeTransportPrincipal(spawnCtx: {
+  workspaceId: string;
+  role: string;
+  isSuperuser?: boolean;
+  /** Explicitly false only for an accepted unsigned legacy spawn URL. */
+  sigVerifiedSpawn?: boolean;
+}): Principal | null {
+  if (!spawnCtx.workspaceId || spawnCtx.workspaceId === '*') return null;
+  const isSuperuser = spawnCtx.isSuperuser === true;
+  const unsignedLegacy = !isSuperuser && spawnCtx.sigVerifiedSpawn === false;
+  return {
+    kind: isSuperuser ? 'system' : unsignedLegacy ? 'loopback' : 'harness',
+    slug: isSuperuser ? 'system:operator' : `system:${spawnCtx.role}`,
+    workspaceId: spawnCtx.workspaceId,
+    authMethod: isSuperuser ? 'bearer-token' : unsignedLegacy ? 'host-loopback' : 'spawn-url',
+    trust: isSuperuser || !unsignedLegacy ? 'trusted' : 'unverified-loopback',
+    capabilities: new Set<string>(),
+  };
+}
+
+/**
  * The workspace a tool call should dispatch under — EI-30.
  *
  * An UNSCOPED superuser session (`?superuser=1`, workspaceId `'*'`) gets no
@@ -389,12 +416,29 @@ export function effectiveDispatchWorkspace(
  */
 export async function synthesizeDispatchPrincipal(
   tx: Sql,
-  spawnCtx: { workspaceId: string; role: string; isSuperuser?: boolean },
-): Promise<{ slug: string; workspaceId: string; capabilities: Set<string> }> {
+  spawnCtx: {
+    workspaceId: string;
+    role: string;
+    isSuperuser?: boolean;
+    /** Explicitly false only for an accepted unsigned legacy spawn URL. */
+    sigVerifiedSpawn?: boolean;
+  },
+): Promise<Principal> {
   const capabilities = spawnCtx.isSuperuser
     ? new Set<string>()
     : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role);
+  // Keep the legacy capability/role behavior above, but carry the transport's
+  // resolved provenance into telemetry. `sigVerifiedSpawn` is supplied by the
+  // MCP adapter for URL calls; omitted by older nested-dispatch callers, which
+  // are already inside an authenticated dispatch and therefore retain the
+  // trusted spawn identity. Only an explicit false is the unsigned fallback.
+  const provenance: Pick<Principal, 'kind' | 'authMethod' | 'trust'> = spawnCtx.isSuperuser
+    ? { kind: 'system', authMethod: 'bearer-token', trust: 'trusted' }
+    : spawnCtx.sigVerifiedSpawn === false
+      ? { kind: 'loopback', authMethod: 'host-loopback', trust: 'unverified-loopback' }
+      : { kind: 'harness', authMethod: 'spawn-url', trust: 'trusted' };
   return {
+    ...provenance,
     slug: spawnCtx.isSuperuser ? 'system:operator' : `system:${spawnCtx.role}`,
     workspaceId: spawnCtx.workspaceId,
     capabilities,
