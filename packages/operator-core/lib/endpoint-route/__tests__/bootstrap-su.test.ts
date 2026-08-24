@@ -8,7 +8,7 @@
  * NOT a `*-su` wrapper.
  */
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFleetRecord } from '../../agent-fleets-store';
@@ -109,9 +109,13 @@ vi.mock('../../console-launcher', () => ({
 // mock replaces the whole module, so an export the subject imports but this omits
 // throws "No <name> export is defined on the mock" the moment that code path runs —
 // silently at author time, loudly in the gate hours later (WI-7185).
+// EI-21365235532676472: named handle so the reclaim assertions below can inspect
+// exactly how stranded bindings were stamped.
+const markAdvSessionEndedMock = vi.fn(async (_id: number, _exitCode: number | null, _endedBy: string) => {});
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
-  markAdvSessionEnded: vi.fn(async () => {}),
+  markAdvSessionEnded: (...a: unknown[]) =>
+    markAdvSessionEndedMock(...(a as [number, number | null, string])),
   claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
@@ -335,10 +339,38 @@ vi.mock('../../fleet-membership-store', async (orig) => ({
 const writePresenceMock = vi.fn(
   async (_identity: unknown, _input: unknown, _harness: unknown) => {},
 );
+// EI-21365235532676472: the supervisor-beat death witness is faked per-test through
+// this override (true alive / false ESRCH-dead / null inconclusive).
+const probeBeatMock = vi.fn((_record: { host?: string | null; pid?: number | null }): boolean | null => null);
 vi.mock('../../agent-tools/coordination/presence', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   writePresence: (...args: unknown[]) =>
     writePresenceMock(...(args as [unknown, unknown, unknown])),
+  probeProcessLiveness: (...args: unknown[]) =>
+    probeBeatMock(...(args as [{ host?: string | null; pid?: number | null }])),
+}));
+type FakeOrgSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+// EI-21365235532676472: pin pty discovery hermetically — no fake owner has a real
+// host on this machine, and the live-evidence leg must be deterministic.
+vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  findLiveHost: () => null,
+}));
+// EI-21365235532676472: hermetic PG for the pre-pinned guard's two reads. Only
+// queries the guard itself issues are answered; everything else stays empty.
+const dbState = vi.hoisted(() => ({
+  advRows: [] as Array<{ id: string; display: string | null; has_session: boolean }>,
+  beatRows: [] as Array<{ pid: number | null; host: string | null }>,
+}));
+const dbSqlMock = vi.fn((strings: TemplateStringsArray): Promise<unknown[]> => {
+  const q = strings.join('?');
+  if (q.includes('FROM harness_shared.coord_presence')) return Promise.resolve(dbState.beatRows);
+  if (q.includes('FROM harness_shared.adv_sessions')) return Promise.resolve(dbState.advRows);
+  return Promise.resolve([]);
+});
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  getOrgPg: () => ({ sql: dbSqlMock as unknown as FakeOrgSql }),
 }));
 
 const CTX: RouteContext = {
@@ -1766,5 +1798,46 @@ describe('bootstrap-su: PAPERCUSP_OMP_NATIVE_LSP (P-021)', () => {
   it('the flag is a real kill-switch at the route: OFF withholds the env', async () => {
     getFlagMock.mockResolvedValue(false);
     expect(await envOf({ agent: 'omp', model: 'claude-bridge/claude-opus-4-8:high' })).toBeUndefined();
+  });
+});
+
+describe('EI-21365235532676472: failed-resume binding reclaim', () => {
+  beforeEach(() => {
+    dbState.advRows = [];
+    dbState.beatRows = [];
+    probeBeatMock.mockReset();
+    probeBeatMock.mockReturnValue(null);
+    markAdvSessionEndedMock.mockClear();
+  });
+
+  it('ends an explicitly-dead stranded binding (ESRCH beat) and lets the fresh successor launch instead of 409-ing', async () => {
+    dbState.advRows = [{ id: '900', display: 'terminal', has_session: true }];
+    dbState.beatRows = [{ pid: 17840, host: hostname() }];
+    probeBeatMock.mockReturnValue(false); // kill(pid, 0) -> ESRCH: authoritative death
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-dead01' });
+    expect(res.status).toBe(200);
+    expect(markAdvSessionEndedMock).toHaveBeenCalledTimes(1);
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(900, null, 'reconciler');
+    const json = await res.json();
+    expect(json.error ?? '').not.toContain('already bound');
+  });
+
+  it('keeps refusing while liveness is merely unknown (no beat evidence) — absence is not proof of death', async () => {
+    dbState.advRows = [{ id: '900', display: 'terminal', has_session: true }];
+    dbState.beatRows = []; // no supervisor beat ever recorded
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-unkn01' });
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(String(json.error)).toContain('already bound to live adv session 900');
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps refusing a LIVE row (beat pid alive) even though no pty host exists', async () => {
+    dbState.advRows = [{ id: '901', display: null, has_session: true }];
+    dbState.beatRows = [{ pid: 17841, host: hostname() }];
+    probeBeatMock.mockReturnValue(true); // headless member, process alive
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-live01' });
+    expect(res.status).toBe(409);
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
   });
 });
