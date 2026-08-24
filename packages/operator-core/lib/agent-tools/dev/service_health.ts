@@ -20,6 +20,7 @@ import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
 import { probeServiceStart, probeUnitStates, type ServiceStartInfo } from "./systemd-service-probe";
+import { isSidecarEnabledFromEnv } from "../../process-supervision/sidecar-spawn-shared";
 import {
   readMcpProxyFailureTail,
   summarizeMcpProxyHealth,
@@ -41,9 +42,23 @@ export function overlayNodeChildSupervision(
   entries: SupervisionStatusEntry[],
   substrate: SidecarSupervisionStatus,
   spawner: SidecarSupervisionStatus,
+  env: NodeJS.ProcessEnv = process.env,
 ): SupervisionStatusEntry[] {
+  // The node-child status modules are process-local. A request-only operator can
+  // import them without owning the sidecar and retain a stale give-up latch from
+  // an earlier local spawn, so only project the spawner state when this host's
+  // explicit per-host opt-in says the sidecar is active. Without this guard,
+  // dev:service_health mistakes local history for host-wide liveness (EI-21311396847110230).
+  const spawnerEnabled = isSidecarEnabledFromEnv(
+    {
+      enableVar: "PAPERCUSP_SPAWNER_SIDECAR",
+      modeVar: "PAPERCUSP_SPAWNER_SIDECAR_MODE",
+    },
+    env,
+  );
   return entries.map((entry) => {
-    const status = entry.name === "substrate-sidecar" ? substrate : entry.name === "spawner-sidecar" ? spawner : null;
+    const status =
+      entry.name === "substrate-sidecar" ? substrate : entry.name === "spawner-sidecar" && spawnerEnabled ? spawner : null;
     if (!status) return entry;
     return {
       ...entry,

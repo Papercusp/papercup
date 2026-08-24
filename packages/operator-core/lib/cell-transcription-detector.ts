@@ -101,6 +101,16 @@ const EXPLICIT_PIPELINE_STATE_AFTER_VALUE =
   /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
 
 /**
+ * A commit explicitly described as committed locally/on staging is path evidence,
+ * not evidence that the commit is the deployed pipeline position. Keep this tied to
+ * the value's `commit` label and its immediate state phrase: a generic `staging`
+ * mention elsewhere must still keep ordinary staging-position claims detectable.
+ */
+const STAGING_ONLY_COMMIT_PREFIX = /\bcommit\s*$/i;
+const EXPLICIT_STAGING_ONLY_COMMIT_AFTER =
+  /^\s+(?:was\s+)?committed\s+(?:locally\s*\/\s*on\s+staging|on\s+staging)\b/i;
+
+/**
  * A work-item checkpoint's contentHash is an artifact fingerprint, not a Git or
  * deployment SHA. The label is often immediately adjacent to the value (for
  * example, `checkpoint 721...` or `(contentHash 562...)`), while an unrelated
@@ -132,6 +142,15 @@ function isUnlinkedReferenceCommitCitation(haystack: string, valueStart: number,
   const afterStart = valueStart + valueLength;
   const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
   return !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after);
+}
+
+function isStagingOnlyCommitCitation(haystack: string, valueStart: number, valueLength: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  if (!STAGING_ONLY_COMMIT_PREFIX.test(before)) return false;
+
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return EXPLICIT_STAGING_ONLY_COMMIT_AFTER.test(after);
 }
 
 /**
@@ -243,6 +262,7 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
         p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
         (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
           isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
+          isStagingOnlyCommitCitation(haystack, m.index, m[0].length) ||
           isCheckpointMetadataValue(haystack, m.index))
       ) {
         continue;

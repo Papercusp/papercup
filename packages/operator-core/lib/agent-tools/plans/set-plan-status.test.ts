@@ -4,6 +4,22 @@ import {
   flipPlanFrontmatterStatus,
   launchAcceptanceGraderForGate,
 } from './set-plan-status';
+import setPlanStatusTool from './set-plan-status';
+
+describe('set-plan-status public lifecycle guidance', () => {
+  it('documents the completion audit gate for shipped and done', () => {
+    const publicGuidance = [
+      setPlanStatusTool.description,
+      setPlanStatusTool.guidance?.when,
+      setPlanStatusTool.guidance?.chaining,
+    ].join('\n');
+
+    expect(publicGuidance).toContain('shipped');
+    expect(publicGuidance).toContain('`done`');
+    expect(publicGuidance).toContain("plans:audit { phase:'completion'");
+    expect(publicGuidance).toContain('peer-graded acceptance rubric');
+  });
+});
 
 // Caller-DX (watchdog P-006): plans:set-plan-status previously zod-REJECTED the
 // status words agents reach for ('active' from old plans, 'done' confused with the

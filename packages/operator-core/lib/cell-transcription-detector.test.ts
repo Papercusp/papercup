@@ -138,6 +138,13 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(hits[0]!.value).toBe('abc1234');
   });
 
+  it('does not classify a commit explicitly described as committed locally/on staging as deployed', () => {
+    const text =
+      'coord:send said commit e67fcd6c5 was committed locally/on staging and explicitly said the gate was deliberately paused';
+    expect(detectCellTranscriptions(text)).toEqual([]);
+    expect(cellTranscriptionHint(text)).toBeNull();
+  });
+
   it('does not classify a work-item checkpoint contentHash as a deployed SHA', () => {
     const text = 'The implementation-start checkpoint is written (contentHash 562d3b6d9979)';
     expect(detectCellTranscriptions(text)).toEqual([]);

@@ -3424,6 +3424,12 @@ export async function setWorkItemState(
     // before a delayed lifecycle callback reaches this point.
     if (result && isSettledWorkItemState(result.state) && priorAssignee) {
       clearGoalClaimedIfMatches(priorAssignee, id);
+      // Keep the feature-family terminal path symmetric with issue-family terminal
+      // writes: taken_by is cleared above, so the claim-next lease must be retired
+      // before completion returns or the item remains lease-poisoned until TTL.
+      if (wi.harness) {
+        await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: priorAssignee });
+      }
     }
   }
   // work-item-status-full-unify (P-003 writer-flip): preserve the collapsed
@@ -6561,6 +6567,18 @@ export async function claimNextIssueWorkItem(
      *  steering for that lane — that is the spec author's explicit choice, which is what
      *  authoring a rank means. */
     specOrderSql?: unknown;
+    /**
+     * EI-21288979130080074: an atomic cross-family priority boundary. When set,
+     * an issue with an explicit feature_order may preempt the feature-family
+     * ladder only when its priority is strictly better than every eligible
+     * feature candidate.
+     */
+    priorityBeforeFeature?: {
+      /** The caller's compiled filter over the feature-family relation. */
+      featureFilterSql?: unknown;
+      /** The feature-family readiness implementation selected by the caller. */
+      useMaintainedReady?: boolean;
+    };
   } = {},
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
@@ -6635,6 +6653,12 @@ export async function claimNextIssueWorkItem(
   // feature_order, created_ts, …) which resolve against `wi` — the only table in the inner
   // SELECT's scope. Undefined ⇒ the pre-existing hardcoded ordering.
   const specOrderSql = (opts.specOrderSql ?? undefined) as ReturnType<OrgSql> | undefined;
+  // EI-21288979130080074: this filter is compiled against the feature relation and is
+  // intentionally separate from specFilterSql, whose feature-only kind leaves are stripped
+  // for the issue-family relation.
+  const priorityFeatureFilterSql = (opts.priorityBeforeFeature?.featureFilterSql ?? undefined) as
+    | ReturnType<OrgSql>
+    | undefined;
   // Mig 499: the SAME release-cooldown floor claimFloorsWhereSql applies for the
   // feature family (mig 485/EI-6956) — without it, an agent that releases an
   // issue-family item immediately re-claims that EXACT row on its very next
@@ -6651,6 +6675,25 @@ export async function claimNextIssueWorkItem(
   // `sql` — so it belongs to the same connection that carries the SET LOCAL timeouts.
   const rows = await boundedOrgTxn(
     async (tx) => {
+      // Cross-family priority comparison (EI-21288979130080074): an issue may jump ahead of
+      // the feature-family ladder only when it has an explicit priority and no eligible
+      // feature with an equal-or-better (lower) feature_order exists. Build the feature side
+      // from the SAME claimFloorsWhereSql fragment used by the real feature claim path, and
+      // evaluate it inside this UPDATE so the comparison and issue claim share one snapshot.
+      const priorityBeforeFeature = opts.priorityBeforeFeature
+        ? claimFloorsWhereSql(tx, {
+            harness: filter.harness,
+            workspaceId: explicitActiveWorkspaceId,
+            states: filter.states,
+            swarmId: filter.swarmId,
+            excludeRedundant: filter.excludeRedundant,
+            useMaintainedReady: opts.priorityBeforeFeature.useMaintainedReady,
+            cooldownAssignee: filter.assignee,
+            rigAvailable: filter.rigAvailable,
+            claimantFleetSlug: filter.claimantFleetSlug,
+            claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+          })
+        : tx`TRUE`;
       const rows = await tx<FeatureRowDb[]>`
     UPDATE harness_shared.work_items
        SET taken_by = ${filter.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
@@ -6669,6 +6712,22 @@ export async function claimNextIssueWorkItem(
           -- 5-attempt post-claim release-and-retry, which false-reported a narrow lane as
           -- drained ~88% of the time. See opts.specFilterSql.
           AND ${specFilterSql ?? tx`TRUE`}
+          -- EI-21288979130080074: only an explicitly prioritized issue can preempt the
+          -- feature-family ladder, and only when no eligible feature has equal-or-better
+          -- priority. The feature relation is intentionally unaliased because
+          -- claimFloorsWhereSql is the shared unqualified fragment for that relation.
+          AND ${
+            opts.priorityBeforeFeature
+              ? tx`wi.feature_order IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+              FROM harness_shared.harness_features_consolidated
+             WHERE ${priorityBeforeFeature}
+               AND ${priorityFeatureFilterSql ?? tx`TRUE`}
+               AND feature_order <= wi.feature_order
+          )`
+              : tx`TRUE`
+          }
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
           AND wi.status = ANY(${[...states]}::text[])

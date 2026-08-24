@@ -126,13 +126,13 @@ describe("dev:service_health handler", () => {
         // P-006: the node-child entries get OVERLAID with the sidecars' own respawn
         // status (mocked above) instead of the reconciler's all-zero defaults.
         { name: "substrate-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: 1000, restartsLast10m: 2, flapState: "damping" },
-        { name: "spawner-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: 2000, restartsLast10m: 5, flapState: "gave-up" },
+        { name: "spawner-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
       ],
       configured: {
         services: ["operator", "desktop"],
         supervised: ["mcp-proxy", "substrate-sidecar", "spawner-sidecar"],
       },
-      effective: { up: 1, down: 0, absent: 1, supervisionUnhealthy: 2 },
+      effective: { up: 1, down: 0, absent: 1, supervisionUnhealthy: 1 },
       rootCause: { component: "substrate-sidecar", reason: "supervisor state damping" },
       nextVerb: "dev:processes",
     });
@@ -151,6 +151,19 @@ describe("dev:service_health handler", () => {
     expect(substrateM).toHaveBeenCalledTimes(1);
     expect(spawnerM).toHaveBeenCalledTimes(1);
     expect(b.supervision).toHaveLength(3);
+  });
+
+  it("does not report a stale local spawner give-up on a request-only host without the sidecar opt-in", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 5 }] as never);
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+
+    expect(b.supervision.find((entry: { name: string }) => entry.name === "spawner-sidecar")).toMatchObject({
+      flapState: "ok",
+      restartsLast10m: 0,
+      lastRestartAt: null,
+    });
+    expect(b.effective.supervisionUnhealthy).toBe(1);
+    expect(b.evidence.unhealthySupervision.map((entry: { name: string }) => entry.name)).toEqual(["substrate-sidecar"]);
   });
 });
 
@@ -466,9 +479,22 @@ describe("overlayNodeChildSupervision (P-006, pure)", () => {
       base,
       { running: true, respawnAttemptsInWindow: 3, gaveUp: false, lastRespawnScheduledAt: 5000 },
       { running: false, respawnAttemptsInWindow: 6, gaveUp: true, lastRespawnScheduledAt: 9000 },
+      { PAPERCUSP_SPAWNER_SIDECAR: "1" },
     );
     expect(out[1]).toEqual({ ...base[1], consecutiveProbeFailures: 0, lastRestartAt: 5000, restartsLast10m: 3, flapState: "damping" });
     expect(out[2]).toEqual({ ...base[2], consecutiveProbeFailures: 0, lastRestartAt: 9000, restartsLast10m: 6, flapState: "gave-up" });
+  });
+
+  it("does not project a local gave-up latch when the per-host spawner sidecar is not configured", () => {
+    const out = overlayNodeChildSupervision(
+      base,
+      { running: true, respawnAttemptsInWindow: 3, gaveUp: false, lastRespawnScheduledAt: 5000 },
+      { running: false, respawnAttemptsInWindow: 6, gaveUp: true, lastRespawnScheduledAt: 9000 },
+      { PAPERCUSP_BACKGROUND_WORKERS: "0" },
+    );
+
+    expect(out[2]).toEqual(base[2]);
+    expect(buildServiceHealthDiagnostic([{ name: "operator", up: true, status: null, latencyMs: 1 }], out).effective.supervisionUnhealthy).toBe(1);
   });
 
   it("derives flapState 'ok' when running with zero attempts, 'gave-up' takes priority over a nonzero attempt count", () => {

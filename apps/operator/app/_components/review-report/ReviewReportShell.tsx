@@ -43,6 +43,9 @@ export interface ReviewReportRow {
   /** 'applied' rows render as already-done (auto-applied with evidence
    *  recorded) and are never selectable; default 'pending'. */
   status?: ReviewRowStatus;
+  /** A pending row whose action still needs authored/manual input remains
+   *  visible but cannot enter Apply-selected. Default true for pending rows. */
+  selectable?: boolean;
   /** Optional drill-in content (P-008 keeps its inline per-row recommendation
    *  cards intact as exactly this). */
   detail?: ReactNode;
@@ -66,12 +69,18 @@ export interface ReviewReportShellProps {
   dismissLabel?: string;
   /** Disables all interaction while an apply is in flight. */
   busy?: boolean;
+  /** Flow-specific guarantee / caveat below the grouped findings. */
+  footer?: ReactNode;
   onApply: (selectedRowIds: string[]) => void;
   onDismiss: () => void;
 }
 
 function rowStatus(row: ReviewReportRow): ReviewRowStatus {
   return row.status ?? 'pending';
+}
+
+function rowSelectable(row: ReviewReportRow): boolean {
+  return rowStatus(row) === 'pending' && row.selectable !== false;
 }
 
 function initialSelection(
@@ -81,7 +90,7 @@ function initialSelection(
   if (defaultSelected === 'none') return new Set();
   if (Array.isArray(defaultSelected)) return new Set(defaultSelected);
   const all = new Set<string>();
-  for (const g of groups) for (const r of g.rows) if (rowStatus(r) === 'pending') all.add(r.id);
+  for (const g of groups) for (const r of g.rows) if (rowSelectable(r)) all.add(r.id);
   return all;
 }
 
@@ -98,6 +107,7 @@ export default function ReviewReportShell({
   applyLabel = 'Apply selected',
   dismissLabel = 'Dismiss',
   busy = false,
+  footer,
   onApply,
   onDismiss,
 }: ReviewReportShellProps) {
@@ -106,7 +116,7 @@ export default function ReviewReportShell({
 
   const pendingIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const g of groups) for (const r of g.rows) if (rowStatus(r) === 'pending') ids.add(r.id);
+    for (const g of groups) for (const r of g.rows) if (rowSelectable(r)) ids.add(r.id);
     return ids;
   }, [groups]);
 
@@ -128,7 +138,7 @@ export default function ReviewReportShell({
   };
 
   const toggleGroup = (group: ReviewReportGroup) => {
-    const ids = group.rows.filter((r) => rowStatus(r) === 'pending').map((r) => r.id);
+    const ids = group.rows.filter(rowSelectable).map((r) => r.id);
     const allOn = ids.length > 0 && ids.every((id) => liveSelected.has(id));
     setSelected((prev) => {
       const next = new Set(prev);
@@ -179,7 +189,7 @@ export default function ReviewReportShell({
       </header>
 
       {groups.map((group) => {
-        const groupPending = group.rows.filter((r) => rowStatus(r) === 'pending');
+        const groupPending = group.rows.filter(rowSelectable);
         const selCount = groupPending.filter((r) => liveSelected.has(r.id)).length;
         const groupState: 'none' | 'some' | 'all' =
           groupPending.length === 0 || selCount === 0 ? 'none' : selCount === groupPending.length ? 'all' : 'some';
@@ -218,7 +228,7 @@ export default function ReviewReportShell({
               <ul className="review-report__rows">
                 {group.rows.map((row) => {
                   const status = rowStatus(row);
-                  const selectable = status === 'pending';
+                  const selectable = rowSelectable(row);
                   return (
                     <li
                       key={row.id}
@@ -238,10 +248,10 @@ export default function ReviewReportShell({
                           <span
                             className="review-report__row-status-mark"
                             data-testid={`review-row-mark-${row.id}`}
-                            title={status}
+                            title={status === 'pending' ? 'manual review required' : status}
                             aria-hidden
                           >
-                            {status === 'applied' ? '✓' : '—'}
+                            {status === 'applied' ? '✓' : status === 'pending' ? '↗' : '—'}
                           </span>
                         )}
                       </span>
@@ -270,6 +280,7 @@ export default function ReviewReportShell({
           </section>
         );
       })}
+      {footer != null ? <footer className="review-report__footer">{footer}</footer> : null}
     </section>
   );
 }

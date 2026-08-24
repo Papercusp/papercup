@@ -14,13 +14,16 @@ export const LEADER_BRIEF_SHAPER_BUDGET_CHARS = 5_000;
 
 type Dict = Record<string, unknown>;
 
-const TIER_CAPS: Record<LeaderBriefPayloadTier, {
-  memberVerdicts: number;
-  members: number;
-  advisories: number;
-  invariants: number;
-  reservationMembers: number;
-}> = {
+const TIER_CAPS: Record<
+  LeaderBriefPayloadTier,
+  {
+    memberVerdicts: number;
+    members: number;
+    advisories: number;
+    invariants: number;
+    reservationMembers: number;
+  }
+> = {
   trimmed: { memberVerdicts: 6, members: 3, advisories: 2, invariants: 2, reservationMembers: 2 },
   standard: { memberVerdicts: 10, members: 6, advisories: 3, invariants: 3, reservationMembers: 3 },
 };
@@ -96,15 +99,12 @@ function compactClaimableNow(value: unknown): unknown {
 
   const population = asDict(source.population);
   if (population) {
-    const compactPopulation = pick(
-      population,
-      ['kind', 'fleet', 'harness', 'basis', 'matchedByFilter', 'note'],
-      180,
-    ) ?? {};
+    const compactPopulation =
+      pick(population, ['kind', 'fleet', 'harness', 'basis', 'matchedByFilter', 'note'], 180) ?? {};
     if ('spec' in population) {
       const spec = asDict(population.spec);
       compactPopulation.spec = spec
-        ? pick(spec, ['ref', 'revision', 'matchedBy', 'assigneeScoped'], 140) ?? {}
+        ? (pick(spec, ['ref', 'revision', 'matchedBy', 'assigneeScoped'], 140) ?? {})
         : population.spec;
     }
     out.population = compactPopulation;
@@ -129,38 +129,37 @@ function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
   }
 
   const out: Dict = { status: 'measured' };
-  const population = pick(source.population, [
-    'kind',
-    'planSlug',
-    'harnessSlug',
-    'basis',
-    'openRoots',
-    'candidates',
-    'shown',
-    'limit',
-    'truncated',
-    'depthLimited',
-    'maxDepth',
-    'progressBasis',
-    'holderBasis',
-  ], 180);
+  const population = pick(
+    source.population,
+    [
+      'kind',
+      'planSlug',
+      'harnessSlug',
+      'basis',
+      'openRoots',
+      'candidates',
+      'shown',
+      'limit',
+      'truncated',
+      'depthLimited',
+      'maxDepth',
+      'progressBasis',
+      'holderBasis',
+    ],
+    180,
+  );
   if (population) out.population = population;
 
   const rows = Array.isArray(source.rows) ? source.rows : [];
   out.rows = rows.slice(0, rowCap).map((value) => {
     const row = asDict(value);
     if (!row) return value;
-    const compact = pick(row, [
-      'rank',
-      'key',
-      'kind',
-      'ref',
-      'status',
-      'title',
-      'openBlockedCount',
-      'lastProgressAt',
-      'hoursSinceProgress',
-    ], 160) ?? {};
+    const compact =
+      pick(
+        row,
+        ['rank', 'key', 'kind', 'ref', 'status', 'title', 'openBlockedCount', 'lastProgressAt', 'hoursSinceProgress'],
+        160,
+      ) ?? {};
     if (Array.isArray(row.workItemRefs)) {
       const refs = row.workItemRefs.filter((ref): ref is string => typeof ref === 'string');
       compact.workItemRefs = refs.slice(0, 4);
@@ -170,9 +169,9 @@ function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
     if (holder) {
       const compactHolder = pick(holder, ['state', 'count', 'truncated'], 120) ?? {};
       if (Array.isArray(holder.agents)) {
-        compactHolder.agents = holder.agents.slice(0, 3).map((agent) =>
-          pick(agent, ['agentId', 'label', 'alive', 'sessionState', 'verdict'], 120) ?? agent,
-        );
+        compactHolder.agents = holder.agents
+          .slice(0, 3)
+          .map((agent) => pick(agent, ['agentId', 'label', 'alive', 'sessionState', 'verdict'], 120) ?? agent);
       }
       compact.holder = compactHolder;
     }
@@ -185,6 +184,50 @@ function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
       more: 'fleet:leader-brief { payloadTier:"full" }',
     };
   }
+  if (typeof source.mermaid === 'string') {
+    // A clipped Mermaid document is syntactically invalid and can misrepresent
+    // the graph. Preserve a small requested diagram whole; for a large one,
+    // provide an explicit full-tier recovery pointer instead of partial text.
+    if (source.mermaid.length <= 2_000) out.mermaid = source.mermaid;
+    else {
+      out.mermaidOmitted = {
+        chars: source.mermaid.length,
+        reason: 'bounded monitor projection never clips Mermaid',
+        more: 'fleet:leader-brief { include_mermaid:true, payloadTier:"full" }',
+      };
+    }
+  }
+  return out;
+}
+
+/** P-009: keep the tri-state alarm, its triggering identity, and its falsifier
+ * atomic in every monitor tier. This is already a one-row decision object, so
+ * compaction clips prose only; it never drops the alarm's evidence. */
+function compactLeaderBlockerStall(value: unknown, maxString = 180): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const out = pick(source, ['status', 'alert', 'thresholdHours', 'checkedRows'], maxString) ?? {};
+  if ('reason' in source) out.reason = clip(source.reason, maxString) ?? source.reason;
+  const row = pick(source.row, ['rank', 'itemRef'], 120);
+  if (row) out.row = row;
+  const unknown = pick(source.unknown, ['code', 'sourceReason'], 140);
+  if (unknown) out.unknown = unknown;
+  if ('falsifier' in source) out.falsifier = compactFalsifier(source.falsifier, maxString);
+  return out;
+}
+
+/** Emergency byte pressure keeps only the alarm decision, triggering identity,
+ * unknown discriminator, and the same minimal falsifier handle used by the
+ * other fleet-level detectors. Normal tiers retain the full reason/check. */
+function compactEmergencyLeaderBlockerStall(value: unknown): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const out = pick(source, ['status', 'alert'], 120) ?? {};
+  const row = pick(source.row, ['rank', 'itemRef'], 120);
+  if (row) out.row = row;
+  const unknown = pick(source.unknown, ['code', 'sourceReason'], 120);
+  if (unknown) out.unknown = unknown;
+  if ('falsifier' in source) out.falsifier = compactEmergencyFalsifier(source.falsifier);
   return out;
 }
 
@@ -214,6 +257,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'throttled',
     'darkFleetAlert',
     'fleetHeadcountVsExecutableFrontierAlert',
+    'leaderBlockerStallAlert',
     'unowned_criticals',
     'unowned_criticals_federated',
     'abandoned_unclaimed',
@@ -238,12 +282,20 @@ function compactSummary(value: unknown, ultra = false): unknown {
     if (deadIds.length > 8) out.dead_member_ids_truncated = { total: deadIds.length, shown: 8 };
   }
 
-  const population = pick(source.population, ['population', 'basis', 'candidates', 'counted', 'withheld', 'withheldReason', 'reveal'], 150);
+  const population = pick(
+    source.population,
+    ['population', 'basis', 'candidates', 'counted', 'withheld', 'withheldReason', 'reveal'],
+    150,
+  );
   if (population) out.population = population;
 
   if ('claimable_now' in source) out.claimable_now = compactClaimableNow(source.claimable_now);
 
-  const pool = pick(source.pool_capacity, ['poolExhausted', 'degraded', 'factor', 'queueDepth', 'usableAccounts', 'availableAccounts'], 120);
+  const pool = pick(
+    source.pool_capacity,
+    ['poolExhausted', 'degraded', 'factor', 'queueDepth', 'usableAccounts', 'availableAccounts'],
+    120,
+  );
   if (pool) out.pool_capacity = pool;
 
   if (!ultra && Array.isArray(source.degraded_roster_legs)) {
@@ -256,27 +308,32 @@ function compactSummary(value: unknown, ultra = false): unknown {
 function compactMember(value: unknown): unknown {
   const source = asDict(value);
   if (!source) return value;
-  const out = pick(source, [
-    'agentId',
-    'label',
-    'alive',
-    'sessionState',
-    'verdict',
-    'wakeMode',
-    'monitorState',
-    'nextFireAt',
-    'lastToolCallAgeMs',
-    'intentAgeSec',
-    'intentStale',
-    'intentDivergent',
-    'queuedCount',
-    'load',
-    'stalled',
-    'contextPressure',
-    'dormant',
-    'spinning',
-    'isSelf',
-  ], 120) ?? {};
+  const out =
+    pick(
+      source,
+      [
+        'agentId',
+        'label',
+        'alive',
+        'sessionState',
+        'verdict',
+        'wakeMode',
+        'monitorState',
+        'nextFireAt',
+        'lastToolCallAgeMs',
+        'intentAgeSec',
+        'intentStale',
+        'intentDivergent',
+        'queuedCount',
+        'load',
+        'stalled',
+        'contextPressure',
+        'dormant',
+        'spinning',
+        'isSelf',
+      ],
+      120,
+    ) ?? {};
   if (source.idleVerdict && typeof source.idleVerdict === 'object') {
     out.idleVerdict = pick(source.idleVerdict, ['cause', 'reason'], 160) ?? source.idleVerdict;
   }
@@ -290,7 +347,8 @@ function compactMember(value: unknown): unknown {
     out.parkedOn = source.parkedOn.slice(0, 3).map((entry) => clip(entry, 140) ?? entry);
   }
   if (source.benchSuggestion && typeof source.benchSuggestion === 'object') {
-    out.benchSuggestion = pick(source.benchSuggestion, ['kind', 'item', 'itemTitle', 'reason'], 160) ?? source.benchSuggestion;
+    out.benchSuggestion =
+      pick(source.benchSuggestion, ['kind', 'item', 'itemTitle', 'reason'], 160) ?? source.benchSuggestion;
   }
   if (source.intentAttention && typeof source.intentAttention === 'object') {
     out.intentAttention = pick(source.intentAttention, ['kind', 'action', 'reason'], 180) ?? source.intentAttention;
@@ -356,29 +414,28 @@ function compactAdvisory(value: unknown): unknown {
  * kept whole; `reason` is the one field that can be long, so it clips.
  */
 function compactAdmissionBlock(value: unknown): unknown {
-  return pick(value, [
-    'itemId',
-    'member',
-    'specId',
-    'specRevision',
-    'code',
-    'occurrences',
-    'action',
-    'reason',
-  ], 160) ?? {};
+  return (
+    pick(value, ['itemId', 'member', 'specId', 'specRevision', 'code', 'occurrences', 'action', 'reason'], 160) ?? {}
+  );
 }
 
 function compactInvariant(value: unknown): unknown {
   const source = asDict(value);
   if (!source) return value;
-  const out = pick(source, ['name', 'severity', 'status', 'violationCount', 'truncated', 'error', 'elapsedMs'], 160) ?? {};
+  const out =
+    pick(source, ['name', 'severity', 'status', 'violationCount', 'truncated', 'error', 'elapsedMs'], 160) ?? {};
   if (Array.isArray(source.rows)) {
     out.rows = source.rows.slice(0, 2).map((row) => {
       const record = asDict(row);
       if (!record) return row;
       const clipped: Dict = {};
       for (const [key, item] of Object.entries(record).slice(0, 8)) {
-        clipped[key] = typeof item === 'string' ? clip(item, 120) : typeof item === 'number' || typeof item === 'boolean' || item === null ? item : String(item);
+        clipped[key] =
+          typeof item === 'string'
+            ? clip(item, 120)
+            : typeof item === 'number' || typeof item === 'boolean' || item === null
+              ? item
+              : String(item);
       }
       return clipped;
     });
@@ -401,7 +458,8 @@ function compactReservation(value: unknown, cap: number): unknown {
 function compactCampaignValue(value: unknown, recentCap: number, depth = 0): unknown {
   if (typeof value === 'string') return clip(value, depth <= 1 ? 150 : 100) ?? value;
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
-  if (Array.isArray(value)) return value.slice(0, recentCap).map((entry) => compactCampaignValue(entry, recentCap, depth + 1));
+  if (Array.isArray(value))
+    return value.slice(0, recentCap).map((entry) => compactCampaignValue(entry, recentCap, depth + 1));
   const source = asDict(value);
   if (!source) return String(value);
   const out: Dict = {};
@@ -409,9 +467,7 @@ function compactCampaignValue(value: unknown, recentCap: number, depth = 0): unk
   // useful fields. The generic deep-object cap used to remove the final two
   // (`countsTowardBurnDown` and `terminalizedAt`) from the leader-facing result.
   // Preserve the whole typed audit row without widening arbitrary deep payloads.
-  const fieldCap = depth >= 3 && 'terminalOwner' in source && 'terminalizedAt' in source
-    ? 16
-    : depth >= 3 ? 10 : 20;
+  const fieldCap = depth >= 3 && 'terminalOwner' in source && 'terminalizedAt' in source ? 16 : depth >= 3 ? 10 : 20;
   for (const [key, item] of Object.entries(source).slice(0, fieldCap)) {
     if (key === 'rows' && Array.isArray(item)) {
       out.rows = item.slice(0, recentCap).map((entry) => compactCampaignValue(entry, recentCap, depth + 1));
@@ -448,14 +504,12 @@ function compactEmergencyCampaign(value: unknown): unknown {
   if (!source) return value;
   const out: Dict = {};
   if ('boundary' in source) out.boundary = pick(source.boundary, ['at', 'source'], 120) ?? source.boundary;
-  if ('everMembers' in source) out.everMembers = pick(source.everMembers, ['available', 'count'], 120) ?? source.everMembers;
+  if ('everMembers' in source)
+    out.everMembers = pick(source.everMembers, ['available', 'count'], 120) ?? source.everMembers;
   const axes = asDict(source.axes);
   if (axes) {
     out.axes = Object.fromEntries(
-      Object.entries(axes).map(([name, axis]) => [
-        name,
-        pick(axis, ['available', 'writer'], 120) ?? axis,
-      ]),
+      Object.entries(axes).map(([name, axis]) => [name, pick(axis, ['available', 'writer'], 120) ?? axis]),
     );
   }
   return out;
@@ -465,7 +519,12 @@ function addCappedArray(out: Dict, source: Dict, key: string, cap: number, proje
   const rows = source[key];
   if (!Array.isArray(rows)) return;
   out[key] = rows.slice(0, cap).map(project);
-  if (rows.length > cap) out[`${key}Truncated`] = { total: rows.length, shown: cap, more: 'fleet:leader-brief { payloadTier:"full" } or a narrow follow-up' };
+  if (rows.length > cap)
+    out[`${key}Truncated`] = {
+      total: rows.length,
+      shown: cap,
+      more: 'fleet:leader-brief { payloadTier:"full" } or a narrow follow-up',
+    };
 }
 
 /**
@@ -493,8 +552,13 @@ function addAlertFields(out: Dict, source: Dict, maxString = 220): void {
     // that emit one, the intuitive remedy is the WRONG verb (release is a no-op on
     // abandonedUnclaimed; a nudge cannot clear an admission block). Clipped like a
     // reason, so a long note cannot crowd out the decision core.
-    if (!/(?:AlertReason|AlertFalsifier|Action)$/.test(key) && key !== 'customInvariantAlertReason' && key !== 'fleetPausedReason') continue;
-    out[key] = key.endsWith('Falsifier') ? compactFalsifier(value, maxString) : clip(value, maxString) ?? value;
+    if (
+      !/(?:AlertReason|AlertFalsifier|Action)$/.test(key) &&
+      key !== 'customInvariantAlertReason' &&
+      key !== 'fleetPausedReason'
+    )
+      continue;
+    out[key] = key.endsWith('Falsifier') ? compactFalsifier(value, maxString) : (clip(value, maxString) ?? value);
   }
 }
 
@@ -508,7 +572,23 @@ function buildProjection(
   const tightDecisionCore = caps.memberVerdicts === 0 && caps.members === 0;
   const decisionStringCap = tightDecisionCore ? 100 : 220;
   for (const key of ['self', 'notLeader', 'leadershipClaimed']) {
-    if (key in data) out[key] = pick(data[key], ['ownerId', 'ownerLabel', 'registeredLeader', 'leaderState', 'reason', 'note', 'claimWith', 'previousLeader', 'notified'], 180) ?? data[key];
+    if (key in data)
+      out[key] =
+        pick(
+          data[key],
+          [
+            'ownerId',
+            'ownerLabel',
+            'registeredLeader',
+            'leaderState',
+            'reason',
+            'note',
+            'claimWith',
+            'previousLeader',
+            'notified',
+          ],
+          180,
+        ) ?? data[key];
   }
   if ('blockedAt' in data) {
     out.blockedAt = compactBlockedAt(data.blockedAt, decisionStringCap, !tightDecisionCore);
@@ -522,6 +602,9 @@ function buildProjection(
       data.dependencyBottlenecks,
       tightDecisionCore ? 2 : tier === 'trimmed' ? 4 : 8,
     );
+  }
+  if ('leaderBlockerStall' in data) {
+    out.leaderBlockerStall = compactLeaderBlockerStall(data.leaderBlockerStall, decisionStringCap);
   }
   if (Array.isArray(data.benchSuggestions)) {
     out.benchSuggestions = data.benchSuggestions.map(compactBenchSuggestion);
@@ -551,15 +634,31 @@ function buildProjection(
   }
   addAlertFields(out, data, decisionStringCap);
 
-  for (const key of ['specRevision', 'specUpdatedBy', 'specUpdatedAt', 'harnessWidePool', 'specMatched', 'fleetPausedReason']) {
+  for (const key of [
+    'specRevision',
+    'specUpdatedBy',
+    'specUpdatedAt',
+    'harnessWidePool',
+    'specMatched',
+    'fleetPausedReason',
+  ]) {
     if (key in data) out[key] = typeof data[key] === 'string' ? clip(data[key], 180) : data[key];
   }
   if (data.specFilter !== undefined) {
     const serialized = (() => {
-      try { return JSON.stringify(data.specFilter); } catch { return ''; }
+      try {
+        return JSON.stringify(data.specFilter);
+      } catch {
+        return '';
+      }
     })();
     if (serialized.length <= 500) out.specFilter = data.specFilter;
-    else out.specFilterOmitted = { reason: 'bounded for monitor transport', chars: serialized.length, more: 'scheduler:get_claim_spec { fleet }' };
+    else
+      out.specFilterOmitted = {
+        reason: 'bounded for monitor transport',
+        chars: serialized.length,
+        more: 'scheduler:get_claim_spec { fleet }',
+      };
   }
 
   out.leaderBriefProjection = {
@@ -567,7 +666,9 @@ function buildProjection(
     memberVerdicts: Array.isArray(data.memberVerdicts)
       ? { shown: data.memberVerdicts.length, total: data.memberVerdicts.length, complete: true }
       : undefined,
-    members: Array.isArray(data.members) ? { shown: Math.min(caps.members, data.members.length), total: data.members.length } : undefined,
+    members: Array.isArray(data.members)
+      ? { shown: Math.min(caps.members, data.members.length), total: data.members.length }
+      : undefined,
     note: 'Default monitor projection keeps the decision core; use payloadTier:"full" or narrow follow-up reads for detail.',
   };
   return out;
@@ -617,20 +718,30 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     if (JSON.stringify(out).length <= LEADER_BRIEF_SHAPER_BUDGET_CHARS) return out;
   }
   // A pathological invariant/reason string must not defeat the safety rail.
+  const emergencySummary = compactSummary(source.summary, true);
+  const emergencySummaryRecord = asDict(emergencySummary);
+  // The top-level emergency alarm below already preserves the verdict and
+  // triggering identity. Carrying the same boolean in summary would spend the
+  // last bytes twice while crowding out the evidence that makes it actionable.
+  if (source.leaderBlockerStall !== undefined && emergencySummaryRecord) {
+    delete emergencySummaryRecord.leaderBlockerStallAlert;
+  }
   const emergency: Dict = {
     ok: source.ok === true,
     ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt, 20, false) } : {}),
     ...(source.monitoringBlindAdvisory !== undefined
       ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }
       : {}),
-    ...(source.summary !== undefined ? { summary: compactSummary(source.summary, true) } : {}),
+    ...(source.summary !== undefined ? { summary: emergencySummary } : {}),
     ...(source.dependencyBottlenecks !== undefined
       ? { dependencyBottlenecks: compactDependencyBottlenecks(source.dependencyBottlenecks, 1) }
+      : {}),
+    ...(source.leaderBlockerStall !== undefined
+      ? { leaderBlockerStall: compactEmergencyLeaderBlockerStall(source.leaderBlockerStall) }
       : {}),
     leaderBriefProjection: {
       tier,
       emergency: true,
-      note: 'Further optional detail was omitted to keep the monitor response valid JSON.',
     },
   };
   // P-010/P-011: keep fleet-level detector evidence at the emergency tier too.

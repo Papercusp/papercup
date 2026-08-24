@@ -42,8 +42,20 @@ import { clampUsageRearmDelayMs } from '@papercusp/papercusp-shared/agent';
 import { runWithWorkspace } from '../../workspace-als';
 import { classifyFireError, recordFire as defaultRecordFire } from '../../autoloop';
 import { getLoopCarryNote as defaultGetLoopCarryNote, splitCarryNoteWalls } from '../../carry-note';
+import { buildOwnerRespawnLaunchSpec, type RespawnLaunchSpec } from '../../carry-respawn';
+import { markRespawnExpected as defaultMarkRespawnExpected } from '../../carry-respawn-marker';
+import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
+import { modelWindowForSpec } from '../../agent-config-constants';
+import {
+  injectIntoHost as defaultInjectIntoHost,
+  selfCompactionAvailability as defaultSelfCompactionAvailability,
+  type SelfCompactionAvailability,
+} from '../../events/await/psu-pty-discovery';
+import { bumpSessionEpoch as defaultBumpSessionEpoch } from '../../memory/session-epoch-ledger';
+import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
 import { detectOwnerAsk, stashLoopWallNag as defaultStashLoopWallNag } from './loop-wall-nag';
+import { buildLoopWakePrompt, materializeLoop as defaultMaterializeLoop, type MaterializeLoopInput } from './loop';
 import { registerResumeTurnOutcomeHandler } from '../../events/await/engine';
 import {
   classifyResumeTurnExit,
@@ -57,6 +69,18 @@ const log = (msg: string) => console.warn(`[loop-turn-outcome] ${msg}`);
 
 /** The loop wake `source` convention (loop-fire.ts): `loop:<routineId>`. */
 const LOOP_SOURCE_PREFIX = 'loop:';
+
+/** Same conservative fallback used by session:request-compaction when the live model window
+ * cannot be resolved. A smaller carry budget is safe; a guessed larger one can recreate the
+ * context-overflow wall while assembling the recovery itself. */
+const FALLBACK_EFFECTIVE_WINDOW_TOKENS = 200_000;
+
+/** A carry-respawn is latency-insensitive to this observer: the dying loop turn is already
+ * over, so allow a pre-ack host enough time to pass its clean-boundary gate. */
+const CARRY_RESPAWN_SOCKET_TIMEOUT_MS = 15 * 60_000;
+
+const CONTEXT_OVERFLOW_RECOVERY_PROMPT =
+  'Context-overflow recovery queued. Re-run coord:orient { afterCompaction: true }, reconcile live state, and resume the loop goal from the carried checkpoints.';
 
 /** Recover the loop routine id from a delivery's source (`loop:<routineId>`), else null
  *  (a non-loop wake — we never attribute its turn death to a loop). */
@@ -122,6 +146,8 @@ interface LoopRoutineRef {
   intervalSec: number | null;
   /** The pinned session the loop wakes — the carry-note / wall-nag scope key (P-006). */
   targetOwnerId: string | null;
+  /** Existing wake configuration, so a cold recovery keeps the loop's goal and guardrails. */
+  payloadTemplate: Record<string, unknown>;
 }
 
 /** Resolve a loop routine's fire-gate key (install_slug + name) + workspace + interval. */
@@ -134,9 +160,10 @@ async function getLoopRoutineRef(sql: Sql, routineId: string): Promise<LoopRouti
       workspace_id: string;
       reschedule_interval_sec: number | null;
       target_owner_id: string | null;
+      payload_template: Record<string, unknown> | null;
     }>
   >`
-    SELECT id, name, install_slug, workspace_id, reschedule_interval_sec, target_owner_id
+    SELECT id, name, install_slug, workspace_id, reschedule_interval_sec, target_owner_id, payload_template
       FROM harness_shared.routines
      WHERE id = ${routineId} AND reschedule_interval_sec IS NOT NULL
      LIMIT 1
@@ -150,6 +177,7 @@ async function getLoopRoutineRef(sql: Sql, routineId: string): Promise<LoopRouti
     workspaceId: r.workspace_id,
     intervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
     targetOwnerId: r.target_owner_id ?? null,
+    payloadTemplate: r.payload_template ?? {},
   };
 }
 

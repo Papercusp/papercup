@@ -1367,6 +1367,7 @@ export interface SetStatusArgs {
   itemId: string;
   status: ItemStatus;
   note?: string;
+  harness?: string;
 }
 
 export interface SetNowArgs {
@@ -1697,6 +1698,17 @@ async function setPlanStatusVerb(
     // busy (lock conflict) → non-2xx → postJson throws; surface it.
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** Public hand-edit seam for a plan-level lifecycle flip. Cleanup review uses
+ * this same client path as the plan UI, then records the run acceptance only
+ * after the write succeeds. */
+export function setPlanLifecycleStatus(
+  slug: string,
+  status: 'draft' | 'ready' | 'shipped' | 'superseded',
+  harnessSlug?: string,
+) {
+  return setPlanStatusVerb(slug, status, { harnessSlug });
 }
 
 /**

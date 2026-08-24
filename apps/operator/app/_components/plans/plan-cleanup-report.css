@@ -1,0 +1,14 @@
+.plan-cleanup-report__subtitle {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.plan-cleanup-report__error {
+  color: var(--bad);
+}
+
+.review-report__footer code {
+  color: var(--fg);
+  font-size: 0.95em;
+}

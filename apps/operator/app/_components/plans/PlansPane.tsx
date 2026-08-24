@@ -83,7 +83,10 @@ import { FLAGS } from "@papercusp/flags";
 import PlanPopupModal from './PlanPopupModal';
 import { PLAN_DASHBOARD_PARAM } from './PlanDashboardHost';
 import PlansCleanupStrip from "./PlansCleanupStrip";
-import { usePlanCleanupRun } from "./use-plan-cleanup-run";
+import {
+  PLAN_CLEANUP_RUN_PARAM,
+  usePlanCleanupRun,
+} from "./use-plan-cleanup-run";
 import { encodeScopedRef } from '../chat/chat-ref-popup-params';
 import './plans-pane.css';
 import { advRosterArgs } from '@/lib/adv-roster-args';
@@ -344,7 +347,10 @@ export default function PlansPane() {
   const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
   // P-006: the selected clean-up RUN is URL-owned. A reload or copied link
   // resumes against the persisted phase instead of resetting to local idle.
-  const [cleanupRunId, setCleanupRunId] = useQueryState("opcln", parseAsString);
+  const [cleanupRunId, setCleanupRunId] = useQueryState(
+    PLAN_CLEANUP_RUN_PARAM,
+    parseAsString,
+  );
   // P-005 (D-002): a row click opens the app-pane dashboard takeover — the
   // param PlanDashboardHost renders. `pplan` (the popup) remains for its other
   // writers; this pane no longer writes it from rows.

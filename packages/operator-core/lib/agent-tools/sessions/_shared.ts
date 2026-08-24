@@ -43,7 +43,7 @@ export function parseSessionSelector(
 }
 
 export interface SessionTurnRef {
-  sourceKind: string;
+  sourceKind: SessionSourceKind;
   sessionId: string;
   turnIdx: number;
 }
@@ -260,10 +260,14 @@ export function parseTurnRef(sourceIdOrRef: string): SessionTurnRef | null {
   const turnIdx = Number(sourceId.slice(last + 1));
   const sourceKind = sourceId.slice(0, first);
   const sessionId = sourceId.slice(first + 1, last);
-  if (!Number.isInteger(turnIdx) || turnIdx < 0 || !sessionId || !SESSION_SOURCE_KINDS.includes(sourceKind as never)) {
+  if (!Number.isInteger(turnIdx) || turnIdx < 0 || !sessionId || !isSessionSourceKind(sourceKind)) {
     return null;
   }
   return { sourceKind, sessionId, turnIdx };
+}
+
+function isSessionSourceKind(value: string): value is SessionSourceKind {
+  return (SESSION_SOURCE_KINDS as readonly string[]).includes(value);
 }
 
 export interface SessionTurnRefResolution {

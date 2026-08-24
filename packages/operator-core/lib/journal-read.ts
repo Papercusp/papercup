@@ -77,6 +77,14 @@ export const JOURNAL_MAX_BUFFER = 32 * 1024 * 1024;
 /** Wall-clock budget for one journalctl invocation. The measured worst case (an
  *  UNSCOPED scan of a 1.2GB journal) was ~26s; a unit-scoped read is ~7s. */
 export const JOURNAL_TIMEOUT_MS = 30_000;
+/**
+ * Maximum interval handed to one grep'd journalctl invocation. `-n` bounds the
+ * result, not the reverse scan needed to find sparse matches, so wide windows
+ * must be split before they reach one subprocess.
+ */
+export const JOURNAL_READ_SLICE_MS = 60 * 60 * 1000;
+/** Keep the slice fan-out bounded; journalctl is disk-backed host I/O. */
+export const JOURNAL_READ_SLICE_CONCURRENCY = 8;
 
 /**
  * Normalize the compact lookback shorthand agents commonly use (`40m`, `-2h`)
@@ -248,6 +256,45 @@ export interface JournalReadOptions {
   scope?: JournalScope;
   /** Test seam for platform selection; production uses `process.platform`. */
   platform?: NodeJS.Platform;
+}
+
+/** A journalctl interval, represented in its unambiguous `@epoch` grammar. */
+export interface JournalReadSlice {
+  since: string;
+  until: string;
+}
+
+/**
+ * Render epoch milliseconds without going through local-time parsing. Three
+ * fractional digits preserve the resolver's millisecond precision and avoid
+ * the UTC-vs-local ambiguity of an ISO timestamp.
+ */
+function journalEpoch(ms: number): string {
+  return `@${(ms / 1000).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}`;
+}
+
+/**
+ * Build newest-first, contiguous slices for a resolved journal window.
+ * Adjacent slices share their boundary; mergeJournalRecords removes the one
+ * boundary record that journalctl may return in both intervals.
+ */
+export function buildJournalReadSlices(
+  sinceMs: number,
+  untilMs: number,
+  sliceMs = JOURNAL_READ_SLICE_MS,
+): JournalReadSlice[] {
+  if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || !Number.isFinite(sliceMs)) return [];
+  if (sliceMs <= 0 || untilMs <= sinceMs || untilMs - sinceMs <= sliceMs) return [];
+
+  const slices: JournalReadSlice[] = [];
+  let cursor = untilMs;
+  while (cursor > sinceMs) {
+    const start = Math.max(sinceMs, cursor - sliceMs);
+    if (start === cursor) break;
+    slices.push({ since: journalEpoch(start), until: journalEpoch(cursor) });
+    cursor = start;
+  }
+  return slices;
 }
 
 /** Host log backend selected for a read. */
@@ -454,6 +501,29 @@ export interface RawJournalRecord {
   level: JournalLevel | null;
   message: string;
   clipped: boolean;
+}
+
+/**
+ * Merge records returned by adjacent slices into one chronological stream.
+ * The shared boundary is intentional: journalctl's timestamp grammar can
+ * include a record at either edge, so remove only exact duplicate records
+ * created by that overlap and retain otherwise-identical log lines.
+ */
+export function mergeJournalRecords(chunks: readonly RawJournalRecord[][]): RawJournalRecord[] {
+  const seen = new Set<string>();
+  const merged: RawJournalRecord[] = [];
+  for (const chunk of chunks) {
+    for (const record of chunk) {
+      const key = `${record.ts}\u0000${record.unit ?? ''}\u0000${record.level ?? ''}\u0000${record.message}\u0000${record.clipped ? '1' : '0'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(record);
+    }
+  }
+  return merged.sort((a, b) => {
+    if (!a.ts || !b.ts) return 0;
+    return a.ts.localeCompare(b.ts);
+  });
 }
 
 /**
@@ -694,6 +764,72 @@ const defaultExec: JournalExec = (args) =>
 const defaultMacExec: JournalExec = (args) =>
   execFileAsync('log', args, { timeout: JOURNAL_TIMEOUT_MS, maxBuffer: JOURNAL_MAX_BUFFER });
 
+/** Resolve a wide grep window before deciding whether to split it. */
+async function resolveWideJournalSlices(
+  opts: JournalReadOptions,
+  resolveWindow: WindowResolver,
+): Promise<JournalReadSlice[]> {
+  // The reverse-scan defect is specific to journalctl's server-side grep path.
+  // Leave unfiltered reads on the native single invocation, where unit indexes
+  // and the existing -n bound retain their intended behavior.
+  if (opts.platform && opts.platform !== 'linux') return [];
+  if (!opts.grep?.trim()) return [];
+
+  const since = normalizeJournalWindow(opts.since ?? JOURNAL_READ_DEFAULT_SINCE);
+  const until = opts.until ? normalizeJournalWindow(opts.until) : null;
+  let sinceMs: number | null;
+  let untilMs: number | null;
+  try {
+    sinceMs = await resolveWindow(since);
+    untilMs = until === null ? Date.now() : await resolveWindow(until);
+  } catch {
+    // A resolver failure must not change the ordinary journal read semantics.
+    return [];
+  }
+  if (sinceMs === null || untilMs === null) return [];
+  return buildJournalReadSlices(sinceMs, untilMs);
+}
+
+interface SlicedJournalRead {
+  records: RawJournalRecord[];
+  failure: { kind: JournalFailureKind; message: string; slice: JournalReadSlice } | null;
+}
+
+/** Run bounded slices in a small worker batch, newest first. */
+async function readJournalSlices(
+  opts: JournalReadOptions,
+  slices: readonly JournalReadSlice[],
+  limit: number,
+  run: JournalExec,
+): Promise<SlicedJournalRead> {
+  const chunks: RawJournalRecord[][] = [];
+  for (let offset = 0; offset < slices.length; offset += JOURNAL_READ_SLICE_CONCURRENCY) {
+    const batch = slices.slice(offset, offset + JOURNAL_READ_SLICE_CONCURRENCY);
+    const outcomes = await Promise.all(batch.map(async (slice) => {
+      const args = buildJournalctlArgs({ ...opts, since: slice.since, until: slice.until, limit });
+      try {
+        const { stdout } = await run(args);
+        return { slice, records: parseJournalJson(stdout), failure: null };
+      } catch (err) {
+        const failure = classifyJournalctlFailure(err);
+        if (failure.kind === 'no-match') return { slice, records: [], failure: null };
+        return { slice, records: [], failure };
+      }
+    }));
+
+    const failure = outcomes.find((outcome) => outcome.failure !== null)?.failure;
+    if (failure) return { records: [], failure: { ...failure, slice: outcomes.find((outcome) => outcome.failure !== null)!.slice } };
+
+    chunks.push(...outcomes.map((outcome) => outcome.records));
+    const merged = mergeJournalRecords(chunks);
+    // We only need limit+1 records to establish the same bounded/truncated
+    // contract as the single invocation. Older slices cannot affect the rows
+    // returned once the newest limit+1 are known.
+    if (merged.length > limit) return { records: merged.slice(-limit - 1), failure: null };
+  }
+  return { records: mergeJournalRecords(chunks), failure: null };
+}
+
 /** Resolves each requested unit to whether systemd knows it. */
 export type UnitLoadProbe = (units: string[], scope: JournalScope) => Promise<string[]>;
 
@@ -929,6 +1065,40 @@ export async function readJournal(
       },
     };
   };
+
+  const slices = backend === 'systemd'
+    ? await resolveWideJournalSlices(opts, resolveWindow)
+    : [];
+  if (slices.length) {
+    const sliced = await readJournalSlices(opts, slices, limit, run);
+    if (sliced.failure) {
+      const { kind, message } = sliced.failure;
+      return {
+        ...base,
+        matched: null,
+        entries: [],
+        journalAvailable: kind !== 'no-systemd',
+        backend: kind === 'no-systemd' ? 'none' : backend,
+        journalError: kind === 'no-systemd' ? null : message,
+      };
+    }
+
+    const records = sliced.records;
+    const truncated = records.length > limit;
+    const kept = truncated ? records.slice(records.length - limit) : records;
+    const { entries, collapsed } = collapseConsecutive(kept);
+    return withWindowDiagnosis(
+      await withUnknownUnits({
+        ...base,
+        entries,
+        matched: records.length,
+        collapsed,
+        truncated,
+        journalAvailable: true,
+        journalError: null,
+      }),
+    );
+  }
 
   let stdout: string;
   try {

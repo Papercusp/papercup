@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parseSessionSelector, resolveSessionTurnRefs } from './_shared';
+import { parseSessionSelector, parseTurnRef, resolveSessionTurnRefs } from './_shared';
 
 describe('parseSessionSelector', () => {
   it('splits a source-prefixed session id while preserving colons in the native id', () => {
@@ -22,6 +22,22 @@ describe('parseSessionSelector', () => {
       sessionId: 'rollout-123',
       sourceKind: 'codex',
     });
+  });
+});
+
+describe('parseTurnRef', () => {
+  it('narrows validated source kinds for downstream session readers', () => {
+    expect(parseTurnRef('session_turn:codex:rollout-123:7')).toEqual({
+      sourceKind: 'codex',
+      sessionId: 'rollout-123',
+      turnIdx: 7,
+    });
+    expect(parseTurnRef('session_turn:agent_chat:chat:with:colons:3')).toEqual({
+      sourceKind: 'agent_chat',
+      sessionId: 'chat:with:colons',
+      turnIdx: 3,
+    });
+    expect(parseTurnRef('session_turn:unknown:session:0')).toBeNull();
   });
 });
 

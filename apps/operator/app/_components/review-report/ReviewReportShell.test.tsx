@@ -91,6 +91,32 @@ describe('rendering', () => {
     expect(screen.getByTestId('review-row-mark-o1').textContent).toBe('✓');
     expect(screen.queryByTestId('review-row-check-o1')).toBeNull();
   });
+
+  it('keeps a manual pending row visible but out of selection, and renders the flow footer', () => {
+    renderShell({
+      groups: [
+        {
+          id: 'manual',
+          title: 'Refresh Now',
+          rows: [
+            {
+              id: 'm1',
+              title: 'rewrite Now',
+              evidence: ['current Now is stale'],
+              confidence: 'recommended',
+              selectable: false,
+            },
+          ],
+        },
+      ],
+      footer: 'Writes use the same hand-edit verbs.',
+    });
+    expect(screen.getByTestId('review-row-m1')).toBeTruthy();
+    expect(screen.queryByTestId('review-row-check-m1')).toBeNull();
+    expect(screen.getByTestId('review-row-mark-m1').textContent).toBe('↗');
+    expect(applyBtn().disabled).toBe(true);
+    expect(screen.getByText('Writes use the same hand-edit verbs.')).toBeTruthy();
+  });
 });
 
 describe('selection + apply', () => {

@@ -30,6 +30,14 @@ updated: 2026-08-23
 ## Decisions
 `;
 
+const GROUPED_COMPLETION = CURRENT.replace(
+  '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+  '**State:** NOT COMPLETE: The engineering half (P-001/P-002/P-003/P-004/P-005/P-007) is code-truth audited and independently accepted; P-008 remains blocked.\n\n**Next:** Continue with P-008.',
+).replace(
+  '- **P-002** `todo` Open item.',
+  '- **P-002** `done` Finished item.\n- **P-003** `done` Finished item.\n- **P-004** `done` Finished item.\n- **P-005** `done` Finished item.\n- **P-006** `todo` Open item.\n- **P-007** `done` Finished item.',
+);
+
 describe('detectNowItemContradictions', () => {
   it('flags an action-oriented mention of a terminal item', () => {
     const proposed = parsePlan(
@@ -67,6 +75,10 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(proposed)).toEqual([
       expect.objectContaining({ id: 'P-001', status: 'dropped' }),
     ]);
+  });
+
+  it('allows grouped affirmative completion evidence before unrelated blocked work', () => {
+    expect(detectNowItemContradictions(parsePlan(GROUPED_COMPLETION))).toEqual([]);
   });
 });
 
@@ -110,5 +122,16 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
 
     expect(result.value).toEqual({ ok: true });
     expect(result.newBody).toContain('**Next:** Continue with P-002.');
+  });
+
+  it('accepts grouped affirmative completion evidence in an incomplete plan', () => {
+    const result = evaluateNowUpdate(
+      GROUPED_COMPLETION,
+      'NOT COMPLETE: The engineering half (P-001/P-002/P-003/P-004/P-005/P-007) is code-truth audited and independently accepted; P-008 remains blocked.',
+      'Continue with P-008.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
   });
 });

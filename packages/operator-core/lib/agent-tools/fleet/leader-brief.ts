@@ -115,10 +115,13 @@ import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
+import { readDependencyBottlenecks, type DependencyBottleneckResult } from '../../dependency-traversal';
+import { renderDependencyBottleneckMermaid } from '../../dependency-mermaid';
 import {
-  readDependencyBottlenecks,
-  type DependencyBottleneckResult,
-} from '../../dependency-traversal';
+  computeLeaderBlockerStallView,
+  DEFAULT_LEADER_BLOCKER_STALL_THRESHOLD_HOURS,
+  type LeaderBlockerStallView,
+} from '../../leader-blocker-stall-alert';
 
 // EI-20226510994156306: a 50-member leader brief previously serialized ~66KB
 // before the transport's own result cap. Keep the detailed, verbose rows small;
@@ -1070,9 +1073,7 @@ function positivePlanSlugsFromFilter(node: FilterNode | null | undefined): strin
  * `any: [plan=P, kind=bug]` mentions one plan but also admits work outside it,
  * so it cannot define the fleet's whole executable frontier.
  */
-export function exactPositiveSinglePlanSlugFromFilter(
-  node: FilterNode | null | undefined,
-): string | null {
+export function exactPositiveSinglePlanSlugFromFilter(node: FilterNode | null | undefined): string | null {
   const slugs = positivePlanSlugsFromFilter(node);
   if (slugs.length !== 1) return null;
   const target = slugs[0];
@@ -1087,9 +1088,7 @@ export function exactPositiveSinglePlanSlugFromFilter(
     if (leaf.field !== 'plan') return false;
     if (leaf.op === '=') return leaf.value === target;
     if (leaf.op === 'in' && Array.isArray(leaf.value)) {
-      const values = uniquePlanSlugs(
-        leaf.value.filter((value): value is string => typeof value === 'string'),
-      );
+      const values = uniquePlanSlugs(leaf.value.filter((value): value is string => typeof value === 'string'));
       return values.length === 1 && values[0] === target;
     }
     return false;
@@ -1131,7 +1130,8 @@ export function computeFleetHeadcountVsExecutableFrontierAlert(input: {
     (input.readyWidth ?? -1) < 0 ||
     !Number.isSafeInteger(input.claimable) ||
     (input.claimable ?? -1) < 0
-  ) return undefined;
+  )
+    return undefined;
 
   const readyWidth = input.readyWidth as number;
   const claimable = input.claimable as number;
@@ -2137,6 +2137,8 @@ export type LeaderDependencyBottleneckView =
         holderBasis: 'reconciled-fleet-assignment-claims';
       };
       rows: LeaderDependencyBottleneckRow[];
+      /** Opt-in human renderer over the same SQL result as `rows`. */
+      mermaid?: string;
     }
   | {
       status: 'unknown';
@@ -2144,6 +2146,47 @@ export type LeaderDependencyBottleneckView =
       planSlug?: string;
       harnessSlug?: string;
     };
+
+export type LeaderBlockerStallBriefView =
+  | LeaderBlockerStallView
+  | {
+      status: 'unknown';
+      alert: null;
+      thresholdHours: number;
+      checkedRows: 0;
+      reason: string;
+      unknown: {
+        code: 'dependency-bottlenecks-unmeasured';
+        sourceReason: Extract<LeaderDependencyBottleneckView, { status: 'unknown' }>['reason'];
+      };
+    };
+
+/**
+ * P-009 consumes P-006's already-measured rows exactly once. An unread P-006
+ * view remains an explicit UNKNOWN alarm state; it must never collapse into a
+ * clear result merely because there are no rows available to evaluate.
+ */
+export function buildLeaderBlockerStallBriefView(
+  dependencyBottlenecks: LeaderDependencyBottleneckView,
+  fleet?: string | null,
+): LeaderBlockerStallBriefView {
+  if (dependencyBottlenecks.status === 'measured') {
+    return computeLeaderBlockerStallView({ rows: dependencyBottlenecks.rows, fleet });
+  }
+  return {
+    status: 'unknown',
+    alert: null,
+    thresholdHours: DEFAULT_LEADER_BLOCKER_STALL_THRESHOLD_HOURS,
+    checkedRows: 0,
+    reason:
+      `leader-blocker stall state is UNKNOWN: dependency bottlenecks were not measured ` +
+      `(${dependencyBottlenecks.reason}).`,
+    unknown: {
+      code: 'dependency-bottlenecks-unmeasured',
+      sourceReason: dependencyBottlenecks.reason,
+    },
+  };
+}
 
 /**
  * Join the graph-ranked blockers to the ALREADY reconciled fleet roster. Progress
@@ -2160,11 +2203,7 @@ export function buildLeaderDependencyBottleneckView(
     const holdersById = new Map<string, LeaderDependencyBottleneckHolder>();
     for (const member of members) {
       const holds = member.claims.some(
-        (claim) =>
-          claim.type === 'work-item' &&
-          claim.active &&
-          claim.id != null &&
-          refs.has(claim.id.toUpperCase()),
+        (claim) => claim.type === 'work-item' && claim.active && claim.id != null && refs.has(claim.id.toUpperCase()),
       );
       if (!holds) continue;
       holdersById.set(member.agentId, {
@@ -2207,6 +2246,7 @@ export function buildLeaderDependencyBottleneckView(
       holderBasis: 'reconciled-fleet-assignment-claims',
     },
     rows,
+    ...(result.graph ? { mermaid: renderDependencyBottleneckMermaid(result.graph) } : {}),
   };
 }
 
@@ -2509,7 +2549,7 @@ export default defineTool({
   name: 'fleet:leader-brief',
   profile: 'engineer',
   description:
-    "Leader health brief for one fleet (yours by default). Per member: " +
+    'Leader health brief for one fleet (yours by default). Per member: ' +
     'sessionState, `wakeable`, `verdict`, wakeMode, lastToolCallAgeMs, ' +
     'claims (doing/ids/queue/load), loop+nextFireAt, stalled, unanswered, contextPressure, ' +
     'parkedOn/resolved, benchSuggestion(s), dormant, spinning, ' +
@@ -2584,6 +2624,12 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Also include members with no claims and a stale heartbeat (default false — dead/idle noise).'),
+    include_mermaid: z
+      .boolean()
+      .optional()
+      .describe(
+        'P-008: include a fenced Mermaid dependency graph for human review. Off by default; it is rendered from the SAME SQL result as dependencyBottlenecks. Use payloadTier:"full" for a large graph because bounded monitor tiers never clip invalid partial Mermaid.',
+      ),
     unowned_critical_age_hours: z
       .number()
       .min(0)
@@ -2693,6 +2739,7 @@ export async function buildLeaderBrief(
     harness?: string;
     workspace?: string;
     include_stale?: boolean;
+    include_mermaid?: boolean;
     unowned_critical_age_hours?: number;
     orphan_min_age_minutes?: number;
     since?: string;
@@ -3179,9 +3226,7 @@ export async function buildLeaderBrief(
   let specUpdatedAt: string | null | undefined;
   let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
   let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert>;
-  let fleetHeadcountVsExecutableFrontierAlert:
-    | FleetHeadcountVsExecutableFrontierEvaluation
-    | undefined;
+  let fleetHeadcountVsExecutableFrontierAlert: FleetHeadcountVsExecutableFrontierEvaluation | undefined;
   // P-006: always in-band. A missing/exploded dependency read is UNKNOWN,
   // never an omitted field that a leader can mistake for a measured empty view.
   let dependencyBottlenecks: LeaderDependencyBottleneckView = {
@@ -3250,6 +3295,7 @@ export async function buildLeaderBrief(
           harnessSlug: planHarness,
           planSlug: exactPlanSlug,
           limit: 8,
+          includeGraph: args.include_mermaid === true,
         });
         dependencyBottlenecks = buildLeaderDependencyBottleneckView(measured, grouped);
       } catch {
@@ -3288,6 +3334,10 @@ export async function buildLeaderBrief(
   } catch {
     /* best-effort — never block the brief on a spec-effect preview failure */
   }
+  // P-009: detector-only projection over P-006's existing graph/liveness/
+  // progress rows. Do not re-read any of those sources here: one measured view
+  // feeds both the ranked table and this tri-state alarm.
+  const leaderBlockerStall = buildLeaderBlockerStallBriefView(dependencyBottlenecks, fleet);
   // P-014: leader-REGISTERED custom invariants, evaluated here alongside the
   // built-in alerts above. The built-ins are checks somebody thought to build in
   // advance; this is where a leader's own ad-hoc check lives instead of dying with
@@ -3438,6 +3488,9 @@ export async function buildLeaderBrief(
         ...(fleetHeadcountVsExecutableFrontierAlert
           ? { fleetHeadcountVsExecutableFrontierAlert: fleetHeadcountVsExecutableFrontierAlert.alert }
           : {}),
+        // P-009: null is load-bearing — the dependency population was not
+        // measured or one of the alarm's required row legs was unknown.
+        leaderBlockerStallAlert: leaderBlockerStall.alert,
         // P-005: unlike its siblings this one is not about SUPPLY — it says the lane you
         // are reading was authored by someone else, so every other spec figure here
         // describes a scope you have not ratified.
@@ -3450,6 +3503,9 @@ export async function buildLeaderBrief(
       // measured|unknown discriminator survives shaping; an unread graph never
       // becomes rows:[] or an absent field that looks like "no bottlenecks".
       dependencyBottlenecks,
+      // P-009/R7: observability only. This carries the triggering row and
+      // independent read-only falsifier, but performs no remediation.
+      leaderBlockerStall,
       // P-022: placed directly under the summary it differences. `deltaSummary` is the
       // one-line "since your last wake — members ±N, closes +N, spec rev X→Y, pool factor
       // A→B" a monitor tick actually reads; `delta` carries the per-axis availability so a
@@ -3584,9 +3640,7 @@ export async function buildLeaderBrief(
           }
         : {}),
       ...(darkFleetAlert.reason ? { darkFleetAlertReason: darkFleetAlert.reason } : {}),
-      ...(darkFleetAlert.alert === true
-        ? { darkFleetAlertFalsifier: darkFleetAlert.falsifier }
-        : {}),
+      ...(darkFleetAlert.alert === true ? { darkFleetAlertFalsifier: darkFleetAlert.falsifier } : {}),
       // P-014: always carried when ANY invariant is registered — including the
       // all-satisfied case. A leader must be able to tell "my checks ran and found
       // nothing" from "my checks are not running", which a reason-only field cannot

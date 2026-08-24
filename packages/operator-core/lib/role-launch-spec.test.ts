@@ -502,6 +502,11 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     expect(u.searchParams.get('workspace')).toBe('default');
   });
 
+  it.each(['claude', 'codex', 'omp'] as const)('%s + trimmed ⇒ seeds the SU-only locks:release cleanup verb', async (agent) => {
+    const tools = (await suMcpUrl(agent, { contextSize: 'trimmed' })).searchParams.get('tools')!.split(',');
+    expect(tools).toContain('locks:release');
+  });
+
   it('codex + full ⇒ NO tools= param (explicit opt-out into the whole catalog)', async () => {
     expect((await suMcpUrl('codex', { contextSize: 'full' })).searchParams.has('tools')).toBe(false);
   });

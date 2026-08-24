@@ -47,6 +47,11 @@ export const OBSERVATION_TITLE_RULE =
   "Recurrence and dedup match on the title's word-bag, so a title phrased as a reflection can never collide with a peer " +
   'filing the SAME friction, and the recurring-condition escalation never fires.';
 
+/** The structured observation evidence-routing contract shared by catalog and prose surfaces. */
+export const OBSERVATION_EVIDENCE_RULE =
+  'Free-text observation evidence belongs in the top-level body; observation.evidence is not a valid field. ' +
+  'For a rubric scorecard, put evidence in each observation.ratings[criterion].evidence.';
+
 /**
  * The same rule stated for a free-text reflection field whose FIRST LINE is
  * harvested verbatim into an observation title (`boundInsight` in

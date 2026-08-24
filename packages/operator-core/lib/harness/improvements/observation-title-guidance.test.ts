@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   CONDITION_KEY_RULE,
+  OBSERVATION_EVIDENCE_RULE,
   HARVESTED_COORD_NOTES_RULE,
   HARVESTED_FIRST_LINE_RULE,
   OBSERVATION_TITLE_RULE,
@@ -130,6 +131,12 @@ describe('the rule text itself states the rule (calibration + controls)', () => 
     expect(namesStableSubject(OBSERVATION_TITLE_RULE_SHORT)).toBe(true);
   });
 
+  it('OBSERVATION_EVIDENCE_RULE names the free-text and rubric evidence channels', () => {
+    expect(OBSERVATION_EVIDENCE_RULE).toMatch(/top-level body/i);
+    expect(OBSERVATION_EVIDENCE_RULE).toMatch(/observation\.evidence is not a valid field/i);
+    expect(OBSERVATION_EVIDENCE_RULE).toMatch(/observation\.ratings\[criterion\]\.evidence/i);
+  });
+
   it('the predicates REJECT the exact text this change replaced (the guard can fail)', () => {
     expect(namesIdentifierNotSentence(CONTROLS.theTextThisReplaced)).toBe(false);
     expect(namesStableSubject(CONTROLS.theTextThisReplaced)).toBe(false);
@@ -231,6 +238,7 @@ describe('every surface that asks for an observation title states the rule', () 
 
   it('improvements:capture { observation } still points the narrative at the body', () => {
     const description = fieldDescription(captureTool.args, 'observation');
+    expect(description).toContain(OBSERVATION_EVIDENCE_RULE);
     expect(description).toMatch(/identifying/i);
     expect(description).toMatch(/\bbody\b/i);
   });
@@ -281,6 +289,13 @@ describe('the su playbooks carry the rule where turn-end reflection is taught', 
     // It must reach the HARVESTED path too, not only the explicit-title path.
     expect(source).toMatch(/loop:checkpoint \{ insight \}/);
     expect(source).toMatch(/coordNotes/);
+  });
+
+  it.each(PLAYBOOKS)('%s states the observation evidence routing', (path) => {
+    const source = readFileSync(path, 'utf8');
+    expect(source).toContain('top-level `body`');
+    expect(source).toMatch(/`observation\.evidence` is not a valid field/i);
+    expect(source).toContain('`observation.ratings[criterion].evidence`');
   });
 
   it.each(PLAYBOOKS)('%s teaches conditionKey as something to MINT (P-002)', (path) => {

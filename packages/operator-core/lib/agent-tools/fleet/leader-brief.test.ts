@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildLeaderBlockerStallBriefView,
   buildLeaderDependencyBottleneckView,
   computeBenchSuggestion,
   computeDarkFleetAlert,
@@ -54,11 +55,18 @@ describe('fleet:leader-brief — ambient workspace transaction safety (EI-201920
 describe('computeFleetHeadcountVsExecutableFrontierAlert (WI-41173 / P-011)', () => {
   it('uses min(readyWidth, claimable) and fires only above that width', () => {
     const out = computeFleetHeadcountVsExecutableFrontierAlert({
-      planSlug: 'one-plan', liveNonLeaderWorkers: 5, readyWidth: 2, claimable: 7,
-      fleet: 'frontier-fleet', harness: 'papercusp',
+      planSlug: 'one-plan',
+      liveNonLeaderWorkers: 5,
+      readyWidth: 2,
+      claimable: 7,
+      fleet: 'frontier-fleet',
+      harness: 'papercusp',
     });
     expect(out).toMatchObject({
-      alert: true, executableWidth: 2, excessWorkers: 3, liveNonLeaderWorkers: 5,
+      alert: true,
+      executableWidth: 2,
+      excessWorkers: 3,
+      liveNonLeaderWorkers: 5,
     });
     expect(out?.reason).toMatch(/5 live non-leader worker.*executableWidth=2.*by 3/i);
     expect(out?.falsifier).toMatchObject({
@@ -67,7 +75,10 @@ describe('computeFleetHeadcountVsExecutableFrontierAlert (WI-41173 / P-011)', ()
     });
     expect(
       computeFleetHeadcountVsExecutableFrontierAlert({
-        planSlug: 'one-plan', liveNonLeaderWorkers: 4, readyWidth: 8, claimable: 3,
+        planSlug: 'one-plan',
+        liveNonLeaderWorkers: 4,
+        readyWidth: 8,
+        claimable: 3,
       }),
     ).toMatchObject({ alert: true, executableWidth: 3, excessWorkers: 1 });
   });
@@ -75,7 +86,9 @@ describe('computeFleetHeadcountVsExecutableFrontierAlert (WI-41173 / P-011)', ()
   it('returns measured false at the frontier and suppresses paused/unknown inputs', () => {
     const base = { planSlug: 'one-plan', liveNonLeaderWorkers: 3, readyWidth: 8, claimable: 3 };
     expect(computeFleetHeadcountVsExecutableFrontierAlert(base)).toMatchObject({
-      alert: false, executableWidth: 3, excessWorkers: 0,
+      alert: false,
+      executableWidth: 3,
+      excessWorkers: 0,
     });
     expect(computeFleetHeadcountVsExecutableFrontierAlert({ ...base, fleetPaused: true })).toBeUndefined();
     expect(computeFleetHeadcountVsExecutableFrontierAlert({ ...base, readyWidth: null })).toBeUndefined();
@@ -85,23 +98,47 @@ describe('computeFleetHeadcountVsExecutableFrontierAlert (WI-41173 / P-011)', ()
 
 describe('exactPositiveSinglePlanSlugFromFilter (WI-41173 / P-011)', () => {
   it('accepts exact AND lanes and ORs only when every branch requires the same plan', () => {
-    expect(exactPositiveSinglePlanSlugFromFilter({ all: [
-      { field: 'plan', op: '=', value: 'one-plan' },
-      { field: 'kind', op: 'in', value: ['bug', 'change'] },
-    ] })).toBe('one-plan');
-    expect(exactPositiveSinglePlanSlugFromFilter({ any: [
-      { all: [{ field: 'plan', op: '=', value: 'one-plan' }, { field: 'kind', op: '=', value: 'bug' }] },
-      { all: [{ field: 'plan', op: '=', value: 'one-plan' }, { field: 'kind', op: '=', value: 'change' }] },
-    ] })).toBe('one-plan');
+    expect(
+      exactPositiveSinglePlanSlugFromFilter({
+        all: [
+          { field: 'plan', op: '=', value: 'one-plan' },
+          { field: 'kind', op: 'in', value: ['bug', 'change'] },
+        ],
+      }),
+    ).toBe('one-plan');
+    expect(
+      exactPositiveSinglePlanSlugFromFilter({
+        any: [
+          {
+            all: [
+              { field: 'plan', op: '=', value: 'one-plan' },
+              { field: 'kind', op: '=', value: 'bug' },
+            ],
+          },
+          {
+            all: [
+              { field: 'plan', op: '=', value: 'one-plan' },
+              { field: 'kind', op: '=', value: 'change' },
+            ],
+          },
+        ],
+      }),
+    ).toBe('one-plan');
   });
 
   it('rejects broad OR, multi-plan, negative, and missing-plan scopes', () => {
     for (const filter of [
-      { any: [{ field: 'plan', op: '=', value: 'one-plan' }, { field: 'kind', op: '=', value: 'bug' }] },
+      {
+        any: [
+          { field: 'plan', op: '=', value: 'one-plan' },
+          { field: 'kind', op: '=', value: 'bug' },
+        ],
+      },
       { field: 'plan', op: 'in', value: ['one-plan', 'another-plan'] },
       { not: { field: 'plan', op: '=', value: 'one-plan' } },
       { field: 'kind', op: '=', value: 'bug' },
-    ]) expect(exactPositiveSinglePlanSlugFromFilter(filter as never)).toBeNull();
+    ])
+      expect(exactPositiveSinglePlanSlugFromFilter(filter as never)).toBeNull();
   });
 });
 
@@ -144,37 +181,37 @@ describe('buildLeaderDependencyBottleneckView (WI-41168 / P-006)', () => {
         },
       ],
     };
-    const holders = [baseAgent({
-      agentId: 'su-holder',
-      label: 'holder',
-      alive: false,
-      sessionState: 'ended',
-      verdict: 'dead',
-      claims: [{
-        type: 'work-item',
-        harnessSlug: 'papercusp',
-        planSlug: 'one-plan',
-        id: 'wi-41117',
-        itemKind: 'bug',
-        detail: 'Shared dependency',
-        status: 'open',
-        acquiredTs: null,
-        expiresTs: null,
-        active: true,
-        orphaned: false,
-        stalled: false,
-        lastProgressAt: '2099-01-01T00:00:00.000Z',
-        activity: 'dead',
-        rank: null,
-        rankWriter: null,
-      }],
-    })];
+    const holders = [
+      baseAgent({
+        agentId: 'su-holder',
+        label: 'holder',
+        alive: false,
+        sessionState: 'ended',
+        verdict: 'dead',
+        claims: [
+          {
+            type: 'work-item',
+            harnessSlug: 'papercusp',
+            planSlug: 'one-plan',
+            id: 'wi-41117',
+            itemKind: 'bug',
+            detail: 'Shared dependency',
+            status: 'open',
+            acquiredTs: null,
+            expiresTs: null,
+            active: true,
+            orphaned: false,
+            stalled: false,
+            lastProgressAt: '2099-01-01T00:00:00.000Z',
+            activity: 'dead',
+            rank: null,
+            rankWriter: null,
+          },
+        ],
+      }),
+    ];
 
-    const view = buildLeaderDependencyBottleneckView(
-      result,
-      holders,
-      Date.parse('2026-08-24T05:00:00.000Z'),
-    );
+    const view = buildLeaderDependencyBottleneckView(result, holders, Date.parse('2026-08-24T05:00:00.000Z'));
 
     expect(view).toMatchObject({
       status: 'measured',
@@ -204,16 +241,81 @@ describe('buildLeaderDependencyBottleneckView (WI-41168 / P-006)', () => {
   });
 });
 
+describe('buildLeaderBlockerStallBriefView (WI-41171 / P-009)', () => {
+  it('derives the alarm from the already-measured P-006 row and carries its falsifier', () => {
+    const view = buildLeaderBlockerStallBriefView(
+      {
+        status: 'measured',
+        population: {
+          kind: 'exact-plan-open-roots',
+          planSlug: 'one-plan',
+          harnessSlug: 'papercusp',
+          basis: 'unified-dependency-graph',
+          openRoots: 2,
+          candidates: 1,
+          shown: 1,
+          limit: 8,
+          truncated: false,
+          depthLimited: false,
+          maxDepth: 64,
+          progressBasis: 'harness_shared.work_items.last_progress_at',
+          holderBasis: 'reconciled-fleet-assignment-claims',
+        },
+        rows: [
+          {
+            rank: 1,
+            key: 'work_item:WI-40086',
+            kind: 'work_item',
+            ref: 'WI-40086',
+            status: 'open',
+            title: 'Critical blocker',
+            workItemRefs: ['WI-40086'],
+            openBlockedCount: 2,
+            lastProgressAt: '2026-08-24T00:00:00.000Z',
+            hoursSinceProgress: 5,
+            holder: { state: 'unowned', count: 0, agents: [], truncated: false },
+          },
+        ],
+      },
+      'one-fleet',
+    );
+
+    expect(view).toMatchObject({
+      status: 'alert',
+      alert: true,
+      row: { rank: 1, itemRef: 'WI-40086' },
+      falsifier: {
+        tool: 'fleet:assignments',
+        check: expect.stringContaining("fleet: 'one-fleet'"),
+      },
+    });
+  });
+
+  it('keeps an unread dependency view unknown instead of calling an empty row set clear', () => {
+    expect(
+      buildLeaderBlockerStallBriefView({
+        status: 'unknown',
+        reason: 'read-failed',
+        planSlug: 'one-plan',
+        harnessSlug: 'papercusp',
+      }),
+    ).toEqual({
+      status: 'unknown',
+      alert: null,
+      thresholdHours: 4,
+      checkedRows: 0,
+      reason: 'leader-blocker stall state is UNKNOWN: dependency bottlenecks were not measured (read-failed).',
+      unknown: { code: 'dependency-bottlenecks-unmeasured', sourceReason: 'read-failed' },
+    });
+  });
+});
+
 describe('computeDarkFleetAlert (WI-41172 / P-010)', () => {
   it('fires for at least three registered members with zero genuine activity in 30 minutes', () => {
     const out = computeDarkFleetAlert({
       fleet: 'dark-fleet',
       presenceDegraded: false,
-      roster: [
-        { lastActiveSecAgo: null },
-        { lastActiveSecAgo: 30 * 60 },
-        { lastActiveSecAgo: 4 * 60 * 60 },
-      ],
+      roster: [{ lastActiveSecAgo: null }, { lastActiveSecAgo: 30 * 60 }, { lastActiveSecAgo: 4 * 60 * 60 }],
     });
 
     expect(out.alert).toBe(true);
@@ -237,11 +339,7 @@ describe('computeDarkFleetAlert (WI-41172 / P-010)', () => {
     expect(
       computeDarkFleetAlert({
         presenceDegraded: false,
-        roster: [
-          { lastActiveSecAgo: null },
-          { lastActiveSecAgo: 29 * 60 + 59 },
-          { lastActiveSecAgo: 10 * 60 * 60 },
-        ],
+        roster: [{ lastActiveSecAgo: null }, { lastActiveSecAgo: 29 * 60 + 59 }, { lastActiveSecAgo: 10 * 60 * 60 }],
       }).alert,
     ).toBe(false);
   });
@@ -259,15 +357,11 @@ describe('computeDarkFleetAlert (WI-41172 / P-010)', () => {
 
 describe('fleet:leader-brief — unowned critical age filter (EI-20228488170965112)', () => {
   it('accepts zero as the immediate-triage age threshold', () => {
-    expect(
-      leaderBriefTool.args.safeParse({ fleet: 'alpha', unowned_critical_age_hours: 0 }).success,
-    ).toBe(true);
+    expect(leaderBriefTool.args.safeParse({ fleet: 'alpha', unowned_critical_age_hours: 0 }).success).toBe(true);
   });
 
   it('still rejects negative thresholds', () => {
-    expect(
-      leaderBriefTool.args.safeParse({ fleet: 'alpha', unowned_critical_age_hours: -1 }).success,
-    ).toBe(false);
+    expect(leaderBriefTool.args.safeParse({ fleet: 'alpha', unowned_critical_age_hours: -1 }).success).toBe(false);
   });
 });
 
@@ -429,10 +523,7 @@ describe('fleetCapacityProviderForMembers (EI-20243921934115652)', () => {
 
   it('does not infer a provider from OMP without a model', () => {
     expect(
-      fleetCapacityProviderForMembers(
-        [{ agentId: 'su-omp', model: null, alive: true }],
-        new Map([['su-omp', 'omp']]),
-      ),
+      fleetCapacityProviderForMembers([{ agentId: 'su-omp', model: null, alive: true }], new Map([['su-omp', 'omp']])),
     ).toBeNull();
     expect(
       fleetCapacityProviderForMembers(
@@ -535,10 +626,7 @@ describe('selectLeaderBriefMembers (EI-11840)', () => {
       'p2p-git',
     );
 
-    expect(members.map((member) => member.agentId)).toEqual([
-      'su-live-working',
-      'su-live-idle',
-    ]);
+    expect(members.map((member) => member.agentId)).toEqual(['su-live-working', 'su-live-idle']);
   });
 
   it('includes stale canonical roster entries only when explicitly requested', () => {
@@ -841,24 +929,15 @@ describe('projectMember (pure)', () => {
   });
 
   it('EI-21125380796386851: projects suspect+wakeable distinctly from terminal dead', () => {
-    const recoverable = projectMember(
-      baseAgent({ sessionState: 'suspect', wakeable: true, verdict: 'suspect' }),
-      NOW,
-    );
+    const recoverable = projectMember(baseAgent({ sessionState: 'suspect', wakeable: true, verdict: 'suspect' }), NOW);
     expect(recoverable).toMatchObject({ sessionState: 'suspect', wakeable: true, verdict: 'suspect' });
 
-    const terminal = projectMember(
-      baseAgent({ sessionState: 'suspect', wakeable: false, verdict: 'dead' }),
-      NOW,
-    );
+    const terminal = projectMember(baseAgent({ sessionState: 'suspect', wakeable: false, verdict: 'dead' }), NOW);
     expect(terminal).toMatchObject({ sessionState: 'suspect', wakeable: false, verdict: 'dead' });
   });
 
   it('carries healthy loop lifecycle and next fire through verbatim', () => {
-    const m = projectMember(
-      baseAgent({ monitorState: 'waiting', nextFireAt: '2026-07-10T12:01:00.000Z' }),
-      NOW,
-    );
+    const m = projectMember(baseAgent({ monitorState: 'waiting', nextFireAt: '2026-07-10T12:01:00.000Z' }), NOW);
     expect(m.monitorState).toBe('waiting');
     expect(m.nextFireAt).toBe('2026-07-10T12:01:00.000Z');
   });
@@ -903,7 +982,15 @@ describe('projectMember (pure)', () => {
 });
 
 describe('computeBenchSuggestion (pure, EI-9943)', () => {
-  const doing = { id: 'WI-1', itemKind: 'bug', title: 'stuck thing', status: 'open', rank: 0, rankWriter: null, activity: 'stalled' as const };
+  const doing = {
+    id: 'WI-1',
+    itemKind: 'bug',
+    title: 'stuck thing',
+    status: 'open',
+    rank: 0,
+    rankWriter: null,
+    activity: 'stalled' as const,
+  };
 
   it('flags a speaking member whose claim is stalled and not already benched', () => {
     const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: [], doing });
@@ -960,7 +1047,14 @@ describe('computeBenchSuggestion (pure, EI-9943)', () => {
 
 describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
   it('flags a speaking member with zero claims/queued and not parked', () => {
-    const s = computeBenchSuggestion({ stalled: false, verdict: 'speaking', parkedOn: [], doing: null, load: 0, queued: [] });
+    const s = computeBenchSuggestion({
+      stalled: false,
+      verdict: 'speaking',
+      parkedOn: [],
+      doing: null,
+      load: 0,
+      queued: [],
+    });
     expect(s).toBeDefined();
     expect(s?.item).toBeNull();
     expect(s?.reason).toMatch(/idle-cycling/);
@@ -986,21 +1080,49 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
   });
 
   it('does NOT flag a member holding a real claim (load>0) or with queued work', () => {
-    const holding = { id: 'WI-1', itemKind: 'bug', title: 'in progress', status: 'open', rank: 0, rankWriter: null, activity: 'alive' as const };
-    expect(computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: holding, load: 1, queued: [] })).toBeUndefined();
+    const holding = {
+      id: 'WI-1',
+      itemKind: 'bug',
+      title: 'in progress',
+      status: 'open',
+      rank: 0,
+      rankWriter: null,
+      activity: 'alive' as const,
+    };
     expect(
-      computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: null, load: 0, queued: [{ id: 'WI-9' }] as never }),
+      computeBenchSuggestion({
+        stalled: false,
+        verdict: 'monitoring',
+        parkedOn: [],
+        doing: holding,
+        load: 1,
+        queued: [],
+      }),
+    ).toBeUndefined();
+    expect(
+      computeBenchSuggestion({
+        stalled: false,
+        verdict: 'monitoring',
+        parkedOn: [],
+        doing: null,
+        load: 0,
+        queued: [{ id: 'WI-9' }] as never,
+      }),
     ).toBeUndefined();
   });
 
   it('does NOT flag dead/booted/joined — a fresh boot or a dead session is not "idle-cycling"', () => {
     for (const verdict of ['dead', 'booted', 'joined'] as const) {
-      expect(computeBenchSuggestion({ stalled: false, verdict, parkedOn: [], doing: null, load: 0, queued: [] })).toBeUndefined();
+      expect(
+        computeBenchSuggestion({ stalled: false, verdict, parkedOn: [], doing: null, load: 0, queued: [] }),
+      ).toBeUndefined();
     }
   });
 
   it('load/queued omitted (pre-EI-13846 call sites) never falsely triggers — undefined reads as "not laneless"', () => {
-    expect(computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: null })).toBeUndefined();
+    expect(
+      computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: null }),
+    ).toBeUndefined();
   });
 
   it('projectMember surfaces the laneless-idle suggestion end-to-end', () => {
@@ -1018,7 +1140,14 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
 describe('computeDormantAlert (EI-18730414627683753)', () => {
   it('flags a first-turn-done member with no loop, not parked, no claim', () => {
     expect(
-      computeDormantAlert({ verdict: 'first-turn-done', loopMode: null, parkedOn: [], doing: null, load: 0, queued: [] }),
+      computeDormantAlert({
+        verdict: 'first-turn-done',
+        loopMode: null,
+        parkedOn: [],
+        doing: null,
+        load: 0,
+        queued: [],
+      }),
     ).toBe(true);
   });
 
@@ -1050,9 +1179,24 @@ describe('computeDormantAlert (EI-18730414627683753)', () => {
   });
 
   it('does NOT flag a member holding a claim or with queued work', () => {
-    const holding = { id: 'WI-1', itemKind: 'bug', title: 'in progress', status: 'open', rank: 0, rankWriter: null, activity: 'alive' as const };
+    const holding = {
+      id: 'WI-1',
+      itemKind: 'bug',
+      title: 'in progress',
+      status: 'open',
+      rank: 0,
+      rankWriter: null,
+      activity: 'alive' as const,
+    };
     expect(
-      computeDormantAlert({ verdict: 'first-turn-done', loopMode: null, parkedOn: [], doing: holding, load: 1, queued: [] }),
+      computeDormantAlert({
+        verdict: 'first-turn-done',
+        loopMode: null,
+        parkedOn: [],
+        doing: holding,
+        load: 1,
+        queued: [],
+      }),
     ).toBe(false);
     expect(
       computeDormantAlert({
@@ -1068,9 +1212,9 @@ describe('computeDormantAlert (EI-18730414627683753)', () => {
 
   it('does NOT flag dead/booted/joined/monitoring/waiting — only speaking/first-turn-done are dormant-eligible', () => {
     for (const verdict of ['dead', 'booted', 'joined', 'monitoring', 'waiting'] as const) {
-      expect(
-        computeDormantAlert({ verdict, loopMode: null, parkedOn: [], doing: null, load: 0, queued: [] }),
-      ).toBe(false);
+      expect(computeDormantAlert({ verdict, loopMode: null, parkedOn: [], doing: null, load: 0, queued: [] })).toBe(
+        false,
+      );
     }
   });
 
@@ -1259,7 +1403,7 @@ describe('computeSpinningAlert (EI-19307414464301772)', () => {
 // remedy (fleet:bench the leader onto a scoped event) is the exact failure the
 // leader contract exists to prevent: the one agent watching for member death
 // goes to sleep. Observed live 2026-07-26 on nonp2p-bug-drain-0725 (twice).
-describe('computeBenchSuggestion — the LEADER\'s own monitor row is never idle-cycling (WI-5973)', () => {
+describe("computeBenchSuggestion — the LEADER's own monitor row is never idle-cycling (WI-5973)", () => {
   it('does NOT flag a leader with fleetRole:"leader" + loopMode:"monitor", zero claims, not parked', () => {
     const s = computeBenchSuggestion({
       stalled: false,
@@ -1344,7 +1488,7 @@ describe('computeBenchSuggestion — the LEADER\'s own monitor row is never idle
     expect(s?.kind).toBe('stalled-no-mcp');
   });
 
-  it('projectMember never surfaces benchSuggestion for the leader\'s own monitoring row end-to-end', () => {
+  it("projectMember never surfaces benchSuggestion for the leader's own monitoring row end-to-end", () => {
     const m = projectMember(
       baseAgent({ fleetRole: 'leader', loopMode: 'monitor', verdict: 'monitoring', monitorState: 'monitoring' }),
       NOW,
@@ -1421,8 +1565,22 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
   // congestion, and the prescribed remedy (wake more members) fed MORE requests into the same
   // congested queue.
   describe('a CONGESTED shared inference pool inverts the remedy (WI-37161)', () => {
-    const degradedPool = { poolExhausted: false, degraded: true, factor: 0, queueDepth: 28, usableAccounts: 1, availableAccounts: 2 };
-    const exhaustedPool = { poolExhausted: true, degraded: false, factor: 0, queueDepth: 5, usableAccounts: 0, availableAccounts: 0 };
+    const degradedPool = {
+      poolExhausted: false,
+      degraded: true,
+      factor: 0,
+      queueDepth: 28,
+      usableAccounts: 1,
+      availableAccounts: 2,
+    };
+    const exhaustedPool = {
+      poolExhausted: true,
+      degraded: false,
+      factor: 0,
+      queueDepth: 5,
+      usableAccounts: 0,
+      availableAccounts: 0,
+    };
 
     it('still reports the lane is NOT drained (the claimable fact is unchanged)', () => {
       const s = computeBenchSuggestion(idle, 2, null, false, null, degradedPool);
@@ -1456,7 +1614,12 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
 
     it('does NOT fire when the pool read is healthy (degraded:false, poolExhausted:false)', () => {
       const s = computeBenchSuggestion(idle, 2, null, false, null, {
-        poolExhausted: false, degraded: false, factor: 1, queueDepth: 0, usableAccounts: 4, availableAccounts: 4,
+        poolExhausted: false,
+        degraded: false,
+        factor: 1,
+        queueDepth: 0,
+        usableAccounts: 4,
+        availableAccounts: 4,
       });
       expect(s?.reason).toMatch(/Wake it to re-run scheduler:get_next/);
     });
@@ -1579,7 +1742,14 @@ describe('computeIdleWithClaimableAlert (EI-18681259560385029 — the summary-le
   // WI-37161 — the summary-level twin of the per-member fix: a leader reading only the
   // summary alert must not be told to wake a fleet that is actually inference-queued.
   describe('a CONGESTED shared inference pool inverts the remedy (WI-37161)', () => {
-    const degradedPool = { poolExhausted: false, degraded: true, factor: 0, queueDepth: 28, usableAccounts: 1, availableAccounts: 2 };
+    const degradedPool = {
+      poolExhausted: false,
+      degraded: true,
+      factor: 0,
+      queueDepth: 28,
+      usableAccounts: 1,
+      availableAccounts: 2,
+    };
 
     it('still fires (the lane is not drained) but does NOT tell the leader to wake them', () => {
       const alert = computeIdleWithClaimableAlert({
@@ -1606,7 +1776,14 @@ describe('computeIdleWithClaimableAlert (EI-18681259560385029 — the summary-le
       const alert = computeIdleWithClaimableAlert({
         claimableCount: 2,
         idleMemberCount: 6,
-        poolCapacity: { poolExhausted: false, degraded: false, factor: 1, queueDepth: 0, usableAccounts: 4, availableAccounts: 4 },
+        poolCapacity: {
+          poolExhausted: false,
+          degraded: false,
+          factor: 1,
+          queueDepth: 0,
+          usableAccounts: 4,
+          availableAccounts: 4,
+        },
       });
       expect(alert?.reason).toMatch(/wake/i);
       expect(alert?.falsifier.tool).toBe('work_items:list');
@@ -1667,12 +1844,7 @@ describe('a PAUSED (winding-down) fleet never gets a wake/bench suggestion (EI-1
       rankWriter: null,
       activity: 'alive' as const,
     };
-    const s = computeBenchSuggestion(
-      { stalled: true, verdict: 'speaking', parkedOn: [], doing: held },
-      2,
-      null,
-      true,
-    );
+    const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: [], doing: held }, 2, null, true);
     expect(s?.kind).toBe('stalled-no-mcp');
   });
 
@@ -1702,12 +1874,8 @@ describe('a PAUSED (winding-down) fleet never gets a wake/bench suggestion (EI-1
       }),
     ).toBeUndefined();
     // …and both still fire on the same inputs when the fleet is ACTIVE.
-    expect(
-      computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 19, fleetPaused: false }),
-    ).toBeDefined();
-    expect(
-      computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 108, idleMemberCount: 5 }),
-    ).toBeDefined();
+    expect(computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 19, fleetPaused: false })).toBeDefined();
+    expect(computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 108, idleMemberCount: 5 })).toBeDefined();
   });
 });
 
@@ -1775,9 +1943,7 @@ describe('computeSpecAuthorshipAlert (P-005 — a fleet spec rewritten under the
   });
 
   it('does NOT fire when the reader authored the spec themselves — the silent case is the common one', () => {
-    expect(
-      computeSpecAuthorshipAlert({ ...INCIDENT, updatedBy: INCIDENT.readerId }),
-    ).toBeUndefined();
+    expect(computeSpecAuthorshipAlert({ ...INCIDENT, updatedBy: INCIDENT.readerId })).toBeUndefined();
   });
 
   it('fires on an UNATTRIBUTED write — a row with no author is no more verified than a foreign one', () => {
@@ -1931,21 +2097,15 @@ describe('computeFloorStarvedFleetAlert (EI-18689489507862177 — the GATED lane
   });
 
   it('does NOT fire when the spec matches nothing — that is computeSpecStarvedFleetAlert, not a floor problem', () => {
-    expect(
-      computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 0, idleMemberCount: 5 }),
-    ).toBeUndefined();
+    expect(computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 0, idleMemberCount: 5 })).toBeUndefined();
   });
 
   it('does NOT fire when work IS claimable — that is computeIdleWithClaimableAlert', () => {
-    expect(
-      computeFloorStarvedFleetAlert({ claimable: 4, matchedByFilter: 108, idleMemberCount: 5 }),
-    ).toBeUndefined();
+    expect(computeFloorStarvedFleetAlert({ claimable: 4, matchedByFilter: 108, idleMemberCount: 5 })).toBeUndefined();
   });
 
   it('does NOT fire when nobody is idle — a fully-busy fleet is not starving', () => {
-    expect(
-      computeFloorStarvedFleetAlert({ ...LIVE_GATED_LANE, idleMemberCount: 0 }),
-    ).toBeUndefined();
+    expect(computeFloorStarvedFleetAlert({ ...LIVE_GATED_LANE, idleMemberCount: 0 })).toBeUndefined();
   });
 
   it('does NOT fire on an unreadable claimable count — unknown is not evidence of a gated lane', () => {
@@ -1955,9 +2115,7 @@ describe('computeFloorStarvedFleetAlert (EI-18689489507862177 — the GATED lane
   });
 
   it('does NOT fire on an unreadable match count — the gated verdict requires BOTH halves', () => {
-    expect(
-      computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: null, idleMemberCount: 5 }),
-    ).toBeUndefined();
+    expect(computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: null, idleMemberCount: 5 })).toBeUndefined();
   });
 
   it('still fires without a breakdown, just without naming floors (the count alone is the alert)', () => {
@@ -2011,7 +2169,15 @@ describe('computeBenchSuggestion — GATED vs DRAINED (EI-18689489507862177)', (
 describe('resolveComposedParkedOn (pure, EI-18732218464905145 — the false-deadlock rendering fix)', () => {
   it('collapses a composed root + its own leaf siblings into ONE entry, never as flat peers', () => {
     const trees = new Map([
-      [96, { required: 1, leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'], expiresTs: '2026-07-26T18:36:37Z', onTimeout: 'wake' as const }],
+      [
+        96,
+        {
+          required: 1,
+          leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'],
+          expiresTs: '2026-07-26T18:36:37Z',
+          onTimeout: 'wake' as const,
+        },
+      ],
     ]);
     const out = resolveComposedParkedOn(
       ['work-item:status:WI-6088', 'work-item:status:WI-6095', 'composed-root:96'],
@@ -2091,11 +2257,17 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
 
   it('resolves parkedOnResolved for an agent whose parkedOn holds a composed-root sentinel', async () => {
     const listActiveComposedRoots = vi.fn(async () => [node()]);
-    const loadTreeLeaves = vi.fn(async () => [leaf('work-item:status:WI-6088', 1), leaf('work-item:status:WI-6095', 2)]);
+    const loadTreeLeaves = vi.fn(async () => [
+      leaf('work-item:status:WI-6088', 1),
+      leaf('work-item:status:WI-6095', 2),
+    ]);
     const agents: ComposedTestAgent[] = [
       { agentId: 'su-1', parkedOn: ['work-item:status:WI-6088', 'work-item:status:WI-6095', 'composed-root:96'] },
     ];
-    await decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: loadTreeLeaves as never });
+    await decorateComposedParkedOn(agents, {
+      listActiveComposedRoots: listActiveComposedRoots as never,
+      loadTreeLeaves: loadTreeLeaves as never,
+    });
     expect(listActiveComposedRoots).toHaveBeenCalledWith('su-1');
     expect(loadTreeLeaves).toHaveBeenCalledWith(96);
     expect(agents[0].parkedOnResolved).toEqual([
@@ -2114,8 +2286,14 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
 
   it('skips the read entirely for an agent with no composed sentinel (no extra cost on the common case)', async () => {
     const listActiveComposedRoots = vi.fn(async () => [node()]);
-    const agents: ComposedTestAgent[] = [{ agentId: 'su-1', parkedOn: ['lock:grant:t1'] }, { agentId: 'su-2', parkedOn: [] }];
-    await decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: vi.fn() as never });
+    const agents: ComposedTestAgent[] = [
+      { agentId: 'su-1', parkedOn: ['lock:grant:t1'] },
+      { agentId: 'su-2', parkedOn: [] },
+    ];
+    await decorateComposedParkedOn(agents, {
+      listActiveComposedRoots: listActiveComposedRoots as never,
+      loadTreeLeaves: vi.fn() as never,
+    });
     expect(listActiveComposedRoots).not.toHaveBeenCalled();
     expect(agents[0].parkedOnResolved).toBeUndefined();
   });
@@ -2127,7 +2305,10 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
     });
     const agents: ComposedTestAgent[] = [{ agentId: 'su-1', parkedOn: ['composed-root:96'] }];
     await expect(
-      decorateComposedParkedOn(agents, { listActiveComposedRoots: listActiveComposedRoots as never, loadTreeLeaves: vi.fn() as never }),
+      decorateComposedParkedOn(agents, {
+        listActiveComposedRoots: listActiveComposedRoots as never,
+        loadTreeLeaves: vi.fn() as never,
+      }),
     ).resolves.toBeDefined();
     // withBoundedTimeout degrades the failed read to its [] fallback rather than throwing, so
     // resolution proceeds with an empty tree map — resolveComposedParkedOn's own fail-open path
@@ -2140,12 +2321,30 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
     const agent = baseAgent({
       parkedOn: ['work-item:status:WI-6088', 'composed-root:96'],
       parkedOnResolved: [
-        { kind: 'composed', rootId: 96, mode: 'any', required: 1, of: 2, leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'], expiresTs: '2026-07-26T18:36:37Z', onTimeout: 'wake' },
+        {
+          kind: 'composed',
+          rootId: 96,
+          mode: 'any',
+          required: 1,
+          of: 2,
+          leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'],
+          expiresTs: '2026-07-26T18:36:37Z',
+          onTimeout: 'wake',
+        },
       ],
     });
     const m = projectMember(agent, NOW);
     expect(m.parkedOn).toEqual([
-      { kind: 'composed', rootId: 96, mode: 'any', required: 1, of: 2, leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'], expiresTs: '2026-07-26T18:36:37Z', onTimeout: 'wake' },
+      {
+        kind: 'composed',
+        rootId: 96,
+        mode: 'any',
+        required: 1,
+        of: 2,
+        leaves: ['work-item:status:WI-6088', 'work-item:status:WI-6095'],
+        expiresTs: '2026-07-26T18:36:37Z',
+        onTimeout: 'wake',
+      },
     ]);
   });
 
@@ -2481,9 +2680,7 @@ describe('computeFleetBlockVerdict (P-019/P-012 — which LAYER is blocking the 
         lanelessIdleCount: 5,
         poolCapacity: healthyPool,
       };
-      expect(computeFleetBlockVerdict(noPrecedenceConflict)?.layer).toBe(
-        naiveFlatVerdict(noPrecedenceConflict),
-      );
+      expect(computeFleetBlockVerdict(noPrecedenceConflict)?.layer).toBe(naiveFlatVerdict(noPrecedenceConflict));
     });
   });
 
@@ -2508,8 +2705,6 @@ describe('computeFleetBlockVerdict (P-019/P-012 — which LAYER is blocking the 
     }
     // calibration: the six inputs must actually exercise all five layers, or the
     // read-only assertion above is passing on a set that never reached most of them
-    expect(layers).toEqual(
-      new Set(['fleet-paused', 'inference-pool', 'spec-scope', 'claim-floors', 'members']),
-    );
+    expect(layers).toEqual(new Set(['fleet-paused', 'inference-pool', 'spec-scope', 'claim-floors', 'members']));
   });
 });

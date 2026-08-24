@@ -161,6 +161,7 @@ beforeAll(async () => {
     '163-await-event-subscriptions.sql',
     '175-watch-floor-coalesce-cols.sql',
     '541-predicate-watches.sql',
+    '632-event-key-fire-latch.sql',
     '871-lifecycle-bound-watches.sql',
   ]) {
     await db.sql.unsafe(readMigration(migration)).simple();
@@ -347,6 +348,41 @@ describe('P-009 — terminal/release lifecycle retires cached goal refs', () => 
     expect(readAgentStateStamp('agB').goalRef).toBe(feature.id);
     await wi.releaseWorkItem(feature.id);
     expect(readAgentStateStamp('agB').goalRef).toBeNull();
+  });
+});
+
+describe('EI-21274952755637248 — terminal lifecycle retires claim_next leases', () => {
+  it('issue-family terminal completion removes the holder\'s claim_next lease before returning', async () => {
+    await setLeaseFlag(true);
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'issue lease cleanup', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(bug.id, 'agIssue'))?.assignee).toBe('agIssue');
+    await seedClaimNextLease(bug.id, 'agIssue');
+    expect(await claimNextLeaseCount(bug.id, 'agIssue')).toBe(1);
+
+    const closed = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agIssue',
+      completionRef: 'issue lease cleanup integration test',
+    });
+
+    expect(closed?.assignee).toBeNull();
+    expect(await claimNextLeaseCount(bug.id, 'agIssue')).toBe(0);
+  });
+
+  it('feature-family terminal completion removes the holder\'s claim_next lease before returning', async () => {
+    await setLeaseFlag(true);
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'feature lease cleanup', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(feature.id, 'agFeature', { harness: 'papercup' }))?.assignee).toBe('agFeature');
+    await seedClaimNextLease(feature.id, 'agFeature');
+    expect(await claimNextLeaseCount(feature.id, 'agFeature')).toBe(1);
+
+    const closed = await wi.setWorkItemState(feature.id, 'passed', {
+      harness: 'papercup',
+      by: 'agFeature',
+      completionRef: 'feature lease cleanup integration test',
+    });
+
+    expect(closed?.assignee).toBeNull();
+    expect(await claimNextLeaseCount(feature.id, 'agFeature')).toBe(0);
   });
 });
 

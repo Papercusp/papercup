@@ -424,6 +424,32 @@ describe('TSC_COMMAND (EI-487 regression guard)', () => {
   });
 });
 
+describe('per-project lint:tsc entrypoints (EI-21311288080670514)', () => {
+  it('leaves compile admission to the shared gate instead of nesting pc-heavy wrappers', () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const packageJson = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const scripts = packageJson.scripts ?? {};
+    const perProjectGates = [
+      'lint:tsc',
+      'lint:tsc:operator-vite',
+      'lint:tsc:orchestrator',
+      'lint:tsc:operator',
+      'lint:tsc:scripts',
+      'typecheck',
+    ];
+
+    for (const name of perProjectGates) {
+      expect(scripts[name], `${name} must be present`).toBeDefined();
+      expect(scripts[name], `${name} must not acquire an outer pc-heavy wrapper`).not.toContain(
+        'pc-heavy',
+      );
+      expect(scripts[name]).toMatch(/^node scripts\/lint-tsc(?:-[a-z-]+)?\.mjs$/);
+    }
+  });
+});
+
 describe('pinned TypeScript CLI resolution (EI-21107417900847684)', () => {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 

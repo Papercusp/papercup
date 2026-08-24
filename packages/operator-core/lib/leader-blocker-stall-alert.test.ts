@@ -136,6 +136,7 @@ describe('computeLeaderBlockerStallView', () => {
       ],
     });
 
+    if (view.status !== 'alert') throw new Error('expected an alert view');
     expect(view.status).toBe('alert');
     expect(view.row).toEqual({ rank: 1, itemRef: 'WI-1' });
     expect(view.alert).toBe(true);
@@ -146,6 +147,7 @@ describe('computeLeaderBlockerStallView', () => {
       rows: [rankedRow({ rank: 1, hoursSinceProgress: null }), rankedRow({ rank: 2, workItemRefs: ['WI-alert'] })],
     });
 
+    if (view.status !== 'alert') throw new Error('expected an alert view');
     expect(view.status).toBe('alert');
     expect(view.row).toEqual({ rank: 2, itemRef: 'WI-alert' });
   });
@@ -174,6 +176,7 @@ describe('computeLeaderBlockerStallView', () => {
       rows: [rankedRow({ rank: 2, hoursSinceProgress: null }), rankedRow({ rank: 1, openBlockedCount: null })],
     });
 
+    if (view.status !== 'unknown') throw new Error('expected an unknown view');
     expect(view.status).toBe('unknown');
     expect(view.row).toEqual({ rank: 1, itemRef: 'WI-40086' });
     expect(view.unknown).toEqual({ code: 'open-blocked-count-unmeasured' });
@@ -214,6 +217,7 @@ describe('computeLeaderBlockerStallView', () => {
       ],
     });
 
+    if (view.status !== 'unknown') throw new Error('expected an unknown view');
     expect(view.status).toBe('unknown');
     expect(view.unknown).toEqual({ code: 'holder-ownership-unmeasured' });
   });
@@ -235,6 +239,7 @@ describe('computeLeaderBlockerStallView', () => {
       ],
     });
 
+    if (view.status !== 'alert') throw new Error('expected an alert view');
     expect(view.status).toBe('alert');
     expect(view.reason).toContain('held by non-live session su-dead-a');
   });

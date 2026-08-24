@@ -90,6 +90,7 @@ export interface PlanCleanupCounts {
 }
 
 const ENDPOINT = "/api/admin/plan-cleanup";
+export const PLAN_CLEANUP_RUN_PARAM = "opcln";
 
 /** The click-time membership snapshot. Keep the pane's order, trim once, and
  * dedupe before POSTing; the route repeats these guards as the trust boundary. */
@@ -205,6 +206,11 @@ export function usePlanCleanupOps(): {
   ) => Promise<PlanCleanupStartResult>;
   stop: (runId: string) => Promise<void>;
   dismiss: (runId: string) => Promise<void>;
+  accept: (
+    runId: string,
+    findingId: string,
+    note?: string | null,
+  ) => Promise<{ ok: boolean; phase?: PlanCleanupPhase | null; error?: string }>;
 } {
   const start = useCallback(
     async (
@@ -245,5 +251,23 @@ export function usePlanCleanupOps(): {
     await postOp({ op: "dismiss", runId });
   }, []);
 
-  return { start, stop, dismiss };
+  const accept = useCallback(
+    async (runId: string, findingId: string, note?: string | null) => {
+      try {
+        const result = await postOp({ op: "accept", runId, findingId, note: note ?? null });
+        const phase =
+          typeof result.phase === "string"
+            ? (result.phase as PlanCleanupPhase)
+            : result.phase === null
+              ? null
+              : undefined;
+        return { ok: true, phase };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    [],
+  );
+
+  return { start, stop, dismiss, accept };
 }

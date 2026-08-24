@@ -77,6 +77,12 @@ import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
  */
 export const SU_EXTRA_MCP_TOOL_NAMES: readonly string[] = [
   'chat:ask_choice',
+  // Model selection can fork a Codex session onto a fresh MCP connection. Keep
+  // the normal file-lock release verb on the SU-only seed so an idempotent
+  // cleanup does not depend on a prior connection's dynamically activated
+  // wrapper. This stays out of CORE_MCP_TOOL_NAMES: automatic file-lock hooks
+  // make it unnecessary for the shared headless role spine.
+  'locks:release',
   // consult-revival-and-honest-min-2026-08-18 P-005 [owner 2026-08-18 21:23Z
   // interactive: "how do we get agents to use our get_feedback tool ad-hoc? adding
   // it to the trimmed tool list or is there another way?"]: the consult verbs are

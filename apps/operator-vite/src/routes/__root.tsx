@@ -53,6 +53,7 @@ import { useFlag } from '@papercusp/flags/client';
 import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
 import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
 import PlanDashboardHost from '@/app/_components/plans/PlanDashboardHost';
+import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 // Slim top progress bar for the "Papercusp dogfood hive clone-on-first-boot"
@@ -312,6 +313,10 @@ function RootComponent() {
                             state intact). Opened by the op-chat plan sidebar's
                             row click (P-005); deep-linkable like any nuqs URL. */}
                         <PlanDashboardHost />
+                        {/* cleanup-report-flows-2026-08-24 P-007: `?opcln=`
+                            remains a strip deep link while the resolver runs,
+                            then becomes the grouped report takeover at review. */}
+                        <PlanCleanupReportHost />
                       </main>
                     </PostHogProvider>
                   </OperatorConversationProvider>

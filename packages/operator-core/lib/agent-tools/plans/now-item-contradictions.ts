@@ -10,7 +10,7 @@ type TerminalStatus = NowItemContradiction['status'];
 
 const PLAN_ITEM_REF_RE = /\bP-\d{3,}\b/g;
 const NOW_CLOSED_RE =
-  /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
+  /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
 
