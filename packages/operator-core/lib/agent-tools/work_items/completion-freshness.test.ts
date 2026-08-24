@@ -7,10 +7,13 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { completionFreshnessForEvidence } from './completion-freshness';
+import type { CompletionTreeContentIdentity } from '../../coord-lifecycle/records';
 
-const identity = [{ path: 'src/fix.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: 'c'.repeat(40) }] as const;
-const stored = { repositoryRoot: '/repo', headSha: 'a'.repeat(40), contentIdentity: identity } as const;
-const current = { repositoryRoot: '/repo', headSha: 'b'.repeat(40), contentIdentity: identity } as const;
+const identity: CompletionTreeContentIdentity[] = [
+  { path: 'src/fix.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: 'c'.repeat(40) },
+];
+const stored = { repositoryRoot: '/repo', headSha: 'a'.repeat(40), contentIdentity: identity };
+const current = { repositoryRoot: '/repo', headSha: 'b'.repeat(40), contentIdentity: identity };
 
 describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
   it('returns no signal when terminal evidence has no valid tree stamp', () => {
