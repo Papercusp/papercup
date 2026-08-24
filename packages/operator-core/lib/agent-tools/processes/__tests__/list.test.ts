@@ -65,9 +65,7 @@ describe('processes:list structured output', () => {
     );
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(
-      expect.objectContaining({ states: ['running'] }),
-    );
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ states: ['running'] }));
   });
 
   it('advertises an object result and preserves a large task inventory', async () => {
@@ -78,33 +76,36 @@ describe('processes:list structured output', () => {
       // literal CONTEXTUAL typing (so `class` / `state` narrow to their real unions instead
       // of widening to string) AND makes a new required field on TaskRow a compile error
       // here — which the old cast silently swallowed.
-      Array.from({ length: 25 }, (_, i): TaskRow => ({
-        taskId: `task-${i}`,
-        workspaceId: 'default',
-        rootTaskId: `root-${i}`,
-        class: 'bash-job',
-        title: `task-${i}-${'x'.repeat(220)}`,
-        argv: [],
-        launchedBy: 'su-test',
-        workItemId: null,
-        planSlug: null,
-        parentTaskId: null,
-        confined: true,
-        state: 'running' as const,
-        startedAt: '2026-08-12T09:00:00.000Z',
-        lastSeenAt: '2026-08-12T09:00:00.000Z',
-        lastMemoryBytes: 1024,
-        peakMemoryBytes: 2048,
-        cpuUsec: 3_000_000,
-        pidsCurrent: 1,
-        scopeUnit: `pc-${i}.scope`,
-        memoryMaxBytes: null,
-        deadlineAt: null,
-        exitCode: null,
-        exitReason: null,
-        logPath: null,
-        detail: {},
-      })),
+      Array.from(
+        { length: 25 },
+        (_, i): TaskRow => ({
+          taskId: `task-${i}`,
+          workspaceId: 'default',
+          rootTaskId: `root-${i}`,
+          class: 'bash-job',
+          title: `task-${i}-${'x'.repeat(220)}`,
+          argv: [],
+          launchedBy: 'su-test',
+          workItemId: null,
+          planSlug: null,
+          parentTaskId: null,
+          confined: true,
+          state: 'running' as const,
+          startedAt: '2026-08-12T09:00:00.000Z',
+          lastSeenAt: '2026-08-12T09:00:00.000Z',
+          lastMemoryBytes: 1024,
+          peakMemoryBytes: 2048,
+          cpuUsec: 3_000_000,
+          pidsCurrent: 1,
+          scopeUnit: `pc-${i}.scope`,
+          memoryMaxBytes: null,
+          deadlineAt: null,
+          exitCode: null,
+          exitReason: null,
+          logPath: null,
+          detail: {},
+        }),
+      ),
     );
 
     const dispatched = await dispatchProjectedTool(
@@ -198,9 +199,7 @@ describe('processes:list structured output', () => {
       {},
     );
 
-    expect(
-      (dispatched.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0],
-    ).toMatchObject({
+    expect((dispatched.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
       state: 'killed',
       exitCode: 137,
       exitReason: 'oom-kill',
@@ -295,12 +294,14 @@ describe('processes:list structured output', () => {
 
       expect(first.ok, JSON.stringify(first)).toBe(true);
       expect(second.ok, JSON.stringify(second)).toBe(true);
-      expect(
-        (first.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0],
-      ).toMatchObject({ cpuSec: 0, cpuBusyPercent: null });
-      expect(
-        (second.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0],
-      ).toMatchObject({ cpuSec: 1, cpuBusyPercent: 100 });
+      expect((first.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
+        cpuSec: 0,
+        cpuBusyPercent: null,
+      });
+      expect((second.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
+        cpuSec: 1,
+        cpuBusyPercent: 100,
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -424,8 +425,7 @@ describe('processes:list structured output', () => {
             scopeUnit: 'pc-orphan-redaction.scope',
             pids: [11],
             sampleCmdline:
-              `python3 - http://127.0.0.1:9071 ${LOCAL_SUPERUSER_BEARER} ` +
-              'AWS_ACCESS_KEY_ID=opaque-aws-access-key',
+              `python3 - http://127.0.0.1:9071 ${LOCAL_SUPERUSER_BEARER} ` + 'AWS_ACCESS_KEY_ID=opaque-aws-access-key',
           },
         ],
         verifierScope: [],
@@ -536,9 +536,7 @@ describe('processes:list structured output', () => {
     );
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(
-      expect.objectContaining({ launchedBy: 'su-self' }),
-    );
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ launchedBy: 'su-self' }));
     const structured = dispatched.result?.structuredContent as {
       live: Record<string, unknown>;
     };
