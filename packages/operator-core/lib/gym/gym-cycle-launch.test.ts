@@ -9,6 +9,7 @@ import {
   launchDetachedGymCycle,
   type SpawnLike,
 } from './gym-cycle-launch';
+import { SYSTEMD_ENV_RUNNER_PATH } from '../systemd-scope';
 import { parseGymCycleRunArgs } from './gym-cycle-run';
 
 function fakeSpawn(opts: { code?: number | null; stderr?: string; error?: NodeJS.ErrnoException }): SpawnLike {
@@ -31,7 +32,7 @@ describe('gym-cycle detached launcher', () => {
     expect(gymCycleUnitForWorkspace('ws-a')).toMatch(/^papercup-gym-cycle-[0-9a-f]{12}$/);
   });
 
-  it('builds a no-block transient service with the exact operator payload env', () => {
+  it('builds a no-block transient service with a secret-free exact operator payload env', () => {
     const argv = buildGymCycleSystemdArgv({
       workspaceId: 'ws-7',
       root: '/repo',
@@ -46,15 +47,18 @@ describe('gym-cycle detached launcher', () => {
       `--unit=${gymCycleUnitForWorkspace('ws-7')}`,
       `--property=RuntimeMaxSec=${GYM_CYCLE_MAX_RUNTIME_SEC}`,
       '--working-directory=/repo',
-      '/usr/bin/env',
-      '-i',
-      'DATABASE_URL=postgres://example/db',
-      'PAPERCUSP_INTEGRATION_ROOT=/repo',
+      process.execPath,
+      SYSTEMD_ENV_RUNNER_PATH,
+      '--env-fd-path',
+      expect.stringMatching(new RegExp(`^/proc/${process.pid}/fd/\\d+$`)),
+      '--',
       '/repo/node_modules/.bin/tsx',
       GYM_CYCLE_RUNNER_REL,
       '--workspace-id',
       'ws-7',
     ]));
+    expect(argv).not.toContain('DATABASE_URL=postgres://example/db');
+    expect(argv).not.toContain('PAPERCUSP_INTEGRATION_ROOT=/repo');
     expect(argv).not.toContain('--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/host-bus');
   });
 

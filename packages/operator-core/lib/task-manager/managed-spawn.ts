@@ -304,7 +304,7 @@ export async function managedSpawn(
   // both ways in `buildExactEnvPayload`'s comment.)
   //
   // So the two environments are split here: the client keeps ours, and the
-  // payload gets the caller's exactly, via `env -i`. Unconfined spawns are
+  // payload gets the caller's exactly, via a memory-only fd transport. Unconfined spawns are
   // untouched — there is no client to protect, and node applies `env` itself.
   const payloadEnv = opts.spawnOptions?.env;
   const builtLaunch = scopeOk

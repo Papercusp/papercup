@@ -28,6 +28,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import type { ChildProcess, SpawnOptions, spawn as nodeSpawn } from 'node:child_process';
 
 vi.mock('./enabled', () => ({
@@ -47,7 +48,11 @@ vi.mock('./store', () => ({
 }));
 
 import { managedSpawn } from './managed-spawn';
-import { buildExactEnvPayload, buildTaskScopeArgv } from '../systemd-scope';
+import {
+  SYSTEMD_ENV_RUNNER_PATH,
+  buildExactEnvPayloadWithTransport,
+  buildTaskScopeArgv,
+} from '../systemd-scope';
 import { CGROUP_ROOT, type CgroupFs } from './cgroup-read';
 import type { TaskSpec } from './types';
 
@@ -130,23 +135,20 @@ describe('confined payload env is not the client env (WI-40906)', () => {
     expect(legacyCoupledLaunch({ ...DESKTOP_ENV }).options.env).toBeDefined();
   });
 
-  it('gives the payload the caller env exactly, as argv operands', async () => {
+  it('gives the payload the caller env exactly, without exposing values in client argv', async () => {
     const l = await launch({ confined: true, env: { ...DESKTOP_ENV } });
     const argv = [l.command, ...l.args];
 
-    const envIdx = argv.indexOf('/usr/bin/env');
-    expect(envIdx).toBeGreaterThan(0);
-    expect(argv[envIdx + 1]).toBe('-i');
-    // Operands, then the real command — order matters: `env -i` would otherwise
-    // treat the command as an assignment or the assignments as arguments.
-    expect(argv.slice(envIdx + 2)).toEqual([
-      `AT_SPI_BUS_ADDRESS=${A11Y_BUS}`,
-      `DBUS_SESSION_BUS_ADDRESS=${A11Y_BUS}`,
-      'DISPLAY=:110',
-      'PATH=/usr/bin:/bin',
-      'zenity',
-      '--info',
-    ]);
+    const runnerIdx = argv.indexOf(SYSTEMD_ENV_RUNNER_PATH);
+    expect(runnerIdx).toBeGreaterThan(0);
+    expect(argv[runnerIdx - 1]).toBe(process.execPath);
+    expect(argv[runnerIdx + 1]).toBe('--env-fd-path');
+    expect(argv[runnerIdx + 2]).toMatch(new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
+    expect(argv.slice(runnerIdx + 3)).toEqual(['--', 'zenity', '--info']);
+    expect(argv).not.toContain(`AT_SPI_BUS_ADDRESS=${A11Y_BUS}`);
+    expect(argv).not.toContain(`DBUS_SESSION_BUS_ADDRESS=${A11Y_BUS}`);
+    expect(argv).not.toContain('DISPLAY=:110');
+    expect(argv).not.toContain('PATH=/usr/bin:/bin');
     // The scope flags must still precede it, or nothing is confined.
     expect(argv.slice(0, 4)).toEqual(['systemd-run', '--user', '--scope', '--quiet']);
   });
@@ -173,41 +175,75 @@ describe('confined payload env is not the client env (WI-40906)', () => {
   });
 });
 
-describe('buildExactEnvPayload', () => {
+describe('buildExactEnvPayloadWithTransport', () => {
   it('replaces the environment rather than merging into it', () => {
-    // `env -i` is the load-bearing token: without it the payload would inherit the
-    // client's env and merely have these keys overlaid, which is NOT what
-    // child_process.spawn({ env }) means.
-    expect(buildExactEnvPayload(['cmd'], { A: '1' })).toEqual(['/usr/bin/env', '-i', 'A=1', 'cmd']);
+    const built = buildExactEnvPayloadWithTransport(['cmd'], { A: '1' });
+    try {
+      expect(built.argv).toEqual([
+        process.execPath,
+        SYSTEMD_ENV_RUNNER_PATH,
+        '--env-fd-path',
+        expect.stringMatching(new RegExp(`^/proc/${process.pid}/fd/\\d+$`)),
+        '--',
+        'cmd',
+      ]);
+      expect(readFileSync(built.transport.sourcePath, 'utf8')).toBe('A=1\0');
+      expect(built.argv).not.toContain('A=1');
+    } finally {
+      built.transport.release();
+    }
   });
 
   it('drops undefined values, as node spawn does', () => {
-    expect(buildExactEnvPayload(['cmd'], { A: '1', B: undefined })).toEqual(['/usr/bin/env', '-i', 'A=1', 'cmd']);
+    const built = buildExactEnvPayloadWithTransport(['cmd'], { A: '1', B: undefined });
+    try {
+      expect(readFileSync(built.transport.sourcePath, 'utf8')).toBe('A=1\0');
+    } finally {
+      built.transport.release();
+    }
   });
 
   it('drops names that cannot be expressed as an operand instead of shifting the rest', () => {
     // A name carrying `=` would make every later operand land in the wrong slot —
     // including the command itself. A subset of the requested env is recoverable;
     // a silently different one is not.
-    const argv = buildExactEnvPayload(['cmd'], { 'BAD=NAME': 'x', GOOD: 'y' });
-    expect(argv).toEqual(['/usr/bin/env', '-i', 'GOOD=y', 'cmd']);
+    const built = buildExactEnvPayloadWithTransport(['cmd'], { 'BAD=NAME': 'x', GOOD: 'y' });
+    try {
+      expect(readFileSync(built.transport.sourcePath, 'utf8')).toBe('GOOD=y\0');
+    } finally {
+      built.transport.release();
+    }
   });
 
   it('keeps values containing = and spaces intact', () => {
     // Real bus addresses carry `=` in the VALUE; only the first `=` separates.
-    const argv = buildExactEnvPayload(['cmd'], { DBUS_SESSION_BUS_ADDRESS: A11Y_BUS });
-    expect(argv).toContain(`DBUS_SESSION_BUS_ADDRESS=${A11Y_BUS}`);
+    const built = buildExactEnvPayloadWithTransport(['cmd'], { DBUS_SESSION_BUS_ADDRESS: `${A11Y_BUS} with spaces` });
+    try {
+      expect(readFileSync(built.transport.sourcePath, 'utf8')).toBe(`DBUS_SESSION_BUS_ADDRESS=${A11Y_BUS} with spaces\0`);
+      expect(built.argv).not.toContain(`DBUS_SESSION_BUS_ADDRESS=${A11Y_BUS} with spaces`);
+    } finally {
+      built.transport.release();
+    }
   });
 
   it('emits operands in a stable order', () => {
-    const a = buildExactEnvPayload(['cmd'], { B: '2', A: '1' });
-    const b = buildExactEnvPayload(['cmd'], { A: '1', B: '2' });
-    expect(a).toEqual(b);
+    const a = buildExactEnvPayloadWithTransport(['cmd'], { B: '2', A: '1' });
+    const b = buildExactEnvPayloadWithTransport(['cmd'], { A: '1', B: '2' });
+    try {
+      expect(readFileSync(a.transport.sourcePath, 'utf8')).toBe(readFileSync(b.transport.sourcePath, 'utf8'));
+    } finally {
+      a.transport.release();
+      b.transport.release();
+    }
   });
 
   it('preserves the payload argv verbatim after the operands', () => {
-    const argv = buildExactEnvPayload(['vglrun', '-d', 'egl0', 'zenity', '--text=a b'], { A: '1' });
-    expect(argv.slice(3)).toEqual(['vglrun', '-d', 'egl0', 'zenity', '--text=a b']);
+    const built = buildExactEnvPayloadWithTransport(['vglrun', '-d', 'egl0', 'zenity', '--text=a b'], { A: '1' });
+    try {
+      expect(built.argv.slice(4)).toEqual(['--', 'vglrun', '-d', 'egl0', 'zenity', '--text=a b']);
+    } finally {
+      built.transport.release();
+    }
   });
 });
 

@@ -41,9 +41,9 @@ export function gymCycleUnitForWorkspace(workspaceId: string): string {
 
 /**
  * Build the exact systemd-run argv. The systemd-run CLIENT keeps the operator's
- * host environment so it can reach the user bus; `/usr/bin/env -i` gives the
- * SERVICE payload the operator environment (DB, gateway and feature settings)
- * exactly. This reuses the same split used by managed background jobs.
+ * host environment so it can reach the user bus; the memory-only fd transport
+ * gives the SERVICE payload the operator environment (DB, gateway and feature
+ * settings) exactly without putting values in the systemd-run argv or journal.
  */
 export function buildGymCycleSystemdArgv(args: {
   workspaceId: string;

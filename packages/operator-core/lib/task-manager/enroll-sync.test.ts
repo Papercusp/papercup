@@ -43,6 +43,7 @@ vi.mock('./cgroup-read', () => ({
 }));
 
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment, syncEnrolmentScopePath } from './enroll-sync';
+import { SYSTEMD_ENV_CREDENTIAL_NAME, SYSTEMD_ENV_RUNNER_PATH } from '../systemd-scope';
 
 const spec = {
   class: 'bash-job' as const,
@@ -129,29 +130,30 @@ describe('with the task manager ON', () => {
     });
   });
 
-  it('passes explicit child env to a transient service as sorted setenv flags', () => {
+  it('passes explicit child env to a transient service through a secret-free credential', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
-    expect(e.wrap('/bin/bash', ['-lc', 'printf'], { ZED: 'last', EMPTY: '', OMIT: undefined, FOO: 'bar' })).toEqual({
-      binary: 'systemd-run',
-      argv: [
-        '--user',
-        '--pipe',
-        '--wait',
-        '--quiet',
-        '--collect',
-        '--property=CollectMode=inactive-or-failed',
-        `--unit=${e.scopeUnit}`,
-        '--slice=papercusp-bash-job.slice',
-        '--property=KillMode=control-group',
-        '--property=TimeoutStopSec=10s',
-        '--setenv=EMPTY=',
-        '--setenv=FOO=bar',
-        '--setenv=ZED=last',
-        '/bin/bash',
-        '-lc',
-        'printf',
-      ],
+    const wrapped = e.wrap('/bin/bash', ['-lc', 'printf'], {
+      ZED: 'last',
+      EMPTY: '',
+      OMIT: undefined,
+      FOO: 'bar',
     });
+    const argv = [wrapped.binary, ...wrapped.argv];
+
+    expect(wrapped.binary).toBe('systemd-run');
+    expect(argv).toContain(SYSTEMD_ENV_RUNNER_PATH);
+    expect(argv).toContain('--credential');
+    expect(argv).toContain(SYSTEMD_ENV_CREDENTIAL_NAME);
+    expect(argv).toContain('--');
+    expect(argv.slice(-3)).toEqual(['/bin/bash', '-lc', 'printf']);
+    expect(argv.find((arg) => arg.startsWith('--property=LoadCredential='))).toMatch(
+      new RegExp(`^--property=LoadCredential=${SYSTEMD_ENV_CREDENTIAL_NAME}:/proc/${process.pid}/fd/\\d+$`),
+    );
+    expect(argv).not.toContain('--setenv=EMPTY=');
+    expect(argv).not.toContain('--setenv=FOO=bar');
+    expect(argv).not.toContain('--setenv=ZED=last');
+    expect(argv.some((arg) => arg.includes('bar') || arg.includes('last'))).toBe(false);
+    wrapped.release?.();
   });
 
   /**
