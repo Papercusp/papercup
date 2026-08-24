@@ -2224,6 +2224,27 @@ describe("psu-launcher arg parsing", () => {
     ).toThrow(/--client=legacy/);
   });
 
+  it("executes the explicit owned client as `pui chat` without entering the legacy picker", () => {
+    const root = mkdtempSync(join(tmpdir(), "psu-owned-client-"));
+    const launcher = join(__dirname, "..", "scripts", "psu-launcher.mjs");
+    const fakePui = join(root, "pui");
+    writeFileSync(fakePui, '#!/bin/sh\nprintf "pui-argv:%s\\n" "$*"\n', { mode: 0o755 });
+    try {
+      const result = spawnSync(process.execPath, [launcher, "--client=pui"], {
+        cwd: process.cwd(),
+        env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ""}` },
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("pui-argv:chat");
+      expect(result.stderr).not.toContain("Agent");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("parses --allow-subagents / --no-subagents (owner mandate 2026-07-02); defaults null (⇒ deny)", () => {
     expect(parseArgs([]).allowSubagents).toBeNull();
     expect(parseArgs(["--allow-subagents"]).allowSubagents).toBe(true);
