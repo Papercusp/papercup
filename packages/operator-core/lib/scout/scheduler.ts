@@ -57,6 +57,15 @@ export interface ScoutRoutedRecord {
   routedRef: string;
   title?: string;
   addressesPatternRefs?: string[];
+  /**
+   * The model spec that produced this idea (migration 947 / P-010). Set by the
+   * producing cycle when it knows it; absent ⇒ the ledger row records NULL rather
+   * than a guess. See {@link BuildScoutTickDepsOptions.modelSpec} for why this is
+   * never defaulted from the configured model at write time.
+   */
+  modelSpec?: string;
+  /** Sampling/config knobs for the producing call (migration 947 / P-010). */
+  modelConfig?: Record<string, unknown>;
 }
 
 /**
@@ -743,6 +752,26 @@ export interface BuildScoutTickDepsOptions {
   /** Recent unaddressed friction-signal count (e.g. open idea-queue backlog / watchdog signals). */
   readFrictionSignals: () => Promise<number>;
   workspaceId?: string;
+  /**
+   * The ideator model spec this tick is configured to run (migration 947 /
+   * learning-loop-backlog-triage-2026-08-22 P-010) — the `"<model-id>:<effort>"`
+   * form, e.g. `'gpt-5.6-sol:xhigh'`. Stamped onto every routed row this tick
+   * persists, unless the record itself carries a more specific one.
+   *
+   * ⚠ MUST be the value the caller RESOLVED for this tick, not a re-read of
+   * `DEFAULT_SCOUT_MODELS.ideator`. Reading the constant here would look identical
+   * today and become a fabricated attribution the day the default changes: rows
+   * would be stamped with a model that never ran. The whole reason this column
+   * exists is that the audit in P-010's plan could not answer "which model wrote
+   * this?" — replacing "unknown" with "confidently wrong" is a worse outcome than
+   * the gap it closes.
+   *
+   * Omitted ⇒ routed rows record NULL. That is a correct, permanent answer for any
+   * producer that genuinely does not know its model.
+   */
+  modelSpec?: string;
+  /** Sampling/config knobs for this tick's ideator calls (migration 947 / P-010). */
+  modelConfig?: Record<string, unknown>;
   /** now() override (tests). */
   now?: () => number;
 }
@@ -857,6 +886,20 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
             cycleId,
             title: r.title,
             addressesPatternRefs: r.addressesPatternRefs,
+            // Migration 947 / P-010 — model provenance. PRECEDENCE IS DELIBERATE:
+            // the per-record value (what the producing ideator actually ran) wins
+            // over the tick-level value (what this tick was configured with). They
+            // agree in the ordinary case; when they disagree — a fallback model was
+            // substituted mid-cycle after a transport failure, which
+            // register-scout-action does — the per-record value is the true
+            // producer and the configured one is a lie about that row.
+            // Both absent ⇒ NULL, never a default: see BuildScoutTickDepsOptions.
+            ...(r.modelSpec ?? opts.modelSpec
+              ? { modelSpec: (r.modelSpec ?? opts.modelSpec) as string }
+              : {}),
+            ...(r.modelConfig ?? opts.modelConfig
+              ? { modelConfig: (r.modelConfig ?? opts.modelConfig) as Record<string, unknown> }
+              : {}),
             ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
           }),
         (r, e) =>

@@ -112,6 +112,26 @@ export interface RecordRoutedIdeaInput {
    */
   createdBy?: string;
   /**
+   * The model spec that PRODUCED this idea (migration 947,
+   * learning-loop-backlog-triage-2026-08-22 P-010) — the `"<model-id>:<effort>"` form
+   * actually passed to the LLM seam, e.g. `'gpt-5.6-sol:xhigh'`.
+   *
+   * ⚠ Pass the value the producing path RESOLVED, never a re-read of the configured
+   * default. Those are the same today and diverge the moment the default changes: a
+   * row stamped from the default at write time is a claim about which model ran, so
+   * sourcing it from a constant would silently re-attribute ideas to a model that
+   * never saw them. Omitting it writes NULL, which is the honest answer when the
+   * caller genuinely does not know — and is why the pre-947 corpus stays NULL rather
+   * than being backfilled with a guess.
+   */
+  modelSpec?: string;
+  /**
+   * Sampling/config provenance for the producing call — the knobs that move output
+   * quality independently of the model id (thinking budget, max tokens, roster
+   * shape). Open-shaped by design; see the column comment in migration 947.
+   */
+  modelConfig?: Record<string, unknown>;
+  /**
    * Insert the provenance only when `ideaId` has no ledger row yet. Agent-review
    * enrollment uses this because an SU capture may already have recorded richer
    * `origin:'su-ideate'` provenance for the same work item; enrolling that artifact
@@ -256,13 +276,16 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
   await sql`
     INSERT INTO harness_shared.scout_routed_ideas
       (idea_id, workspace_id, harness_slug, source_hive, target_hive, cycle_id, lens, rail,
-       routed_ref, title, addresses_pattern_refs, routed_at, origin, created_by)
+       routed_ref, title, addresses_pattern_refs, routed_at, origin, created_by,
+       model_spec, model_config)
     VALUES
       (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${sourceHive}, ${targetHive},
        ${input.cycleId ?? null}, ${input.lens},
        ${input.rail}, ${input.routedRef}, ${input.title ?? null},
        ${input.addressesPatternRefs ? JSON.stringify(input.addressesPatternRefs) : null}::text::jsonb,
-       ${routedAt}, ${origin}, ${input.createdBy ?? null})
+       ${routedAt}, ${origin}, ${input.createdBy ?? null},
+       ${input.modelSpec ?? null},
+       ${input.modelConfig ? JSON.stringify(input.modelConfig) : null}::text::jsonb)
     ON CONFLICT (idea_id) DO UPDATE SET
       harness_slug = EXCLUDED.harness_slug,
       source_hive = EXCLUDED.source_hive,
@@ -277,7 +300,14 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       addresses_pattern_refs = COALESCE(EXCLUDED.addresses_pattern_refs, scout_routed_ideas.addresses_pattern_refs),
       routed_at = EXCLUDED.routed_at,
       origin = EXCLUDED.origin,
-      created_by = COALESCE(EXCLUDED.created_by, scout_routed_ideas.created_by)
+      created_by = COALESCE(EXCLUDED.created_by, scout_routed_ideas.created_by),
+      -- Migration 947 / P-010: COALESCE for the SAME reason addresses_pattern_refs
+      -- above does (EI-10607). A rail hop (blender:route-idea) re-records the row
+      -- without knowing the producing model, and a bare EXCLUDED here would erase
+      -- the provenance the producing cycle wrote — turning a recorded model into a
+      -- NULL that reads as "never recorded". Provenance is write-once-then-sticky.
+      model_spec = COALESCE(EXCLUDED.model_spec, scout_routed_ideas.model_spec),
+      model_config = COALESCE(EXCLUDED.model_config, scout_routed_ideas.model_config)
     WHERE ${!input.preserveExisting}`;
   // Push the Learning tab's Scout view (learning.scout reads this ledger).
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never

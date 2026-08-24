@@ -101,6 +101,25 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
   return buildScoutTickDeps({
     harnessSlug: input.installSlug,
     workspaceId: input.workspaceId,
+    // Migration 947 / learning-loop-backlog-triage-2026-08-22 P-010: stamp every
+    // routed row this tick persists with the model that actually produced it.
+    //
+    // `scoutConfig` is the RESOLVED per-tick config (resolveScoutConfig above, from
+    // this routine's blueprint payload) — the same object threaded into the cycle
+    // runner on the next line, so the stamp and the run cannot disagree. That is the
+    // whole point: reading DEFAULT_SCOUT_MODELS here instead would be a second copy
+    // of a truth the config already owns, and would mis-attribute every row the day a
+    // blueprint overrides the model without a deploy — which is exactly what the
+    // `models` block exists to allow.
+    modelSpec: scoutConfig.models.ideator,
+    modelConfig: {
+      // The ideator model is the headline, but a cycle's output quality is shaped by
+      // the critic/recombine/revision lane too — record the whole resolved step map
+      // so a later "which configuration produced good ideas?" question is answerable
+      // without re-deriving anything.
+      models: { ...scoutConfig.models },
+      lensRoster: [...scoutConfig.lenses],
+    },
     runCycle: ({ budget, cycleId, revisionRequests, signal, deadlineMs, onPhase }) =>
       runCycle({
         harnessSlug: input.installSlug,
