@@ -42,7 +42,9 @@ function transactionHarness(opts: {
   return { statements };
 }
 
-beforeEach(() => h.boundedOrgTxn.mockReset());
+beforeEach(() => {
+  h.boundedOrgTxn.mockReset();
+});
 
 describe('armPausedCheckpointTransition', () => {
   it('locks prerequisites and atomically makes the existing routine due exactly once', async () => {
