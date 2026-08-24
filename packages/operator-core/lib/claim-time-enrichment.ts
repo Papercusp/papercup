@@ -43,6 +43,9 @@
  * set that SHOULD be identical everywhere.
  */
 
+
+import type { ClaimTimeStalePathHint } from './stale-path-hints-claim-port';
+
 /**
  * The registry. Order is the order the guards were added; it carries no meaning
  * beyond keeping diffs small.
@@ -63,6 +66,9 @@ export const CLAIM_TIME_ENRICHMENT_LEGS = [
   // by delegating to this port. Registering earlier would have made the parity guard
   // assert a coverage the tree did not have.
   'behaviorContract',
+  // EI-21267393427094356: which stored payload paths are dead at HEAD, and where
+  // each moved to — a bounded git rename walk at the moment of the claim.
+  'pathHints',
 ] as const;
 
 export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number];
@@ -107,6 +113,14 @@ export interface ClaimTimeEnrichment {
    */
   behaviorContract?: unknown;
   behaviorContractNote?: string;
+  /**
+   * EI-21267393427094356: stored payload paths that no longer exist at HEAD, each
+   * resolved to its current location when git can follow the renames. Advisory:
+   * the claimant works from resolvedTo instead of taking the stored hint literally
+   * and falling back to a repository-wide search.
+   */
+  pathHints?: ClaimTimeStalePathHint[];
+  pathHintsNote?: string;
 }
 
 export interface ClaimTimeEnrichmentOpts {
@@ -145,6 +159,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     authorship,
     planContradiction,
     behaviorContract,
+    pathHintsEntry,
   ] = await Promise.all([
       // What OTHERS ruled that governs this item. Available from either a
       // work-item payload stamp or an explicit plan pointer.
@@ -265,6 +280,26 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
             .then((m) => m.getClaimTimeBehaviorContract(behaviorContractWorkItem, harness))
             .catch(() => null)
         : Promise.resolve(null),
+
+      // EI-21267393427094356: which stored payload paths are dead at HEAD, and where
+      // each moved to. Hints freeze at filing time while modules relocate (hive/* →
+      // pot/* being the measured instance); without this resolution the claimant's
+      // literal affected-path check fails into a repository-wide fallback search.
+      // Needs a work-item payload — a bare plan-item claim carries none.
+      wi?.payload
+        ? import('./stale-path-hints-claim-port')
+            .then(async (m) => {
+              const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
+              // `stalePathHintsNote` returns string | null; ClaimTimeEnrichment's
+              // optional field is `string | undefined`, and a null would be spread
+              // onto the result as a present-but-null key. Coerce so an absent note
+              // is genuinely absent.
+              return hints
+                ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) ?? undefined }
+                : null;
+            })
+            .catch(() => null)
+        : Promise.resolve(null),
     ]);
 
   return {
@@ -275,5 +310,6 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     ...(authorship ?? {}),
     ...(planContradiction ?? {}),
     ...(behaviorContract ?? {}),
+    ...(pathHintsEntry ?? {}),
   };
 }

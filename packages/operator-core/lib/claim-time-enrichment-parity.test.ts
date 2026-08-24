@@ -49,6 +49,7 @@ const LEG_IMPLEMENTATION: Record<ClaimTimeEnrichmentLeg, string> = {
   authorship: 'getClaimTimeAuthorshipRevalidationHint',
   planContradiction: 'getClaimTimePlanItemContradiction',
   behaviorContract: 'getClaimTimeBehaviorContract',
+  pathHints: 'getClaimTimeStalePathHints',
 };
 
 /** Every surface that hands an agent a claimed item and is therefore obliged to warn it. */
@@ -101,18 +102,27 @@ describe('claim-time enrichment parity (WI-41182)', () => {
    * unconditionally — the failure mode that turns a guard into decoration.
    */
   describe('falsifiability controls', () => {
-    const SURFACE_MISSING_ONE_LEG = `
-      import { getClaimTimePlanDecisions } from './plan-decisions-claim-port';
-      import { getClaimTimePriorAttemptBrief } from './prior-attempt-context';
-      import { getClaimTimePremises } from './premises-claim-port';
-      import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
-      import { getClaimTimeAuthorshipRevalidationHint } from './work-item-prior-work';
-      // planContradiction deliberately absent — this is claim_next's real pre-fix shape.
-    `;
+    /**
+     * The omitted leg is `planContradiction` because that was claim_next's real
+     * pre-fix shape — a surface attaching every leg but one.
+     *
+     * ⚠ DERIVED from the registry, deliberately, rather than a hand-written list of
+     * imports. This fixture is a description of CLAIM_TIME_ENRICHMENT_LEGS, and a
+     * hand-maintained second copy of a registry drifts from it: the literal version
+     * of this fixture failed the moment a seventh leg was registered, reporting the
+     * new leg as "missing" from a control whose only intended omission was
+     * planContradiction. Building it from the registry keeps the control asserting
+     * the one thing it is for — that `attachesLeg` returns false for a leg a surface
+     * does not attach — without needing an edit every time the leg set grows.
+     */
+    const OMITTED_LEG: ClaimTimeEnrichmentLeg = 'planContradiction';
+    const SURFACE_MISSING_ONE_LEG = CLAIM_TIME_ENRICHMENT_LEGS.filter((leg) => leg !== OMITTED_LEG)
+      .map((leg) => `import { ${LEG_IMPLEMENTATION[leg]} } from './${leg}-port';`)
+      .join('\n');
 
     it('rejects a surface that omits a leg', () => {
       const missing = CLAIM_TIME_ENRICHMENT_LEGS.filter((leg) => !attachesLeg(SURFACE_MISSING_ONE_LEG, leg));
-      expect(missing).toEqual(['planContradiction']);
+      expect(missing).toEqual([OMITTED_LEG]);
     });
 
     it('accepts a surface that delegates the whole set to the port', () => {

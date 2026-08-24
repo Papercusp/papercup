@@ -603,6 +603,16 @@ export function assembleSchedulerClaimResult(legs: {
   priorAttemptBrief?: unknown;
   premises?: unknown;
   premisesNote?: string | null;
+  /** EI-21267393427094356: dead-at-HEAD payload paths, resolved to current locations. */
+  pathHints?: unknown;
+  pathHintsNote?: string | null;
+  /**
+   * P-011: WHICH behavior clauses this claim puts the agent on the hook for, at
+   * WHICH revision. ⚠ ADVISORY (D-017) — reported, never enforced here; P-013 owns
+   * any refusal, so a consumer must not render it as a blocker.
+   */
+  behaviorContract?: unknown;
+  behaviorContractNote?: string;
 }): Record<string, unknown> {
   const workItemRecord =
     legs.workItem && typeof legs.workItem === 'object' ? (legs.workItem as { id?: unknown }) : null;
@@ -631,6 +641,9 @@ export function assembleSchedulerClaimResult(legs: {
       ? { planDecisions: legs.planDecisions, planDecisionsNote: legs.planDecisionsNote as string }
       : {}),
     ...(legs.priorAttemptBrief ? { priorAttemptBrief: legs.priorAttemptBrief } : {}),
+    // Stale-path hints join the prefix block: a caller that loses the response tail must
+    // still know which stored paths are fossils before it starts work (EI-21267393427094356).
+    ...(legs.pathHints ? { pathHints: legs.pathHints, pathHintsNote: legs.pathHintsNote } : {}),
     workItem: legs.workItem,
     claimedUnder: legs.claimedUnder,
     ...(legs.freshness ? { freshness: legs.freshness } : {}),
@@ -1398,6 +1411,13 @@ export default defineTool({
       behaviorContract: unknown;
       behaviorContractNote: string;
     } | null = null;
+    // EI-21267393427094356: which stored payload paths are dead at HEAD, and where
+    // each moved to. Advisory: the claimant works from resolvedTo instead of taking
+    // a stale stored path literally and falling back to a repo-wide search.
+    let pathHintsHint: {
+      pathHints: unknown;
+      pathHintsNote: string | null;
+    } | null = null;
     if (res?.workItem) {
       const wi = res.workItem as {
         id?: string | null;
@@ -1408,7 +1428,7 @@ export default defineTool({
         sourcePlanSlug?: string | null;
         sourcePlanItemIds?: string[] | null;
       };
-      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint] =
+      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint] =
         await Promise.all([
           import('../../plan-decisions-claim-port')
             .then(async (m) => {
@@ -1483,6 +1503,14 @@ export default defineTool({
                     wi.harness ?? args.harness,
                   ),
                 )
+                .catch(() => null)
+            : Promise.resolve(null),
+          wi.payload
+            ? import('../../stale-path-hints-claim-port')
+                .then(async (m) => {
+                  const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
+                  return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+                })
                 .catch(() => null)
             : Promise.resolve(null),
         ]);
@@ -1616,6 +1644,8 @@ export default defineTool({
           planItemContradictionWarning: planContradictionHint?.planItemContradictionWarning,
           behaviorContract: behaviorContractHint?.behaviorContract,
           behaviorContractNote: behaviorContractHint?.behaviorContractNote,
+          pathHints: pathHintsHint?.pathHints,
+          pathHintsNote: pathHintsHint?.pathHintsNote ?? undefined,
           // EI-19396519606401168: this note used to be built from the
           // POST-CAP length, so a capped brief announced itself as the
           // complete set. The shared helper still renders the true total

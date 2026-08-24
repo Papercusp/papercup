@@ -523,6 +523,28 @@ export default defineTool({
       }
     };
 
+    /**
+     * EI-21267393427094356 — which stored payload paths are dead at HEAD, and where each
+     * moved to, via the shared stale-path-hints port. Modules relocate while hints freeze
+     * at filing time; without this resolution a self-selected claim hands its successor
+     * fossilized paths whose literal check fails into a repository-wide fallback search.
+     *
+     * Same fail-soft posture as every sibling helper above: a swallowed read omits the
+     * hint rather than asserting the paths are clean.
+     */
+    const pathHintsFor = async (
+      wi: { payload?: unknown } | null,
+    ): Promise<{ pathHints: unknown; pathHintsNote: string | null } | null> => {
+      if (!wi?.payload) return null;
+      try {
+        const m = await import('../../stale-path-hints-claim-port');
+        const hints = await m.getClaimTimeStalePathHints({ payload: wi.payload });
+        return hints ? { pathHints: hints, pathHintsNote: m.stalePathHintsNote(hints) } : null;
+      } catch {
+        return null;
+      }
+    };
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
@@ -546,6 +568,7 @@ export default defineTool({
         authorshipRevalidationResult,
         planContradictionResult,
         behaviorContractResult,
+        pathHintsResult,
       ] = await Promise.all([
         planDecisionsFor(wiOf(claimed)),
         priorAttemptsFor(wiOf(claimed)),
@@ -554,6 +577,7 @@ export default defineTool({
         authorshipRevalidationFor(wiOf(claimed)),
         planContradictionFor(wiOf(claimed)),
         behaviorContractFor(wiOf(claimed)),
+        pathHintsFor(wiOf(claimed)),
       ]);
       return {
         content: [
@@ -570,6 +594,8 @@ export default defineTool({
               ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
               ...(authorshipRevalidationResult ?? {}),
               ...(planContradictionResult ?? {}),
+              ...(behaviorContractResult ?? {}),
+              ...(pathHintsResult ?? {}),
             }),
           },
         ],
@@ -608,6 +634,8 @@ export default defineTool({
           retractionAdvisory,
           authorshipRevalidationResult,
           planContradictionResult,
+          behaviorContractResult,
+          pathHintsResult,
         ] = await Promise.all([
           planDecisionsFor(wiOf(c)),
           priorAttemptsFor(wiOf(c)),
@@ -615,6 +643,8 @@ export default defineTool({
           getClaimTimeRetractionAdvisory(wiOf(c), args.harness),
           authorshipRevalidationFor(wiOf(c)),
           planContradictionFor(wiOf(c)),
+          behaviorContractFor(wiOf(c)),
+          pathHintsFor(wiOf(c)),
         ]);
         return {
           ...c,
@@ -626,6 +656,8 @@ export default defineTool({
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(authorshipRevalidationResult ?? {}),
           ...(planContradictionResult ?? {}),
+          ...(behaviorContractResult ?? {}),
+          ...(pathHintsResult ?? {}),
         };
       }),
     );
