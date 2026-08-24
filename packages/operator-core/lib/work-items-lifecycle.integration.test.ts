@@ -41,6 +41,7 @@ import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { emitFlagChange } from '@papercusp/flags/server';
 import { readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
+import { getKeyFireLatch } from './events/await/store';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -478,6 +479,30 @@ describe('P-004 — completion authority round-trips through both family views',
     expect(await authorityOf(bug.id)).toBeNull();
     await wi.setWorkItemState(bug.id, 'open', { by: 'agA' });
     expect(await authorityOf(bug.id)).toBeNull();
+  });
+
+  // EI-21342578761370279: a settle latches `work-item:done:<id>` unconditionally
+  // (event_key_fires, migration 632). Reopening the item retires that terminal
+  // cycle — the latch must CLEAR so events:status stops reporting
+  // `fired_undeclared` against a LIVE item (the stale latch made a done-gate
+  // look already-satisfied and blocked monitoring of the reopened work).
+  it('reopening an item clears its stale work-item:done:<id> fire latch', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'latch', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'cycle one' });
+    const latchKey = `work-item:done:${bug.id}`;
+    // Both the settled-emit (latching) and the reopen-clear are fire-and-forget
+    // chains of real async PG round-trips — poll rather than assume a tick.
+    await vi.waitFor(async () => {
+      expect(await getKeyFireLatch(latchKey)).not.toBeNull();
+    });
+    await wi.setWorkItemState(bug.id, 'open', { by: 'agC' });
+    await vi.waitFor(async () => {
+      expect(await getKeyFireLatch(latchKey)).toBeNull();
+    });
+    const { promise: flushed, resolve: flushDone } = Promise.withResolvers<void>();
+    setImmediate(flushDone);
+    await flushed;
+    expect(await getKeyFireLatch(latchKey)).toBeNull();
   });
 
   it('a close with no authority supplied stays null — D-008, no writer invents a judgement', async () => {
