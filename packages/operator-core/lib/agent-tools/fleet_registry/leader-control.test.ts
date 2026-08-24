@@ -391,6 +391,43 @@ describe('ensureFleetLeaderControl', () => {
     );
   });
 
+  it('retires an unbound legacy standing watch before re-arming its bound profile row', async () => {
+    const target = 'fleet:member-dead:alpha';
+    const legacyStanding = {
+      id: 99,
+      eventKey: target,
+      policy: 'wake',
+      once: false,
+      wakeHandle: { kind: 'psu-socket' },
+      boundTo: null,
+      note: 'standing fleet leader transition watch (alpha)',
+    };
+    const manualWait = {
+      ...legacyStanding,
+      id: 100,
+      note: 'operator standing wait for a member-dead transition',
+    };
+    listActiveAwaits.mockResolvedValue([
+      ...activeWatches().filter((row) => row.eventKey !== target),
+      legacyStanding,
+      manualWait,
+    ]);
+
+    const out = await ensureFleetLeaderControl(input);
+
+    expect(out.healthy).toBe(true);
+    expect(out.watches.repaired).toContain(target);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(registerAwait).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKey: target,
+        boundTo: { kind: 'fleet-leadership', ref: 'alpha' },
+      }),
+    );
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'leader-1' });
+    expect(cancelAwait).not.toHaveBeenCalledWith({ awaitId: 100, subscriberId: 'leader-1' });
+  });
+
   it('treats an explicit operator cancellation as sticky during reconciliation', async () => {
     const suppressedKey = 'fleet:context-critical:alpha';
     listOperatorCancelledAwaits.mockResolvedValue([
