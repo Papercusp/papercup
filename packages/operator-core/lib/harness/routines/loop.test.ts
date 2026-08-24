@@ -57,6 +57,8 @@ import {
   detectDrivenWorkItemId,
   loopRoutineName,
   computeLoopStall,
+  computeLoopFireStarvation,
+  LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES,
   computeTurnsStalled,
   computeLifecycleBackoff,
   TURNS_STALLED_MIN_FIRE_COUNT,
@@ -193,6 +195,61 @@ describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
     // interval 1200s → 4× = 4800s = 80min > 30min, so 60min parked is NOT yet stalled.
     expect(computeLoopStall(parkedFor(60 * 60_000, { intervalSec: 1200 })).stalled).toBe(false);
     expect(computeLoopStall(parkedFor(90 * 60_000, { intervalSec: 1200 })).stalled).toBe(true);
+  });
+});
+
+describe('computeLoopFireStarvation (EI-21301493615546911 — no post-arm fire)', () => {
+  const NOW = 1_800_000_000_000;
+  const armedAtMs = NOW - 10 * 60_000;
+  const base = {
+    active: true,
+    parked: true,
+    firesSinceArm: 0,
+    expectedFiresSinceArm: LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES,
+    armedAtMs,
+    lastFiredAtMs: armedAtMs - 60_000,
+    lastActiveAtMs: armedAtMs - 60 * 60_000,
+    intervalSec: 60,
+    nowMs: NOW,
+  };
+
+  it('flags an active parked loop after three missed opportunities with no post-arm fire', () => {
+    expect(computeLoopFireStarvation(base)).toBe(true);
+  });
+
+  it('stays quiet before the three-opportunity floor', () => {
+    expect(
+      computeLoopFireStarvation({
+        ...base,
+        expectedFiresSinceArm: LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('stays quiet when any post-arm fire is recorded, even if the count lags', () => {
+    expect(
+      computeLoopFireStarvation({
+        ...base,
+        firesSinceArm: 1,
+        expectedFiresSinceArm: 10,
+        lastFiredAtMs: armedAtMs + 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('stays quiet for an unparked loop or an inactive loop', () => {
+    expect(computeLoopFireStarvation({ ...base, parked: false })).toBe(false);
+    expect(computeLoopFireStarvation({ ...base, active: false })).toBe(false);
+  });
+
+  it('stays quiet when the owner has recent activity (a legitimate long first turn)', () => {
+    expect(
+      computeLoopFireStarvation({ ...base, lastActiveAtMs: NOW - 1_000 }),
+    ).toBe(false);
+  });
+
+  it('allows a never-fired loop with no fire timestamp to be diagnosed once the floor is crossed', () => {
+    expect(computeLoopFireStarvation({ ...base, lastFiredAtMs: null })).toBe(true);
   });
 });
 
@@ -1085,6 +1142,31 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
   it('EI-21219642654072321: NOT parked → parkedForSec is null even when the fire-age column has a value', async () => {
     const out = await getLoopStatuses(['su-x'], { sql: rowSql({ parked: false, parked_ms: 95_000 }) as unknown as Sql });
     expect(out.get('su-x')!.parkedForSec).toBeNull();
+  });
+
+  it('EI-21301493615546911: marks a parked active loop stalled when its current arm has no post-arm fire', async () => {
+    const now = Date.now();
+    const armedAt = new Date(now - 10 * 60_000).toISOString();
+    const out = await getLoopStatuses(
+      ['su-x'],
+      {
+        sql: rowSql({
+          fire_count: 5,
+          fire_count_at_arm: 5,
+          armed_at: armedAt,
+          last_fired_at: new Date(now - 60 * 60_000).toISOString(),
+          parked: true,
+          next_fire_at: null,
+          presence_last_active_at: new Date(now - 60 * 60_000).toISOString(),
+        }) as unknown as Sql,
+      },
+    );
+    const status = out.get('su-x')!;
+
+    expect(status.firesSinceArm).toBe(0);
+    expect(status.expectedFiresSinceArm).toBeGreaterThanOrEqual(9);
+    expect(status.turnsStalled).toBe(false);
+    expect(status.stalled).toBe(true);
   });
 
   it('EI-21276782387845111: exposes cadenceDrift while keeping the filed parked slow-cadence shape quiet', async () => {
