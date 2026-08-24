@@ -197,7 +197,7 @@ describe('POST /agent-config strict save', () => {
     const { resolverProfiles: _omitted, ...legacyBody } = VALID_BODY;
     const res = await callPost(legacyBody);
     expect(res.status).toBe(200);
-    expect(writeMock.mock.calls[0][0].resolverProfiles).toEqual({
+    expect((writeMock.mock.calls[0][0] as { resolverProfiles: unknown }).resolverProfiles).toEqual({
       'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
       'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
     });

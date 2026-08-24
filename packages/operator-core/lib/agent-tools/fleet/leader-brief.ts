@@ -2849,7 +2849,13 @@ export async function buildLeaderBrief(
         ownerId,
         controlState: fleetRecord?.controlState,
       }) &&
-      fleetRecord
+      fleetRecord &&
+      // Type-level only: the guard above already requires a defined ownerId
+      // (`Boolean(input.ownerId)`), but it returns a plain boolean rather than a
+      // type predicate, so it cannot NARROW `ownerId` (declared `string |
+      // undefined`) for the write below. Restating it here is what lets
+      // ensureFleetLeaderControl take its `string`. No behaviour change.
+      ownerId != null
     ) {
       // Also a WRITE (it refreshes the leader's control row), so it is gated
       // too — a viewer reading a leader's brief must not touch that leader's
