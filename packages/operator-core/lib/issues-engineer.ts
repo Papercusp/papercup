@@ -2584,6 +2584,16 @@ export async function setIssueState(
   });
   if (isTerminal && terminalWriteSucceeded && priorAssignee) {
     clearGoalClaimedIfMatches(priorAssignee, id);
+    // A terminal issue transition clears the local taken_by claim above. Await the
+    // harness-agnostic lease cleanup before returning so work_items:complete cannot
+    // report success while its scheduler:get_next/claim_next lease still poisons the
+    // item for the next claimant. The lease helper is best-effort and self-catches;
+    // the dynamic import preserves the issue/work-items module boundary.
+    await trackDetached(
+      import('./work-item-claim-lease-wiring')
+        .then((m) => m.releaseIssueClaimLease({ workItemId: id, owner: priorAssignee }))
+        .catch(() => false),
+    );
   }
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
