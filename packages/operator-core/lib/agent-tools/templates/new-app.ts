@@ -550,7 +550,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
 export default defineTool({
   name: 'templates:new-app',
   description:
-    'Materialize an app-template into a NEW pot (its own Hive home — a plan-capable project, created IDLE + local-only) and (by default) kick off a building agent seeded with the template GUIDE. V1: first-party templates ship BUNDLED, so this copies them from the local store (works offline). Composes pot:create + agent_chats. Args: `template` (ref e.g. "papercusp-webapp" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, supplyChain, builder:{spawned,chatId?} } — `supplyChain` is the resolved libs/generic root for THIS install (the real path for `file:` deps, or an explicit statement that this install has none), and the builder kickoff carries it. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
+    'Materialize an app-template into a NEW pot (its own Hive home — a plan-capable project, created IDLE + local-only) and (by default) kick off a building agent seeded with the template GUIDE. V1: first-party templates ship BUNDLED, so this copies them from the local store (works offline). Composes pot:create + agent_chats. Args: `template` (ref e.g. "papercusp-app" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, supplyChain, builder:{spawned,chatId?} } — `supplyChain` is the resolved libs/generic root for THIS install (the real path for `file:` deps, or an explicit statement that this install has none), and the builder kickoff carries it. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
   guidance: {
     when: 'The user picked a template (from templates:list, or named one) and wants to START building the app — this scaffolds the harness AND hands the GUIDE to a builder in one call.',
     notWhen:
@@ -592,7 +592,7 @@ export default defineTool({
       .string()
       .min(1)
       .max(200)
-      .describe('Template listing ref (e.g. "papercusp-webapp") or listing id (uuid).'),
+      .describe('Template listing ref (e.g. "papercusp-app") or listing id (uuid).'),
     slug: z
       .string()
       .min(1)
