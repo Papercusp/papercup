@@ -16,7 +16,7 @@ afterEach(() => {
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   runGitSync,
   addFailureIgnoredPaths,
@@ -61,6 +61,8 @@ function configUser(repo: string): void {
   git(repo, 'config', 'user.name', 'git-sync test');
   git(repo, 'config', 'commit.gpgsign', 'false');
 }
+
+const REPO_ROOT = resolve(__dirname, '../../../../..');
 
 describe('git-sync commit identity', () => {
   it('uses a verified GitHub no-reply email for automated pushes', () => {
@@ -437,6 +439,36 @@ describe('runGitSync (real git, no submodule)', () => {
     );
     expect(readFileSync(ignoredArtifact, 'utf8')).toBe('must remain local and untracked\n');
     expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
+  });
+
+  it('EI-21371380265465702: git-sync ignores in-progress dependency-generation build markers', async () => {
+    // The production integration tree uses the canonical root policy. Copy it
+    // into the throwaway clone so this test fails if the policy ever stops
+    // excluding a build marker, rather than merely testing a duplicated fixture
+    // pattern.
+    writeFileSync(join(repo, '.gitignore'), readFileSync(join(REPO_ROOT, '.gitignore')));
+    const markerPaths = [
+      '.papercusp/dependency-generations/.build-pending-host-123-456/tree/file',
+      'packages/mock/.papercusp/dependency-generations/.build-pending-host-123-456/tree/file',
+    ];
+    for (const markerPath of markerPaths) {
+      mkdirSync(join(repo, markerPath, '..'), { recursive: true });
+      writeFileSync(join(repo, markerPath), 'in-progress generation\n');
+    }
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    for (const markerPath of markerPaths) {
+      expect(originFiles).not.toContain(markerPath);
+      expect(git(repo, 'check-ignore', '-v', '--no-index', markerPath)).toContain(
+        '.build-pending-*/',
+      );
+    }
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
   });
 
   it('WI-40770: a live-held dirty path stays excluded while the unlocked remainder syncs', async () => {

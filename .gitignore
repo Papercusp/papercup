@@ -145,6 +145,13 @@ apps/operator/docs/plans/**/*.md
 **/.papercusp/bench-reports/
 **/.papercusp/pi-sessions/
 
+# Dependency-generation publishers stage an in-progress tree under a
+# `.build-pending-*` directory. It is a disposable runtime sentinel, not a
+# generation artifact; git-sync's whole-tree add must never publish it while a
+# build overlaps a sync tick.
+.papercusp/dependency-generations/.build-pending-*/
+**/.papercusp/dependency-generations/.build-pending-*/
+
 # npm-only repo — a pnpm/yarn install breaks the shared node_modules layout (2026-07-03 fleet incident)
 pnpm-lock.yaml
 yarn.lock
