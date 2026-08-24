@@ -8,7 +8,7 @@
 // Open session → ?pdsess, work-row deep link → ?wpop). Data hooks are mocked;
 // nuqs is a seeded store (same seams as PlansPane.test.tsx).
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
 
 const {
@@ -19,6 +19,7 @@ const {
   syncData,
   launchAgentSpy,
   toastSpies,
+  cleanupFlag,
 } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
@@ -33,6 +34,7 @@ const {
   },
   launchAgentSpy: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
   toastSpies: { success: vi.fn(), error: vi.fn() },
+  cleanupFlag: { value: true },
 }));
 function mkSetter(key: string) {
   if (!setters[key]) setters[key] = vi.fn(async (v: unknown) => { nuqs[key] = v; });
@@ -66,6 +68,7 @@ vi.mock('@papercusp/sync', async (orig) => ({
   }),
 }));
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-1' }));
+vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => cleanupFlag.value }));
 // Keep bucketOf real — only stub the data hook.
 vi.mock('@/app/admin/plans/plans-api', async (orig) => ({
   ...(await orig<typeof import('@/app/admin/plans/plans-api')>()),
@@ -234,6 +237,8 @@ afterEach(() => {
   launchAgentSpy.mockClear();
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
+  cleanupFlag.value = true;
+  vi.unstubAllGlobals();
 });
 
 describe('PlanDashboard header', () => {
@@ -284,6 +289,39 @@ describe('PlanDashboard header', () => {
     fireEvent.click(screen.getByTestId('plan-dash-search-transcripts'));
     expect(setters['ppv']).toHaveBeenCalledWith('sessions');
     expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
+  });
+
+  it('starts a one-plan clean-up from the header and deep-links its run', async () => {
+    seed();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, runId: 'cleanup-dash-1', launched: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderDash();
+
+    fireEvent.click(screen.getByTestId('plan-dash-cleanup'));
+
+    await waitFor(() => expect(setters.opcln).toHaveBeenCalledWith('cleanup-dash-1'));
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+      op: 'start',
+      planSlugs: ['p1'],
+      filter: {
+        scope: 'single-plan',
+        entryPoint: 'plan-dashboard',
+        shownCount: 1,
+        planSlug: 'p1',
+        harness: 'papercusp',
+      },
+      harness: 'papercusp',
+    });
+  });
+
+  it('hides the header clean-up action when the plan-cleanup flag is off', () => {
+    cleanupFlag.value = false;
+    seed();
+    renderDash();
+    expect(screen.queryByTestId('plan-dash-cleanup')).toBeNull();
   });
 
   it('Launch agent fires the plan-bound launch', () => {

@@ -31,15 +31,18 @@
  *   - popups: `wpop`/`wppop` via chat-ref-popup-params — written here, rendered
  *     by ChatRefPopupHost's singleton mount. Never a second renderer.
  *
- * State lives in the URL (nuqs): `?pdash` (the host's takeover param) and
- * `?pdsess` (the open session-chat owner) — deep-linkable + agent-driveable.
+ * State lives in the URL (nuqs): `?pdash` (the host's takeover param),
+ * `?pdsess` (the open session-chat owner), and `?opcln` (the selected clean-up
+ * run) — deep-linkable + agent-driveable.
  */
 import { useCallback, useMemo, useState } from 'react';
 import { ArrowLeft, ExternalLink, Hammer, Pencil, Plus, Search } from 'lucide-react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { FLAGS } from '@papercusp/flags';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { useSyncQuery } from '@papercusp/sync';
+import { useFlag } from '@/lib/flag-hooks';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { bucketOf, usePlanList } from '@/app/admin/plans/plans-api';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
@@ -50,6 +53,11 @@ import {
   encodeScopedRef,
 } from '../chat/chat-ref-popup-params';
 import { agoLabel, agoLabelMs, progressOf, WORK_HOT_MS } from './PlansPane';
+import PlanCleanupEntryButton from './PlanCleanupEntryButton';
+import {
+  PLAN_CLEANUP_RUN_PARAM,
+  usePlanCleanupRun,
+} from './use-plan-cleanup-run';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import './plan-dashboard.css';
 
@@ -189,6 +197,21 @@ export default function PlanDashboard({
   // Open-session chat (?pdsess — deep-linkable, same modal the popup tab uses).
   const [openSessionOwner, setOpenSessionOwner] = useQueryState('pdsess', parseAsString);
 
+  // P-009: one-plan clean-up shares the global URL-owned run selection. Reading
+  // the same sync entry as PlanCleanupReportHost costs no second server query;
+  // it only keeps this header action disabled while its own run is active.
+  const cleanupEnabled = useFlag(FLAGS.PLAN_CLEANUP);
+  const [cleanupRunId, setCleanupRunId] = useQueryState(
+    PLAN_CLEANUP_RUN_PARAM,
+    parseAsString,
+  );
+  const cleanup = usePlanCleanupRun(cleanupRunId, { enabled: cleanupEnabled });
+  const cleanupActive = Boolean(
+    cleanup.isRunning &&
+      cleanup.run?.seedRefs.length === 1 &&
+      cleanup.run.seedRefs[0] === planSlug,
+  );
+
   // Popups: written here, rendered by ChatRefPopupHost's singleton mount.
   const [, setOpenPlanPopup] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
   const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
@@ -266,6 +289,16 @@ export default function PlanDashboard({
             {planSlug}
           </span>
           <span className="plan-dash__spacer" />
+          {cleanupEnabled ? (
+            <PlanCleanupEntryButton
+              planSlug={planSlug}
+              harness={harness}
+              title={title}
+              appearance="dashboard"
+              active={cleanupActive}
+              onRunStarted={(runId) => void setCleanupRunId(runId)}
+            />
+          ) : null}
           <button
             type="button"
             className="plan-dash__btn plan-dash__btn--ghost"

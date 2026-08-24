@@ -254,11 +254,40 @@ describe('PlansPane', () => {
     expect(body.planSlugs).toEqual(["p-active", "p-ready"]);
   });
 
+  it('starts the same clean-up machinery from a single plan row', async () => {
+    planListData.value = {
+      plans: [plan({ slug: 'p-active', title: 'Active plan' })],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, runId: 'cleanup-row-1', launched: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<PlansPane />);
+    fireEvent.click(screen.getByTestId('plans-pane-cleanup-p-active'));
+
+    await waitFor(() => expect(setters.opcln).toHaveBeenCalledWith('cleanup-row-1'));
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+      op: 'start',
+      planSlugs: ['p-active'],
+      filter: {
+        scope: 'single-plan',
+        entryPoint: 'plans-row',
+        shownCount: 1,
+        planSlug: 'p-active',
+        harness: 'papercusp',
+      },
+      harness: 'papercusp',
+    });
+  });
+
   it("removes the clean-up strip entirely when its default-on flag is overridden off", () => {
     cleanupFlag.value = false;
     planListData.value = { plans: [plan({ slug: "p-active" })] };
     render(<PlansPane />);
     expect(screen.queryByTestId("plans-cleanup-idle")).toBeNull();
+    expect(screen.queryByTestId('plans-pane-cleanup-p-active')).toBeNull();
   });
 
   it("clears a populated plan search from the compact search shell (P-020)", () => {

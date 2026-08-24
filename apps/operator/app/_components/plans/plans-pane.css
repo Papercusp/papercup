@@ -188,26 +188,37 @@
     transparent 42%
   );
 }
-/* One-click archive on a STALE row (P-008 / EI-15304). Sits over the row's
-   right edge as a SIBLING of the row button (never nested — invalid HTML).
-   Hidden until the row is hovered or the button itself is focused, so it never
-   competes with the badges; keyboard users reach it via :focus-visible. */
-.plans-pane__archive {
+/* Row actions sit over the card's right edge as SIBLINGS of the row button
+   (never nested — invalid HTML). Hidden until row hover or keyboard focus. */
+.plans-pane__archive,
+.plans-pane__cleanup {
   position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
+  display: block;
+  width: 22px; height: 22px; min-height: 22px; padding: 0; border-radius: 6px; cursor: pointer;
   opacity: 0; pointer-events: none;
   color: var(--fg-mute, #8a8a91); background: var(--bg-2, #17171a);
   border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
   transition: opacity 90ms ease-out, color 90ms ease-out, border-color 90ms ease-out;
 }
+.plans-pane__row-action-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+}
 [role='listitem']:hover > .plans-pane__archive,
-.plans-pane__archive:focus-visible { opacity: 1; pointer-events: auto; }
+[role='listitem']:hover > .plans-pane__cleanup,
+.plans-pane__archive:focus-visible,
+.plans-pane__cleanup:focus-visible { opacity: 1; pointer-events: auto; }
 .plans-pane__archive:hover {
   color: #fcd34d;
   border-color: color-mix(in srgb, var(--warn, #fbbf24) 55%, transparent);
   background: color-mix(in srgb, var(--warn, #fbbf24) 14%, transparent);
 }
+.plans-pane__cleanup:hover {
+  color: var(--accent-strong, #7dd3fc);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.plans-pane__cleanup:disabled { cursor: default; opacity: 0.55; }
 
 /* P-020 — make the Plans face a visual sibling of InboxPane while preserving
    its plan-specific popup behavior. These deliberately reuse InboxPane's
@@ -492,11 +503,13 @@
   color: var(--accent-strong, #7dd3fc);
   transform: translate(2px, -50%);
 }
-.plans-pane__archive {
+.plans-pane__archive,
+.plans-pane__cleanup {
   top: 10px;
-  right: 29px;
   transform: none;
 }
+.plans-pane__cleanup { right: 29px; }
+.plans-pane__archive { right: 55px; }
 .plans-pane__foot {
   display: flex;
   align-items: center;

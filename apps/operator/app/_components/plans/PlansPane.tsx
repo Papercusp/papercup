@@ -82,6 +82,7 @@ import { useFlag } from "@/lib/flag-hooks";
 import { FLAGS } from "@papercusp/flags";
 import PlanPopupModal from './PlanPopupModal';
 import { PLAN_DASHBOARD_PARAM } from './PlanDashboardHost';
+import PlanCleanupEntryButton from './PlanCleanupEntryButton';
 import PlansCleanupStrip from "./PlansCleanupStrip";
 import {
   PLAN_CLEANUP_RUN_PARAM,
@@ -886,6 +887,20 @@ export default function PlansPane() {
                       </span>
                     ) : null}
                   </button>
+                  {cleanupEnabled ? (
+                    <PlanCleanupEntryButton
+                      planSlug={plan.slug}
+                      harness={plan.harness}
+                      title={plan.title ?? plan.slug}
+                      appearance="row"
+                      active={Boolean(
+                        cleanup.isRunning &&
+                          cleanup.run?.seedRefs.length === 1 &&
+                          cleanup.run.seedRefs[0] === plan.slug,
+                      )}
+                      onRunStarted={(runId) => void setCleanupRunId(runId)}
+                    />
+                  ) : null}
                   {/* P-008 / EI-15304: one-click archive for a STALE row — the
                     sprawl sweep. A SIBLING of the row button, never nested
                     (a <button> inside a <button> is invalid HTML — the trap
@@ -900,7 +915,9 @@ export default function PlansPane() {
                         aria-label={`Archive ${plan.title ?? plan.slug}`}
                         data-testid={`plans-pane-archive-${plan.slug}`}
                       >
-                        <Archive size={12} aria-hidden="true" />
+                        <span className="plans-pane__row-action-icon" aria-hidden="true">
+                          <Archive size={12} />
+                        </span>
                       </button>
                     </Tooltip>
                   ) : null}
