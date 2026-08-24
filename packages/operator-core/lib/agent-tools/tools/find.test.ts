@@ -200,6 +200,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('assumptions?');
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
+
 });
 
 describe('confirmed hive discovery visibility (WI-39255)', () => {

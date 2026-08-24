@@ -613,6 +613,25 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(r.success).toBe(true);
   });
 
+  it('rejects top-level linkTo while accepting the nested dispatch shape (EI-21314316567182083)', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: {
+        linkTo?: unknown;
+        observation?: { properties?: { linkTo?: unknown } };
+      };
+    };
+    expect(json.properties?.linkTo).toBeUndefined();
+    expect(json.properties?.observation?.properties?.linkTo).toBeDefined();
+
+    const misplaced = argsSchema.safeParse({
+      title: 'top-level linkTo schema mismatch',
+      kind: 'feature',
+      linkTo: [{ targetId: 'EI-1', rel: 'revises' }],
+    });
+    expect(misplaced.success).toBe(false);
+    expect(JSON.stringify(misplaced.success ? [] : misplaced.error!.issues)).toContain('linkTo');
+  });
+
   it('accepts a rubric-graded observation (rubricRef + ratings with evidence)', () => {
     const r = argsSchema.safeParse({
       title: 'scorecard',
