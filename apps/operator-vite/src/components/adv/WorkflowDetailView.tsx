@@ -26,6 +26,8 @@ import './adv-workflow-detail.css';
 export interface WorkflowDetailViewProps {
   /** Display name of the workflow being inspected. */
   workflowLabel: string;
+  /** Canonical plan identity; remains available when no binding exists yet. */
+  planSlug: string | null;
   /** Harness the workflow's plan belongs to; null when it has none. */
   harnessSlug: string | null;
   /** The binding that wires this workflow, or null when it has none. */
@@ -44,6 +46,7 @@ export interface WorkflowDetailViewProps {
 
 export default function WorkflowDetailView({
   workflowLabel,
+  planSlug,
   harnessSlug,
   binding,
   bindingLoaded,
@@ -106,6 +109,8 @@ export default function WorkflowDetailView({
         <WorkflowAgentPanel
           harnessSlug={harnessSlug}
           workflowLabel={workflowLabel}
+          planSlug={planSlug}
+          binding={binding}
           armed={armed}
           selectedNode={selectedNode}
           busy={busy}

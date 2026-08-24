@@ -498,6 +498,7 @@ export default function AdvWorkflowsTab() {
         {confirmElement}
         <WorkflowDetailView
           workflowLabel={openedWorkflow.label}
+          planSlug={openedWorkflow.planSlug ?? null}
           harnessSlug={openedWorkflow.harness ?? null}
           binding={openedBinding}
           // `external === null` means the snapshot has not been read yet — the

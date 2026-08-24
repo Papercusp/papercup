@@ -119,6 +119,38 @@ describe('ChatPanel — conversation-thread-load perf interaction (P-006)', () =
   });
 });
 
+describe('ChatPanel — hosting-surface context', () => {
+  it('forwards non-empty context with the message instead of dropping the host identity', async () => {
+    syncRows = [chatRow()];
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(
+      sseStream([`event: done\ndata: ${JSON.stringify({})}\n\n`]),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ChatPanel
+        slug={SLUG}
+        chatId={CHAT}
+        context='{"surface":"workflows-detail","planSlug":"meeting-prep"}'
+      />,
+    );
+    const textarea = await screen.findByPlaceholderText(/Message worker/i);
+    fireEvent.change(textarea, { target: { value: 'change the filter' } });
+    fireEvent.submit(textarea.closest('form')!);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const messageCall = fetchMock.mock.calls.find(
+      ([url]) => typeof url === 'string' && url.includes('/messages'),
+    );
+    const request = messageCall?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      content: 'change the filter',
+      context: '{"surface":"workflows-detail","planSlug":"meeting-prep"}',
+    });
+  });
+});
+
 describe('ChatPanel — resolved-but-empty is an error, not an eternal spinner (WI-5125)', () => {
   it('surfaces a not-found fault when the subscription settles with zero rows', async () => {
     syncRows = [];

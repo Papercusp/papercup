@@ -64,6 +64,13 @@ export interface ChatPanelProps {
    *  right role prompt: 'discuss' reframes a worker to advise-first. Optional;
    *  the server defaults to 'chat' when absent. */
   mode?: 'chat' | 'discuss';
+  /**
+   * Bounded client-rendered context for the surface that hosts this chat.
+   * The server labels it untrusted data and never treats it as authority; it
+   * exists so embedded chats (for example Workflows) can name the canonical
+   * object currently on screen without forking the agent-chat store.
+   */
+  context?: string;
   /** Called when the user archives this chat — parent should remove the dock panel. */
   onArchive?: () => void;
 }
@@ -73,7 +80,7 @@ type SendState =
   | { kind: 'streaming'; partial: string }
   | { kind: 'error'; message: string };
 
-export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelProps) {
+export default function ChatPanel({ slug, chatId, mode, context, onArchive }: ChatPanelProps) {
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [chat, setChat] = useState<ChatRow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -207,7 +214,11 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ content, ...(mode ? { mode } : {}) }),
+          body: JSON.stringify({
+            content,
+            ...(mode ? { mode } : {}),
+            ...(context?.trim() ? { context: context.trim() } : {}),
+          }),
         },
       );
       if (!res.ok) {
@@ -309,7 +320,7 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
     } catch (err) {
       setSendState({ kind: 'error', message: `send failed: ${(err as Error).message}` });
     }
-  }, [chat, chatId, draft, invalidateDetail, mode, sendState.kind, slug]);
+  }, [chat, chatId, context, draft, invalidateDetail, mode, sendState.kind, slug]);
 
   const onArchiveClick = useCallback(async () => {
     if (!await askConfirm({

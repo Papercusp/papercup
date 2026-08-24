@@ -8,14 +8,14 @@ import type { WorkflowBindingInput } from './workflow-graph-model';
 
 const H = vi.hoisted(() => ({
   layout: vi.fn<(graph: unknown) => Promise<unknown>>(),
-  chatMounts: [] as Array<{ slug: string; chatId: string }>,
+  chatMounts: [] as Array<{ slug: string; chatId: string; context?: string }>,
 }));
 
 // The real ChatPanel opens an EventSource and hits the network; the Conversations tab's own
 // tests stub it the same way. What matters here is WHICH chat we mount, not its internals.
 vi.mock('@/app/harness/ChatPanel', () => ({
-  default: (props: { slug: string; chatId: string }) => {
-    H.chatMounts.push({ slug: props.slug, chatId: props.chatId });
+  default: (props: { slug: string; chatId: string; context?: string }) => {
+    H.chatMounts.push({ slug: props.slug, chatId: props.chatId, context: props.context });
     return <div data-testid="chat-panel-stub" />;
   },
 }));
@@ -47,6 +47,7 @@ function binding(overrides: Partial<WorkflowBindingInput> = {}): WorkflowBinding
 function renderView(props: Partial<React.ComponentProps<typeof WorkflowDetailView>> = {}, search = '') {
   const merged: React.ComponentProps<typeof WorkflowDetailView> = {
     workflowLabel: 'Meeting prep brief',
+    planSlug: 'meeting-prep-brief',
     harnessSlug: 'papercusp',
     binding: binding(),
     bindingLoaded: true,
@@ -143,6 +144,7 @@ describe('WorkflowDetailView — selection is URL state', () => {
     render(
       <WorkflowDetailView
         workflowLabel="Meeting prep brief"
+        planSlug="meeting-prep-brief"
         harnessSlug="papercusp"
         binding={binding()}
         bindingLoaded
@@ -216,11 +218,37 @@ describe('WorkflowDetailView — the agent chat is the existing one', () => {
   it('creates a harness-scoped agent chat and mounts the standard ChatPanel', async () => {
     renderView();
     await waitFor(() => expect(H.chatMounts).toHaveLength(1));
-    expect(H.chatMounts[0]).toEqual({ slug: 'papercusp', chatId: 'chat-1' });
+    expect(H.chatMounts[0]).toMatchObject({ slug: 'papercusp', chatId: 'chat-1' });
+    const context = JSON.parse(H.chatMounts[0].context ?? '{}') as {
+      surface?: string;
+      workflow?: { label?: string; harness?: string; planSlug?: string };
+      binding?: { id?: string; eventPattern?: string; armed?: boolean };
+      selectedNode?: unknown;
+    };
+    expect(context).toMatchObject({
+      surface: 'workflows-detail',
+      workflow: { label: 'Meeting prep brief', harness: 'papercusp', planSlug: 'meeting-prep-brief' },
+      binding: { id: 'bind-1', eventPattern: 'calendar.event.starts-in-30m', armed: false },
+      selectedNode: null,
+    });
 
     const call = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[0]).toBe('/api/harness/papercusp/agent-chats');
     expect(JSON.parse((call[1] as RequestInit).body as string).title).toBe('Workflow · Meeting prep brief');
+  });
+
+  it('updates the existing chat context when the selected workflow node changes', async () => {
+    renderView({}, '?wfNode=plan');
+    await waitFor(() => expect(H.chatMounts.length).toBeGreaterThan(0));
+    const latest = H.chatMounts.at(-1);
+    const context = JSON.parse(latest?.context ?? '{}') as {
+      selectedNode?: { id?: string; kind?: string; label?: string };
+    };
+    expect(context.selectedNode).toMatchObject({
+      id: 'plan',
+      kind: 'plan',
+      label: 'Meeting prep brief',
+    });
   });
 
   it('explains rather than mounting a chat when the workflow has no harness', async () => {

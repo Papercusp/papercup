@@ -22,13 +22,66 @@
 
 import { useEffect, useState } from 'react';
 import ChatPanel from '@/app/harness/ChatPanel';
-import type { WorkflowGraphNode } from './workflow-graph-model';
+import type { WorkflowBindingInput, WorkflowGraphNode } from './workflow-graph-model';
+
+const WORKFLOW_CONTEXT_MAX_CHARS = 3_500;
+
+/**
+ * The workflow chat reuses the canonical agent-chat transport, whose generic
+ * row has no workflow foreign key. Carry the current read-model snapshot on
+ * each message so the agent knows what the panel means by "this workflow".
+ * The server labels this block untrusted and requires canonical re-reads before
+ * mutation; this is orientation data, never an authority token.
+ */
+export function buildWorkflowAgentContext(input: {
+  workflowLabel: string;
+  harnessSlug: string | null;
+  planSlug: string | null;
+  binding: WorkflowBindingInput | null;
+  selectedNode: WorkflowGraphNode | null;
+}): string {
+  const { binding, selectedNode } = input;
+  const encoded = JSON.stringify({
+    surface: 'workflows-detail',
+    workflow: {
+      label: input.workflowLabel,
+      harness: input.harnessSlug,
+      planSlug: input.planSlug,
+    },
+    binding: binding
+      ? {
+          id: binding.id,
+          sourceKind: binding.sourceKind,
+          eventPattern: binding.eventPattern,
+          eventFilter: binding.eventFilter,
+          action: binding.action,
+          stormPolicy: binding.stormPolicy,
+          armed: binding.armed,
+        }
+      : null,
+    selectedNode: selectedNode
+      ? {
+          id: selectedNode.id,
+          kind: selectedNode.kind,
+          label: selectedNode.label,
+          detail: selectedNode.detail,
+        }
+      : null,
+  });
+  return encoded.length <= WORKFLOW_CONTEXT_MAX_CHARS
+    ? encoded
+    : `${encoded.slice(0, WORKFLOW_CONTEXT_MAX_CHARS - 1)}…`;
+}
 
 export interface WorkflowAgentPanelProps {
   /** Harness the chat is scoped to — agent_chats are per-harness. */
   harnessSlug: string | null;
   /** Workflow display name, used as the chat's context title. */
   workflowLabel: string;
+  /** Canonical plan slug even when the workflow has no external binding yet. */
+  planSlug: string | null;
+  /** Current binding read-model row; null means unwired or not yet loaded. */
+  binding: WorkflowBindingInput | null;
   /** Whether the workflow's trigger is currently armed; null when unknown. */
   armed: boolean | null;
   /** The node the operator clicked in the topology pane, so the chat has visible context. */
@@ -41,6 +94,8 @@ export interface WorkflowAgentPanelProps {
 export default function WorkflowAgentPanel({
   harnessSlug,
   workflowLabel,
+  planSlug,
+  binding,
   armed,
   selectedNode,
   busy,
@@ -50,6 +105,13 @@ export default function WorkflowAgentPanel({
   const [chatId, setChatId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const workflowContext = buildWorkflowAgentContext({
+    workflowLabel,
+    harnessSlug,
+    planSlug,
+    binding,
+    selectedNode,
+  });
 
   // Create the chat once per (harness, workflow). Re-create when either changes, so opening
   // a different workflow does not continue the previous workflow's conversation.
@@ -111,7 +173,7 @@ export default function WorkflowAgentPanel({
         ) : creating || !chatId ? (
           <p className="pc-workflow-agent__notice">Starting the workflow agent…</p>
         ) : (
-          <ChatPanel slug={harnessSlug} chatId={chatId} />
+          <ChatPanel slug={harnessSlug} chatId={chatId} context={workflowContext} />
         )}
       </div>
 
