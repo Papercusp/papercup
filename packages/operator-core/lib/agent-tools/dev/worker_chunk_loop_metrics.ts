@@ -33,13 +33,17 @@ import {
   type OrchestratorPg,
   type RampStep,
 } from '@papercusp/orchestrator';
+import {
+  decideWorkerParityGate,
+  readWorkerParityRuns,
+} from '../../agent-loop/worker-parity-gate';
 
 export default defineTool({
   name: 'dev:worker_chunk_loop_metrics',
   description:
-    'Monitoring metrics for the operator-hosted worker:chunk-loop rollout (P-020), all six gate metrics: feature completion RATE, outcome DISTRIBUTION (completed/escalated/planning_failed/aborted), file-lock CONTENTION rate, replan FREQUENCY across all runs, crash-RESUME success rate, and per-chunk DURABILITY — split by execution PATH (subprocess vs the operator-hosted op) — plus the op−subprocess completion-rate delta. Reads harness_shared.worker_chunk_loop_outcomes for the active workspace over a lookback window. EMPTY (zeroed) until the dark-launch (per-harness workerChunkLoop knob) has run real features through the op path. Use to diff op vs subprocess parity before/while ramping.',
+    'Worker rollout metrics. The default P-020 view compares worker:chunk-loop execution paths. Set includeOwnedLoopParity=true for the P-011 fail-closed owned-loop vs omp -p worker gate: paired task success, cost/task, stream fidelity, and MCP compatibility. A worker engine may flip only when ownedLoopParity.workerFlipAllowed is true.',
   guidance: {
-    when: 'Watch worker:chunk-loop dark-launch / ramp health — is the operator-hosted op at parity with the subprocess path on completion-rate + outcome distribution? Read before approving a ramp step.',
+    when: 'Watch worker:chunk-loop dark-launch/ramp health. For own-loop cutover, pass includeOwnedLoopParity=true and require its explicit green verdict before changing worker engine defaults.',
     notWhen: 'Live rate-limit pacing — dev:rate_governor_status. Per-feature chunk progress — the harness UI / harness_chunk_plans. Whether the op path is ROUTED on a harness — check the per-harness workerChunkLoop config knob.',
     seeAlso: [
       'dev:rate_governor_status (live rate-limit pacing)',
@@ -71,6 +75,17 @@ export default defineTool({
       .union([z.literal(0), z.literal(25), z.literal(50), z.literal(100)])
       .optional()
       .describe('Current ramp cohort % (0|25|50|100). When set, include the deterministic ramp-gate recommendation (advance/hold/rollback, P-021) for this step.'),
+    includeOwnedLoopParity: z
+      .boolean()
+      .optional()
+      .describe('Include the P-011 owned-loop vs omp -p paired worker gate (default false).'),
+    parityRunLimit: z
+      .number()
+      .int()
+      .min(40)
+      .max(2000)
+      .optional()
+      .describe('Bound parity-qualified runs read before pairing (default 500).'),
   }),
   async handler(args) {
     const windowHours = args.windowHours ?? 168;
@@ -100,6 +115,49 @@ export default defineTool({
     const sampleLimit = args.sampleLimit ?? 0;
     const rampRecommendation =
       args.rampStep !== undefined ? decideRampAdvance(metrics, args.rampStep as RampStep) : undefined;
+    const parityRunLimit = args.parityRunLimit ?? 500;
+    let parityReadError: string | null = null;
+    let parityRuns = [] as Awaited<ReturnType<typeof readWorkerParityRuns>>;
+    if (args.includeOwnedLoopParity) {
+      try {
+        // The tool-invocation writer is intentionally deferred. Drain it before
+        // grading MCP compatibility so an immediately-following gate read cannot
+        // mistake queued calls for missing calls.
+        const { flushPendingTelemetry } = await import('../../projected-tool-deps');
+        await flushPendingTelemetry();
+        parityRuns = await routeWithWorkspace(async (tx) =>
+          readWorkerParityRuns(tx as unknown as OrchestratorPg, {
+            workspaceId: ws,
+            sinceMs,
+            ...(args.harnessSlug ? { harnessSlug: args.harnessSlug } : {}),
+            limit: parityRunLimit,
+          }),
+        );
+      } catch (err) {
+        parityReadError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    const parityGate = args.includeOwnedLoopParity ? decideWorkerParityGate(parityRuns) : null;
+    const ownedLoopParity = args.includeOwnedLoopParity
+      ? {
+          ...parityGate!,
+          windowHours,
+          harnessSlug: args.harnessSlug ?? null,
+          parityRunLimit,
+          truncatedByRunLimit: parityRuns.length >= parityRunLimit,
+          telemetryReadError: parityReadError,
+          basis: {
+            taskSuccess: 'exit_code = 0 AND persisted stream summary ok',
+            costPerTask: 'one run-attributed agent_usage_samples USD row per paired task; missing/duplicate/unpriced holds',
+            streamFidelity: 'exactly one backend terminal, valid JSONL, non-empty final text; native tool events balanced',
+            mcpCompatibility: 'run_id-correlated tool_invocations failure rate + baseline tool-name coverage',
+            pairing: 'same harness + SHA-256 prompt hash + same requested model; repeated prompts newest-to-newest',
+          },
+          ...(parityReadError
+            ? { reasons: [`telemetry read failed: ${parityReadError}`, ...parityGate!.reasons] }
+            : {}),
+        }
+      : undefined;
     return {
       content: [
         {
@@ -111,6 +169,7 @@ export default defineTool({
             totalRows: rows.length,
             metrics,
             rampRecommendation,
+            ownedLoopParity,
             sample: sampleLimit > 0 ? rows.slice(0, sampleLimit) : undefined,
           }),
         },
