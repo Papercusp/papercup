@@ -194,6 +194,36 @@ export const runnerPath = (cmd: string): string | null =>
   /(\S*lint-tsc[\w-]*\.mjs)/.exec(cmd)?.[1] ?? null;
 
 /**
+ * LEAF vs FAN-OUT — the two runner shapes, which take OPPOSITE wrapper rules.
+ *
+ * A LEAF runner configures ONE compile: it hands the shared gate a `tscCommand`
+ * and a `baselineFile`. The gate reserves a slot around that compile, so an outer
+ * prefix on the npm script is a second, nested reservation — the thing
+ * EI-21311288080670514 removed.
+ *
+ * A FAN-OUT runner (`lint-tsc-workspaces.mjs`, `lint-tsc-papercusp-libs.mjs`)
+ * configures NEITHER — it discovers many packages and drives each one. Its outer
+ * prefix is the deliberate AGGREGATE reservation that stops N package compiles
+ * from all starting at once, and `lint-tsc.test.ts` ("workspace fan-out invokes
+ * each package's typecheck from inside its own aggregate pc-heavy reservation")
+ * is the statement of that design. Flagging it would red-pin the gate on
+ * intended behaviour.
+ *
+ * Measured discriminator (2026-08-24): every leaf carries baselineFile≥2 and
+ * tscCommand≥1; both fan-outs carry exactly 0 of each. This reads the runner
+ * rather than hardcoding a filename list, so a new runner of either shape is
+ * classified without editing this guard.
+ */
+const CONFIGURES_ONE_COMPILE = /baselineFile|tscCommand/;
+export const runnerShape = (workspaceDir: string, cmd: string): 'leaf' | 'fan-out' | 'unknown' => {
+  const rel = runnerPath(cmd);
+  if (rel === null) return 'unknown';
+  const resolved = path.resolve(REPO_ROOT, workspaceDir, rel);
+  if (!existsSync(resolved)) return 'unknown';
+  return CONFIGURES_ONE_COMPILE.test(readFileSync(resolved, 'utf8')) ? 'leaf' : 'fan-out';
+};
+
+/**
  * Does this runner ACTUALLY reach the shared gate?
  *
  * Without this, 'internal' would be a naming convention rather than a fact, and a
@@ -217,24 +247,39 @@ export const inScope = (workspaceDir: string, cmd: string, submodules: string[])
  * The invariant is ADMITTED EXACTLY ONCE — not "carries a wrapper".
  * Under-admission starves the box; over-admission deadlocks it.
  */
+/**
+ * The verdict for ONE script, or null when it is compliant / not governed.
+ *
+ * Split out from the scan so the rules can be exercised on synthetic commands
+ * against REAL runners — proving each branch can fire without mutating the
+ * shared tree, which on this repo the sweep can commit out from under a probe.
+ */
+export const classify = (
+  dir: string,
+  name: string,
+  cmd: string,
+  submodules: string[],
+): string | null => {
+  if (!isHeavyTypecheck(cmd)) return null;
+  if (!inScope(dir, cmd, submodules)) return null;
+  if (`${dir}:${name}` in ALLOW) return null;
+  const wrapped = ROUTES_THROUGH_PC_HEAVY.test(cmd);
+  if (admissionSite(cmd) === 'internal') {
+    if (runnerShape(dir, cmd) === 'fan-out') return null; // aggregate reservation, by design
+    if (wrapped) return `${dir} :: ${name} :: DOUBLE-ADMITTED (outer wrapper nests a second slot) :: ${cmd}`;
+    if (!runnerReachesSharedGate(dir, cmd)) return `${dir} :: ${name} :: RUNNER NEVER REACHES ${SHARED_GATE} :: ${cmd}`;
+    return null;
+  }
+  return wrapped ? null : `${dir} :: ${name} :: UNADMITTED (bare tsc, no wrapper) :: ${cmd}`;
+};
+
 export const offenders = (): string[] => {
   const submodules = submodulePaths();
   const found: string[] = [];
   for (const dir of workspaceDirs()) {
     for (const [name, cmd] of Object.entries(scriptsOf(dir))) {
-      if (!isHeavyTypecheck(cmd)) continue;
-      if (!inScope(dir, cmd, submodules)) continue;
-      if (`${dir}:${name}` in ALLOW) continue;
-      const wrapped = ROUTES_THROUGH_PC_HEAVY.test(cmd);
-      if (admissionSite(cmd) === 'internal') {
-        if (wrapped) {
-          found.push(`${dir} :: ${name} :: DOUBLE-ADMITTED (outer wrapper nests a second slot) :: ${cmd}`);
-        } else if (!runnerReachesSharedGate(dir, cmd)) {
-          found.push(`${dir} :: ${name} :: RUNNER NEVER REACHES ${SHARED_GATE} :: ${cmd}`);
-        }
-      } else if (!wrapped) {
-        found.push(`${dir} :: ${name} :: UNADMITTED (bare tsc, no wrapper) :: ${cmd}`);
-      }
+      const verdict = classify(dir, name, cmd, submodules);
+      if (verdict !== null) found.push(verdict);
     }
   }
   return found;
@@ -273,6 +318,52 @@ describe('typecheck scripts are admission-controlled', () => {
     expect(isHeavyTypecheck(cmd)).toBe(true);
     expect(admissionSite(cmd)).toBe('internal');
     expect(ROUTES_THROUGH_PC_HEAVY.test(cmd)).toBe(true);
+  });
+
+  it('every branch of the rule can actually fire — falsifiability, without mutating the tree', () => {
+    // A scan-based guard that only ever returns [] is indistinguishable from one
+    // that cannot fail. Each verdict is provoked here on a REAL runner path with a
+    // synthetic command, so the branches are proven live rather than assumed.
+    const none: string[] = [];
+
+    // 1. UNADMITTED — bare tsc with no wrapper.
+    expect(classify('apps/thing', 'typecheck', 'tsc --noEmit', none)).toMatch(/UNADMITTED/);
+    // ...and its compliant twin does NOT fire.
+    expect(classify('apps/thing', 'typecheck', 'bash ../../scripts/pc-heavy.sh tsc --noEmit', none)).toBeNull();
+
+    // 2. DOUBLE-ADMITTED — the exact pre-EI-21311288080670514 line on a leaf.
+    expect(
+      classify('apps/operator', 'typecheck', 'bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc-operator.mjs', none),
+    ).toMatch(/DOUBLE-ADMITTED/);
+    // ...and the current, correct line does NOT fire.
+    expect(classify('apps/operator', 'typecheck', 'node ../../scripts/lint-tsc-operator.mjs', none)).toBeNull();
+
+    // 3. RUNNER NEVER REACHES the shared gate — a plausible name that delegates nowhere.
+    expect(classify('.', 'typecheck', 'node scripts/lint-tsc-does-not-exist.mjs', none)).toMatch(/NEVER REACHES/);
+
+    // 4. The fan-out exemption stays an exemption, not a blanket.
+    expect(classify('.', 'lint:tsc:workspaces', 'bash scripts/pc-heavy.sh node scripts/lint-tsc-workspaces.mjs', none)).toBeNull();
+  });
+
+  it('separates a single-compile leaf from a fan-out aggregator', () => {
+    // Leaves configure one compile, so the gate reserves for them and an outer
+    // wrapper would nest. Fan-outs configure none and drive many packages, so
+    // their outer wrapper IS the aggregate reservation.
+    expect(runnerShape('apps/operator', 'node ../../scripts/lint-tsc-operator.mjs')).toBe('leaf');
+    expect(runnerShape('.', 'node scripts/lint-tsc.mjs')).toBe('leaf');
+    expect(runnerShape('.', 'bash scripts/pc-heavy.sh node scripts/lint-tsc-workspaces.mjs')).toBe('fan-out');
+    expect(runnerShape('.', 'bash scripts/pc-heavy.sh node scripts/lint-tsc-papercusp-libs.mjs')).toBe('fan-out');
+    // An unresolvable runner is never silently treated as a fan-out — that would
+    // be the exemption widening itself into a hole.
+    expect(runnerShape('.', 'node scripts/lint-tsc-does-not-exist.mjs')).toBe('unknown');
+  });
+
+  it('still flags a LEAF that carries an outer wrapper, fan-out exemption notwithstanding', () => {
+    // The exemption is keyed on runner shape, so it cannot be used to smuggle a
+    // leaf back under an outer wrapper.
+    expect(runnerShape('apps/operator', 'bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc-operator.mjs')).toBe(
+      'leaf',
+    );
   });
 
   it('treats internal admission as a fact about the runner, not about its name', () => {
