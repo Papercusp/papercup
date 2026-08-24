@@ -367,10 +367,17 @@ export interface WorkItemSpecRevisionEdge {
 /** Read the explicit many-to-many coverage edges for one work item. */
 export async function listWorkItemSpecRevisionEdges(options: {
   harnessSlug?: string;
-  planSlug: string;
+  /**
+   * OMIT to read every namespace. D-013: a work item may link to clauses in any
+   * plan namespace regardless of its own source-plan provenance, so the universal
+   * resolver needs the unscoped read. Widened here rather than added as a sibling
+   * reader — two readers over one edge table is how the two drift apart.
+   */
+  planSlug?: string;
   workItemId: string;
 }): Promise<WorkItemSpecRevisionEdge[]> {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const planSlug = options.planSlug;
   const rows = await withWorkspace(
     scope.workspaceId,
     async (tx) => tx<{
@@ -384,9 +391,9 @@ export async function listWorkItemSpecRevisionEdges(options: {
         FROM harness_shared.work_item_spec_revision_edges
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${options.planSlug}
          AND work_item_id = ${options.workItemId}
-       ORDER BY spec_id, spec_revision`,
+         ${planSlug === undefined ? tx`` : tx`AND plan_slug = ${planSlug}`}
+       ORDER BY plan_slug, spec_id, spec_revision`,
   );
   return rows.map((row) => ({
     workItemId: row.work_item_id,

@@ -44,6 +44,10 @@ const MIGRATION_852 = path.resolve(
   '../../../../../libs/papercusp/libs/db/sql/852-plan-spec-clause-integrity.sql',
 );
 const MIGRATION_929 = path.resolve(here, '../../../../../libs/papercusp/libs/db/sql/929-spec-clause-falsifier.sql');
+const MIGRATION_930 = path.resolve(
+  here,
+  '../../../../../libs/papercusp/libs/db/sql/930-spec-clause-falsifier-null-safe.sql',
+);
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-integration',
@@ -118,6 +122,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_929);
   // 929 drops-then-adds its own CHECK precisely so it is re-runnable; prove that.
   await applyMigrationForTest(db.sql, MIGRATION_929);
+  await applyMigrationForTest(db.sql, MIGRATION_930);
+  await applyMigrationForTest(db.sql, MIGRATION_930);
 }, 90_000);
 
 afterAll(async () => {
@@ -525,6 +531,11 @@ describe('D-016 clause falsifier', () => {
     };
 
     await expect(bad(`'{"observation": "   "}'::jsonb`)).rejects.toThrow(/falsifier_shape/);
+    // THE 929 REGRESSION, and the reason 930 exists. A falsifier that says only how to
+    // probe and never what would be OBSERVED used to be ACCEPTED: with the key absent,
+    // `jsonb_typeof(falsifier->'observation')` is NULL, `NULL = 'string'` is NULL, and a
+    // CHECK rejects only on FALSE — so it passed. A blank observation was caught ('' is a
+    // string); only the MISSING one slipped, and the two are indistinguishable downstream.
     await expect(bad(`'{"probeMethod": "how"}'::jsonb`)).rejects.toThrow(/falsifier_shape/);
     await expect(bad(`'{"observation": 42}'::jsonb`)).rejects.toThrow(/falsifier_shape/);
     await expect(bad(`'"a bare string"'::jsonb`)).rejects.toThrow(/falsifier_shape/);
