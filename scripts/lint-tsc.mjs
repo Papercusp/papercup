@@ -166,13 +166,27 @@ const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');
 export const TSC_COMMAND =
   'npx tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false';
 
+const USAGE = `Usage:
+  npm run lint:tsc              # any file above its baseline fails, named
+  npm run lint:tsc -- --mine    # fail on regressions in files dirty in the tree
+  npm run lint:tsc -- --files=path/a.ts,path/b.ts
+                               # scope to exactly these files
+  npm run lint:tsc -- --update  # lower each improved file's baseline (never raises)
+`;
+
 async function main() {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(USAGE);
+    return;
+  }
+
   await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
     baselineFile,
     label: 'operator-core',
-    argv: process.argv.slice(2),
+    argv,
     countField: 'operatorCoreErrorCount', // legacy field name — preserved for back-compat
   });
 }
