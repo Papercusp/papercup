@@ -42,6 +42,8 @@ import RevisionConversationModal from './RevisionConversationModal';
 import AgentsPanel from './AgentsPanel';
 import RunsPanel from './RunsPanel';
 import PlanTriggersPanel from './PlanTriggersPanel';
+import { PlanSpecCoverageSection } from './PlanSpecCoverageSection';
+import { PlanAcceptanceGateSection } from './PlanAcceptanceGateSection';
 import PlanConflictModal from './PlanConflictModal';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import PlanStatusPopover, {
@@ -496,6 +498,16 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
           featureSummary={featureSummary}
         />
       ) : null}
+      {/* P-011: ship-readiness belongs beside `## Now`, not buried in a tab — these are
+          the first surfaces on which the acceptance gate and the spec-coverage census are
+          visible WITHOUT attempting a ship. Both collapsed by default and `enabled`-gated.
+          Gate first (what blocks the ship NOW), census second (the full coverage picture,
+          which the gate's own short-circuit can hide). */}
+      <PlanAcceptanceGateSection slug={data.slug} />
+      <PlanSpecCoverageSection
+        slug={data.slug}
+        harnessSlug={harnessSlug ?? data.harness ?? null}
+      />
       <div ref={editorScopeRef} className="pc-plan-editor-scope">
         <PlanEditor
           value={editing ? (draft ?? raw) : strippedRaw}
