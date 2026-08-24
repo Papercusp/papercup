@@ -128,6 +128,15 @@ export function proxyOverloadRetryDelayMs(value: any, fallbackMs?: number, maxMs
 /** Only the proxy's explicitly retryable admission response is absorbed. A
  * bare application 429 without Retry-After is returned to the caller unchanged. */
 export function isRetryableMcpProxyOverload(response: any): boolean;
+/**
+ * Classify the two typed bootstrap responses that are safe to replay with the
+ * SAME idempotency key. `clone()` preserves the original response for api() to
+ * surface unchanged when the bounded retry budget is exhausted.
+ */
+export function bootstrapReplayDirective(response: any): Promise<{
+    kind: string;
+    delayMs: number;
+} | null>;
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv: any): {
     picker: boolean;
@@ -1421,7 +1430,7 @@ export function storeClaudeOAuthToken(token: any, { home }?: {
  * Deps are injected for tests (psu-launcher.test.ts) — `fetchImpl`/`sleep`/`now`
  * make the retry timing deterministic without real timers or sockets.
  */
-export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now, onNotice, timeoutMs, connectBudgetMs, timeoutRetries, label, target, resolveFallback, onFailover, healthProbeTimeoutMs, }?: {
+export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now, onNotice, timeoutMs, connectBudgetMs, timeoutRetries, retryBootstrapFailures, bootstrapReplayMaxAttempts, bootstrapReplayBudgetMs, label, target, resolveFallback, onFailover, healthProbeTimeoutMs, }?: {
     fetchImpl?: typeof fetch | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
     now?: (() => number) | undefined;
@@ -1429,6 +1438,9 @@ export function fetchWithResilience(url: any, init?: {}, { fetchImpl, sleep, now
     timeoutMs?: number | undefined;
     connectBudgetMs?: number | undefined;
     timeoutRetries?: number | undefined;
+    retryBootstrapFailures?: boolean | undefined;
+    bootstrapReplayMaxAttempts?: number | undefined;
+    bootstrapReplayBudgetMs?: number | undefined;
     label?: any;
     target?: {
         url: any;
@@ -2093,6 +2105,17 @@ export function spawnInherit({ wrapperBin, args, cwd, env, spawnImpl, processApi
     processExit?: any;
     reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
 }): void;
+export function runWrapper({ wrapperBin, args, cwd, envelopeEnv, kickoff, kickoffFile, sessionPort, preserveCwd, reportSessionEndedImpl, }: {
+    wrapperBin: any;
+    args?: never[] | undefined;
+    cwd: any;
+    envelopeEnv: any;
+    kickoff?: null | undefined;
+    kickoffFile?: null | undefined;
+    sessionPort?: null | undefined;
+    preserveCwd?: boolean | undefined;
+    reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
+}): void;
 /**
  * Classify the activity evidence in a discovery record. This is deliberately a
  * diagnostic helper, not an auto-release decision: a quiet interactive prompt
@@ -2184,8 +2207,9 @@ export function assertFleetJoined(requestedFleet: any, res: any): void;
 export function psuLaunchArgvRecord(selections: any, args: any, { brain }?: {
     brain?: boolean | undefined;
 }): string[];
-export function freshSuBootstrapBody(selections: any, args: any, { brain }?: {
+export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey }?: {
     brain?: boolean | undefined;
+    bootstrapIdempotencyKey?: null | undefined;
 }): {
     session_port_protocol?: any;
     session_port_transform_version?: any;
@@ -2213,11 +2237,12 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain }?: {
     mode?: string | undefined;
     auto?: boolean | undefined;
     carry?: any;
+    launch_argv: string[];
+    bootstrap_idempotency_key?: undefined;
     agent: any;
     workspace: any;
     harness_slug: any;
     plan_slug: any;
-    launch_argv: string[];
 };
 export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, model, fleet, fleetRole, fleetName, fleetScheme, }?: {}): {
     fleet_scheme?: any;
@@ -2517,6 +2542,9 @@ export const MCP_PROXY_OVERLOAD_MAX_ATTEMPTS: 5;
 export const MCP_PROXY_OVERLOAD_RETRY_BUDGET_MS: 20000;
 export const MCP_PROXY_OVERLOAD_DEFAULT_RETRY_MS: 1000;
 export const MCP_PROXY_OVERLOAD_MAX_RETRY_MS: 5000;
+export const BOOTSTRAP_REPLAY_MAX_ATTEMPTS: 4;
+export const BOOTSTRAP_REPLAY_BUDGET_MS: 30000;
+export const BOOTSTRAP_REPLAY_DEFAULT_DELAY_MS: 1000;
 /** Floor for `--compaction-limit`, mirroring MIN_COMPACTION_LIMIT_TOKENS in
  *  packages/operator-core/lib/agent-config-constants.ts. Duplicated (this launcher
  *  is plain .mjs and imports no TS) and pinned by a parity assertion in
