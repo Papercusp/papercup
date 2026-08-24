@@ -144,6 +144,8 @@ export interface OrientationState {
   announcedGates: OrientationAnnouncedGate[];
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
+  /** Whether the armed loop's most recent fire was withheld before delivery. */
+  loopFireWithheld: boolean;
   /** Ranked, still-untriaged improvement signal; null means none or unreadable. */
   improvementTriage: OrientationImprovementTriage | null;
 }
@@ -180,8 +182,32 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     state.inboxRecent.length === 0 &&
     state.announcedGates.length === 0 &&
     !state.loopArmed &&
+    !state.loopFireWithheld &&
     state.improvementTriage === null
   );
+}
+
+/**
+ * The durable loop-status discriminator for a fire that never reached the wake
+ * ladder. A withhold deliberately leaves `lastFiredAt` alone, so the signal is
+ * current only when its timestamp is at or after the latest fire. Invalid or
+ * incomplete status is fail-open: orientation must not call an armed loop dead
+ * merely because observability is unavailable.
+ */
+export function isLoopFireWithheld(
+  status:
+    | {
+        active: boolean;
+        lastFiredAt?: string | null;
+        lastWithheldAt?: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!status?.active || !status.lastFiredAt || !status.lastWithheldAt) return false;
+  const lastFiredMs = Date.parse(status.lastFiredAt);
+  const lastWithheldMs = Date.parse(status.lastWithheldAt);
+  return Number.isFinite(lastFiredMs) && Number.isFinite(lastWithheldMs) && lastWithheldMs >= lastFiredMs;
 }
 
 /**
@@ -240,6 +266,7 @@ export function fingerprintOrientation(state: OrientationState, epoch: number): 
       .sort()
       .join('|'),
     loop: state.loopArmed ? 1 : 0,
+    loopWithheld: state.loopFireWithheld ? 1 : 0,
     triage: state.improvementTriage
       ? `${state.improvementTriage.pending}:${state.improvementTriage.considered}:` +
         `${state.improvementTriage.lowerBound ? 1 : 0}:${state.improvementTriage.top.lane}:` +
@@ -260,6 +287,7 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.inbox === b.inbox &&
     a.gates === b.gates &&
     a.loop === b.loop &&
+    a.loopWithheld === b.loopWithheld &&
     a.triage === b.triage &&
     a.epoch === b.epoch
   );
@@ -353,7 +381,13 @@ export function renderOrientationLines(state: OrientationState): string[] {
   for (const entry of state.inboxRecent.slice(0, INBOX_DISPLAY_CAP)) {
     lines.push(`- inbox ${compactActor(entry.from)}: ${compactHeadline(entry.summary)}`);
   }
-  if (state.loopArmed) lines.push('- engine loop: ARMED (a wake source exists).');
+  if (state.loopArmed) {
+    lines.push(
+      state.loopFireWithheld
+        ? '- engine loop: ARMED — fire pending, withheld for interactive turn.'
+        : '- engine loop: ARMED (a wake source exists).',
+    );
+  }
   return lines;
 }
 
@@ -410,6 +444,7 @@ export interface OrientationDeps {
   }>;
   announcedGates: (ownerId: string) => Promise<OrientationAnnouncedGate[]>;
   loopArmed: (ownerId: string) => Promise<boolean>;
+  loopFireWithheld: (ownerId: string) => Promise<boolean>;
   /** Existing improvement triage/ranking path, reduced to one bounded row. */
   improvementTriage: (workspaceId: string) => Promise<OrientationImprovementTriage | null>;
   /**
@@ -435,11 +470,12 @@ export async function resolveOrientationState(
   deps: Partial<OrientationDeps> = {},
 ): Promise<OrientationState> {
   const d = { ...defaultOrientationDeps(), ...deps };
-  const [held, inbox, announcedGates, loopArmed, improvementTriage] = await Promise.all([
+  const [held, inbox, announcedGates, loopArmed, loopFireWithheld, improvementTriage] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId).catch(() => [] as OrientationAnnouncedGate[]),
     d.loopArmed(ownerId).catch(() => false),
+    d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
   ]);
   return {
@@ -448,6 +484,7 @@ export async function resolveOrientationState(
     inboxRecent: inbox.newest,
     announcedGates,
     loopArmed,
+    loopFireWithheld,
     improvementTriage,
   };
 }
@@ -533,6 +570,10 @@ export function defaultOrientationDeps(): OrientationDeps {
     loopArmed: async (ownerId) => {
       const { activeLoopOwners } = await import('./adv-roster');
       return (await activeLoopOwners()).has(ownerId);
+    },
+    loopFireWithheld: async (ownerId) => {
+      const { getLoopStatus } = await import('./harness/routines/loop');
+      return isLoopFireWithheld(await getLoopStatus(ownerId));
     },
     // P-013: filing already works; consumption did not. Reuse the exact bounded
     // triage window, policy split, and ONE human-queue ranker rather than adding

@@ -5,10 +5,16 @@
  * here is the behaviour that decides whether an agent is oriented at all, and the
  * behaviour that decides what it COSTS every turn.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+const getLoopStatusMock = vi.hoisted(() => vi.fn());
+vi.mock('./harness/routines/loop', () => ({ getLoopStatus: getLoopStatusMock }));
+
 import {
   composeOrientationBlock,
+  defaultOrientationDeps,
   fingerprintOrientation,
+  isLoopFireWithheld,
   orientationUnchanged,
   isEmptyOrientation,
   renderOrientationLines,
@@ -26,6 +32,7 @@ const base: OrientationState = {
   inboxRecent: [],
   announcedGates: [],
   loopArmed: false,
+  loopFireWithheld: false,
   improvementTriage: null,
 };
 const withWork: OrientationState = {
@@ -42,6 +49,7 @@ const withWork: OrientationState = {
   inboxRecent: [{ msgId: 'm-1', from: 'su-peer', summary: 'Need your decision on the shared seam.' }],
   announcedGates: [{ event: 'fleet:atlas:phase-open', note: 'Phase 2 may begin.' }],
   loopArmed: true,
+  loopFireWithheld: false,
   improvementTriage: null,
 };
 
@@ -71,6 +79,7 @@ describe('turn-start-orientation — when it speaks', () => {
     for (const changed of [
       { ...withWork, unansweredDirected: 3 },
       { ...withWork, loopArmed: false },
+      { ...withWork, loopFireWithheld: true },
       { ...withWork, held: [{ id: 'WI-1', status: 'blocked' }] },
       { ...withWork, held: [{ id: 'WI-2', status: 'wip' }] },
       { ...withWork, announcedGates: [{ event: 'fleet:atlas:another-gate' }] },
@@ -107,6 +116,17 @@ describe('turn-start-orientation — when it speaks', () => {
     const a = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'wip' }] }, EPOCH);
     const b = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'blocked' }] }, EPOCH);
     expect(orientationUnchanged(a, b)).toBe(false);
+  });
+
+  it('a withheld-fire state change re-emits while the loop remains armed', () => {
+    const committed = fingerprintOrientation(withWork, EPOCH);
+    expect(
+      composeOrientationBlock({
+        state: { ...withWork, loopFireWithheld: true },
+        committed,
+        epoch: EPOCH,
+      }),
+    ).not.toBe('');
   });
 
   it('held-item ORDER does not count as a change (the fingerprint sorts)', () => {
@@ -222,6 +242,53 @@ describe('turn-start-orientation — what it says', () => {
     });
     expect(out).toContain('not armed');
     expect(out).toContain('halt silently');
+  });
+
+  it('labels an armed loop fire withheld for interaction instead of making it look unarmed', () => {
+    const out = composeOrientationBlock({
+      state: { ...withWork, loopFireWithheld: true },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out).toContain('engine loop: ARMED — fire pending, withheld for interactive turn.');
+    expect(out).not.toContain('engine loop: not armed');
+  });
+
+  it('recognizes only a current, active withheld fire', () => {
+    const fired = '2026-08-24T04:00:00.000Z';
+    expect(isLoopFireWithheld({ active: true, lastFiredAt: fired, lastWithheldAt: '2026-08-24T04:00:01.000Z' })).toBe(
+      true,
+    );
+    expect(isLoopFireWithheld({ active: true, lastFiredAt: fired, lastWithheldAt: fired })).toBe(true);
+    expect(isLoopFireWithheld({ active: true, lastFiredAt: fired, lastWithheldAt: '2026-08-24T03:59:59.000Z' })).toBe(
+      false,
+    );
+    expect(isLoopFireWithheld({ active: false, lastFiredAt: fired, lastWithheldAt: '2026-08-24T04:00:01.000Z' })).toBe(
+      false,
+    );
+    expect(isLoopFireWithheld({ active: true, lastFiredAt: null, lastWithheldAt: '2026-08-24T04:00:01.000Z' })).toBe(
+      false,
+    );
+    expect(isLoopFireWithheld({ active: true, lastFiredAt: 'not-a-time', lastWithheldAt: '2026-08-24T04:00:01.000Z' })).toBe(
+      false,
+    );
+  });
+
+  it('reads the withheld-fire signal from the shared loop-status discriminator', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      active: true,
+      lastFiredAt: '2026-08-24T04:00:00.000Z',
+      lastWithheldAt: '2026-08-24T04:00:01.000Z',
+    });
+    expect(await defaultOrientationDeps().loopFireWithheld('su-1')).toBe(true);
+
+    getLoopStatusMock.mockResolvedValue({
+      active: true,
+      lastFiredAt: '2026-08-24T04:00:02.000Z',
+      lastWithheldAt: '2026-08-24T04:00:01.000Z',
+    });
+    expect(await defaultOrientationDeps().loopFireWithheld('su-1')).toBe(false);
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
   });
 
   it('tells an agent holding nothing to claim before editing', () => {
@@ -342,6 +409,7 @@ describe('turn-start-orientation — what it says', () => {
       }),
       announcedGates: async () => [{ event: 'fleet:f:ready' }],
       loopArmed: async () => true,
+      loopFireWithheld: async () => true,
       improvementTriage: async () => ({
         pending: 2,
         considered: 2,
@@ -355,6 +423,7 @@ describe('turn-start-orientation — what it says', () => {
       inboxRecent: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
       announcedGates: [{ event: 'fleet:f:ready' }],
       loopArmed: true,
+      loopFireWithheld: true,
       improvementTriage: {
         pending: 2,
         considered: 2,
@@ -370,6 +439,7 @@ describe('turn-start-orientation — what it says', () => {
       inbox: async () => ({ count: 0, newest: [] }),
       announcedGates: async () => [],
       loopArmed: async () => false,
+      loopFireWithheld: async () => false,
       improvementTriage: async () => {
         throw new Error('ranker unavailable');
       },
