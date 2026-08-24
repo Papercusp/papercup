@@ -71,6 +71,12 @@ export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOL_SEGMENT_REGEX = /^[A-Za-z0-9._:-]+$/;
 
+// Keep this model-facing ceiling synchronized with MAX_BYTE_PAGE in
+// agent-tools/capability/read.ts. A cursor advertises the safe page request
+// (3,072 bytes) separately, but callers also need the tool's schema maximum
+// when they choose their own page size during recovery.
+const CAPABILITY_READ_MAX_BYTE_PAGE = 4_096;
+
 /** The subset of an MCP tools/call result the door reads/rewrites. */
 export interface DoorableResult {
   content: ReadonlyArray<{ type?: string; text?: string } | Record<string, unknown>>;
@@ -970,6 +976,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               kind: 'scratch-page',
               tool: 'capability:read',
               args: { file_path: fsPath, byte_offset: 0, byte_limit: 3_072 },
+              maxByteLimit: CAPABILITY_READ_MAX_BYTE_PAGE,
               uri,
               // EI-20685195115158619: named `dataEncoding`, not `encoding`. Bare
               // and adjacent to `file_path`, it read as "the file at that path is

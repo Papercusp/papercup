@@ -68,6 +68,7 @@ type SpillCursor = {
   kind: string;
   tool: string;
   args: { file_path: string; byte_offset: number; byte_limit: number };
+  maxByteLimit?: number;
   uri?: string;
   encoding?: unknown;
   dataEncoding?: string;
@@ -232,6 +233,13 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // the retained preview — the fuller prose warning must NOT appear here. A
     // ~90-char addition measurably evicted coord:orient's recovery fields.
     expect(next).not.toContain('grep/tail it directly');
+  });
+
+  it("surfaces capability:read's schema byte-page ceiling in the cursor", () => {
+    const { cursor } = doorOversizedResult();
+
+    expect(cursor.maxByteLimit).toBe(4_096);
+    expect(cursor.args.byte_limit).toBeLessThanOrEqual(cursor.maxByteLimit!);
   });
 
   it('carries the full plaintext warn-off on the raw-text branch, which has budget', () => {
