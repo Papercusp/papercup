@@ -126,20 +126,25 @@ fn work_terminal_pane_ids(panes: &PaneManifest, tabs: &[TabInfo]) -> Vec<u32> {
         .collect()
 }
 
-/// Return the current work set once at least one pending stack target is visible
-/// in the manifest. `None` means the open-command-pane result raced ahead of the
-/// corresponding `PaneUpdate`, so the caller should retain the pending target.
-/// Pure so the delayed-manifest race is covered by native tests.
+/// Return the current work set plus the pending stack targets that are visible
+/// in the manifest. `None` means every open-command-pane result raced ahead of
+/// its corresponding `PaneUpdate`, so the caller should retain every pending
+/// target. Keeping the visible subset separate is important when several panes
+/// open together: one pane becoming visible must not discard a later pane that
+/// has not reached the manifest yet. Pure so both delayed-manifest races are
+/// covered by native tests.
 fn stack_ids_when_ready(
     panes: &PaneManifest,
     tabs: &[TabInfo],
     pending_ids: &[u32],
-) -> Option<Vec<u32>> {
+) -> Option<(Vec<u32>, Vec<u32>)> {
     let ids = work_terminal_pane_ids(panes, tabs);
-    pending_ids
+    let visible_pending: Vec<u32> = pending_ids
         .iter()
-        .any(|pending_id| ids.contains(pending_id))
-        .then_some(ids)
+        .copied()
+        .filter(|pending_id| ids.contains(pending_id))
+        .collect();
+    (!visible_pending.is_empty()).then_some((ids, visible_pending))
 }
 
 /// Is this pane the pui HUD? Matches its command (`pui hud`) first, then falls
@@ -456,13 +461,25 @@ impl PuiCompanion {
         }
         let pending = std::mem::take(&mut self.pending_stack_panes);
         let pending_ids: Vec<u32> = pending.iter().map(|(id, _)| *id).collect();
-        let Some(ids) = stack_ids_when_ready(&self.panes, &self.tabs, &pending_ids) else {
+        let Some((ids, visible_pending)) =
+            stack_ids_when_ready(&self.panes, &self.tabs, &pending_ids)
+        else {
             self.pending_stack_panes = pending
                 .into_iter()
                 .filter_map(|(id, attempts)| (attempts > 0).then_some((id, attempts - 1)))
                 .collect();
             return;
         };
+
+        // Retire only targets proved visible by this manifest. Another launch
+        // can still be in flight even though an earlier one has appeared; keep
+        // that unseen id queued so its later PaneUpdate performs the final
+        // all-work-panes convergence instead of silently leaving it unstacked.
+        self.pending_stack_panes = pending
+            .into_iter()
+            .filter(|(id, _)| !visible_pending.contains(id))
+            .filter_map(|(id, attempts)| (attempts > 0).then_some((id, attempts - 1)))
+            .collect();
 
         if ids.len() >= 2 {
             stack_panes(ids.into_iter().map(PaneId::Terminal).collect());
@@ -665,7 +682,49 @@ mod tests {
         ));
         assert_eq!(
             stack_ids_when_ready(&PaneManifest { panes }, &tabs, &[9]),
-            Some(vec![1, 9])
+            Some((vec![1, 9], vec![9]))
+        );
+    }
+
+    #[test]
+    fn stack_keeps_staggered_pending_panes_until_each_is_visible() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            0usize,
+            vec![
+                cmd_pane(1, "existing-agent", Some("psu --agent=claude"), false),
+                cmd_pane(2, "pui", Some("pui hud"), false),
+            ],
+        );
+        let tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..Default::default()
+        }];
+
+        // Two launches are pending, but only the first has reached PaneUpdate.
+        // The caller may stack the visible work set now, but must retire only 9
+        // and leave 10 pending for the next manifest.
+        panes.get_mut(&0).unwrap().push(cmd_pane(
+            9,
+            "first-new-agent",
+            Some("psu --agent=codex"),
+            false,
+        ));
+        assert_eq!(
+            stack_ids_when_ready(&PaneManifest { panes: panes.clone() }, &tabs, &[9, 10]),
+            Some((vec![1, 9], vec![9]))
+        );
+
+        panes.get_mut(&0).unwrap().push(cmd_pane(
+            10,
+            "second-new-agent",
+            Some("psu --agent=claude"),
+            false,
+        ));
+        assert_eq!(
+            stack_ids_when_ready(&PaneManifest { panes }, &tabs, &[10]),
+            Some((vec![1, 9, 10], vec![10]))
         );
     }
 
