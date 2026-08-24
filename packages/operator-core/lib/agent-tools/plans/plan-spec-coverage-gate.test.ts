@@ -24,6 +24,7 @@ import {
   computePlanSpecCoverage,
   evaluatePlanSpecCoverageGate,
   type PlanSpecCoverageDeps,
+  type SpecEvidenceCensusRow,
 } from './plan-spec-coverage-gate';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { ScorecardRow } from '../../scorecards';
@@ -57,8 +58,27 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   };
 }
 
-function evidence(specId: string, specRevision: number) {
-  return { specId, specRevision };
+/**
+ * One evidence row as the census reads it.
+ *
+ * `evidenceKind` and `observedAt` are REQUIRED by `SpecEvidenceCensusRow` (P-013) and
+ * are supplied here rather than defaulted away: the composition and staleness
+ * partitions are derived from exactly these two fields, so a fixture that omitted them
+ * would produce a partition keyed on `undefined` that still "passes" every count
+ * assertion. Overridable so a test can state the kind or the timestamp it is exercising.
+ */
+function evidence(
+  specId: string,
+  specRevision: number,
+  over: Partial<SpecEvidenceCensusRow> = {},
+): SpecEvidenceCensusRow {
+  return {
+    specId,
+    specRevision,
+    evidenceKind: 'test',
+    observedAt: '2026-08-20T01:00:00.000Z',
+    ...over,
+  };
 }
 
 function adequacyCard(subjectRef: string, over: Partial<ScorecardRow> = {}): ScorecardRow {
@@ -84,7 +104,7 @@ function adequacyCard(subjectRef: string, over: Partial<ScorecardRow> = {}): Sco
 function deps(over: Partial<PlanSpecCoverageDeps> = {}): PlanSpecCoverageDeps {
   return {
     listClauses: vi.fn(async () => [] as SpecClauseRevision[]),
-    listEvidence: vi.fn(async () => [] as Array<{ specId: string; specRevision: number }>),
+    listEvidence: vi.fn(async () => [] as SpecEvidenceCensusRow[]),
     listCards: vi.fn(async () => [] as ScorecardRow[]),
     // ⚠ MUST be stubbed, and must default to an ENFORCING status.
     //
@@ -325,7 +345,7 @@ describe('computePlanSpecCoverage — the aggregate', () => {
   });
 
   it('pins the census limit itself rather than inheriting listSpecEvidence’s 200-row page default', async () => {
-    const listEvidence = vi.fn(async () => [] as Array<{ specId: string; specRevision: number }>);
+    const listEvidence = vi.fn(async () => [] as SpecEvidenceCensusRow[]);
     await computePlanSpecCoverage(
       { harnessSlug: 'papercusp', planSlug: PLAN },
       deps({ listClauses: vi.fn(async () => [clause()]), listEvidence }),
@@ -333,5 +353,179 @@ describe('computePlanSpecCoverage — the aggregate', () => {
     expect(listEvidence).toHaveBeenCalledWith(
       expect.objectContaining({ planSlugs: [PLAN], limit: SPEC_EVIDENCE_CENSUS_LIMIT }),
     );
+  });
+});
+
+/**
+ * P-013 instrumentation — the behavior-class / evidence-level / staleness partitions.
+ *
+ * The through-line of every test here is that a PARTITION of a census must reconcile
+ * with the census it partitions. A partition that merely looks plausible is worse than
+ * no partition: it is a second count of the same population, and two counts of one
+ * population are indistinguishable from one correct count right up until they disagree
+ * about the thing you are relying on.
+ */
+describe('computePlanSpecCoverage — P-013 instrumentation partitions', () => {
+  /** Sum one field across every present class. The reconciliation half of every test. */
+  const sumOver = (
+    byClass: Awaited<ReturnType<typeof computePlanSpecCoverage>>['byBehaviorClass'],
+    field: 'total' | 'enforceable' | 'proven' | 'staleProof' | 'unproven' | 'falsifierDeclared',
+  ) => Object.values(byClass).reduce((n, slice) => n + (slice?.[field] ?? 0), 0);
+
+  const mixedClassDeps = () =>
+    deps({
+      listClauses: vi.fn(async () => [
+        // Two happy-path clauses, both proven at their current revision.
+        clause({ specId: 'HP-1', behaviorClass: 'happy-path' }),
+        clause({ specId: 'HP-2', behaviorClass: 'happy-path' }),
+        // One authorization clause with NO evidence — the case the flat number buries.
+        clause({ specId: 'AUTHZ-1', behaviorClass: 'authorization', falsifier: null }),
+        // One exempt clause: counted in `total`, never enforceable.
+        clause({ specId: 'EX-1', behaviorClass: 'observability', lifecycleStatus: 'exempt' }),
+      ]),
+      listEvidence: vi.fn(async () => [evidence('HP-1', 1), evidence('HP-2', 1)]),
+    });
+
+  /**
+   * CALIBRATION CONTROL — proves the reconciliation assertion below has teeth.
+   *
+   * `sumOver(partition) === flatTotal` passes trivially when both sides are 0, which is
+   * exactly the state an unpopulated partition produces. So a reconciliation test on a
+   * fixture with no clauses would be a guard that can never fail. This control runs the
+   * SAME comparison against a deliberately-wrong partition and asserts it DISAGREES,
+   * which is what establishes that a wrong partition is detectable at all.
+   *
+   * It also pins the non-vacuity of the real fixture: the totals it reconciles against
+   * are non-zero, asserted here rather than assumed.
+   */
+  it('CONTROL: the reconciliation comparison detects a partition that does not add up', async () => {
+    const aggregate = await computePlanSpecCoverage({ harnessSlug: 'papercusp', planSlug: PLAN }, mixedClassDeps());
+
+    // Non-vacuity: if these ever become 0, every reconciliation assertion below goes
+    // trivially green and stops measuring anything.
+    expect(aggregate.clauses.total).toBeGreaterThan(0);
+    expect(aggregate.clauses.enforceable).toBeGreaterThan(0);
+    expect(aggregate.coverage.proven).toBeGreaterThan(0);
+
+    // A partition that drops one class — the realistic form of the bug (a class missed
+    // by the accumulator) — must NOT reconcile.
+    const { authorization: _dropped, ...missingAClass } = aggregate.byBehaviorClass;
+    expect(sumOver(missingAClass, 'enforceable')).not.toBe(aggregate.clauses.enforceable);
+  });
+
+  it('partitions coverage by behavior class, and every field reconciles with the flat total', async () => {
+    const aggregate = await computePlanSpecCoverage({ harnessSlug: 'papercusp', planSlug: PLAN }, mixedClassDeps());
+
+    // The reconciliation property, field by field. This is what makes the partition a
+    // VIEW of the census rather than a second census of the same rows.
+    expect(sumOver(aggregate.byBehaviorClass, 'total')).toBe(aggregate.clauses.total);
+    expect(sumOver(aggregate.byBehaviorClass, 'enforceable')).toBe(aggregate.clauses.enforceable);
+    expect(sumOver(aggregate.byBehaviorClass, 'proven')).toBe(aggregate.coverage.proven);
+    expect(sumOver(aggregate.byBehaviorClass, 'staleProof')).toBe(aggregate.coverage.staleProof);
+    expect(sumOver(aggregate.byBehaviorClass, 'unproven')).toBe(aggregate.coverage.unproven);
+    expect(sumOver(aggregate.byBehaviorClass, 'falsifierDeclared')).toBe(aggregate.clauses.falsifierDeclared);
+  });
+
+  it('surfaces a high-risk class at 0% proven that the flat coverage number reads as healthy', async () => {
+    const aggregate = await computePlanSpecCoverage({ harnessSlug: 'papercusp', planSlug: PLAN }, mixedClassDeps());
+
+    // THE MOTIVATING CASE. Flat reading: 2 of 3 enforceable clauses proven — the kind of
+    // number that gets reported as "coverage is fine".
+    expect(aggregate.coverage.proven).toBe(2);
+    expect(aggregate.clauses.enforceable).toBe(3);
+
+    // Partitioned reading: the single unproven clause is the AUTHORIZATION one, which the
+    // adequacy grader already treats as high-risk. Same census, materially different story.
+    expect(aggregate.byBehaviorClass['happy-path']).toMatchObject({ enforceable: 2, proven: 2, unproven: 0 });
+    expect(aggregate.byBehaviorClass.authorization).toMatchObject({ enforceable: 1, proven: 0, unproven: 1 });
+  });
+
+  it('OMITS a class the plan never declared rather than zero-filling it', async () => {
+    const aggregate = await computePlanSpecCoverage({ harnessSlug: 'papercusp', planSlug: PLAN }, mixedClassDeps());
+
+    // Absence must stay distinguishable from "declared and fully accounted for". A
+    // zero-filled row here would render "this plan says nothing about concurrency"
+    // identically to "this plan's concurrency clauses are all proven".
+    expect(aggregate.byBehaviorClass.concurrency).toBeUndefined();
+    expect(aggregate.byBehaviorClass['migration-data-integrity']).toBeUndefined();
+
+    // ...while an exempt-only class IS present, with enforceable 0 — the one case where
+    // total and enforceable legitimately diverge.
+    expect(aggregate.byBehaviorClass.observability).toMatchObject({ total: 1, enforceable: 0 });
+  });
+
+  it('counts stale evidence in byKind but NOT in currentByKind', async () => {
+    const aggregate = await computePlanSpecCoverage(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => [clause({ specId: 'SPEC-1', revision: 2, currentRevision: 2 })]),
+        listEvidence: vi.fn(async () => [
+          // Stale: bound to r1 while the clause is at r2.
+          evidence('SPEC-1', 1, { evidenceKind: 'manual' }),
+          // Current.
+          evidence('SPEC-1', 2, { evidenceKind: 'mutation' }),
+        ]),
+      }),
+    );
+
+    // Both rows exist and are reported...
+    expect(aggregate.evidence.byKind).toEqual({ manual: 1, mutation: 1 });
+    // ...but only the current-revision one is proof that still counts. Collapsing these
+    // into one number is how a superseded attestation keeps a clause looking proven.
+    expect(aggregate.evidence.currentByKind).toEqual({ mutation: 1 });
+  });
+
+  it('measures revision lag from the clause’s BEST proven revision, not its worst', async () => {
+    const aggregate = await computePlanSpecCoverage(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => [clause({ specId: 'SPEC-1', revision: 5, currentRevision: 5 })]),
+        // Proof exists at r1 and r4. The honest lag is 1 (5 − 4), not 4 (5 − 1):
+        // measuring from the oldest row on file would report how much history was
+        // retained, not how far the proof has fallen behind the promise.
+        listEvidence: vi.fn(async () => [evidence('SPEC-1', 1), evidence('SPEC-1', 4)]),
+      }),
+    );
+
+    expect(aggregate.coverage.staleProof).toBe(1);
+    expect(aggregate.evidence.staleness.maxRevisionLag).toBe(1);
+  });
+
+  it('reports the oldest CURRENT proof, never an older stale row that no longer counts', async () => {
+    const aggregate = await computePlanSpecCoverage(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => [
+          clause({ specId: 'A', revision: 2, currentRevision: 2 }),
+          clause({ specId: 'B', revision: 1, currentRevision: 1 }),
+        ]),
+        listEvidence: vi.fn(async () => [
+          // OLDEST row overall, but stale — it must not become the reported weakest link,
+          // or the measure would report the age of discarded proof.
+          evidence('A', 1, { observedAt: '2020-01-01T00:00:00.000Z' }),
+          evidence('A', 2, { observedAt: '2026-06-01T00:00:00.000Z' }),
+          evidence('B', 1, { observedAt: '2026-07-01T00:00:00.000Z' }),
+        ]),
+      }),
+    );
+
+    expect(aggregate.evidence.staleness.oldestCurrentProofAt).toBe('2026-06-01T00:00:00.000Z');
+    // `newestProofAt` spans every row read, stale included — it answers "when did anything
+    // last happen here", which is a different question from "how old is the live proof".
+    expect(aggregate.evidence.staleness.newestProofAt).toBe('2026-07-01T00:00:00.000Z');
+  });
+
+  it('reports no staleness signal at all when a plan has no evidence, rather than a zeroed one', async () => {
+    const aggregate = await computePlanSpecCoverage(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({ listClauses: vi.fn(async () => [clause({ specId: 'SPEC-1' })]) }),
+    );
+
+    // A null here means "never proven". A 0 or an epoch would be a manufactured
+    // measurement of something that was never measured.
+    expect(aggregate.evidence.staleness.oldestCurrentProofAt).toBeNull();
+    expect(aggregate.evidence.staleness.newestProofAt).toBeNull();
+    expect(aggregate.evidence.byKind).toEqual({});
+    expect(aggregate.coverage.unproven).toBe(1);
   });
 });

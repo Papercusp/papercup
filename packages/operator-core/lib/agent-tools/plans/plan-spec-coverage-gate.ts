@@ -248,7 +248,31 @@ export type SpecEvidenceCensusReader = (options: {
    */
   planSlugs: string[];
   limit?: number;
-}) => Promise<ReadonlyArray<{ specId: string; specRevision: number }>>;
+}) => Promise<ReadonlyArray<SpecEvidenceCensusRow>>;
+
+/**
+ * The evidence fields this census actually reads.
+ *
+ * ⚠ WIDENED IN P-013, AND THE WIDENING IS THE GUARD. This used to declare only
+ * `{ specId, specRevision }` — enough for the proven/stale/unproven counts. The
+ * instrumentation partitions need the KIND of each proof and WHEN it was observed, and
+ * both are already on every row the real reader returns (NOT NULL columns), so nothing
+ * new is queried.
+ *
+ * Declaring them here rather than reaching for them off a loosely-typed row is what
+ * makes the test fixtures supply them. A stub returning the old two-field shape would
+ * otherwise leave `evidenceKind` undefined at runtime and silently accumulate the
+ * composition under an `undefined` key — a partition that looks populated, reconciles
+ * against nothing, and is invisible to a typecheck. Same failure family as an
+ * unstubbed enforcement dep: the shape compiles, and the measurement is vacuous.
+ */
+export interface SpecEvidenceCensusRow {
+  specId: string;
+  specRevision: number;
+  evidenceKind: SpecEvidenceKind;
+  /** ISO-8601. The real reader always sets it; declared non-null so a fixture must too. */
+  observedAt: string;
+}
 
 export interface PlanSpecCoverageDeps {
   listClauses?: typeof listSpecClauses;

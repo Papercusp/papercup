@@ -334,3 +334,147 @@ describe('permanent negative control — one-axis boundedness checking reads a f
     expect(rollup.bounded.countsAreFloor).toBe(true);
   });
 });
+
+/**
+ * P-013 instrumentation — GATE REASONS at census scope, and the corpus partitions.
+ *
+ * `byLane` and `byAdoption` between them already contain the information, and that is
+ * precisely the problem this block exists to fix: getting the answer out of them
+ * requires cross-multiplying two partitions and knowing which combination the gates
+ * treat as enforcing. Every reader who does that arithmetic is a second implementation
+ * of the eligibility rule, and the ledger has no way to notice when one of them drifts.
+ */
+describe('computeSpecReconciliationLedger — P-013 enforcement census', () => {
+  it('counts, for the whole corpus, how many plans a clause gate can actually refuse for', async () => {
+    const { run } = ledgerOver([
+      // Enforceable + adopted ⇒ the ONLY combination that enforces.
+      plan({ planSlug: 'adopted-active', status: 'active', clauseCount: 3 }),
+      // Adopted clauses, but the plan has shipped: historical, never enforced.
+      plan({ planSlug: 'shipped', status: 'shipped', clauseCount: 3 }),
+      // A draft plan is a candidate, never enforceable until promotion (D-012).
+      plan({ planSlug: 'draft', status: 'draft', clauseCount: 3 }),
+      // Active, but nothing adopted — the silent-waiver population.
+      plan({ planSlug: 'legacy', status: 'active', clauseCount: 0, legacyValSignal: true }),
+      plan({ planSlug: 'silent', status: 'active', clauseCount: 0 }),
+    ]);
+    const { rollup } = await run();
+
+    expect(rollup.byEnforcement.enforcing).toBe(1);
+    expect(rollup.byEnforcement.notEnforcing).toEqual({
+      historical: 1,
+      'pre-enforcement': 1,
+      // Both the legacy-VAL plan and the declares-nothing plan land here: neither has
+      // reconciled, and collapsing them into "compliant" is the failure this ledger exists
+      // to prevent.
+      'not-yet-reconciled': 2,
+    });
+  });
+
+  it('accounts for EVERY plan considered — the reason census cannot silently drop a term', async () => {
+    const population = [
+      plan({ planSlug: 'a', status: 'active', clauseCount: 2 }),
+      plan({ planSlug: 'b', status: 'shipped', clauseCount: 2 }),
+      plan({ planSlug: 'c', status: 'draft', clauseCount: 0 }),
+      plan({ planSlug: 'd', status: 'active', clauseCount: 0 }),
+    ];
+    const { rollup } = await ledgerOver(population).run();
+
+    // Unlike `byAdoption`, which deliberately excludes historical plans, this partition
+    // spans the whole population — "enforcement does not reach these 1,290 plans" IS the
+    // finding, and dropping the historical term would delete the largest part of it.
+    const totalCounted =
+      rollup.byEnforcement.enforcing +
+      Object.values(rollup.byEnforcement.notEnforcing).reduce((a, b) => a + b, 0);
+    expect(totalCounted).toBe(rollup.plansConsidered);
+    expect(totalCounted).toBe(population.length);
+  });
+
+  it('reports each row’s eligibility from the same predicate the gates use, not a re-derivation', async () => {
+    const { run } = ledgerOver([
+      plan({ planSlug: 'adopted-active', status: 'active', clauseCount: 3 }),
+      plan({ planSlug: 'silent', status: 'active', clauseCount: 0 }),
+    ]);
+    const { rows } = await run();
+
+    const enforcing = rows.find((r) => r.planSlug === 'adopted-active');
+    const silent = rows.find((r) => r.planSlug === 'silent');
+
+    expect(enforcing?.eligibility).toEqual({ enforcing: true, lane: 'enforceable', adoption: 'adopted' });
+    expect(silent?.eligibility).toEqual({
+      enforcing: false,
+      lane: 'enforceable',
+      adoption: 'no-behavior-declared',
+      reason: 'not-yet-reconciled',
+    });
+
+    // The row's own lane/adoption must be the SAME values the eligibility verdict was
+    // built from. They were separately derived before P-013, which is exactly how a row
+    // could describe an enforcement regime the gate was not running.
+    for (const row of rows) {
+      expect(row.lane).toBe(row.eligibility.lane);
+      expect(row.adoption).toBe(row.eligibility.adoption);
+    }
+  });
+
+  it('sums the behavior-class and evidence partitions across adopted plans', async () => {
+    // Two adopted plans, each contributing the default fixture partition.
+    const { run } = ledgerOver([
+      plan({ planSlug: 'p1', status: 'active', clauseCount: 3 }),
+      plan({ planSlug: 'p2', status: 'active', clauseCount: 3 }),
+    ]);
+    const { rollup } = await run();
+
+    // Summed, not re-counted: two plans × the fixture's 2 happy-path enforceable clauses.
+    expect(rollup.byBehaviorClass['happy-path']).toMatchObject({ total: 4, enforceable: 4, proven: 4 });
+    expect(rollup.byBehaviorClass.boundary).toMatchObject({ total: 2, enforceable: 0 });
+    expect(rollup.byBehaviorClass.concurrency).toBeUndefined();
+
+    // The corpus partition must reconcile with the corpus flat totals, exactly as the
+    // per-plan one does — a sum of reconciling parts that does not itself reconcile means
+    // the fold dropped something.
+    const sum = (field: 'total' | 'enforceable' | 'proven') =>
+      Object.values(rollup.byBehaviorClass).reduce((n, s) => n + (s?.[field] ?? 0), 0);
+    expect(sum('total')).toBe(rollup.clauses.total);
+    expect(sum('enforceable')).toBe(rollup.clauses.enforceable);
+    expect(sum('proven')).toBe(rollup.coverage.proven);
+
+    expect(rollup.evidence.byKind).toEqual({ test: 10 });
+    expect(rollup.evidence.currentByKind).toEqual({ test: 10 });
+  });
+
+  it('takes the WORST revision lag and the OLDEST current proof across the corpus', async () => {
+    const { run } = ledgerOver(
+      [
+        plan({ planSlug: 'mild', status: 'active', clauseCount: 1 }),
+        plan({ planSlug: 'severe', status: 'active', clauseCount: 1 }),
+      ],
+      (slug) =>
+        aggregate({
+          planSlug: slug,
+          evidence: {
+            byKind: { test: 1 },
+            currentByKind: { test: 1 },
+            staleness:
+              slug === 'severe'
+                ? {
+                    maxRevisionLag: 11,
+                    oldestCurrentProofAt: '2025-01-01T00:00:00.000Z',
+                    newestProofAt: '2026-08-01T00:00:00.000Z',
+                  }
+                : {
+                    maxRevisionLag: 1,
+                    oldestCurrentProofAt: '2026-08-01T00:00:00.000Z',
+                    newestProofAt: '2026-08-02T00:00:00.000Z',
+                  },
+          },
+        }),
+    );
+    const { rollup } = await run();
+
+    // A corpus-level staleness figure has to be the worst case, not an average: averaging
+    // an eleven-revision gap against a healthy majority reports a comfortable number for a
+    // corpus containing a clause whose proof no longer describes what it promises.
+    expect(rollup.evidence.maxRevisionLag).toBe(11);
+    expect(rollup.evidence.oldestCurrentProofAt).toBe('2025-01-01T00:00:00.000Z');
+  });
+});
