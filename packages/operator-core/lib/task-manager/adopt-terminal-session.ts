@@ -72,7 +72,7 @@ import { readProcessIdentity } from '../process-identity';
 import { nodeCgroupFs, readProcessCmdline, type CgroupFs } from './cgroup-read';
 import { taskManagerEnabledSync } from './enabled';
 import { beginSyncEnrolment, completeSyncEnrolment } from './enroll-sync';
-import { listTasks } from './store';
+import { closeTask, listTasks } from './store';
 import type { TaskRow, TaskSpec } from './types';
 
 /** Stamped on every row this module writes. The reaper exemption and the

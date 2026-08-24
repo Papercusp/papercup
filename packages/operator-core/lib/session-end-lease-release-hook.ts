@@ -18,6 +18,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
 import { fileLockCoordinationDomain, lockDomainForProjectDir } from './agent-tools/locks/coordination-domain';
 import { releaseAllOwnedLocks } from './agent-tools/locks/release-all-owned';
+import { closeAdoptedTerminalSessions } from './task-manager/adopt-terminal-session';
 import { killTask } from './task-manager/control';
 import { listTasks } from './task-manager/store';
 import { isAutoReapExempt } from './task-manager/types';
@@ -48,6 +49,7 @@ export interface SessionEndLeaseReleaseDeps {
   releaseWorkItems?: typeof releaseAllWorkItemLeasesForOwner;
   listTasks?: typeof listTasks;
   killTask?: typeof killTask;
+  closeAdoptedTerminalSessions?: typeof closeAdoptedTerminalSessions;
 }
 
 interface SessionEndLeaseReleaseScheduleOptions {
@@ -196,11 +198,21 @@ export async function runSessionEndLeaseRelease(
     // it with it. Auto-reaping was put to the owner in two forms
     // (reap-when-provably-dead, reap-fleet-spawned-only) and both were
     // declined. Do not widen this without a fresh owner ruling.
-    const exempt = listed.filter(isAutoReapExempt);
-    const tasks = listed.filter((task) => !isAutoReapExempt(task));
+    const { reapable: tasks, exempt } = partitionReapableTasks(listed);
     const outcomes = await Promise.allSettled(
       tasks.map((task) => (deps.killTask ?? killTask)(task.taskId, { reapTerminalResidue: true })),
     );
+    // Exempt rows are never SIGNALLED, but a row whose supervisor is provably
+    // gone is still CLOSED — closing a ledger row touches no process, so the
+    // exemption is intact. Without this every ordinary psu exit would reach the
+    // reconciler as a `stranded` row, and a steady drip of routine shutdowns
+    // filed as strands is exactly what buries the one real escape. A row whose
+    // launcher is STILL ALIVE after its session ended is deliberately left open:
+    // that is the zombie this feature exists to make visible.
+    await (deps.closeAdoptedTerminalSessions ?? closeAdoptedTerminalSessions)(exempt).catch(() => ({
+      closedTaskIds: [],
+      stillLiveTaskIds: [],
+    }));
     const reapedTaskIds: string[] = [];
     const failedTaskIds: string[] = [];
     for (let index = 0; index < tasks.length; index += 1) {

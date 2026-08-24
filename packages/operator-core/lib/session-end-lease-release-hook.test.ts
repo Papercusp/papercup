@@ -25,6 +25,7 @@ const h = {
   releaseWorkItems: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['releaseWorkItems']>>(),
   listTasks: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['listTasks']>>(),
   killTask: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['killTask']>>(),
+  closeAdoptedTerminalSessions: vi.fn<NonNullable<SessionEndLeaseReleaseDeps['closeAdoptedTerminalSessions']>>(),
 };
 
 function deps(): SessionEndLeaseReleaseDeps {
@@ -35,6 +36,7 @@ function deps(): SessionEndLeaseReleaseDeps {
     releaseWorkItems: h.releaseWorkItems,
     listTasks: h.listTasks,
     killTask: h.killTask,
+    closeAdoptedTerminalSessions: h.closeAdoptedTerminalSessions,
   };
 }
 
@@ -52,6 +54,7 @@ beforeEach(() => {
   h.releaseWorkItems.mockResolvedValue({ releasedIds: ['EI-1'], claimsCleared: 1 });
   h.listTasks.mockResolvedValue([]);
   h.killTask.mockResolvedValue({ ok: true, taskId: 'unused', action: 'kill' });
+  h.closeAdoptedTerminalSessions.mockResolvedValue({ closedTaskIds: [], stillLiveTaskIds: [] });
 });
 
 describe('runSessionEndLeaseRelease', () => {
@@ -147,6 +150,48 @@ describe('runSessionEndLeaseRelease', () => {
       reapedTaskIds: ['task-a', 'task-b'],
       failedTaskIds: [],
     });
+  });
+
+  it('NEVER auto-reaps a terminal-launched session, and reaps its neighbours in the same pass', async () => {
+    // ⛔ OWNER RULING (plan terminal-psu-session-enrolment-2026-08-24 D-001, avi
+    // 2026-08-24: "Visible only — never auto-reap"). WI-41197 enrols the psu
+    // sessions a human started by typing in a terminal so they are VISIBLE and
+    // so a person can make a DELIBERATE `processes:kill { taskId }`. This is the
+    // ONE automated killer of live agent-session rows, and it must skip them.
+    //
+    // The stakes are physical, not cosmetic: we do not own a `vte-spawn` scope's
+    // lifetime — the terminal window does — so reaping one of these rows closes
+    // the owner's window and takes the live agent inside it with it.
+    //
+    // The mixed list is the point: a blanket "skip when any exempt row is
+    // present" would also pass a same-population assertion, so the headless
+    // neighbour must still die in the SAME pass.
+    h.listTasks.mockResolvedValue([
+      { taskId: 'task-headless', detail: { headless: true } } as unknown as TaskRow,
+      {
+        taskId: 'task-terminal',
+        detail: { launchSurface: 'terminal', autoReapExempt: true, supervisorPid: 4242 },
+      } as unknown as TaskRow,
+    ]);
+    h.killTask.mockImplementation(async (taskId) => ({ ok: true, taskId, action: 'kill' }));
+
+    const result = await runSessionEndLeaseRelease(77, deps());
+
+    expect(h.killTask).toHaveBeenCalledTimes(1);
+    expect(h.killTask).toHaveBeenCalledWith('task-headless', { reapTerminalResidue: true });
+    expect(h.killTask).not.toHaveBeenCalledWith('task-terminal', expect.anything());
+    // Reported, not silently dropped: "we skipped one" and "there were none"
+    // are different facts, and only one of them proves the exemption ran.
+    expect(result).toMatchObject({
+      ok: true,
+      reapedTaskIds: ['task-headless'],
+      exemptTaskIds: ['task-terminal'],
+    });
+    // Exempt from SIGNALS, not from bookkeeping: the row is still offered for
+    // closure, which is what stops every ordinary psu exit becoming a strand.
+    expect(h.closeAdoptedTerminalSessions).toHaveBeenCalledWith([
+      expect.objectContaining({ taskId: 'task-terminal' }),
+    ]);
   });
 
   it('accounts for per-task failures without skipping lock or work-item cleanup', async () => {
