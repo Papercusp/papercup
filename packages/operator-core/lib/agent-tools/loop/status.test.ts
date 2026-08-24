@@ -209,3 +209,37 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
     expect(out.pendingAwaits).toEqual({ status: 'found', count: 1, sample: ['lock:grant:t1'] });
   });
 });
+
+// EI-21197839138727609 guard: the declared response shape MUST name the `loop`
+// wrapper, and the handler body MUST nest the record under it. A jq/code:run
+// reducer that assumes root-level active/interval fields iterates null — the
+// exact reported failure — so doc and body are pinned together here (mirrors
+// find.test.ts's declared-vs-actual pin for tools:find).
+describe('loop:status declared-vs-actual envelope (EI-21197839138727609)', () => {
+  it('declares the ROOT ENVELOPE and names the `loop` wrapper in guidance.returns', () => {
+    const tool = statusTool as unknown as { guidance?: { returns?: string } };
+    expect(tool.guidance?.returns).toContain('ROOT ENVELOPE');
+    expect(tool.guidance?.returns).toMatch(/NESTED under `loop`/);
+  });
+
+  it('nests the loop record under `loop` (never at the root) so reducers descend .loop', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      active: true,
+      intervalSec: 90,
+      parked: false,
+      nextFireAt: '2026-08-24T10:00:00.000Z',
+      lastFiredAt: null,
+      fireCount: 3,
+      firesSinceArm: 3,
+    });
+    listWakeAwaitsMock.mockResolvedValue([]);
+
+    const out = await run();
+
+    expect(out.ok).toBe(true);
+    expect(out.loop).toMatchObject({ active: true, intervalSec: 90 });
+    // Root-level convenience fields would BE the reported bug shape — assert absence.
+    expect(out.active).toBeUndefined();
+    expect(out.intervalSec).toBeUndefined();
+  });
+});
