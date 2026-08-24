@@ -81,6 +81,7 @@ import { applyOpVia, type ProjectionLookup, type TableProjection } from '../sync
 import { buildHarnessFeaturesProjection } from '../sync/hyperbee/projections/harness-features';
 import { buildIssuesProjection } from '../sync/hyperbee/projections/issues';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import { ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import {
   WORK_ITEM_CLAIM_OP_KINDS,
   type AcquireOpts,
@@ -173,6 +174,10 @@ const FRAMEWORK_ROLES_DDL = `
  */
 async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; harnessSlug: string }): Promise<void> {
   await sql.unsafe(FRAMEWORK_ROLES_DDL);
+  // Await-event notify delivery persists through the canonical coord log even
+  // in rigs that do not opt into the full coord federation helper. Reuse the
+  // production bootstrap so appendLine sees the real fresh-database shape.
+  await ensureCoordEventLogTable(sql);
 
   await sql.unsafe(`
     CREATE TABLE harness_shared.harness_features_consolidated (
@@ -514,18 +519,48 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
   // migration runner handles and raw pooled sql.unsafe rejects. (plpgsql BEGIN
   // bodies are indented/inline — the line-anchored match never touches them.)
   for (const file of [
+    // Empty coordination/Pot relations are still required: the awaited-event
+    // subscriber lookup and fail-soft federation-scope resolver must return an
+    // empty result, not emit a 42P01 warning that vitest treats as a failure.
+    '123-coordination-substrate.sql',
     'archive/102-substrate-outbox.sql',
     'archive/103-issues-workspace-id-fill-trigger.sql',
     '131-engineer-issues.sql',
+    // Event-await registrations and durable wake deliveries used by awaited
+    // emits on releaseWorkItem (migration 163).
+    '163-await-event-subscriptions.sql',
+    // Event-await schema follow-ons used by the current store and delivery
+    // paths. Keep this list in migration order so each ALTER/table addition
+    // sees the shape established by its canonical predecessor.
+    '175-watch-floor-coalesce-cols.sql',
+    '183-event-awaits-inbox-wake-one-per-agent.sql',
+    '184-hives-table.sql',
     '188-work-item-claims.sql',
     '195-work-item-redundancy.sql',
     // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
     '241-signal-provenance-origin.sql',
+    '387-event-wake-delivery-source.sql',
+    '480-event-awaits-pattern-index.sql',
+    '533-add-event-awaits-payload-filter.sql',
+    '541-predicate-watches.sql',
+    '550-event-awaits-announce-scope.sql',
+    '557-cup-lexicon-db-rename-phase3.sql',
+    '569-event-awaits-policy-allow-announce.sql',
+    '572-event-await-nodes-threshold-tree.sql',
+    '599-event-announcement-generation.sql',
+    '602-work-item-follow-blockers.sql',
     // Migration 675 normalizes the canonical plan content into plan_items /
     // plan_decisions. The claim-floor path reads plan_items even when a rig test
     // seeds no plan-linked rows, so omitting this derived relation makes every
     // claim attempt fail with 42P01 before the test reaches its assertion.
+    // Event fire latch used by the same awaited emit path (migration 632).
+    '632-event-key-fire-latch.sql',
     '675-normalize-plan-items-decisions.sql',
+    '686-pots-canonical-home-slug-fk.sql',
+    '710-event-awaits-effective-deadline-view.sql',
+    '825-verified-wait-producer-health.sql',
+    '871-lifecycle-bound-watches.sql',
+    '925-fleet-leader-watch-suppression.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper.
     await applyMigrationForTest(sql, join(SQL_DIR, file));
