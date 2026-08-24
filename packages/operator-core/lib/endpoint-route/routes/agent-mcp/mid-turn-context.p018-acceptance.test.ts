@@ -153,12 +153,19 @@ vi.mock('../../../memory/session-epoch-ledger', () => ({
   },
 }));
 
-const { getMemoryBackendMock, recallCorpusContextMock } = vi.hoisted(() => ({
+const { getMemoryBackendMock, recallCorpusContextMock, withMidTurnMemoryAdmissionMock } = vi.hoisted(() => ({
   getMemoryBackendMock: vi.fn(),
   recallCorpusContextMock: vi.fn(),
+  withMidTurnMemoryAdmissionMock: vi.fn(),
 }));
 vi.mock('../../../memory/backend', () => ({ getMemoryBackend: getMemoryBackendMock }));
 vi.mock('../../../memory/corpus-recall-io', () => ({ recallCorpusContext: recallCorpusContextMock }));
+// The endpoint's optional recall is host-admitted in production. Keep this
+// acceptance replay focused on retrieval and transport by admitting its real
+// pipeline inside the partial-PG fixture, as the sibling endpoint suite does.
+vi.mock('../../../memory/mid-turn-admission', () => ({
+  withMidTurnMemoryAdmission: withMidTurnMemoryAdmissionMock,
+}));
 
 import routes, { deriveBatchQuery, type BatchCall } from './mid-turn-context';
 
@@ -356,6 +363,9 @@ beforeEach(() => {
   ledger.clear();
   backend.search.mockClear();
   getMemoryBackendMock.mockReset().mockReturnValue(backend);
+  withMidTurnMemoryAdmissionMock
+    .mockReset()
+    .mockImplementation(async (run: () => Promise<unknown>) => ({ admitted: true, value: await run() }));
   recallCorpusContextMock.mockReset().mockImplementation(async ({ queryText }: { queryText: string }) => {
     const score = relevance(queryText, CORPUS_POINTER_TEXT);
     return score >= FAKE_FLOOR
