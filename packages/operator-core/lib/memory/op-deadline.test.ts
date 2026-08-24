@@ -260,6 +260,17 @@ describe('embedFailureReason — embed failure → clean degraded reason', () =>
     expect(embedFailureReason('a string error')).toBeNull();
   });
 
+  it('EI-21348316803580175: maps a blown query-embed budget (embed_budget_exceeded) to embed_timeout', () => {
+    // The exact message shape libs/generic/memory's EmbedBudgetExceededError throws when the
+    // query embed blows SearchOptions.embedTimeoutMs. Classifying it is load-bearing: it is what
+    // routes memory:search into its embed-free lexical fallback (WI-4214). Unclassified, it would
+    // fall through to the raw `throw err` and become an opaque handler_error — turning a
+    // slow-but-successful search into a failed one, i.e. worse than the regression it fixes.
+    expect(
+      embedFailureReason(new Error('embed_budget_exceeded: query embed exceeded 4000ms budget')),
+    ).toBe('embed_timeout');
+  });
+
   it('WI-4183: maps a dead-sidecar throw (sidecar_required_unavailable) to sidecar_unavailable', () => {
     // The exact message shape buildSidecarFirstEmbedder / embed-sidecar-wiring.ts throws when a
     // configured sidecar is unreachable (WI-4021 D-003: required, no in-process fallback) — a
