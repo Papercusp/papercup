@@ -954,6 +954,22 @@ async fn run<B: Backend>(
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::ResolveAgentChatApproval { call_id, approved } => {
+                // Answer a parked HITL request (P-005 slice 2). Guarded rather
+                // than unwrapped: the prompt cannot render without a bound chat,
+                // but a decision arriving in that state should be a no-op, not a
+                // panic that takes the whole TUI down.
+                if let Some(chat_id) = app.agent_chat_id.clone() {
+                    tokio::spawn(resolve_agent_chat_approval_send(
+                        app.harness.clone(),
+                        chat_id,
+                        call_id,
+                        approved,
+                        tx.clone(),
+                    ));
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::CardRespond {
                 correlation_id,
                 workspace_id,
@@ -2936,7 +2952,7 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
         .tools
         .unwrap_or_default()
         .into_iter()
-        .map(|x| models::ChatToolCall { name: x.name })
+        .map(|x| models::ChatToolCall::plain(x.name))
         .collect();
     Some(models::ChatMessage {
         role: t.role,
@@ -3006,6 +3022,23 @@ async fn stream_agent_chat_turn(
         }
     };
 
+    // Re-hydrate anything still parked on this chat BEFORE the new turn opens.
+    // A call parked by an earlier turn — or before this pane ever attached — is
+    // otherwise invisible here, so the pane would render no way to answer it and
+    // the loop would stay blocked forever. Best-effort: a failure to read the
+    // pending set must not abort the turn the user just sent.
+    if let Ok(pending) = client.list_agent_chat_approvals(&harness, &chat_id).await {
+        let _ = tx.send(Event::AgentChatApprovalsHydrated(
+            pending
+                .into_iter()
+                .map(|p| models::PendingApproval {
+                    call_id: p.call_id,
+                    tool_name: p.tool_name,
+                })
+                .collect(),
+        ));
+    }
+
     let request = AgentChatTurnRequest {
         content: text,
         model,
@@ -3037,17 +3070,25 @@ async fn stream_agent_chat_turn(
                 needs_approval,
                 ..
             } => {
-                // HITL belongs to this seam, but the pane's approval round-trip
-                // is not wired yet (the next P-005 slice). An approval-gated
-                // call parks server-side in `agent_loop_approvals`, so the turn
-                // STALLS here rather than failing — label the chip so that stall
-                // is legible instead of looking like a hung stream.
-                let name = if needs_approval {
-                    format!("{} · awaiting approval", call.name)
-                } else {
-                    call.name
-                };
-                let _ = tx.send(Event::ChatToolCall(models::ChatToolCall { name }));
+                // Carry the call id through (P-005 slice 2): it IS the `callId`
+                // the approvals route is keyed by, so dropping it would leave a
+                // parked call unanswerable from this pane. The "awaiting
+                // approval" label is applied at RENDER time from
+                // `needs_approval` — baking it into the name would corrupt both
+                // the prompt text and the resolve POST.
+                let _ = tx.send(Event::ChatToolCall(models::ChatToolCall {
+                    name: call.name,
+                    id: Some(call.id),
+                    needs_approval,
+                }));
+            }
+            AgentChatEvent::ApprovalResolved {
+                call_id, approved, ..
+            } => {
+                // A decision taken on ANOTHER surface (the desktop operator, or
+                // a second pui on the same chat) arrives here. Without this the
+                // pane keeps offering a decision the loop has already moved past.
+                let _ = tx.send(Event::AgentChatApprovalResolved { call_id, approved });
             }
             AgentChatEvent::Error { message } => {
                 let _ = tx.send(Event::ChatError(message));
@@ -3065,6 +3106,46 @@ async fn stream_agent_chat_turn(
     }
 
     let _ = tx.send(Event::ChatDone);
+}
+
+/// POST one HITL decision for the native agent-chat seam (P-005 slice 2). The
+/// route is PG-backed, so the decision lands even when it reaches a different
+/// operator worker than the one streaming the turn. On success the loop resumes
+/// on its own — this only has to unblock it.
+async fn resolve_agent_chat_approval_send(
+    harness: String,
+    chat_id: String,
+    call_id: String,
+    approved: bool,
+    tx: UnboundedSender<Event>,
+) {
+    use crate::agent_chats::AgentChatApprovalDecision;
+
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("approval: {e}")));
+            return;
+        }
+    };
+    let decision = AgentChatApprovalDecision {
+        approved,
+        reason: None,
+    };
+    match client
+        .resolve_agent_chat_approval(&harness, &chat_id, &call_id, &decision)
+        .await
+    {
+        // The loop ALSO emits `approval_resolved` on the open stream and the
+        // reducer arm is idempotent, so echoing the decision here is safe — it
+        // clears the prompt immediately instead of waiting on the next frame.
+        Ok(()) => {
+            let _ = tx.send(Event::AgentChatApprovalResolved { call_id, approved });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("approval: {e}")));
+        }
+    }
 }
 
 async fn converse_send(
@@ -3141,9 +3222,9 @@ async fn converse_send(
                             "name": name,
                             "input": v.get("input").cloned().unwrap_or(serde_json::Value::Null),
                         }));
-                        let _ = tx.send(Event::ChatToolCall(models::ChatToolCall {
-                            name: name.to_string(),
-                        }));
+                        let _ = tx.send(Event::ChatToolCall(models::ChatToolCall::plain(
+                            name.to_string(),
+                        )));
                     }
                 }
             }

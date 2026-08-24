@@ -114,6 +114,11 @@ pub enum Action {
     /// is the message text (the reducer has already appended it + a streaming
     /// assistant bubble before returning this).
     SendChat(String),
+    /// Answer the oldest parked HITL request on the native agent-chat seam
+    /// (P-005 slice 2). The run loop POSTs it via `resolve_agent_chat_approval`;
+    /// until this lands the loop is blocked waiting for a decision, so the turn
+    /// shows no error and no timeout — it simply never finishes.
+    ResolveAgentChatApproval { call_id: String, approved: bool },
     /// Answer the focused inline card (sentinel-tui-shared-backend-and-cards
     /// Phase 2a) — the run loop POSTs `/card-response`. The reducer has already
     /// optimistically dismissed the card from `card_state`. `payload` is the
@@ -1471,6 +1476,10 @@ pub struct App {
     /// Distinct from `conversation_id`, which is the legacy operator-converse
     /// lane — kept alongside until native parity is proven.
     pub agent_chat_id: Option<String>,
+    /// HITL requests parked on the native seam, oldest first. Non-empty means a
+    /// turn is STALLED waiting on a decision only this pane can supply — the
+    /// composer swaps to the approve/deny prompt while any entry stands.
+    pub pending_approvals: Vec<crate::models::PendingApproval>,
     pub chat_has_more_earlier: bool,
     /// The lowest `seq` currently loaded — the cursor for paginating older turns
     /// (`GET …/turns?beforeSeq=<this>`). `None` when the transcript is empty.
@@ -1739,6 +1748,7 @@ impl App {
             chat_streaming: false,
             conversation_id: None,
             agent_chat_id: None,
+            pending_approvals: Vec::new(),
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
             chat_loading_earlier: false,
@@ -1847,6 +1857,22 @@ impl App {
             m.content.push_str(text);
         }
         self.chat_scroll = 0;
+    }
+
+    /// Clear a decided HITL request: drop it from the pending set and stop its
+    /// chip rendering as awaiting. Deliberately IDEMPOTENT — the same decision
+    /// arrives twice (our own POST's confirmation and the loop's own
+    /// `approval_resolved` frame), and a call decided on another surface arrives
+    /// with no local pending row at all.
+    fn resolve_approval(&mut self, call_id: &str) {
+        self.pending_approvals.retain(|p| p.call_id != call_id);
+        for m in self.chat_messages.iter_mut() {
+            for tc in m.tools.iter_mut() {
+                if tc.id.as_deref() == Some(call_id) {
+                    tc.needs_approval = false;
+                }
+            }
+        }
     }
 
     /// Record a mid-turn tool call as a chip on the in-flight assistant bubble.
@@ -4713,7 +4739,42 @@ impl App {
                 Action::Render
             }
             Event::ChatToolCall(tc) => {
+                // Record the parked request BEFORE the chip renders. A call with
+                // needs_approval set has already stopped the loop server-side, so
+                // if this pane does not track it there is no affordance anywhere
+                // that can restart the turn — it just hangs with no error.
+                if tc.needs_approval {
+                    if let Some(call_id) = tc.id.clone() {
+                        if !self.pending_approvals.iter().any(|p| p.call_id == call_id) {
+                            self.pending_approvals.push(crate::models::PendingApproval {
+                                call_id,
+                                tool_name: tc.name.clone(),
+                            });
+                        }
+                    }
+                }
                 self.push_chat_tool(tc);
+                Action::Render
+            }
+            Event::AgentChatApprovalResolved { call_id, approved } => {
+                let _ = approved;
+                self.resolve_approval(&call_id);
+                Action::Render
+            }
+            Event::AgentChatApprovalsHydrated(pending) => {
+                // Authoritative REPLACEMENT, not a merge: the server is the only
+                // thing that knows what is still parked, and a call decided while
+                // this pane was away must not survive as a stale prompt.
+                self.pending_approvals = pending;
+                for p in self.pending_approvals.clone() {
+                    for m in self.chat_messages.iter_mut() {
+                        for tc in m.tools.iter_mut() {
+                            if tc.id.as_deref() == Some(p.call_id.as_str()) {
+                                tc.needs_approval = true;
+                            }
+                        }
+                    }
+                }
                 Action::Render
             }
             Event::ChatDone => {
@@ -5340,6 +5401,25 @@ impl App {
                 }
                 _ => Action::None,
             };
+        }
+        // A parked HITL request blocks the loop, so answering it outranks both
+        // composing and the pane's ordinary bindings — and it must work whether
+        // or not the user is still in compose mode (Esc leaves compose, but the
+        // turn stays stalled, and the prompt stays on screen). CONTROL-modified
+        // so it can never collide with typing: a bare y/n still reaches the
+        // message box.
+        if self.operator_input_active()
+            && !self.pending_approvals.is_empty()
+            && mods.contains(KeyModifiers::CONTROL)
+        {
+            if let KeyCode::Char(c @ ('y' | 'n')) = code {
+                if let Some(p) = self.pending_approvals.first() {
+                    return Action::ResolveAgentChatApproval {
+                        call_id: p.call_id.clone(),
+                        approved: c == 'y',
+                    };
+                }
+            }
         }
         // Operator chat composer captures all input while focused (like the
         // palette) so digits/letters type into the message instead of switching
@@ -10623,6 +10703,79 @@ mod tests {
         assert_eq!(c.chat_input, "q");
     }
 
+    /// The HITL round-trip (P-005 slice 2). An approval-gated tool call parks the
+    /// loop SERVER-side, so if the pane fails to record it — or fails to carry the
+    /// call id — the turn hangs with no error, no timeout, and nothing on screen
+    /// that can restart it. Pins: the pending row appears, the raw tool name
+    /// survives, Ctrl+Y answers the OLDEST call by its real id, a bare `y` is
+    /// still text, and resolution is idempotent across the two paths that both
+    /// report it (our POST's echo and the loop's own frame).
+    #[test]
+    fn hitl_approval_parks_then_resolves_from_the_pane() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('i', KeyModifiers::NONE)); // enter compose
+        a.agent_chat_id = Some("chat-1".into());
+        a.begin_user_send("do it");
+
+        // An approval-gated call parks, and still renders its chip.
+        a.update(Event::ChatToolCall(ChatToolCall {
+            name: "capability:bash".into(),
+            id: Some("call-a".into()),
+            needs_approval: true,
+        }));
+        assert_eq!(a.pending_approvals.len(), 1);
+        assert_eq!(a.pending_approvals[0].call_id, "call-a");
+        // The stored name is the RAW tool — the "awaiting approval" suffix is a
+        // render concern, and baking it in would corrupt the prompt and the POST.
+        assert_eq!(a.pending_approvals[0].tool_name, "capability:bash");
+        assert_eq!(a.chat_messages[1].tools.len(), 1);
+
+        // A call needing no approval never parks.
+        a.update(Event::ChatToolCall(ChatToolCall::plain("plans:list".into())));
+        assert_eq!(a.pending_approvals.len(), 1);
+
+        // Ctrl+Y answers the oldest pending call, carrying its real id.
+        assert_eq!(
+            a.update(key('y', KeyModifiers::CONTROL)),
+            Action::ResolveAgentChatApproval {
+                call_id: "call-a".into(),
+                approved: true,
+            }
+        );
+        // A bare `y` must still reach the message box, not decide anything.
+        assert_eq!(a.update(key('y', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(a.chat_input, "y");
+
+        // Resolution clears the row and stops the chip rendering as awaiting.
+        a.update(Event::AgentChatApprovalResolved {
+            call_id: "call-a".into(),
+            approved: true,
+        });
+        assert!(a.pending_approvals.is_empty());
+        assert!(!a.chat_messages[1].tools[0].needs_approval);
+        // Idempotent: the loop's own frame reports the same decision again.
+        a.update(Event::AgentChatApprovalResolved {
+            call_id: "call-a".into(),
+            approved: true,
+        });
+        assert!(a.pending_approvals.is_empty());
+
+        // Hydration REPLACES: a call parked while the pane was away surfaces.
+        a.update(Event::AgentChatApprovalsHydrated(vec![
+            crate::models::PendingApproval {
+                call_id: "call-b".into(),
+                tool_name: "db:migrate".into(),
+            },
+        ]));
+        assert_eq!(a.pending_approvals.len(), 1);
+        assert_eq!(a.pending_approvals[0].call_id, "call-b");
+        // …and an empty hydration clears a prompt decided elsewhere, rather than
+        // leaving a decision on screen the loop has already moved past.
+        a.update(Event::AgentChatApprovalsHydrated(Vec::new()));
+        assert!(a.pending_approvals.is_empty());
+    }
+
     #[test]
     fn chat_stream_lifecycle_builds_and_finalizes() {
         let mut a = App::new();
@@ -10634,9 +10787,9 @@ mod tests {
         assert!(a.chat_messages[1].streaming);
         assert_eq!(a.chat_messages[1].content, "<say>hello</say>"); // raw while streaming
                                                                     // A tool call becomes a chip on the streaming bubble.
-        a.update(Event::ChatToolCall(ChatToolCall {
-            name: "harness:list".into(),
-        }));
+        a.update(Event::ChatToolCall(ChatToolCall::plain(
+            "harness:list".into(),
+        )));
         assert_eq!(a.chat_messages[1].tools.len(), 1);
         // Done finalizes: raw → the <say> body, streaming cleared.
         a.update(Event::ChatDone);

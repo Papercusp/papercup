@@ -247,6 +247,16 @@ pub enum Event {
     /// so every later turn lands on the same PG-backed transcript instead of
     /// opening a fresh chat per message.
     AgentChatBound(String),
+    /// A parked HITL request was decided — by US (the resolve POST succeeded) or
+    /// by ANOTHER surface (the desktop operator), which reaches us as the loop's
+    /// own `approval_resolved` frame. Both converge here, and the reducer arm is
+    /// idempotent, so a decision made elsewhere still clears this pane's prompt.
+    AgentChatApprovalResolved { call_id: String, approved: bool },
+    /// The full set of still-unresolved HITL requests for the bound chat, read
+    /// back from `list_agent_chat_approvals`. REPLACES the pending set: a call
+    /// parked before this pane attached (or during a disconnect) is otherwise
+    /// invisible here, leaving the turn stalled with no way to answer it.
+    AgentChatApprovalsHydrated(Vec<crate::models::PendingApproval>),
     // --- Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a) ---
     /// One per-run state-channel snapshot from `/api/operator/state-snapshot` —
     /// the union of open `chat:ask_choice` cards for a run. The reducer folds it

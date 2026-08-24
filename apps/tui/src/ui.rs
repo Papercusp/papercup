@@ -1759,10 +1759,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(wl));
         }
         for tc in &m.tools {
-            lines.push(Line::from(Span::styled(
-                format!("  ⚙ {}", tc.name),
-                Theme::dim(),
-            )));
+            // The approval suffix is a RENDER concern, not part of the tool's
+            // name: `name` stays the raw tool so the approve/deny prompt and the
+            // resolve POST both read it cleanly, and a decided call simply stops
+            // rendering the suffix.
+            let label = if tc.needs_approval {
+                format!("  ⚙ {} · awaiting approval", tc.name)
+            } else {
+                format!("  ⚙ {}", tc.name)
+            };
+            lines.push(Line::from(Span::styled(label, Theme::dim())));
         }
         lines.push(Line::from("")); // blank separator between turns
     }
@@ -1838,6 +1844,21 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             badge.to_string()
         };
         (" Voice ", body, Theme::notify())
+    } else if let Some(p) = app.pending_approvals.first() {
+        // A parked HITL request outranks the composer: the loop is blocked on a
+        // decision and nothing the user types can advance it, so the prompt —
+        // not the message box — is what the composer row must show.
+        let more = app.pending_approvals.len().saturating_sub(1);
+        let queued = if more > 0 {
+            format!("  (+{more} more)")
+        } else {
+            String::new()
+        };
+        (
+            " Approval — Ctrl+Y approve · Ctrl+N deny ",
+            format!("⏸ {} is waiting on your decision{queued}", p.tool_name),
+            Theme::notify(),
+        )
     } else if app.chat_composing {
         (
             " Message — Enter send · Esc cancel ",

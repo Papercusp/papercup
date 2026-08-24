@@ -1747,6 +1747,36 @@ pub struct MemoriesPayload {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatToolCall {
     pub name: String,
+    /// The loop's tool-call id. This is the `callId` the HITL approvals route is
+    /// keyed by, so it is what an approve/deny POST must carry — losing it makes
+    /// a parked call unresolvable from the pane. `None` on the legacy converse
+    /// lane and on persisted history, neither of which carries a call id.
+    pub id: Option<String>,
+    /// This call is parked server-side on a HITL approval decision (native seam
+    /// only). While true the turn is STALLED, not failed: the loop is waiting.
+    pub needs_approval: bool,
+}
+
+impl ChatToolCall {
+    /// A chip with no call id and no approval gate — the legacy converse lane
+    /// and replayed history, which carry neither.
+    pub fn plain(name: String) -> Self {
+        Self {
+            name,
+            id: None,
+            needs_approval: false,
+        }
+    }
+}
+
+/// One HITL request parked on the native agent-chat seam, awaiting the operator's
+/// approve/deny. Held on `App` so the pane can render the prompt and resolve it;
+/// re-hydrated from `list_agent_chat_approvals` so a reconnect does not strand a
+/// parked call with no visible way to answer it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingApproval {
+    pub call_id: String,
+    pub tool_name: String,
 }
 
 /// One rendered chat message in the operator pane. Built from a persisted turn
