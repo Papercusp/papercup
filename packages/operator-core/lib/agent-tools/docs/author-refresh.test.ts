@@ -10,9 +10,14 @@ const h = vi.hoisted(() => {
     writeFile: vi.fn(async () => undefined),
     resolveHarnessDocPaths: vi.fn(async () => ({ docsRoot: '/tmp/docs-author-refresh-test' })),
     safeJoinUnderRoot: vi.fn((_root: string, docId: string) => `/tmp/docs-author-refresh-test/${docId}`),
-    anchorManualDoc: vi.fn(async () => ({ ok: true, anchored: true, record: { status: 'active' }, subjectRef: [] })),
+    anchorManualDoc: vi.fn(async (_args: { content: string }) => ({
+      ok: true,
+      anchored: true,
+      record: { status: 'active' },
+      subjectRef: [],
+    })),
     applyProjectionBanner: vi.fn((content: string) => content),
-    getAuthoredDocContent: vi.fn(async () => null),
+    getAuthoredDocContent: vi.fn<() => Promise<string | null>>(async () => null),
     engineeringAdapter: { name: 'engineering-adapter-test-double' },
     invalidateEngineeringAdapter: vi.fn(() => {
       order.push('invalidate');

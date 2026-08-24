@@ -44,7 +44,7 @@ async function seedIssue(
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
     VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${`title ${id}`}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null},
-       ${WS}, ${opts.createdTs ?? 0}, 0, ${opts.payload ? db.sql.json(opts.payload) : null})`;
+       ${WS}, ${opts.createdTs ?? 0}, 0, ${opts.payload ? db.sql.json(opts.payload as unknown as Parameters<typeof db.sql.json>[0]) : null})`;
 }
 
 beforeAll(async () => {
@@ -157,7 +157,9 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
     });
     await db.sql`
       UPDATE harness_shared.work_items
-         SET payload = ${db.sql.json({ humanCapability: 'credential', externalBlockers: blockers })}
+         SET payload = ${db.sql.json(
+           { humanCapability: 'credential', externalBlockers: blockers } as unknown as Parameters<typeof db.sql.json>[0],
+         )}
        WHERE workspace_id = ${WS} AND feature_id = 'EI-claimed-human'`;
 
     const parked = await wi.setWorkItemStateWithAliasInfo('EI-claimed-human', 'needs-human', {
