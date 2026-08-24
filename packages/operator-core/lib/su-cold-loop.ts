@@ -72,7 +72,11 @@ export function readColdLoopMarker(payload: unknown): ColdLoopMarker | null {
   const harness = typeof p.harness === 'string' && p.harness.length > 0 ? p.harness : undefined;
   // WI-5510: the loop-instance id (see ColdLoopMarker.routineId doc).
   const routineId = typeof p.routineId === 'string' && p.routineId.length > 0 ? p.routineId : undefined;
-  if (carry === undefined && wakeCount === undefined && harness === undefined && routineId === undefined)
+  // Harness is also ordinary metadata on many event payloads (for example
+  // work-item:* events). It is only a loop marker when paired with one of the
+  // loop-specific marker fields; treating a bare event `harness` as a marker
+  // makes the wake executor apply loop lifecycle gates to ordinary wakes.
+  if (carry === undefined && wakeCount === undefined && routineId === undefined)
     return null;
   return { carry, wakeCount, harness, routineId };
 }

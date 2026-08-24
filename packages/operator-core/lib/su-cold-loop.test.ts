@@ -43,6 +43,18 @@ describe('readColdLoopMarker', () => {
     expect(readColdLoopMarker({ carry: 'cold', routineId: 42 })).toEqual({ carry: 'cold', wakeCount: undefined });
     expect(readColdLoopMarker({ carry: 'cold', routineId: '' })).toEqual({ carry: 'cold', wakeCount: undefined });
   });
+
+  it('does not treat ordinary harness metadata as a loop marker', () => {
+    expect(
+      readColdLoopMarker({
+        id: 'WI-41390',
+        state: 'closed',
+        kind: 'task',
+        harness: 'papercusp',
+        title: 'settled child work item',
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('coldWakeMode — the HYBRID cadence (reset each wake, recycle every Nth)', () => {

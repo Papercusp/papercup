@@ -675,8 +675,9 @@ export function wakeTurnText(d: DeliveryWork): string {
  *
  * Fix: at ACTUAL delivery time (inside `executeWake`, right before injection —
  * every channel: live psu-socket inject, plan-run resume, adv-session inject),
- * for a LOOP wake ONLY (`readColdLoopMarker` finds a `harness` on the payload —
- * stamped for BOTH warm and cold loops per loop-fire.ts), re-read the carry-note
+ * for a LOOP wake ONLY (`readColdLoopMarker` finds an explicit loop marker signal
+ * and its optional `harness` scope — stamped for BOTH warm and cold loops per
+ * loop-fire.ts), re-read the carry-note
  * FRESH and append a live re-check block. The block is appended EVEN WHEN walls
  * are now empty — silence there would NOT override a stale walls block rendered
  * above it, so "no open walls" must be stated explicitly, not omitted.

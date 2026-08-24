@@ -1241,6 +1241,38 @@ describe('executeWake — the liveness ladder', () => {
     expect(sendCoordMessage).not.toHaveBeenCalled();
   });
 
+  it('delivers a cross-harness work-item completion wake instead of treating its harness as loop lineage', async () => {
+    const write = vi.fn(() => true);
+    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => ({
+      active: true,
+      harnessSlug: 'sb-devboard-hive',
+      armedAt: '1970-01-01T00:00:00.000Z',
+    }));
+    const d = deps({
+      findPty: vi.fn(() => ({ id: 'pty-7' })) as never,
+      write: write as never,
+      getLoopStatusFn,
+    });
+    const out = await executeWake(
+      work({
+        eventKey: 'work-item:done:WI-41390',
+        payload: {
+          id: 'WI-41390',
+          state: 'closed',
+          kind: 'task',
+          harness: 'papercusp',
+          title: 'settled child work item',
+        },
+        wakeHandle: advHandle(),
+      }),
+      d,
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(write).toHaveBeenCalled();
+    expect(getLoopStatusFn).not.toHaveBeenCalled();
+  });
+
   it('session ended, not resumable, presence gone → DEGRADES to a coord inbox notification, not a drop (P-001)', async () => {
     const sendCoordMessage = vi.fn(async () => ({}) as never);
     const out = await executeWake(
