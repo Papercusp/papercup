@@ -6276,7 +6276,7 @@
           "POST"
         ]
       },
-      "description": "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for owner lookups. Before taking over draining/suspect rows (confirmLiveness:true), send coord:send { wake:'required' } and inspect woken/recipient_absent. Default scope is your Hive; use scope/pot for explicit scope, owner for one row, or coord:roster { view:'live', project:'ids' } for bounded IDs. `owner` is singular. Do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys: harness is implicit; plan-scoped 'who's on P' reads belong to coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
+      "description": "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for owner lookups. Default scope is your Hive; use scope/pot to widen it, owner for one row, or coord:roster { view:'live', project:'ids' } for bounded IDs. `owner` is singular. Legacy harness/ownerId/ownerIds/plan/includeStale keys are invalid. For plan-scoped claims use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
       "capabilities": [
         "coord:read"
       ],
@@ -6298,7 +6298,7 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "Use before dispatch or handoff. Choose a parked + wakeable row; for draining/suspect, set confirmLiveness:true, then send coord:send { wake:'required' } and inspect the result; ended rows need relaunch. Use owner:<id> for one agent and coord:roster { view:'live', project:'ids' } for several. For plan-scoped 'who's on P' reads use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys: harness is implicit, and scope/pot select the roster.",
+        "when": "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, set confirmLiveness:true, send a required coord:send wake, and inspect its result; ended rows need relaunch. Use owner:<id> for one agent and coord:roster { view:'live', project:'ids' } for several.",
         "notWhen": "Not for file ownership (locks:queue), historical ended-agent dumps, or every-turn polling when coord deltas suffice. Presence reports liveness, not file activity; use locks:queue plus git status/file mtimes to see who edits files.",
         "chaining": "Read once and follow coord deltas; if repolling, pass since:<etag> for a tiny unchanged stub."
       }
@@ -9391,7 +9391,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Load integration-tree edits into long-running hosts (no deploy). desktop-dev kills only the verified wrapper-owned :3270 listener; its wrapper respawns it. Route: desktop → \"desktop-dev\"; inference-gateway → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; MCP proxy/transport → \"mcp-proxy\"; shared server → \"staging\" (probe :3170).",
+        "when": "Load integration-tree edits into long-running hosts (no deploy). desktop-dev asks only the verified wrapper-owned :3270 listener for a non-zero graceful recycle and waits for a different verified listener. Route: desktop → \"desktop-dev\"; inference-gateway → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; MCP proxy/transport → \"mcp-proxy\"; shared server → \"staging\" (probe :3170).",
         "notWhen": "Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.",
         "chaining": "dry → review holders → { confirm:true, authorize:true, reason:\"<why>\", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status."
       }
