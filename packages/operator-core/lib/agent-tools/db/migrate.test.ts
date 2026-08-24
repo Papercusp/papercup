@@ -60,7 +60,12 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('node:child_process', () => ({ execFile: vi.fn(), spawnSync: h.spawnSync }));
-vi.mock('node:fs', () => ({ readFileSync: h.readFileSync }));
+// Keep the real fs surface for transitive imports (self-describing-store uses
+// existsSync while locating the repository root); only replace migration-file reads.
+vi.mock('node:fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs')>()),
+  readFileSync: h.readFileSync,
+}));
 vi.mock('../locks/identity', () => ({
   readIdentity: () => ({ ownerId: 'su-test', ownerLabel: 'su-test', coordinationDomain: 'default' }),
 }));
