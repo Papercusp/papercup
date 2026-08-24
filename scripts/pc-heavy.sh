@@ -60,6 +60,9 @@
 #   PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE  inject the caller-cgroup
 #                         envelope for tests. `max` means unlimited. In normal
 #                         operation these are read from cgroup-v2 directly.
+#   PC_HEAVY_SYSTEMD_RUN_BIN  test-only override for the detached user-scope
+#                         runner. In normal operation `systemd-run` is resolved
+#                         from PATH when a finite caller cgroup cannot hold tsc.
 #   PC_HEAVY_TYPECHECK_OVERHEAD_MIB  non-V8 headroom required beside the
 #                         configured TypeScript heap (default 1024). A full
 #                         typecheck is refused when its finite caller cgroup
@@ -291,7 +294,7 @@ _caller_cgroup_headroom_mib() {
 _guard_typecheck_cgroup_headroom() {
   _is_full_typecheck_command "$@" || return 0
 
-  local _headroom _heap _overhead _needed
+  local _headroom _heap _overhead _needed _runner _reexec_rc
   _headroom="$(_caller_cgroup_headroom_mib)"
   [ -n "$_headroom" ] || return 0  # unlimited / unreadable / cgroup-v1 → fail open
 
@@ -301,6 +304,34 @@ _guard_typecheck_cgroup_headroom() {
   case "$_overhead" in ''|*[!0-9]*) _overhead=1024 ;; esac
   _needed=$(( _heap + _overhead ))
   [ "$_headroom" -ge "$_needed" ] && return 0
+
+  # A direct lint:tsc invocation is common in agent sessions, but those sessions
+  # are deliberately placed in a small cgroup. The old behavior stopped here and
+  # made every caller hand-route to capability:inspect/build:typecheck. That was
+  # safe for memory but operationally incomplete: the canonical verifier itself
+  # could not run from the documented command. Re-enter in a sibling user scope so
+  # the compiler gets the same detached envelope as the MCP verifier. The marker
+  # prevents a broken/custom runner from recursively spawning scopes forever.
+  if [ "${PC_HEAVY_CGROUP_REEXEC:-}" != "1" ]; then
+    _runner="${PC_HEAVY_SYSTEMD_RUN_BIN:-}"
+    if [ -z "$_runner" ]; then
+      _runner="$(command -v systemd-run 2>/dev/null || true)"
+    fi
+    if [ -n "$_runner" ]; then
+      echo "[pc-heavy] caller cgroup has ${_headroom} MiB headroom, below the ${_needed} MiB compiler floor; re-running typecheck in a detached user scope." >&2
+      # Test overrides describe the OUTER cgroup and must not leak into the
+      # detached child. In production these variables are absent and this branch
+      # simply inherits the real child scope's memory.max/current values.
+      local -a _scope_cmd=("$_runner" --user --scope --collect)
+      if [ -n "${PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE:-}" ] || [ -n "${PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE:-}" ]; then
+        _scope_cmd+=(env -u PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE -u PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE)
+      fi
+      _scope_cmd+=("$@")
+      PC_HEAVY_CGROUP_REEXEC=1 "${_scope_cmd[@]}"
+      _reexec_rc=$?
+      return "$_reexec_rc"
+    fi
+  fi
 
   echo "[pc-heavy] REFUSED typecheck: caller cgroup has ${_headroom} MiB headroom, below the ${_needed} MiB compiler floor (${_heap} MiB configured V8 heap + ${_overhead} MiB agent/wrapper overhead)." >&2
   echo "[pc-heavy] This is the EI-212067 memcg-OOM class, not a TypeScript verdict. Run the check outside the agent-session cgroup with tools:invoke { name: \"capability:inspect\", args: { check: \"typecheck\", package: \"<package>\", onlyPaths: [\"<changed file>\"], run_in_background: true } }, or use build:typecheck for a bounded foreground check." >&2
