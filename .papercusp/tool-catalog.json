@@ -23782,7 +23782,7 @@
           "POST"
         ]
       },
-      "description": "Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered — and verifier-owned systemd scopes in `live.verifierGroups`. Pass `live:true` to reconcile against the kernel first (slower, authoritative).",
+      "description": "Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, cumulative CPU time, sampled current CPU busy percentage, RSS/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered — and verifier-owned systemd scopes in `live.verifierGroups`. Pass `live:true` to reconcile against the kernel first (slower, authoritative).",
       "capabilities": [
         "intel:read"
       ],
@@ -23794,7 +23794,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is eating memory, or whether anything bypassed the spawn chokepoint. Also the honest answer to \"is my background job still alive\" for anything started through managedSpawn.",
+        "when": "You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is using CPU or memory right now, or whether anything bypassed the spawn chokepoint. Also the honest answer to \"is my background job still alive\" for anything started through managedSpawn.",
         "notWhen": "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
         "chaining": "Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
       }
