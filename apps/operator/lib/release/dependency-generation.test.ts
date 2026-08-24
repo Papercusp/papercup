@@ -140,18 +140,25 @@ describe('immutable dependency generation', () => {
     expect(entries.filter((entry) => entry.startsWith('.build-'))).toEqual([]);
   });
 
-  it('ignores and prunes Vitest .vite-temp churn without weakening dependency drift detection', () => {
+  it('ignores and prunes Vitest cache churn without weakening dependency drift detection', () => {
     const integration = makeIntegration();
-    const cache = join(
+    const tempCache = join(
       integration,
       'packages/a/node_modules/.vite-temp',
     );
-    mkdirSync(cache, { recursive: true });
-    writeFileSync(join(cache, 'before.tmp'), 'ephemeral\n');
+    const resultsCache = join(
+      integration,
+      'packages/a/node_modules/.vite/vitest/project-hash',
+    );
+    mkdirSync(tempCache, { recursive: true });
+    mkdirSync(resultsCache, { recursive: true });
+    writeFileSync(join(tempCache, 'before.tmp'), 'ephemeral\n');
+    writeFileSync(join(resultsCache, 'results.json'), '{}\n');
     const result = publish(integration, {
-      DG_TEST_CACHE: cache,
+      DG_TEST_TEMP_CACHE: tempCache,
+      DG_TEST_RESULTS_CACHE: resultsCache,
       DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
-        'printf "churn\\n" > "$DG_TEST_CACHE/during.tmp"',
+        'printf "churn\\n" > "$DG_TEST_TEMP_CACHE/during.tmp"; printf "{\\"updated\\":true}\\n" > "$DG_TEST_RESULTS_CACHE/results.json"',
     });
 
     expect(result.status, result.stderr).toBe(0);
@@ -160,6 +167,9 @@ describe('immutable dependency generation', () => {
       existsSync(
         join(generation, 'tree/packages/a/node_modules/.vite-temp'),
       ),
+    ).toBe(false);
+    expect(
+      existsSync(join(generation, 'tree/packages/a/node_modules/.vite')),
     ).toBe(false);
   });
 
