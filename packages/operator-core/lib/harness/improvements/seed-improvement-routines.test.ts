@@ -12,7 +12,7 @@ import { LEARNING_ROUTINE_GROUP } from './loop-control';
 import { IMPROVEMENT_ROUTINES, resolveImprovementRoutineActive } from './seed-improvement-routines';
 
 const LEARNING_GROUP_REPAIR_MIGRATION = new URL(
-  '../../../../../libs/papercusp/libs/db/sql/941-learning-routine-group-completeness.sql',
+  '../../../../../libs/papercusp/libs/db/sql/942-learning-routine-group-completeness-sql.sql',
   import.meta.url,
 );
 
