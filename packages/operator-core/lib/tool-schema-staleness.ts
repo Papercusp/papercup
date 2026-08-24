@@ -51,7 +51,12 @@
  * success and fails loudly otherwise, so an absence cannot masquerade as a match.
  */
 
-import { blobAtCommit, type GitRead } from './candidate-contains';
+import { projectedToolSourceFile } from '@papercusp/tooldef';
+
+import { getBuildInfo } from './build-info';
+import { blobAtCommit, gitReadForRepo, type GitRead } from './candidate-contains';
+import { realGit } from './git-pipeline-position';
+import { integrationRoot } from './release-deploy-launch';
 
 /** Why a verdict could not be reached. Enumerated, not prose — a caller branches on it. */
 export type StalenessUnknownReason =
@@ -163,4 +168,35 @@ export function renderStalenessHint(verdict: ToolSchemaStaleness, toolName: stri
     `Confirm with \`dev:pipeline_position { path: '${verdict.relPath}' }\` before triaging this as open — ` +
     `and if it is skew, the useful artifact is a standing fact naming the interim workaround, not a code change.`
   );
+}
+
+/**
+ * The wired, never-throwing entry point used by `improvements:capture`.
+ *
+ * Returns the hint line for a tool whose defining file has moved since the running
+ * build, or `null` for every other outcome — current, unknown, or a fault in this
+ * check itself. A capture is a friction-moment write on someone else's critical
+ * path: an annotation that cannot answer must cost them nothing, and must never be
+ * the reason their report fails to file.
+ *
+ * Cost when it runs: two `git rev-parse` reads, each bounded by `realGit`'s 5s
+ * subprocess timeout, and only on captures that carry a `toolFailure`.
+ */
+export async function toolFailureStalenessHint(
+  toolName: string,
+  overrides?: Partial<ToolSchemaStalenessDeps>,
+): Promise<string | null> {
+  try {
+    const repoRoot = overrides?.repoRoot ?? integrationRoot();
+    const verdict = await toolSchemaStaleness(toolName, {
+      sourceFileFor: overrides?.sourceFileFor ?? projectedToolSourceFile,
+      deployedSha: overrides?.deployedSha ?? (() => getBuildInfo().sha),
+      repoRoot,
+      git: overrides?.git ?? gitReadForRepo(realGit, repoRoot),
+      treeRef: overrides?.treeRef,
+    });
+    return renderStalenessHint(verdict, toolName);
+  } catch {
+    return null;
+  }
 }
