@@ -172,7 +172,8 @@ METAFILE="$TMPFILE.meta.json"
 # ANY time, including mid-rebuild).
 NEW_BLUEPRINTS_DIR=""
 NEW_SQL_DIR=""
-trap 'rm -f "$TMPFILE" "$METAFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"' EXIT
+SYSTEMD_ENV_RUNNER_TMP=""
+trap 'rm -f "$TMPFILE" "$METAFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"; [[ -n "$SYSTEMD_ENV_RUNNER_TMP" ]] && rm -f "$SYSTEMD_ENV_RUNNER_TMP"' EXIT
 
 # EI-20093985382484201: A BUNDLE FAILURE MUST NOT TAKE THE SERVICE DOWN.
 # ExecStartPre runs this on EVERY restart against the LIVE shared tree, which
@@ -238,7 +239,13 @@ if [[ $bundle_rc -ne 0 ]]; then
     # publishes below are SKIPPED so dist-host/ stays exactly as the last
     # SUCCESSFUL build left it — a coherent bundle+assets set, rather than a
     # stale bundle sitting beside assets freshly published from a newer tree.
-    exit 0
+    #
+    # WI-41242: the fallback is a SERVICE-AVAILABILITY mitigation, not a
+    # successful build. Returning 0 let deploy-cli report a green deploy while
+    # the operator continued serving the previous bundle. Keep the coherent
+    # last-known-good bytes + marker, but fail the caller loudly so deploy and
+    # systemd cannot mistake stale code for the requested release.
+    exit 1
   fi
   echo "ERROR: bundling $ENTRY failed and there is NO previous bundle at $OUTFILE"
   echo "       to fall back to. Refusing to start rather than exec a missing entrypoint."
@@ -255,6 +262,22 @@ echo "✓ bundled: $(du -h "$OUTFILE" | cut -f1) $OUTFILE"
 # esbuild only emits JS, never sibling src/sql/*.sql assets. Keep this in sync
 # with papercusp-desktop/bin/build-desktop-sidecar.sh's sidecar/sql copy.
 OUTDIR="$(dirname "$OUTFILE")"
+
+# systemd-scope.ts resolves this plain-Node helper beside the bundled host
+# entry. esbuild cannot emit a source .mjs sibling, so publish it explicitly
+# with the same temp-then-rename discipline as the host bundle. A missing
+# runner is a hard build error: starting without it turns every out-of-cgroup
+# capability into a preflight MODULE_NOT_FOUND failure.
+SYSTEMD_ENV_RUNNER_SRC="../../packages/operator-core/lib/systemd-scope-env-runner.mjs"
+if [[ ! -f "$SYSTEMD_ENV_RUNNER_SRC" ]]; then
+  echo "ERROR: systemd scope environment runner not found at $SYSTEMD_ENV_RUNNER_SRC"
+  exit 1
+fi
+SYSTEMD_ENV_RUNNER_TMP="$OUTDIR/systemd-scope-env-runner.mjs.new.$$"
+cp "$SYSTEMD_ENV_RUNNER_SRC" "$SYSTEMD_ENV_RUNNER_TMP"
+mv -f "$SYSTEMD_ENV_RUNNER_TMP" "$OUTDIR/systemd-scope-env-runner.mjs"
+SYSTEMD_ENV_RUNNER_TMP=""
+echo "✓ bundled systemd scope environment runner beside the host entry"
 
 # @papercusp/harness is bundled into the host graph too. Its built-in blueprint
 # resolver derives the package root from import.meta.url, so a plain-node bundle

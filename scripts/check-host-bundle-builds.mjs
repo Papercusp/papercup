@@ -26,7 +26,7 @@
  * ships. Output goes to a throwaway dir; the live dist-host/ is never touched.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,13 +45,24 @@ try {
     env: process.env,
   });
   console.log('✓ host bundle builds (bin/hono-host.ts → esbuild)');
+
+  const runnerSource = join(repoRoot, 'packages', 'operator-core', 'lib', 'systemd-scope-env-runner.mjs');
+  const runnerOutput = join(outDir, 'systemd-scope-env-runner.mjs');
+  if (!existsSync(runnerOutput)) {
+    throw new Error(`systemd scope environment runner was not published at ${runnerOutput}`);
+  }
+  if (readFileSync(runnerOutput, 'utf8') !== readFileSync(runnerSource, 'utf8')) {
+    throw new Error('published systemd scope environment runner differs from its source');
+  }
+  console.log('✓ systemd scope environment runner is published beside the host bundle');
 } catch (err) {
   failed = true;
   const out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
+  const detail = out || (err instanceof Error ? err.message : String(err));
   const errorLines = out.split('\n').filter((l) => /✘|\[ERROR\]|No loader is configured/.test(l));
   console.error('✘ HOST BUNDLE FAILED TO BUILD — this WILL take :3170 down at the next restart');
   console.error('  and break the release deploy. It is invisible to unit tests by construction.\n');
-  console.error(errorLines.length ? errorLines.slice(0, 20).join('\n') : out.slice(-4000));
+  console.error(errorLines.length ? errorLines.slice(0, 20).join('\n') : detail.slice(-4000));
   console.error(
     '\nMost common cause: a new import pulled a package with a NATIVE (.node) addon into the\n' +
       'host graph. Fix by adding that package to NATIVE_PKGS in apps/operator/bin/bundle-host.sh\n' +
