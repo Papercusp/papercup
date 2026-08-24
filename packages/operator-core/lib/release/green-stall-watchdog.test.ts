@@ -156,10 +156,7 @@ describe('evaluateGreenStall', () => {
 
   it('FIRE-STALE: an active routine that stopped firing (>3h) alarms — the EI-455 wedge signature', () => {
     // The in-routine detector is blind to this (it only runs when the routine fires).
-    const v = evaluateGreenStall(
-      { lastFiredMs: NOW - 4 * H, lastGreenAt: NOW - 4 * H, watchdogAlerted: false },
-      NOW,
-    );
+    const v = evaluateGreenStall({ lastFiredMs: NOW - 4 * H, lastGreenAt: NOW - 4 * H, watchdogAlerted: false }, NOW);
     expect(v.stalled).toBe(true);
     expect(v.fireStale).toBe(true);
     expect(v.reason).toContain('has not FIRED');
@@ -187,10 +184,7 @@ describe('evaluateGreenStall', () => {
   });
 
   it('BOTH stale: the wedge that also aged past the green backstop reports both clauses', () => {
-    const v = evaluateGreenStall(
-      { lastFiredMs: NOW - 5 * H, lastGreenAt: NOW - 24 * H, watchdogAlerted: false },
-      NOW,
-    );
+    const v = evaluateGreenStall({ lastFiredMs: NOW - 5 * H, lastGreenAt: NOW - 24 * H, watchdogAlerted: false }, NOW);
     expect(v.fireStale).toBe(true);
     expect(v.verdictStale).toBe(true);
     expect(v.reason).toContain('has not FIRED');
@@ -208,10 +202,7 @@ describe('evaluateGreenStall', () => {
   });
 
   it('boundary: exactly at the fire-stale threshold does not alarm (strict >)', () => {
-    const v = evaluateGreenStall(
-      { lastFiredMs: NOW - 3 * H, lastGreenAt: NOW - 3 * H, watchdogAlerted: false },
-      NOW,
-    );
+    const v = evaluateGreenStall({ lastFiredMs: NOW - 3 * H, lastGreenAt: NOW - 3 * H, watchdogAlerted: false }, NOW);
     expect(v.fireStale).toBe(false);
     expect(v.stalled).toBe(false);
   });
@@ -219,10 +210,7 @@ describe('evaluateGreenStall', () => {
   it('a routine that fired recently but has NEVER greened does not verdict-alarm (no lastGreenAt to age)', () => {
     // Fire-recency is healthy here; lastGreenAt null can't be aged. Caught only once
     // firing also goes stale (the wedge) — avoids false alarms on a never-green fresh start.
-    const v = evaluateGreenStall(
-      { lastFiredMs: NOW - 10 * 60 * 1000, lastGreenAt: null, watchdogAlerted: false },
-      NOW,
-    );
+    const v = evaluateGreenStall({ lastFiredMs: NOW - 10 * 60 * 1000, lastGreenAt: null, watchdogAlerted: false }, NOW);
     expect(v.stalled).toBe(false);
   });
 
@@ -245,10 +233,7 @@ describe('evaluateGreenStall', () => {
     };
 
     it('suppresses only a live run in the exact delivering phase', () => {
-      const v = evaluateGreenStall(
-        { ...STALLED, checkpointRunActive: true, checkpointRunPhase: 'delivering' },
-        NOW,
-      );
+      const v = evaluateGreenStall({ ...STALLED, checkpointRunActive: true, checkpointRunPhase: 'delivering' }, NOW);
       expect(v).toEqual({ stalled: false, fireStale: false, verdictStale: false, suppressed: true, reason: null });
     });
 
@@ -293,7 +278,9 @@ describe('evaluateGreenStall', () => {
       { lastFiredMs: NOW - 20 * 60 * 1000, lastGreenAt: NOW - 13 * H, watchdogAlerted: false, failingTests: tests },
       NOW,
     );
-    expect(v.reason).toContain('pkg/file-0.test.ts, pkg/file-1.test.ts, pkg/file-2.test.ts, pkg/file-3.test.ts, pkg/file-4.test.ts');
+    expect(v.reason).toContain(
+      'pkg/file-0.test.ts, pkg/file-1.test.ts, pkg/file-2.test.ts, pkg/file-3.test.ts, pkg/file-4.test.ts',
+    );
     expect(v.reason).toContain('(+3 more)');
   });
 
@@ -390,8 +377,7 @@ describe('attributeVerdictStale — the alarm may not assert a cause it did not 
 
 describe('readLastGateRunEvidence (WI-39704)', () => {
   function makeFakeSql(rows: unknown[]) {
-    return ((_s: TemplateStringsArray, ..._v: unknown[]) =>
-      Promise.resolve(rows)) as unknown as import('postgres').Sql;
+    return ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve(rows)) as unknown as import('postgres').Sql;
   }
 
   it('reads crashed + the FIRST line of the crash summary (the fault, not the stack)', async () => {
@@ -402,7 +388,7 @@ describe('readLastGateRunEvidence (WI-39704)', () => {
           green: null,
           candidate: 'ad976f129ccb',
           summary:
-            "green-checkpoint crashed before producing a normal verdict: Error: git push origin exited 128: fatal: could not read Username\n    at ChildProcess.<anonymous> (/x/green-checkpoint.ts:10206:11)\n    at ChildProcess.emit (node:events:509:20)",
+            'green-checkpoint crashed before producing a normal verdict: Error: git push origin exited 128: fatal: could not read Username\n    at ChildProcess.<anonymous> (/x/green-checkpoint.ts:10206:11)\n    at ChildProcess.emit (node:events:509:20)',
         },
         created_at: '2026-08-17T18:19:36.190Z',
       },
@@ -581,7 +567,9 @@ describe('checkGreenStall checkpoint-run routing (EI-20378004056924553)', () => 
     // `updated_at` (which is the release-trigger freeze signal). It carries a `watchdog-health`
     // marker comment precisely so this assertion can exclude one known statement rather than
     // relax to a whole category.
-    const routineWrites = calls.map((call) => String(call[0])).filter((t) => t.includes('UPDATE harness_shared.routines'));
+    const routineWrites = calls
+      .map((call) => String(call[0]))
+      .filter((t) => t.includes('UPDATE harness_shared.routines'));
     expect(routineWrites.filter((t) => !t.includes('watchdog-health'))).toEqual([]);
     // ...and state the original intent positively, so this cannot pass by accident later.
     expect(routineWrites.some((t) => t.includes('gate_health'))).toBe(false);
@@ -697,9 +685,10 @@ describe('evaluatePausedGreenCheckpoint (EI-21190903677660085)', () => {
       ownerId: 'su-dead-owner',
       holdReason: 'D-016 sole serializer hold: observe the acceptance gate',
     });
-    expect(
-      decidePausedGreenCheckpointRecovery({ ...structured, serializerOwnerLive: true }, NOW),
-    ).toEqual({ action: 'none', reason: 'not-overdue' });
+    expect(decidePausedGreenCheckpointRecovery({ ...structured, serializerOwnerLive: true }, NOW)).toEqual({
+      action: 'none',
+      reason: 'not-overdue',
+    });
     expect(decidePausedGreenCheckpointRecovery(overdue, NOW)).toEqual({
       action: 'none',
       reason: 'not-structured-serializer-hold',
@@ -848,11 +837,7 @@ describe('checkGreenStall paused release green-checkpoint watchdog (EI-211909036
         return Promise.resolve(Object.assign([], { count: 1 }));
       }
       if (text.includes('UPDATE harness_shared.routines')) {
-        return Promise.resolve(
-          opts.rearmSucceeded
-            ? [{ install_slug: 'papercusp' }]
-            : Object.assign([], { count: 0 }),
-        );
+        return Promise.resolve(opts.rearmSucceeded ? [{ install_slug: 'papercusp' }] : Object.assign([], { count: 0 }));
       }
       return Promise.resolve(Object.assign([], { count: 0 }));
     }) as unknown as import('postgres').Sql;
@@ -918,7 +903,9 @@ describe('checkGreenStall paused release green-checkpoint watchdog (EI-211909036
     expect(result).toEqual({ alarmed: [], recovered: [], suppressed: [] });
     expect(notifyAttentionMock).not.toHaveBeenCalled();
     expect(broadcastSevereEventMock).not.toHaveBeenCalled();
-    expect(calls.some((call) => String(call[0]).includes('INSERT INTO harness_shared.harness_escalations'))).toBe(false);
+    expect(calls.some((call) => String(call[0]).includes('INSERT INTO harness_shared.harness_escalations'))).toBe(
+      false,
+    );
   });
 
   it('clears the paused alarm when the routine resumes', async () => {
@@ -1073,9 +1060,7 @@ describe('green-checkpoint-stall recovery parser + decision', () => {
       reason: 'max-attempts',
       nextAttempt: 3,
     });
-    expect(
-      decideGreenCheckpointStallRecovery({ ...valid, recoveryAttempts: 3, recoveryNotifiedAt: NOW - H }),
-    ).toEqual({
+    expect(decideGreenCheckpointStallRecovery({ ...valid, recoveryAttempts: 3, recoveryNotifiedAt: NOW - H })).toEqual({
       action: 'none',
       reason: 'max-attempts',
       nextAttempt: 3,
@@ -1174,9 +1159,7 @@ describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
   it('marks a no-progress dispatch and bounds recovery notifications to 20 data tests / 5 body tests', async () => {
     const failingTests = Array.from({ length: 25 }, (_, i) => `pkg/test-${i}.test.ts`);
     dispatchReleaseFixerMock.mockResolvedValue(null);
-    const { sql, calls } = makeRecoveryFakeSql([
-      recoveryRow({ candidate: 'abcdef1234567890', failingTests }),
-    ]);
+    const { sql, calls } = makeRecoveryFakeSql([recoveryRow({ candidate: 'abcdef1234567890', failingTests })]);
 
     await checkGreenStall(sql, { greenCheckpointStallRecoveryStaleMs: H, greenCheckpointStallRecoveryMaxAttempts: 3 });
 
@@ -1565,11 +1548,11 @@ describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () =
   });
 
   it('EI-9922: fails open (all-null) without throwing when git rejects (non-repo)', () => {
-    (vi.mocked(execFileSync) as unknown as { mockImplementationOnce: (fn: () => never) => void }).mockImplementationOnce(
-      () => {
-        throw new Error('fatal: not a git repository (or any parent up to mount point /)');
-      },
-    );
+    (
+      vi.mocked(execFileSync) as unknown as { mockImplementationOnce: (fn: () => never) => void }
+    ).mockImplementationOnce(() => {
+      throw new Error('fatal: not a git repository (or any parent up to mount point /)');
+    });
     expect(computeMainBehindStaging('/some/packaged/install')).toEqual({
       commitsBehind: null,
       behindMs: null,
@@ -1623,7 +1606,11 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
   // computeMainBehindStaging's two git calls (rev-list --count, then log --format=%ct --reverse)
   // are the only ones made.
   function mockStalledGit() {
-    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void } })
+    (
+      vi.mocked(execFileSync) as unknown as {
+        mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void };
+      }
+    )
       .mockReturnValueOnce('30\n')
       .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
   }
@@ -1716,7 +1703,11 @@ describe('checkMainBehindStaging gate-advance suppression wiring (EI-10202)', ()
   // git: 30 commits / 2h behind (over both DEFAULT thresholds) — the same stalled
   // git snapshot the EI-10103 suite uses.
   function mockStalledGit() {
-    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void } })
+    (
+      vi.mocked(execFileSync) as unknown as {
+        mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void };
+      }
+    )
       .mockReturnValueOnce('30\n')
       .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
   }
@@ -1738,7 +1729,9 @@ describe('checkMainBehindStaging gate-advance suppression wiring (EI-10202)', ()
   }
 
   function findInsert(calls: unknown[][]) {
-    return calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'));
+    return calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'),
+    );
   }
 
   it('SUPPRESSES the alarm when the gate greened recently, even with a deep+old git backlog', async () => {
@@ -1750,7 +1743,9 @@ describe('checkMainBehindStaging gate-advance suppression wiring (EI-10202)', ()
     expect(notifyAttentionMock).not.toHaveBeenCalled();
     expect(broadcastSevereEventMock).not.toHaveBeenCalled();
     // It DID consult the gate-advance signal (the whole point of the fix).
-    expect(calls.some((c) => typeof c[0] === 'string' && (c[0] as string).includes("gate_health'->>'lastGreenAt"))).toBe(true);
+    expect(
+      calls.some((c) => typeof c[0] === 'string' && (c[0] as string).includes("gate_health'->>'lastGreenAt")),
+    ).toBe(true);
   });
 
   it('still ALARMS on a deep+old git backlog when the gate has NOT greened in a long time', async () => {
@@ -1774,7 +1769,10 @@ describe('checkMainBehindStaging gate-advance suppression wiring (EI-10202)', ()
 
 describe('evaluateReleaseTriggerFreeze (WI-4322)', () => {
   it('a fresh/active routine never alarms, however much green code is stranded', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: true, activeChangedAtMs: NOW - 24 * H, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFreeze(
+      { active: true, activeChangedAtMs: NOW - 24 * H, deployedBehindGreenPin: 44 },
+      NOW,
+    );
     expect(v.frozen).toBe(false);
     expect(v.reason).toBeNull();
   });
@@ -1785,31 +1783,46 @@ describe('evaluateReleaseTriggerFreeze (WI-4322)', () => {
   });
 
   it('paused but nothing green is stranded — harmless, never alarms', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 2 * H, deployedBehindGreenPin: 0 }, NOW);
+    const v = evaluateReleaseTriggerFreeze(
+      { active: false, activeChangedAtMs: NOW - 2 * H, deployedBehindGreenPin: 0 },
+      NOW,
+    );
     expect(v.frozen).toBe(false);
   });
 
   it('paused with null deployedBehindGreenPin never alarms (unknown ≠ pending)', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 2 * H, deployedBehindGreenPin: null }, NOW);
+    const v = evaluateReleaseTriggerFreeze(
+      { active: false, activeChangedAtMs: NOW - 2 * H, deployedBehindGreenPin: null },
+      NOW,
+    );
     expect(v.frozen).toBe(false);
   });
 
   it('paused + green stranded, but only just (< 30m threshold) — a normal short manual pause, not yet a freeze', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 10 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFreeze(
+      { active: false, activeChangedAtMs: NOW - 10 * 60_000, deployedBehindGreenPin: 44 },
+      NOW,
+    );
     expect(v.frozen).toBe(false);
   });
 
   it('THE SIGNATURE: paused > 30m + green code stranded ⇒ frozen, with an actionable reason', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 45 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFreeze(
+      { active: false, activeChangedAtMs: NOW - 45 * 60_000, deployedBehindGreenPin: 44 },
+      NOW,
+    );
     expect(v.frozen).toBe(true);
     expect(v.reason).toContain('PAUSED');
     expect(v.reason).toContain('44 green commit');
-    expect(v.reason).toContain("routines:set");
+    expect(v.reason).toContain('routines:set');
     expect(v.reason).toContain('release-trigger');
   });
 
   it('boundary: exactly at the threshold does not alarm (strict >)', () => {
-    const v = evaluateReleaseTriggerFreeze({ active: false, activeChangedAtMs: NOW - 30 * 60_000, deployedBehindGreenPin: 5 }, NOW);
+    const v = evaluateReleaseTriggerFreeze(
+      { active: false, activeChangedAtMs: NOW - 30 * 60_000, deployedBehindGreenPin: 5 },
+      NOW,
+    );
     expect(v.frozen).toBe(false);
   });
 
@@ -1907,7 +1920,9 @@ describe('checkReleaseTriggerFreeze DB wiring (WI-4322)', () => {
   }
 
   function findRTInsertCall(calls: unknown[][]) {
-    return calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'));
+    return calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'),
+    );
   }
 
   it('no routine row (no deploy target for this hive) is a complete no-op', async () => {
@@ -2018,7 +2033,10 @@ describe('checkReleaseTriggerFreeze DB wiring (WI-4322)', () => {
 
 describe('evaluateReleaseTriggerFireStale (EI-14003)', () => {
   it('active + firing within cadence never alarms, however much green code is stranded', () => {
-    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 5 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 5 * 60_000, deployedBehindGreenPin: 44 },
+      NOW,
+    );
     expect(v.stale).toBe(false);
     expect(v.reason).toBeNull();
   });
@@ -2029,27 +2047,42 @@ describe('evaluateReleaseTriggerFireStale (EI-14003)', () => {
   });
 
   it('PAUSED (active:false) never alarms here — checkReleaseTriggerFreeze owns that case', () => {
-    const v = evaluateReleaseTriggerFireStale({ active: false, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFireStale(
+      { active: false, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: 44 },
+      NOW,
+    );
     expect(v.stale).toBe(false);
   });
 
   it('stale-fired but nothing green is stranded — harmless, never alarms', () => {
-    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: 0 }, NOW);
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: 0 },
+      NOW,
+    );
     expect(v.stale).toBe(false);
   });
 
   it('stale-fired with null deployedBehindGreenPin never alarms (unknown ≠ pending)', () => {
-    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: null }, NOW);
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 3 * H, deployedBehindGreenPin: null },
+      NOW,
+    );
     expect(v.stale).toBe(false);
   });
 
   it('not fired long enough yet (< 30m threshold) — normal cadence jitter, not a stall', () => {
-    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 20 * 60_000, deployedBehindGreenPin: 44 }, NOW);
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 20 * 60_000, deployedBehindGreenPin: 44 },
+      NOW,
+    );
     expect(v.stale).toBe(false);
   });
 
   it('THE EI-14003 SIGNATURE: active, not fired in 65m (the real repro gap), green stranded ⇒ stale', () => {
-    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 65 * 60_000, deployedBehindGreenPin: 8 }, NOW);
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 65 * 60_000, deployedBehindGreenPin: 8 },
+      NOW,
+    );
     expect(v.stale).toBe(true);
     expect(v.reason).toContain('ACTIVE');
     expect(v.reason).toContain('not FIRED');
@@ -2058,7 +2091,10 @@ describe('evaluateReleaseTriggerFireStale (EI-14003)', () => {
   });
 
   it('boundary: exactly at the threshold does not alarm (strict >)', () => {
-    const v = evaluateReleaseTriggerFireStale({ active: true, lastFiredMs: NOW - 30 * 60_000, deployedBehindGreenPin: 5 }, NOW);
+    const v = evaluateReleaseTriggerFireStale(
+      { active: true, lastFiredMs: NOW - 30 * 60_000, deployedBehindGreenPin: 5 },
+      NOW,
+    );
     expect(v.stale).toBe(false);
   });
 
@@ -2121,7 +2157,9 @@ describe('checkReleaseTriggerFireStale DB wiring (EI-14003)', () => {
   }
 
   function findFSInsertCall(calls: unknown[][]) {
-    return calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'));
+    return calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'),
+    );
   }
 
   it('no routine row (no deploy target for this hive) is a complete no-op', async () => {

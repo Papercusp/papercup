@@ -120,9 +120,9 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
 }
 
 /** EI-18724155280048738: a running deploy, as `readDeployStatus` reports it. */
-function inFlight(over: Partial<NonNullable<DeployStatus['deployInFlight']>> = {}): NonNullable<
-  DeployStatus['deployInFlight']
-> {
+function inFlight(
+  over: Partial<NonNullable<DeployStatus['deployInFlight']>> = {},
+): NonNullable<DeployStatus['deployInFlight']> {
   return {
     active: true,
     unit: 'papercup-auto-deploy',
@@ -155,7 +155,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   fireGitSyncM.mockResolvedValue(undefined as never);
   auditUnsafeM.mockResolvedValue(undefined);
-  launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log' });
+  launchM.mockResolvedValue({
+    launched: true,
+    unit: 'papercup-auto-deploy',
+    mode: 'trigger',
+    argv: [],
+    logPath: '/tmp/x.log',
+  });
 });
 
 describe('release:deploy — orchestration effect classification', () => {
@@ -248,25 +254,31 @@ describe('release:deploy — status', () => {
 });
 
 describe('release:deploy — skipWorkspaceTx (EI-18733783500981433)', () => {
-  it('opts out of the ambient workspace tx — trigger/force await fireGitSyncNow + ' +
-    'readDeployStatus (tens of seconds) before launching, and never read ctx.tx, so holding ' +
-    'one open the whole time hits Postgres\'s idle_in_transaction_session_timeout (60s) and ' +
-    'surfaces as a bare CONNECTION_CLOSED even though the deploy itself launched (the exact ' +
-    'false-negative EI-18724155280048738 had to work around with the deployInFlight check). ' +
-    'Same fix as capability:bash (EI-18666279107998059).', () => {
-    expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
-  });
+  it(
+    'opts out of the ambient workspace tx — trigger/force await fireGitSyncNow + ' +
+      'readDeployStatus (tens of seconds) before launching, and never read ctx.tx, so holding ' +
+      "one open the whole time hits Postgres's idle_in_transaction_session_timeout (60s) and " +
+      'surfaces as a bare CONNECTION_CLOSED even though the deploy itself launched (the exact ' +
+      'false-negative EI-18724155280048738 had to work around with the deployInFlight check). ' +
+      'Same fix as capability:bash (EI-18666279107998059).',
+    () => {
+      expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+    },
+  );
 });
 
 describe('release:deploy — timeoutSec (EI-18761103623054929)', () => {
-  it('raises the dispatch-stack timeout above the 60s default — trigger/force await ' +
-    'fireGitSyncNow, which is NOT bounded by "tens of seconds" under real load: measured live ' +
-    '2026-07-26 (60 commits stranded behind 5 consecutive gate reds), 4 of 5 consecutive ' +
-    'trigger calls took 83s/96s/177s/61s, each surfacing as a spurious timeout (or transport ' +
-    'CONNECTION_CLOSED) past the 60s default even though the deploy launch itself succeeded.', () => {
-    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(300);
-    expect((tool as unknown as { timeoutSec?: number }).timeoutSec!).toBeGreaterThan(177);
-  });
+  it(
+    'raises the dispatch-stack timeout above the 60s default — trigger/force await ' +
+      'fireGitSyncNow, which is NOT bounded by "tens of seconds" under real load: measured live ' +
+      '2026-07-26 (60 commits stranded behind 5 consecutive gate reds), 4 of 5 consecutive ' +
+      'trigger calls took 83s/96s/177s/61s, each surfacing as a spurious timeout (or transport ' +
+      'CONNECTION_CLOSED) past the 60s default even though the deploy launch itself succeeded.',
+    () => {
+      expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(300);
+      expect((tool as unknown as { timeoutSec?: number }).timeoutSec!).toBeGreaterThan(177);
+    },
+  );
 });
 
 describe('release:deploy — trigger', () => {
@@ -314,7 +326,12 @@ describe('release:deploy — trigger', () => {
 
   it('dry-run (no confirm) previews but does NOT launch even when green-deployable', async () => {
     statusM.mockResolvedValue(
-      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false, deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2, greenPinSha: 'gp' } }),
+      mkStatus({
+        state: 'green-deployable',
+        canTriggerGreen: true,
+        nothingToDeploy: false,
+        deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2, greenPinSha: 'gp' },
+      }),
     );
     const b = body(await tool.handler({ op: 'trigger' } as never, { role: 'operator' } as never));
     expect(b.dry_run).toBe(true);
@@ -323,7 +340,12 @@ describe('release:deploy — trigger', () => {
 
   it('confirm:true fires a detached GREEN deploy (no force flags)', async () => {
     statusM.mockResolvedValue(
-      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false, deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 } }),
+      mkStatus({
+        state: 'green-deployable',
+        canTriggerGreen: true,
+        nothingToDeploy: false,
+        deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 },
+      }),
     );
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, launched: true });
@@ -365,7 +387,12 @@ describe('release:deploy — trigger', () => {
    */
   it('REFUSES a second trigger while a deploy is in flight, and says so definitely', async () => {
     statusM.mockResolvedValue(
-      mkStatus({ state: 'deploy-in-flight', canTriggerGreen: false, nothingToDeploy: false, deployInFlight: inFlight() }),
+      mkStatus({
+        state: 'deploy-in-flight',
+        canTriggerGreen: false,
+        nothingToDeploy: false,
+        deployInFlight: inFlight(),
+      }),
     );
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
@@ -456,9 +483,7 @@ describe('release:deploy — trigger', () => {
   });
 
   it('the success note pre-warns that a transport error still means the deploy LAUNCHED', async () => {
-    statusM.mockResolvedValue(
-      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false }),
-    );
+    statusM.mockResolvedValue(mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false }));
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
     expect(b.note).toMatch(/TRANSPORT ERROR/i);
     expect(b.note).toMatch(/deployInFlight/);
@@ -467,16 +492,15 @@ describe('release:deploy — trigger', () => {
   });
 
   it('a duplicate-unit refusal from systemd is reported as the guard working, not as a maybe', async () => {
-    statusM.mockResolvedValue(
-      mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false }),
-    );
+    statusM.mockResolvedValue(mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false }));
     launchM.mockResolvedValue({
       launched: false,
       unit: 'papercup-auto-deploy',
       mode: 'trigger',
       argv: [],
       logPath: '/tmp/x.log',
-      reason: 'systemd-run exited 1 (a deploy may already be in flight): Unit papercup-auto-deploy.service was already loaded',
+      reason:
+        'systemd-run exited 1 (a deploy may already be in flight): Unit papercup-auto-deploy.service was already loaded',
     });
     const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
     expect(b.launched).toBe(false);
@@ -487,7 +511,12 @@ describe('release:deploy — trigger', () => {
 });
 
 describe('release:deploy — force (owner-gated)', () => {
-  const forceArgs = { op: 'force', reason: 'no-users window: ship the ledger fix', acknowledgeRedTests: ['orchestrator/invoke.test'], confirm: true };
+  const forceArgs = {
+    op: 'force',
+    reason: 'no-users window: ship the ledger fix',
+    acknowledgeRedTests: ['orchestrator/invoke.test'],
+    confirm: true,
+  };
 
   it('is role-gated: a bee cannot force, and no deploy fires', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red' }));
@@ -498,7 +527,9 @@ describe('release:deploy — force (owner-gated)', () => {
   });
 
   it('dry-run (no confirm) previews the commit + acknowledged reds, does NOT launch', async () => {
-    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
+    statusM.mockResolvedValue(
+      mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }),
+    );
     const b = body(await tool.handler({ ...forceArgs, confirm: false } as never, { role: 'operator' } as never));
     expect(b.dry_run).toBe(true);
     expect(b.would_force_deploy).toMatchObject({ commit: 'feedface' });
@@ -506,8 +537,17 @@ describe('release:deploy — force (owner-gated)', () => {
   });
 
   it('confirm:true fires force (un-green commit) AND notifies the owner', async () => {
-    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
-    launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'force', commit: 'feedface', argv: [], logPath: '/tmp/x.log' });
+    statusM.mockResolvedValue(
+      mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }),
+    );
+    launchM.mockResolvedValue({
+      launched: true,
+      unit: 'papercup-auto-deploy',
+      mode: 'force',
+      commit: 'feedface',
+      argv: [],
+      logPath: '/tmp/x.log',
+    });
     const b = body(await tool.handler(forceArgs as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, launched: true, op: 'force', commit: 'feedface' });
     expect(launchM).toHaveBeenCalledWith({ force: true, commit: 'feedface' });
@@ -527,10 +567,7 @@ describe('release:deploy — force (owner-gated)', () => {
     });
 
     const b = body(
-      await tool.handler(
-        { ...forceArgs, commit: 'bb694a6af028' } as never,
-        { role: 'operator' } as never,
-      ),
+      await tool.handler({ ...forceArgs, commit: 'bb694a6af028' } as never, { role: 'operator' } as never),
     );
 
     expect(b).toMatchObject({ ok: true, launched: true, op: 'force', commit: 'bb694a6af028' });
@@ -562,11 +599,9 @@ describe('release:deploy — subject stamp + cross-harness misattribution (EI-20
     expect(b.subject.note).toContain('test-home');
   });
 
-  it('WARNS LOUDLY when the caller\'s own harness is not the reported one', async () => {
+  it("WARNS LOUDLY when the caller's own harness is not the reported one", async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
-    const b = body(
-      await tool.handler({ op: 'status' } as never, { role: 'cup', harnessSlug: 'sidestage' } as never),
-    );
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup', harnessSlug: 'sidestage' } as never));
     expect(b.harnessMismatch).toMatchObject({ callerHarness: 'sidestage', reportedHarness: 'test-home' });
     // The warning must name BOTH harnesses — the misread it prevents is a reader quoting these
     // numbers as SideStage's release truth.
@@ -600,9 +635,7 @@ describe('release:deploy — subject stamp + cross-harness misattribution (EI-20
 
   it('REFUSES a harness assertion naming another harness — without reading status at all', async () => {
     statusM.mockResolvedValue(mkStatus());
-    const b = body(
-      await tool.handler({ op: 'status', harness: 'sidestage' } as never, { role: 'cup' } as never),
-    );
+    const b = body(await tool.handler({ op: 'status', harness: 'sidestage' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: false, refused: true, op: 'status' });
     expect(b.reason).toContain('harness_not_reportable');
     expect(b.reason).toContain('sidestage');
@@ -621,13 +654,22 @@ describe('release:deploy — subject stamp + cross-harness misattribution (EI-20
   it('REFUSES a foreign harness assertion on the WRITE ops too — no cross-harness deploy by mistake', async () => {
     statusM.mockResolvedValue(mkStatus({ canTriggerGreen: true }));
     const trig = body(
-      await tool.handler({ op: 'trigger', harness: 'sidestage', confirm: true } as never, { role: 'operator' } as never),
+      await tool.handler(
+        { op: 'trigger', harness: 'sidestage', confirm: true } as never,
+        { role: 'operator' } as never,
+      ),
     );
     expect(trig).toMatchObject({ ok: false, refused: true, op: 'trigger' });
     expect(trig.reason).toContain('harness_not_reportable');
     const forced = body(
       await tool.handler(
-        { op: 'force', harness: 'sidestage', reason: 'testing the gate', acknowledgeRedTests: ['x'], confirm: true } as never,
+        {
+          op: 'force',
+          harness: 'sidestage',
+          reason: 'testing the gate',
+          acknowledgeRedTests: ['x'],
+          confirm: true,
+        } as never,
         { role: 'operator' } as never,
       ),
     );
@@ -637,7 +679,10 @@ describe('release:deploy — subject stamp + cross-harness misattribution (EI-20
 
   it('stamps EVERY exit — degraded envelope, refusal, dry-run and fire all name the subject', async () => {
     const ctx = { role: 'operator', harnessSlug: 'sidestage' } as never;
-    const expectStamped = (b: { subject?: { harness?: string }; harnessMismatch?: { callerHarness?: string } }, where: string) => {
+    const expectStamped = (
+      b: { subject?: { harness?: string }; harnessMismatch?: { callerHarness?: string } },
+      where: string,
+    ) => {
       expect(b.subject?.harness, `subject missing on ${where}`).toBe('test-home');
       expect(b.harnessMismatch?.callerHarness, `mismatch missing on ${where}`).toBe('sidestage');
     };
@@ -672,12 +717,7 @@ describe('release:deploy — subject stamp + cross-harness misattribution (EI-20
 
     // 6. force dry-run
     expectStamped(
-      body(
-        await tool.handler(
-          { op: 'force', reason: 'testing the gate', acknowledgeRedTests: ['x'] } as never,
-          ctx,
-        ),
-      ),
+      body(await tool.handler({ op: 'force', reason: 'testing the gate', acknowledgeRedTests: ['x'] } as never, ctx)),
       'force dry-run',
     );
 

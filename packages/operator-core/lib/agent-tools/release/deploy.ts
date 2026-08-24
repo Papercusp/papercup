@@ -36,7 +36,12 @@ import { hardText, LIMITS } from '../limits';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { readDeployStatus, launchDetachedDeploy, integrationRoot, type DeployStatus } from '../../release-deploy-launch';
+import {
+  readDeployStatus,
+  launchDetachedDeploy,
+  integrationRoot,
+  type DeployStatus,
+} from '../../release-deploy-launch';
 import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
 import { operatorHomeHarnessSlug, canonicalHarnessSlug } from '../../harness/operator-home-harness';
@@ -117,7 +122,11 @@ const harnessAssertion = z
   );
 
 /** Refuse a harness assertion naming anything but the one pipeline this tool can report. */
-function harnessAssertionRefusal(op: 'status' | 'trigger' | 'force', asserted: string | undefined, stamp: ReleaseSubjectStamp) {
+function harnessAssertionRefusal(
+  op: 'status' | 'trigger' | 'force',
+  asserted: string | undefined,
+  stamp: ReleaseSubjectStamp,
+) {
   const raw = asserted?.trim();
   if (!raw) return null;
   const want = canonicalHarnessSlug(raw);
@@ -152,7 +161,6 @@ async function recordDeployAudit(op: string, actor: string, details: Record<stri
       [id, Date.now(), actor, 'release:deploy', op, JSON.stringify(details), activeWorkspaceId()],
     );
   } catch (err) {
-     
     console.warn('[release:deploy] audit write failed:', (err as Error)?.message);
   }
 }
@@ -252,9 +260,12 @@ function attachFileReadHandles(status: DeployStatus): DeployStatus {
   const deployInFlight = status.deployInFlight?.logPath
     ? { ...status.deployInFlight, read: fileReadHandle(status.deployInFlight.logPath) }
     : status.deployInFlight;
-  const checkpointRunInFlight = status.checkpointRunInFlight && typeof status.checkpointRunInFlight.logPath === 'string' && status.checkpointRunInFlight.logPath
-    ? { ...status.checkpointRunInFlight, read: fileReadHandle(status.checkpointRunInFlight.logPath) }
-    : status.checkpointRunInFlight;
+  const checkpointRunInFlight =
+    status.checkpointRunInFlight &&
+    typeof status.checkpointRunInFlight.logPath === 'string' &&
+    status.checkpointRunInFlight.logPath
+      ? { ...status.checkpointRunInFlight, read: fileReadHandle(status.checkpointRunInFlight.logPath) }
+      : status.checkpointRunInFlight;
 
   return {
     ...status,
@@ -270,8 +281,7 @@ export default defineTool({
   description:
     'Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited operator/queen/architect-only escape for an un-green commit (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.',
   guidance: {
-    when:
-      'A committed, gate-clean change isn\'t live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).',
+    when: "A committed, gate-clean change isn't live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).",
     notWhen:
       'Never force as a reflex to "get my change out" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.',
     chaining:
@@ -324,12 +334,17 @@ export default defineTool({
     z.object({
       op: z.literal('trigger'),
       harness: harnessAssertion,
-      confirm: z.boolean().optional().describe('false/absent ⇒ DRY RUN (preview what would deploy). true ⇒ fire the detached green deploy.'),
+      confirm: z
+        .boolean()
+        .optional()
+        .describe('false/absent ⇒ DRY RUN (preview what would deploy). true ⇒ fire the detached green deploy.'),
     }),
     z.object({
       op: z.literal('force'),
       harness: harnessAssertion,
-      reason: hardText(LIMITS.SHORT_TITLE, { min: 8 }).describe('Why a force (un-green) deploy is justified — loudly audited.'),
+      reason: hardText(LIMITS.SHORT_TITLE, { min: 8 }).describe(
+        'Why a force (un-green) deploy is justified — loudly audited.',
+      ),
       acknowledgeRedTests: z
         .array(z.string().min(1))
         .min(1)
@@ -338,7 +353,9 @@ export default defineTool({
         .string()
         .regex(/^[0-9a-fA-F]{7,40}$/)
         .optional()
-        .describe('The commit sha to ship past the red gate. Omitted ⇒ the current staging HEAD (shown in the dry-run preview).'),
+        .describe(
+          'The commit sha to ship past the red gate. Omitted ⇒ the current staging HEAD (shown in the dry-run preview).',
+        ),
       confirm: z.boolean().optional().describe('false/absent ⇒ DRY RUN. true ⇒ fire the detached force deploy.'),
     }),
   ]),
@@ -396,8 +413,10 @@ export default defineTool({
         const refreshed = await readStatusBounded();
         if (!refreshed.degraded && refreshed.value) status = refreshed.value;
       } catch (e) {
-
-        console.warn('[release:deploy] pre-deploy git-sync fire failed (continuing with current staging):', (e as Error)?.message);
+        console.warn(
+          '[release:deploy] pre-deploy git-sync fire failed (continuing with current staging):',
+          (e as Error)?.message,
+        );
       }
     }
 
@@ -522,7 +541,6 @@ export default defineTool({
         body: `${actor} force-deployed ${commit.slice(0, 12)} past a red gate. Accepting reds: ${args.acknowledgeRedTests.join(', ')}. Reason: ${args.reason}`,
       });
     } catch (err) {
-       
       console.warn('[release:deploy] force notifyAttention failed:', (err as Error)?.message);
     }
     const launch = await launchDetachedDeploy({ force: true, commit });
