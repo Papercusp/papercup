@@ -183,6 +183,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
         ok: true,
         dependencyBottlenecks: {
           status: 'measured',
+          mermaid: '```mermaid\nflowchart LR\n  n0 --> n1\n```',
           population: {
             kind: 'exact-plan-open-roots',
             planSlug: 'one-plan',
@@ -230,6 +231,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     const bottlenecks = out.dependencyBottlenecks as {
       rows: Array<Record<string, unknown>>;
       rowsTruncated: { total: number; shown: number };
+      mermaid: string;
     };
     expect(bottlenecks).toMatchObject({
       status: 'measured',
@@ -250,7 +252,34 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       workItemRefsTruncated: { total: 9, shown: 4 },
       holder: { state: 'held', count: 4 },
     });
+    expect(bottlenecks.mermaid).toBe('```mermaid\nflowchart LR\n  n0 --> n1\n```');
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+
+  it('never clips a large Mermaid document into invalid syntax', () => {
+    const mermaid = `\`\`\`mermaid\nflowchart LR\n${'  n0 --> n1\n'.repeat(200)}\`\`\``;
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        dependencyBottlenecks: {
+          status: 'measured',
+          population: { planSlug: 'one-plan' },
+          rows: [],
+          mermaid,
+        },
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+
+    expect(out.dependencyBottlenecks).toMatchObject({
+      status: 'measured',
+      mermaidOmitted: {
+        chars: mermaid.length,
+        reason: 'bounded monitor projection never clips Mermaid',
+        more: expect.stringContaining('payloadTier:"full"'),
+      },
+    });
+    expect(out.dependencyBottlenecks).not.toHaveProperty('mermaid');
   });
 
   it('keeps an unknown dependency read explicit instead of emitting an empty measured table', () => {

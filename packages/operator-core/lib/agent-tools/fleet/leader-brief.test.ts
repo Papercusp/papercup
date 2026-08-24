@@ -239,6 +239,49 @@ describe('buildLeaderDependencyBottleneckView (WI-41168 / P-006)', () => {
       ],
     });
   });
+
+  it('adds Mermaid only when the same query result includes the opt-in graph rows (WI-41170 / P-008)', () => {
+    const result: DependencyBottleneckResult = {
+      population: {
+        kind: 'exact-plan-open-roots',
+        planSlug: 'one-plan',
+        harnessSlug: 'papercusp',
+        basis: 'unified-dependency-graph',
+        openRoots: 1,
+        candidates: 1,
+        shown: 1,
+        limit: 8,
+        truncated: false,
+        depthLimited: false,
+        maxDepth: 64,
+      },
+      rows: [],
+      graph: {
+        nodes: [
+          { key: 'plan_item:one-plan#P-001', kind: 'plan_item', ref: 'P-001', status: 'todo', title: 'Blocked lane' },
+          { key: 'work_item:WI-41117', kind: 'work_item', ref: 'WI-41117', status: 'open', title: 'Shared blocker' },
+        ],
+        edges: [
+          {
+            key: 'edge-1',
+            subjectKey: 'plan_item:one-plan#P-001',
+            dependencyKey: 'work_item:WI-41117',
+            relation: 'work-item-blocks',
+            externalRef: null,
+          },
+        ],
+      },
+    };
+
+    const rendered = buildLeaderDependencyBottleneckView(result, []);
+    expect(rendered).toMatchObject({
+      status: 'measured',
+      mermaid: expect.stringContaining('n0 -->|blocked by| n1'),
+    });
+
+    const withoutGraph = buildLeaderDependencyBottleneckView({ ...result, graph: undefined }, []);
+    expect(withoutGraph).not.toHaveProperty('mermaid');
+  });
 });
 
 describe('buildLeaderBlockerStallBriefView (WI-41171 / P-009)', () => {
