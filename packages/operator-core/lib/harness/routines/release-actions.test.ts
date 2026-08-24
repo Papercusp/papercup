@@ -40,6 +40,15 @@ vi.mock('../../events/await/engine', () => ({
   emitAwaitedEvent: (...a: unknown[]) => emitAwaitedEvent(...a),
 }));
 
+// EI-21363817573800034: drive the scheduled gate's ADMISSION check. Only the reader is
+// replaced — releaseCheckpointConfig() and the rest of the module stay REAL, so this cannot
+// mask a regression in the thresholds the same module owns.
+const qualificationAdmission = vi.fn(async (): Promise<QualificationAdmission> => ({ status: 'clear' }));
+vi.mock('../../release-checkpoint-config', async (orig) => ({
+  ...(await orig<typeof import('../../release-checkpoint-config')>()),
+  readQualificationAdmission: () => qualificationAdmission(),
+}));
+
 // EI-10158: the green-checkpoint action's fail-safe stall-tracking + flake-history
 // (trackGateStall / trackFlakeHistory) and release-trigger's back-off read reach
 // @papercusp/db-org DIRECTLY (getOrgPg().sql.unsafe) — not through appendPipelineEvent.
@@ -151,6 +160,7 @@ import {
   type GitCheckRunner,
 } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
+import type { QualificationAdmission } from '../../release-checkpoint-config';
 import type { FlakeSuspect } from '../../dev-data';
 import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
@@ -728,6 +738,12 @@ beforeEach(() => {
   appendPipelineEvent.mockClear();
   emitAwaitedEvent.mockClear();
   fakeSql.unsafe.mockClear();
+  // EI-21363817573800034: admission defaults to CLEAR for every test, so the guard is invisible
+  // to the ~136 cases that predate it. Reset globally (not just in the admission describe): a
+  // held/unknown value leaking forward silently stops the suite from spawning, which surfaces as
+  // a dozen unrelated "expected spawn to be called" failures rather than as a mock-hygiene bug.
+  qualificationAdmission.mockReset();
+  qualificationAdmission.mockResolvedValue({ status: 'clear' });
 });
 
 describe('register-system-actions — registry population', () => {
@@ -1162,6 +1178,69 @@ describe('checkReleaseFixerCandidateStale — live re-verify (EI-8718)', () => {
     );
     const r = await checkReleaseFixerCandidateStale('/repo', 'cafe1234', runner);
     expect(r).toEqual({ candidateExists: true, candidatePromoted: false });
+  });
+});
+
+describe('EI-21363817573800034: a scheduled tick declines while a qualification hold is active', () => {
+  // The recurrence this pins: on 2026-08-24 the hourly wrapper twice took the run-lock while an
+  // owner-directed serializer hold forbade any qualification (D-025 18:16Z, D-031 19:20Z). Both
+  // runs had to be hand-stopped at the systemd scope and marked permanently non-qualifying,
+  // because the hold bound humans and agents but was invisible to the scheduler.
+  const GREEN_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+  const okStdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'up-to-date', green: true })}\n`;
+
+  beforeEach(() => {
+    qualificationAdmission.mockReset();
+    qualificationAdmission.mockResolvedValue({ status: 'clear' });
+  });
+
+  it('HELD: never spawns the suite — so the run-lock is never acquired — and records skipped-held with the governing ref', async () => {
+    qualificationAdmission.mockResolvedValue({
+      status: 'held',
+      hold: {
+        governingRef: 'stable-candidate-related-gate-2026-08-23#D-028',
+        blockingItems: ['EI-21345855843068720'],
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getSystemAction('green-checkpoint')!(ctx);
+    // THE property, asserted behaviourally rather than by field name: the run-lock is taken by
+    // the CHILD process, so "no spawn at all" is exactly "cannot acquire the run-lock".
+    expect(spawnMock).not.toHaveBeenCalled();
+    // …and the decline is attributable — a skip with no governing ref would be indistinguishable
+    // from the gate silently breaking, which is the failure mode this whole item is about.
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'green_checkpoint',
+        status: 'skipped-held',
+        detail: expect.objectContaining({
+          governingRef: 'stable-candidate-related-gate-2026-08-23#D-028',
+          blockingItems: ['EI-21345855843068720'],
+        }),
+      }),
+    );
+    warn.mockRestore();
+  });
+
+  it('CLEAR: resumes after the hold lifts — the suite spawns exactly as it did before the guard existed', async () => {
+    qualificationAdmission.mockResolvedValue({ status: 'clear' });
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(spawnMock).toHaveBeenCalled();
+    expect(appendPipelineEvent).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'skipped-held' }));
+  });
+
+  it('UNKNOWN is not permission: an unreadable admission also declines, rather than failing open', async () => {
+    // Fail-open here would defeat the entire guard, since an unreachable DB is precisely when a
+    // supervisor is least able to notice an unauthorized run. It skips THIS tick only.
+    qualificationAdmission.mockResolvedValue({ status: 'unknown', reason: 'connection refused' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getSystemAction('green-checkpoint')!(ctx);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'skipped-admission-unknown' }),
+    );
+    warn.mockRestore();
   });
 });
 

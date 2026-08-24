@@ -69,6 +69,80 @@ export async function resetReleaseCheckpointConfig(): Promise<void> {
   await setReleaseCheckpointOverride({});
 }
 
+/**
+ * EI-21363817573800034 — the QUALIFICATION HOLD (the scheduled gate's admission token).
+ *
+ * A coordination decision can forbid any candidate from qualifying (owner-directed
+ * serializer holds: see `stable-candidate-related-gate-2026-08-23` D-028/D-029). Before this
+ * existed, that prohibition was fail-closed for HUMANS AND AGENTS ONLY — the hourly scheduled
+ * wrapper knew nothing about it, took the run-lock anyway, and a supervisor had to hand-stop the
+ * systemd scope after the fact (D-025 at 18:16Z, D-031 at 19:20Z on 2026-08-24; both runs then
+ * had to be marked permanently non-qualifying). This makes the hold machine-readable so the
+ * scheduler declines on its own.
+ *
+ * Rides the SAME jsonb row as the thresholds above — the module header's stated extension path
+ * ("addable to this same JSONB row incrementally (no further migration)").
+ */
+export interface QualificationHold {
+  /** REQUIRED governing ref, e.g. 'stable-candidate-related-gate-2026-08-23#D-028'. A hold with
+   *  no attributable authority is not a hold — it reads as malformed, which is fail-closed. */
+  governingRef: string;
+  /** Evidence only (what the hold is waiting on); the ACTIVE/CLEAR decision is the hold's
+   *  presence, so a stale work-item read can never fail this open. */
+  blockingItems?: string[];
+  reason?: string;
+  placedBy?: string;
+  placedAtMs?: number;
+}
+
+/** The stored row: thresholds + the optional hold, sharing one jsonb payload. */
+type CheckpointConfigRow = Partial<ReleaseCheckpointConfig> & {
+  qualificationHold?: QualificationHold | null;
+};
+
+/**
+ * Three-state ON PURPOSE. `unknown` is in-band and is NOT `clear`:
+ *  - fail OPEN on a read error would defeat the whole guard (the unauthorized run launches);
+ *  - fail CLOSED permanently would let one transient DB blip freeze `main` indefinitely.
+ * So `unknown` skips THIS tick only and self-heals on the next one (hourly).
+ */
+export type QualificationAdmission =
+  | { status: 'clear' }
+  | { status: 'held'; hold: QualificationHold }
+  | { status: 'unknown'; reason: string };
+
+/**
+ * Read admission FRESH — never `releaseCheckpointConfig()`.
+ *
+ * That accessor is a sync cache refreshed on boot + on local write, so a hold placed in ANOTHER
+ * process (the supervisor's) is invisible to it for the life of this process. A hold must be read
+ * atomically at launch or it does not bind.
+ */
+export async function readQualificationAdmission(): Promise<QualificationAdmission> {
+  let row: CheckpointConfigRow | null;
+  try {
+    row = await readOperatorState<CheckpointConfigRow>('operator_release_checkpoint_config');
+  } catch (e) {
+    return { status: 'unknown', reason: e instanceof Error ? e.message : String(e) };
+  }
+  const hold = row?.qualificationHold;
+  if (hold === undefined || hold === null) return { status: 'clear' };
+  if (typeof hold !== 'object' || typeof hold.governingRef !== 'string' || hold.governingRef.trim() === '') {
+    // Malformed ⇒ unknown, never clear: a corrupted token must not read as permission.
+    return { status: 'unknown', reason: 'qualificationHold present but has no governingRef' };
+  }
+  return { status: 'held', hold };
+}
+
+/** Place (or, with `null`, lift) the hold, preserving the threshold fields in the same row. */
+export async function setQualificationHold(hold: QualificationHold | null): Promise<void> {
+  const row = (await readOperatorState<CheckpointConfigRow>('operator_release_checkpoint_config')) ?? {};
+  const next: CheckpointConfigRow = { ...row };
+  if (hold) next.qualificationHold = hold;
+  else delete next.qualificationHold;
+  await writeOperatorState<CheckpointConfigRow>('operator_release_checkpoint_config', next);
+}
+
 registerOverrideConcern({
   name: 'release-checkpoint-config',
   description: 'green-checkpoint / release thresholds (stall reds/age, chronic-flake count/cooldown, deploy backoff)',
