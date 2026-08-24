@@ -67,6 +67,7 @@ import {
   getClaimSpec,
 } from '../../scheduler/claim-spec-store';
 import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
+import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { startVerdictForRow } from '../plans/plan-start-gate';
 import {
@@ -203,6 +204,62 @@ export interface PersistedFleetLaunchProfileConflict {
   field: string;
   saved: unknown;
   requested: unknown;
+}
+
+export interface FleetRouteSwitchConflict {
+  currentFleet: string;
+  currentRole: string | null;
+  targetFleet: string;
+}
+
+/**
+ * A caller-led launch relabels the caller into the target fleet.  Doing that
+ * while the caller is already enrolled in another fleet is a route switch,
+ * not an ordinary top-up: the old fleet loses its live supervisor/membership
+ * even though every member process stays alive.  Require an explicit audit bit
+ * for that transition.  `leader:'spawn'` is safe because the caller remains in
+ * its current fleet and the fresh agent leads the new one.
+ */
+export function fleetRouteSwitchConflict(opts: {
+  currentFleet?: string | null;
+  currentRole?: string | null;
+  targetFleet: string;
+  leader?: 'caller' | 'spawn';
+  confirmRouteSwitch?: boolean;
+}): FleetRouteSwitchConflict | null {
+  const currentFleet = opts.currentFleet?.trim();
+  if (
+    !currentFleet ||
+    currentFleet === opts.targetFleet ||
+    opts.leader === 'spawn' ||
+    opts.confirmRouteSwitch === true
+  ) {
+    return null;
+  }
+  return {
+    currentFleet,
+    currentRole: opts.currentRole?.trim() || null,
+    targetFleet: opts.targetFleet,
+  };
+}
+
+/**
+ * A saved fleet profile may supply terminal placement, but a first/unprofiled
+ * local launch has no such authority.  Do not silently turn an omitted
+ * `headless` into visible desktop windows: require one fleet-wide choice, or an
+ * explicit choice for every member in a deliberately mixed launch.
+ */
+export function requiresExplicitUnprofiledVisibility(opts: {
+  savedSpecFound: boolean;
+  placement?: 'local' | 'remote';
+  headless?: boolean;
+  count?: number;
+  members?: readonly { headless?: boolean }[];
+}): boolean {
+  if (opts.savedSpecFound || opts.placement === 'remote' || opts.headless !== undefined) return false;
+  const count = Math.max(1, Math.floor(opts.count ?? 1));
+  const members = opts.members ?? [];
+  return members.length < count || members.slice(0, count).some((member) => member.headless === undefined);
 }
 
 /** Existing fleets recover from their persisted recipe; only host placement
@@ -1461,6 +1518,12 @@ export default defineTool({
       .describe(
         "WHO LEADS the fleet (default 'caller' — you become leader, the historical behavior). 'spawn' launches a FRESH agent to lead it and leaves you out of the fleet entirely: use it when you must NOT be the leader — a GOAL-mode portfolio manager delegating a plan, where leading a plan fleet yourself is the same mistake as implementing it. Replaces the two-hop relay (launch an agent, brief it to call this tool itself) with one call. The spawned leader's coord identity is PRE-PINNED, so the fleet row names its real leader from the first write and there is never a window where you are recorded as leading. It is opened BEFORE any member, and if it fails to open the whole launch ABORTS with zero members — members draining a queue with no leader watching is worse than no fleet. The leader gets the same agent/model/account/carry/headless treatment as the members unless you say otherwise, plus the standing leader brief.",
       ),
+    confirmRouteSwitch: z
+      .boolean()
+      .optional()
+      .describe(
+        "Explicitly authorize moving the CALLER from its currently registered fleet into a different target fleet. Without this bit, a caller-led launch (`leader:'caller'`, the default) is refused before mutation when the caller already belongs to another fleet; use `leader:'spawn'` instead when the current fleet must keep its supervisor. This is an audit guard, not a convenience retry flag — read the refusal's currentFleet/targetFleet first.",
+      ),
     carry: z
       .enum(['warm', 'cold'])
       .optional()
@@ -1673,6 +1736,65 @@ export default defineTool({
       return err(
         `${savedLaunchSpec.message} Existing-fleet top-up/takeover may vary only count and host placement. ` +
           'Use fleet:respawn-member for an explicit audited per-member boot-setting change.',
+      );
+    }
+
+    // EI-21304203620302419: a caller-led launch changes the caller's durable
+    // membership below.  The recovered incident had an agent leading BYOC call
+    // this tool for a brand-new observability fleet; that silently abandoned the
+    // selected route and, because the new slug had no saved profile, also lost
+    // BYOC's headless launch setting.  Refuse before promotion/fleet creation.
+    let priorFleetMembership: { fleetSlug: string | null; fleetRole: string | null } | null = null;
+    try {
+      priorFleetMembership = (await fetchPresenceFleet([ownerId])).get(ownerId) ?? null;
+    } catch {
+      priorFleetMembership = null; // a presence read outage must not fabricate a route
+    }
+    const routeSwitch = fleetRouteSwitchConflict({
+      currentFleet: priorFleetMembership?.fleetSlug,
+      currentRole: priorFleetMembership?.fleetRole,
+      targetFleet: fleetSlug,
+      leader: args.leader,
+      confirmRouteSwitch: args.confirmRouteSwitch,
+    });
+    if (routeSwitch) {
+      return json(
+        {
+          ok: false,
+          error: 'fleet_route_switch_refused',
+          ...routeSwitch,
+          message:
+            `Caller is already enrolled in fleet \`${routeSwitch.currentFleet}\`` +
+            `${routeSwitch.currentRole ? ` as ${routeSwitch.currentRole}` : ''}; a caller-led launch into ` +
+            `\`${routeSwitch.targetFleet}\` would silently switch routes. Target the current fleet to reuse its ` +
+            "saved launch spec, use `leader:'spawn'` so the caller stays put, or pass " +
+            '`confirmRouteSwitch:true` only for a deliberate route change.',
+        },
+        true,
+      );
+    }
+
+    if (
+      requiresExplicitUnprofiledVisibility({
+        savedSpecFound: savedLaunchSpec.found,
+        placement: args.placement,
+        headless: args.headless,
+        count: args.count,
+        members: args.members,
+      })
+    ) {
+      return json(
+        {
+          ok: false,
+          error: 'unprofiled_visibility_required',
+          fleet: fleetSlug,
+          message:
+            `No saved launch spec exists for fleet \`${fleetSlug}\`. Pass \`headless:true\` or ` +
+            '`headless:false` explicitly (or set every `members[].headless` value for a mixed fleet) ' +
+            'instead of silently defaulting to visible desktop windows. If an existing fleet profile is the ' +
+            'authority, target that fleet slug; launch specs are fleet-scoped and are never inferred from another fleet.',
+        },
+        true,
       );
     }
     const persistedHeadcountProfile = savedLaunchSpec.found
