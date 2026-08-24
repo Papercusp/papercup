@@ -241,6 +241,94 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   };
 }
 
+/**
+ * Build the telemetry-only context for a request rejected before auth can
+ * produce a normal spawn context. This deliberately trusts no authorization
+ * claim: the context is used only to preserve the request's claimed scope and
+ * origin in a best-effort error row, never for dispatch or presence updates.
+ */
+function mcpAuthFailureContext(extra: unknown): UnifiedToolContext | null {
+  const url = urlFromExtra(extra);
+  if (!url) return null;
+  const headers = headersFromExtra(extra);
+  const queryParam = (name: string): string => (url.searchParams.get(name) ?? '').trim();
+  const headerParam = (name: string): string => (headers.get(name) ?? '').trim();
+  const workspaceId = headerParam('x-papercusp-workspace') || queryParam('workspace');
+  // Without an explicit claimed workspace, writing a row would mis-scope it to
+  // a tenant guessed from process state. Keep the failure visible in logs, but
+  // leave the workspace-scoped telemetry ledger untouched.
+  if (!workspaceId) return null;
+
+  const harnessSlug = headerParam('x-papercusp-harness') || queryParam('harness') || '*';
+  const uiClientId = headerParam('x-papercusp-client') || queryParam('client') || headerParam('mcp-session-id');
+  const role = canonicalCoordRole(queryParam('role') || 'operator') as AgentRole;
+  const runId = queryParam('run') || `mcp-auth-failure-${globalThis.crypto.randomUUID()}`;
+  const spawnId = queryParam('spawn') || `mcp-auth-failure-${globalThis.crypto.randomUUID()}`;
+  const claimedSuperuser = queryParam('superuser') === '1';
+  const claimedPowerUser = queryParam('power_user') === '1';
+
+  return {
+    workspaceId,
+    harnessSlug,
+    role,
+    featureId: null,
+    chunkId: null,
+    runId,
+    spawnId,
+    parentSpawnId: null,
+    uiClientId: uiClientId || null,
+    // These are URL claims only. They allow the existing telemetry identity
+    // resolver to retain a known session label, but no gate reads this ctx.
+    ...(claimedSuperuser ? { isSuperuser: true } : {}),
+    ...(claimedPowerUser ? { isPowerUser: true } : {}),
+    profile: queryParam('profile') === 'power' ? 'power' : 'engineer',
+    transport: 'mcp',
+    requestOrigin: buildMcpRequestOrigin(extra),
+    log: () => {},
+    progress: () => {},
+    emit: () => {},
+    signal: new AbortController().signal,
+  };
+}
+
+/**
+ * Keep rejected MCP calls visible to the same tool_invocations ledger as
+ * dispatched calls. Auth rejection happens before buildMcpToolContext and the
+ * dispatcher, so this is the only recording point for a dark session.
+ */
+async function recordMcpAuthFailureTelemetry(
+  toolName: string,
+  extra: unknown,
+  reason: string,
+  projected: ReturnType<typeof lookupByMcpName>,
+  callStartedAt: number,
+): Promise<void> {
+  const ctx = mcpAuthFailureContext(extra);
+  if (!ctx) return;
+  try {
+    const roleQuota = ctx.role ? projected?.rolesQuota?.[ctx.role] : undefined;
+    await PROJECTED_DEPS.recordInvocation?.({
+      toolName,
+      pluginName: projected?.pluginName ?? 'agent-mcp',
+      ctx,
+      windowKey: PROJECTED_DEPS.computeQuotaWindow?.(ctx, roleQuota, toolName).key ?? '',
+      durationMs: Date.now() - callStartedAt,
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: reason,
+      // Auth failed before input validation; do not persist untrusted args.
+      metadataJson: { mcpAuthFailure: { reason, contextVerified: false } },
+    });
+  } catch (error) {
+    // Telemetry is best-effort and must never change the auth rejection seen by
+    // the caller (or turn a dark session into a different failure mode).
+    console.warn(
+      `[mcp-handler] auth-failure telemetry failed for ${toolName}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}
+
 const DELTA_PROXY_SESSIONS = new DeltaProxySessionStore();
 
 function deltaProxySession(sessionKey: string) {
@@ -2034,6 +2122,7 @@ const handler = createMcpHandler(
         // to legacy bearer dispatch. That's the whole point of the
         // verification step.
         if (spawnRes.kind === 'failed') {
+          await recordMcpAuthFailureTelemetry(toolName, extra, spawnRes.reason, projected, callStartedAt);
           return {
             isError: true,
             content: [

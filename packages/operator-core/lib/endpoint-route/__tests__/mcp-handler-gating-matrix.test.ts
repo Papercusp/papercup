@@ -106,10 +106,20 @@ const h = vi.hoisted(() => {
       toolName: string;
       status: string;
       windowKey: string;
-      ctx: { role?: string; runId?: string | null; spawnId?: string; harnessSlug?: string };
+      ctx: {
+        role?: string;
+        runId?: string | null;
+        spawnId?: string;
+        harnessSlug?: string;
+        workspaceId?: string;
+        uiClientId?: string | null;
+        isSuperuser?: boolean;
+        transport?: string;
+      };
       args?: unknown;
       metadataJson?: Record<string, unknown> | null;
       errorMessage?: string | null;
+      errorCode?: string | null;
     }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
@@ -1927,6 +1937,27 @@ describe('tools/call — auth failures reject before any dispatch', () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toBe('request_rejected: superuser_invalid_bearer');
     expect(seen).toEqual([]);
+
+    // Auth rejection happens before the projected dispatcher builds its ctx,
+    // so this row is the detector's only evidence that the session attempted a
+    // call. The rejected request's args remain intentionally absent.
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]).toMatchObject({
+      toolName: 'gatingtest:scoped',
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_invalid_bearer',
+      ctx: {
+        workspaceId: 'ws-test',
+        harnessSlug: '*',
+        isSuperuser: true,
+        transport: 'mcp',
+      },
+      metadataJson: {
+        mcpAuthFailure: { reason: 'superuser_invalid_bearer', contextVerified: false },
+      },
+    });
+    expect(h.invocations[0]?.args).toBeUndefined();
   });
 
   it('?superuser=1 from a non-loopback origin → superuser_non_loopback', async () => {
