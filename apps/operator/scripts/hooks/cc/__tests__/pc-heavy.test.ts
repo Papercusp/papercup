@@ -397,16 +397,17 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
-  it('WI-41318: a preemptible ordinary holder yields its whole child group to an exclusive materializer', async () => {
+  it('WI-41318: every ordinary holder yields its whole child group to an exclusive materializer by default', async () => {
     const workloadPidFile = join(dir, 'preemptible-workload.pid');
     const terminatedFile = join(dir, 'preemptible-workload.terminated');
     const barrierRan = join(dir, 'exclusive-barrier-ran');
     const env = {
       PC_HEAVY_SLOTS: '1',
-      PC_HEAVY_COALESCE: '0',
+      // Exercise the harder coalescing-leader path: the old late opt-in block
+      // sat after this path's early exit and therefore never covered it.
+      PC_HEAVY_COALESCE: '1',
       PC_HEAVY_TIMEOUT_SEC: '5',
       PC_HEAVY_HEARTBEAT_SEC: '1',
-      PC_HEAVY_PREEMPTIBLE: '1',
       PC_HEAVY_PREEMPT_GRACE_SEC: '0',
       PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
@@ -446,6 +447,9 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       expect(holderErr.text()).toContain('PREEMPTING ordinary holder for exclusive materialization');
       expect(holderErr.text()).toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
       expect(barrierErr.text()).toContain('exclusive materialization barrier acquired');
+      await waitFor('the preempted workload process group being fully reaped', () => {
+        try { process.kill(-workloadPid, 0); return false; } catch { return true; }
+      });
     } finally {
       killGroup(holder);
       if (barrier) killGroup(barrier);
@@ -455,16 +459,49 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   }, 15_000);
 
-  it('a preemptible holder with no materializer preserves the child exit status', () => {
+  it('a default-preemptible holder with no materializer preserves the child exit status', () => {
     const r = runSync(['bash', '-c', 'exit 23'], {
       PC_HEAVY_SLOTS: '1',
       PC_HEAVY_COALESCE: '0',
-      PC_HEAVY_PREEMPTIBLE: '1',
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
     });
     expect(r.status).toBe(23);
     expect(r.stderr).not.toContain('PREEMPTING');
   });
+
+  it('keeps an explicit unpreemptible escape hatch for a caller that cannot be interrupted', async () => {
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '2',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+      PC_HEAVY_PREEMPTIBLE: '0',
+      PC_HEAVY_PREEMPT_GRACE_SEC: '0',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the explicit unpreemptible holder');
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
+      expect(await barrierExit).toBe(75);
+      expect(barrierErr.text()).toContain('REFUSED materialization');
+      expect(holderErr.text()).not.toContain('PREEMPTING');
+      expect(holder.exitCode).toBeNull();
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+    }
+  }, 10_000);
 
   it('does not squat free slots while an exclusive drain waits on a live holder', async () => {
     const env = {
