@@ -126,7 +126,16 @@ export interface SpecEnforcementRepeatedApproachRollup {
    */
   pairing: MetricPairing;
   coverage: {
+    /** EVERY row the reader returned, observations included — the read's own size. */
     itemsRead: number;
+    /**
+     * Turn-end notes excluded before measurement — those the reader dropped in SQL PLUS any
+     * this module dropped defensively. Both terms are required: this module filters
+     * `lane = 'observation'` itself, so reporting only the reader's count made its own drops
+     * invisible — a payload could state that four were excluded while five left the
+     * denominator. The latency rollup has always summed both; this now matches it, so the
+     * three blocks of one payload answer the question the same way.
+     */
     observationsExcluded: number;
     /** Items with no ledger row — invisible to this measure in both directions. */
     itemsOutsideLedgerReach: number;
@@ -399,7 +408,7 @@ export async function computeSpecEnforcementRepeatedApproach(
       },
       coverage: {
         itemsRead: read.rows.length,
-        observationsExcluded: read.observationsExcluded,
+        observationsExcluded: read.observationsExcluded + (read.rows.length - claimable.length),
         itemsOutsideLedgerReach,
       },
       notDerivable: REPEATED_APPROACH_NOT_DERIVABLE,

@@ -273,21 +273,44 @@ describe('cross-rollup consistency — three independent scans, one corpus', () 
     }
   });
 
-  it('never lets an escape whose first claim PRECEDES the close be missing from the repeat chain', async () => {
-    // The honest form of the invariant. An item claimed for the FIRST time after its own close
-    // is an escape with exactly one claim, so "every escape is a re-attempt" is false; the
-    // implication only holds when a claim preceded the close.
-    const all = await runAll(sharedWorld());
-    const attemptsById = new Map(all.repeated.rows.map((r) => [r.workItemId, r.attempts]));
-    const escapesAfterAPriorClaim = all.escape.rows.filter((r) => r.closedAtMs > r.reclaimedAtMs - r.gapMs - 1);
+  /**
+   * The honest form of the invariant, and a caution about how easy the dishonest form is.
+   *
+   * The first cut of this test derived "was it claimed before the close?" from the escape row
+   * alone, as `reclaimedAtMs - gapMs === closedAtMs`. That identity holds by CONSTRUCTION —
+   * `gapMs` is defined as `lastWonAtMs - closedAtMs` — so the condition was always true and the
+   * test discriminated nothing while appearing to guard a real property. It is exactly the
+   * vacuous shape this file exists to catch, produced by this file, on its first run. The fix
+   * is to read the FIRST claim from the shared envelope, which the escape row deliberately does
+   * not carry.
+   */
+  it('requires a re-attempt for every escape that was already claimed before its close', async () => {
+    const w = sharedWorld();
+    const all = await runAll(w);
+    const claimsById = new Map(w.claims.map((c) => [c.workItemId, c]));
 
-    expect(all.escape.rows.length).toBeGreaterThan(0);
-    for (const row of all.escape.rows) {
-      const firstClaimPrecededClose = row.reclaimedAtMs - row.gapMs === row.closedAtMs;
-      if (!firstClaimPrecededClose) continue;
-      expect(attemptsById.get(row.workItemId) ?? 0).toBeGreaterThanOrEqual(2);
+    const priorClaimEscapes = all.escape.rows.filter(
+      (r) => (claimsById.get(r.workItemId)?.firstWonAtMs ?? Infinity) < r.closedAtMs,
+    );
+    expect(priorClaimEscapes.length).toBeGreaterThan(0);
+
+    for (const row of priorClaimEscapes) {
+      expect(claimsById.get(row.workItemId)!.wonClaimCount).toBeGreaterThanOrEqual(2);
     }
-    expect(escapesAfterAPriorClaim.length).toBeGreaterThan(0);
+  });
+
+  it('does NOT demand a re-attempt for an escape first claimed only AFTER the close', async () => {
+    // The discriminating case that proves the rule above is a real filter and not a tautology:
+    // an item closed unclaimed and picked up later escapes with exactly one won claim.
+    const w = world({
+      items: [item({ workItemId: 'WI-LATE', sourcePlanSlug: 'p-adopted', closedAtMs: T0 + 5 * MIN })],
+      claims: [claim({ workItemId: 'WI-LATE', firstWonAtMs: T0 + 50 * MIN, lastWonAtMs: T0 + 50 * MIN })],
+      plans: [plan({ planSlug: 'p-adopted', clauseCount: 2 })],
+    });
+    const { escape, repeated } = await runAll(w);
+    expect(escape.rollup.escapedItems).toBe(1);
+    expect(repeated.rollup.reattemptedItems).toBe(0);
+    expect(w.claims[0].firstWonAtMs).toBeGreaterThan(w.items[0].closedAtMs!);
   });
 
   it('flips every block’s floor flag together when one shared read truncates', async () => {

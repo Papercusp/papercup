@@ -78,8 +78,22 @@ export interface SpecEnforcementEscapeRollup {
   escapesPerThousand: number | null;
   byEnforcement: Record<EnforcementBucket, EscapeLane>;
   coverage: {
-    /** Non-observation items the reader returned. */
+    /**
+     * EVERY row the reader returned, observations included — the read's own size, not the
+     * measured population. Named to match the identical field on the latency and
+     * repeated-approach rollups so the three blocks of one `plans:spec-reconciliation` payload
+     * can be compared directly; a reader who finds three different numbers here is looking at
+     * three different snapshots (the scans are independent), which is the only signal that
+     * divergence leaves.
+     */
     itemsRead: number;
+    /**
+     * Turn-end notes excluded before measurement — those the reader dropped in SQL PLUS any
+     * this module dropped defensively. Both terms are required: reporting only the reader's
+     * count while also filtering here makes this module's own drops vanish from its coverage,
+     * so a payload could state that nothing was excluded while a denominator silently shrank.
+     */
+    observationsExcluded: number;
     /** Of those, how many were closed at all. */
     closedItems: number;
     /**
@@ -233,6 +247,7 @@ export async function computeSpecEnforcementEscape(
       byEnforcement: lanes,
       coverage: {
         itemsRead: read.rows.length,
+        observationsExcluded: read.observationsExcluded + (read.rows.length - claimable.length),
         closedItems,
         closedItemsOutsideLedgerReach,
         graceMs,
