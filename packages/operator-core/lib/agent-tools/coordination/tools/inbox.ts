@@ -570,7 +570,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only`. Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. Bound a direct read with `limit` — `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
     notWhen:
@@ -656,6 +656,12 @@ export default defineTool({
       .describe(
         "EI-13159: narrow to exactly the DIRECTED messages still awaiting your reply — the same unanswered-directed definition fleet:assignments' `unanswered_directed` counter and fleet:leader-brief use (a real correspondent's message, sender explicitly expects a reply, no ack/reply from you yet; excludes broadcasts, machine chatter, and reply-to-your-own-reply ping-pong). Applied after the ambient/intent/sender filters; summary.total reflects it. A lookup failure returns zero entries (never silently falls back to the unfiltered inbox) and sets summary.unanswered_lookup_failed:true.",
       ),
+    unansweredOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        "Compatibility alias for `unanswered_only`; prefer the canonical snake_case key. If both are supplied, `unanswered_only` wins.",
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -677,6 +683,10 @@ export default defineTool({
     // explicitly-declared compatibility alias; an explicitly supplied
     // include_ambient value wins when both are present.
     const includeAmbient = args.include_ambient ?? args.includeAmbient ?? false;
+    // EI-21374977511049906: older model-facing surfaces used camelCase for this
+    // filter. Keep the snake_case spelling canonical while accepting the explicit
+    // compatibility alias; an explicitly supplied `unanswered_only` wins.
+    const unansweredOnly = args.unanswered_only ?? args.unansweredOnly ?? false;
     // EI-12930: resolve a SHORT ownerId/label `from` (`su-b0fbf`) to the FULL ownerId via
     // the SAME roster resolver coord:send uses — so a filter that SUCCESSFULLY sent can't
     // then silently FAIL to find the reply — and flag `from_unmatched` when it matches NO
@@ -733,7 +743,7 @@ export default defineTool({
             // These MUST be in the key — without them a cached 15-entry window
             // would be served to a caller asking for 500.
             limit,
-            bounded: !resolvedFrom && !args.unanswered_only,
+            bounded: !resolvedFrom && !unansweredOnly,
             ambient: includeAmbient,
             intents: !!args.include_intents,
           },
@@ -778,7 +788,7 @@ export default defineTool({
           readInbox(
             identity.ownerId,
             { since_ts: deliveryFloorTs, kinds: args.kinds },
-            !resolvedFrom && !args.unanswered_only
+            !resolvedFrom && !unansweredOnly
               ? {
                   enough: (entries) => {
                     const afterAmbient = includeAmbient
@@ -827,7 +837,7 @@ export default defineTool({
     // inbox, which would look like "unanswered_only had no effect" and hide the failure).
     let unansweredMsgIds: Set<string> | undefined;
     let unansweredLookupFailed = false;
-    if (args.unanswered_only) {
+    if (unansweredOnly) {
       try {
         const unansweredMap = await fetchUnansweredDirected([identity.ownerId], {
           perRecipientCap: UNANSWERED_FILTER_CAP,
@@ -884,7 +894,7 @@ export default defineTool({
       // EI-13159: echo whether the unanswered_only filter ran and whether its
       // lookup succeeded — a lookup failure filters to zero entries, and this
       // flag is what distinguishes that from "you genuinely have none".
-      ...(args.unanswered_only
+      ...(unansweredOnly
         ? { unanswered_only: true, unanswered_lookup_failed: unansweredLookupFailed }
         : {}),
       by_kind: byKind,
