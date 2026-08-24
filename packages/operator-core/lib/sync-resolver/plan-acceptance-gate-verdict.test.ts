@@ -1,0 +1,207 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+/**
+ * P-011, the plan acceptance-gate read surface — the D-019 half of the plan panel.
+ *
+ * This query and `plans.specCoverage` look redundant (the gate verdict can itself carry a
+ * `specCoverage` field), and the obvious simplification is to delete the census query and
+ * render coverage from this verdict. D-019 forbids it, and the reason is mechanical:
+ * `evaluatePlanAcceptanceGate` SHORT-CIRCUITS on its first refusal, so `specCoverage` is
+ * absent on every refusal that PRECEDES the census — the item/audit family, the flag being
+ * off, an exempt plan. A panel deriving coverage from this verdict would show a plan with a
+ * real coverage problem as having none, because an earlier check refused first.
+ *
+ * The permanent negative control at the bottom reproduces that derivation and shows it
+ * going blind, so the ruling is pinned by a failing alternative rather than by prose.
+ *
+ * The honesty rule here runs the OPPOSITE way from the census. The census's findings are
+ * advisory (D-018) and it fails OPEN; these codes are REAL refusals and this resolver fails
+ * CLOSED. That asymmetry is deliberate — "harmonizing" the two would either manufacture
+ * refusals out of read errors, or render an unverified plan green — so both polarities are
+ * asserted below.
+ *
+ * Three states must never be flattened into a green, and each is asserted against real
+ * output rather than trusted to the module comment:
+ *
+ *   · `skipped`           — the gate did not APPLY. Nothing was checked.
+ *   · `forcedPast`        — a human waived the code-truth family, with a reason.
+ *   · `vettedUnderWaiver` — vetting attested over a consult nobody critiqued.
+ */
+
+const gateSpy = vi.fn();
+vi.mock('../plan-acceptance-gate', () => ({
+  evaluatePlanAcceptanceGate: (...a: unknown[]) => gateSpy(...a),
+}));
+
+import { resolvePlanAcceptanceGateVerdict } from './plan-acceptance-gate-verdict';
+
+const ARGS = { workspaceId: 'default', harnessSlug: 'papercusp', planSlug: 'p-1' };
+
+type Row = {
+  planSlug: string;
+  satisfied: boolean;
+  skipped: string | null;
+  code: string | null;
+  message: string | null;
+  rubricId: string | null;
+  gradedBy: string | null;
+  forcedPast: { reason: string; checks: string[] } | null;
+  vettedUnderWaiver: { consultId: string; reason: string | null } | null;
+  unavailableReason: string | null;
+};
+
+const run = async (): Promise<Row> =>
+  (await resolvePlanAcceptanceGateVerdict(ARGS))[0] as Row;
+
+beforeEach(() => {
+  gateSpy.mockReset();
+});
+
+describe('P-011 acceptance-gate read — never flatten a non-check into a pass', () => {
+  it('asks the gate about the plan it was given', async () => {
+    gateSpy.mockResolvedValue({ satisfied: true });
+    await run();
+    expect(gateSpy).toHaveBeenCalledWith('p-1');
+  });
+
+  it('carries `skipped` through even though the gate reports satisfied', async () => {
+    // The dangerous shape: satisfied:true, but nothing was actually checked.
+    gateSpy.mockResolvedValue({ satisfied: true, skipped: 'flag-off' });
+
+    const row = await run();
+
+    expect(row.satisfied).toBe(true);
+    expect(row.skipped).toBe('flag-off');
+  });
+
+  it.each(['flag-off', 'rubric-template-plan', 'template-instance'] as const)(
+    'preserves skip reason %s rather than collapsing it to a boolean',
+    async (reason) => {
+      gateSpy.mockResolvedValue({ satisfied: true, skipped: reason });
+      expect((await run()).skipped).toBe(reason);
+    },
+  );
+
+  it('surfaces a forcedPast waiver AND its reason on an otherwise-green verdict', async () => {
+    gateSpy.mockResolvedValue({
+      satisfied: true,
+      forcedPast: { reason: 'release window', checks: ['code-truth', 'spec-coverage'] },
+    });
+
+    const row = await run();
+
+    expect(row.satisfied).toBe(true);
+    expect(row.forcedPast).toEqual({
+      reason: 'release window',
+      checks: ['code-truth', 'spec-coverage'],
+    });
+  });
+
+  it('copies forcedPast.checks instead of aliasing the gate’s array', async () => {
+    const checks = ['code-truth'];
+    gateSpy.mockResolvedValue({ satisfied: true, forcedPast: { reason: 'r', checks } });
+
+    const row = await run();
+    checks.push('mutated-after-the-fact');
+
+    expect(row.forcedPast?.checks).toEqual(['code-truth']);
+  });
+
+  it('surfaces vettedUnderWaiver, including a null reason, on a green verdict', async () => {
+    gateSpy.mockResolvedValue({
+      satisfied: true,
+      vettedUnderWaiver: { consultId: 'c-9', reason: null },
+    });
+
+    const row = await run();
+
+    expect(row.satisfied).toBe(true);
+    expect(row.vettedUnderWaiver).toEqual({ consultId: 'c-9', reason: null });
+  });
+
+  it('renders the refusal message verbatim, not summarized', async () => {
+    const message = 'Plan p-1 is not graded by an INDEPENDENT reviewer; author grades do not count.';
+    gateSpy.mockResolvedValue({ satisfied: false, code: 'rubric-not-graded', message, rubricId: 'RB-1' });
+
+    const row = await run();
+
+    expect(row.message).toBe(message);
+    expect(row.code).toBe('rubric-not-graded');
+    expect(row.rubricId).toBe('RB-1');
+  });
+
+  it('reports the rubric ROLE and the independent grader when the gate is satisfied', async () => {
+    gateSpy.mockResolvedValue({ satisfied: true, rubricId: 'RB-1', gradedBy: 'su-peer' });
+
+    const row = await run();
+
+    expect(row.rubricId).toBe('RB-1');
+    expect(row.gradedBy).toBe('su-peer');
+  });
+});
+
+describe('P-011 acceptance-gate read — fails CLOSED (opposite polarity to the census)', () => {
+  it('reports NOT satisfied when the gate module cannot be run', async () => {
+    gateSpy.mockRejectedValue(new Error('module gone'));
+
+    const row = await run();
+
+    // The gate never throws by contract, so reaching here is "could not verify" — which
+    // must never render as the green that a failing-open resolver would produce.
+    expect(row.satisfied).toBe(false);
+    expect(row.unavailableReason).toBe('resolver-unavailable');
+    expect(row.message).toContain('could not be evaluated');
+  });
+
+  it('does not invent a refusal CODE out of a read failure', async () => {
+    gateSpy.mockRejectedValue(new Error('module gone'));
+    const row = await run();
+
+    // Unsatisfied, but with no code: "could not verify" is not the same as "check X failed",
+    // and a renderer must not be handed a blocker name that no check produced.
+    expect(row.code).toBeNull();
+    expect(row.skipped).toBeNull();
+  });
+
+  it('marks a real verdict with unavailableReason null, so the two are distinguishable', async () => {
+    gateSpy.mockResolvedValue({ satisfied: false, code: 'items-incomplete' });
+    expect((await run()).unavailableReason).toBeNull();
+  });
+});
+
+describe('D-019 permanent negative control — coverage cannot be derived from this verdict', () => {
+  /**
+   * The forbidden "simplification": drop `plans.specCoverage` and read coverage off the
+   * acceptance-gate verdict. Below is a gate verdict that refused in the ITEM family, i.e.
+   * BEFORE the census ever ran — the single most common real refusal.
+   */
+  const shortCircuitedVerdict = {
+    satisfied: false,
+    code: 'items-incomplete',
+    message: '2 plan items are not complete.',
+    // NOTE: no `specCoverage` key at all — the gate returned before computing it.
+  } as { satisfied: boolean; code: string; specCoverage?: { unproven: number } };
+
+  it('a panel deriving coverage from the gate verdict goes BLIND on a short-circuited refusal', () => {
+    const derived = shortCircuitedVerdict.specCoverage;
+
+    // Not "zero unproven clauses" — no census happened at all. A renderer that treated
+    // this as the coverage picture would show a clean coverage panel for a plan whose
+    // clauses were never examined.
+    expect(derived).toBeUndefined();
+    expect(derived?.unproven).toBeUndefined();
+  });
+
+  it('the resolver therefore exposes NO coverage field of its own', async () => {
+    gateSpy.mockResolvedValue(shortCircuitedVerdict);
+    const row = (await run()) as Row & Record<string, unknown>;
+
+    // Coverage is the census query's job (D-019). If this row ever grows a coverage field,
+    // the two surfaces have been merged and the short-circuit blindness above is live.
+    expect(row).not.toHaveProperty('specCoverage');
+    expect(row).not.toHaveProperty('coverage');
+    expect(row).not.toHaveProperty('clauses');
+    // ...while the blocker it DOES own is reported exactly.
+    expect(row.code).toBe('items-incomplete');
+  });
+});
