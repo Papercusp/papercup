@@ -25,10 +25,12 @@ import {
   newTaskId,
   serviceUnitForTask,
   scopeUnitForTask,
+  taskTerminalProvenanceFromDetail,
   type TaskMetrics,
   type TaskRow,
   type TaskSpec,
   type TaskState,
+  type TaskTerminalProvenance,
   type TaskUnitKind,
 } from './types';
 
@@ -49,6 +51,7 @@ function toRow(r: any): TaskRow {
   const iso = (v: unknown): string | null =>
     v == null ? null : v instanceof Date ? v.toISOString() : String(v);
   const num = (v: unknown): number | null => (v == null ? null : Number(v));
+  const detail = typeof r.detail === 'object' && r.detail ? r.detail : {};
   return {
     taskId: r.task_id,
     workspaceId: r.workspace_id,
@@ -76,6 +79,7 @@ function toRow(r: any): TaskRow {
     state: r.state,
     exitCode: num(r.exit_code),
     exitReason: r.exit_reason ?? null,
+    terminalProvenance: taskTerminalProvenanceFromDetail(detail),
     startedAt: iso(r.started_at) ?? new Date(0).toISOString(),
     endedAt: iso(r.ended_at),
     lastSeenAt: iso(r.last_seen_at) ?? new Date(0).toISOString(),
@@ -84,7 +88,7 @@ function toRow(r: any): TaskRow {
     cpuUsec: num(r.cpu_usec),
     pidsCurrent: num(r.pids_current),
     logPath: r.log_path ?? null,
-    detail: typeof r.detail === 'object' && r.detail ? r.detail : {},
+    detail,
   };
 }
 
@@ -246,6 +250,81 @@ export interface CloseTaskInput {
   state: Extract<TaskState, 'exited' | 'killed' | 'timed_out' | 'stranded' | 'ended_unobserved'>;
   exitCode?: number | null;
   exitReason?: string | null;
+  terminalProvenance?: TaskTerminalProvenance | null;
+}
+
+function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | null): number | null {
+  if (terminal.execMainStatus == null) return fallback;
+  // systemd exposes wait(2) si_code: CLD_EXITED=1; CLD_KILLED=2;
+  // CLD_DUMPED=3. Preserve the ledger's shell-compatible exit-code convention.
+  if (terminal.execMainCode === 1) return terminal.execMainStatus;
+  if (terminal.execMainCode === 2 || terminal.execMainCode === 3) return 128 + terminal.execMainStatus;
+  return fallback;
+}
+
+function classifyTerminalClose(
+  input: CloseTaskInput,
+  row: TaskRow | null,
+): Required<Pick<CloseTaskInput, 'state'>> &
+  Pick<CloseTaskInput, 'exitCode' | 'exitReason'> & { terminalProvenance: TaskTerminalProvenance | null } {
+  const captured = input.terminalProvenance;
+  if (!captured) {
+    return {
+      state: input.state,
+      exitCode: input.exitCode ?? null,
+      exitReason: input.exitReason ?? null,
+      terminalProvenance: null,
+    };
+  }
+
+  const peakMemoryBytes = captured.peakMemoryBytes ?? row?.peakMemoryBytes ?? null;
+  const memoryMaxBytes = captured.memoryMaxBytes ?? row?.memoryMaxBytes ?? null;
+  const terminal: TaskTerminalProvenance = {
+    ...captured,
+    scopeUnit: row?.scopeUnit ?? captured.scopeUnit,
+    cgroupPath: captured.cgroupPath ?? row?.cgroupPath ?? null,
+    memoryMaxBytes,
+    peakMemoryBytes,
+    peakMemorySource:
+      captured.peakMemoryBytes != null
+        ? 'systemd'
+        : row?.peakMemoryBytes != null
+          ? 'cgroup-sample'
+          : 'unknown',
+  };
+
+  let state = input.state;
+  let exitReason = input.exitReason ?? null;
+  const result = terminal.serviceResult;
+  if (result === 'oom-kill') {
+    state = 'killed';
+    // A finite cgroup cap plus a peak at that cap proves the LOCAL MemoryMax
+    // path. Without that pair, keep the OOM observable but do not manufacture
+    // cgroup attribution: an uncapped task is a host/ancestor OOM, while a
+    // capped task with no surviving peak is genuinely unattributed.
+    exitReason =
+      memoryMaxBytes != null && peakMemoryBytes != null && peakMemoryBytes >= memoryMaxBytes
+        ? 'oom-kill'
+        : memoryMaxBytes == null
+          ? 'host-oom'
+          : 'oom-kill-unattributed';
+  } else if (result === 'timeout') {
+    state = 'timed_out';
+    exitReason = 'timeout';
+  } else if (result === 'signal' || result === 'core-dump') {
+    state = 'killed';
+    exitReason ??= result;
+  } else if (result === 'exit-code') {
+    state = 'exited';
+    exitReason ??= 'exit-code';
+  }
+
+  return {
+    state,
+    exitCode: terminalExitCode(terminal, input.exitCode ?? null),
+    exitReason,
+    terminalProvenance: terminal,
+  };
 }
 
 /**
@@ -255,14 +334,45 @@ export interface CloseTaskInput {
  * exit code with a guess.
  */
 export async function closeTask(taskId: string, input: CloseTaskInput, inject?: Sql): Promise<boolean> {
-  assertState(input.state);
-  if (!isTerminalState(input.state)) throw new Error(`task-manager: ${input.state} is not terminal`);
   const sql = sqlOf(inject);
+  const existing = input.terminalProvenance ? await getTask(taskId, inject) : null;
+  if (input.terminalProvenance && !existing) return false;
+  if (
+    input.terminalProvenance &&
+    existing?.scopeUnit &&
+    existing.scopeUnit !== input.terminalProvenance.scopeUnit
+  ) {
+    // A systemd snapshot is identity-bearing evidence. Refuse to attach it to a
+    // different ledger scope even when a caller accidentally pairs the task ids.
+    return false;
+  }
+  const classified = classifyTerminalClose(input, existing);
+  assertState(classified.state);
+  if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
+  const terminalJson = classified.terminalProvenance
+    ? JSON.stringify(classified.terminalProvenance)
+    : null;
   const rows = await sql`
     UPDATE harness_shared.task_ledger
-       SET state = ${input.state},
-           exit_code = ${input.exitCode ?? null},
-           exit_reason = ${input.exitReason ?? null},
+       SET state = ${classified.state},
+           exit_code = ${classified.exitCode ?? null},
+           exit_reason = ${classified.exitReason ?? null},
+           memory_max_bytes = COALESCE(
+             ${classified.terminalProvenance?.memoryMaxBytes ?? null}, memory_max_bytes
+           ),
+           peak_memory_bytes = CASE
+             WHEN ${classified.terminalProvenance?.peakMemoryBytes ?? null}::bigint IS NULL
+               THEN peak_memory_bytes
+             WHEN peak_memory_bytes IS NULL
+               THEN ${classified.terminalProvenance?.peakMemoryBytes ?? null}::bigint
+             ELSE GREATEST(peak_memory_bytes, ${classified.terminalProvenance?.peakMemoryBytes ?? null}::bigint)
+           END,
+           detail = CASE
+             WHEN ${terminalJson}::text IS NULL THEN detail
+             ELSE detail || jsonb_build_object(
+               'terminalProvenance', ${terminalJson}::text::jsonb
+             )
+           END,
            ended_at = now(),
            last_seen_at = now(),
            updated_at = now()
@@ -341,12 +451,28 @@ export async function markStranded(
  * `markStranded` is for, just an exit nobody happened to observe.
  */
 export async function markEndedUnobserved(
-  verdicts: readonly { taskId: string; reason: string }[],
+  verdicts: readonly {
+    taskId: string;
+    reason: string;
+    terminalProvenance?: TaskTerminalProvenance | null;
+  }[],
   inject?: Sql,
 ): Promise<number> {
   let n = 0;
   for (const v of verdicts) {
-    if (await closeTask(v.taskId, { state: 'ended_unobserved', exitReason: v.reason }, inject)) n++;
+    if (
+      await closeTask(
+        v.taskId,
+        {
+          state: 'ended_unobserved',
+          exitReason: v.reason,
+          terminalProvenance: v.terminalProvenance,
+        },
+        inject,
+      )
+    ) {
+      n++;
+    }
   }
   return n;
 }

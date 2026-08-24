@@ -37,6 +37,7 @@ import {
   type CgroupFs,
 } from './cgroup-read';
 import { isTaskManagerEnabled } from './enabled';
+import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
 import { closeTask, markSpawned, registerTask } from './store';
 import {
   deriveUserManagerRoot,
@@ -397,7 +398,7 @@ export async function managedSpawn(
     }
   }
 
-  wireExit(child, taskId, scopeOk, scopeCgroupPath, fs);
+  wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs);
 
   return {
     taskId,
@@ -468,6 +469,7 @@ function wireExit(
   child: ChildProcess,
   taskId: string,
   confined: boolean,
+  scopeUnit: string | null,
   scopeCgroupPath: string | null,
   fs: CgroupFs,
 ): void {
@@ -475,10 +477,22 @@ function wireExit(
   const close = (state: 'exited' | 'killed', code: number | null, reason: string | null): void => {
     if (closed) return;
     closed = true;
-    void closeTask(taskId, { state, exitCode: code, exitReason: reason }).catch(() => {
-      // A close that loses its race with the reconciler's strand verdict is fine:
-      // closeTask is idempotent on `ended_at`, so first writer wins and we never
-      // overwrite a real exit code with a guess (or vice versa).
+    void (async () => {
+      const terminal =
+        confined && scopeUnit
+          ? ((await inspectTaskUnitTerminals([scopeUnit])).get(scopeUnit) ?? null)
+          : null;
+      await closeTask(taskId, {
+        state,
+        exitCode: code,
+        exitReason: reason,
+        terminalProvenance: terminal,
+      });
+      if (terminal) await resetFailedTaskUnit(terminal);
+    })().catch(() => {
+      // A persistence failure leaves a retained failed unit available for the
+      // reconciler's next tick. A close that merely loses the race is fine:
+      // closeTask is idempotent on `ended_at`, so the first terminal writer wins.
     });
   };
 
@@ -554,8 +568,9 @@ function wireExit(
       // WI-40906 — for a confined task this is the CLIENT's exit, and a client that
       // exits non-zero with an empty scope has two very different readings: the
       // payload ran and failed, or the scope never started so the payload never ran
-      // at all. `--collect` has already garbage-collected a failed unit by now, so
-      // the two are genuinely indistinguishable from here.
+      // at all. P-012 retains a FAILED unit until the close writer snapshots its
+      // terminal properties; a missing/collected unit still leaves these two
+      // readings genuinely indistinguishable from here.
       //
       // Say that, instead of recording a bare exit code that reads as the first one.
       // The distinction is what a caller needs and cannot otherwise get: the whole

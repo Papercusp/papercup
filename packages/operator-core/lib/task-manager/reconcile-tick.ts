@@ -29,7 +29,10 @@ import {
   type ScannedProcess,
 } from './reconcile';
 import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
-import { checkScopesReleased } from './scope-terminal-state';
+import {
+  inspectTaskUnitTerminals,
+  resetFailedTaskUnit,
+} from './scope-terminal-state';
 import {
   clearVanishedUnaccounted,
   listLiveTasks,
@@ -56,6 +59,10 @@ export interface ReconcileTickDeps {
   /** D-018 — confirm which of a candidate set of scope units systemd has
    *  released. Injected for tests; defaults to the real systemctl-backed probe. */
   checkScopesReleased?: (units: readonly string[]) => Promise<ReadonlySet<string>>;
+  /** P-012 terminal provenance probe. Kept separate from the legacy injected
+   * release-only seam so existing tests can still exercise that narrow verdict. */
+  inspectTaskUnitTerminals?: typeof inspectTaskUnitTerminals;
+  resetFailedTaskUnit?: typeof resetFailedTaskUnit;
 }
 
 export interface ReconcileTickResult {
@@ -119,8 +126,23 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         .map((r) => r.scopeUnit as string),
     ),
   ];
-  const checkReleased = deps.checkScopesReleased ?? checkScopesReleased;
-  const releasedScopes = candidateUnits.length ? await checkReleased(candidateUnits) : new Set<string>();
+  const terminalByUnit = deps.checkScopesReleased
+    ? new Map()
+    : candidateUnits.length
+      ? await (deps.inspectTaskUnitTerminals ?? inspectTaskUnitTerminals)(candidateUnits)
+      : new Map();
+  const releasedScopes = deps.checkScopesReleased
+    ? candidateUnits.length
+      ? await deps.checkScopesReleased(candidateUnits)
+      : new Set<string>()
+    : new Set(
+        [...terminalByUnit.entries()]
+          .filter(([, terminal]) => {
+            const state = terminal.activeState;
+            return Boolean(state && !['active', 'activating', 'reloading', 'deactivating'].includes(state));
+          })
+          .map(([unit]) => unit),
+      );
 
   const result = reconcile(live, scan.processes, { now: now(), graceMs: deps.graceMs, releasedScopes });
   const summary = summarizeReconcile(result);
@@ -197,7 +219,22 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   let residueCleared = 0;
   if (!degraded) {
     strandedCount = await markStranded(result.stranded);
-    endedUnobservedCount = await markEndedUnobserved(result.endedUnobserved);
+    const endedWithTerminal = result.endedUnobserved.map((verdict) => {
+      const scopeUnit = byTaskId.get(verdict.taskId)?.scopeUnit;
+      return {
+        ...verdict,
+        terminalProvenance: scopeUnit ? (terminalByUnit.get(scopeUnit) ?? null) : null,
+      };
+    });
+    endedUnobservedCount = await markEndedUnobserved(endedWithTerminal);
+    // The failed unit was deliberately retained at spawn so its Result/exit
+    // status/MemoryPeak could reach the ledger. Release it only after the writer
+    // returns; a failed persistence throws before this point and leaves the unit
+    // available for the next reconciler tick.
+    const resetFailure = deps.resetFailedTaskUnit ?? resetFailedTaskUnit;
+    for (const verdict of endedWithTerminal) {
+      if (verdict.terminalProvenance) await resetFailure(verdict.terminalProvenance);
+    }
 
     const groups = result.unaccounted.map((g) => ({
       // A scope of OURS whose row already closed keeps its own id, so the history
