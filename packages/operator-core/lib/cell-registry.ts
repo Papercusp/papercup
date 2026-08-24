@@ -41,9 +41,17 @@
 export {
   cellUnknown,
   formatCellUnknown,
+  CELL_UNKNOWN_CODES,
   type CellUnknown,
   type CellUnknownCode,
 } from './cell-contract';
+
+/**
+ * The same list again, as a VALUE this module can read at validation time. The
+ * re-export above serves cell authors; this serves `validateCellSpec`, which must
+ * reject an assessment code that collides with the unknown vocabulary (D-008).
+ */
+import { CELL_UNKNOWN_CODES } from './cell-contract';
 
 /**
  * D-038 axis 3 — caller-relativity is DECLARED, never inferred.
@@ -500,7 +508,11 @@ export interface CellRejection {
     | 'doorProjections'
     | 'materiality'
     | 'headlineSource'
-    | 'pointers';
+    | 'pointers'
+    /** D-008. Named, not numbered, for the same reason `visibility`/`federation` are:
+     *  the assessment is not a sixth D-038 axis, it is the contract that REPLACES
+     *  axis 1 (D-006). Numbering it would misrepresent D-038 as having grown one. */
+    | 'assessment';
   rule: string;
   detail: string;
 }
@@ -698,6 +710,132 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
     }
   }
 
+  // ── D-008 — THE ASSESSMENT. Every check below runs ONLY when one is declared, which
+  // is what keeps P-003 additive: the ten cells that have not migrated yet register
+  // exactly as before. P-006 removes the `undefined` branch and makes absence itself
+  // a rejection.
+  const assessment = spec.assessment;
+  if (assessment !== undefined) {
+    const apath = typeof assessment.path === 'string' ? assessment.path.trim() : '';
+    if (!apath) {
+      reject(
+        'assessment',
+        'assessment-path-missing',
+        'assessment must declare `path` — the ONE resolver-output path carrying the enum code. Without it there is nothing to read, and a declared-but-unreadable assessment is worse than none: it advertises semantics the read can never deliver.',
+      );
+    }
+
+    // ── LINEAGE. An assessment names a path into a RESOLVER RESULT, and an
+    // event-signalled cell has no resolver to produce one — so the declaration could
+    // never be satisfied at read time. Identical rule, identical reason, to
+    // `headline-source-on-event-cell` above.
+    if (spec.changeSignal?.kind !== 'poll') {
+      reject(
+        'assessment',
+        'assessment-on-event-cell',
+        'assessment names a path into a RESOLVER RESULT, but this cell is event-signalled and has no resolver to produce one. Carry the assessment in the event payload instead.',
+      );
+    }
+
+    // ── DISTINCTNESS. An assessment that IS the headline is the headline wearing a
+    // hat — axis 1's `falsifier-is-headline` emptiness in a fourth field. `norm` is
+    // used here (not an exact match) precisely because a re-cased or re-punctuated
+    // restatement of the headline is the case worth catching.
+    if (apath && norm(apath) === headline) {
+      reject(
+        'assessment',
+        'assessment-is-headline',
+        `assessment.path "${assessment.path}" IS the headline value. An assessment exists to say what the raw measurement MEANS; re-projecting the measurement itself adds a field and no information.`,
+      );
+    }
+
+    // ── THE CLOSED CODE MAP.
+    const codes = assessment.codes as unknown;
+    const codeKeys =
+      codes !== null && typeof codes === 'object' && !Array.isArray(codes) ? Object.keys(codes) : null;
+    if (codeKeys === null) {
+      reject(
+        'assessment',
+        'assessment-codes-not-a-map',
+        '`codes` must be a map from enum code to `{ meaning, safeAction }`.',
+      );
+    } else if (codeKeys.length === 0) {
+      reject(
+        'assessment',
+        'assessment-codes-empty',
+        '`codes` is empty. A closed map with nothing in it can never resolve, so every read of this cell would downgrade to `unavailable` — the cell would ship a semantics channel that is broken by construction.',
+      );
+    } else {
+      const seenCodes = new Set<string>();
+      const codeMap = codes as Record<string, CellAssessmentCode | undefined>;
+      for (const key of codeKeys) {
+        const code = key.trim();
+        if (!code) {
+          reject('assessment', 'assessment-code-blank', 'a code key is empty or whitespace. An unnameable code cannot be branched on.');
+          continue;
+        }
+        if (seenCodes.has(norm(code))) {
+          reject(
+            'assessment',
+            'assessment-code-duplicate',
+            `code "${code}" is declared twice (after normalisation). Two spellings of one code split its meaning across entries, and a reader gets whichever one the object literal happened to keep.`,
+          );
+        }
+        seenCodes.add(norm(code));
+        // D-008 — read HEALTH and domain MEANING are different vocabularies. A cell
+        // answering `resolver-failed` as a domain code would let an apparatus failure
+        // masquerade as a measured finding about the subject.
+        if ((CELL_UNKNOWN_CODES as readonly string[]).includes(code)) {
+          reject(
+            'assessment',
+            'assessment-code-collides-with-unknown',
+            `code "${code}" is a CellUnknownCode. Read-health and domain meaning are separate vocabularies: reusing one here would make "the apparatus failed" indistinguishable from a verdict ABOUT the subject, which is the confusion the in-band unknown exists to prevent.`,
+          );
+        }
+        const entry = codeMap[key];
+        if (!entry?.meaning?.trim() || !entry?.safeAction?.trim()) {
+          reject(
+            'assessment',
+            'assessment-code-incomplete',
+            `code "${code}" needs both \`meaning\` (what it says about the subject) and \`safeAction\` (what a caller may safely DO under it). Meaning alone is a reason a human can read and a program cannot act on — the exact defect this contract replaces.`,
+          );
+        }
+      }
+    }
+
+    // ── EVIDENCE — what SUBSTANTIATES the code, in the same payload.
+    const evidence = assessment.evidence as unknown;
+    if (!Array.isArray(evidence)) {
+      reject('assessment', 'assessment-evidence-not-a-list', '`evidence` must be a list of paths in this cell\'s own resolver payload.');
+    } else if (evidence.length === 0) {
+      reject(
+        'assessment',
+        'assessment-evidence-empty',
+        '`evidence` is empty. An assessment with nothing behind it is an assertion wearing the contract\'s badge — the same emptiness axis 1 rejected a falsifier for, one field over.',
+      );
+    } else {
+      const seenEvidence = new Set<string>();
+      for (const raw of evidence) {
+        const p = typeof raw === 'string' ? raw.trim() : '';
+        if (!p) {
+          reject('assessment', 'assessment-evidence-blank', 'an evidence entry is empty or is not a string path.');
+          continue;
+        }
+        if (seenEvidence.has(norm(p))) {
+          reject('assessment', 'assessment-evidence-duplicate', `evidence path "${p}" is declared twice. A fact cited twice is not corroborated twice.`);
+        }
+        seenEvidence.add(norm(p));
+        if (apath && norm(p) === norm(apath)) {
+          reject(
+            'assessment',
+            'assessment-evidence-is-assessment-path',
+            `evidence path "${p}" IS assessment.path. A code cannot be its own evidence: it looks like corroboration and carries no information.`,
+          );
+        }
+      }
+    }
+  }
+
   // ── P-006 — POINTERS. Optional, and deliberately the THINNEST gate in this function.
   //
   // Every check below is a SHAPE check answerable from the spec alone. Target existence
@@ -867,6 +1005,46 @@ export function registerCell(spec: CellSpec): CellSpec {
       },
     ]);
   }
+  /**
+   * D-008 — PRODUCER PATHS ARE UNIQUE WITHIN A SHARED PAYLOAD.
+   *
+   * Several cells legitimately share ONE resolver (axis 5: one derivation, many
+   * lenses) — `gitPipelinePosition()` backs five. Sharing the resolver means sharing
+   * the PAYLOAD, so two such cells declaring the same `assessment.path` are reading
+   * the same field and calling it two different verdicts: whichever registers second
+   * silently inherits the first one's assessment. This is why D-008 fixes distinct
+   * producer paths (`assessments.gateVerdict`, `assessments.deployedSha`, …) for
+   * shared payloads and reserves the bare `assessment` for single-purpose resolvers.
+   *
+   * Checked HERE rather than in `validateCellSpec` because it is the one assessment
+   * rule that is not answerable from a single spec — it is a property of the
+   * registry, exactly like `duplicate-resolver` above.
+   *
+   * ⚠ EXACT comparison, deliberately, where the in-spec distinctness checks use
+   * `norm`. There the point is to catch a re-punctuated restatement of the headline;
+   * here a false positive would REFUSE a legitimate registration and block P-004, and
+   * `norm` collapses genuinely different paths (`a.gateVerdict` / `a.gate.verdict`)
+   * onto each other.
+   */
+  if (spec.assessment) {
+    const path = spec.assessment.path?.trim();
+    if (path) {
+      for (const other of CELLS.values()) {
+        if (other.cell === spec.cell) continue;
+        if (other.resolver !== spec.resolver) continue;
+        if (other.assessment?.path?.trim() !== path) continue;
+        throw new CellRegistrationError([
+          {
+            cell: spec.cell,
+            axis: 'assessment',
+            rule: 'assessment-path-collides-in-shared-payload',
+            detail: `assessment.path "${path}" is already claimed by "${other.cell}", which shares this cell's resolver "${spec.resolver}" and therefore its payload. Two cells reading one field as two different verdicts means one of them is reporting the other's assessment. Give each a distinct producer path (D-008: \`assessments.<cell>\`).`,
+          },
+        ]);
+      }
+    }
+  }
+
   CELLS.set(spec.cell, spec);
   return spec;
 }

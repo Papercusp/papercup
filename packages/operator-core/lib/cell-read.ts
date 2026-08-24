@@ -57,11 +57,19 @@
 import { cellUnknown, type CellUnknown } from './cell-contract';
 import {
   getCell,
+  type CellAssessmentSpec,
   type CellHeadlineSource,
   type CellPointer,
   type CellReader,
   type CellSpec,
 } from './cell-registry';
+/**
+ * The TOTAL own-key path walk, shared with the door stamper rather than re-implemented
+ * here. `state-plane-stamp` imports only `cell-registry`, so this direction adds no
+ * cycle — and reusing it keeps ONE definition of "did this path actually arrive" for
+ * the whole cell system, which is the question every lens in this file turns on.
+ */
+import { pathExists } from './state-plane-stamp';
 import {
   dispatchReadOnlyTool,
   isAccessDenialCode,
@@ -140,6 +148,18 @@ export type CellRead =
        * none" omission case here the way there is for `material`/`unknownHoist`.
        */
       falsifier: CellFalsifierRead;
+      /**
+       * D-008 — WHAT THE VALUE MEANS. Present exactly when the spec declares an
+       * `assessment`, which during the P-003→P-006 migration is "the cells that have
+       * been migrated"; P-004 populates the rest and P-006 makes this non-optional.
+       *
+       * ⚠ OPTIONAL HERE MEANS "THIS CELL HAS NOT MIGRATED", NEVER "NOTHING TO REPORT".
+       * The two failure directions are already distinguished INSIDE the field —
+       * `status:'unavailable'` is how a migrated cell says it could not assess — so a
+       * consumer must not read an absent `assessment` as an all-clear. That collapse
+       * is the same one `ordered` documents ("absence means no opinion, never clear").
+       */
+      assessment?: CellAssessmentRead;
       /**
        * D-039 — THE HOIST. Present exactly when the spec declares `unknownHoist`,
        * which the registry allows only on a `nullable` cell (axis 2). Carries the
@@ -304,6 +324,92 @@ export interface CellFalsifierRead {
   /** The re-read that returns the untruncated payload (the door's own `projection.fullRead`). */
   fullRead?: unknown;
 }
+
+/**
+ * D-008 — ONE declared evidence path, delivered with the code it substantiates.
+ *
+ * Carries the same MISSING ≠ NULL split as `CellHoist`/`CellFalsifierRead`, for the
+ * same reason and by the same own-key walk: a resolver that MEASURED and found null
+ * and a path that never arrived demand opposite responses, and collapsing them is the
+ * defect this whole plan exists to close.
+ */
+export interface CellAssessmentEvidence {
+  /** The declared path, carried so a caller need not consult the registry to read `value`. */
+  path: string;
+  /** The value AT that path in this SAME resolver payload — never a second dispatch. */
+  value: unknown;
+  /** True ⇒ the path was absent from the payload: registration or resolver drift. */
+  drifted?: true;
+  /** True ⇒ absent, but the payload declares ITSELF truncated, so the absence is
+   *  UNATTRIBUTABLE. Mutually exclusive with `drifted`. */
+  truncatedByDoor?: true;
+}
+
+/**
+ * D-008 — THE DECISION-READY HALF OF A CELL READ: what the raw value MEANS and what
+ * is safe to do about it.
+ *
+ * Two branches, and the split is the contract's central safety property: generic
+ * code can TRANSPORT a domain code but can never INVENT one. Every failure — an
+ * undeclared code, an absent assessment path, an absent evidence path, a
+ * door-truncated payload — converges on `unavailable`. There is no third branch and
+ * no partial-credit code, because the one thing worse than "I cannot assess this" is
+ * a plausible enum nobody measured.
+ *
+ * ⚠ `safeAction` IS PRESENT ON BOTH BRANCHES, and that is deliberate rather than an
+ * oversight in the unavailable case. A caller who learns only that the assessment
+ * failed is exactly the hurried consumer this registry's axis-2 rule is written
+ * against — they have a raw value in hand and no stated reason not to act on it. The
+ * unavailable branch therefore still answers "what may I safely do", and its answer
+ * is the conservative one.
+ */
+export type CellAssessmentRead =
+  | {
+      status: 'resolved';
+      /** The declared assessment path this code was read from. */
+      path: string;
+      /** The code, guaranteed to be one of the spec's declared keys. */
+      code: string;
+      /** The declared `meaning` for that code — carried, never re-derived. */
+      meaning: string;
+      /** The declared `safeAction` for that code. */
+      safeAction: string;
+      /** Every declared evidence path, resolved off the same payload. */
+      evidence: CellAssessmentEvidence[];
+    }
+  | {
+      status: 'unavailable';
+      path: string;
+      /** ALWAYS null. Present as an explicit null rather than omitted so a consumer
+       *  reading `assessment.code` gets a falsy value instead of `undefined` on a
+       *  branch it forgot to check. */
+      code: null;
+      /** ALWAYS null, for the same reason as `code`. */
+      meaning: null;
+      /** The conservative action — see the type doc above for why this survives here. */
+      safeAction: string;
+      /** Carried even here: WHICH evidence arrived is often the diagnosis. */
+      evidence: CellAssessmentEvidence[];
+      /** WHY it is unavailable, in the existing in-band vocabulary (D-008: read health
+       *  uses `CellUnknown`, never a domain enum). */
+      unknown: CellUnknown;
+      /** True ⇒ the payload declared itself door-truncated, so the assessment did not
+       *  survive transit rather than never being measured. */
+      truncatedByDoor?: true;
+      /** The re-read that returns the untruncated payload. */
+      fullRead?: unknown;
+    };
+
+/**
+ * The `safeAction` handed back when no code resolved.
+ *
+ * Stated once, here, rather than composed per call site: this is the sentence a
+ * caller acts on in the exact situation where the read has least to tell them, and a
+ * variant of it drifting into "could not assess" — a fact, not an action — is how the
+ * branch would quietly stop being useful.
+ */
+const ASSESSMENT_UNAVAILABLE_SAFE_ACTION =
+  'Do not act on this cell as though it carried a verdict: no assessment resolved, so the raw value is UNINTERPRETED — not benign. Read the evidence below, or re-read the cell, before treating the value as decision input.';
 
 /**
  * Render a hoist for a prose surface, or `null` when it has nothing to say.
@@ -712,6 +818,10 @@ async function readCellValue(
       resolver: spec.resolver,
       ...(spec.ordered === undefined ? {} : { ordered: { stages: [...spec.ordered.stages] } }),
       falsifier: falsifierFrom(payload, spec.falsifier),
+      // D-008 — omitted entirely when the cell has not migrated yet, so an unmigrated
+      // cell reads exactly as it did before P-003. A MIGRATED cell always carries the
+      // field, reporting `unavailable` rather than vanishing when it cannot assess.
+      ...(spec.assessment === undefined ? {} : { assessment: assessmentFrom(payload, spec.assessment) }),
       ...(spec.unknownHoist === undefined ? {} : { unknownHoist: hoistFrom(payload, spec.unknownHoist) }),
       ...(materialPath !== undefined && materialValue !== undefined
         ? { material: { path: materialPath, value: materialValue } }
@@ -862,6 +972,143 @@ function falsifierFrom(payload: unknown, f: { field: string; kills: string }): C
     };
   }
   return { field: f.field, value: null, kills: f.kills, drifted: true };
+}
+
+/**
+ * D-008 — THE ASSESSMENT LENS, off the SAME payload (axis 5, exactly like `material`,
+ * `hoistFrom`, `sourceFrom` and `falsifierFrom` above: one derivation, many lenses).
+ *
+ * ⚠ THE ONE INVARIANT WORTH STATING PLAINLY: this function can only ever TRANSPORT a
+ * domain code the owning resolver emitted AND the spec declared. It has no path that
+ * synthesises, defaults, coerces or infers one. Every way of failing — a missing
+ * path, a non-string, an undeclared code, missing evidence, a truncated payload —
+ * lands on `unavailable`. That is what lets a generic registry carry domain meaning
+ * without ever learning any domain: the registry cannot be wrong about what a gate
+ * verdict means, because it never forms an opinion about one.
+ *
+ * ⚠ USES THE SHARED `pathExists` FROM `state-plane-stamp`, not the local
+ * `falsifierPathExists` below. Same own-key discipline, but that one is TOTAL — a
+ * throwing getter or a hostile proxy reports as missing rather than propagating out
+ * to the caller's catch and blacking out an otherwise-good read. `falsifierFrom` is
+ * deliberately left on the local copy: `falsifier` is deleted wholesale at P-006, and
+ * changing its behaviour now would risk a red in `cell-falsifier-reality.test.ts` for
+ * a field with weeks to live. P-006 removes the local copy with the field it serves.
+ */
+function assessmentFrom(payload: unknown, spec: CellAssessmentSpec): CellAssessmentRead {
+  const path = spec.path;
+  const door = payloadTruncatedByDoor(payload);
+
+  /**
+   * Evidence is resolved FIRST and carried on BOTH branches: when an assessment comes
+   * back unavailable, which evidence did or did not arrive is usually the diagnosis,
+   * and dropping it on the failure path would withhold the payload precisely when the
+   * reader has least else to go on.
+   */
+  const evidence: CellAssessmentEvidence[] = spec.evidence.map((p) => {
+    const r = pathExists(payload, p);
+    if (r.exists) return { path: p, value: r.value };
+    return door.truncated
+      ? { path: p, value: null, truncatedByDoor: true as const }
+      : { path: p, value: null, drifted: true as const };
+  });
+
+  const unavailable = (unknown: CellUnknown): CellAssessmentRead => ({
+    status: 'unavailable',
+    path,
+    code: null,
+    meaning: null,
+    safeAction: ASSESSMENT_UNAVAILABLE_SAFE_ACTION,
+    evidence,
+    unknown,
+    ...(door.truncated ? { truncatedByDoor: true as const } : {}),
+    ...(door.truncated && door.fullRead !== undefined ? { fullRead: door.fullRead } : {}),
+  });
+
+  const found = pathExists(payload, path);
+
+  if (!found.exists) {
+    // WI-38266's split, one field over: DRIFT sends the reader to fix a resolver,
+    // TRUNCATION sends them to re-read it. Reporting either as the other blames a
+    // blameless resolver or hides a real one.
+    return unavailable(
+      door.truncated
+        ? cellUnknown(
+            'not-measured',
+            `this cell's assessment path "${path}" did not arrive, but the resolver's response declares ITSELF truncated — so the absence is UNATTRIBUTABLE: it may have been dropped to fit a response budget rather than never measured. Re-read via the door's \`fullRead\` before concluding anything about the subject.`,
+          )
+        : cellUnknown(
+            'insufficient-data',
+            `this cell's declared assessment path "${path}" was absent from its resolver's result — the declaration and the resolver's shape have drifted apart. This is a defect in the cell's registration or in its resolver, NOT a finding about the subject.`,
+          ),
+    );
+  }
+
+  const raw = found.value;
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return unavailable(
+      cellUnknown(
+        'insufficient-data',
+        `this cell's assessment path "${path}" resolved to ${
+          raw === null ? 'null' : typeof raw
+        }, not a code string. An assessment is a closed enum; a non-string cannot be one, and coercing it here would invent a verdict the resolver never emitted.`,
+      ),
+    );
+  }
+
+  const declared = Object.prototype.hasOwnProperty.call(spec.codes, raw) ? spec.codes[raw] : undefined;
+  if (!declared) {
+    /**
+     * THE CASE THIS CONTRACT EXISTS FOR. The resolver emitted a code the spec does not
+     * declare — a new verdict shipped without its meaning, or a typo. Passing it
+     * through would hand the caller an enum with no `meaning` and no `safeAction`,
+     * which is precisely the un-actionable prose verdict the assessment replaced. The
+     * code is NAMED in the detail so the drift is diagnosable, and refused as a value.
+     */
+    return unavailable(
+      cellUnknown(
+        'insufficient-data',
+        `this cell's resolver emitted assessment code "${raw}", which its registration does not declare (declared: ${
+          Object.keys(spec.codes).join(', ') || 'none'
+        }). An undeclared code has no stated meaning and no safe action, so it is refused rather than passed through — the resolver and the registration have drifted apart.`,
+      ),
+    );
+  }
+
+  /**
+   * ⚠ EVIDENCE FAILURE DOWNGRADES A RESOLVED CODE (D-008: "an undeclared code, absent
+   * assessment/evidence path, or door truncation can only downgrade to unavailable").
+   *
+   * Reported AFTER the code checks so the detail can name the code that was withheld —
+   * which is what makes this diagnosable rather than merely conservative. Evidence is
+   * what makes a code trustworthy; a verdict whose declared substantiation did not
+   * arrive is an unverified claim, and shipping it as `resolved` would let the branch
+   * a caller trusts most be the one carrying the least support.
+   */
+  const missingEvidence = evidence.filter((e) => e.drifted || e.truncatedByDoor);
+  if (missingEvidence.length > 0) {
+    const truncated = missingEvidence.some((e) => e.truncatedByDoor);
+    return unavailable(
+      cellUnknown(
+        truncated ? 'not-measured' : 'insufficient-data',
+        `this cell assessed "${raw}", but ${missingEvidence.length} of its ${
+          evidence.length
+        } declared evidence path(s) did not arrive (${missingEvidence.map((e) => e.path).join(', ')})${
+          truncated
+            ? " — and the resolver's response declares ITSELF truncated, so the absence is UNATTRIBUTABLE. Re-read via `fullRead`"
+            : ' — the declaration and the resolver have drifted apart'
+        }. The code is withheld rather than served unsubstantiated.`,
+      ),
+    );
+  }
+
+  return {
+    status: 'resolved',
+    path,
+    code: raw,
+    meaning: declared.meaning,
+    safeAction: declared.safeAction,
+    evidence,
+  };
 }
 
 /**

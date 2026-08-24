@@ -58,7 +58,26 @@ function valueResult(out: Extract<CellRead, { status: 'value' }>) {
    * on the healthy path dismisses it in one glance. See `formatCellPointers`.
    */
   const pointerProse = out.pointers ? formatCellPointers(out.pointers) : null;
-  const summary = [hoistProse, sourceProse, pointerProse]
+  /**
+   * D-008 — HOIST AN UNAVAILABLE ASSESSMENT, and ONLY an unavailable one.
+   *
+   * Same asymmetry as `sourceProse` above, applied to the semantics channel. A
+   * RESOLVED assessment needs no prose: its code, meaning and `safeAction` sit in the
+   * structured `assessment` field where a caller reads them, and announcing them on
+   * every healthy read would spend the summary channel to say "normal" — which is how
+   * a line becomes one agents learn to skip.
+   *
+   * An UNAVAILABLE one is the opposite case, and it is the dangerous one. The caller
+   * still has a raw `value` in hand and nothing in the shape of the result stops them
+   * acting on it; the only thing that changed is that nobody established what it
+   * MEANS. That is exactly the hurried consumer this registry's axis-2 rule is
+   * written against, so the caveat goes where they cannot miss it.
+   */
+  const assessmentProse =
+    out.assessment && out.assessment.status === 'unavailable'
+      ? `⚠ UNINTERPRETED: no assessment resolved for ${out.cell} — ${formatCellUnknown(out.assessment.unknown)} ${out.assessment.safeAction}`
+      : null;
+  const summary = [hoistProse, sourceProse, assessmentProse, pointerProse]
     .filter((s): s is string => s !== null)
     .join(' · ');
   return summary === '' ? { ok: true, ...out } : { ok: true, ...out, summary };
@@ -134,6 +153,13 @@ export default defineTool({
         // guaranteed refusal on their next call. Name the key here instead, which is
         // what the refusal itself does.
         ...(s.changeSignal.kind === 'event' ? { awaitKey: s.changeSignal.key } : {}),
+        // D-008 — WHAT THIS CELL CAN TELL YOU, not just where its number lives.
+        // `headline`/`shape` describe the raw measurement; the code vocabulary is how
+        // a caller decides BEFORE dispatching whether this cell answers their
+        // question. Omitted (rather than sent as an empty list) for a cell that has
+        // not migrated yet, so absence reads as "no semantics declared" instead of
+        // "declared none" — the same distinction the read's own optional field draws.
+        ...(s.assessment ? { assessmentCodes: Object.keys(s.assessment.codes) } : {}),
       }));
       return {
         content: [
@@ -143,7 +169,7 @@ export default defineTool({
               ok: true,
               cells,
               count: cells.length,
-              note: 'Cells you may read. `readable:false` = event-signalled: it has no resolver to poll, so state:subscribe refuses it — await its `awaitKey` with events:await instead. `readable:true` cells take state:subscribe. A cell whose callerRelativity is a `parameter` needs `as`; where that parameter is an agent identity, `as:"self"` means you. This list is audience-filtered; cells outside your audience are omitted, not marked.',
+              note: 'Cells you may read. `readable:false` = event-signalled: it has no resolver to poll, so state:subscribe refuses it — await its `awaitKey` with events:await instead. `readable:true` cells take state:subscribe. A cell whose callerRelativity is a `parameter` needs `as`; where that parameter is an agent identity, `as:"self"` means you. `assessmentCodes` lists the closed set of meanings that cell can report — read it to see whether a cell answers your question before you dispatch; its absence means that cell declares no semantics yet, NOT that it is always fine. This list is audience-filtered; cells outside your audience are omitted, not marked.',
             }),
           },
         ],
