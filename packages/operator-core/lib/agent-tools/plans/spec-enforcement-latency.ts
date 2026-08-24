@@ -18,6 +18,13 @@
  *
  * ## Four measured hazards this shape refuses to hide
  *
+ * 0. **The claim ledger is effectively the SOLE source, not a preferred one.** Measured on this
+ *    corpus: of 35,593 non-observation work-items, `taken_at` survives on **41** — the release
+ *    and completion paths NULL it (`work-items.ts`: `SET taken_by = NULL, taken_at = NULL`), so
+ *    a closed item almost never carries the column at all. `claim_audit` covers 8,010 of them,
+ *    7,475 of which are closed. Treat `byClaimInstantSource['taken-at-column']` as a rounding
+ *    term, and treat everything this module reports as scoped to the ledger's reach — items
+ *    claimed before the ledger began are invisible to it, which `excluded.neverClaimed` states.
  * 1. **`taken_at` is overwritten on every reclaim** (`work-items.ts`: the claim path sets
  *    `taken_at = now(), last_progress_at = NULL`). A duration measured from it is therefore
  *    time-since-LAST-claim, not time-since-first-claim, and on a re-claimed item those differ
@@ -95,6 +102,22 @@ export interface WorkItemLifecycleRow {
   lastProgressAtMs: number | null;
   /** `work_items.closed_ts` — already epoch ms in storage, unlike its timestamptz siblings. */
   closedAtMs: number | null;
+}
+
+/**
+ * The lifecycle read's result.
+ *
+ * The observation exclusion happens in SQL and its count comes back separately, rather than the
+ * reader returning everything for the census to filter. MEASURED reason: on this corpus 59,188 of
+ * 94,781 work_items rows (62%) are `lane = 'observation'`, so a reader that returned them would
+ * spend most of its row budget on rows the census then discards — the limit would truncate real
+ * work while the census reported a comfortable-looking total. Counting them separately keeps the
+ * exclusion visible without paying to transport it.
+ */
+export interface WorkItemLifecycleRead {
+  rows: WorkItemLifecycleRow[];
+  /** Rows the reader excluded as `lane = 'observation'` — agents' turn-end notes. */
+  observationsExcluded: number;
 }
 
 /** One item's first WON claim, from the append-only ledger. */
@@ -180,7 +203,7 @@ export interface SpecEnforcementLatencyDeps {
   listWorkItemLifecycle?: (input: {
     harnessSlug?: string;
     limit: number;
-  }) => Promise<WorkItemLifecycleRow[]>;
+  }) => Promise<WorkItemLifecycleRead>;
   listFirstClaims?: (input: {
     harnessSlug?: string;
     workItemIds: string[];
@@ -188,7 +211,13 @@ export interface SpecEnforcementLatencyDeps {
   listPlanAdoption?: (input: { harnessSlug?: string; limit: number }) => Promise<PlanAdoptionRow[]>;
 }
 
-export const LATENCY_ITEM_LIMIT = 20_000;
+/**
+ * Sized ABOVE the current corpus on purpose: 35,596 non-observation items read in 201ms here, so
+ * a limit below that would make `countsAreFloor` permanently true and every number a floor —
+ * which is honest but useless. Raise it when the corpus approaches it rather than letting the
+ * floor flag become background noise a reader learns to ignore.
+ */
+export const LATENCY_ITEM_LIMIT = 50_000;
 export const LATENCY_PLAN_LIMIT = 2_000;
 
 /**
@@ -205,6 +234,111 @@ export const LATENCY_NOT_DERIVABLE: readonly NotDerivableMeasure[] = [
       'reading it as a first-checkpoint latency would overstate how quickly work is grounded.',
   },
 ] as const;
+
+/**
+ * The lifecycle read.
+ *
+ * ⚠ Every instant is converted to epoch milliseconds HERE, at the edge, because storage is
+ * mixed: `closed_ts` is already a bigint of ms while `taken_at` / `last_progress_at` are
+ * `timestamptz`. Doing it once here is what lets the computation above treat all four uniformly;
+ * a caller that hand-built these rows and passed seconds for one of them would produce durations
+ * ~1000x wrong that still look like plausible durations.
+ *
+ * `lane` is selected rather than filtered in SQL so the excluded observation rows can be COUNTED
+ * (`excluded.observations`) instead of vanishing before anything can report them.
+ */
+async function defaultListWorkItemLifecycle(input: {
+  harnessSlug?: string;
+  limit: number;
+}): Promise<WorkItemLifecycleRead> {
+  const { resolvePlanScope } = await import('./source');
+  const { withWorkspace } = await import('@papercusp/db-org');
+  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
+
+  const [rows, counts] = await withWorkspace(scope.workspaceId, async (tx) =>
+    Promise.all([
+      tx<
+        {
+          feature_id: string;
+          source_plan_slug: string | null;
+          lane: string | null;
+          status: string | null;
+          taken_at_ms: string | null;
+          last_progress_at_ms: string | null;
+          closed_ts: string | null;
+        }[]
+      >`
+        SELECT w.feature_id,
+               w.source_plan_slug,
+               w.lane,
+               w.status,
+               (extract(epoch FROM w.taken_at) * 1000)::bigint          AS taken_at_ms,
+               (extract(epoch FROM w.last_progress_at) * 1000)::bigint  AS last_progress_at_ms,
+               w.closed_ts
+          FROM harness_shared.work_items w
+         WHERE w.workspace_id = ${scope.workspaceId}
+           AND w.harness_slug = ${scope.harnessSlug}
+           AND w.lane IS DISTINCT FROM 'observation'
+         ORDER BY w.feature_id
+         LIMIT ${input.limit}
+      `,
+      tx<{ observations: string }[]>`
+        SELECT count(*) AS observations
+          FROM harness_shared.work_items w
+         WHERE w.workspace_id = ${scope.workspaceId}
+           AND w.harness_slug = ${scope.harnessSlug}
+           AND w.lane = 'observation'
+      `,
+    ]),
+  );
+
+  const num = (v: string | null): number | null => (v == null ? null : Number(v));
+  return {
+    rows: rows.map((r) => ({
+      workItemId: r.feature_id,
+      sourcePlanSlug: r.source_plan_slug,
+      lane: r.lane,
+      status: r.status,
+      takenAtMs: num(r.taken_at_ms),
+      lastProgressAtMs: num(r.last_progress_at_ms),
+      closedAtMs: num(r.closed_ts),
+    })),
+    observationsExcluded: Number(counts[0]?.observations ?? 0),
+  };
+}
+
+/**
+ * FIRST won claim per item, from the append-only ledger.
+ *
+ * `MIN(attempt_ts)` over `outcome = 'won'` is the point: a later reclaim appends another row
+ * rather than overwriting, so the minimum is the true first claim — which is exactly what
+ * `work_items.taken_at` cannot tell us once an item has been reclaimed.
+ */
+async function defaultListFirstClaims(input: {
+  harnessSlug?: string;
+  workItemIds: string[];
+}): Promise<FirstClaimRow[]> {
+  if (input.workItemIds.length === 0) return [];
+  const { resolvePlanScope } = await import('./source');
+  const { withWorkspace } = await import('@papercusp/db-org');
+  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
+
+  const rows = await withWorkspace(
+    scope.workspaceId,
+    async (tx) => tx<{ feature_id: string; first_won_ms: string }[]>`
+      SELECT c.feature_id,
+             (extract(epoch FROM min(c.attempt_ts)) * 1000)::bigint AS first_won_ms
+        FROM harness_shared.claim_audit c
+       WHERE c.workspace_id = ${scope.workspaceId}
+         AND c.harness_slug = ${scope.harnessSlug}
+         AND c.outcome = 'won'
+         AND c.feature_id = ANY(${input.workItemIds})
+       GROUP BY c.feature_id
+    `,
+  );
+
+  return rows.map((r) => ({ workItemId: r.feature_id, firstWonAtMs: Number(r.first_won_ms) }));
+}
 
 /** Nearest-rank percentile over an ASCENDING array. Returns null for an empty sample. */
 function percentile(sortedAsc: readonly number[], fraction: number): number | null {
@@ -243,12 +377,14 @@ export async function computeSpecEnforcementLatency(
   const listFirstClaims = deps.listFirstClaims ?? defaultListFirstClaims;
   const listPlanAdoption = deps.listPlanAdoption ?? defaultListPlanAdoption;
 
-  const items = await listWorkItemLifecycle({ harnessSlug: opts.harnessSlug, limit: itemLimit });
-  const truncatedByItemLimit = items.length >= itemLimit;
+  const read = await listWorkItemLifecycle({ harnessSlug: opts.harnessSlug, limit: itemLimit });
+  const truncatedByItemLimit = read.rows.length >= itemLimit;
 
-  // Exclusion 1: turn-end notes are not claimed work. Counted, never silently dropped.
-  const observations = items.filter((r) => r.lane === 'observation');
-  const claimable = items.filter((r) => r.lane !== 'observation');
+  // Exclusion 1: turn-end notes are not claimed work. The reader excludes them (they are 62% of
+  // the table, so transporting them would truncate real work), but a defensive filter stays here
+  // so an injected reader that does NOT pre-filter cannot quietly poison the distributions.
+  const observationsInRows = read.rows.filter((r) => r.lane === 'observation').length;
+  const claimable = read.rows.filter((r) => r.lane !== 'observation');
 
   const [firstClaims, planRows] = await Promise.all([
     listFirstClaims({
@@ -361,14 +497,14 @@ export async function computeSpecEnforcementLatency(
       },
       byClaimInstantSource: sourceCounts,
       excluded: {
-        observations: observations.length,
+        observations: read.observationsExcluded + observationsInRows,
         neverClaimed,
         negativeDuration,
       },
       notDerivable: LATENCY_NOT_DERIVABLE,
       bounded: {
         itemLimit,
-        itemsRead: items.length,
+        itemsRead: read.rows.length,
         truncatedByItemLimit,
         countsAreFloor: truncatedByItemLimit,
       },

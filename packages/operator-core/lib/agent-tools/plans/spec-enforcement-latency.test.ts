@@ -38,11 +38,16 @@ function plan(over: Partial<PlanAdoptionRow> & { planSlug: string }): PlanAdopti
 
 function deps(input: {
   items: WorkItemLifecycleRow[];
+  /** Observations the READER already excluded in SQL, as the production reader does. */
+  observationsExcluded?: number;
   claims?: FirstClaimRow[];
   plans?: PlanAdoptionRow[];
 }): SpecEnforcementLatencyDeps {
   return {
-    listWorkItemLifecycle: async () => input.items,
+    listWorkItemLifecycle: async () => ({
+      rows: input.items,
+      observationsExcluded: input.observationsExcluded ?? 0,
+    }),
     listFirstClaims: async () => input.claims ?? [],
     listPlanAdoption: async () => input.plans ?? [],
   };
@@ -132,7 +137,23 @@ describe('computeSpecEnforcementLatency — claim instant provenance', () => {
 });
 
 describe('computeSpecEnforcementLatency — exclusions are counted, never silent', () => {
-  it("drops lane='observation' turn-end notes and reports how many", async () => {
+  it("counts lane='observation' rows the reader excluded in SQL", async () => {
+    // The production path: the reader pre-filters (they are 62% of the table) and reports how
+    // many it dropped, so the exclusion is visible without being transported.
+    const ledger = await computeSpecEnforcementLatency(
+      deps({
+        items: [item({ workItemId: 'WI-1', takenAtMs: T0, closedAtMs: T0 + MIN })],
+        observationsExcluded: 59_188,
+      }),
+    );
+
+    expect(ledger.rollup.itemsMeasured).toBe(1);
+    expect(ledger.rollup.excluded.observations).toBe(59_188);
+  });
+
+  it('DEFENSIVE: still drops observation rows an injected reader failed to pre-filter', async () => {
+    // A reader that does not pre-filter must not be able to poison the distributions. Without
+    // this second filter, the 999-minute notes below would dominate every percentile.
     const ledger = await computeSpecEnforcementLatency(
       deps({
         items: [
