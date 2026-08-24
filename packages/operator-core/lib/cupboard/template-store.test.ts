@@ -128,6 +128,92 @@ describe('resolveLocalTemplate', () => {
     expect(resolveLocalTemplate('uuid-1', roots)?.ref).toBe('papercusp-webapp');
     expect(resolveLocalTemplate('nope', roots)).toBeNull();
   });
+
+  /**
+   * RETIREMENT ALIASES (plan unified-app-template-2026-08-23, P-004).
+   *
+   * The four old app roots collapsed into `papercusp-app`. Their refs must keep
+   * resolving so existing cupboard listings and any in-flight materialize do
+   * not break — but ONLY as a last resort: a template that really owns a
+   * ref/id always wins, or a retirement could hijack a live template.
+   */
+  describe('retirement aliases', () => {
+    function writeApp(extra: Record<string, unknown> = {}) {
+      writeTemplate(bundled, 'papercusp-app', {
+        listing: {
+          ref: 'papercusp-app',
+          id: 'uuid-app',
+          title: 'App',
+          aliases: ['papercusp-webapp', 'papercusp-desktop-app', 'papercusp-agentic-webapp', 'papercusp-agentic-desktop-app'],
+          ...extra,
+        },
+        yaml: 'id: papercusp-app\n',
+      });
+    }
+
+    it('a retired ref resolves to the template that lists it as an alias', () => {
+      writeApp();
+      for (const retired of [
+        'papercusp-webapp',
+        'papercusp-desktop-app',
+        'papercusp-agentic-webapp',
+        'papercusp-agentic-desktop-app',
+      ]) {
+        expect(resolveLocalTemplate(retired, roots)?.ref).toBe('papercusp-app');
+      }
+    });
+
+    it('a REAL ref beats an alias — resolution order is load-bearing', () => {
+      writeApp();
+      // A live template genuinely owning the ref an alias also claims.
+      writeTemplate(bundled, 'papercusp-webapp', {
+        listing: { ref: 'papercusp-webapp', id: 'uuid-web', title: 'The real one' },
+        yaml: 'id: papercusp-webapp\n',
+      });
+      expect(resolveLocalTemplate('papercusp-webapp', roots)?.title).toBe('The real one');
+      // The alias still covers the refs nothing else owns.
+      expect(resolveLocalTemplate('papercusp-desktop-app', roots)?.ref).toBe('papercusp-app');
+    });
+
+    it('a REAL id beats an alias too', () => {
+      writeApp({ aliases: ['uuid-other'] });
+      writeTemplate(bundled, 'other', {
+        listing: { ref: 'other', id: 'uuid-other', title: 'Owns the id' },
+        yaml: 'id: other\n',
+      });
+      expect(resolveLocalTemplate('uuid-other', roots)?.title).toBe('Owns the id');
+    });
+
+    it('an unknown key still returns null — aliases widen resolution, never make it total', () => {
+      writeApp();
+      expect(resolveLocalTemplate('papercusp-nonexistent', roots)).toBeNull();
+    });
+
+    it('a template with no aliases key gets an empty alias list (no manifest fallback)', () => {
+      // Retirement must be DELIBERATE: template.yaml is never mined for
+      // aliases, so a template that does not opt in answers to nothing extra.
+      writeTemplate(bundled, 'plain', {
+        listing: { ref: 'plain', id: 'uuid-plain', title: 'Plain' },
+        yaml: 'id: plain\naliases:\n  - sneaky\n',
+      });
+      expect(resolveLocalTemplate('plain', roots)?.aliases).toEqual([]);
+      expect(resolveLocalTemplate('sneaky', roots)).toBeNull();
+    });
+
+    it('malformed alias entries are dropped and duplicates deduped', () => {
+      writeTemplate(bundled, 'messy', {
+        listing: {
+          ref: 'messy',
+          id: 'uuid-messy',
+          title: 'Messy',
+          aliases: ['  spaced  ', 'spaced', '', '   ', 42, null, 'kept'],
+        },
+        yaml: 'id: messy\n',
+      });
+      expect(resolveLocalTemplate('messy', roots)?.aliases).toEqual(['spaced', 'kept']);
+      expect(resolveLocalTemplate('spaced', roots)?.ref).toBe('messy');
+    });
+  });
 });
 
 describe('readLocalGuide', () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { COMPONENT_CATALOG } from "./catalog.js";
 import type { ComponentManifest } from "./component-manifest.js";
 import {
-  AGENTIC_DESKTOP_APP_TEMPLATE,
+  PAPERCUSP_APP_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   REFERENCE_TEMPLATES,
   TAURI_DESKTOP_SHELL_TEMPLATE,
@@ -159,8 +159,8 @@ describe("REFERENCE_TEMPLATES (the retro-fitted quartermaster manifests — P-00
     for (const t of REFERENCE_TEMPLATES) {
       expect(validateTemplateManifest(t)).toEqual({ ok: true, errors: [] });
     }
-    expect(parseTemplateManifest(AGENTIC_DESKTOP_APP_TEMPLATE).scope).toBe("app");
-    expect(AGENTIC_DESKTOP_APP_TEMPLATE.components).toEqual([]);
+    expect(parseTemplateManifest(PAPERCUSP_APP_TEMPLATE).scope).toBe("app");
+    expect(PAPERCUSP_APP_TEMPLATE.components).toEqual([]);
   });
 
   it("each cross-validates against the REAL component catalog (catalog drift breaks this loudly)", () => {

@@ -294,7 +294,7 @@ describe("validateChecksConfig", () => {
       readFileSync(
         join(
           TEMPLATES_DIR,
-          "papercusp-agentic-desktop-app/reference/worked-example.checks-config.json",
+          "papercusp-app/reference/worked-example.checks-config.json",
         ),
         "utf8",
       ),

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { composeTemplates, resolveRequiresClosure, resolveSelection, validateTemplateSet } from "./composition.js";
 import {
-  AGENTIC_DESKTOP_APP_TEMPLATE,
   PAPERCUSP_ANDROID_APP_TEMPLATE,
+  PAPERCUSP_APP_TEMPLATE,
   PAPERCUSP_IPHONE_APP_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   REFERENCE_TEMPLATES,
@@ -149,19 +149,25 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
     expect(validateTemplateSet(REFERENCE_TEMPLATES)).toEqual({ ok: true, errors: [] });
   });
 
-  // Template #1's composition = the papercusp-agentic-desktop-app requires-closure
-  // (P-015) — NOT the whole reference set, which now also carries templates
-  // the app does not require (data-sync, …).
-  const template1 = () => resolveRequiresClosure([AGENTIC_DESKTOP_APP_TEMPLATE], REFERENCE_TEMPLATES).templates;
+  // Template #1's composition is now reached by ANSWERING papercusp-app's
+  // decision points, not by picking one of four fixed roots (plan
+  // unified-app-template-2026-08-23, P-002/P-003/P-004). `target: desktop` +
+  // `agents: pots` is the selection that the retired papercusp-agentic-desktop-app
+  // root used to name, so this is the same composition reached a different way —
+  // which is exactly what the retirement had to preserve.
+  const template1 = () =>
+    resolveSelection(PAPERCUSP_APP_TEMPLATE, { target: "desktop", agents: "pots" }, REFERENCE_TEMPLATES).templates;
 
-  it("papercusp-agentic-desktop-app's closure composes: agentic is the ROOT app over the papercusp-desktop-app BASE (P-022)", () => {
+  it("papercusp-app with target:desktop + agents:pots composes, and papercusp-app is the single ROOT app", () => {
     const { ok, errors, composition } = composeTemplates(template1());
     expect(errors).toEqual([]);
     expect(ok).toBe(true);
     expect(composition!.scope).toBe("app");
-    expect(composition!.appTemplateId).toBe("papercusp-agentic-desktop-app");
-    // The effective component set is the full construction: the papercusp-desktop-app
-    // base's chassis + data + UI closure, plus the judgment plane.
+    expect(composition!.appTemplateId).toBe("papercusp-app");
+    // RETIREMENT EQUIVALENCE: this is byte-for-byte the component set the
+    // retired papercusp-agentic-desktop-app root produced. The four old roots
+    // were named compositions, so collapsing them must not change what an app
+    // is built from — only how it is asked for.
     expect(composition!.components.map((c) => c.id).sort()).toEqual([
       "dock-workbench",
       "embedded-pg-discovery",
@@ -177,19 +183,21 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
     ]);
   });
 
-  it("the union-of-checks carries every closure member's checks — the base app's included", () => {
+  it("the union-of-checks carries every selected member's checks — chassis and agent plane included", () => {
     const { composition } = composeTemplates(template1());
     const keys = composition!.checks.map((c) => `${c.templateId}:${c.item.id}`).sort();
     expect(keys).toEqual([
-      "papercusp-agentic-desktop-app:composition-integrity",
+      "papercusp-app:composition-integrity",
       "papercusp-data-layer:components-integrated",
-      "papercusp-desktop-app:composition-integrity",
       "papercusp-ops-pots:confinement-guard",
       "papercusp-ops-pots:gym-signals",
       "papercusp-ops-pots:seam-round-trip",
       "papercusp-tauri-desktop-shell:boot-e2e",
       "papercusp-ui:components-integrated",
     ]);
+    // The old two-app stack carried composition-integrity TWICE (once for the
+    // agentic root, once for the desktop base). One root ⇒ one.
+    expect(keys.filter((k) => k.endsWith(":composition-integrity"))).toEqual(["papercusp-app:composition-integrity"]);
   });
 
   it("aspects also compose WITHOUT the app template (aspect-only composition)", () => {
@@ -197,9 +205,55 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
     expect(ok).toBe(true);
     expect(composition!.scope).toBe("aspect");
     expect(composition!.appTemplateId).toBeUndefined();
-    expect(AGENTIC_DESKTOP_APP_TEMPLATE.composesWith.sort()).toEqual(
-      ["papercusp-desktop-app", "papercusp-ops-pots"],
+    // papercusp-app reaches both chassis and the agent plane by composesWith —
+    // the chassis pair is what `target` selects between.
+    expect(PAPERCUSP_APP_TEMPLATE.composesWith).toEqual(
+      expect.arrayContaining(["papercusp-tauri-desktop-shell", "papercusp-web-host", "papercusp-ops-pots"]),
     );
+  });
+});
+
+/**
+ * The P-022 BASE-app rule, on a SYNTHETIC pair.
+ *
+ * `composeTemplates` still implements it: an app-scope template may REQUIRE
+ * another app-scope template, and the required one joins the composition as a
+ * member without owning it. As of the four-root retirement (plan
+ * unified-app-template-2026-08-23, P-004) NO reference pair exercises it —
+ * papercusp-agentic-desktop-app-over-papercusp-desktop-app was the only one, and
+ * the `agents` decision point replaced it with an ASPECT join. So the rule is
+ * covered here with controlled inputs rather than silently going untested; if a
+ * future reference set reintroduces a real base-app pair, assert on that too
+ * instead of replacing this.
+ */
+describe("composeTemplates: the base-app rule (P-022) — synthetic, no reference pair survives", () => {
+  const app = (id: string, over: Partial<TemplateManifest> = {}) =>
+    aspect(id, { scope: "app", category: "app", ...over });
+
+  it("a required BASE app is a member but never the owner — the root app owns the composition", () => {
+    const base = app("base-app");
+    const root = app("root-app", { requires: [{ id: "base-app", version: "1.0.0" }] });
+    const { ok, errors, composition } = composeTemplates([base, root]);
+    expect(errors).toEqual([]);
+    expect(ok).toBe(true);
+    expect(composition!.scope).toBe("app");
+    expect(composition!.appTemplateId).toBe("root-app");
+    // Both app templates' checks are in the union — the base is a real member.
+    expect(composition!.checks.map((c) => c.templateId).sort()).toEqual(["base-app", "root-app"]);
+  });
+
+  it("two INDEPENDENT app roots are still the 'two scaffolds cannot both own an app' conflict", () => {
+    const { ok, errors } = composeTemplates([app("one"), app("two")]);
+    expect(ok).toBe(false);
+    expect(errors.join(";")).toContain("at most ONE ROOT app-scope template");
+  });
+
+  it("app templates in a requires CYCLE leave no root", () => {
+    const x = app("x", { requires: [{ id: "y", version: "1.0.0" }] });
+    const y = app("y", { requires: [{ id: "x", version: "1.0.0" }] });
+    const { ok, errors } = composeTemplates([x, y]);
+    expect(ok).toBe(false);
+    expect(errors.join(";")).toContain("no root app");
   });
 });
 
@@ -301,23 +355,33 @@ describe("P-015 — requires: hard pinned cross-template deps", () => {
     expect(resolveRequiresClosure([x], [x, y]).errors.join(";")).toContain("requires cycle");
   });
 
-  it("the reference set: papercusp-agentic-desktop-app's requires-closure = the papercusp-desktop-app base's closure + the judgment plane (P-022)", () => {
-    const res = resolveRequiresClosure([AGENTIC_DESKTOP_APP_TEMPLATE], REFERENCE_TEMPLATES);
+  it("the reference set: papercusp-app's requires-closure is the INVARIANT half only — the chassis is selected, not required", () => {
+    const res = resolveRequiresClosure([PAPERCUSP_APP_TEMPLATE], REFERENCE_TEMPLATES);
     expect(res.ok).toBe(true);
+    // Data + UI are hard requires, so they are in the closure unconditionally.
+    // NEITHER chassis is — that is the whole point of the `target` decision
+    // point, and it is why one root can serve desktop, web, or both.
     expect(new Set(res.templates.map((t) => t.id))).toEqual(
-      new Set([
-        "papercusp-agentic-desktop-app",
-        "papercusp-desktop-app",
-        "papercusp-data-layer",
-        "papercusp-ops-pots",
-        "papercusp-ui",
-        "papercusp-tauri-desktop-shell",
-      ]),
+      new Set(["papercusp-app", "papercusp-data-layer", "papercusp-ui"]),
     );
-    expect(res.templates[res.templates.length - 1]!.id).toBe("papercusp-agentic-desktop-app"); // deps first
-    const composed = composeTemplates(res.templates);
+    expect(res.templates[res.templates.length - 1]!.id).toBe("papercusp-app"); // deps first
+
+    // And the requires-closure ALONE is deliberately NOT composable: `target`
+    // is a REQUIRED selecting decision point, so a chassis-less papercusp-app is
+    // refused with the same force a stale pin would be. That refusal is what
+    // makes "the chassis is selected, not required" safe — the chassis cannot
+    // be silently omitted, only chosen.
+    const bare = composeTemplates(res.templates);
+    expect(bare.ok).toBe(false);
+    expect(bare.errors.join(";")).toContain("decision point 'target' selects a REQUIRED template axis");
+
+    // Answering it composes.
+    const answered = resolveSelection(PAPERCUSP_APP_TEMPLATE, { target: "web" }, REFERENCE_TEMPLATES);
+    expect(answered.ok).toBe(true);
+    const composed = composeTemplates(answered.templates);
+    expect(composed.errors).toEqual([]);
     expect(composed.ok).toBe(true);
-    expect(composed.composition!.appTemplateId).toBe("papercusp-agentic-desktop-app");
+    expect(composed.composition!.appTemplateId).toBe("papercusp-app");
   });
 });
 
