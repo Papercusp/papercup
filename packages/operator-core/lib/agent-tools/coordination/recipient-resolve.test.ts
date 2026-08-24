@@ -33,6 +33,8 @@ const KNOWN = [
   'su-fc2fd592-e760-42bd-8057-beb4d06eef52',
   'pus-abcdef01-2345',
 ];
+const STALE_SU_SESSION = 'su-d9211d54-beee-4d43-8154-fdc13877435a';
+const RESUMED_SU_SESSION = 'su-d9211d54-fa02-4391-b0a2-0efbce528c1f';
 
 describe('resolveRecipientsAgainst', () => {
   it('resolves a unique short prefix to the full ownerId (the wake-key bug)', () => {
@@ -52,6 +54,15 @@ describe('resolveRecipientsAgainst', () => {
     expect(resolveRecipientsAgainst(['beb4d'], KNOWN).resolved).toEqual([
       'su-fc2fd592-e760-42bd-8057-beb4d06eef52',
     ]);
+  });
+
+  it('resolves a stale full su session id through the resumed session short handle', () => {
+    const r = resolveRecipientsAgainst([STALE_SU_SESSION], [RESUMED_SU_SESSION]);
+    expect(r).toEqual({
+      resolved: [RESUMED_SU_SESSION],
+      unknown: [],
+      ambiguous: [],
+    });
   });
 
   it('prefers a PREFIX match over substring (prefix tried first)', () => {
@@ -124,6 +135,11 @@ describe('resolveBestEffort (the silent shared-layer twin)', () => {
   });
   it('leaves an AMBIGUOUS prefix unchanged', () => {
     expect(resolveBestEffort(['su-'], KNOWN)).toEqual(['su-']);
+  });
+  it('rewrites a stale full su session id through its resumed short handle', () => {
+    expect(resolveBestEffort([STALE_SU_SESSION], [RESUMED_SU_SESSION])).toEqual([
+      RESUMED_SU_SESSION,
+    ]);
   });
   it('passes selectors/wildcards + exact ids through untouched', () => {
     const to = ['*', 'human', '@plan:x', 'su-fc2fd592-e760-42bd-8057-beb4d06eef52'];

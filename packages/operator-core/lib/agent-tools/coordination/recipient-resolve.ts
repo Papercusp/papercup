@@ -15,6 +15,7 @@
 
 import { listPresence } from './presence';
 import { listRecordedLiveSessions } from '../../adv-sessions';
+import { shortHandle } from '../../coord-schema';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { listLiveSessionPresence } from '../../sync/hyperbee/session-presence-store';
 
@@ -33,6 +34,33 @@ export interface RecipientResolution {
   unknown: string[];
   /** Concrete ids whose prefix matched MORE than one known agent. */
   ambiguous: { id: string; matches: string[] }[];
+}
+
+/**
+ * A resumed PSU session can mint a new full `su-<uuid>` owner id while keeping
+ * the five-character handle shown in coord injections. A copied full id from
+ * before that respawn therefore no longer matches by prefix or substring, but
+ * its handle still identifies the current session. Keep this fallback narrow:
+ * short, human-readable ids and arbitrary typos must retain their existing
+ * unknown behavior.
+ */
+function staleSuSessionHandle(id: string): string | null {
+  if (!/^su-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return null;
+  }
+  return shortHandle(id);
+}
+
+/** Find current owner ids for a concrete recipient, including the stable
+ * handle fallback for a stale full PSU session id. */
+function matchingOwnerIds(id: string, knownOwnerIds: readonly string[]): string[] {
+  let matches = knownOwnerIds.filter((k) => k.startsWith(id));
+  if (matches.length === 0) matches = knownOwnerIds.filter((k) => k.includes(id));
+  if (matches.length === 0) {
+    const handle = staleSuSessionHandle(id);
+    if (handle) matches = knownOwnerIds.filter((k) => k.includes(handle));
+  }
+  return matches;
 }
 
 /** PURE core (unit-tested): resolve each `to` entry against the known ownerId
@@ -60,8 +88,7 @@ export function resolveRecipientsAgainst(
     // the SHORT HANDLE shown in the [coord+N] injection / inbox — a mid-uuid segment
     // like '93a38' for 'su-93a3872a-…', which is NOT a prefix — resolves directly,
     // without a separate coord:presence lookup to reply (owner ask 2026-06-19).
-    let matches = knownOwnerIds.filter((k) => k.startsWith(id));
-    if (matches.length === 0) matches = knownOwnerIds.filter((k) => k.includes(id));
+    const matches = matchingOwnerIds(id, knownOwnerIds);
     if (matches.length === 1) resolved.push(matches[0]);
     else if (matches.length > 1) ambiguous.push({ id, matches });
     else unknown.push(id);
@@ -232,8 +259,7 @@ export function resolveBestEffort(
   const known = new Set(knownOwnerIds);
   return to.map((id) => {
     if (isSelectorOrWildcard(id) || known.has(id)) return id;
-    let matches = knownOwnerIds.filter((k) => k.startsWith(id));
-    if (matches.length === 0) matches = knownOwnerIds.filter((k) => k.includes(id));
+    const matches = matchingOwnerIds(id, knownOwnerIds);
     return matches.length === 1 ? matches[0] : id;
   });
 }
