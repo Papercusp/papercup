@@ -139,14 +139,20 @@ export interface ProbeRunnerPorts {
     summary: string;
     payload: Readonly<Record<string, unknown>>;
   }): Promise<void>;
-  /** Refresh the bound release-scorecard criterion. P-005: the scorecards emit surface. */
-  refreshScorecardCriterion(refresh: {
-    prerequisiteKey: string;
-    owningWorkItem: string;
-    readiness: PrerequisiteReadiness;
-    satisfied: boolean;
-  }): Promise<void>;
-  /** Wake the lane owner accountable for the wall. P-005: `coord:send { wake }` to the work-item's holder. */
+  /**
+   * Wake the lane owner accountable for the wall. P-005: resolve the work-item's
+   * holder, then an inbox write + a targeted wake.
+   *
+   * NOTE (D-003): a sixth port, `refreshScorecardCriterion`, was declared here and
+   * REMOVED by P-005. It named a push that cannot be performed — the spec carries no
+   * rubric/criterion binding, and the scorecards emit surface is whole-card
+   * (`validateScorecardCompleteness` requires a rating for every criterion), so no
+   * per-criterion refresh exists to call. It was also the wrong SHAPE: a criterion
+   * re-stated on a timer is a second copy of a truth this store already owns, whereas
+   * `resolvePrerequisiteReadiness` DERIVES readiness at evaluation time and therefore
+   * cannot go stale. The gate PULLS (see `readScopePrerequisiteReadiness` in
+   * external-prerequisite-ports.ts) rather than being pushed. Do not re-add it.
+   */
   wakeLaneOwner(wake: { owningWorkItem: string; summary: string }): Promise<void>;
 }
 
@@ -262,7 +268,6 @@ async function announce(
   transition: PrerequisiteTransition,
   readiness: PrerequisiteReadiness,
 ): Promise<string | undefined> {
-  const satisfied = isPrerequisiteSatisfied(readiness);
   const problems: string[] = [];
 
   const safely = async (label: string, fn: () => Promise<void>): Promise<void> => {
