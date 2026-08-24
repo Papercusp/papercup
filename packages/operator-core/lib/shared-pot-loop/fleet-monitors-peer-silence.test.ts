@@ -869,3 +869,168 @@ describe('judgePeerFederationSilence — a cursor outlives admission (WI-39489)'
     expect(empty.admittedRemoteLogs).toBeNull();
   });
 });
+
+/**
+ * EI-21322935352272541 — scope-local peer departure vs HOST-WIDE admission outage.
+ *
+ * `admittedRemoteLogs === 0` is a determined zero, but on its own it cannot say
+ * WHOSE zero it is: "our peers in this scope went away" and "this host admits
+ * nothing anywhere" produce byte-identical per-scope readings. The scan reads
+ * only its own scope, so that distinction was never measured — and an unmeasured
+ * distinction does not fail loudly, it collapses to whichever branch was written
+ * first. It collapsed to the scope-local one.
+ *
+ * Measured on this host 2026-08-24: `admittedLogCount` was min=1 max=1 across 101
+ * booted scopes (own log only — ZERO remote admitted anywhere) while 45 scopes
+ * held durable remote cursors. So one host-wide condition was up to 45 per-scope
+ * majors, none of which any scope-local action could clear. Which of the 45
+ * actually alarmed was decided by the unrelated `scope-dormant` guard — whether
+ * we happened to have written locally inside the SLO window — so the alarming set
+ * was arbitrary with respect to the fault (this scope fired 5 times and went
+ * quiet at 13:38 when its own last write aged past 6h; siblings kept firing).
+ */
+describe('judgePeerFederationSilence — host-wide admission outage (EI-21322935352272541)', () => {
+  const OWN = 'own5b00878b7df0';
+  const PEERS = ['peer1e847ce7104b', 'peerda0f8e3e99b0', 'peeref7a81605440'];
+  const hostA = () => [log(OWN, 0), ...PEERS.map((k, i) => log(k, 13 + i * 20))];
+  const scopeAdmitsNothing = { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: OWN, admittedLogKeysHex: [OWN] };
+
+  it('REPRODUCTION: when the host admits nothing ANYWHERE, the verdict names the HOST, not this scope', () => {
+    const v = judgePeerFederationSilence(hostA(), {
+      ...scopeAdmitsNothing,
+      // The measured live shape: 101 scopes, every admitted set = own log only.
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+    });
+
+    expect(v.admittedRemoteLogs).toBe(0);
+    expect(v.hostAdmitsAnyRemoteLog).toBe(false);
+    expect(v.hostWideAdmissionBreach).toContain('HOST ADMITS NO REMOTE LOGS');
+    expect(v.hostWideAdmissionBreach).toContain('101 booted scope(s)');
+    expect(v.hostWideAdmissionBreach).toContain('Do NOT chase it per scope');
+
+    // The POINT of the fix: the per-scope alarm must NOT also fire. Emitting both
+    // re-files the same condition into N per-harness dedup buckets.
+    expect(v.breaches).toHaveLength(0);
+
+    // ...and the host-wide statement must NEVER ride in `breaches`, because the
+    // caller scopes everything in there to this harness — which is the defect.
+    expect(v.breaches.join(' ')).not.toContain('HOST ADMITS NO REMOTE LOGS');
+
+    // Still MEASURED. Re-scoping the alarm must not make the scope look healthy.
+    expect(v.measured).toBe(true);
+    expect(v.allSilent).toBe(true);
+  });
+
+  it('CALIBRATION: a genuine scope-local departure still fires per-scope, and says so', () => {
+    // The carve-out must be NARROW. If the host admits remote logs in OTHER
+    // scopes, admission demonstrably works and this scope's peers really did go
+    // away — the pre-existing verdict, which must survive untouched. Without this
+    // control, deleting the per-scope signal entirely would also pass the test
+    // above.
+    const v = judgePeerFederationSilence(hostA(), {
+      ...scopeAdmitsNothing,
+      hostAdmission: { remoteLogsAdmitted: 7, scopesMeasured: 101 },
+    });
+
+    expect(v.hostAdmitsAnyRemoteLog).toBe(true);
+    expect(v.hostWideAdmissionBreach).toBeNull();
+    expect(v.breaches).toHaveLength(1);
+    expect(v.breaches[0]).toContain('NO PEER ADMITTED');
+    expect(v.breaches[0]).toContain('ABSENT, not slow');
+    // It now says WHY it is entitled to call this scope-local.
+    expect(v.breaches[0]).toContain('admit remote log(s) in other scope(s)');
+  });
+
+  it('UNMEASURED is not FALSE: an absent host reading asserts nothing host-wide', () => {
+    // `hostAdmission` omitted ⇒ we never looked. Reporting the host-wide breach
+    // here would assert a determined "this host admits nothing" from an absent
+    // measurement — the same ignorance-as-fact error the null-vs-0 split on
+    // `admittedRemoteLogs` exists to prevent, one level up.
+    const v = judgePeerFederationSilence(hostA(), scopeAdmitsNothing);
+
+    expect(v.hostAdmitsAnyRemoteLog).toBeNull();
+    expect(v.hostWideAdmissionBreach).toBeNull();
+    // The legacy per-scope reading survives, unchanged...
+    expect(v.breaches).toHaveLength(1);
+    expect(v.breaches[0]).toContain('NO PEER ADMITTED');
+    // ...and must NOT borrow the measured-true wording it did not earn.
+    expect(v.breaches[0]).not.toContain('admit remote log(s) in other scope(s)');
+  });
+
+  it('FALSIFIABILITY: the obvious wrong implementation is caught by the unmeasured case', () => {
+    // `wrongHostJudge` is the version an author reaches for first: treat "no host
+    // reading" as "the host admits nothing", because both are falsy. It agrees
+    // with the real judge on BOTH measured inputs and diverges only on the
+    // unmeasured one — so a suite without the test above would not notice it.
+    const wrongHostJudge = (hostAdmission?: { remoteLogsAdmitted: number }) =>
+      !hostAdmission?.remoteLogsAdmitted;
+
+    for (const measured of [
+      { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+      { remoteLogsAdmitted: 7, scopesMeasured: 101 },
+    ]) {
+      const v = judgePeerFederationSilence(hostA(), { ...scopeAdmitsNothing, hostAdmission: measured });
+      expect(v.hostWideAdmissionBreach != null).toBe(wrongHostJudge(measured));
+    }
+
+    // The divergence the guard is FOR: unmeasured.
+    const unmeasured = judgePeerFederationSilence(hostA(), scopeAdmitsNothing);
+    expect(wrongHostJudge(undefined)).toBe(true); // the wrong judge would alarm
+    expect(unmeasured.hostWideAdmissionBreach).toBeNull(); // the real one does not
+  });
+
+  it('an ADMITTED-but-silent peer keeps blaming the local fold, host reading or not', () => {
+    // The host-wide branch is gated on admittedRemoteLogs === 0. A scope with
+    // genuinely admitted peers must be unaffected even on a host that admits
+    // nothing elsewhere — otherwise the re-scoping would swallow LOCAL FOLD
+    // SUSPECT, the one verdict that points at our own merge loop.
+    const v = judgePeerFederationSilence(hostA(), {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN, ...PEERS],
+      hostAdmission: { remoteLogsAdmitted: 3, scopesMeasured: 101 },
+    });
+    expect(v.hostWideAdmissionBreach).toBeNull();
+    expect(v.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+  });
+
+  it('a host-wide zero with NO silent cursor here stays quiet — silence is still required', () => {
+    // Admission being absent host-wide is not, by itself, this monitor's alarm:
+    // a scope whose cursors are all fresh has nothing to report. Guards against
+    // turning the new reading into an unconditional host-wide siren.
+    const fresh = [log(OWN, 0), ...PEERS.map((k) => log(k, 0))];
+    const v = judgePeerFederationSilence(fresh, {
+      ...scopeAdmitsNothing,
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+    });
+    expect(v.hostAdmitsAnyRemoteLog).toBe(false);
+    expect(v.hostWideAdmissionBreach).toBeNull();
+    expect(v.breaches).toHaveLength(0);
+  });
+
+  it('reports the host reading on the unmeasured branches too, so it is never a silent gap', () => {
+    const ownOnly = judgePeerFederationSilence([log(OWN, 0)], {
+      ...scopeAdmitsNothing,
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+    });
+    expect(ownOnly.unmeasuredReason).toBe('own-log-only');
+    expect(ownOnly.hostAdmitsAnyRemoteLog).toBe(false);
+    expect(ownOnly.hostWideAdmissionBreach).toBeNull();
+
+    // scope-dormant: the guard that made WHICH scopes alarm arbitrary. It still
+    // withdraws the verdict, and still reports what it knew.
+    const dormant = judgePeerFederationSilence(hostA(), {
+      ...scopeAdmitsNothing,
+      localActivityAgeMs: SLO + 1,
+      hostAdmission: { remoteLogsAdmitted: 0, scopesMeasured: 101 },
+    });
+    expect(dormant.unmeasuredReason).toBe('scope-dormant');
+    expect(dormant.hostAdmitsAnyRemoteLog).toBe(false);
+    expect(dormant.hostWideAdmissionBreach).toBeNull();
+
+    const empty = judgePeerFederationSilence([], { silentAfterMs: SLO, nowMs: NOW });
+    expect(empty.hostAdmitsAnyRemoteLog).toBeNull();
+    expect(empty.hostWideAdmissionBreach).toBeNull();
+  });
+});
