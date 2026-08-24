@@ -1756,8 +1756,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         } else {
             m.content.clone()
         };
-        for wl in wrap_text(&body, inner_w) {
-            lines.push(Line::from(wl));
+        // Assistant prose is MARKDOWN; the user's own text is not. A human who
+        // types `*` means an asterisk and a pasted path means that path — and
+        // showing someone their own message back restyled is a lie about what
+        // was sent. Only the model's half goes through the renderer.
+        if m.role == "assistant" {
+            lines.extend(crate::markdown::render(&body, inner_w, m.streaming));
+        } else {
+            for wl in wrap_text(&body, inner_w) {
+                lines.push(Line::from(wl));
+            }
         }
         for tc in &m.tools {
             // Every label here is a RENDER concern applied from raw model fields

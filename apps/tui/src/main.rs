@@ -27,6 +27,7 @@ mod http;
 mod ipc;
 mod layout;
 mod lexicon;
+mod markdown;
 mod models;
 mod mux;
 mod network;
