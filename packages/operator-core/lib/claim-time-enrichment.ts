@@ -121,6 +121,16 @@ export interface ClaimTimeEnrichment {
    */
   pathHints?: ClaimTimeStalePathHint[];
   pathHintsNote?: string;
+  /**
+   * EI-18713141708830049: the plan item this row belongs to is still NON-terminal
+   * while a SIBLING work-item on the same item has already settled — "the tree says
+   * done". Deliberately the MIRROR of `planItemContradiction` above and disjoint
+   * from it: that one fires on a TERMINAL plan item, this one on a live plan item
+   * whose work has in fact landed. Advisory; the warning stamps which evidence tier
+   * resolved the link, because a prose-derived match must never read as a recorded one.
+   */
+  planItemLanded?: unknown;
+  planItemLandedWarning?: string;
 }
 
 export interface ClaimTimeEnrichmentOpts {
@@ -160,6 +170,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     planContradiction,
     behaviorContract,
     pathHintsEntry,
+    planItemLandedEntry,
   ] = await Promise.all([
       // What OTHERS ruled that governs this item. Available from either a
       // work-item payload stamp or an explicit plan pointer.
@@ -300,6 +311,35 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
             })
             .catch(() => null)
         : Promise.resolve(null),
+
+      // EI-18713141708830049: the MIRROR of the planContradiction leg above — the plan
+      // item is still open while a SIBLING work-item on it has already settled, so the
+      // work may already be in the tree even though the ledger says otherwise. The
+      // measured failure this closes is an agent re-investigating (and nearly
+      // re-implementing) finished work because it routes off the ledger, not the tree.
+      //
+      // Resolves the plan item through a TIERED evidence chain (payload stamp > column >
+      // prose) because only 24 of 119 real work-items carry the stamp and 7 the column:
+      // a machine-link-only leg is silent for four items in five. The hint STAMPS which
+      // tier matched so a prose-derived guess can never read as a recorded link.
+      // Needs an identified work-item — a bare plan-item claim has no row to compare.
+      workItemId
+        ? import('./work-item-plan-item-landed')
+            .then(async (m) => {
+              const hint = await m.getClaimTimePlanItemLanded({
+                workItemId,
+                payload: wi?.payload,
+                planSlug: opts.planSlug,
+                planItemId: opts.planItemId,
+                sourcePlanSlug: wi?.sourcePlanSlug,
+                sourcePlanItemIds: wi?.sourcePlanItemIds,
+                workspaceId,
+              });
+              const warning = m.planItemLandedWarning(hint, workItemId);
+              return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
+            })
+            .catch(() => null)
+        : Promise.resolve(null),
     ]);
 
   return {
@@ -311,5 +351,6 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
     ...(planContradiction ?? {}),
     ...(behaviorContract ?? {}),
     ...(pathHintsEntry ?? {}),
+    ...(planItemLandedEntry ?? {}),
   };
 }

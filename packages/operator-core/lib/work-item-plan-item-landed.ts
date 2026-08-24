@@ -140,12 +140,22 @@ export function resolvePlanItemRef(ref: {
   payload?: unknown;
   planSlug?: string | null;
   planItemId?: string | null;
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
 }): { planSlug: string; itemId: string } | null {
   const stamp = (
     ref.payload as { plan_item?: { plan_slug?: string; item_id?: string } } | null | undefined
   )?.plan_item;
-  const planSlug = (stamp?.plan_slug ?? ref.planSlug ?? '').trim();
-  const itemId = (stamp?.item_id ?? ref.planItemId ?? '').trim();
+  // The COLUMN tier, and the reason it is LAST and guarded. `source_plan_item_ids` is a
+  // LIST: a row implementing several plan items gives no principled way to pick one, and
+  // picking arbitrarily would emit a confident "already landed" about the wrong item —
+  // strictly worse than staying silent (a false hint costs the claimant more than no hint).
+  // So it contributes only when it identifies EXACTLY ONE item. This lives here rather than
+  // at the four call sites so the rule cannot drift into four divergent copies.
+  const columnItemIds = (ref.sourcePlanItemIds ?? []).filter((id) => typeof id === 'string' && id.trim());
+  const columnItemId = columnItemIds.length === 1 ? columnItemIds[0] : null;
+  const planSlug = (stamp?.plan_slug ?? ref.planSlug ?? ref.sourcePlanSlug ?? '').trim();
+  const itemId = (stamp?.item_id ?? ref.planItemId ?? columnItemId ?? '').trim();
   if (!planSlug || !itemId) return null;
   return { planSlug, itemId };
 }
@@ -161,6 +171,8 @@ export async function getClaimTimePlanItemLanded(ref: {
   payload?: unknown;
   planSlug?: string | null;
   planItemId?: string | null;
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
   workspaceId?: string | null;
 }): Promise<ClaimTimePlanItemLandedHint | null> {
   const resolved = resolvePlanItemRef(ref);
