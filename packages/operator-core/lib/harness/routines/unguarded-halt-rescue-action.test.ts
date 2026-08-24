@@ -9,6 +9,7 @@ import {
   DEFAULT_HALT_MAX_IDLE_MS,
   DEFAULT_RESCUE_THROTTLE_MS,
   MAX_RESCUES_PER_TICK,
+  partitionStoodDown,
   RESCUE_PREFIX,
   rescueBody,
   selectSweepCandidates,
@@ -179,6 +180,50 @@ describe('unguarded-halt rescue — the halt predicate it acts on', () => {
 
   it('does NOT flag an interactive session — its owner is the guaranteed next wake', () => {
     expect(detectUnguardedHalt({ ...halted, autonomousModeActive: false })).toBeNull();
+  });
+});
+
+/**
+ * THE EI-21275606411048371 RECURRENCE GUARD. A member whose directed work is
+ * terminal and which ended its engine loop (`loop:end`) must NOT be re-woken by
+ * the sweep every throttle hour just because the fleet-wide queue still admits
+ * items — twice reproduced 2026-08-23 (deliveries #135568/#136380), same class
+ * as dropped EI-18734910825871393. Never-armed owners stay fully rescuable.
+ */
+describe('unguarded-halt rescue — stood-down suppression (ended engine loop)', () => {
+  const a = candidate('stood-down');
+  const b = candidate('never-armed');
+
+  it('suppresses an owner whose loop row(s) are ALL inactive, keeps the rest', () => {
+    const { rescuable, stoodDown } = partitionStoodDown([a, b], {
+      'stood-down': [{ active: false }],
+    });
+    expect(stoodDown.map((c) => c.agentId)).toEqual(['stood-down']);
+    expect(rescuable.map((c) => c.agentId)).toEqual(['never-armed']);
+  });
+
+  it('does NOT suppress an owner with any ACTIVE loop row (defense in depth)', () => {
+    const { rescuable, stoodDown } = partitionStoodDown([a], {
+      'stood-down': [{ active: false }, { active: true }],
+    });
+    expect(stoodDown).toEqual([]);
+    expect(rescuable.map((c) => c.agentId)).toEqual(['stood-down']);
+  });
+
+  it('fails OPEN: a failed reader (null) suppresses nobody — pre-fix behavior', () => {
+    const { rescuable, stoodDown } = partitionStoodDown([a, b], null);
+    expect(stoodDown).toEqual([]);
+    expect(rescuable.map((c) => c.agentId)).toEqual(['stood-down', 'never-armed']);
+  });
+
+  it('wires the partition BEFORE the per-agent claimability fan-out (order pin)', () => {
+    const src = readFileSync(join(__dirname, 'unguarded-halt-rescue-action.ts'), 'utf8');
+    const sweepAt = src.indexOf('selectSweepCandidates(');
+    const partitionAt = src.indexOf('partitionStoodDown(candidates, loopRows)');
+    const claimableAt = src.indexOf('claimableForCandidate(candidate, ctx.workspaceId)');
+    expect(sweepAt).toBeGreaterThan(-1);
+    expect(partitionAt).toBeGreaterThan(sweepAt);
+    expect(claimableAt).toBeGreaterThan(partitionAt);
   });
 });
 
