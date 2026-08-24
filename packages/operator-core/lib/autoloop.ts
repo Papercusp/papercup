@@ -245,10 +245,9 @@ export async function recordWithheld(slug: string, role: string, reason: string,
   const ws = activeWorkspaceId();
   try {
     if (isOwnerLoopRole(role)) {
-      // Owner-loop identity is role-only (WI-41224/P-001). A target-free insert
-      // handles either the legacy three-column primary key or migration 939's
-      // role-only partial unique index; on a re-home conflict, update the row
-      // that readFireState/checkFireGate uses.
+      // Owner-loop identity is role-only (WI-41224/P-001). Name migration 939's
+      // partial index predicate explicitly, then refresh the one role-scoped row
+      // (including its descriptive harness/workspace metadata) on conflict.
       const inserted = await db
         .insert(at)
         .values({
@@ -275,23 +274,23 @@ export async function recordWithheld(slug: string, role: string, reason: string,
       }
     } else {
       await db
-      .insert(at)
-      .values({
-        harnessSlug: slug,
-        role,
-        workspaceId: ws,
-        lastWithheldAt: dsql`now()` as any,
-        lastWithheldReason: reason,
-        lastWithheldDetail: detail ?? null,
-      })
-      .onConflictDoUpdate({
-        target: [at.workspaceId, at.harnessSlug, at.role],
-        set: {
-          lastWithheldAt: dsql`now()`,
-          lastWithheldReason: dsql`EXCLUDED.last_withheld_reason`,
-          lastWithheldDetail: dsql`EXCLUDED.last_withheld_detail`,
-        },
-      });
+        .insert(at)
+        .values({
+          harnessSlug: slug,
+          role,
+          workspaceId: ws,
+          lastWithheldAt: dsql`now()` as any,
+          lastWithheldReason: reason,
+          lastWithheldDetail: detail ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [at.workspaceId, at.harnessSlug, at.role],
+          set: {
+            lastWithheldAt: dsql`now()`,
+            lastWithheldReason: dsql`EXCLUDED.last_withheld_reason`,
+            lastWithheldDetail: dsql`EXCLUDED.last_withheld_detail`,
+          },
+        });
     }
   } catch (e) {
     console.warn(`[autoloop] recordWithheld failed (${slug}/${role}/${reason}):`, e instanceof Error ? e.message : e);
@@ -326,9 +325,9 @@ export async function recordFire(
         ? dsql`0`
         : dsql`${at.consecutiveErrors}`; // attempt / infra-error (WI-669): preserve
   if (isOwnerLoopRole(role)) {
-    // Owner-loop identity is role-only (WI-41224/P-001). A target-free insert
-    // handles migration 939's role-only partial unique index; a re-home conflict
-    // falls through to the same workspace+role row that the gate reads.
+    // Owner-loop identity is role-only (WI-41224/P-001). Name migration 939's
+    // partial index predicate explicitly; a re-home conflict then refreshes the
+    // same workspace+role row the gate reads, rather than minting a split row.
     const inserted = await db
       .insert(at)
       .values({
@@ -355,24 +354,24 @@ export async function recordFire(
     }
   } else {
     await db
-    .insert(at)
-    .values({
-      harnessSlug: slug,
-      role,
-      lastFiredAt: dsql`now()` as any,
-      lastStatus: status,
-      consecutiveErrors: insertErrors,
-      workspaceId: ws,
-    })
-    .onConflictDoUpdate({
-      target: [at.workspaceId, at.harnessSlug, at.role],
-      set: {
-        lastFiredAt: dsql`now()`,
-        lastStatus: dsql`EXCLUDED.last_status`,
-        consecutiveErrors: onUpdateErrors,
-        workspaceId: dsql`EXCLUDED.workspace_id`,
-      },
-    });
+      .insert(at)
+      .values({
+        harnessSlug: slug,
+        role,
+        lastFiredAt: dsql`now()` as any,
+        lastStatus: status,
+        consecutiveErrors: insertErrors,
+        workspaceId: ws,
+      })
+      .onConflictDoUpdate({
+        target: [at.workspaceId, at.harnessSlug, at.role],
+        set: {
+          lastFiredAt: dsql`now()`,
+          lastStatus: dsql`EXCLUDED.last_status`,
+          consecutiveErrors: onUpdateErrors,
+          workspaceId: dsql`EXCLUDED.workspace_id`,
+        },
+      });
   }
   // Health-signal hygiene (autonomous-loop-hardening F6): piggyback a throttled prune of
   // long-dead fire-state rows on the existing fire path, so the table self-maintains without a
