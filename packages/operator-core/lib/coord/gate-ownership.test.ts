@@ -62,7 +62,13 @@ describe('gateStallConditionKey', () => {
 
 describe('toCellOwnership', () => {
   it('renames conditionKey to eventKey and carries the lease through', () => {
-    const own = toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-abc', takenAt: 'T1', expiresAt: 'T2' }));
+    const own = toCellOwnership(mkObj({
+      claimState: 'held',
+      takenBy: 'su-abc',
+      takenAt: 'T1',
+      lastProgressAt: 'P1',
+      expiresAt: 'T2',
+    }));
     expect(own).toEqual({
       assessment: 'held-needs-confirmation',
       eventKey: 'green-stall:papercusp',
@@ -71,6 +77,7 @@ describe('toCellOwnership', () => {
       unknown: null,
       takenBy: 'su-abc',
       takenAt: 'T1',
+      lastProgressAt: 'P1',
       expiresAt: 'T2',
       holderSessionState: null,
       duplicates: [],
@@ -130,6 +137,7 @@ describe('unownedCell vs unmeasuredCell', () => {
       unknown: null,
       takenBy: null,
       takenAt: null,
+      lastProgressAt: null,
       expiresAt: null,
       holderSessionState: null,
       duplicates: [],

@@ -44,6 +44,7 @@ import {
   assessRequiredAncestorPreflight,
 } from '../../release/checkpoint-required-ancestor';
 import { integrationRoot } from '../../release-deploy-launch';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import {
   attributeRetriageToRun,
   describeRefireBudget,
@@ -64,7 +65,10 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { clampText, LIMITS, softText } from '../limits';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
-import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
+import {
+  armPausedCheckpointTransition,
+  readCheckpointSerializerAuthority,
+} from '../../release/checkpoint-serializer-authority';
 
 type SeeAlsoContext = { harnessSlug?: unknown };
 
@@ -274,6 +278,20 @@ export default defineTool({
       .describe(
         'OPTIONAL: why you are firing the gate by hand. Recorded to this call\'s tool_invocations metadata as an audit trail for a ~55min suite fired on demand — it does NOT change the launch decision. Worth passing: the strings agents already send here are exactly what an auditor wants ("gate RED 3x / ~2h, main frozen, no run in flight"). Never rejected for length or terseness; clamped if very long.',
       ),
+    resumePausedRoutine: z
+      .boolean()
+      .optional()
+      .describe(
+        'P-008 serializer completion transition. Requires prerequisiteWorkItems. The caller must still own the current gate condition; every prerequisite must be terminal. Atomically clears the deliberate green-checkpoint pause and makes the routine due now. The routine engine then claims exactly one fire; this request does NOT spawn a competing detached unit.',
+      ),
+    prerequisiteWorkItems: z
+      .array(z.string().regex(/^(?:WI|EI)-\d+$/))
+      .min(1)
+      .max(24)
+      .optional()
+      .describe(
+        'Work-items that must already be terminal before resumePausedRoutine may hand the gate back to the routine engine.',
+      ),
   }),
   async handler(args, ctx) {
     // EI-21209828474655790: D-012/D-013 pauses the release gate under an exact
@@ -342,6 +360,121 @@ export default defineTool({
           ],
         };
       }
+    }
+
+    // P-008: the paused serializer's terminal handoff is ONE authoritative
+    // transition, not the old two-call resume-then-manual-fire sequence. The
+    // helper locks the routine + work-items together, verifies current
+    // ownership and terminal prerequisites, clears the deliberate pause, and
+    // sets next_fire_at=now(). The ordinary routine claimant serializes every
+    // host onto exactly one fire, so this branch must return without launching
+    // a detached unit of its own.
+    if (args.resumePausedRoutine) {
+      if (!args.prerequisiteWorkItems?.length) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              scheduled: false,
+              reason: 'serializer_transition_requires_prerequisites',
+              note: 'NOT resumed: pass prerequisiteWorkItems so the transition can prove every blocking repair is terminal in the same transaction.',
+            }),
+          }],
+        };
+      }
+      let caller: ReturnType<typeof resolveAgentIdentity> | null = null;
+      try {
+        caller = resolveAgentIdentity(ctx);
+      } catch {
+        caller = null;
+      }
+      if (!caller) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              scheduled: false,
+              reason: 'serializer_transition_identity_unreadable',
+              note: 'NOT resumed: the caller identity is required to prove gate ownership.',
+            }),
+          }],
+        };
+      }
+      const ownership = await readGateOwnership();
+      if (
+        ownership.claimState !== 'held' ||
+        !ownership.workItem ||
+        ownership.takenBy !== caller.ownerId
+      ) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              scheduled: false,
+              reason: 'serializer_transition_not_gate_owner',
+              work_item: ownership.workItem,
+              taken_by: ownership.takenBy,
+              claim_state: ownership.claimState,
+              note: 'NOT resumed: only the current gate-condition owner may complete the paused serializer transition.',
+            }),
+          }],
+        };
+      }
+      const transition = await armPausedCheckpointTransition({
+        callerOwnerId: caller.ownerId,
+        gateWorkItemId: ownership.workItem,
+        prerequisiteWorkItems: args.prerequisiteWorkItems,
+        workspaceId: caller.workspaceId ?? undefined,
+      });
+      ctx.metadata?.({
+        serializerTransition: transition.status,
+        serializerTransitionWorkItem: ownership.workItem,
+        serializerTransitionPrerequisites: args.prerequisiteWorkItems,
+        ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+      });
+      if (transition.status === 'armed' || transition.status === 'already-armed') {
+        const pipeline = operatorHomeHarnessSlug();
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              launched: false,
+              scheduled: true,
+              reason: transition.status === 'armed' ? 'serializer_transition_armed' : 'serializer_transition_already_armed',
+              work_item: ownership.workItem,
+              prerequisite_work_items: transition.prerequisiteWorkItems,
+              armed_at_ms: transition.armedAtMs,
+              completion_events: [
+                `release:green:${pipeline}`,
+                `green-checkpoint:red:${pipeline}`,
+                `green-checkpoint:inconclusive:${pipeline}`,
+              ],
+              note:
+                'The deliberate pause is cleared and the existing routine is due now. Its compare-and-claim starts exactly one checkpoint; no detached duplicate was spawned by this request.',
+            }),
+          }],
+        };
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            scheduled: false,
+            reason: `serializer_transition_${transition.status}`,
+            detail: transition.status === 'refused' ? transition.detail : transition.error,
+            transition_reason: transition.status === 'refused' ? transition.reason : undefined,
+          }),
+        }],
+      };
     }
 
     // No in-handler role gate: firing the verdict is verification-only + self-locked (see the
@@ -431,6 +564,9 @@ export default defineTool({
     // behaviour. It records WHY the launch was allowed past a still-`held` claim, which is
     // otherwise indistinguishable from "no claim at all" in the metadata.
     let ownershipAbandoned = false;
+    let ownershipTransferred = false;
+    let ownershipTransferBasis: string | null = null;
+    let ownershipTransferWorkItem: string | null = null;
     if (!args.force) {
       const ownership = await readGateOwnership();
       // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
@@ -446,10 +582,153 @@ export default defineTool({
       } catch {
         callerOwnerId = null;
       }
+      const peerHeld =
+        ownership.claimState === 'held' &&
+        Boolean(ownership.workItem) &&
+        Boolean(ownership.takenBy) &&
+        Boolean(callerOwnerId) &&
+        ownership.takenBy !== callerOwnerId;
+      ownershipLivenessAmbiguous = ownershipNeedsLivenessConfirmation(ownership) === true;
+      ownershipAbandoned = ownershipContradicted(ownership);
+
+      // P-008 direct-wake escalation. Parked/recorded owners are alive but not
+      // currently executing, and draining/suspect owners are ambiguous. A
+      // required wake is the cheapest falsifier in both cases: delivery means
+      // stand down; a terminal miss feeds the shared force guard below instead
+      // of the old "missed wake => launch anyway" split-brain path.
+      let wakeCount = 0;
+      const shouldWakeOwner =
+        peerHeld &&
+        (ownershipLivenessAmbiguous ||
+          ownership.holderSessionState === 'parked' ||
+          ownership.holderSessionState === 'recorded');
+      if (shouldWakeOwner && ownership.takenBy) {
+        const wake = await wakeRecipients([ownership.takenBy], {
+          summary:
+            `release:checkpoint-run is escalating ${ownership.workItem ?? ownership.eventKey} to its current owner ` +
+            'before a checked self-healing transfer',
+          source: 'release:checkpoint-run',
+          workspaceId: callerWorkspaceId,
+        });
+        wakeCount = wake.woken;
+        if (wakeCount > 0) {
+          ctx.metadata?.({
+            standDown: 'condition_claimed_liveness_confirmed',
+            standDownWorkItem: ownership.workItem,
+            standDownTakenBy: ownership.takenBy,
+            standDownHolderSessionState: ownership.holderSessionState,
+            standDownWakeCount: wakeCount,
+            ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+          });
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ok: false,
+                  launched: false,
+                  reason: 'condition_claimed_liveness_confirmed',
+                  work_item: ownership.workItem,
+                  taken_by: ownership.takenBy,
+                  holder_session_state: ownership.holderSessionState,
+                  wake_confirmed: true,
+                  woken: wakeCount,
+                  note:
+                    `NOT launched: a required wake reached ${ownership.takenBy}, confirming the current gate owner can resume. ` +
+                    'The claim remains theirs; read its checkpoint and wait for their progress rather than starting a parallel gate run.',
+                }),
+              },
+            ],
+          };
+        }
+      }
+
+      // P-008 progress lease + deterministic transfer. Reuse the same shared
+      // guard work_items:claim force:true uses: it combines canonical session
+      // state, a persisted wake miss, real lastActiveAt, and this work-item's
+      // lastProgressAt. Only liveness/progress bases auto-transfer here; fleet
+      // authority bases still require an explicit force claim.
+      if (peerHeld && callerOwnerId && ownership.takenBy && ownership.workItem) {
+        const [{ assessForceRelease, recordForceTransitionAudit, notifyForceTransition }, { claimWorkItem }] =
+          await Promise.all([
+            import('../work_items/release-force-guard'),
+            import('../../work-items'),
+          ]);
+        const recovery = await assessForceRelease({
+          callerOwnerId,
+          holderOwnerId: ownership.takenBy,
+          workspaceId: callerWorkspaceId ?? '',
+          itemLastProgressAt: ownership.lastProgressAt,
+        });
+        const automaticBasis =
+          recovery.allowed &&
+          recovery.basis &&
+          [
+            'holder-not-live',
+            'holder-warm-idle',
+            'holder-shutdown-accepted',
+            'holder-session-ended',
+            'holder-wake-missed',
+          ].includes(recovery.basis)
+            ? recovery.basis
+            : null;
+        if (automaticBasis) {
+          const transferred = await claimWorkItem(ownership.workItem, callerOwnerId, {
+            harness: operatorHomeHarnessSlug(),
+            expectedAssignee: ownership.takenBy,
+          });
+          if (!transferred) {
+            ctx.metadata?.({
+              standDown: 'condition_takeover_race',
+              standDownWorkItem: ownership.workItem,
+              standDownTakenBy: ownership.takenBy,
+              standDownTransferBasis: automaticBasis,
+              ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+            });
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  ok: false,
+                  launched: false,
+                  reason: 'condition_takeover_race',
+                  work_item: ownership.workItem,
+                  expected_holder: ownership.takenBy,
+                  note: 'NOT launched: the abandoned-owner CAS lost because ownership changed during recovery. Re-read gate ownership before acting.',
+                }),
+              }],
+            };
+          }
+          const takeoverReason =
+            `release:checkpoint-run self-healing transfer after ${automaticBasis}; ` +
+            `required wake count=${wakeCount}, prior session=${ownership.holderSessionState ?? 'unknown'}`;
+          await recordForceTransitionAudit(callerOwnerId, ownership.workItem, 'claim', {
+            holder: ownership.takenBy,
+            basis: automaticBasis,
+            reason: takeoverReason,
+            harness: transferred.harness ?? operatorHomeHarnessSlug(),
+            replacementAssignee: callerOwnerId,
+          });
+          await notifyForceTransition({ ownerId: callerOwnerId }, {
+            itemId: ownership.workItem,
+            holder: ownership.takenBy,
+            basis: automaticBasis,
+            reason: takeoverReason,
+            harness: transferred.harness ?? operatorHomeHarnessSlug(),
+            operation: 'claim',
+            replacementAssignee: callerOwnerId,
+          });
+          ownershipTransferred = true;
+          ownershipTransferBasis = automaticBasis;
+          ownershipTransferWorkItem = ownership.workItem;
+          ownershipAbandoned = true;
+        }
+      }
+
       // The decision is PURE and lives in gate-ownership.ts so it is testable without firing a
-      // ~55min detached suite; it is false for every unknown (unread/ambiguous/dead holder,
-      // unidentified caller, own claim).
-      if (shouldStandDownForLivePeer(ownership, callerOwnerId)) {
+      // ~55min detached suite. A live/progressing peer remains authoritative;
+      // the branch above is the only automatic transfer path.
+      if (!ownershipTransferred && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
         const said = ownership.thread.recent.at(-1);
         // EI-20208253097914491. WI-37618 added the launch stamp below expressly because "a refusal
         // was indistinguishable in the ledger from a call that spent a ~55min suite" — but it was
@@ -503,54 +782,31 @@ export default defineTool({
           ],
         };
       }
-      ownershipLivenessAmbiguous = ownershipNeedsLivenessConfirmation(ownership) === true;
-      ownershipAbandoned = ownershipContradicted(ownership);
-      if (
-        ownershipLivenessAmbiguous &&
-        ownership.takenBy &&
-        callerOwnerId &&
-        ownership.takenBy !== callerOwnerId
-      ) {
-        const wake = await wakeRecipients([ownership.takenBy], {
-          summary:
-            `release:checkpoint-run is confirming ambiguous ownership of ${ownership.workItem ?? ownership.eventKey} ` +
-            'before another gate suite launches',
-          source: 'release:checkpoint-run',
-          workspaceId: callerWorkspaceId,
+      if (!ownershipTransferred && ownershipLivenessAmbiguous && peerHeld) {
+        ctx.metadata?.({
+          standDown: 'condition_claimed_unconfirmed',
+          standDownWorkItem: ownership.workItem,
+          standDownTakenBy: ownership.takenBy,
+          standDownHolderSessionState: ownership.holderSessionState,
+          standDownWakeCount: wakeCount,
+          ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
         });
-        if (wake.woken > 0) {
-          ctx.metadata?.({
-            standDown: 'condition_claimed_liveness_confirmed',
-            standDownWorkItem: ownership.workItem,
-            standDownTakenBy: ownership.takenBy,
-            standDownHolderSessionState: ownership.holderSessionState,
-            standDownWakeCount: wake.woken,
-            ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
-          });
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  ok: false,
-                  launched: false,
-                  reason: 'condition_claimed_liveness_confirmed',
-                  work_item: ownership.workItem,
-                  taken_by: ownership.takenBy,
-                  holder_session_state: ownership.holderSessionState,
-                  wake_confirmed: true,
-                  woken: wake.woken,
-                  note:
-                    `NOT launched: ${ownership.workItem ?? ownership.eventKey} is claimed by ${ownership.takenBy}. ` +
-                    `The presence oracle reported '${ownership.holderSessionState}', which is ambiguous rather than dead, ` +
-                    `and a required wake just reached ${wake.woken} live waiter(s). That delivery confirms the peer can still ` +
-                    'receive coordination, so firing another ~55min gate suite would pile onto active work. Read the item and ' +
-                    'coordinate with its holder; pass force:true only when you intentionally override this coordination rail.',
-                }),
-              },
-            ],
-          };
-        }
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: 'condition_claimed_unconfirmed',
+              work_item: ownership.workItem,
+              taken_by: ownership.takenBy,
+              holder_session_state: ownership.holderSessionState,
+              wake_confirmed: false,
+              note:
+                'NOT launched: the required wake missed, but the shared progress/liveness guard did not authorize a transfer. Re-read ownership rather than launching beside an unresolved claim.',
+            }),
+          }],
+        };
       }
     }
     // EI-20025784115349280: the containment verdict below (L~479) is assembled ENTIRELY from
@@ -638,6 +894,13 @@ export default defineTool({
       // Same ride-the-stamp reason. Selects the launches that proceeded past a claim whose
       // holder was CONFIRMED dead — the signal that a work-item is orphaned, not unclaimed.
       ...(ownershipAbandoned ? { ownershipAbandoned: true } : {}),
+      ...(ownershipTransferred
+        ? {
+            ownershipTransferred: true,
+            ownershipTransferBasis,
+            ownershipTransferWorkItem,
+          }
+        : {}),
       preLaunchExclusion: preflight.refuse
         ? waitReceipt
           ? 'scheduled'
