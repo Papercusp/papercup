@@ -74,7 +74,9 @@ already in that tree — a plain restart loads them. **No deploy / green-checkpo
 would only matter for `:3070`, the release port, which this suite does not use).
 
 ```
-dev:restart { target: 'staging', confirm: true }
+dev:restart { target: 'staging', confirm: true, authorize: true, reason: '<why>' }
+# confirm:true alone is REFUSED (restart_withheld) — the enablement gate also needs
+# authorize:true + a short reason (or PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator).
 # then confirm it is serving:
 curl -s -m5 http://127.0.0.1:3170/api/mcp -o /dev/null -w '%{http_code}\n'   # any non-000 = up
 ```

@@ -65,7 +65,7 @@ import {
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { clearGoalClaimedIfMatches } from './agent-state-stamp';
 import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
-import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { createBlockingEdgeReader, ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { planItemRef } from './issue-blocks-merge';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { randomInt } from 'node:crypto';
@@ -448,6 +448,7 @@ const tags = new PgTaggableStore(coordOpts);
 const threads = new PgThreadStore(coordOpts);
 const subs = new PgEntitySubscriptionStore(coordOpts);
 const links = new PgLinkStore(coordOpts);
+const blockingLinks = createBlockingEdgeReader(links);
 // (topic-subscriber resolution now lives in fanoutForObject's own stores — A6.)
 
 export function issueRef(id: string): ObjectRef {
@@ -2127,7 +2128,7 @@ export async function getIssueDetail(id: string): Promise<EngineerIssueDetail | 
   const topics = await tags.listTags(issueRef(id));
   const thread = await threads.getThreadByParent(issueRef(id));
   const posts = thread ? await threads.listPosts(thread.thread_id) : [];
-  const out = await links.listOut(issueRef(id));
+  const out = await blockingLinks.listOut(issueRef(id));
   return {
     ...issue,
     topics,
@@ -2816,19 +2817,20 @@ export async function unsubscribeIssue(subscriberId: string, id: string): Promis
 /** Linkable.link — an issue→target edge (rel 'blocks' | 'relates' | 'duplicates' | …). Phase 2. */
 export async function linkIssue(id: string, dst: ObjectRef, rel: string, by?: string): Promise<void> {
   const src = issueRef(id);
-  await links.link(src, dst, rel, { created_by: by, created_ts: nowIso() });
-  // Scheduler readiness reads work_item_deps, while the polymorphic issue link
-  // surface persists coord_links. Mirror only scheduler work-item targets;
-  // plan-item/event links intentionally remain coord_links-only.
   if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
     await mirrorWorkItemBlockingEdge(src, dst, { createdBy: by });
+  } else {
+    // Non-work blocks (plan items/events) and every other relation remain on the
+    // polymorphic coord_links substrate.
+    await links.link(src, dst, rel, { created_by: by, created_ts: nowIso() });
   }
 }
 export async function unlinkIssue(id: string, dst: ObjectRef, rel: string): Promise<void> {
   const src = issueRef(id);
-  await links.unlink(src, dst, rel);
   if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
     await removeMirroredWorkItemBlockingEdge(src, dst);
+  } else {
+    await links.unlink(src, dst, rel);
   }
 }
 
@@ -2850,7 +2852,7 @@ export async function issuesOutLinksMany(ids: readonly string[]): Promise<Map<st
   const out = new Map<string, IssueOutLink[]>();
   if (ids.length === 0) return out;
   for (const id of ids) out.set(id, []);
-  const rows = await links.listOutMany(ids.map(issueRef));
+  const rows = await blockingLinks.listOutMany(ids.map(issueRef));
   for (const r of rows) {
     if (r.rel === 'tagged') continue;
     out.get(r.src.ref)?.push({ rel: r.rel, dst: r.dst });
@@ -2897,7 +2899,10 @@ export async function issueLinkCounts(ids: readonly string[]): Promise<Map<strin
   if (ids.length === 0) return out;
   for (const id of ids) out.set(id, { blocksOut: 0, inboundRefs: 0 });
   const refs = ids.map(issueRef);
-  const [outRows, inRows] = await Promise.all([links.listOutMany(refs, { rel: 'blocks' }), links.listInMany(refs)]);
+  const [outRows, inRows] = await Promise.all([
+    blockingLinks.listOutMany(refs, { rel: 'blocks' }),
+    blockingLinks.listInMany(refs),
+  ]);
   for (const r of outRows) {
     const c = out.get(r.src.ref);
     if (c) c.blocksOut += 1;

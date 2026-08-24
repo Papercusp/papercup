@@ -268,18 +268,31 @@ export async function listFleetAssignments(
       AND ${opts.plan ? sql`plan_slug = ${opts.plan}` : sql`TRUE`}
       AND ${
         opts.harness
-          ? opts.agent
+          ? opts.agent || opts.plan || opts.fleet
             ? // EI-18683155325549123: `presence`-sourced rows carry harness_slug=NULL
               // BY DESIGN (identity/presence is workspace-scoped, never harness-bound —
               // see the view's presence branch in 430-fleet-membership-append-only-fact.sql).
-              // An unconditional `harness_slug = opts.harness` AND'd onto an agent-scoped
-              // (self-identification) read silently zeroed the caller's OWN row whenever
-              // they held no harness-scoped CLAIM — exactly a fleet leader holding presence
-              // only. That is not "the fleet is empty"; it is a scope mismatch between an
-              // identity signal (harness-agnostic) and a work signal (harness-scoped). When
-              // `agent` narrows the read to one identity, let that agent's own presence
-              // row through regardless of harness — its claims still must match the
-              // harness exactly, so a bare `{ harness }` listing (no agent) is unaffected.
+              // An unconditional `harness_slug = opts.harness` AND'd onto such a read
+              // silently zeroed rows whose ONLY signal is presence — exactly a fleet leader
+              // or a just-spawned member holding no harness-scoped CLAIM yet. That is not
+              // "the fleet is empty"; it is a scope mismatch between an identity signal
+              // (harness-agnostic) and a work signal (harness-scoped).
+              //
+              // EI-21302052245180843 WIDENED this from `agent` to `agent || plan || fleet`.
+              // The original fix reasoned that "a bare `{ harness }` listing (no agent) is
+              // unaffected" — true, but `{ plan }` and `{ fleet }` are not bare listings and
+              // were affected exactly like `{ agent }`. Measured live: `fleet:assignments
+              // { plan: 'byoc-cloud-workspaces-gcp-aws-azure-2026-08-22', workspace, harness:
+              // 'papercusp' }` returned agents:0 / candidates:0 while the SAME call without
+              // `harness` returned ELEVEN live agents, every one carrying that exact
+              // plan_slug. The canonical plan-scoped "who is on P" read was falsely empty.
+              //
+              // Admitting a NULL-harness presence row is safe here precisely BECAUSE another
+              // predicate already pins it: the presence branch populates plan_slug (from
+              // current_plan_slug) and fleet_slug, both of which are harness-scoped in
+              // practice, and those clauses are ANDed alongside this one. A BARE `{ harness }`
+              // listing still excludes presence rows — nothing pins them there, so admitting
+              // them would leak agents working a different harness (EI-6176).
               sql`(harness_slug = ${opts.harness} OR (source = 'presence' AND harness_slug IS NULL))`
             : sql`harness_slug = ${opts.harness}`
           : sql`TRUE`

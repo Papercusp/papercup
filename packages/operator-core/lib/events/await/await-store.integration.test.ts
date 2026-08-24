@@ -31,6 +31,43 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     await db?.cleanup();
   });
 
+  /**
+   * EI-21295379735880011 — loop-fire Guard 4 withholds an agent's routine wake while
+   * this read reports it PARKED. A park must mean "the agent CHOSE to sleep on an
+   * event"; a PLATFORM-ARMED binding means the system registered an interest on the
+   * agent's behalf while it keeps working. Reading the second as the first silences a
+   * fleet leader's own supervision loop from the moment it takes the fleet (~5 rows per
+   * fleet), and throttles any work-item holder.
+   *
+   * The deliberate-park row is a POSITIVE CONTROL: without it a query that returned
+   * nothing at all would satisfy both exclusion assertions and look like a pass.
+   */
+  it('listParkedAwaitsForSubscribers excludes PLATFORM-ARMED bindings (work-item-claim, fleet-leadership) and keeps a deliberate park (EI-21295379735880011)', async () => {
+    const sub = 'su-parked-exclusions';
+
+    await store.registerAwait({ subscriberId: sub, eventKey: 'gate:green' });
+    await store.registerAwait({
+      subscriberId: sub,
+      eventKey: 'claim:released:WI-9001',
+      note: 'claim-holder auto-arm for WI-9001',
+      boundTo: { kind: 'work-item-claim', ref: 'WI-9001' },
+    });
+    await store.registerAwait({
+      subscriberId: sub,
+      eventKey: 'fleet:member-dead:demo-fleet',
+      note: 'fleet-leader auto-arm (fleet:member-dead:demo-fleet)',
+      boundTo: { kind: 'fleet-leadership', ref: 'demo-fleet' },
+    });
+
+    const keys = (await store.listParkedAwaitsForSubscribers([sub])).map((r) => r.eventKey);
+
+    // Positive control — the read works and this subscriber's rows are visible.
+    expect(keys).toContain('gate:green');
+    // Neither auto-arm is a park: the agent chose neither.
+    expect(keys).not.toContain('claim:released:WI-9001');
+    expect(keys).not.toContain('fleet:member-dead:demo-fleet');
+  });
+
   it('registers an await with the wake handle + computed deadline', async () => {
     const row = await store.registerAwait({
       subscriberId: 'su-1',

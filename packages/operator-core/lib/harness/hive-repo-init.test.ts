@@ -15,7 +15,11 @@ import { join } from 'node:path';
 import { commitInitialHiveRepo, publishHiveRepo, DEFAULT_INTEGRATION_BRANCH } from './hive-repo-init';
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
+  }).trim();
 }
 
 let dir: string;

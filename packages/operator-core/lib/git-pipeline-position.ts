@@ -2712,8 +2712,17 @@ export function computeStages(
   // misreading, so those stages are `na` with the activation lever attached.
   const rt = p.runtime;
   const releaseApplies = rt ? rt.releasePipelineApplies : true;
+  // EI-21302702663327936 / EI-21271731610759140: normalize through
+  // withRestartAuthorization like the `activation` (owners map) and
+  // `activationLever` legs — a bare `{ confirm: true }` recommendation is a
+  // call the live gate REFUSES (restart_withheld: the enablement gate also
+  // needs authorize:true + reason), so agents copying it verbatim fired the
+  // repeated-tool-error watchdog. This was the third emission path, missed
+  // by the 2026-08-12 fix that added the helper.
   const naDetail = rt
-    ? `Not on this path's activation route — it runs in ${rt.host}, which does not read the release checkout. It goes live on RESTART: dev:restart { target: "${rt.restartTarget}", confirm: true }.`
+    ? withRestartAuthorization(
+        `Not on this path's activation route — it runs in ${rt.host}, which does not read the release checkout. It goes live on RESTART: dev:restart { target: "${rt.restartTarget}", confirm: true }.`,
+      )
     : null;
   const off = (name: StageName): StageState => ({
     name,

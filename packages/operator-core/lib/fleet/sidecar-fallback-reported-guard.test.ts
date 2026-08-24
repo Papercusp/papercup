@@ -139,7 +139,12 @@ describe('sidecar-fallback-reported guard — live verdict over the real tree', 
     // Executes the guard exactly as the gate does. This invocation is what the
     // reachability taxonomy counts as enforcement, and it is also the honest test:
     // it asserts the SHIPPED entrypoint's verdict, not a re-implementation of it.
-    const out = execFileSync('node', [GUARD], { cwd: REPO_ROOT, encoding: 'utf8' });
+    const out = execFileSync('node', [GUARD], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
     expect(out).toMatch(/✓ every sidecar-git fallback reports via noteSidecarFallback\(\)/);
   });
 });

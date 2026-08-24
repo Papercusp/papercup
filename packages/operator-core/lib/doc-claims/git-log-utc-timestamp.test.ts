@@ -135,8 +135,8 @@ describe('CLAUDE.md git-log UTC timestamp claim', () => {
     beforeAll(() => {
       repo = mkdtempSync(join(tmpdir(), 'git-log-utc-probe-'));
       const run = (...args: string[]): string =>
-        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
-      execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      execFileSync('git', ['init', '-q', '-b', 'main', repo], { timeout: 30_000, killSignal: 'SIGKILL' });
       run('config', 'user.email', 'probe@example.invalid');
       run('config', 'user.name', 'probe');
       writeFileSync(join(repo, 'subject.txt'), 'content\n');
@@ -147,6 +147,8 @@ describe('CLAUDE.md git-log UTC timestamp claim', () => {
           GIT_AUTHOR_DATE: '2026-08-16T12:00:00+09:00',
           GIT_COMMITTER_DATE: '2026-08-16T12:00:00+09:00',
         },
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
       });
     });
 
@@ -159,6 +161,8 @@ describe('CLAUDE.md git-log UTC timestamp claim', () => {
       // zone is UTC — i.e. it would prove nothing about TZ handling at all.
       const raw = execFileSync('git', ['-C', repo, 'log', '-1', '--format=%cI'], {
         encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
       }).trim();
       expect(raw).toMatch(/\+09:00$/);
     });
@@ -169,7 +173,7 @@ describe('CLAUDE.md git-log UTC timestamp claim', () => {
       const out = execFileSync(
         'bash',
         ['-c', "TZ=UTC git log -1 --format='%cI' -- subject.txt"],
-        { cwd: repo, encoding: 'utf8' },
+        { cwd: repo, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
       ).trim();
       expect(out).toMatch(/\+09:00$/);
       expect(out).not.toMatch(/\+00:00/);
@@ -185,6 +189,8 @@ describe('CLAUDE.md git-log UTC timestamp claim', () => {
         const out = execFileSync('bash', ['-c', runnable], {
           cwd: repo,
           encoding: 'utf8',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
         }).trim();
         expect(out, `command did not render UTC: ${cmd} -> ${out}`).toMatch(/\+00:00/);
       }

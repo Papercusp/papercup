@@ -33,6 +33,7 @@ function row(over: Partial<ConditionWorkItemRow> = {}): ConditionWorkItemRow {
     status: 'open',
     takenBy: null,
     takenAt: null,
+    lastProgressAt: null,
     expiresAt: null,
     ...over,
   };

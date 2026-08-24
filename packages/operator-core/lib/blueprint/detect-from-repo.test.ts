@@ -20,7 +20,11 @@ import { resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 // "pass" case below cannot produce a verified=true run there. Its twin — the FAILING
 // verify case — still passes without npm (npm-absent IS a failing run). Gate only the
 // success case on npm's presence, rather than skipping the whole file.
-const NPM_AVAILABLE = spawnSync('npm', ['--version'], { stdio: 'ignore' }).status === 0;
+const NPM_AVAILABLE = spawnSync('npm', ['--version'], {
+  stdio: 'ignore',
+  timeout: 10_000,
+  killSignal: 'SIGKILL',
+}).status === 0;
 
 const created: string[] = [];
 

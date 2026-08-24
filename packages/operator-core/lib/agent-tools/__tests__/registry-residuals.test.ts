@@ -23,8 +23,16 @@ const MAKE_CTX = (over: Record<string, unknown> = {}) =>
     ...over,
   } as never);
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+function parsePayload(result: {
+  content?: Array<{ text: string }>;
+  data?: unknown;
+}): Record<string, unknown> {
+  // Tools are migrating to the `{ data }` return shape (token-opt P-003 —
+  // tool-data-shape-ratchet.test.ts); un-migrated ones still return the
+  // inline-JSON content envelope. Accept both so a per-tool migration
+  // (e.g. harness:pending_reviews, 2026-08-24) cannot red this file.
+  if (result.data !== undefined) return result.data as Record<string, unknown>;
+  return JSON.parse(result.content![0].text);
 }
 
 const listUserActionsMock = vi.fn();

@@ -219,7 +219,7 @@ describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
       const clean = spawnSync(
         'cargo',
         ['clean', '--manifest-path', manifestPath, '--target-dir', targetDir],
-        { encoding: 'utf8' },
+        { encoding: 'utf8', timeout: 300_000, killSignal: 'SIGKILL' },
       );
 
       expect(clean.status, clean.stderr || clean.stdout).toBe(0);

@@ -345,6 +345,7 @@ describe('background jobs', () => {
       enrolled: true,
       registrationReady: null,
       wrap,
+      releaseEnvironmentTransport: () => {},
     });
     const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
     const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
@@ -465,6 +466,7 @@ describe('background jobs', () => {
       enrolled: true,
       registrationReady: null,
       wrap: (binary, argv) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
     });
     const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation((enrolment) => {
       enrolment.registrationReady = Promise.resolve();

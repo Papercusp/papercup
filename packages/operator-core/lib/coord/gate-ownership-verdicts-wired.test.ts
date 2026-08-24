@@ -49,13 +49,7 @@ const VERDICT_HELPERS = [
  *
  * An import cannot be faked by prose: a string literal does not create a binding.
  */
-function importsSymbolFromModule(relPath: string, symbol: string): boolean {
-  let src = '';
-  try {
-    src = readFileSync(join(REPO_ROOT, relPath), 'utf8');
-  } catch {
-    return false;
-  }
+function sourceImportsSymbolFromModule(src: string, symbol: string): boolean {
   // Import blocks are routinely multi-line, so match the braces across newlines.
   const importBlocks = src.matchAll(/import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/gs);
   for (const [, names, spec] of importBlocks) {
@@ -66,12 +60,22 @@ function importsSymbolFromModule(relPath: string, symbol: string): boolean {
   return false;
 }
 
+function importsSymbolFromModule(relPath: string, symbol: string): boolean {
+  try {
+    return sourceImportsSymbolFromModule(readFileSync(join(REPO_ROOT, relPath), 'utf8'), symbol);
+  } catch {
+    return false;
+  }
+}
+
 function directProductionCallSites(symbol: string): string[] {
   let out = '';
   try {
     out = execFileSync('grep', ['-rl', '--include=*.ts', symbol, 'packages', 'libs', 'apps'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
   } catch {
     return []; // grep exits 1 on no match
@@ -156,18 +160,12 @@ describe('gate-ownership verdict helpers are WIRED, not merely correct', () => {
 
   it('CONTROL: a file that only MENTIONS a helper in prose is not a call site', () => {
     // The regression control for this guard's own first false green, and the reason it is
-    // falsifiable without ever mutating the shared tree: cell-registrations.ts genuinely
-    // discusses these helpers by name — in call-shaped form — inside a doc-string, and
-    // genuinely does not import them. If someone reverts the import filter, THIS reds first
-    // and names the reason, instead of the guard quietly going back to certifying dead code.
-    const PROSE_ONLY = 'packages/operator-core/lib/cell-registrations.ts';
-    const src = readFileSync(join(REPO_ROOT, PROSE_ONLY), 'utf8');
-    // Calibration: if the prose ever stops naming the helper, this control proves nothing.
-    expect(src, `${PROSE_ONLY} no longer mentions the helper — pick another prose fixture`).toContain(
-      'ownershipContradicted(',
-    );
-    expect(importsSymbolFromModule(PROSE_ONLY, 'ownershipContradicted')).toBe(false);
-    expect(directProductionCallSites('ownershipContradicted')).not.toContain(PROSE_ONLY);
+    // falsifiable without depending on mutable production prose. A call-shaped mention in a
+    // doc-string must not create an import binding; if the import filter regresses, THIS reds
+    // first instead of the guard quietly certifying dead code.
+    const proseOnly = `/** Call ownershipContradicted() before treating the lease as abandoned. */`;
+    expect(proseOnly).toContain('ownershipContradicted(');
+    expect(sourceImportsSymbolFromModule(proseOnly, 'ownershipContradicted')).toBe(false);
   });
 
   it('recognizes the live-holder verdict through the production-wired stand-down wrapper', () => {

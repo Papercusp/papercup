@@ -23,8 +23,10 @@ import {
   unreservedNumbers,
   reservationFilenameMismatches,
   partitionRawTxControl,
+  partitionIndexSwaps,
   unappliedFrozenExemptions,
   FROZEN_TXCTL_EXEMPTIONS,
+  FROZEN_INDEX_SWAP_EXEMPTIONS,
   ENFORCED_FROM,
   INDEX_SWAP_ENFORCED_FROM,
   // eslint-disable-next-line import/no-relative-packages
@@ -104,10 +106,66 @@ describe('unappliedFrozenExemptions — the list cannot become a bypass', () => 
   });
 
   it('every real exemption states a non-empty reason (an entry is an admission, not a shrug)', () => {
-    for (const [file, reason] of FROZEN_TXCTL_EXEMPTIONS) {
+    for (const [file, reason] of [...FROZEN_TXCTL_EXEMPTIONS, ...FROZEN_INDEX_SWAP_EXEMPTIONS]) {
       expect(typeof reason, `${file} must carry a reason`).toBe('string');
       expect(reason.trim().length, `${file} reason must be substantive`).toBeGreaterThan(40);
     }
+  });
+});
+
+/*
+ * The index-swap twin of the WI-41119 deadlock: the sanctioned fix for a safe
+ * swap is the IN-FILE allow-index-swap pragma, which the immutability guard
+ * refuses once the file is applied — so a safe-but-applied swap (937) needs the
+ * same frozen-exemption shape, partitioned identically by the CLI and the
+ * gate-wiring scan below.
+ */
+const SWAP_SQL = `DROP INDEX IF EXISTS harness_shared.t_one;
+CREATE UNIQUE INDEX IF NOT EXISTS t_one_kind ON harness_shared.t (workspace_id, kind) WHERE phase = 'open';`;
+
+describe('partitionIndexSwaps (frozen index-swap exemptions)', () => {
+  it('CONTROL: a clean file is neither offender nor exempt', () => {
+    const r = partitionIndexSwaps([{ file: '950-clean.sql', text: 'ALTER TABLE t ADD COLUMN c int;\n' }]);
+    expect(r).toEqual({ offenders: [], exempted: [] });
+  });
+
+  it('flags an un-listed swap at or above INDEX_SWAP_ENFORCED_FROM', () => {
+    const r = partitionIndexSwaps([{ file: `${INDEX_SWAP_ENFORCED_FROM}-fresh.sql`, text: SWAP_SQL }]);
+    expect(r.offenders.map((o) => o.file)).toEqual([`${INDEX_SWAP_ENFORCED_FROM}-fresh.sql`]);
+    expect(r.exempted).toEqual([]);
+  });
+
+  it('grandfathers a swap below INDEX_SWAP_ENFORCED_FROM (applied history: 564/689)', () => {
+    const r = partitionIndexSwaps([{ file: `${INDEX_SWAP_ENFORCED_FROM - 1}-legacy.sql`, text: SWAP_SQL }]);
+    expect(r).toEqual({ offenders: [], exempted: [] });
+  });
+
+  it('moves a LISTED file out of offenders and into exempted, carrying its reason', () => {
+    const exemptions = new Map([['950-frozen.sql', 'applied; the immutability guard refuses the pragma edit']]);
+    const r = partitionIndexSwaps([{ file: '950-frozen.sql', text: SWAP_SQL }], { exemptions });
+    expect(r.offenders).toEqual([]);
+    expect(r.exempted).toHaveLength(1);
+    expect(r.exempted[0]).toMatchObject({ file: '950-frozen.sql' });
+    expect(r.exempted[0].reason).toMatch(/applied/);
+  });
+
+  it('does NOT let an exemption leak to a different file (the check keeps its teeth)', () => {
+    const exemptions = new Map([['950-frozen.sql', 'reason']]);
+    const r = partitionIndexSwaps(
+      [
+        { file: '950-frozen.sql', text: SWAP_SQL },
+        { file: '951-not-listed.sql', text: SWAP_SQL },
+      ],
+      { exemptions },
+    );
+    expect(r.offenders.map((o) => o.file)).toEqual(['951-not-listed.sql']);
+    expect(r.exempted.map((e) => e.file)).toEqual(['950-frozen.sql']);
+  });
+
+  it('the not-applied hard error covers this list too (the list cannot become a bypass)', () => {
+    expect(unappliedFrozenExemptions(new Set<string>(), FROZEN_INDEX_SWAP_EXEMPTIONS)).toEqual(
+      [...FROZEN_INDEX_SWAP_EXEMPTIONS.keys()].sort(),
+    );
   });
 });
 
@@ -400,18 +458,31 @@ describe('the real libs/papercusp/libs/db/sql/ directory (gate wiring)', () => {
   // grandfathered; this stops the CLASS. Same gate-run block as the checks above,
   // so a NEW same-migration index swap reds here rather than an hour into a
   // fleet-wide write outage.
+  // Deliberately partitionIndexSwaps, not findUniqueIndexShapeSwap: the same
+  // WI-41119 contract as the txctl scan above — a FROZEN applied file (937) must
+  // not be reported as a fixable violation here when the CLI has accounted for it.
   it('has no same-migration unique-index shape swap in an enforced-era migration', () => {
-    const violations: string[] = [];
-    for (const f of files) {
-      const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? '0', 10);
-      if (num < INDEX_SWAP_ENFORCED_FROM) continue; // applied history: immutable (sha256-verified)
-      const hits = findUniqueIndexShapeSwap(readFileSync(join(SQL_DIR, f), 'utf8'));
-      if (hits.length)
-        violations.push(
-          `${f}: ${hits.map((h: { index: string; dropped: string[] }) => `${h.index} ← ${h.dropped.join('/')}`).join(', ')}`,
-        );
+    const { offenders } = partitionIndexSwaps(
+      files.map((f) => ({ file: f, text: readFileSync(join(SQL_DIR, f), 'utf8') })),
+    );
+    expect(
+      offenders.map(
+        (o: { file: string; hits: { index: string; dropped: string[] }[] }) =>
+          `${o.file}: ${o.hits.map((h) => `${h.index} ← ${h.dropped.join('/')}`).join(', ')}`,
+      ),
+    ).toEqual([]);
+  });
+
+  // Same stale-entry guard as the txctl list: an exemption for a file that no
+  // longer exists or no longer offends silently widens the exemption surface.
+  it('every FROZEN_INDEX_SWAP_EXEMPTIONS entry names a file that still exists and still offends', () => {
+    for (const file of FROZEN_INDEX_SWAP_EXEMPTIONS.keys()) {
+      expect(files, `${file} is exempted but not present in sql/`).toContain(file);
+      expect(
+        findUniqueIndexShapeSwap(readFileSync(join(SQL_DIR, file), 'utf8')).length,
+        `${file} no longer has a same-migration index swap — remove its exemption`,
+      ).toBeGreaterThan(0);
     }
-    expect(violations).toEqual([]);
   });
 });
 

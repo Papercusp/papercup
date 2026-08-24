@@ -11,6 +11,18 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
 export const SESSION_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
+export const SESSION_TURN_REF_PREFIX = 'session_turn:';
+
+export interface SessionTurnRef {
+  sourceKind: string;
+  sessionId: string;
+  turnIdx: number;
+}
+
+/** Canonical, directly-readable reference to one indexed transcript turn. */
+export function formatSessionTurnRef(sourceKind: string, sessionId: string, turnIdx: number): string {
+  return `${SESSION_TURN_REF_PREFIX}${sourceKind}:${sessionId}:${turnIdx}`;
+}
 
 /** Fail-open flag read — the flag's default is ON. */
 export async function sessionSearchEnabled(): Promise<boolean> {
@@ -32,6 +44,7 @@ export function disabledResult(): { content: Array<{ type: 'text'; text: string 
 }
 
 export interface WindowTurn {
+  ref: string;
   turn_idx: number;
   speaker: string;
   ts: string | null;
@@ -196,15 +209,30 @@ export async function hydrateWindow(
        AND turn_idx BETWEEN ${lo} AND ${hi}
   ORDER BY turn_idx
   `;
-  return rows;
+  return rows.map((row) => ({
+    ref: formatSessionTurnRef(sourceKind, sessionId, row.turn_idx),
+    ...row,
+  }));
 }
 
-/** Parse a session_turn source_id (`<source_kind>:<session_id>:<turn_idx>`). */
-export function parseTurnRef(sourceId: string): { sourceKind: string; sessionId: string; turnIdx: number } | null {
+/**
+ * Parse either the search engine's compact source_id
+ * (`<source_kind>:<session_id>:<turn_idx>`) or the public canonical reference
+ * (`session_turn:<source_kind>:<session_id>:<turn_idx>`). Session ids may
+ * themselves contain `:`, so the first/last separators are load-bearing.
+ */
+export function parseTurnRef(sourceIdOrRef: string): SessionTurnRef | null {
+  const sourceId = sourceIdOrRef.startsWith(SESSION_TURN_REF_PREFIX)
+    ? sourceIdOrRef.slice(SESSION_TURN_REF_PREFIX.length)
+    : sourceIdOrRef;
   const first = sourceId.indexOf(':');
   const last = sourceId.lastIndexOf(':');
   if (first < 0 || last <= first) return null;
   const turnIdx = Number(sourceId.slice(last + 1));
-  if (!Number.isInteger(turnIdx)) return null;
-  return { sourceKind: sourceId.slice(0, first), sessionId: sourceId.slice(first + 1, last), turnIdx };
+  const sourceKind = sourceId.slice(0, first);
+  const sessionId = sourceId.slice(first + 1, last);
+  if (!Number.isInteger(turnIdx) || turnIdx < 0 || !sessionId || !SESSION_SOURCE_KINDS.includes(sourceKind as never)) {
+    return null;
+  }
+  return { sourceKind, sessionId, turnIdx };
 }

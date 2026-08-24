@@ -49,6 +49,8 @@ describe.skipIf(!submodulePresent)('affected-tests: standalone (non-workspace) p
       cwd: REPO_ROOT,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
+      timeout: 300_000,
+      killSignal: 'SIGKILL',
     });
     expect(r.status, `affected-tests --print-affected failed:\n${r.stderr}`).toBe(0);
 

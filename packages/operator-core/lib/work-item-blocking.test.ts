@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { LinkRow } from '@papercusp/coordination/capabilities';
 import { ISSUE_STATES } from './issues-engineer';
 import {
   ALL_TERMINAL_STATUSES,
+  createBlockingEdgeReader,
   ISSUE_ABANDONED_STATUSES,
   ISSUE_SHIPPED_STATUSES,
   ISSUE_TERMINAL_STATUSES,
@@ -9,6 +11,7 @@ import {
   partitionReady,
   toReadinessNodes,
   type BlockingNode,
+  type BlockingEdgeReader,
 } from './work-item-blocking';
 
 const DISPATCHABLE = new Set(['todo']);
@@ -99,6 +102,70 @@ describe('toReadinessNodes', () => {
     const items = [{ id: 'A', status: 'todo', externalBlockers: ['event:deploy:ready'] }];
     const nodes = toReadinessNodes(items, new Map());
     expect(nodes).toEqual([{ id: 'A', status: 'todo', blockedBy: [], externalBlockers: ['event:deploy:ready'] }]);
+  });
+});
+
+const linkRow = (
+  id: number,
+  src: LinkRow['src'],
+  rel: string,
+  dst: LinkRow['dst'],
+  createdTs: string,
+): LinkRow => ({ id, src, rel, dst, created_by: 'test', created_ts: createdTs });
+
+const fakeEdgeStore = (rows: LinkRow[]): BlockingEdgeReader => ({
+  listOut: vi.fn(async () => rows),
+  listIn: vi.fn(async () => rows),
+  listOutMany: vi.fn(async () => rows),
+  listInMany: vi.fn(async () => rows),
+});
+
+describe('createBlockingEdgeReader canonical cutover (WI-41166)', () => {
+  const issue = { kind: 'issue', ref: 'WI-1' };
+  const feature = { kind: 'feature', ref: 'demo#F-2' };
+  const planItem = { kind: 'plan_item', ref: 'demo-plan#P-001' };
+
+  it('takes work-item blocks only from work_item_deps while retaining polymorphic coord links', async () => {
+    const staleCoordBlock = linkRow(1, issue, 'blocks', feature, '2026-01-01T00:00:00.000Z');
+    const planBlock = linkRow(2, issue, 'blocks', planItem, '2026-01-02T00:00:00.000Z');
+    const relates = linkRow(3, issue, 'relates', feature, '2026-01-03T00:00:00.000Z');
+    const canonicalBlock = linkRow(4, issue, 'blocks', feature, '2026-01-04T00:00:00.000Z');
+    const reader = createBlockingEdgeReader(
+      fakeEdgeStore([staleCoordBlock, planBlock, relates]),
+      fakeEdgeStore([canonicalBlock]),
+    );
+
+    expect(await reader.listOut(issue)).toEqual([planBlock, relates, canonicalBlock]);
+  });
+
+  it('never resurrects a stale coord work-item block after its canonical edge is removed', async () => {
+    const staleCoordBlock = linkRow(1, issue, 'blocks', feature, '2026-01-01T00:00:00.000Z');
+    const reader = createBlockingEdgeReader(fakeEdgeStore([staleCoordBlock]), fakeEdgeStore([]));
+
+    expect(await reader.listOut(issue, { rel: 'blocks' })).toEqual([]);
+    expect(await reader.listIn(feature, { rel: 'blocks' })).toEqual([]);
+  });
+
+  it('does not query work_item_deps for a non-block relation', async () => {
+    const relates = linkRow(3, issue, 'relates', feature, '2026-01-03T00:00:00.000Z');
+    const coord = fakeEdgeStore([relates]);
+    const deps = fakeEdgeStore([]);
+    const reader = createBlockingEdgeReader(coord, deps);
+
+    expect(await reader.listOut(issue, { rel: 'relates' })).toEqual([relates]);
+    expect(deps.listOut).not.toHaveBeenCalled();
+  });
+
+  it('uses the batched canonical methods for both edge directions', async () => {
+    const canonicalBlock = linkRow(4, issue, 'blocks', feature, '2026-01-04T00:00:00.000Z');
+    const coord = fakeEdgeStore([]);
+    const deps = fakeEdgeStore([canonicalBlock]);
+    const reader = createBlockingEdgeReader(coord, deps);
+
+    expect(await reader.listOutMany([issue], { rel: 'blocks' })).toEqual([canonicalBlock]);
+    expect(await reader.listInMany([feature], { rel: 'blocks' })).toEqual([canonicalBlock]);
+    expect(deps.listOutMany).toHaveBeenCalledWith([issue], { rel: 'blocks' });
+    expect(deps.listInMany).toHaveBeenCalledWith([feature], { rel: 'blocks' });
   });
 });
 

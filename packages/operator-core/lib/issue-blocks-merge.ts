@@ -190,22 +190,22 @@ export async function overlayIssueBlocksForPlan<T extends { id: string; effectiv
  */
 export async function getBlockedFeatures(): Promise<Map<string, string[]>> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ dst_ref: string; issue_id: string }[]>`
-    SELECT l.dst_ref, l.src_ref AS issue_id
-      FROM harness_shared.coord_links l
+  const rows = await sql<{ blocked_ref: string; issue_id: string }[]>`
+    SELECT d.blocked_ref, d.blocker_ref AS issue_id
+      FROM harness_shared.work_item_deps d
       JOIN harness_shared.engineer_issues i
-        ON i.issue_id = l.src_ref
-     WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND l.rel = 'blocks'
-       AND l.src_kind = 'issue'
-       AND l.dst_kind = ${FEATURE_KIND}
+        ON i.issue_id = d.blocker_ref
+     WHERE d.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND d.dep_type = 'blocks'
+       AND d.blocker_kind = 'issue'
+       AND d.blocked_kind = ${FEATURE_KIND}
        AND i.state = 'open'
-     ORDER BY l.src_ref`;
+     ORDER BY d.blocker_ref`;
   const out = new Map<string, string[]>();
   for (const r of rows) {
-    const arr = out.get(r.dst_ref) ?? [];
+    const arr = out.get(r.blocked_ref) ?? [];
     arr.push(r.issue_id);
-    out.set(r.dst_ref, arr);
+    out.set(r.blocked_ref, arr);
   }
   return out;
 }

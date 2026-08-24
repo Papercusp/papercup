@@ -19,9 +19,9 @@
  * as features:* / issues:* (a true facade, not a parallel store):
  *   - issue-family  → ObjectRef {kind:'issue',   ref: id}                  (issues-engineer.ts)
  *   - feature-family→ ObjectRef {kind:'feature',  ref:'<harness>#<id>'}     (issue-blocks-merge.featureRef)
- * Cross-kind blocking (a bug blocks a feature) is a plain coord_links rel='blocks'
- * edge between the two ObjectRefs (D-003) — the substrate keys on (kind, ref), not
- * the physical table, so it works across kinds for free.
+ * Cross-kind blocking (a bug blocks a feature) is a canonical work_item_deps row between
+ * the two ObjectRefs (D-003). The public Linkable view merges it with polymorphic coord_links
+ * relations so callers do not depend on the physical split.
  *
  * Fan-out: issue-family writes fan out synchronously via issues-engineer.deliver();
  * feature-family writes fan out + federate via the hfc capture_substrate_outbox CDC
@@ -67,7 +67,7 @@ import {
   FEATURE_TERMINAL_STATES,
   normalizeFeatureStateInput,
 } from './work-item-dispatch-states';
-import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { createBlockingEdgeReader, ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import {
@@ -419,6 +419,7 @@ const tags = guardAgainstIssueRef(new PgTaggableStore(coordOpts), 'tags');
 const threads = guardAgainstIssueRef(new PgThreadStore(coordOpts), 'threads');
 const subs = new PgEntitySubscriptionStore(coordOpts);
 const links = new PgLinkStore(coordOpts);
+const blockingLinks = createBlockingEdgeReader(links);
 
 /** The ObjectRef a work-item presents to the coord substrate (per family). */
 export function workItemObjectRef(wi: Pick<WorkItem, 'family' | 'harness' | 'id'>): ObjectRef {
@@ -1556,7 +1557,7 @@ export async function getWorkItemDetail(id: string, harness?: string): Promise<W
   const topics = await tags.listTags(ref);
   const thread = await threads.getThreadByParent(ref);
   const posts = thread ? await threads.listPosts(thread.thread_id) : [];
-  const out = await links.listOut(ref);
+  const out = await blockingLinks.listOut(ref);
   return {
     ...wi,
     topics,
@@ -7532,7 +7533,7 @@ export async function reorderWorkItem(
  */
 async function syncDerivedBlockerSubscriptions(target: ObjectRef): Promise<void> {
   const [blockers, subscribers] = await Promise.all([
-    links.listIn(target, { rel: 'blocks' }),
+    blockingLinks.listIn(target, { rel: 'blocks' }),
     subs.listTargetSubscribers('object', `${target.kind}:${target.ref}`),
   ]);
   const optedIn = subscribers.filter((row) => row.follow_blockers && !row.derived_from);
@@ -7577,9 +7578,10 @@ export async function linkWorkItem(
     await linkIssue(id, dst, rel, opts.by);
   } else {
     const src = workItemObjectRef(wi);
-    await links.link(src, dst, rel, { created_by: opts.by, created_ts: nowIso() });
     if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
       await mirrorWorkItemBlockingEdge(src, dst, { createdBy: opts.by });
+    } else {
+      await links.link(src, dst, rel, { created_by: opts.by, created_ts: nowIso() });
     }
   }
   if (rel === 'blocks') await syncDerivedBlockerSubscriptions(dst);
@@ -7604,9 +7606,10 @@ export async function unlinkWorkItem(
   if (wi.family === 'issue') await unlinkIssue(id, dst, rel);
   else {
     const src = workItemObjectRef(wi);
-    await links.unlink(src, dst, rel);
     if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
       await removeMirroredWorkItemBlockingEdge(src, dst);
+    } else {
+      await links.unlink(src, dst, rel);
     }
   }
   if (rel === 'blocks') await subs.unsubscribeDerivedForEdge(dst, workItemObjectRef(wi));

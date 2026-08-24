@@ -593,3 +593,93 @@ describe('fleet_assignment change-feed (P-005/P-006)', () => {
     });
   });
 });
+
+/**
+ * EI-21302052245180843 — a `{ harness }` filter must not zero a PRESENCE-only agent
+ * when another predicate has already pinned the read's scope.
+ *
+ * The view's presence branch emits `NULL::text AS harness_slug` BY DESIGN (identity is
+ * workspace-scoped, never harness-bound) while populating `plan_slug` from
+ * `current_plan_slug`. So `AND harness_slug = $h` can NEVER match a presence row.
+ * EI-18683155325549123 already fixed this for `{ agent }` but reasoned that "a bare
+ * `{ harness }` listing (no agent) is unaffected" — true of a BARE listing, but
+ * `{ plan }` and `{ fleet }` are not bare, and were affected identically.
+ *
+ * Measured live before the fix: `fleet:assignments { plan: 'byoc-cloud-workspaces-…',
+ * workspace, harness: 'papercusp' }` returned agents:0 / candidates:0 while the SAME
+ * call without `harness` returned ELEVEN live agents, each carrying that exact plan.
+ *
+ * The last test is the one that keeps this fix HONEST: a bare `{ harness }` must still
+ * exclude presence rows, or the fix has over-widened into the EI-6176 leak it must not
+ * reintroduce.
+ */
+describe('harness filter vs presence-only rows (EI-21302052245180843)', () => {
+  const PLAN = 'fa-harness-presence-plan';
+  const FLEET = 'fa-harness-presence-fleet';
+  const HARNESS = 'papercusp';
+
+  beforeEach(async () => {
+    // Presence ONLY — deliberately no plan/work-item claim, so this agent's sole row
+    // is the harness_slug=NULL presence row. That is the whole hazard surface.
+    await seedPresence('su-presence-only', { planSlug: PLAN });
+    await seedMembershipEvent('su-presence-only', FLEET);
+  });
+
+  it('NEGATIVE CONTROL: the PRE-FIX predicate returns zero for the very same row', async () => {
+    // The point of this file's fix, kept executable rather than described. This is the
+    // OLD clause verbatim — `harness_slug = $h` with no presence escape — run against the
+    // SAME seeded presence row the tests below assert IS returned. It must find nothing.
+    //
+    // Without this, every assertion below would pass just as happily if the fix were
+    // reverted and the presence row happened to be visible for some other reason. With it,
+    // the file demonstrates the before AND the after on every run, which is stronger
+    // evidence than a one-shot mutation of the shared tree (and needs no sweep lock).
+    const preFix = await admin`
+      SELECT agent_id FROM harness_shared.fleet_assignment
+       WHERE workspace_id = ${WS}
+         AND plan_slug = ${PLAN}
+         AND harness_slug = ${HARNESS}
+    `;
+    expect(preFix.map((r) => r.agent_id)).not.toContain('su-presence-only');
+
+    // ...and the POST-FIX clause, equally verbatim, does find it. Same row, same seed,
+    // one predicate apart — so a zero above is attributable to the clause and nothing else.
+    const postFix = await admin`
+      SELECT agent_id FROM harness_shared.fleet_assignment
+       WHERE workspace_id = ${WS}
+         AND plan_slug = ${PLAN}
+         AND (harness_slug = ${HARNESS} OR (source = 'presence' AND harness_slug IS NULL))
+    `;
+    expect(postFix.map((r) => r.agent_id)).toContain('su-presence-only');
+  });
+
+  it('CONTROL: the seeded presence row is visible with no harness filter', async () => {
+    // Proves the fixture and the plan filter both work, so a zero below is attributable
+    // to the harness clause alone rather than to a broken seed.
+    const rows = await listFleetAssignments({ workspaceId: WS, plan: PLAN });
+    expect(rows.map((r) => r.agentId)).toContain('su-presence-only');
+    expect(rows.every((r) => r.harnessSlug === null)).toBe(true); // the NULL that breaks it
+  });
+
+  it('{ plan } + { harness } still returns the presence-only agent', async () => {
+    const rows = await listFleetAssignments({ workspaceId: WS, plan: PLAN, harness: HARNESS });
+    expect(rows.map((r) => r.agentId)).toContain('su-presence-only');
+  });
+
+  it('{ fleet } + { harness } still returns the presence-only agent', async () => {
+    const rows = await listFleetAssignments({ workspaceId: WS, fleet: FLEET, harness: HARNESS });
+    expect(rows.map((r) => r.agentId)).toContain('su-presence-only');
+  });
+
+  it('{ agent } + { harness } still returns it — the original EI-18683155325549123 fix', async () => {
+    const rows = await listFleetAssignments({ workspaceId: WS, agent: 'su-presence-only', harness: HARNESS });
+    expect(rows.map((r) => r.agentId)).toContain('su-presence-only');
+  });
+
+  it('OVER-WIDENING GUARD: a BARE { harness } listing still excludes presence rows', async () => {
+    // Nothing pins a presence row here, so admitting it would surface agents working a
+    // DIFFERENT harness — the EI-6176 cross-harness leak. This must stay excluded.
+    const rows = await listFleetAssignments({ workspaceId: WS, harness: HARNESS });
+    expect(rows.map((r) => r.agentId)).not.toContain('su-presence-only');
+  });
+});

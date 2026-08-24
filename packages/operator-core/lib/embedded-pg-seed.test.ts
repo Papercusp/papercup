@@ -101,7 +101,10 @@ describe('extractSeed (directory + tar.gz seed → bootable-shaped data dir)', (
     const archive = join(tmp('seed-arc-'), 'db-seed.tar.gz');
     // Legacy compatibility fixture. New builds ship a logical db-seed.dump,
     // but upgraded runtimes must still boot already-published PGDATA archives.
-    execFileSync('tar', ['-c', '-z', '-f', archive, '-C', src, '.']);
+    execFileSync('tar', ['-c', '-z', '-f', archive, '-C', src, '.'], {
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    });
 
     const dataDir = tmp('seed-dst-');
     await extractSeed(archive, dataDir);

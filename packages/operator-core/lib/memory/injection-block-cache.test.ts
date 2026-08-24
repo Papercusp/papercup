@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCache } from '@papercusp/cache';
 
-import { getMemoryBlockBounded } from './injection-block-cache';
+import { getMemoryBlockBounded, getMemoryBlockBoundedResult } from './injection-block-cache';
 
 /** A controllable build: counts calls, resolves/rejects on demand. */
 function controlledBuild(block: string | null = '## Operator memory') {
@@ -63,6 +63,27 @@ describe('getMemoryBlockBounded', () => {
       getMemoryBlockBounded('ws', 'papercup:u1:c1', next.build, { cache, deadlineMs: 2000 }),
     ).resolves.toBe('LATE-BLOCK');
     expect(next.calls()).toBe(1); // background revalidate with the new query
+  });
+
+  it('keeps a deadline distinct from a completed empty build for delivery metrics', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = createCache({ clock: () => Date.now() });
+    const under = controlledBuild('LATE-BLOCK');
+    const p = getMemoryBlockBoundedResult('ws', 'turn-start:s1', under.build, {
+      cache,
+      deadlineMs: 2000,
+    });
+    await vi.advanceTimersByTimeAsync(2001);
+    await expect(p).resolves.toEqual({ status: 'deadline', block: null });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded the 2000ms prompt-build deadline'));
+
+    const empty = controlledBuild(null);
+    const p2 = getMemoryBlockBoundedResult('ws', 'turn-start:s2', empty.build, {
+      cache,
+      deadlineMs: 2000,
+    });
+    empty.resolveAll();
+    await expect(p2).resolves.toEqual({ status: 'ready', block: null });
   });
 
   it('serves the previous turn instantly and pipelines the current query (soft TTL 0)', async () => {

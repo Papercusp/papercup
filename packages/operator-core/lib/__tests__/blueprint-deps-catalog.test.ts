@@ -109,7 +109,7 @@ const ABSTRACT_PARENTS = new Set(['base', 'single-agent']);
 describe('blueprint dependencies vs the static tool catalog', () => {
   it('derivation includes the universal base prompt for a child blueprint', () => {
     const script = join(REPO, 'scripts/derive-blueprint-deps.mjs');
-    const report = JSON.parse(execFileSync(process.execPath, [script], { encoding: 'utf8' })) as {
+    const report = JSON.parse(execFileSync(process.execPath, [script], { encoding: 'utf8', timeout: 120_000, killSignal: 'SIGKILL' })) as {
       blueprints: Record<string, { personaFiles: string[]; candidates: { tools: string[] } }>;
     };
     const implement = report.blueprints.implement;

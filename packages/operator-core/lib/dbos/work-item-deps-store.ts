@@ -10,6 +10,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import type { LinkRow, ObjectRef } from '@papercusp/coordination/capabilities';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from '../issue-blocks-merge';
 import { detectDependencyCycle } from '../feature-deps';
 
@@ -238,6 +239,76 @@ export async function getWorkItemDepBlockers(harnessSlug: string): Promise<Map<s
   }
   return out;
 }
+
+interface WorkItemDepLinkRowDb {
+  id: string | number;
+  blocked_kind: string;
+  blocked_ref: string;
+  blocker_kind: string;
+  blocker_ref: string;
+  dep_type: string;
+  created_by: string | null;
+  created_at: unknown;
+}
+
+function toLinkRow(row: WorkItemDepLinkRowDb): LinkRow {
+  return {
+    id: Number(row.id),
+    src: { kind: row.blocker_kind, ref: row.blocker_ref },
+    dst: { kind: row.blocked_kind, ref: row.blocked_ref },
+    rel: row.dep_type,
+    created_by: row.created_by,
+    created_ts: row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at as string).toISOString(),
+  };
+}
+
+async function listWorkItemDepEdges(
+  side: 'out' | 'in',
+  refs: readonly ObjectRef[],
+  opts: { rel?: string } = {},
+): Promise<LinkRow[]> {
+  if (refs.length === 0) return [];
+  const { sql } = getOrgPg();
+  const byKind = new Map<string, string[]>();
+  for (const ref of refs) {
+    const values = byKind.get(ref.kind);
+    if (values) values.push(ref.ref);
+    else byKind.set(ref.kind, [ref.ref]);
+  }
+  const out: LinkRow[] = [];
+  for (const [kind, values] of byKind) {
+    const rows =
+      side === 'out'
+        ? await sql<WorkItemDepLinkRowDb[]>`
+            SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref,
+                   dep_type, created_by, created_at
+              FROM harness_shared.work_item_deps
+             WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+               AND blocker_kind = ${kind} AND blocker_ref = ANY(${values})
+               AND ${opts.rel == null ? sql`TRUE` : sql`dep_type = ${opts.rel}`}
+             ORDER BY created_at ASC, id ASC`
+        : await sql<WorkItemDepLinkRowDb[]>`
+            SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref,
+                   dep_type, created_by, created_at
+              FROM harness_shared.work_item_deps
+             WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+               AND blocked_kind = ${kind} AND blocked_ref = ANY(${values})
+               AND ${opts.rel == null ? sql`TRUE` : sql`dep_type = ${opts.rel}`}
+             ORDER BY created_at ASC, id ASC`;
+    out.push(...rows.map(toLinkRow));
+  }
+  return out;
+}
+
+/** LinkRow-shaped reads over the canonical work-item dependency graph.
+ * work_item_deps stores blocked→blocker columns; the public edge convention remains
+ * blocker src → blocked dst, matching Linkable and the historical coord_links surface. */
+export const workItemDepEdgeReader = {
+  listOut: (src: ObjectRef, opts?: { rel?: string }) => listWorkItemDepEdges('out', [src], opts),
+  listIn: (dst: ObjectRef, opts?: { rel?: string }) => listWorkItemDepEdges('in', [dst], opts),
+  listOutMany: (srcs: ObjectRef[], opts?: { rel?: string }) => listWorkItemDepEdges('out', srcs, opts),
+  listInMany: (dsts: ObjectRef[], opts?: { rel?: string }) => listWorkItemDepEdges('in', dsts, opts),
+};
 
 /**
  * Acyclicity guard (P-008): would REPLACING `blocked`'s blocker set with `newBlockers` create a

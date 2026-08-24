@@ -14,6 +14,10 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
+import {
+  evaluatePlanSpecCoverageGate,
+  type PlanSpecCoverageGateVerdict,
+} from './agent-tools/plans/plan-spec-coverage-gate';
 
 vi.mock('./rubrics', () => ({
   getAcceptanceRubricForPlan: vi.fn(),
@@ -37,6 +41,12 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
+// P-008's spec-coverage census is mocked here on purpose: this suite's subject is the
+// WIRING (does the acceptance gate refuse, waive under force, and carry the aggregate),
+// not the census itself — that has its own suite next to the module.
+vi.mock('./agent-tools/plans/plan-spec-coverage-gate', () => ({
+  evaluatePlanSpecCoverageGate: vi.fn(),
+}));
 // rubric-template self-registers into the template registry on import; keep the real
 // module (it is dependency-free) so RUBRIC_TEMPLATE_NAME stays the real constant.
 
@@ -47,6 +57,18 @@ const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
 const mockAuthorIdentity = vi.mocked(isAcceptanceAuthorIdentity);
+const mockSpecCoverage = vi.mocked(evaluatePlanSpecCoverageGate);
+
+const coverageVerdict = (over: Partial<PlanSpecCoverageGateVerdict> = {}): PlanSpecCoverageGateVerdict => ({
+  satisfied: true,
+  applicable: true,
+  mode: 'enforced',
+  planSlug: 'some-plan-2026-08-11',
+  aggregate: null,
+  wouldBlock: [],
+  reports: [],
+  ...over,
+});
 
 /** A sql`` tag that resolves the same rows for any query. */
 const sqlReturning = (rows: unknown[]) => {
@@ -97,6 +119,9 @@ beforeEach(() => {
   // code-truth gates have their own focused suite and deliberately run first in
   // production, so leave them disabled here unless a test opts in explicitly.
   mockFlag.mockImplementation(async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
+  // Safe default so a suite that never opts the P-008 flag in cannot trip over an
+  // unstubbed mock if the flag mapping above is ever widened.
+  mockSpecCoverage.mockResolvedValue(coverageVerdict());
   // Default: the subject plan row exists and is a plain work plan (no exemption).
   mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null }]));
 });
@@ -468,5 +493,78 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v.satisfied).toBe(true);
     expect(v.vettedUnderWaiver).toBeUndefined();
+  });
+});
+
+/**
+ * The spec-proof check (first-class-spec-clauses-…-2026-08-20 P-008).
+ *
+ * The census itself is proven in plan-spec-coverage-gate.test.ts. What is asserted here
+ * is only what the WIRING promises: the refusal reaches the caller, `force` waives it
+ * like its code-truth siblings, the aggregate rides along on the satisfied verdict so a
+ * successful ship still exposes what was proven, and the check sits ahead of rubric
+ * ceremony.
+ */
+describe('the spec-proof check (first-class-spec-clauses-2026-08-20 P-008)', () => {
+  const staleVerdict = coverageVerdict({
+    satisfied: false,
+    code: 'spec_proof_stale',
+    wouldBlock: ['1-clause(s)-proven-only-at-a-superseded-revision'],
+    message: "plan 'some-plan-2026-08-11' cannot be marked shipped: SPEC-1 (proof at r1, clause now r2)",
+  });
+
+  beforeEach(() => {
+    mockFlag.mockImplementation(
+      async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE,
+    );
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([scorecard({ createdBy: 'su-implementer' }), scorecard({ createdBy: 'su-grader' })]);
+  });
+
+  it('a stale spec proof refuses the ship and carries the aggregate verdict', async () => {
+    mockSpecCoverage.mockResolvedValue(staleVerdict);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'spec_proof_stale' });
+    expect(v.message).toContain('SPEC-1');
+    expect(v.specCoverage).toMatchObject({ code: 'spec_proof_stale', satisfied: false });
+  });
+
+  it('refuses BEFORE rubric ceremony — a plan with no rubric at all is still sent to re-prove', async () => {
+    // Ordering guard: refusing acceptance_rubric_missing here would send the agent to
+    // author a rubric for promises that are no longer proven.
+    mockSpecCoverage.mockResolvedValue(staleVerdict);
+    mockRubric.mockResolvedValue(null);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v.code).toBe('spec_proof_stale');
+  });
+
+  it('an explicit reasoned force waives it like its code-truth siblings, and records the waiver', async () => {
+    mockSpecCoverage.mockResolvedValue(staleVerdict);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', {
+      force: { reason: 'clause reworded only; behaviour unchanged and re-verified by hand' },
+    });
+    expect(v.satisfied).toBe(true);
+    expect(v.forcedPast?.checks).toContain('spec_proof_stale');
+    expect(v.forcedPast?.reason).toContain('behaviour unchanged');
+  });
+
+  it('a satisfied ship still carries the coverage aggregate (advisory reports included)', async () => {
+    mockSpecCoverage.mockResolvedValue(
+      coverageVerdict({ reports: ['2-enforceable-clause(s)-with-no-evidence'] }),
+    );
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v.satisfied).toBe(true);
+    // Reported, NOT refused — an uncovered clause is P-013's to enforce (D-018).
+    expect(v.code).toBeUndefined();
+    expect(v.specCoverage?.reports).toEqual(['2-enforceable-clause(s)-with-no-evidence']);
+  });
+
+  it('CONTROL: with the P-008 flag OFF the census is never read and the ship is unaffected', async () => {
+    mockFlag.mockImplementation(async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
+    mockSpecCoverage.mockResolvedValue(staleVerdict);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v.satisfied).toBe(true);
+    expect(v.specCoverage).toBeUndefined();
+    expect(mockSpecCoverage).not.toHaveBeenCalled();
   });
 });

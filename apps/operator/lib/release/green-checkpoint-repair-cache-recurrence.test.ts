@@ -405,7 +405,7 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
       const decideNow = () =>
         decidePassingTaskVerdict({
           enabled: true,
-          cacheRead: { cache, reason: "cache-ready" },
+          cacheRead: { reason: "cache-ready" },
           entry: passingTaskVerdictCacheEntry(cache, INITIAL_RUN, task.key),
           identity: identityNow(),
         });

@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
   openEscalation: vi.fn(async () => ({ msg_id: 'esc-test', ts: new Date(0).toISOString() })),
   resolveEscalation: vi.fn(async () => undefined),
+  mugKettleSystemEnabled: vi.fn(async () => true),
 }));
 vi.mock('../agent-tools/coordination/inbox-wake', async (orig) => ({
   ...(await (orig as () => Promise<Record<string, unknown>>)()),
@@ -30,6 +31,13 @@ vi.mock('../agent-tools/coordination/escalations', async (orig) => ({
   ...(await (orig as () => Promise<Record<string, unknown>>)()),
   openEscalation: mocks.openEscalation,
   resolveEscalation: mocks.resolveEscalation,
+}));
+// The tier is permanently retired, so its production gate is always closed.
+// Force that one seam open here to keep the watchdog's delivery-body contract
+// covered; placement-watchdog.test.ts separately proves the gate stays closed.
+vi.mock('./started', async (orig) => ({
+  ...(await (orig as () => Promise<Record<string, unknown>>)()),
+  mugKettleSystemEnabled: mocks.mugKettleSystemEnabled,
 }));
 
 import { hostname } from 'node:os';
@@ -164,6 +172,7 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
     mocks.resolveEscalation.mockClear();
+    mocks.mugKettleSystemEnabled.mockResolvedValue(true);
     await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.spec_evidence_bindings, harness_shared.work_item_spec_revision_edges, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.coord_links, harness_shared.adv_sessions, harness_shared.agent_usage_samples, harness_shared.agent_activity `;
     await seedMugSession();
   });

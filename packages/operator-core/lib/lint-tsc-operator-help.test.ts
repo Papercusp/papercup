@@ -12,6 +12,8 @@ describe('lint-tsc-operator help', () => {
       cwd: ROOT,
       encoding: 'utf8',
       env: { ...process.env, FORCE_COLOR: '0' },
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
     });
 
     expect(result.status).toBe(0);

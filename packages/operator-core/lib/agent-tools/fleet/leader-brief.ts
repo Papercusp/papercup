@@ -979,6 +979,115 @@ function positivePlanSlugsFromFilter(node: FilterNode | null | undefined): strin
 }
 
 /**
+ * Return the one positive plan slug that EVERY admitting branch requires.
+ * `any: [plan=P, kind=bug]` mentions one plan but also admits work outside it,
+ * so it cannot define the fleet's whole executable frontier.
+ */
+export function exactPositiveSinglePlanSlugFromFilter(
+  node: FilterNode | null | undefined,
+): string | null {
+  const slugs = positivePlanSlugsFromFilter(node);
+  if (slugs.length !== 1) return null;
+  const target = slugs[0];
+  const requiresTarget = (candidate: FilterNode | null | undefined): boolean => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    if ('not' in candidate) return false;
+    if ('all' in candidate) return candidate.all.some((child) => requiresTarget(child));
+    if ('any' in candidate) {
+      return candidate.any.length > 0 && candidate.any.every((child) => requiresTarget(child));
+    }
+    const leaf = candidate as { field?: unknown; op?: unknown; value?: unknown };
+    if (leaf.field !== 'plan') return false;
+    if (leaf.op === '=') return leaf.value === target;
+    if (leaf.op === 'in' && Array.isArray(leaf.value)) {
+      const values = uniquePlanSlugs(
+        leaf.value.filter((value): value is string => typeof value === 'string'),
+      );
+      return values.length === 1 && values[0] === target;
+    }
+    return false;
+  };
+  return requiresTarget(node) ? target : null;
+}
+
+export interface FleetHeadcountVsExecutableFrontierEvaluation {
+  alert: boolean;
+  planSlug: string;
+  liveNonLeaderWorkers: number;
+  readyWidth: number;
+  claimable: number;
+  executableWidth: number;
+  excessWorkers: number;
+  reason?: string;
+  falsifier?: AlertFalsifier;
+}
+
+/**
+ * WI-41173 / P-011: continuously apply fleet:launch-on-plan's executable-seat
+ * definition after launch. Detector-only: it never resizes or benches.
+ * Undefined means unknown/inapplicable/paused, never a fabricated false clean.
+ */
+export function computeFleetHeadcountVsExecutableFrontierAlert(input: {
+  planSlug: string;
+  liveNonLeaderWorkers: number;
+  readyWidth: number | null;
+  claimable: number | null;
+  fleetPaused?: boolean | null;
+  harness?: string | null;
+  fleet?: string | null;
+}): FleetHeadcountVsExecutableFrontierEvaluation | undefined {
+  if (input.fleetPaused || !input.planSlug) return undefined;
+  if (
+    !Number.isSafeInteger(input.liveNonLeaderWorkers) ||
+    input.liveNonLeaderWorkers < 0 ||
+    !Number.isSafeInteger(input.readyWidth) ||
+    (input.readyWidth ?? -1) < 0 ||
+    !Number.isSafeInteger(input.claimable) ||
+    (input.claimable ?? -1) < 0
+  ) return undefined;
+
+  const readyWidth = input.readyWidth as number;
+  const claimable = input.claimable as number;
+  // Identical to evaluateExactPlanAdmission / fleet:launch-on-plan.
+  const executableWidth = Math.min(readyWidth, claimable);
+  const excessWorkers = Math.max(0, input.liveNonLeaderWorkers - executableWidth);
+  const base = {
+    planSlug: input.planSlug,
+    liveNonLeaderWorkers: input.liveNonLeaderWorkers,
+    readyWidth,
+    claimable,
+    executableWidth,
+    excessWorkers,
+  };
+  if (excessWorkers === 0) return { alert: false, ...base };
+  return {
+    alert: true,
+    ...base,
+    falsifier: {
+      tool: 'fleet:leader-brief',
+      check: renderFalsifierCall('fleet:leader-brief', {
+        fleet: input.fleet,
+        harness: input.harness,
+      }),
+      measurement:
+        'a FRESH point-in-time rebuild of the canonical live roster, exact-plan DAG, and ' +
+        'fleet claim lane — independent of the prior response snapshot that fired this alert',
+      kills:
+        '`summary.fleetHeadcountVsExecutableFrontierAlert` is false/absent, or the fresh ' +
+        'reason shows liveNonLeaderWorkers <= executableWidth → do not bench or relaunch ' +
+        'anyone from the stale alert.',
+    },
+    reason:
+      `${input.liveNonLeaderWorkers} live non-leader worker(s) exceed exact plan ` +
+      `'${input.planSlug}' executableWidth=${executableWidth} ` +
+      `(readyWidth=${readyWidth}, fleetClaimable=${claimable}) by ${excessWorkers}. ` +
+      'The fleet was sized for an earlier frontier but now has workers that cannot all ' +
+      'receive plan work. Re-run the read-only fresh-brief falsifier before choosing which ' +
+      'excess lanes to bench; this detector never resizes the fleet itself (WI-41173).',
+  };
+}
+
+/**
  * Evaluate only what positive plan predicates can prove about one declared
  * plan. Non-plan leaves are unknown, so a branch that could still admit the
  * member never produces a false divergence. `not` is unknown by design: a
@@ -2876,6 +2985,9 @@ export async function buildLeaderBrief(
   let specUpdatedAt: string | null | undefined;
   let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
   let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert>;
+  let fleetHeadcountVsExecutableFrontierAlert:
+    | FleetHeadcountVsExecutableFrontierEvaluation
+    | undefined;
   try {
     const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
     const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
@@ -2919,6 +3031,36 @@ export async function buildLeaderBrief(
       harness: args.harness ?? null,
       fleet,
     });
+    // P-011: continuously re-run launch admission's executable-width definition
+    // for a provably exact one-plan lane. Every unknown suppresses the detector.
+    const exactPlanSlug = exactPositiveSinglePlanSlugFromFilter(rec.spec.view?.filter);
+    const planHarness = args.harness ?? rec.harnessSlug ?? fleetLaneHealth?.spec.harness ?? null;
+    if (exactPlanSlug && planHarness) {
+      try {
+        const [{ getPlanRow, planItemsForRow }, { analyzePlanDagParallelism }] = await Promise.all([
+          import('../plans/source'),
+          import('../plans/plan-dag-parallelism'),
+        ]);
+        const planRow = await getPlanRow(exactPlanSlug, { workspaceId, harnessSlug: planHarness });
+        if (planRow) {
+          const readyWidth = analyzePlanDagParallelism(planItemsForRow(planRow)).readyWidth;
+          const liveNonLeaderWorkers = grouped.filter(
+            (member) => member.fleetRole !== 'leader' && member.alive !== false && member.verdict !== 'dead',
+          ).length;
+          fleetHeadcountVsExecutableFrontierAlert = computeFleetHeadcountVsExecutableFrontierAlert({
+            planSlug: exactPlanSlug,
+            liveNonLeaderWorkers,
+            readyWidth,
+            claimable: fleetClaimableCount,
+            fleetPaused: fleetPause.paused,
+            harness: planHarness,
+            fleet,
+          });
+        }
+      } catch {
+        /* unread plan/frontier suppresses the detector, never fabricates false */
+      }
+    }
   } catch {
     /* best-effort — never block the brief on a spec-effect preview failure */
   }
@@ -3068,6 +3210,9 @@ export async function buildLeaderBrief(
         strandedFleetAlert: strandedFleetAlert != null,
         specStarvedAlert: specStarvedAlert != null,
         declaredPlanSpecDivergenceAlert: declaredPlanSpecDivergenceAlert != null,
+        ...(fleetHeadcountVsExecutableFrontierAlert
+          ? { fleetHeadcountVsExecutableFrontierAlert: fleetHeadcountVsExecutableFrontierAlert.alert }
+          : {}),
         // P-005: unlike its siblings this one is not about SUPPLY — it says the lane you
         // are reading was authored by someone else, so every other spec figure here
         // describes a scope you have not ratified.
@@ -3186,6 +3331,12 @@ export async function buildLeaderBrief(
         ? {
             declaredPlanSpecDivergenceAlertReason: declaredPlanSpecDivergenceAlert.reason,
             declaredPlanSpecDivergenceAlertFalsifier: declaredPlanSpecDivergenceAlert.falsifier,
+          }
+        : {}),
+      ...(fleetHeadcountVsExecutableFrontierAlert?.alert
+        ? {
+            fleetHeadcountVsExecutableFrontierAlertReason: fleetHeadcountVsExecutableFrontierAlert.reason,
+            fleetHeadcountVsExecutableFrontierAlertFalsifier: fleetHeadcountVsExecutableFrontierAlert.falsifier,
           }
         : {}),
       ...(idleWithClaimableAlert

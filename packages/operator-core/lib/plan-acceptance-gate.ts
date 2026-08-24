@@ -30,6 +30,10 @@ import { getAcceptanceRubricForPlan, getRubric, getRubricPlanRevision, META_ACCE
 import { listScorecards } from './scorecards';
 import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
 import {
+  evaluatePlanSpecCoverageGate,
+  type PlanSpecCoverageGateVerdict,
+} from './agent-tools/plans/plan-spec-coverage-gate';
+import {
   citationBlobSha,
   getEffectiveItemAudits,
   getLatestPlanAudit,
@@ -52,7 +56,9 @@ export type PlanAcceptanceGateCode =
   | 'plan_items_unfinished'
   | 'acceptance_unaudited'
   | 'audit_coverage_stale'
-  | 'audit_citations_unresolved';
+  | 'audit_citations_unresolved'
+  // first-class-spec-clauses-…-2026-08-20 P-008 — the spec-proof half of code truth.
+  | 'spec_proof_stale';
 
 export interface PlanAcceptanceGateVerdict {
   satisfied: boolean;
@@ -76,6 +82,19 @@ export interface PlanAcceptanceGateVerdict {
    *  `forcedPast` exists it must not be silent: this rubric received no external
    *  critique, and a reader of the verdict is entitled to know that. */
   vettedUnderWaiver?: { consultId: string; reason?: string };
+  /**
+   * P-008's structured spec-coverage aggregate — current clauses, adequacy scorecards,
+   * exemptions and proof freshness — carried on BOTH the refusal it produces and the
+   * satisfied verdict, so a reader of a successful ship can still see what was proven
+   * and what merely went unreported. Absent when its own flag is off, when the plan is
+   * exempt, and on the refusals that precede it (the item/audit family) or that follow
+   * it on a different axis entirely (the rubric family's ceremony checks).
+   *
+   * ⚠ Its `reports` are ADVISORY: an enforceable clause with no evidence at all is
+   * named there and deliberately does NOT refuse (D-018). A caller rendering `reports`
+   * as a failure has imported P-013's enforcement early.
+   */
+  specCoverage?: PlanSpecCoverageGateVerdict;
 }
 
 export interface PlanAcceptanceGateOpts {
@@ -118,15 +137,21 @@ export async function evaluatePlanAcceptanceGate(
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
   // recurrence, not authored work (disclosed in the plan's D-008 discussion).
+  // Read once, for two purposes: the exemption test below, and the harness slug the
+  // spec-coverage census needs to scope its clause read (P-008).
+  let planHarnessSlug: string | null = null;
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ plan_slug: string; template: string | null; template_slug: string | null }[]>`
-      SELECT plan_slug, template, template_slug
+    const rows = await sql<
+      { plan_slug: string; harness_slug: string | null; template: string | null; template_slug: string | null }[]
+    >`
+      SELECT plan_slug, harness_slug, template, template_slug
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
        LIMIT 1`;
     const row = rows.find((r) => r.plan_slug === planSlug);
+    planHarnessSlug = row?.harness_slug ?? null;
     if (row?.template === RUBRIC_TEMPLATE_NAME) return { satisfied: true, skipped: 'rubric-template-plan' };
     if (row?.template_slug) return { satisfied: true, skipped: 'template-instance' };
   } catch {
@@ -290,6 +315,37 @@ export async function evaluatePlanAcceptanceGate(
     }
   }
 
+  // ── the SPEC-PROOF check (first-class-spec-clauses-…-2026-08-20 P-008) ───────
+  // Last of the code-truth family and still ahead of rubric ceremony, for the reason
+  // the audit checks are: a plan whose promises are no longer proven should be sent to
+  // re-prove them, not to author a rubric. The audit asks whether the CODE still matches
+  // what was claimed; this asks whether the PROMISE is still proven at the revision that
+  // is actually in force — a clause revised after its evidence was recorded has green
+  // proof for a promise nobody makes any more.
+  //
+  // Independently flagged, and `force`-waivable like its code-truth siblings: it is an
+  // evidence-truth check, not the separate owner ruling the rubric family encodes.
+  let specCoverage: PlanSpecCoverageGateVerdict | undefined;
+  const specCoverageGate = await getFlag(FLAGS.PLAN_SPEC_COVERAGE_GATE, 'system').catch(() => true);
+  if (specCoverageGate) {
+    specCoverage = await evaluatePlanSpecCoverageGate({
+      ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
+      planSlug,
+    });
+    if (!specCoverage.satisfied) {
+      if (force) {
+        forcedChecks.push('spec_proof_stale');
+      } else {
+        return {
+          satisfied: false,
+          code: 'spec_proof_stale',
+          message: specCoverage.message ?? `plan '${planSlug}' has spec clauses proven only at a superseded revision.`,
+          specCoverage,
+        };
+      }
+    }
+  }
+
   // ── the RUBRIC family (acceptance-rubrics-on-every-plan-2026-08-11) ──────────
   // Independently flagged, and NOT waivable by `force` (D-005): it encodes a separate
   // owner ruling, and collapsing both families into one switch would make the override
@@ -298,6 +354,7 @@ export async function evaluatePlanAcceptanceGate(
     return {
       satisfied: true,
       skipped: 'flag-off',
+      ...(specCoverage ? { specCoverage } : {}),
       ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
     };
   }
@@ -469,6 +526,7 @@ export async function evaluatePlanAcceptanceGate(
     satisfied: true,
     rubricId: rubric.rubricId,
     ...(vettedUnderWaiver ? { vettedUnderWaiver } : {}),
+    ...(specCoverage ? { specCoverage } : {}),
     gradedBy: independent.createdBy ?? null,
     ...(forcedChecks.length > 0 && force ? { forcedPast: { reason: force.reason, checks: forcedChecks } } : {}),
   };

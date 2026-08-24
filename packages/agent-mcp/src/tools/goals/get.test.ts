@@ -217,6 +217,10 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
       pause: null,
       actionable: true,
       premiseInvalidated: false,
+      // P-018 (WI-41129): get.ts folds the package-update OFFER into BOTH detail
+      // levels. Null here because this fixture declares no goalPackageRef —
+      // goalPackageUpdateInfo() returns null before it ever looks a package up.
+      packageUpdate: null,
     });
     const json = JSON.stringify(res.data);
     expect(json).not.toContain('rationale'); // body dropped
@@ -261,6 +265,8 @@ describe('goals:get — the deliberate-pause record is READ BACK (P-005)', () =>
       },
       actionable: true,
       premiseInvalidated: false,
+      // P-018 (WI-41129) — see the note on the summary assertion above.
+      packageUpdate: null,
     });
   });
 
@@ -342,6 +348,8 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
       actionable: true,
       premiseInvalidated: false,
       blockedBy: [],
+      // P-018 (WI-41129) — see the note on the summary assertion above.
+      packageUpdate: null,
     });
   });
 

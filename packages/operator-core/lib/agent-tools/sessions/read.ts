@@ -13,55 +13,78 @@ import {
   sessionSearchEnabled,
   disabledResult,
   SESSION_SOURCE_KINDS,
+  SESSION_TURN_REF_PREFIX,
+  formatSessionTurnRef,
+  parseTurnRef,
   refreshTargetSessionBeforeRead,
 } from './_shared';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
-export default defineTool({
-  name: 'sessions:read',
-  crossWorkspace: true,
-  capability: 'search:read',
-  description:
-    "Read a bounded window of turns from one indexed session transcript — around a turn (a sessions:search hit's readMore), a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included). " +
-    "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
-  guidance: {
-    when:
-      "Following a sessions:search hit for more context, or reading where a session left off. Pass around=<turn_idx> (from the hit's provenance), order:'asc' for the session's OPENING turns, or nothing for the tail.",
-    notWhen:
-      'Finding WHERE something was said — sessions:search. Raw un-indexed files — dev:claude_session op=read (being absorbed here).',
-    chaining: 'provenance.turn_idx from sessions:search hits → around.',
-    // EI-10882: the RESPONSE shape, stated up front. Arg schemas were published
-    // but return shapes were not, so the only way to learn the shape was to call
-    // once and introspect — one guaranteed wasted round-trip per tool, per agent.
-    returns:
-      '{ ok, session_id, turn_count (SIZE OF THIS WINDOW, not the session total), turns: [{ turn_idx, speaker, owner?, ts, text }] } — turns are ALWAYS returned in chronological order (oldest→newest) regardless of `order`; `order` selects WHICH END of the range you get, not the sort of the output.',
-    seeAlso: ['sessions:search', 'sessions:list', 'sessions:digest'],
-  },
-  requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
-  rolesQuota: { operator: { perRun: 100 } },
-  args: z.object({
-    session: z.string().min(1).max(200).describe("Session id, or 'self' for the calling agent's current session."),
+const readArgsSchema = z
+  .object({
+    ref: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'Canonical session-turn reference from sessions:search/read: session_turn:<source-kind>:<full-session-id>:<turn-index>. Pass directly to retrieve that exact turn; add context for surrounding turns.',
+      ),
+    session: z.string().min(1).max(200).optional().describe("Session id, or 'self' for the calling agent's current session."),
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional().describe('Disambiguates when the same id exists under two sources; usually unnecessary.'),
     around: z.number().int().min(0).optional().describe('Center the window on this turn_idx.'),
-    context: z.number().int().min(1).max(50).optional().describe('Turns each side of `around` (default 5).'),
+    context: z.number().int().min(0).max(50).optional().describe('Turns each side of `around` or `ref` (around default 5; ref default 0 = exact turn).'),
     from_idx: z.number().int().min(0).optional(),
     to_idx: z.number().int().min(0).optional(),
-    // EI-10887: the HEAD of a session was unreachable. `from_idx: 0` did NOT get
-    // you the opening turns — the query always ordered `turn_idx DESC LIMIT n`, so
-    // any range still returned its LAST `limit` rows. That made turn 0 (the kickoff
-    // prompt / launch context / loop goal — the single turn that answers "what was
-    // this session FOR") reachable only by guessing a `to_idx` bound. `order:'asc'`
-    // makes it one call.
     order: z
       .enum(['asc', 'desc'])
       .optional()
       .describe(
         "Which END of the range to return when it has more turns than `limit`: 'desc' (DEFAULT) = the TAIL (newest — where a session left off); 'asc' = the HEAD (from turn 0 — the kickoff prompt / launch context / loop goal, i.e. what the session was FOR). Output is chronological either way.",
       ),
-    limit: z.number().int().min(1).max(200).optional().describe('Max turns (default 40). No range args = the session TAIL (or HEAD with order:"asc").'),
-  }),
+    limit: z.number().int().min(1).max(200).optional().describe('Max turns (default 40 for a session read; exact ref reads default to 1, or 2×context+1).'),
+  })
+  .superRefine((args, ctx) => {
+    if (Boolean(args.ref) === Boolean(args.session)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass exactly one of `ref` or `session`' });
+    }
+    if (args.ref && !args.ref.startsWith(SESSION_TURN_REF_PREFIX)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ref'], message: `ref must start with ${SESSION_TURN_REF_PREFIX}` });
+    }
+    if (args.ref && (args.source_kind || args.around != null || args.from_idx != null || args.to_idx != null || args.order)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ref'],
+        message: '`ref` already fixes source/session/turn; combine it only with `context` and/or `limit`',
+      });
+    }
+  });
+
+export default defineTool({
+  name: 'sessions:read',
+  crossWorkspace: true,
+  capability: 'search:read',
+  description:
+    "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included). " +
+    "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
+  guidance: {
+    when:
+      "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). Or read where a session left off; use order:'asc' for the opening turns.",
+    notWhen:
+      'Finding WHERE something was said — sessions:search. Raw un-indexed files — dev:claude_session op=read (being absorbed here).',
+    chaining: 'sessions:search result.ref → sessions:read { ref, context? }.',
+    // EI-10882: the RESPONSE shape, stated up front. Arg schemas were published
+    // but return shapes were not, so the only way to learn the shape was to call
+    // once and introspect — one guaranteed wasted round-trip per tool, per agent.
+    returns:
+      '{ ok, session_id, turn_count (SIZE OF THIS WINDOW, not the session total), turns: [{ ref, turn_idx, speaker, owner?, ts, text }] } — each ref is directly reusable with sessions:read. Turns are ALWAYS returned oldest→newest.',
+    seeAlso: ['sessions:search', 'sessions:list', 'sessions:digest'],
+  },
+  requirePrincipal: false,
+  agentRoles: [...ALL_ROLES],
+  rolesQuota: { operator: { perRun: 100 } },
+  args: readArgsSchema,
   // Keep the lossless object available as MCP structuredContent for programmatic
   // callers (ptool / MCP clients that request `_meta.structured`). The text body
   // still goes through the ordinary result door for model-facing calls, but a
@@ -73,6 +96,7 @@ export default defineTool({
     turn_count: z.number().int().nonnegative(),
     turns: z.array(
       z.object({
+        ref: z.string(),
         turn_idx: z.number().int().nonnegative(),
         speaker: z.string(),
         owner: z.string().optional(),
@@ -84,11 +108,21 @@ export default defineTool({
   async handler(args, ctx) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
-    const limit = args.limit ?? 40;
+    const parsedRef = args.ref ? parseTurnRef(args.ref) : null;
+    if (args.ref && !parsedRef) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'invalid_session_turn_ref', ref: args.ref }) }],
+        isError: true,
+      };
+    }
+    const refContext = parsedRef ? (args.context ?? 0) : null;
+    const limit = args.limit ?? (parsedRef ? refContext! * 2 + 1 : 40);
 
-    let sessionId = args.session;
+    let sessionId = parsedRef?.sessionId ?? args.session!;
+    let sourceKind = parsedRef?.sourceKind ?? args.source_kind;
     let selfNote: string | undefined;
-    if (args.session === 'self') {
+    const selfSession = sessionId === 'self';
+    if (selfSession) {
       const { resolveSelfSession } = await import('../../search/self-session');
       const self = await resolveSelfSession(resolveAgentIdentity(ctx).ownerId ?? '');
       if (!self) {
@@ -98,6 +132,7 @@ export default defineTool({
         };
       }
       sessionId = self.sessionId;
+      sourceKind = self.sourceKind;
       try {
         const { ingestFileNow } = await import('../../search/session-ingest');
         await ingestFileNow(self.filePath); // read-time freshness (D-002)
@@ -107,7 +142,7 @@ export default defineTool({
       // Keep the historical/indexed read and archive fall-through unchanged;
       // the helper refreshes only an active target found in adv_sessions.
       try {
-        await refreshTargetSessionBeforeRead(ctx.tx, args.source_kind, sessionId);
+        await refreshTargetSessionBeforeRead(ctx.tx, sourceKind, sessionId);
       } catch {
         /* target freshness is best-effort; never make an indexed read fail */
       }
@@ -115,7 +150,10 @@ export default defineTool({
 
     let lo: number | null = null;
     let hi: number | null = null;
-    if (typeof args.around === 'number') {
+    if (parsedRef) {
+      lo = Math.max(0, parsedRef.turnIdx - refContext!);
+      hi = parsedRef.turnIdx + refContext!;
+    } else if (typeof args.around === 'number') {
       const c = args.context ?? 5;
       lo = Math.max(0, args.around - c);
       hi = args.around + c;
@@ -138,7 +176,7 @@ export default defineTool({
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
          AND session_id = ${sessionId}
-         AND (${args.source_kind ?? null}::text IS NULL OR source_kind = ${args.source_kind ?? null})
+         AND (${sourceKind ?? null}::text IS NULL OR source_kind = ${sourceKind ?? null})
          AND (${lo}::int IS NULL OR turn_idx >= ${lo})
          AND (${hi}::int IS NULL OR turn_idx <= ${hi})
     ORDER BY CASE WHEN ${asc} THEN turn_idx END ASC NULLS LAST,
@@ -155,7 +193,7 @@ export default defineTool({
     // with the ingest parsers, re-apply the ingest cap+redaction, and window
     // in JS. sessions:search stays index-bounded by design (D-001).
     let archiveNote: string | undefined;
-    if (!rows.length && args.session !== 'self') {
+    if (!rows.length && !selfSession) {
       try {
         const { readArchivedSessionTurns } = await import('../../session-archive-read');
         // WI-4301: the archive blob store is file-based and never covers
@@ -164,7 +202,10 @@ export default defineTool({
         // undefined just means "try all archive-backed kinds", which is the
         // correct fallback when the caller asked for a kind the archive can't
         // serve anyway.
-        const archiveSourceKind = args.source_kind === 'agent_chat' ? undefined : args.source_kind;
+        const archiveSourceKind =
+          sourceKind === 'claude' || sourceKind === 'omp' || sourceKind === 'codex'
+            ? sourceKind
+            : undefined;
         const arch = await readArchivedSessionTurns(sessionId, archiveSourceKind);
         if (arch) {
           let t = arch.turns;
@@ -205,6 +246,7 @@ export default defineTool({
           // description. sessions:list's `turns` is the total; do not conflate.
           turn_count: rows.length,
           turns: rows.map((r: { source_kind: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
+            ref: formatSessionTurnRef(r.source_kind, sessionId, r.turn_idx),
             turn_idx: r.turn_idx, speaker: r.speaker,
             ...(r.owner ? { owner: r.owner } : {}), ...(r.ts ? { ts: r.ts } : {}),
             text: r.text,

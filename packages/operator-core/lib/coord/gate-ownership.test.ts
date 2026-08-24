@@ -38,6 +38,7 @@ function mkObj(over: Partial<ConditionObject> = {}): ConditionObject {
     claimState: 'claimable',
     takenBy: null,
     takenAt: null,
+    lastProgressAt: null,
     expiresAt: null,
     duplicates: [],
     ...over,

@@ -384,6 +384,8 @@ describe('collectInsightStalenessSignals — fs glue over the real docs tree', (
       try {
         execFileSync('git', ['-C', REPO_ROOT, 'check-ignore', '-q', '--', p], {
           stdio: 'ignore',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
         });
         return true; // exit 0 = git considers it ignored
       } catch {

@@ -1415,19 +1415,27 @@ function rubricRevisionAfterWrite(
  */
 export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
   const kind = input.kind ?? 'standard';
-  // Acceptance rubrics are never ratified (plan D-008): they activate on propose and are
-  // judged at plan completion by a NON-implementer grading them, not by a Queen ratify.
-  const rubricStatus: RubricStatus = input.status ?? (kind === 'acceptance' ? 'active' : 'proposed');
-  const planStatus = rubricStatusToPlanStatus(rubricStatus);
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
   const templateData = buildRubricTemplateData(input);
   // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
   // subjectPlan would never gate anything, silently.
   if (kind === 'acceptance') await assertAcceptanceLinksResolve(input);
+  const stored = await getRubric(input.rubricId);
+  // EI-21296891484659125: acceptance rubrics activate on their FIRST propose (D-008),
+  // but a whole-document revision must never resurrect one already retired with its
+  // shipped subject plan. Mirror the EI-12932 seed-upgrade guard: stored lifecycle state
+  // outranks the path's authoring default. This is deliberately stricter than accepting
+  // an explicit active status — reopening a closed acceptance contract needs a successor,
+  // not a content upsert that silently flips its rubric-template plan back to active.
+  const rubricStatus: RubricStatus =
+    kind === 'acceptance' && stored?.status === 'retired'
+      ? stored.status
+      : (input.status ?? (kind === 'acceptance' ? 'active' : 'proposed'));
+  const planStatus = rubricStatusToPlanStatus(rubricStatus);
   // WI-4287 loss-guard: propose is a whole-document replace — refuse to silently drop
   // stored criteria or gut their testing procedures (see assertNoSilentRubricLoss).
-  assertNoSilentRubricLoss(await getRubric(input.rubricId), input);
+  assertNoSilentRubricLoss(stored, input);
   // P-011 (owner-ratified D-006): every kind:'tests' structured check must name files
   // that RESOLVE against the live tree, or the propose is REFUSED — a check that can
   // never run is a booby trap, not advice (unlike the advisory replicationSqlCheck,

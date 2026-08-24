@@ -92,7 +92,11 @@ function runGuard(repoDir: string, sideDir: string): { status: number | null; st
   // DEB is referenced only in the FATAL message body (`set -u` is on in the real script,
   // so it must be bound here too) — its value doesn't affect the guard's pass/fail logic.
   const script = `set -uo pipefail\nREPO_DIR=${JSON.stringify(repoDir)}\nSIDE=${JSON.stringify(sideDir)}\nDEB=${JSON.stringify(join(sideDir, 'fixture.deb'))}\n${guardBlockMatch![0]}`;
-  const res = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+  const res = spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  });
   return { status: res.status, stdout: res.stdout + res.stderr };
 }
 

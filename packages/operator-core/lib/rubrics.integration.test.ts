@@ -65,6 +65,14 @@ const sampleCriteria = [
   },
 ];
 
+// Permanent tier-1 mutation control (CLAUDE.md): this is the deliberately WRONG,
+// pre-EI-21296891484659125 status resolver. It calibrates against a brand-new acceptance
+// rubric below, then stays `active` after retirement so the real writer's preservation
+// assertion demonstrably distinguishes the guarded path without mutating production code.
+const deliberatelyUnguardedAcceptanceProposeStatus = (
+  explicit?: 'proposed' | 'active' | 'retired',
+): 'proposed' | 'active' | 'retired' => explicit ?? 'active';
+
 const rubricData = {
   characteristic: 'hive-coordination',
   criteria: [
@@ -397,6 +405,66 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
       by: 'su-reviser',
     });
     expect(revised.status).toBe('active');
+  });
+
+  it('acceptance re-propose preserves a retired contract and its superseded rubric plan (EI-21296891484659125)', async () => {
+    const subjectPlan = 'retired-acceptance-subject';
+    const rubricId = 'retired-acceptance-contract';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Retired acceptance subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
+              false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+
+    const initialCriteria = [{ key: 'original-outcome', title: 'Original outcome' }];
+    const first = await rubrics.proposeRubric({
+      rubricId,
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'retired-acceptance-contract',
+      title: 'Retired acceptance contract',
+      criteria: initialCriteria,
+      by: 'su-author',
+    });
+    // Calibration: the real writer and permanent wrong control agree for a NEW acceptance
+    // rubric. The distinguishing case begins only after the lifecycle retirement below.
+    expect(first.status).toBe(deliberatelyUnguardedAcceptanceProposeStatus());
+
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET status = 'shipped'
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${subjectPlan}`;
+    expect(await rubrics.retireAcceptanceRubricForPlan(subjectPlan, 'su-shipper')).toBe(rubricId);
+    expect((await rubrics.getRubric(rubricId))?.status).toBe('retired');
+
+    // The unguarded implementation silently chooses active because the agent-facing path
+    // has no status argument. Keep this wrong control permanently: if the production guard
+    // disappears, the assertions below fail on the exact pre-fix behavior.
+    expect(deliberatelyUnguardedAcceptanceProposeStatus()).toBe('active');
+    const revised = await rubrics.proposeRubric({
+      rubricId,
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'retired-acceptance-contract',
+      title: 'Retired acceptance contract',
+      criteria: [...initialCriteria, { key: 'added-after-ship', title: 'Added after ship' }],
+      by: 'su-reviser',
+    });
+
+    expect(revised.status).toBe('retired');
+    expect(revised.criteria.map((criterion) => criterion.key)).toEqual([
+      'original-outcome',
+      'added-after-ship',
+    ]);
+    const [rubricPlan] = await db.adminSql<{ status: string }[]>`
+      SELECT status
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    expect(rubricPlan.status).toBe('superseded');
   });
 
   it('re-propose is an idempotent upsert — updates content, never a duplicate row', async () => {

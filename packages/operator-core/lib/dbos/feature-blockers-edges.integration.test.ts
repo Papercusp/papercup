@@ -1,6 +1,6 @@
 /**
- * EI-1 (P-020 / D-027 / D-028) — feature→feature blocking on coord_links rel='blocks'
- * edges, now the SINGLE source of truth (the legacy `blocked_by` column + its GIN
+ * EI-1 (P-020 / D-027 / D-028) — feature→feature blocking on canonical work_item_deps
+ * edges (the legacy `blocked_by` column + its GIN
  * index were dropped, migration 155). Proves: edge writes via syncFeatureBlockEdges
  * round-trip through getFeatureBlockers, and the dispatch frontier
  * (readFrontierFeatures) derives each feature's blockedBy from the edges.
@@ -8,10 +8,16 @@
  * Real PG (throwaway DB); getOrgPg mocked at it, mirroring issues-engineer.integration.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 
 const h: { sql: FreshPgDb['sql'] } = { sql: null as never };
+const here = dirname(fileURLToPath(import.meta.url));
+const migrationBase = resolve(here, '../../../../libs/papercusp/libs/db/sql/935-canonical-work-item-blocking-edges.sql');
+const migration935 = readFileSync(existsSync(migrationBase) ? migrationBase : `${migrationBase}.DRAFT`, 'utf8');
 
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -52,7 +58,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.work_items, harness_shared.harness_plans  RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.work_items, harness_shared.harness_plans  RESTART IDENTITY`;
 });
 
 // Seed features (no blocked_by column post-155) + their blocker edges via the real
@@ -80,10 +86,17 @@ describe('featureBlockEdges (pure)', () => {
   });
 });
 
-describe('EI-1 edge blocking (real PG)', () => {
+describe('EI-1 canonical edge blocking (real PG)', () => {
   it('syncFeatureBlockEdges writes/replaces/clears a feature’s blocker edges; getFeatureBlockers reads them', async () => {
     await syncFeatureBlockEdges('demo', 'F-1', ['F-2', 'F-3']);
     expect(sortMap(await getFeatureBlockers('demo'))).toEqual({ 'F-1': ['F-2', 'F-3'] });
+    const physical = await db.sql<{ blocked_ref: string; blocker_ref: string }[]>`
+      SELECT blocked_ref, blocker_ref FROM harness_shared.work_item_deps ORDER BY blocker_ref`;
+    expect(physical).toEqual([
+      { blocked_ref: 'demo#F-1', blocker_ref: 'demo#F-2' },
+      { blocked_ref: 'demo#F-1', blocker_ref: 'demo#F-3' },
+    ]);
+    expect(await db.sql`SELECT 1 FROM harness_shared.coord_links WHERE rel = 'blocks'`).toEqual([]);
     // Update: F-1 now blocked only by F-4 → old edges gone, new present.
     await syncFeatureBlockEdges('demo', 'F-1', ['F-4']);
     expect(sortMap(await getFeatureBlockers('demo'))).toEqual({ 'F-1': ['F-4'] });
@@ -107,6 +120,43 @@ describe('EI-1 edge blocking (real PG)', () => {
     const norm = (fs: { id: string; blockedBy: readonly string[] }[]) =>
       Object.fromEntries(fs.map((f) => [f.id, [...f.blockedBy].sort()]).sort());
     expect(norm(frontier)).toEqual({ 'F-1': ['F-2'], 'F-2': [], 'F-3': ['F-1', 'F-2'] });
+  });
+});
+
+describe('migration 935 canonicalizes historical work-item blocks', () => {
+  it('converges tenant duplicates at default and deletes only work-item block rows', async () => {
+    await db.sql.unsafe(`
+      INSERT INTO harness_shared.coord_links
+        (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at)
+      VALUES
+        ('tenant-late', 'feature', 'demo#F-2', 'feature', 'demo#F-1', 'blocks', 'late', '2026-01-02T00:00:00Z'),
+        ('tenant-early', 'feature', 'demo#F-2', 'feature', 'demo#F-1', 'blocks', 'early', '2026-01-01T00:00:00Z'),
+        ('default', 'issue', 'WI-9', 'plan_item', 'plan#P-001', 'blocks', 'keep', '2026-01-03T00:00:00Z'),
+        ('default', 'feature', 'demo#F-2', 'feature', 'demo#F-1', 'relates', 'keep', '2026-01-04T00:00:00Z');
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by, created_at)
+      VALUES
+        ('default', 'feature', 'demo#F-1', 'feature', 'demo#F-2', 'blocks', 'existing-late', '2026-01-05T00:00:00Z');
+    `).simple();
+
+    await db.sql.unsafe(migration935).simple();
+
+    expect(await db.sql`
+      SELECT workspace_id, blocked_ref, blocker_ref, created_by, created_at::text
+        FROM harness_shared.work_item_deps`).toEqual([
+      {
+        workspace_id: 'default',
+        blocked_ref: 'demo#F-1',
+        blocker_ref: 'demo#F-2',
+        created_by: 'early',
+        created_at: '2026-01-01 00:00:00+00',
+      },
+    ]);
+    expect(await db.sql`
+      SELECT src_kind, dst_kind, rel FROM harness_shared.coord_links ORDER BY rel`).toEqual([
+      { src_kind: 'issue', dst_kind: 'plan_item', rel: 'blocks' },
+      { src_kind: 'feature', dst_kind: 'feature', rel: 'relates' },
+    ]);
   });
 });
 

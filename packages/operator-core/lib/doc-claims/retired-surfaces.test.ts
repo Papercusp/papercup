@@ -49,6 +49,8 @@ function buildResolver(): SurfaceResolver {
       cwd: ROOT,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
     })
       .split('\n')
       .filter(Boolean);

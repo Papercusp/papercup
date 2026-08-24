@@ -39,7 +39,11 @@ const UPSTREAM_REPO = 'shared-hive-test';
 
 /** Resolve a specific gh account's token WITHOUT switching the active account. */
 function ghToken(user: string): string {
-  return execFileSync('gh', ['auth', 'token', '--user', user], { encoding: 'utf8' }).trim();
+  return execFileSync('gh', ['auth', 'token', '--user', user], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  }).trim();
 }
 
 async function git(args: string[], cwd: string): Promise<void> {

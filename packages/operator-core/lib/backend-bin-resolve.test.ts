@@ -464,6 +464,8 @@ describe.skipIf(process.platform === 'win32')(
       return execFileSync('/bin/sh', ['-c', script], {
         encoding: 'utf8',
         env: { PATH: DESKTOP_PATH },
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
       }).trim();
     }
 

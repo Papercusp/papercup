@@ -72,6 +72,8 @@ function listScannedFiles(): string[] {
         cwd: REPO,
         encoding: 'utf8',
         maxBuffer: 64 * 1024 * 1024,
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
       })
         .split('\n')
         .filter(Boolean)

@@ -128,7 +128,11 @@ function renderVerdict(fx: Fixture): { verdict: string; cutOk: string } {
     ].join('\n'),
     'utf8',
   );
-  const run = spawnSync('bash', [harness], { encoding: 'utf8' });
+  const run = spawnSync('bash', [harness], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    killSignal: 'SIGKILL',
+  });
   const out = `${run.stdout ?? ''}`;
   const verdict = /^VERDICT=(.*)$/m.exec(out)?.[1] ?? '';
   const cutOk = /^CUTOK=(.*)$/m.exec(out)?.[1] ?? '';

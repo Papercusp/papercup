@@ -62,7 +62,7 @@ describe('authored-doc projection (P-008)', () => {
           '-e',
           "import { listCorpusDocs, resolveDocsRoot } from './scripts/project-authored-docs.mts'; console.log(typeof listCorpusDocs, typeof resolveDocsRoot)",
         ],
-        { cwd: REPO_ROOT, encoding: 'utf8' },
+        { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
       );
       expect(output.trim()).toBe('function function');
     });

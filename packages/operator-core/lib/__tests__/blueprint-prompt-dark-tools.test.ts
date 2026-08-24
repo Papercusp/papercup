@@ -72,7 +72,7 @@ function buildToolCatalog(): Set<string> {
     const manifests = execFileSync(
       'find',
       [join(REPO, 'libs/papercusp/plugins'), '-name', 'papercusp.json'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
     )
       .trim()
       .split('\n')

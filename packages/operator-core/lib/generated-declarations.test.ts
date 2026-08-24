@@ -53,6 +53,8 @@ function runCheck(): { ok: boolean; out: string } {
         cwd: REPO_ROOT,
         encoding: 'utf8',
         stdio: 'pipe',
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
       });
       checkRun = { ok: true, out };
     } catch (err) {

@@ -22,6 +22,7 @@ import { searchFilterArgs, resolveSearchFilters } from '../search/filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
   sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef,
+  formatSessionTurnRef,
   refreshLiveSessionsBeforeRead, type WindowTurn,
 } from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
@@ -41,6 +42,7 @@ const SEARCH_TRUNCATION_MARKER = '…[truncated]';
 
 interface SearchOutput {
   source: string;
+  ref?: string;
   provenance: Record<string, unknown>;
   excerpt: string;
   highlight?: string;
@@ -78,6 +80,7 @@ function shapeSearchOutput(result: SearchOutput): SearchOutput {
 function minimizeSearchOutput(result: SearchOutput): SearchOutput {
   return {
     source: result.source,
+    ...(result.ref ? { ref: result.ref } : {}),
     provenance: result.provenance,
     excerpt: '[result content omitted to keep the response valid JSON; use readMore]',
     score: result.score,
@@ -302,8 +305,11 @@ export default defineTool({
       }
       out.push(shapeSearchOutput({
         source: h.source,
+        ...(h.source === 'session_turn'
+          ? { ref: formatSessionTurnRef(h.sourceKind, h.sessionId, h.turnIdx) }
+          : {}),
         provenance: h.source === 'session_turn'
-          ? { source_kind: h.sourceKind, session_id: h.sessionId, turn_idx: h.turnIdx,
+          ? { ref: formatSessionTurnRef(h.sourceKind, h.sessionId, h.turnIdx), source_kind: h.sourceKind, session_id: h.sessionId, turn_idx: h.turnIdx,
               ...(h.speaker ? { speaker: h.speaker } : {}), ...(h.owner ? { owner: h.owner } : {}),
               ...(h.harness_slug ? { harness_slug: h.harness_slug } : {}), ...(h.ts ? { ts: h.ts } : {}),
               ...(turnOrigin ? { turn_origin: turnOrigin } : {}) }
@@ -313,7 +319,7 @@ export default defineTool({
         score: h.score,
         ...(window ? { window } : {}),
         ...(h.source === 'session_turn'
-          ? { readMore: { tool: 'sessions:read', args: { session: h.sessionId, source_kind: h.sourceKind, around: h.turnIdx, context: 10 } } }
+          ? { readMore: { tool: 'sessions:read', args: { ref: formatSessionTurnRef(h.sourceKind, h.sessionId, h.turnIdx), context: 10 } } }
           : {}),
       }));
     }

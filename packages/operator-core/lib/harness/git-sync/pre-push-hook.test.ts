@@ -33,6 +33,8 @@ function runHook(refLine: string, env: Record<string, string> = {}) {
     input: `${refLine}\n`,
     encoding: 'utf-8',
     env: { ...process.env, ...env },
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   });
 }
 

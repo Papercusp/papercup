@@ -206,28 +206,12 @@ const turnStartMemory = defineTool({
           return '';
         }
         try {
-          const [{ buildMemoryContextBlock }, recallInput] = await Promise.all([
+          const [{ buildMemoryContextBlock }, { getMemoryBlockBoundedResult }, recallInput] = await Promise.all([
             import('../../../memory/injection'),
+            import('../../../memory/injection-block-cache'),
             recallInputPromise,
           ]);
           if (!recallInput) return '';
-          // P-044 (F-L): resolve the agent's ACTION signals and route them to the
-          // lexical leg. Started here so its two indexed lookups overlap the user
-          // resolution below rather than adding to this path serially; it is
-          // deadline-bounded and never throws, so a slow or failed read degrades
-          // to "no signals" — the pre-P-044 query — and never delays the turn.
-          const signalsPromise = (async () => {
-            try {
-              const { resolveAgentSignalsForOwner } = await import('../../../memory/agent-signals');
-              return await resolveAgentSignalsForOwner({
-                ownerId: owner,
-                workspaceId,
-                ...(body.cwd ? { cwd: body.cwd } : {}),
-              });
-            } catch {
-              return undefined;
-            }
-          })();
           // Retrieve on what the turn is ABOUT, not on the scaffolding it
           // arrived in — see PROMPT_QUERY_CLAMP above and D-033. Never empty
           // for a non-empty prompt, so this cannot silently disable recall.
@@ -239,33 +223,61 @@ const turnStartMemory = defineTool({
           // procedural ("continue where you left off" — the single most common human
           // turn in this corpus) loses its on-topic hits entirely. See plan decision
           // D-047. Do not wire this without re-running that measurement.
-          const agentSignals = await signalsPromise;
-          const block =
-            (await buildMemoryContextBlock({
-              userId: recallInput.userId,
-              workspaceId,
-              harnessSlugs: harness ? [harness] : [],
-              // P-044: the COSINE leg still gets the human's words alone — that
-              // is the point, not a leftover (identifiers were measured diluting
-              // that vector, D-041). The signals ride the LEXICAL leg's query,
-              // composed by `lexicalQueryText`.
-              queryContext: {
-                userText: queryText.slice(0, PROMPT_QUERY_CLAMP),
-                ...(agentSignals ? { agentSignals } : {}),
-              },
-              // P-005 / migration 770: `client` is recorded on
-              // memory_recall_stats and NEVER branched on — this endpoint stays
-              // client-agnostic by contract (D-001 invariant 6). A caller that
-              // sends no client records NULL (unattributed), which is what every
-              // pre-P-005 hook does and what makes the coverage query honest.
-              session: {
-                sessionId: owner,
-                port: 'turn-start',
-                ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
-              },
-              budgetChars: TURN_START_BUDGET_CHARS,
-              heading: 'Relevant memory (turn-start delta)',
-            })) ?? '';
+          // The client has a hard 2.5s wall around this whole endpoint. Reuse
+          // the existing operator SWR block cache so a slow recall build serves
+          // on the next turn instead of suppressing the concurrently-ready CTRL
+          // and orientation sections. Owner is the session/conversation key;
+          // cross-session stale recall must never bleed.
+          const bounded = await getMemoryBlockBoundedResult(
+            workspaceId,
+            `turn-start:${owner}`,
+            async () => {
+              // P-044 (F-L): resolve the agent's ACTION signals only when this
+              // turn actually builds/revalidates memory. A stale cache hit must
+              // return immediately rather than paying these lookups inline.
+              let agentSignals;
+              try {
+                const { resolveAgentSignalsForOwner } = await import('../../../memory/agent-signals');
+                agentSignals = await resolveAgentSignalsForOwner({
+                  ownerId: owner,
+                  workspaceId,
+                  ...(body.cwd ? { cwd: body.cwd } : {}),
+                });
+              } catch {
+                agentSignals = undefined;
+              }
+              return await buildMemoryContextBlock({
+                userId: recallInput.userId,
+                workspaceId,
+                harnessSlugs: harness ? [harness] : [],
+                // P-044: the COSINE leg still gets the human's words alone — that
+                // is the point, not a leftover (identifiers were measured diluting
+                // that vector, D-041). The signals ride the LEXICAL leg's query,
+                // composed by `lexicalQueryText`.
+                queryContext: {
+                  userText: queryText.slice(0, PROMPT_QUERY_CLAMP),
+                  ...(agentSignals ? { agentSignals } : {}),
+                },
+                // P-005 / migration 770: `client` is recorded on
+                // memory_recall_stats and NEVER branched on — this endpoint stays
+                // client-agnostic by contract (D-001 invariant 6). A caller that
+                // sends no client records NULL (unattributed), which is what every
+                // pre-P-005 hook does and what makes the coverage query honest.
+                session: {
+                  sessionId: owner,
+                  port: 'turn-start',
+                  ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
+                },
+                budgetChars: TURN_START_BUDGET_CHARS,
+                heading: 'Relevant memory (turn-start delta)',
+              });
+            },
+          );
+          // A deadline/error is NOT healthy quiet. Record nothing so the
+          // delivery-coverage detector sees the missing turn; only a completed
+          // empty build earns `no-recall`.
+          if (bounded.status !== 'ready') return '';
+          const block = bounded.block ?? '';
           // `no-signal` is reserved for a prompt that carried nothing to
           // retrieve ON — chrome-stripped to empty. A non-empty query that
           // simply matched nothing is `no-recall`: healthy quiet, and a

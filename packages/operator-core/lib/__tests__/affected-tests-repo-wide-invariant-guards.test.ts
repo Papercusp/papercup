@@ -1054,6 +1054,8 @@ function someSubmodulePath(): string {
   const res = spawnSync('git', ['config', '--file', '.gitmodules', '--get-regexp', 'path'], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   });
   expect(res.status, `could not read .gitmodules: ${res.stderr ?? ''}`).toBe(0);
   const paths = (res.stdout ?? '')

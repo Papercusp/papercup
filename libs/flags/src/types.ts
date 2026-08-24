@@ -1936,6 +1936,19 @@ export const FLAGS = {
   // claude-md-projection-from-pg-2026-08-10 shipping with P-009 still todo, so it should
   // survive an audit-gate rollback rather than die with it. Default ON.
   PLAN_ITEM_COMPLETION_GATE: "papercusp-plan-item-completion-gate",
+  // first-class-spec-clauses-and-prior-attempt-briefs-2026-08-20 P-008 — the SPEC-PROOF
+  // half of plan completion. The audit gate above re-resolves the plan's code citations
+  // against the tree; this one reads the plan's first-class spec clauses and refuses
+  // (spec_proof_stale) when a clause was REVISED after its evidence was recorded, so its
+  // only proof is bound to a promise that no longer applies. Deliberately narrow: an
+  // enforceable clause with NO evidence at all is REPORTED in the aggregate and never
+  // refused, because widening WHICH clauses are enforced is P-013's (D-013/D-017/D-018),
+  // and refusing it here would freeze ships fleet-wide on clauses authored as
+  // documentation. Legacy-safe: a plan that has adopted no clauses is report-only, and a
+  // truncated evidence census degrades to report-only rather than rendering a floor as a
+  // refusal. Bypassable per-ship with the same reasoned `force` as the code-truth family
+  // (D-003). Default ON; OFF restores the pre-P-008 shipping path byte-identically.
+  PLAN_SPEC_COVERAGE_GATE: "papercusp-plan-spec-coverage-gate",
   // infra-perf-reliability-audit-round4 P-005 (D-005): switch listEscalations({status:'open'})
   // to read the materialized harness_shared.coord_open_escalations projection (mig 355) instead
   // of the unbounded ~35k-event full-surface replay that pg_stat_statements pinned as ~88% of

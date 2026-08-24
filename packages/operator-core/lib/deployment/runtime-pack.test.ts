@@ -41,7 +41,11 @@ describe('packRuntimeTarball', () => {
       const { bytes } = await packRuntimeTarball(root, out);
       expect(bytes).toBeGreaterThan(0);
 
-      const listing = execFileSync('tar', ['-tzf', out], { encoding: 'utf8' });
+      const listing = execFileSync('tar', ['-tzf', out], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
       expect(listing).toContain('./package.json');
       expect(listing).toContain('./src/index.ts');
       expect(listing).not.toContain('.git/HEAD');

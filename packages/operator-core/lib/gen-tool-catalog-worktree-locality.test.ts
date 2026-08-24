@@ -28,6 +28,8 @@ function run(cwd: string, ...args: string[]): string {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, FORCE_COLOR: '0' },
+    timeout: 120_000,
+    killSignal: 'SIGKILL',
   });
 }
 

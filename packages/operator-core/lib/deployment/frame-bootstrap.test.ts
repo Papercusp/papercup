@@ -18,7 +18,12 @@ const baseEnv = { setup: [], install: [], build: [], test: [], run: [], services
  */
 function assertParses(script: string, label: string): void {
   try {
-    execFileSync('bash', ['-n'], { input: script, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('bash', ['-n'], {
+      input: script,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+    });
   } catch (e) {
     const err = e as { stderr?: Buffer };
     throw new Error(`emitted bootstrap (${label}) is not valid bash:\n${err.stderr?.toString() ?? String(e)}`);

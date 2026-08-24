@@ -61,6 +61,8 @@ function runTsc(outDir: string): void {
       cwd: PKG_DIR,
       encoding: 'utf8',
       stdio: 'pipe',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };

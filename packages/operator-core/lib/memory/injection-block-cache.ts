@@ -54,6 +54,11 @@ export interface MemoryBlockBoundedOpts {
   hardTtlMs?: number;
 }
 
+export type MemoryBlockBoundedResult =
+  | { status: 'ready'; block: string | null }
+  | { status: 'deadline'; block: null }
+  | { status: 'error'; block: null };
+
 /**
  * Get the rendered memory-injection block for (workspaceId, scopeKey), building
  * with `build` (a closure over THIS turn's queryContext). Never rejects: a
@@ -61,12 +66,12 @@ export interface MemoryBlockBoundedOpts {
  * `scopeKey` must isolate conversations — stale recall must never bleed across
  * a different role/user/conversation.
  */
-export async function getMemoryBlockBounded(
+export async function getMemoryBlockBoundedResult(
   workspaceId: string,
   scopeKey: string,
   build: () => Promise<string | null>,
   opts: MemoryBlockBoundedOpts = {},
-): Promise<string | null> {
+): Promise<MemoryBlockBoundedResult> {
   const cache = opts.cache ?? getOperatorCache();
   const deadlineMs = opts.deadlineMs ?? MEMORY_BLOCK_COLD_DEADLINE_MS;
 
@@ -85,7 +90,7 @@ export async function getMemoryBlockBounded(
       cacheEmpty: true,
     },
   );
-  if (res.ok) return res.value;
+  if (res.ok) return { status: 'ready', block: res.value };
   if (res.reason === 'deadline') {
     // The single-flight build keeps running and will serve the NEXT turn;
     // this turn proceeds without the section.
@@ -93,11 +98,26 @@ export async function getMemoryBlockBounded(
       `[memory-injection] block build exceeded the ${deadlineMs}ms prompt-build deadline — ` +
         'omitting the section this turn; the in-flight build will serve the next one (P-010).',
     );
-    return null;
+    return { status: 'deadline', block: null };
   }
   console.warn(
     '[memory-injection] block build failed (omitting the section):',
     res.error instanceof Error ? res.error.message : String(res.error),
   );
-  return null;
+  return { status: 'error', block: null };
+}
+
+/**
+ * Compatibility surface for callers that only render the block. Delivery
+ * instrumentation should use `getMemoryBlockBoundedResult`: a completed
+ * no-hit build and a deadline both render as null, but they are not the same
+ * reading and must never share a healthy `no-recall` metric.
+ */
+export async function getMemoryBlockBounded(
+  workspaceId: string,
+  scopeKey: string,
+  build: () => Promise<string | null>,
+  opts: MemoryBlockBoundedOpts = {},
+): Promise<string | null> {
+  return (await getMemoryBlockBoundedResult(workspaceId, scopeKey, build, opts)).block;
 }

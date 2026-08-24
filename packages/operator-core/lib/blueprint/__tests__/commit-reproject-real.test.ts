@@ -14,7 +14,7 @@ import { realGitCommit } from '../commit-reproject-real';
 let dir: string;
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' }).trim();
 }
 
 beforeEach(() => {

@@ -39,6 +39,8 @@ function probe(args: string[]): { stdout: string; stderr: string; status: number
     cwd: REPO_ROOT,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
+    timeout: 300_000,
+    killSignal: 'SIGKILL',
   });
   expect(r.status, `affected-tests --print-affected failed:\n${r.stderr}`).toBe(0);
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };

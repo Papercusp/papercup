@@ -128,6 +128,8 @@ export interface CellOwnership {
   unknown: CellUnknown | null;
   takenBy: string | null;
   takenAt: string | null;
+  /** Genuine work-item progress; never inferred from presence heartbeat. */
+  lastProgressAt: string | null;
   expiresAt: string | null;
   /**
    * THE FALSIFIER (P-005). The holder's liveness per the presence oracle —
@@ -247,6 +249,7 @@ export function toCellOwnership(
     unknown: null,
     takenBy: obj.takenBy,
     takenAt: obj.takenAt,
+    lastProgressAt: obj.lastProgressAt,
     expiresAt: obj.expiresAt,
     holderSessionState,
     duplicates: obj.duplicates,
@@ -269,6 +272,7 @@ export function unownedCell(eventKey: string): CellOwnership {
     unknown: null,
     takenBy: null,
     takenAt: null,
+    lastProgressAt: null,
     expiresAt: null,
     holderSessionState: null,
     duplicates: [],
@@ -288,6 +292,7 @@ export function unmeasuredCell(eventKey: string, detail: string): CellOwnership 
     unknown: cellUnknown('resolver-failed', detail),
     takenBy: null,
     takenAt: null,
+    lastProgressAt: null,
     expiresAt: null,
     holderSessionState: null,
     duplicates: [],

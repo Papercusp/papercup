@@ -26,6 +26,8 @@ const {
   resolveAgentSignalsMock,
   recordInjectionCoverageMock,
   buildPersonalAmbientContextBlockMock,
+  getMemoryBlockBoundedResultMock,
+  buildTurnStartOrientationBlockMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   consumePendingControlTransitionMock: vi.fn(),
@@ -33,6 +35,8 @@ const {
   resolveAgentSignalsMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
   buildPersonalAmbientContextBlockMock: vi.fn(),
+  getMemoryBlockBoundedResultMock: vi.fn(),
+  buildTurnStartOrientationBlockMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
@@ -58,6 +62,12 @@ vi.mock('../../../memory/injection-delivery-coverage', () => ({
 vi.mock('../../../personal-vault/ambient', () => ({
   buildPersonalAmbientContextBlock: buildPersonalAmbientContextBlockMock,
 }));
+vi.mock('../../../memory/injection-block-cache', () => ({
+  getMemoryBlockBoundedResult: getMemoryBlockBoundedResultMock,
+}));
+vi.mock('../../../turn-start-orientation', () => ({
+  buildTurnStartOrientationBlock: buildTurnStartOrientationBlockMock,
+}));
 
 import routes from './turn-start-memory';
 
@@ -82,6 +92,13 @@ beforeEach(() => {
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
   buildPersonalAmbientContextBlockMock.mockReset().mockResolvedValue(null);
+  getMemoryBlockBoundedResultMock.mockReset().mockImplementation(
+    async (_workspaceId: string, _scopeKey: string, build: () => Promise<string | null>) => ({
+      status: 'ready',
+      block: await build(),
+    }),
+  );
+  buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue('');
 });
 
 /**
@@ -93,6 +110,23 @@ beforeEach(() => {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
+  it('returns orientation when memory misses its bounded deadline, without recording healthy quiet', async () => {
+    getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'deadline', block: null });
+    buildTurnStartOrientationBlockMock.mockResolvedValue('## Orientation\n- improvement triage: top EI-1');
+
+    const out = await post({ owner: 'sess-1', prompt: 'continue', harness: 'papercusp' });
+    await settle();
+
+    expect(out.text).toContain('improvement triage: top EI-1');
+    expect(out.text).not.toContain('MEM-BLOCK');
+    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith(
+      'ws-test',
+      'turn-start:sess-1',
+      expect.any(Function),
+    );
+    expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
+  });
+
   it('a 23-char prompt REACHES the memory pipeline — the audit\'s founding symptom', async () => {
     // Verbatim length of the owner prompt the old 40-char gate dropped.
     const prompt = 'why is recall empty??!';

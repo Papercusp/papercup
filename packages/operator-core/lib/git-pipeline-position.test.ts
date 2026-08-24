@@ -2090,6 +2090,30 @@ describe('computeStages: position x health', () => {
     expect(deriveBlocker(stages)).toMatchObject({ blockedOn: null, nextAction: null });
   });
 
+  describe('EI-21302702663327936 / EI-21271731610759140: emitted restart guidance carries the enablement gate', () => {
+    // The miss: `naDetail` recommended the literal call `dev:restart { target: "…",
+    // confirm: true }` — a shape the live gate REFUSES (restart_withheld: a real
+    // restart also needs authorize:true + a reason). Agents copied it verbatim and
+    // the repeated-tool-error watchdog fired (structural:call-with-target-…-and-confirm,
+    // two independent filings in one day). The `activation` (owners map) and
+    // `activationLever` legs were already normalized through withRestartAuthorization
+    // (2026-08-12); the na-stage detail was the third, missed emission path.
+    it('never emits the bare { confirm: true } shape the gate refuses', () => {
+      const runtime = classifyRuntimeOwner('packages/operator-core/lib/dbos/routines-workflow.ts')!;
+      const s = computeStages(input({ runtime }));
+      const texts = s.map((x) => `${x.detail ?? ''} ${x.lever ?? ''}`);
+      const recommending = texts.filter((t) => t.includes('dev:restart {'));
+      // The na stages for a bg-host path must exist and carry the recommendation —
+      // an empty set here means the fixture stopped exercising the emission path,
+      // which would make this guard vacuous.
+      expect(recommending.length).toBeGreaterThan(0);
+      for (const t of recommending) {
+        expect(t).not.toMatch(/dev:restart \{[^}]*confirm: true \}/);
+        expect(t).toMatch(/authorize: true/);
+      }
+    });
+  });
+
   const unpushed = { committedLocal: true, onStaging: false, inMain: false, deployed: false };
 
   it('EI-18753105351266788: "synced" with NOTHING pushed says so explicitly', () => {

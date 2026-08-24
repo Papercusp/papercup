@@ -47,6 +47,8 @@ function resolveGitCommonDir(): string | null {
       cwd: HERE,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
     }).trim();
   } catch {
     return null;

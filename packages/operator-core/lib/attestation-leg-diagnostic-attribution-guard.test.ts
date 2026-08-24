@@ -221,7 +221,7 @@ describe('attestation_unattested_device diagnostic attribution (EI-1873722523357
         loop,
         'printf "%s" "$reasons_moved"',
       ].join('\n');
-      return execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim();
+      return execFileSync('bash', ['-c', script], { encoding: 'utf8', timeout: 120_000, killSignal: 'SIGKILL' }).trim();
     }
 
     it('THE REGRESSION: the exact 133957 vectors report NOTHING moved', () => {

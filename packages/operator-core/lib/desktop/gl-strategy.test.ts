@@ -264,6 +264,8 @@ function runShellLadder(facts: {
   execFileSync('bash', ['-c', script], {
     env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
     encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   });
 
   const envFile = readFileSync(envPath, 'utf8');

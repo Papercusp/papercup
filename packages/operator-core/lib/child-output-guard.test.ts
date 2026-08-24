@@ -36,6 +36,8 @@ import { listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
 const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf8',
   cwd: import.meta.dirname,
+  timeout: 10_000,
+  killSignal: 'SIGKILL',
 }).trim();
 
 /**

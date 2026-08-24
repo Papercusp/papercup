@@ -207,8 +207,9 @@ describe('sessions:search response-door shaping', () => {
     expect(parsed.nextCursor).toBeDefined();
     expect(parsed.resultsTruncated).toMatchObject({ reason: 'response_budget' });
     expect(parsed.results[0]).toMatchObject({
-      provenance: { session_id: 'session-0', source_kind: 'claude' },
-      readMore: { tool: 'sessions:read' },
+      ref: 'session_turn:claude:session-0:0',
+      provenance: { ref: 'session_turn:claude:session-0:0', session_id: 'session-0', source_kind: 'claude' },
+      readMore: { tool: 'sessions:read', args: { ref: 'session_turn:claude:session-0:0', context: 10 } },
     });
   });
 });

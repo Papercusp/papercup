@@ -13,7 +13,7 @@
  * ⚠ TARGET :3170 (staging), not :3070. :3070 runs from the release checkout, so
  * it answers about code that shipped, not code you just wrote. :3170 runs from
  * this integration tree — but it does NOT hot-reload, so after a server-side edit
- * you must `dev:restart { target: 'staging', confirm: true }` or you will
+ * you must `dev:restart { target: 'staging', confirm: true, authorize: true, reason: '<why>' }` or you will
  * measure the previous build and believe you measured yours.
  *
  * ═══ THE TWO MODES ARE DIFFERENT QUESTIONS — DO NOT AVERAGE THEM ════════════

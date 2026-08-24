@@ -67,6 +67,8 @@ function runGuard(args: string[]): { code: number; out: string } {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
     return { code: 0, out };
   } catch (err) {

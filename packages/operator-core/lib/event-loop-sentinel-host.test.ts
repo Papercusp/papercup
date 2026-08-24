@@ -33,7 +33,7 @@ function buildWorkerMjs(footer?: string): string | null {
         `--outfile=${out}`,
         ...(footer ? [`--footer:js=${footer}`] : []),
       ],
-      { stdio: 'pipe' },
+      { stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL' },
     );
   } catch {
     return null;

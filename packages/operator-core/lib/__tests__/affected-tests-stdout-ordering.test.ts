@@ -142,6 +142,8 @@ describe('sync-write keeps headers glued to inherit-child output through a pipe 
       const r = spawnSync(process.execPath, [fixture], {
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
       });
       return r.stdout ?? '';
     } finally {

@@ -13,7 +13,12 @@ import {
 let roots: string[] = [];
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  }).trim();
 }
 
 function makeRepository(): { repo: string; remote: string } {

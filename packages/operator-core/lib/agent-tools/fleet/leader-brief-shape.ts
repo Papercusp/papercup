@@ -104,6 +104,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'throttled',
     'claimable_now',
     'darkFleetAlert',
+    'fleetHeadcountVsExecutableFrontierAlert',
     'unowned_criticals',
     'unowned_criticals_federated',
     'abandoned_unclaimed',
@@ -438,14 +439,16 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       note: 'Further optional detail was omitted to keep the monitor response valid JSON.',
     },
   };
-  // WI-41172 / P-010: this alert exists specifically to survive a noisy monitor
-  // wake. Keep its actionable independent check even at the emergency tier; the
-  // generic alert projector already preserves it at normal tiers.
-  if (source.darkFleetAlertReason !== undefined) {
-    emergency.darkFleetAlertReason = clip(source.darkFleetAlertReason, 140) ?? source.darkFleetAlertReason;
-  }
-  if (source.darkFleetAlertFalsifier !== undefined) {
-    emergency.darkFleetAlertFalsifier = compactFalsifier(source.darkFleetAlertFalsifier, 140);
+  // P-010/P-011: keep fleet-level detector evidence at the emergency tier too.
+  for (const alert of ['darkFleetAlert', 'fleetHeadcountVsExecutableFrontierAlert']) {
+    const reasonKey = `${alert}Reason`;
+    const falsifierKey = `${alert}Falsifier`;
+    if (source[reasonKey] !== undefined) {
+      emergency[reasonKey] = clip(source[reasonKey], 140) ?? source[reasonKey];
+    }
+    if (source[falsifierKey] !== undefined) {
+      emergency[falsifierKey] = compactFalsifier(source[falsifierKey], 140);
+    }
   }
   if (Array.isArray(source.benchSuggestions)) {
     emergency.benchSuggestions = source.benchSuggestions.map(compactBenchSuggestion);

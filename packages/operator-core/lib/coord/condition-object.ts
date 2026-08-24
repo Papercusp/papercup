@@ -80,6 +80,8 @@ export interface ConditionWorkItemRow {
   status: string | null;
   takenBy: string | null;
   takenAt: string | null;
+  /** Genuine item-scoped progress, distinct from the holder's process heartbeat. */
+  lastProgressAt: string | null;
   expiresAt: string | null;
 }
 
@@ -92,6 +94,8 @@ export interface ConditionObject {
   claimState: ConditionClaimState;
   takenBy: string | null;
   takenAt: string | null;
+  /** Genuine item-scoped progress used by critical-claim recovery. */
+  lastProgressAt: string | null;
   expiresAt: string | null;
   /**
    * Additional open work-items linked to the SAME key beyond the canonical one.
@@ -125,6 +129,7 @@ export function resolveConditionObject(
       claimState: 'no-object',
       takenBy: null,
       takenAt: null,
+      lastProgressAt: null,
       expiresAt: null,
       duplicates: [],
     };
@@ -145,6 +150,7 @@ export function resolveConditionObject(
     claimState: claimStateOf(canonical, nowMs),
     takenBy: canonical.takenBy,
     takenAt: canonical.takenAt,
+    lastProgressAt: canonical.lastProgressAt,
     expiresAt: canonical.expiresAt,
     duplicates,
   };
@@ -225,6 +231,7 @@ export async function findConditionObjects(
         status: string | null;
         taken_by: string | null;
         taken_at: string | null;
+        last_progress_at: string | null;
         expires_at: string | null;
       }[]
     >`
@@ -234,6 +241,7 @@ export async function findConditionObjects(
              w.status      AS status,
              w.taken_by    AS taken_by,
              w.taken_at    AS taken_at,
+             w.last_progress_at AS last_progress_at,
              w.expires_at  AS expires_at
         FROM harness_shared.coord_links l
         JOIN harness_shared.work_items w
@@ -257,6 +265,7 @@ export async function findConditionObjects(
         status: r.status ?? null,
         takenBy: r.taken_by ?? null,
         takenAt: r.taken_at ?? null,
+        lastProgressAt: r.last_progress_at ?? null,
         expiresAt: r.expires_at ?? null,
       };
       if (list) list.push(row);

@@ -1,0 +1,440 @@
+/**
+ * plan-cleanup/run-store — per-finding outcome rows for a PLAN-CLEANUP bulk run
+ * (cleanup-report-flows-2026-08-24 P-002; migration 937).
+ *
+ * A plan-cleanup run rides the SAME `attention_bulk_runs` machinery as the inbox
+ * bulk resolve (attention/bulk-run-store.ts, `runKind: 'plan-cleanup'`); this
+ * module is the analog of that store's ITEM half: one row per scanner finding in
+ * `plan_cleanup_run_findings`, keyed by the scanner's deterministic `findingId`
+ * (`<kind>:<harness>/<plan>[#item]`), which is what makes seeding idempotent
+ * across a resolver retry and lets an apply target a finding without
+ * translation.
+ *
+ * The item store's two load-bearing properties hold here identically:
+ *
+ *  - **Findings are a RUN-SCOPED SNAPSHOT.** `seedFindings` persists what the
+ *    scanner emitted for the run's click-time `seedRefs`; nothing re-derives
+ *    membership after the owner clicked.
+ *  - **Counters are DERIVED, never incremented blind.** `reportFindingOutcomes`
+ *    recomputes the run's counters from the finding rows inside the same
+ *    transaction, so a retried or re-reported finding cannot double-count.
+ *
+ * Counter mapping onto the run row's inbox-named columns (the strip renders the
+ * same four numbers for either kind):
+ *   auto_resolved = auto_applied + accepted   (applied — by the resolver, or by
+ *                                              the owner via review accept)
+ *   recommended   = recommended               (still awaiting the owner)
+ *   skipped       = dismissed + skipped       (deliberately not applied)
+ *   failed        = failed
+ *
+ * Access mirrors bulk-run-store.ts: plain `getOrgPg().sql` with an explicit
+ * workspace_id predicate (org handle = table owner, RLS enforced for the
+ * runtime app role and bypassed here, like every operator-state table).
+ */
+
+import { getOrgPg } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
+import { activeWorkspaceId } from '../workspace-registry';
+import {
+  RUNNING_PHASES,
+  type BulkRunPhase,
+  type BulkRunRow,
+} from '../attention/bulk-run-store';
+import type {
+  CleanupConfidence,
+  CleanupEvidenceRef,
+  CleanupFindingKind,
+} from './scanner';
+
+/**
+ * Row-level finding kind: the scanner's mechanical kinds plus 'semantic' — the
+ * resolver's own judgment-pass findings, which have no mechanical scanner rule
+ * (migration 937's CHECK admits it for exactly that reason).
+ */
+export type CleanupRunFindingKind = CleanupFindingKind | 'semantic';
+
+/**
+ * Per-finding terminal disposition. Unlike the inbox items' outcome set this
+ * distinguishes the OWNER's review verdicts (`accepted` / `dismissed`) from the
+ * resolver's (`auto_applied` / `recommended` / `skipped` / `failed`), because a
+ * plan-cleanup apply is a plan mutation the audit trail must attribute to the
+ * right actor. `pending` is the seeded, not-yet-resolved state — a finding
+ * still carrying it when the run settles keeps the run in `review` (see
+ * bulk-run-store.settleRunPhase's kind-aware branch) rather than silently
+ * vanishing.
+ */
+export type CleanupFindingOutcome =
+  | 'pending'
+  | 'auto_applied'
+  | 'recommended'
+  | 'accepted'
+  | 'dismissed'
+  | 'skipped'
+  | 'failed';
+
+/** What a caller must supply to seed one finding row. The scanner's
+ *  `CleanupFinding` satisfies this structurally; a semantic-pass finding
+ *  supplies the same fields with `kind: 'semantic'`. */
+export interface SeedableCleanupFinding {
+  findingId: string;
+  kind: CleanupRunFindingKind;
+  planSlug: string;
+  harnessSlug?: string | null;
+  itemId?: string | null;
+  target?: string;
+  from?: string;
+  to?: string;
+  confidence?: CleanupConfidence;
+  evidence?: CleanupEvidenceRef[];
+}
+
+export interface CleanupRunFindingRow {
+  workspaceId: string;
+  runId: string;
+  findingId: string;
+  kind: CleanupRunFindingKind;
+  planSlug: string;
+  harnessSlug: string | null;
+  itemId: string | null;
+  target: string;
+  from: string;
+  to: string;
+  confidence: CleanupConfidence;
+  evidence: CleanupEvidenceRef[];
+  position: number;
+  outcome: CleanupFindingOutcome;
+  error: string | null;
+  decidedAt: string | null;
+}
+
+/** One resolver/review verdict for one finding. `evidence`, when present,
+ *  REPLACES the stored evidence (the resolver re-verified at current state, so
+ *  its refs supersede the scan-time ones). */
+export interface CleanupFindingOutcomeReport {
+  findingId: string;
+  outcome: Exclude<CleanupFindingOutcome, 'pending'>;
+  error?: string | null;
+  evidence?: CleanupEvidenceRef[] | null;
+}
+
+/** Why a write was refused. Same contract shape as the item store's refusals:
+ *  the DB is never half-written when one of these comes back. */
+export type CleanupFindingWriteRefusal =
+  | { reason: 'run_not_found'; phase: null }
+  | { reason: 'run_wrong_kind'; phase: BulkRunPhase }
+  | { reason: 'run_authority_revoked'; phase: BulkRunPhase };
+
+function iso(v: Date | string | null | undefined): string | null {
+  if (v == null) return null;
+  return v instanceof Date ? v.toISOString() : String(v);
+}
+
+function asEvidence(v: unknown): CleanupEvidenceRef[] {
+  return Array.isArray(v) ? (v as CleanupEvidenceRef[]) : [];
+}
+
+interface RawFindingRow {
+  workspace_id: string;
+  run_id: string;
+  finding_id: string;
+  finding_kind: CleanupRunFindingKind;
+  plan_slug: string;
+  harness_slug: string | null;
+  item_id: string | null;
+  target: string;
+  from_state: string;
+  to_state: string;
+  confidence: CleanupConfidence;
+  evidence: unknown;
+  position: number | string;
+  outcome: CleanupFindingOutcome;
+  error: string | null;
+  decided_at: Date | string | null;
+}
+
+function mapFinding(r: RawFindingRow): CleanupRunFindingRow {
+  return {
+    workspaceId: r.workspace_id,
+    runId: r.run_id,
+    findingId: r.finding_id,
+    kind: r.finding_kind,
+    planSlug: r.plan_slug,
+    harnessSlug: r.harness_slug,
+    itemId: r.item_id,
+    target: r.target,
+    from: r.from_state,
+    to: r.to_state,
+    confidence: r.confidence,
+    evidence: asEvidence(r.evidence),
+    position: Number(r.position ?? 0),
+    outcome: r.outcome,
+    error: r.error,
+    decidedAt: iso(r.decided_at),
+  };
+}
+
+const FINDING_COLUMNS = `workspace_id, run_id, finding_id, finding_kind, plan_slug, harness_slug,
+                         item_id, target, from_state, to_state, confidence, evidence, position,
+                         outcome, error, decided_at`;
+
+const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
+                     run_kind, seed_refs, filter_snapshot,
+                     total_items, auto_resolved, recommended, skipped, failed,
+                     error, created_at, updated_at, started_at, finished_at`;
+
+type StoreSql = Sql | TransactionSql;
+
+/**
+ * Recompute the run's strip counters from its FINDING rows (the plan-cleanup
+ * analog of the item store's recomputeCounters — same derive-don't-increment
+ * rule, different source table and outcome mapping; see the module header).
+ */
+async function recomputeCountersFromFindings(
+  sql: StoreSql,
+  runId: string,
+  workspaceId: string,
+): Promise<void> {
+  await sql`
+    UPDATE harness_shared.attention_bulk_runs r
+       SET auto_resolved = c.auto_resolved,
+           recommended = c.recommended,
+           skipped = c.skipped,
+           failed = c.failed,
+           updated_at = now()
+      FROM (
+        SELECT
+          COUNT(*) FILTER (WHERE outcome IN ('auto_applied', 'accepted'))::int AS auto_resolved,
+          COUNT(*) FILTER (WHERE outcome = 'recommended')::int                 AS recommended,
+          COUNT(*) FILTER (WHERE outcome IN ('dismissed', 'skipped'))::int     AS skipped,
+          COUNT(*) FILTER (WHERE outcome = 'failed')::int                      AS failed
+          FROM harness_shared.plan_cleanup_run_findings
+         WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
+      ) c
+     WHERE r.workspace_id = ${workspaceId} AND r.run_id = ${runId}
+  `;
+}
+
+/** Lock the run row and refuse anything that is not a live plan-cleanup run.
+ *  Shared preamble of both write paths, inside their transaction. */
+async function lockLiveCleanupRun(
+  tx: TransactionSql,
+  runId: string,
+  workspaceId: string,
+): Promise<{ phase: BulkRunPhase; refused: CleanupFindingWriteRefusal | null }> {
+  const rows = await tx<{ phase: BulkRunPhase; run_kind: string | null }[]>`
+    SELECT phase, run_kind
+      FROM harness_shared.attention_bulk_runs
+     WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
+     FOR UPDATE
+  `;
+  if (!rows[0]) return { phase: 'failed', refused: { reason: 'run_not_found', phase: null } };
+  const { phase } = rows[0];
+  if (rows[0].run_kind !== 'plan-cleanup')
+    return { phase, refused: { reason: 'run_wrong_kind', phase } };
+  // Same rule as the item store's ACCEPTING_REPORTS: Stop/settle revokes the
+  // resolver's authority, so a write after that must land nowhere.
+  if (!RUNNING_PHASES.includes(phase))
+    return { phase, refused: { reason: 'run_authority_revoked', phase } };
+  return { phase, refused: null };
+}
+
+/**
+ * Seed (or refresh) the run's finding rows from a scan. Idempotent by
+ * `findingId`: a retried resolver re-seeds the same identities without error, a
+ * re-scan refreshes the descriptive fields (target/from/to/confidence/evidence/
+ * position) — and `outcome`/`error`/`decided_at` are deliberately NOT touched,
+ * so a re-seed can never roll back work already resolved.
+ *
+ * Position is the array index (the scanner emits a deterministic order), so the
+ * review list renders stably across retries.
+ */
+export async function seedFindings(input: {
+  runId: string;
+  findings: readonly SeedableCleanupFinding[];
+  workspaceId?: string;
+}): Promise<{ findings: CleanupRunFindingRow[]; refused: CleanupFindingWriteRefusal | null }> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+
+  // De-dupe defensively (mirror createRun): a duplicate findingId would make
+  // the second upsert overwrite the first row's position mid-seed.
+  const seen = new Set<string>();
+  const unique = (input.findings ?? []).filter((f) => {
+    if (!f?.findingId || seen.has(f.findingId)) return false;
+    seen.add(f.findingId);
+    return true;
+  });
+
+  return await sql.begin(async (tx) => {
+    const { refused } = await lockLiveCleanupRun(tx, input.runId, ws);
+    if (refused) return { findings: [], refused };
+
+    const rows: CleanupRunFindingRow[] = [];
+    for (let i = 0; i < unique.length; i += 1) {
+      const f = unique[i]!;
+      const inserted = await tx<RawFindingRow[]>`
+        INSERT INTO harness_shared.plan_cleanup_run_findings
+          (workspace_id, run_id, finding_id, finding_kind, plan_slug, harness_slug,
+           item_id, target, from_state, to_state, confidence, evidence, position)
+        VALUES (${ws}, ${input.runId}, ${f.findingId}, ${f.kind}, ${f.planSlug},
+                ${f.harnessSlug ?? null}, ${f.itemId ?? null}, ${f.target ?? ''},
+                ${f.from ?? ''}, ${f.to ?? ''}, ${f.confidence ?? 'recommended'},
+                ${JSON.stringify(f.evidence ?? [])}::jsonb, ${i})
+        ON CONFLICT (workspace_id, run_id, finding_id) DO UPDATE
+          SET finding_kind = EXCLUDED.finding_kind,
+              plan_slug = EXCLUDED.plan_slug,
+              harness_slug = EXCLUDED.harness_slug,
+              item_id = EXCLUDED.item_id,
+              target = EXCLUDED.target,
+              from_state = EXCLUDED.from_state,
+              to_state = EXCLUDED.to_state,
+              confidence = EXCLUDED.confidence,
+              evidence = EXCLUDED.evidence,
+              position = EXCLUDED.position,
+              updated_at = now()
+        RETURNING ${tx.unsafe(FINDING_COLUMNS)}
+      `;
+      if (inserted[0]) rows.push(mapFinding(inserted[0]));
+    }
+    return { findings: rows, refused: null };
+  });
+}
+
+/**
+ * Record resolver (or review) verdicts for findings and recompute the run's
+ * counters in the same transaction. A findingId that was never seeded is
+ * reported back in `missing` rather than silently dropped — the resolver
+ * mis-targeting a finding is a bug its caller must see.
+ */
+export async function reportFindingOutcomes(input: {
+  runId: string;
+  reports: readonly CleanupFindingOutcomeReport[];
+  workspaceId?: string;
+}): Promise<{
+  updated: CleanupRunFindingRow[];
+  missing: string[];
+  run: BulkRunRow | null;
+  refused: CleanupFindingWriteRefusal | null;
+}> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+
+  return await sql.begin(async (tx) => {
+    const { refused } = await lockLiveCleanupRun(tx, input.runId, ws);
+    if (refused) return { updated: [], missing: [], run: null, refused };
+
+    const updated: CleanupRunFindingRow[] = [];
+    const missing: string[] = [];
+    for (const report of input.reports ?? []) {
+      const rows = await tx<RawFindingRow[]>`
+        UPDATE harness_shared.plan_cleanup_run_findings
+           SET outcome = ${report.outcome},
+               error = ${report.error ?? null},
+               evidence = CASE WHEN ${report.evidence != null}
+                               THEN ${JSON.stringify(report.evidence ?? [])}::jsonb
+                               ELSE evidence END,
+               decided_at = now(),
+               updated_at = now()
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+           AND finding_id = ${report.findingId}
+        RETURNING ${tx.unsafe(FINDING_COLUMNS)}
+      `;
+      if (rows[0]) updated.push(mapFinding(rows[0]));
+      else missing.push(report.findingId);
+    }
+
+    await recomputeCountersFromFindings(tx, input.runId, ws);
+    const runRows = await tx<Parameters<typeof mapRunLoose>[0][]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    return {
+      updated,
+      missing,
+      run: runRows[0] ? mapRunLoose(runRows[0]) : null,
+      refused: null,
+    };
+  });
+}
+
+/**
+ * Minimal run mapper for this module's refreshed-run read. Kept local (rather
+ * than importing bulk-run-store's private mapRun) but shaped identically to
+ * BulkRunRow, so callers see one run type either way.
+ */
+function mapRunLoose(r: {
+  run_id: string;
+  workspace_id: string;
+  harness_slug: string | null;
+  requested_by: string | null;
+  resolver_owner: string | null;
+  phase: BulkRunPhase;
+  run_kind: string | null;
+  seed_refs: unknown;
+  filter_snapshot: unknown;
+  total_items: number | string;
+  auto_resolved: number | string;
+  recommended: number | string;
+  skipped: number | string;
+  failed: number | string;
+  error: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  started_at: Date | string | null;
+  finished_at: Date | string | null;
+}): BulkRunRow {
+  return {
+    runId: r.run_id,
+    workspaceId: r.workspace_id,
+    harnessSlug: r.harness_slug,
+    requestedBy: r.requested_by,
+    resolverOwner: r.resolver_owner,
+    phase: r.phase,
+    runKind: (r.run_kind ?? 'inbox-resolve') as BulkRunRow['runKind'],
+    seedRefs: Array.isArray(r.seed_refs) ? (r.seed_refs as string[]) : [],
+    filterSnapshot: (r.filter_snapshot ?? {}) as BulkRunRow['filterSnapshot'],
+    totalItems: Number(r.total_items ?? 0),
+    autoResolved: Number(r.auto_resolved ?? 0),
+    recommended: Number(r.recommended ?? 0),
+    skipped: Number(r.skipped ?? 0),
+    failed: Number(r.failed ?? 0),
+    error: r.error,
+    createdAt: iso(r.created_at)!,
+    updatedAt: iso(r.updated_at)!,
+    startedAt: iso(r.started_at),
+    finishedAt: iso(r.finished_at),
+  };
+}
+
+/** One run's findings, in scanner order (the review list's read — migration
+ *  937's plan_cleanup_run_findings_run_idx covers exactly this). */
+export async function getRunFindings(
+  runId: string,
+  workspaceId?: string,
+): Promise<CleanupRunFindingRow[]> {
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql<RawFindingRow[]>`
+    SELECT ${sql.unsafe(FINDING_COLUMNS)}
+      FROM harness_shared.plan_cleanup_run_findings
+     WHERE workspace_id = ${ws} AND run_id = ${runId}
+     ORDER BY position ASC
+  `;
+  return rows.map(mapFinding);
+}
+
+/**
+ * Findings still awaiting the OWNER's review verdict: what the resolver
+ * recommended. Mirrors the item store's getPendingReviewItems (outcome =
+ * 'recommended' only): a still-`pending` finding was never reached by the
+ * resolver — it keeps the run out of `complete` (settleRunPhase's kind-aware
+ * branch), but it is not a recommendation the owner can act on.
+ */
+export async function getPendingReviewFindings(
+  runId: string,
+  workspaceId?: string,
+): Promise<CleanupRunFindingRow[]> {
+  const findings = await getRunFindings(runId, workspaceId);
+  return findings.filter((f) => f.outcome === 'recommended');
+}

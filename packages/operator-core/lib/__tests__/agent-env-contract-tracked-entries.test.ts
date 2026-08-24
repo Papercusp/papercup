@@ -56,6 +56,8 @@ function gitEntriesUnder(root: string): Set<string> {
   const out = execFileSync('git', ['ls-tree', '--name-only', 'HEAD', `${root}/`], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
   });
   return new Set(
     out

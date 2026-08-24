@@ -195,6 +195,25 @@ export const FROZEN_TXCTL_EXEMPTIONS = new Map([
 ]);
 
 /**
+ * FROZEN offenders for the index-swap check (#6) — the WI-41119 deadlock, second
+ * rule. The sanctioned fix for a genuinely-safe swap is the in-file
+ * `-- lint-migrations: allow-index-swap <reason>` pragma, but once the file is
+ * APPLIED the migration-immutability guard (WI-38352) refuses that edit exactly
+ * like any other, so a safe-but-applied swap would red-pin the gate permanently.
+ * Entry rules are identical to FROZEN_TXCTL_EXEMPTIONS: deliberate, reasoned,
+ * SHRINK-ONLY in intent, and a listed file that is NOT actually applied is a
+ * hard error (unappliedFrozenExemptions) so the list cannot become a bypass.
+ * An entry must state why the swap is safe ON THE CHECK'S OWN HAZARD MODEL
+ * (no ON CONFLICT can target the swapped index), not merely that it is applied.
+ */
+export const FROZEN_INDEX_SWAP_EXEMPTIONS = new Map([
+  [
+    "937-bulk-run-kind-plan-cleanup.sql",
+    "Applied 2026-08-24T03:24:05Z (sha 882e5741). Re-keys bulk-run single-flight (workspace_id) → (workspace_id, run_kind). Verified safe on this check's own hazard model before exempting (WI-41214): no ON CONFLICT anywhere — the deployed papercup-release checkout included — targets the swapped index (the only ON CONFLICT on these tables is the attention_bulk_run_items PK, untouched); single-flight is enforced by catching 23505 and substring-matching the index NAME in bulk-run-store.ts, and the replacement name deliberately keeps 'one_active_per_workspace'; every old-code row carries run_kind='inbox-resolve' (column default), so the new index enforces the identical one-active-per-workspace rule for every deployed reader. The in-file allow-index-swap pragma is refused by the immutability guard because the file is applied.",
+  ],
+]);
+
+/**
  * Partition migration files by the tx-control rule.
  *
  * `entries` is `[{ file, text }]`. Returns offenders (a real failure), the
@@ -236,6 +255,36 @@ export function unappliedFrozenExemptions(
   exemptions = FROZEN_TXCTL_EXEMPTIONS,
 ) {
   return [...exemptions.keys()].filter((f) => !appliedFilenames.has(f)).sort();
+}
+
+/**
+ * Partition migration files by the unique-index shape-swap rule (check #6),
+ * mirroring partitionRawTxControl so the CLI and the gate-wiring test cannot
+ * disagree about a FROZEN file (the WI-41119 contract). Files below
+ * `enforcedFrom` are grandfathered applied history (564/689) and skipped,
+ * exactly as the inline loop did before.
+ */
+export function partitionIndexSwaps(
+  entries,
+  {
+    enforcedFrom = INDEX_SWAP_ENFORCED_FROM,
+    exemptions = FROZEN_INDEX_SWAP_EXEMPTIONS,
+  } = {},
+) {
+  const offenders = [];
+  const exempted = [];
+  for (const { file, text } of entries) {
+    const num = Number.parseInt(/^(\d+)-/.exec(file)?.[1] ?? "0", 10);
+    if (num < enforcedFrom) continue;
+    const hits = findUniqueIndexShapeSwap(text);
+    if (!hits.length) continue;
+    if (exemptions.has(file)) {
+      exempted.push({ file, hits, reason: exemptions.get(file) });
+    } else {
+      offenders.push({ file, hits });
+    }
+  }
+  return { offenders, exempted };
 }
 
 /**
@@ -794,13 +843,10 @@ async function main() {
   // Its own boundary (INDEX_SWAP_ENFORCED_FROM), not ENFORCED_FROM: 564 and 689
   // already carry this pattern above 494 and are applied+ledgered, so they are
   // grandfathered exactly like the other checks' legacy files.
-  for (const f of files) {
-    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
-    if (num < INDEX_SWAP_ENFORCED_FROM) continue;
-    const hits = findUniqueIndexShapeSwap(
-      readFileSync(join(SQL_DIR, f), "utf8"),
-    );
-    if (!hits.length) continue;
+  const swaps = partitionIndexSwaps(
+    files.map((f) => ({ file: f, text: readFileSync(join(SQL_DIR, f), "utf8") })),
+  );
+  for (const { file: f, hits } of swaps.offenders) {
     failed = true;
     console.error(
       `✗ ${f}: drops a ${hits.map((h) => h.table).join("/")} index in the SAME migration that creates its unique replacement (${hits
@@ -811,6 +857,16 @@ async function main() {
         .join(
           " · ",
         )}) — PostgreSQL infers an ON CONFLICT target by MATCHING a unique index, so changing that index's shape (partial predicate, column set, expression) makes every ON CONFLICT spec written against the old shape match NO index and fail AT PLAN TIME: every write, not just conflicting ones. On a SHARED database the migration lands the instant ANY operator boots while the matching code lands only per-deploy, so this is a breaking change to every not-yet-deployed reader even when the code fix is in the same commit. It has already caused this outage three times on these tables (461 → zero fact writes until 2026-07-03; 564 repeated it on memory_canonical; 689 took facts:assert down fleet-wide for an hour). Make it TWO-PHASE: migration N creates the new index and LEAVES the old one, then migration N+k drops the old one once the code is deployed everywhere. If the swap is genuinely safe, say why with "-- lint-migrations: allow-index-swap <reason>".`,
+    );
+  }
+  // Never silent, same contract as the txctl exemptions above.
+  for (const { file: f, hits } of swaps.exempted) {
+    console.log(
+      `· ${f}: same-migration unique-index shape swap (${hits
+        .map((h) => h.index)
+        .join(
+          ", ",
+        )}) — FROZEN (already applied; the immutability guard refuses the in-file allow-index-swap pragma). See FROZEN_INDEX_SWAP_EXEMPTIONS.`,
     );
   }
 
@@ -837,6 +893,16 @@ async function main() {
       failed = true;
       console.error(
         `✗ FROZEN_TXCTL_EXEMPTIONS lists file(s) that are NOT applied, so they are not frozen and must be fixed, not exempted: ${bogus.join(", ")}`,
+      );
+    }
+    const bogusSwaps = unappliedFrozenExemptions(
+      appliedFilenames,
+      FROZEN_INDEX_SWAP_EXEMPTIONS,
+    );
+    if (bogusSwaps.length) {
+      failed = true;
+      console.error(
+        `✗ FROZEN_INDEX_SWAP_EXEMPTIONS lists file(s) that are NOT applied, so they are not frozen and must be fixed (two-phase, or the in-file allow-index-swap pragma), not exempted: ${bogusSwaps.join(", ")}`,
       );
     }
     const mismatches = reservationFilenameMismatches(files, reservations, {

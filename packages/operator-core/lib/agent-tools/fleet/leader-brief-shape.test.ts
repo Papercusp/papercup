@@ -115,6 +115,26 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
   });
 
+  it('retains the executable-frontier verdict, reason, and falsifier at the normal monitor tier', () => {
+    const out = shapeLeaderBrief({
+      ok: true,
+      summary: { fleet: 'frontier-fleet', members: 6, fleetHeadcountVsExecutableFrontierAlert: true },
+      fleetHeadcountVsExecutableFrontierAlertReason:
+        "5 live non-leader workers exceed exact plan 'one-plan' executableWidth=2 by 3",
+      fleetHeadcountVsExecutableFrontierAlertFalsifier: {
+        tool: 'fleet:leader-brief',
+        check: "fleet:leader-brief { fleet: 'frontier-fleet', harness: 'papercusp' }",
+        measurement: 'fresh roster, exact-plan DAG, and fleet claim lane',
+        kills: 'the fresh alert is false or absent',
+      },
+    }, 'trimmed') as Record<string, unknown>;
+    expect(out.summary).toMatchObject({ fleetHeadcountVsExecutableFrontierAlert: true });
+    expect(out).toMatchObject({
+      fleetHeadcountVsExecutableFrontierAlertReason: expect.stringContaining('executableWidth=2'),
+      fleetHeadcountVsExecutableFrontierAlertFalsifier: { tool: 'fleet:leader-brief' },
+    });
+  });
+
   it('keeps every typed terminal audit-feed field through campaign compaction', () => {
     const row = {
       id: 'WI-42',
@@ -221,6 +241,15 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       measurement: 'fresh agent-activity tool calls',
       kills: 'any member shows a recent tool call or progressing claim',
     };
+    (input.summary as Record<string, unknown>).fleetHeadcountVsExecutableFrontierAlert = true;
+    (input as Record<string, unknown>).fleetHeadcountVsExecutableFrontierAlertReason =
+      "52 live non-leader workers exceed exact plan 'large-plan' executableWidth=4 by 48";
+    (input as Record<string, unknown>).fleetHeadcountVsExecutableFrontierAlertFalsifier = {
+      tool: 'fleet:leader-brief',
+      check: "fleet:leader-brief { fleet: 'large-fleet', harness: 'papercusp' }",
+      measurement: 'fresh roster, exact-plan DAG, and fleet claim lane',
+      kills: 'the fresh alert is false or absent',
+    };
     (input as Record<string, unknown>).admissionBlocked = Array.from({ length: 6 }, (_, index) => ({
       itemId: `WI-${5891 + index}`,
       member: `su-blocked-${index}`,
@@ -256,6 +285,11 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out).toMatchObject({
       darkFleetAlertReason: expect.stringContaining('zero turns'),
       darkFleetAlertFalsifier: { tool: 'fleet:assignments' },
+    });
+    expect(out.summary).toMatchObject({ fleetHeadcountVsExecutableFrontierAlert: true });
+    expect(out).toMatchObject({
+      fleetHeadcountVsExecutableFrontierAlertReason: expect.stringContaining('executableWidth=4'),
+      fleetHeadcountVsExecutableFrontierAlertFalsifier: { tool: 'fleet:leader-brief' },
     });
     expect(out.monitoringBlindAdvisory).toMatchObject({
       line: expect.stringContaining('monitoring blind'),

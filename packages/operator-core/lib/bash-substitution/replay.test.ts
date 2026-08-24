@@ -329,7 +329,7 @@ describe('replay against the real capability:read handler', () => {
   it('the fixture is what the test thinks it is', () => {
     // Guards the whole suite: every assertion below is about a diff between two
     // readings of this file, and a wrong fixture makes all of them vacuous.
-    const raw = execFileSync('/bin/bash', ['-c', `cat ${smallPath}`], { encoding: 'utf8' });
+    const raw = execFileSync('/bin/bash', ['-c', `cat ${smallPath}`], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
     expect(raw.split('\n').filter(Boolean)).toHaveLength(40);
   });
 

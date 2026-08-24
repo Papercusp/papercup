@@ -18,9 +18,9 @@
  * could report it: the runner's own heartbeat rose identically for "working" and "wedged".
  *
  * WHAT THIS GUARD DOES, AND DELIBERATELY DOES NOT DO. It is a SHRINK-ONLY RATCHET, not a
- * clean-tree assertion. 92 pure-lane files carried an unbounded sync spawn when this was
- * written, and bounding all of them at once is a change nobody could review. So the baseline
- * below grandfathers the ones that already existed and the guard fails on:
+ * clean-tree assertion. 91 pure-lane files carried an unbounded sync spawn when this was written
+ * (AST-measured: ~208 real call sites), and bounding all of them at once is a change nobody could
+ * review. So the baseline below grandfathers the ones that already existed and the guard fails on:
  *   (a) any NEW pure-lane file that introduces an unbounded sync spawn, and
  *   (b) any baseline entry that has since been FIXED but not removed from the list —
  *       without (b) the list rots into a permanent allowlist and the ratchet stops turning.
@@ -29,31 +29,26 @@
  * interruptible; a `try/catch`, an `AbortSignal`, or a wrapper's own timer cannot help, because
  * none of them get to run while the loop is blocked.
  *
- * WHY THE MATCHER IS NOT JUST `timeout:` (WI-41223). ES6 shorthand is a real bound and must be
- * recognised as one: `spawnSync(bin, argv, { encoding: 'utf8', timeout, env })` — where `timeout`
- * is a parameter with a default — is fully bounded, but a `timeout:`-only matcher reads it as an
- * offender. That is not a harmless over-report: an entry that can never be cleaned is an entry
- * that can never leave BASELINE, so the ratchet jams on it forever and the list rots into exactly
- * the permanent allowlist assertion (b) exists to prevent. So the matcher accepts `timeout`
- * followed by `:` (explicit), `,` (shorthand mid-object) or `}` (shorthand at the end).
- * MEASURED when this widened: exactly ONE of the 91 baselined files used the shorthand form
- * (desktop-sandbox-live.test.ts, bounded at 30s), so widening reclassified one file and nothing
- * else — it did not silently absolve a population of real offenders.
+ * SHORTHAND IS A REAL BOUND (WI-41223). `spawnSync(bin, argv, { encoding: 'utf8', timeout, env })`
+ * — where `timeout` is a parameter with a default — is fully bounded, and the first cut's
+ * `timeout:`-only text match read it as an offender. Exactly one baselined file used that form
+ * (desktop-sandbox-live.test.ts, bounded at 30s) and it was consequently unclearable. The AST
+ * reader below treats a ShorthandPropertyAssignment as the bound it is.
  *
- * KNOWN LIMIT (documented, not defended — same posture as lane-split.ts's own matcher). The scan
- * does NOT strip comments or string literals, so a commented-out or quoted call still counts as an
- * offender. Nor can it see a bound passed INDIRECTLY (`spawnSync(bin, argv, opts)` where `opts`
- * carries the timeout) — that still reports as an offender. Both err in the deliberate direction:
- * a false positive costs one developer one confusing failure with a message naming the file and
- * the fix, while a false negative costs the whole fleet a silent 45-minute wedge per affected run.
- * If a legitimate mention ever trips it, bound the call or reword the mention — do NOT add the
- * file to BASELINE.
+ * KNOWN LIMIT (documented, not defended). The scan reads each call's LAST argument, so a bound it
+ * cannot see through — `spawnSync(bin, argv, opts)`, or `{ ...opts }` — is reported as an
+ * offender. That is the deliberate direction to err in, and unlike the quoted-mention false
+ * positives this replaced, it is ACTIONABLE: inline an explicit `timeout` and the report clears.
+ * A false positive is only cheap when the developer can DO something about it.
+ *
+ * If a legitimate call ever trips it, bound the call — do NOT add the file to BASELINE.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveLaneInclude } from '@papercusp/test-config/lane-split';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const WORKSPACE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -68,35 +63,65 @@ const SYNC_SPAWN = String.raw`\b(execFileSync|spawnSync|execSync)\s*\(`;
 
 const SELF = 'lib/__tests__/pure-lane-unbounded-sync-spawn.test.ts';
 
-/**
- * Matches a `timeout` option in either form: explicit (`timeout: 5_000`) or ES6 shorthand
- * (`{ ..., timeout, ... }` / `{ ..., timeout }`). Built from a source string for the same
- * self-match reason as SYNC_SPAWN above.
- */
-const TIMEOUT_OPTION = String.raw`\btimeout\s*[:,}]`;
+const SYNC_SPAWN_NAMES = new Set(['execFileSync', 'spawnSync', 'execSync']);
 
 /**
  * Count sync-spawn calls in `source` that carry no `timeout` option.
  *
- * The argument span is found by paren balance from the call's own open paren, so a `timeout`
- * belonging to a LATER, unrelated call in the same file cannot be miscredited to this one —
- * the failure mode of a naive "is `timeout` anywhere near it" window.
+ * TWO STAGES, and the split is load-bearing for cost. `SYNC_SPAWN` is a cheap prefilter run over
+ * the WHOLE ~2,740-file lane roster; only the handful of files it hits are parsed. Parsing the
+ * whole roster with the TypeScript scanner would turn a ~2s guard into a slow one, and a guard
+ * nobody wants to run is a guard that stops running.
+ *
+ * WHY THE AST AND NOT A REGEX (WI-41223). The regex version counted any TEXT that looked like a
+ * call, and MEASURED on the real tree that was 37 of 179 reported sites — 21% noise. The noise is
+ * not evenly spread: it lands hardest on the files whose JOB is to quote these calls. A test for a
+ * detector-of-guard-invocations (`check-lint-guard-reachability.test.ts`) held 9 quoted mentions
+ * and executes ZERO sync spawns; `git-log-utc-timestamp.test.ts` held 6. SEVEN baselined files had
+ * no real call at all.
+ *
+ * That is not the harmless direction the first cut assumed. A phantom cannot be BOUNDED — you
+ * cannot add a `timeout` to a string that a test asserts on without changing what the test
+ * measures — so a phantom entry can never leave BASELINE. The ratchet jams on it permanently, and
+ * the list rots into exactly the allowlist that assertion (b) exists to prevent. A false positive
+ * is only cheap when it is ACTIONABLE; these were not.
+ *
+ * WHAT STILL COUNTS AS UNBOUNDED, deliberately. An options object this cannot read through —
+ * `spawnSync(bin, argv, opts)` or `{ ...opts }` — is reported. That case IS actionable (inline an
+ * explicit `timeout`), so it never jams the ratchet, and treating an unreadable bound as absent
+ * keeps the error on the safe side.
  */
 export function countUnboundedSyncSpawns(source: string): number {
-  const re = new RegExp(SYNC_SPAWN, 'g');
-  let m: RegExpExecArray | null;
+  if (!new RegExp(SYNC_SPAWN).test(source)) return 0;
+  const sf = ts.createSourceFile('scan.ts', source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
   let unbounded = 0;
-  while ((m = re.exec(source))) {
-    let i = m.index + m[0].length;
-    let depth = 1;
-    while (i < source.length && depth > 0) {
-      const c = source[i];
-      if (c === '(') depth++;
-      else if (c === ')') depth--;
-      i++;
+
+  const isBound = (node: ts.Node | undefined): boolean => {
+    if (!node || !ts.isObjectLiteralExpression(node)) return false;
+    return node.properties.some((p) => {
+      // `timeout: 5_000` and `timeout` (ES6 shorthand — a real bound the regex version missed)
+      if (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) {
+        const n = p.name;
+        return (ts.isIdentifier(n) || ts.isStringLiteral(n)) && n.text === 'timeout';
+      }
+      return false; // a spread is unreadable, so not a proof of boundedness
+    });
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.name.text
+          : undefined;
+      if (name && SYNC_SPAWN_NAMES.has(name) && !isBound(node.arguments.at(-1))) unbounded++;
     }
-    if (!new RegExp(TIMEOUT_OPTION).test(source.slice(m.index, i))) unbounded++;
-  }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sf);
   return unbounded;
 }
 
@@ -126,64 +151,22 @@ function scanPureLane(): { roster: string[]; offenders: string[] } {
  * make a new test pass — bound the call instead. Removing one is always correct.
  */
 const BASELINE: readonly string[] = [
-  'lib/__tests__/affected-tests-changed-path-provenance.test.ts',
   'lib/__tests__/affected-tests-non-workspace-routes.test.ts',
-  'lib/__tests__/affected-tests-repo-wide-invariant-guards.test.ts',
-  'lib/__tests__/affected-tests-standalone-packages.test.ts',
-  'lib/__tests__/affected-tests-stdout-ordering.test.ts',
-  'lib/__tests__/agent-env-contract-tracked-entries.test.ts',
-  'lib/__tests__/blueprint-deps-catalog.test.ts',
-  'lib/__tests__/blueprint-prompt-dark-tools.test.ts',
   'lib/__tests__/check-explicit-presence.test.ts',
-  'lib/__tests__/check-file-verdict-scope.test.ts',
-  'lib/__tests__/check-lint-guard-reachability.test.ts',
   'lib/__tests__/check-peer-dep-conflicts.test.ts',
   'lib/__tests__/check-required-field-strands.test.ts',
   'lib/__tests__/finding-context-sync.test.ts',
-  'lib/__tests__/prompt-blueprint-verb-catalog.test.ts',
-  'lib/__tests__/report-cargo-tests.test.ts',
   'lib/__tests__/strand-guard-not-checked-contract.test.ts',
-  'lib/attestation-leg-diagnostic-attribution-guard.test.ts',
-  'lib/backend-bin-resolve.test.ts',
-  'lib/bash-substitution/replay.test.ts',
-  'lib/blueprint/__tests__/commit-reproject-real.test.ts',
-  'lib/blueprint/detect-from-repo.test.ts',
   'lib/bundle-host-fallback.test.ts',
-  'lib/check-transitive-boundary.test.ts',
-  'lib/child-output-guard.test.ts',
-  'lib/coord/gate-ownership-verdicts-wired.test.ts',
-  'lib/deployment/frame-bootstrap.test.ts',
-  'lib/deployment/runtime-pack.test.ts',
-  'lib/desktop/desktop-gl-live.test.ts',
-  'lib/desktop/gl-strategy.test.ts',
-  'lib/doc-claims/git-log-utc-timestamp.test.ts',
-  'lib/doc-claims/retired-surfaces.test.ts',
-  'lib/embedded-pg-declarations.test.ts',
-  'lib/embedded-pg-seed.test.ts',
-  'lib/event-loop-sentinel-host.test.ts',
-  'lib/fleet/sidecar-fallback-reported-guard.test.ts',
-  'lib/gen-tool-catalog-worktree-locality.test.ts',
-  'lib/generated-declarations.test.ts',
-  'lib/git-store-ref-integrity.test.ts',
-  'lib/goals/kill-criterion-doors.test.ts',
   'lib/gym/__tests__/fake-agent.test.ts',
-  'lib/harness/docs/authored-doc-projection.test.ts',
   'lib/harness/docs/drift.test.ts',
   'lib/harness/docs/freshness-sweep.test.ts',
-  'lib/harness/git-stats.test.ts',
-  'lib/harness/git-sync/code-plane-fork-pr-live.test.ts',
-  'lib/harness/git-sync/pre-push-hook.test.ts',
   'lib/harness/git-sync/run-git-sync.test.ts',
-  'lib/harness/hive-repo-init.test.ts',
-  'lib/harness/improvements/insight-staleness.test.ts',
-  'lib/hive-git-drill-migration-freshness-guard.test.ts',
   'lib/hive-git-drill-zero-skip-guard.test.ts',
   'lib/kopia-backup-guard.test.ts',
   'lib/lint-as-committed.test.ts',
-  'lib/lint-tsc-operator-help.test.ts',
   'lib/live-federation-gate-attestation-preflight.test.ts',
   'lib/live-federation-gate-fromrepo-default.test.ts',
-  'lib/live-federation-gate-k3-cut-verdict.test.ts',
   'lib/live-federation-gate-matrix-leg-skip-reason.test.ts',
   'lib/live-federation-gate-matrix-leg-staleness.test.ts',
   'lib/live-federation-gate-singleton-lock-fd-inheritance.test.ts',
@@ -197,7 +180,6 @@ const BASELINE: readonly string[] = [
   'lib/no-cdn-egress-guard.test.ts',
   'lib/no-retired-imports-guard.test.ts',
   'lib/no-unhosted-remote-core-guard.test.ts',
-  'lib/p2p/work-distribution-drill-probe-symbols.test.ts',
   'lib/partial-index-alignment-guard.test.ts',
   'lib/release-deploy-launch.test.ts',
   'lib/release-submodule-freshness-fail-closed.test.ts',
@@ -208,7 +190,6 @@ const BASELINE: readonly string[] = [
   'lib/sync/pot-git/physical-drill-phase-a.test.ts',
   'lib/sync/pot-git/physical-drill-phase-b.test.ts',
   'lib/sync/pot-git/secrets-guard-hook-parity.test.ts',
-  'lib/task-manager/no-unenrolled-spawn-guard.test.ts',
   'lib/templates-mirror-sync-cli.test.ts',
   'lib/testing-guard-script.test.ts',
   'lib/tracked-node-modules-guard.test.ts',
@@ -231,6 +212,42 @@ describe('pure lane — unbounded synchronous spawns (WI-41180 ratchet)', () => 
 
     // And a file with no sync spawn at all is silent — otherwise every negative below is vacuous.
     expect(countUnboundedSyncSpawns(`await execFile('git', ['status']);`)).toBe(0);
+  });
+
+  it('counts CODE only: a quoted or commented mention is not a call (WI-41223)', () => {
+    // The regression these pin cost 37 of 179 reported sites, and produced SEVEN baselined files
+    // with no real call at all. A phantom cannot be bounded — adding `timeout:` inside a string a
+    // test asserts on changes what the test measures — so it can never leave BASELINE and the
+    // ratchet jams on it forever. Files whose JOB is to quote these calls (a test for a
+    // detector-of-guard-invocations) are hit hardest, which is exactly where the noise is worst.
+    expect(countUnboundedSyncSpawns(`const fixture = "spawnSync('node', ['x.mjs'])";`)).toBe(0);
+    expect(countUnboundedSyncSpawns(`const fixture = 'execSync("ls")';`)).toBe(0);
+    expect(countUnboundedSyncSpawns('const fixture = `spawnSync(BIN, [])`;')).toBe(0);
+    expect(countUnboundedSyncSpawns(`// execFileSync('node', [SCRIPT])`)).toBe(0);
+    expect(countUnboundedSyncSpawns(`/* spawnSync('sh', ['-c', 'x']) */`)).toBe(0);
+
+    // A regex literal containing a quote is what breaks a hand-rolled string-stripper: its state
+    // machine desyncs on the quote and blanks out the REAL code that follows, silently
+    // under-reporting. The AST cannot desync, and this pins that it does not.
+    expect(countUnboundedSyncSpawns(`const q = /['"]/g;\nspawnSync('sh', ['-c', 'x']);`)).toBe(1);
+
+    // But a real call INSIDE a template interpolation is still code, and still counts.
+    expect(countUnboundedSyncSpawns('const s = `${spawnSync(BIN, [])}`;')).toBe(1);
+  });
+
+  it('reads a bound the regex version could not, and refuses one it cannot verify', () => {
+    // ES6 shorthand IS a bound. Missing it is what kept desktop-sandbox-live.test.ts — bounded at
+    // 30s via `function run(bin, argv, timeout = 30_000)` — permanently unclearable in BASELINE.
+    expect(countUnboundedSyncSpawns(`spawnSync(bin, argv, { encoding: 'utf8', timeout, env });`)).toBe(0);
+    expect(countUnboundedSyncSpawns(`spawnSync(bin, argv, { timeout });`)).toBe(0);
+
+    // A member-access callee is the same call.
+    expect(countUnboundedSyncSpawns(`cp.execFileSync('git', ['status']);`)).toBe(1);
+
+    // Unreadable options are reported, on purpose: unlike a quoted mention this is ACTIONABLE
+    // (inline an explicit timeout), so it never jams the ratchet.
+    expect(countUnboundedSyncSpawns(`spawnSync(bin, argv, opts);`)).toBe(1);
+    expect(countUnboundedSyncSpawns(`spawnSync(bin, argv, { ...opts });`)).toBe(1);
   });
 
   it('DENOMINATOR: the pure-lane roster actually resolved (a scan of nothing is not a pass)', () => {

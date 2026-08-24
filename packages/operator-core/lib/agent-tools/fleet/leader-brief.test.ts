@@ -11,6 +11,7 @@ import {
   computeDarkFleetAlert,
   computeDormantAlert,
   computeFleetBlockVerdict,
+  computeFleetHeadcountVsExecutableFrontierAlert,
   computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
@@ -21,6 +22,7 @@ import {
   compactLeaderBriefBenchSuggestions,
   compactLeaderBriefMemberVerdicts,
   decorateComposedParkedOn,
+  exactPositiveSinglePlanSlugFromFilter,
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
   projectMember,
@@ -41,6 +43,60 @@ const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 describe('fleet:leader-brief — ambient workspace transaction safety (EI-20192040030675541)', () => {
   it('opts out because the supervision read never uses ctx.tx', () => {
     expect((leaderBriefTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
+describe('computeFleetHeadcountVsExecutableFrontierAlert (WI-41173 / P-011)', () => {
+  it('uses min(readyWidth, claimable) and fires only above that width', () => {
+    const out = computeFleetHeadcountVsExecutableFrontierAlert({
+      planSlug: 'one-plan', liveNonLeaderWorkers: 5, readyWidth: 2, claimable: 7,
+      fleet: 'frontier-fleet', harness: 'papercusp',
+    });
+    expect(out).toMatchObject({
+      alert: true, executableWidth: 2, excessWorkers: 3, liveNonLeaderWorkers: 5,
+    });
+    expect(out?.reason).toMatch(/5 live non-leader worker.*executableWidth=2.*by 3/i);
+    expect(out?.falsifier).toMatchObject({
+      tool: 'fleet:leader-brief',
+      check: "fleet:leader-brief { fleet: 'frontier-fleet', harness: 'papercusp' }",
+    });
+    expect(
+      computeFleetHeadcountVsExecutableFrontierAlert({
+        planSlug: 'one-plan', liveNonLeaderWorkers: 4, readyWidth: 8, claimable: 3,
+      }),
+    ).toMatchObject({ alert: true, executableWidth: 3, excessWorkers: 1 });
+  });
+
+  it('returns measured false at the frontier and suppresses paused/unknown inputs', () => {
+    const base = { planSlug: 'one-plan', liveNonLeaderWorkers: 3, readyWidth: 8, claimable: 3 };
+    expect(computeFleetHeadcountVsExecutableFrontierAlert(base)).toMatchObject({
+      alert: false, executableWidth: 3, excessWorkers: 0,
+    });
+    expect(computeFleetHeadcountVsExecutableFrontierAlert({ ...base, fleetPaused: true })).toBeUndefined();
+    expect(computeFleetHeadcountVsExecutableFrontierAlert({ ...base, readyWidth: null })).toBeUndefined();
+    expect(computeFleetHeadcountVsExecutableFrontierAlert({ ...base, claimable: null })).toBeUndefined();
+  });
+});
+
+describe('exactPositiveSinglePlanSlugFromFilter (WI-41173 / P-011)', () => {
+  it('accepts exact AND lanes and ORs only when every branch requires the same plan', () => {
+    expect(exactPositiveSinglePlanSlugFromFilter({ all: [
+      { field: 'plan', op: '=', value: 'one-plan' },
+      { field: 'kind', op: 'in', value: ['bug', 'change'] },
+    ] })).toBe('one-plan');
+    expect(exactPositiveSinglePlanSlugFromFilter({ any: [
+      { all: [{ field: 'plan', op: '=', value: 'one-plan' }, { field: 'kind', op: '=', value: 'bug' }] },
+      { all: [{ field: 'plan', op: '=', value: 'one-plan' }, { field: 'kind', op: '=', value: 'change' }] },
+    ] })).toBe('one-plan');
+  });
+
+  it('rejects broad OR, multi-plan, negative, and missing-plan scopes', () => {
+    for (const filter of [
+      { any: [{ field: 'plan', op: '=', value: 'one-plan' }, { field: 'kind', op: '=', value: 'bug' }] },
+      { field: 'plan', op: 'in', value: ['one-plan', 'another-plan'] },
+      { not: { field: 'plan', op: '=', value: 'one-plan' } },
+      { field: 'kind', op: '=', value: 'bug' },
+    ]) expect(exactPositiveSinglePlanSlugFromFilter(filter as never)).toBeNull();
   });
 });
 

@@ -79,7 +79,7 @@ function existsAsCode(symbol: string): boolean {
         symbol,
         ...SOURCE_DIRS,
       ],
-      { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+      { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120_000, killSignal: 'SIGKILL' },
     );
   } catch {
     return false; // grep exits 1 on no match

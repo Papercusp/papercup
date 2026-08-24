@@ -21,7 +21,8 @@ vi.mock('./_shared', async (importOriginal) => ({
   refreshTargetSessionBeforeRead,
 }));
 
-await import('./read');
+const readModule = await import('./read');
+const readArgsSchema = readModule.default.args as { safeParse: (value: unknown) => { success: boolean } };
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
 
@@ -70,6 +71,50 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
     const structured = dispatched.result?.structuredContent as { turns: unknown[] };
     expect(structured.turns).toHaveLength(33);
+    expect(structured.turns[16]).toMatchObject({
+      ref: 'session_turn:codex:sess-known:16',
+      turn_idx: 16,
+    });
+  });
+
+  it('accepts a canonical ref directly and reads the exact turn by default', async () => {
+    refreshTargetSessionBeforeRead.mockClear();
+    const tx = makeTx([{
+      source_kind: 'codex',
+      turn_idx: 44,
+      speaker: 'user',
+      owner: 'su-peer',
+      ts: '2026-08-24T01:02:03.000Z',
+      text: 'the referenced requirement',
+    }]);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref: 'session_turn:codex:sess-with:colon:44' },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-ref-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx,
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, 'codex', 'sess-with:colon');
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      session_id: 'sess-with:colon',
+      turn_count: 1,
+      turns: [{ ref: 'session_turn:codex:sess-with:colon:44', turn_idx: 44 }],
+    });
+  });
+
+  it('rejects malformed or mixed canonical-ref inputs at the schema boundary', () => {
+    expect(readArgsSchema.safeParse({ ref: 'not-a-turn-ref' }).success).toBe(false);
+    expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', session: 'sess' }).success).toBe(false);
+    expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', around: 4 }).success).toBe(false);
+    expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3 }).success).toBe(true);
   });
 
   it('refreshes a named target before querying its indexed turns', async () => {

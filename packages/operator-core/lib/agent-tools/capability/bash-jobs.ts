@@ -809,6 +809,147 @@ export function formatBufferingPipelineAdvice(stage: string, context: 'launch' |
   );
 }
 
+/**
+ * A stdout redirect the command performs ITSELF (`>` / `>>` / `&>` / `&>>` /
+ * `1>` to a file), which sends the job's output somewhere OTHER than the
+ * capability's own log. EI-21301075566136325: for such a job, an empty
+ * capability log (`total_bytes_written: 0`, `output_tail: ""`) is the EXPECTED
+ * and CORRECT reading and carries no information about progress — rendering it
+ * as "how far it got" turns "not measured" into what reads as "nothing
+ * happened" (the repo's documented false-absence class), inviting the caller to
+ * relaunch a live job.
+ */
+export interface SelfOutputRedirect {
+  /** The redirect target as written (surrounding quotes stripped; may still
+   *  contain `$vars` or command substitution when `literalPath` is false). */
+  target: string;
+  /** The operator observed: `>`, `>>`, `&>`, `&>>`, `1>`, or `1>>`. */
+  op: string;
+  /** True when `target` is a literal absolute path with no expansion
+   *  characters — safe for a caller to stat as a progress probe. */
+  literalPath: boolean;
+}
+
+/**
+ * Detects whether `command` redirects its OWN stdout to a file, anywhere in the
+ * command (not just the last stage — `for i in …; do echo … >> /tmp/x; done`
+ * counts). Skips stderr-only redirects (`2>`), fd dups (`>&2`, `2>&1`), process
+ * substitution (`>(…)`), and anything inside quotes. Returns the LAST such
+ * redirect (the conventional main one), or `null`. Deliberately pragmatic, like
+ * `detectBufferingLastStage`: this feeds an advisory note, so a rare miss just
+ * preserves today's behavior.
+ */
+export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | null {
+  let inSingle = false;
+  let inDouble = false;
+  let found: SelfOutputRedirect | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || inDouble || ch !== '>') continue;
+
+    const prev = command[i - 1];
+    let op: string;
+    let opEnd = i + 1; // index just past the operator
+    if (prev === '&' && command[i - 2] !== '>') {
+      // `&>` / `&>>` — bash "both streams" redirect. (`>&` dup is handled below.)
+      op = '&>';
+    } else if (prev !== undefined && /\d/.test(prev)) {
+      // A digit-prefixed redirect (`1>`, `2>`) only counts as an fd redirect
+      // when the digit starts its own token; otherwise the digit is part of a
+      // word (`echo hi1>f` still redirects stdout, with `hi1` the word).
+      const beforeDigit = command[i - 2];
+      const digitIsFd = beforeDigit === undefined || /[\s;|&(]/.test(beforeDigit);
+      if (digitIsFd && prev !== '1') {
+        // Stderr(-or-other-fd)-only redirect: stdout still reaches the
+        // capability log, so this is not a self-output redirect. Skip past its
+        // target so we do not re-trigger inside it.
+        if (command[opEnd] === '>') opEnd++;
+        i = opEnd;
+        continue;
+      }
+      op = digitIsFd ? '1>' : '>';
+    } else {
+      op = '>';
+    }
+    if (command[opEnd] === '>') {
+      op += '>';
+      opEnd++;
+    }
+    // Fd dup (`>&1`, `1>&2`, `2>&1`) or process substitution (`>(…)`) — not a file.
+    if (command[opEnd] === '&' || command[opEnd] === '(') {
+      i = opEnd;
+      continue;
+    }
+
+    // Parse the target token (respecting quotes), tracking expansion characters.
+    let j = opEnd;
+    while (j < command.length && /\s/.test(command[j])) j++;
+    let target = '';
+    let hasExpansion = false;
+    let tSingle = false;
+    let tDouble = false;
+    for (; j < command.length; j++) {
+      const tc = command[j];
+      if (tc === "'" && !tDouble) {
+        tSingle = !tSingle;
+        continue;
+      }
+      if (tc === '"' && !tSingle) {
+        tDouble = !tDouble;
+        continue;
+      }
+      if (!tSingle && !tDouble && /[\s;|&<>()]/.test(tc)) break;
+      if (!tSingle && (tc === '$' || tc === '`')) hasExpansion = true;
+      target += tc;
+    }
+    if (target.length > 0) {
+      found = {
+        target,
+        op,
+        literalPath: target.startsWith('/') && !hasExpansion && !/[*?]/.test(target),
+      };
+    }
+    i = j - 1;
+  }
+  return found;
+}
+
+/**
+ * Explain that an empty capability log is the EXPECTED reading for a job that
+ * redirects its own stdout, and point at the redirect target (with a fresh stat
+ * of it, when the caller could take one) as the ACTUAL progress signal.
+ */
+export function formatSelfRedirectAdvice(
+  redirect: SelfOutputRedirect,
+  probe: { sizeBytes: number; mtimeMs: number } | null,
+): string {
+  if (redirect.target === '/dev/null') {
+    return (
+      `NOTE: this command discards its own stdout (\`${redirect.op} /dev/null\`), so an empty ` +
+      'output_tail here is EXPECTED and says NOTHING about progress — judge liveness by the task ' +
+      'ledger or `ps`, never by output volume.'
+    );
+  }
+  const probeNote = probe
+    ? ` Measured just now: \`${redirect.target}\` holds ${probe.sizeBytes} bytes, last written ${new Date(probe.mtimeMs).toISOString()}.`
+    : '';
+  return (
+    `NOTE: this command redirects its own stdout (\`${redirect.op} ${redirect.target}\`), so the ` +
+    'capability log legitimately holds nothing — an empty output_tail here means "not measured", ' +
+    'NOT "the job produced nothing". Judge progress by that file instead: sample its size/mtime ' +
+    'twice a few seconds apart (growth = alive and advancing).' +
+    probeNote
+  );
+}
+
 export interface RunOptions {
   command: string;
   cwd: string;

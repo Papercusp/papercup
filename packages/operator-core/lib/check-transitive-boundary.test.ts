@@ -78,7 +78,11 @@ describe('transitive client/server boundary preflight', () => {
       'second.ts': "import { createServer } from 'node:http';\n",
     });
     const script = resolve(__dirname, '../../../scripts/check-transitive-boundary.mjs');
-    const run = spawnSync(process.execPath, [script, join(root, 'main.ts')], { encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [script, join(root, 'main.ts')], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    });
 
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('Found 2 forbidden import(s)');

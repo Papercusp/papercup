@@ -3,9 +3,9 @@
  *
  * Consumers (the scheduler's get_next/claim path, the Queen survey, the readiness column
  * maintainer) call THIS, never the dependency table directly. That decouples them from where
- * blocking is stored, so the storage can evolve — coord_links rel='blocks' TODAY → a dedicated
- * `work_item_deps` table (P-002/P-003) → FK to the unified work_items base table (P-009) — without
- * rewriting a single consumer.
+ * blocking is stored, so the storage can evolve. Work-item→work-item `blocks` edges now live in
+ * `work_item_deps`; `coord_links` remains the polymorphic store for every other relation and for
+ * blocks whose endpoint is not a work item.
  *
  * The READINESS LOGIC is the existing pure predicate in dbos/frontier-readiness.ts (the "one
  * frontier, two views" keystone) — reused verbatim, NOT forked. This module adds (a) the storage
@@ -17,7 +17,7 @@ import { PgLinkStore, type LinkRow, type ObjectRef } from '@papercusp/coordinati
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
-import { getWorkItemDepBlockers } from './dbos/work-item-deps-store';
+import { getWorkItemDepBlockers, workItemDepEdgeReader } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
 
 /** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed).
@@ -75,29 +75,22 @@ export interface BlockingStore {
 }
 
 /**
- * Current backend: coord_links rel='blocks' (feature→feature), via the existing reader.
- * P-002/P-003 introduce `workItemDepsBlockingStore` and flip this one constant.
+ * Historical compatibility name. `getFeatureBlockers` now reads the canonical
+ * `work_item_deps` table, so this is no longer a distinct coord_links backend.
  */
 export const coordLinksBlockingStore: BlockingStore = {
   blockersFor: (harnessSlug: string) => getFeatureBlockers(harnessSlug),
 };
 
 /**
- * NEW backend: the dedicated `work_item_deps` table (P-002). The seam flips its DEFAULT to this once
- * the backfill + dual-write land (the P-003 cutover); `coordLinksBlockingStore` remains the default
- * until then so reads stay correct during the transition. Exposed now so the cutover is a one-line swap.
+ * Canonical backend: the dedicated `work_item_deps` table.
  */
 export const workItemDepsBlockingStore: BlockingStore = {
   blockersFor: (harnessSlug: string) => getWorkItemDepBlockers(harnessSlug),
 };
 
 /**
- * The seam's default backend. P-004 cutover (2026-06-23): flipped from `coordLinksBlockingStore` to
- * `workItemDepsBlockingStore` so the dispatch frontier + Queen survey read blocking from the SAME
- * `work_item_deps` table the scheduler claim already reads — closing the latent split (frontier read
- * coord_links while the claim read work_item_deps; if the dual-write ever diverged they'd disagree).
- * The two readers return identical prefix-stripped Maps on the dual-written, verified-equal data; the
- * coord_links blocks edges remain dual-written as a safety net until the full edge migration drops them.
+ * P-004 makes every readiness consumer read the same canonical table as the scheduler claim floor.
  */
 export const defaultBlockingStore: BlockingStore = workItemDepsBlockingStore;
 
@@ -108,14 +101,15 @@ export const defaultBlockingStore: BlockingStore = workItemDepsBlockingStore;
  * `blockersFor` is a within-harness, id-only projection: it CANNOT represent the
  * polymorphic (kind, ref) edges the emitter needs — a bug can block a feature
  * across harnesses; `work_items:link` keys on ObjectRef, not the physical table.
- * So edge consumers read through THIS interface instead. TODAY it is backed by
- * coord_links (`rel='blocks'` edges are still dual-written there); when
- * `work_item_deps` grows polymorphic refs, this ONE binding is the emitter-side
- * flip point — mirror of the `defaultBlockingStore` cutover above.
+ * So edge consumers read through THIS interface instead. Work-item blocks come from
+ * `work_item_deps`; non-work blocks and every other relation are merged from the caller's
+ * correctly-scoped coord_links store.
  */
 export interface BlockingEdgeReader {
   listOut(src: ObjectRef, opts?: { rel?: string }): Promise<LinkRow[]>;
   listIn(dst: ObjectRef, opts?: { rel?: string }): Promise<LinkRow[]>;
+  /** Batched listOut: ONE kind-grouped query for many srcs — never a per-src loop. */
+  listOutMany(srcs: ObjectRef[], opts?: { rel?: string }): Promise<LinkRow[]>;
   /** Batched listIn: ONE kind-grouped query for many dsts — never a per-dst loop. */
   listInMany(dsts: ObjectRef[], opts?: { rel?: string }): Promise<LinkRow[]>;
 }
@@ -126,12 +120,59 @@ const edgeLinkStore = new PgLinkStore({
   workspaceId: DEFAULT_COORD_WORKSPACE,
 });
 
-/** The production edge reader: coord_links via PgLinkStore (see BlockingEdgeReader). */
-export const blockingEdgeReader: BlockingEdgeReader = {
-  listOut: (src, opts) => edgeLinkStore.listOut(src, opts),
-  listIn: (dst, opts) => edgeLinkStore.listIn(dst, opts),
-  listInMany: (dsts, opts) => edgeLinkStore.listInMany(dsts, opts),
-};
+const WORK_ITEM_KINDS = new Set(['issue', 'feature']);
+
+function isWorkItemBlock(row: LinkRow): boolean {
+  return row.rel === 'blocks' && WORK_ITEM_KINDS.has(row.src.kind) && WORK_ITEM_KINDS.has(row.dst.kind);
+}
+
+function edgeKey(row: LinkRow): string {
+  return `${row.src.kind}\0${row.src.ref}\0${row.rel}\0${row.dst.kind}\0${row.dst.ref}`;
+}
+
+function mergeBlockingRows(coordRows: LinkRow[], depRows: LinkRow[]): LinkRow[] {
+  const merged = new Map<string, LinkRow>();
+  // work_item_deps is authoritative only for work-item→work-item blocks. Every other
+  // coord relation — including issue→plan_item blocks — remains on coord_links.
+  for (const row of coordRows) if (!isWorkItemBlock(row)) merged.set(edgeKey(row), row);
+  for (const row of depRows) if (isWorkItemBlock(row)) merged.set(edgeKey(row), row);
+  return [...merged.values()].sort(
+    (a, b) => a.created_ts.localeCompare(b.created_ts) || a.id - b.id || edgeKey(a).localeCompare(edgeKey(b)),
+  );
+}
+
+/**
+ * Hybrid compatibility reader for the polymorphic Linkable surface.
+ *
+ * Work-item `blocks` edges come only from canonical work_item_deps. Non-work blocks
+ * and every other relation stay on the caller's correctly-scoped PgLinkStore. The
+ * filter is intentionally source-wide rather than "prefer canonical when present":
+ * a stale coord_links duplicate must never resurrect after its canonical edge is removed.
+ */
+export function createBlockingEdgeReader(
+  coordStore: Pick<BlockingEdgeReader, 'listOut' | 'listIn' | 'listOutMany' | 'listInMany'>,
+  depStore: BlockingEdgeReader = workItemDepEdgeReader,
+): BlockingEdgeReader {
+  const merge = async (coord: Promise<LinkRow[]>, deps: Promise<LinkRow[]>): Promise<LinkRow[]> => {
+    const [coordRows, depRows] = await Promise.all([coord, deps]);
+    return mergeBlockingRows(coordRows, depRows);
+  };
+  return {
+    listOut: (src, opts) => merge(coordStore.listOut(src, opts), workItemDepsFor(opts, () => depStore.listOut(src, opts))),
+    listIn: (dst, opts) => merge(coordStore.listIn(dst, opts), workItemDepsFor(opts, () => depStore.listIn(dst, opts))),
+    listOutMany: (srcs, opts) =>
+      merge(coordStore.listOutMany(srcs, opts), workItemDepsFor(opts, () => depStore.listOutMany(srcs, opts))),
+    listInMany: (dsts, opts) =>
+      merge(coordStore.listInMany(dsts, opts), workItemDepsFor(opts, () => depStore.listInMany(dsts, opts))),
+  };
+}
+
+function workItemDepsFor(opts: { rel?: string } | undefined, read: () => Promise<LinkRow[]>): Promise<LinkRow[]> {
+  return opts?.rel != null && opts.rel !== 'blocks' ? Promise.resolve([]) : read();
+}
+
+/** The production edge reader: canonical work-item blocks + coord_links compatibility edges. */
+export const blockingEdgeReader: BlockingEdgeReader = createBlockingEdgeReader(edgeLinkStore);
 
 /** Build readiness nodes from items + a blocker map (pure). */
 export function toReadinessNodes(
