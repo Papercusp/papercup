@@ -75,6 +75,58 @@ export function classifyPrePinnedOwnerRows<T extends PrePinnedOwnerRow>(
 }
 
 /**
+ * The witnesses a caller supplies for resolving three-way liveness on the rows
+ * bound to ONE pre-pinned owner. Both legs key on the owner id, so a single
+ * resolution covers every candidate row.
+ */
+export type PrePinnedOwnerLivenessWitness = {
+  /**
+   * Self-validating psu-pty host discovery (`findLiveHost`): a non-null result
+   * is POSITIVE live evidence — pid alive + socket present + psu-host identity.
+   * Null proves nothing by itself (a headless member legitimately has no pty
+   * host between wakes), so it must never authorise a 'dead' verdict.
+   */
+  findHost: (ownerId: string) => unknown;
+  /**
+   * The psu supervisor beat's self-reported record persisted for this owner
+   * (`coord_presence.host` / `.pid`), or null when no beat ever ran. The beat
+   * runs AS the agent's own parent process — the process whose death IS the
+   * session's death — which is what makes an ESRCH probe of it trustworthy.
+   */
+  beat: { pid?: number | null; host?: string | null } | null;
+  /**
+   * {@link probeProcessLiveness}-shaped: true = alive, false = ESRCH-dead,
+   * null = inconclusive (no recorded pid/host, foreign host, or EPERM).
+   */
+  probeBeat: (record: { host?: string | null; pid?: number | null }) => boolean | null;
+};
+
+/**
+ * Resolve the three-way process evidence for the rows bound to one pre-pinned
+ * owner id.
+ *
+ * Precedence: positive live evidence wins first (a live pty host settles it),
+ * then the supervisor-beat probe — and ONLY an authoritative ESRCH yields
+ * 'dead'. Every inconclusive shape (no beat, remote/unknown host, EPERM)
+ * returns 'unknown', because absence of evidence is not proof of death:
+ * reclaiming on 'unknown' would tear down a possibly-live session's binding —
+ * exactly the harm this guard exists to prevent.
+ */
+export function resolvePrePinnedOwnerLiveness(
+  ownerId: string,
+  witness: PrePinnedOwnerLivenessWitness,
+): PrePinnedOwnerLiveness {
+  if (witness.findHost(ownerId)) return 'live';
+  const probed = witness.probeBeat(witness.beat ?? {});
+  if (probed === false) return 'dead';
+  if (probed === true) return 'live';
+  return 'unknown';
+}
+
+/**
+ * The per-row evidence appended to a refusal, e.g.
+
+/**
  * The per-row evidence appended to a refusal, e.g.
  * `14746(display=terminal,session=bound)`.
  *
