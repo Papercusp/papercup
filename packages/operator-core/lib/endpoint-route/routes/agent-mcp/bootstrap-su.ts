@@ -53,7 +53,6 @@ import {
   describePrePinnedConflicts,
   resolvePrePinnedOwnerLiveness,
 } from './pre-pinned-owner-rows';
-import { findLiveHost } from '../../../events/await/psu-pty-discovery';
 import { probeProcessLiveness } from '../../../agent-tools/coordination/presence';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
