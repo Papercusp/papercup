@@ -28,6 +28,7 @@
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { listSpecClauses } from './spec-clauses-store';
 import { enforcementEligibility, type EnforcementEligibility } from './spec-enforcement-eligibility';
+import { listPlanStatuses } from './plan-status-read';
 import type { WorkItemSpecRevisionEdge } from './spec-evidence-store';
 import { listWorkItemSpecRevisionEdges } from './spec-evidence-store';
 
@@ -186,37 +187,11 @@ export function enforcedClausesOf(contract: WorkItemBehaviorContract): {
 }
 
 /**
- * Default plan-status read: ONE query for every namespace in scope.
- *
- * Deliberately narrow — only `status`, because that is all eligibility needs (the other
- * input, whether the plan adopted clauses, is already resolved as `group.clauses`). A
- * plan that does not come back is simply absent from the map, which the caller reads as
- * non-enforcing; this function never invents a status for a row it did not see.
+ * Default plan-status read — EXTRACTED to `plan-status-read.ts` in P-013 so the plan-ship
+ * coverage gate reads eligibility from the same query this resolver does. See that
+ * module's header for why a second copy would be a defect rather than a duplication.
  */
-async function defaultListPlanStatuses(input: {
-  harnessSlug?: string;
-  planSlugs: string[];
-}): Promise<Map<string, string>> {
-  if (input.planSlugs.length === 0) return new Map();
-  const { resolvePlanScope } = await import('./source');
-  const { withWorkspace } = await import('@papercusp/db-org');
-  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
-
-  const rows = await withWorkspace(
-    scope.workspaceId,
-    async (tx) => tx<{ plan_slug: string; status: string | null }[]>`
-      SELECT p.plan_slug, p.status
-        FROM harness_shared.harness_plans p
-       WHERE p.workspace_id = ${scope.workspaceId}
-         AND p.harness_slug = ${scope.harnessSlug}
-         AND p.plan_slug = ANY(${input.planSlugs})
-    `,
-  );
-
-  return new Map(
-    rows.flatMap((row) => (row.status ? [[row.plan_slug, row.status] as const] : [])),
-  );
-}
+const defaultListPlanStatuses = listPlanStatuses;
 
 /**
  * Resolve every behavior clause a work item is on the hook for, across plan namespaces.

@@ -143,11 +143,22 @@ describe('PlanSpecCoverageSection subscription (P-011)', () => {
 });
 
 describe('PlanSpecCoverageSection advisory contract (D-018)', () => {
-  it('REPORTS unproven clauses and ungraded adequacy WITHOUT rendering a ship blocker', () => {
-    // The exact shape D-018 rules on: enforceable clauses with no evidence at all.
-    // P-013 owns turning this into a refusal; until then it is a notice.
+  it('REPORTS unproven clauses on a NOT-YET-ELIGIBLE plan without rendering a ship blocker', () => {
+    // ⚠ RE-FRAMED by P-013, not weakened. This case used to be "unproven clauses are
+    // permanently advisory, because P-013 owns the refusal". P-013 made that refusal, so
+    // on an ELIGIBLE plan these now DO block (asserted in the next test).
+    //
+    // What survives is the migration lane, which is the half that still must not block: a
+    // plan that has shipped, or has not been reconciled, reports `mode: 'report-only'` and
+    // names its findings in `wouldBlock` WITHOUT refusing. Rendering those as a blocker
+    // would refuse every unreconciled plan at once — the fleet-wide refusal the per-plan
+    // migration exists to avoid.
     coverageRow.current = row({
+      mode: 'report-only',
+      satisfied: true,
+      wouldBlock: ['2-enforceable-clause(s)-with-no-evidence'],
       reports: [
+        'not-enforcing:not-yet-reconciled',
         '2-enforceable-clause(s)-with-no-evidence',
         '1-enforceable-clause(s)-without-a-current-adequacy-scorecard',
       ],
@@ -170,6 +181,46 @@ describe('PlanSpecCoverageSection advisory contract (D-018)', () => {
     // anyone promotes an advisory report into a blocker at this surface.
     expect(screen.queryByTestId('plan-spec-coverage-blocking')).toBeNull();
     expect(screen.queryByText(/Ship BLOCKED/)).toBeNull();
+  });
+
+  it('renders an ENFORCED unproven-clause refusal as a REAL blocker (P-013)', () => {
+    // The falsifier for the re-framing above. Without this case, the panel could render
+    // EVERY unproven finding as advisory — including one the ship path will actually
+    // refuse — and the test above would still pass. That failure mode is the worse
+    // direction: a human reads "advisory", ships, and the gate refuses anyway.
+    coverageRow.current = row({
+      mode: 'enforced',
+      satisfied: false,
+      code: 'spec_clause_unproven',
+      message: "plan 'p' cannot be marked shipped: 2 enforceable spec clause(s) have NO evidence bound",
+      wouldBlock: ['2-enforceable-clause(s)-with-no-evidence'],
+      coverage: {
+        proven: 1,
+        staleProof: 0,
+        unproven: 2,
+        staleProofClauses: [],
+        unprovenSpecIds: ['SPEC-7', 'SPEC-9'],
+      },
+    });
+    renderSection(OPEN);
+
+    expect(screen.getByTestId('plan-spec-coverage-blocking')).toBeTruthy();
+  });
+
+  it('renders a blocker from the VERDICT, not from a known-code list', () => {
+    // The regression guard for how `blocking` is computed. The panel read
+    // `code === 'spec_proof_stale'`, so any refusal carrying a different code rendered as
+    // advisory. Pinning an UNKNOWN code here fails if anyone re-introduces a hand-kept
+    // list, and passes as long as the gate's own satisfied/mode verdict is what is read.
+    coverageRow.current = row({
+      mode: 'enforced',
+      satisfied: false,
+      code: 'some_future_refusal_code',
+      message: 'refused for a reason this panel has never heard of',
+    });
+    renderSection(OPEN);
+
+    expect(screen.getByTestId('plan-spec-coverage-blocking')).toBeTruthy();
   });
 
   it('renders spec_proof_stale as a REAL blocker — the one condition entitled to be one', () => {

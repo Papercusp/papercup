@@ -58,7 +58,13 @@ export type PlanAcceptanceGateCode =
   | 'audit_coverage_stale'
   | 'audit_citations_unresolved'
   // first-class-spec-clauses-…-2026-08-20 P-008 — the spec-proof half of code truth.
-  | 'spec_proof_stale';
+  | 'spec_proof_stale'
+  // …P-013 widened it: a clause with NO evidence at any revision now refuses too. Both
+  // codes are carried through from the census verbatim so the author is told which of the
+  // two actually happened — re-prove a stale binding, or bind one that never existed.
+  | 'spec_clause_unproven'
+  /** Never accompanies a refusal (the census degrades to report-only), carried for the union's honesty. */
+  | 'spec_coverage_unavailable';
 
 export interface PlanAcceptanceGateVerdict {
   satisfied: boolean;
@@ -333,12 +339,20 @@ export async function evaluatePlanAcceptanceGate(
       planSlug,
     });
     if (!specCoverage.satisfied) {
+      // ⚠ Carry the census's OWN code through rather than hardcoding one. This said
+      // `spec_proof_stale` on both legs, which was true while that was the only refusal
+      // this gate could produce. P-013 added `spec_clause_unproven`, and a hardcoded code
+      // would have reported "proven only at a superseded revision" for a clause that has
+      // no proof at all — telling the author to re-bind evidence that was never there.
+      // A misdiagnosis is worse than a bare refusal: it sends someone to fix the wrong
+      // thing and reads as authoritative while doing it.
+      const code = specCoverage.code ?? 'spec_proof_stale';
       if (force) {
-        forcedChecks.push('spec_proof_stale');
+        forcedChecks.push(code);
       } else {
         return {
           satisfied: false,
-          code: 'spec_proof_stale',
+          code,
           message: specCoverage.message ?? `plan '${planSlug}' has spec clauses proven only at a superseded revision.`,
           specCoverage,
         };

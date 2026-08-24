@@ -72,8 +72,13 @@ export interface PlanSpecCoverageRow {
   /** The gate's OWN statement of whether it can currently refuse. Never re-derived. */
   mode: 'report-only' | 'enforced';
   satisfied: boolean;
-  /** 'spec_proof_stale' is the ONLY failure; see the module header. */
-  code: 'spec_proof_stale' | 'spec_coverage_unavailable' | null;
+  /**
+   * The census's own code. ⚠ Do NOT read this to decide whether the panel shows a
+   * blocker — read `satisfied`/`mode`. P-013 added a second refusing code
+   * (`spec_clause_unproven`), and any consumer that had enumerated the failing codes by
+   * hand silently kept rendering the new refusal as advisory.
+   */
+  code: 'spec_proof_stale' | 'spec_clause_unproven' | 'spec_coverage_unavailable' | null;
   message: string | null;
   /** Conditions that DID refuse, or WOULD were the gate enforcing. */
   wouldBlock: string[];

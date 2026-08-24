@@ -44,19 +44,22 @@ vi.mock('../agent-tools/work_items/spec-test-adequacy-gate', () => ({
 
 const contractSpy = vi.fn<(...a: unknown[]) => Promise<WorkItemBehaviorContract>>();
 const stampSpy = vi.fn();
-vi.mock('../agent-tools/plans/behavior-contract-resolver', () => ({
+// ⚠ `enforcedClausesOf` and ENFORCEABLE_LIFECYCLE_STATUSES come from importActual, NOT a
+// stub. Only the two DATABASE-touching functions are substituted.
+//
+// This mock briefly carried a hand-written `enforcedClausesOf` that re-implemented the
+// filter (`lifecycleStatus === 'accepted' || 'active'`, eligibility re-derived inline).
+// It passed — and it made this file assert against a COPY of the enforced-set rule while
+// claiming to cover the real one. That is the exact drift this module was just refactored
+// to eliminate, reintroduced one layer down where it is harder to see: the real selector
+// could change and every test here would still be green.
+//
+// The rule is a pure function of the contract, so there is no reason to fake it. Fake the
+// I/O; run the logic.
+vi.mock('../agent-tools/plans/behavior-contract-resolver', async (orig) => ({
+  ...(await orig<typeof import('../agent-tools/plans/behavior-contract-resolver')>()),
   resolveWorkItemBehaviorContract: (...a: unknown[]) => contractSpy(...a),
-  enforcedClausesOf: (contract: WorkItemBehaviorContract) => {
-    const enforcing = contract.groups.filter((group) => group.eligibility.enforcing);
-    return {
-      planSlugs: enforcing.map((group) => group.planSlug),
-      clauses: enforcing
-        .flatMap((group) => group.clauses)
-        .filter((clause) => clause.lifecycleStatus === 'accepted' || clause.lifecycleStatus === 'active'),
-    };
-  },
   planStampOf: (...a: unknown[]) => stampSpy(...a),
-  ENFORCEABLE_LIFECYCLE_STATUSES: ['accepted', 'active'] as const,
 }));
 
 // spec-test-adequacy is NOT mocked on purpose: `requiredProofFloor` is a pure function and

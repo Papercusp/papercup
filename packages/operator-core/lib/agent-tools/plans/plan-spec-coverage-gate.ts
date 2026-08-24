@@ -39,6 +39,8 @@ import { listScorecards, type ScorecardRow } from '../../scorecards';
 import { listSpecClauses, type SpecClauseRevision } from './spec-clauses-store';
 import { listSpecEvidence } from './spec-evidence-store';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF } from './spec-test-adequacy';
+import { enforcementEligibility } from './spec-enforcement-eligibility';
+import { listPlanStatuses, type PlanStatusReader } from './plan-status-read';
 
 /** Lifecycle states carrying an enforceable promise (D-012), mirrored from the resolver. */
 const ENFORCEABLE_LIFECYCLE = new Set(['accepted', 'active']);
@@ -111,7 +113,11 @@ export interface PlanSpecCoverageAggregate {
   };
 }
 
-export type PlanSpecCoverageGateCode = 'spec_proof_stale' | 'spec_coverage_unavailable';
+export type PlanSpecCoverageGateCode =
+  | 'spec_proof_stale'
+  /** P-013: an enforceable clause with NO evidence at any revision — an unproven promise. */
+  | 'spec_clause_unproven'
+  | 'spec_coverage_unavailable';
 
 export interface PlanSpecCoverageGateVerdict {
   satisfied: boolean;
@@ -153,6 +159,12 @@ export interface PlanSpecCoverageDeps {
   listClauses?: typeof listSpecClauses;
   listEvidence?: SpecEvidenceCensusReader;
   listCards?: typeof listScorecards;
+  /**
+   * P-013: reads the plan's own status so the gate can decide whether its clauses may
+   * refuse at all. The SAME reader the work-item contract resolver uses — see
+   * `plan-status-read.ts` for why this is shared rather than re-queried here.
+   */
+  readPlanStatuses?: PlanStatusReader;
 }
 
 function acceptedRating(value: unknown): boolean {
@@ -383,7 +395,35 @@ export async function evaluatePlanSpecCoverageGate(
     };
   }
 
-  if (aggregate.coverage.staleProof > 0) {
+  // ── P-013: is this plan ELIGIBLE to refuse at all? ──────────────────────────────────
+  //
+  // Read AFTER the two report-only degradations above, deliberately: a truncated census
+  // or an unreadable one is report-only regardless of eligibility, so asking first would
+  // spend a query on a verdict already decided.
+  //
+  // Adoption is not re-derived — `clauses.total === 0` returned above, so every plan
+  // reaching this line has adopted clauses. What remains is the LANE: a shipped or
+  // superseded plan stays non-blocking (D-018), and a draft's clauses are candidates until
+  // promotion (D-012). The ship path itself is unaffected — a plan being marked shipped is
+  // still `active` when this runs — but the same function backs the admin panel, where
+  // rendering a ship blocker on an already-shipped plan would be exactly the fleet-wide
+  // refusal the migration semantics exist to prevent.
+  //
+  // A read failure degrades to NON-enforcing, matching the resolver: refusing because we
+  // could not read a plan's status would turn an infrastructure blip into a ship freeze.
+  const readPlanStatuses = deps.readPlanStatuses ?? listPlanStatuses;
+  const planStatus = await readPlanStatuses({
+    ...(input.harnessSlug ? { harnessSlug: input.harnessSlug } : {}),
+    planSlugs: [input.planSlug],
+  })
+    .then((map) => map.get(input.planSlug) ?? null)
+    .catch(() => null);
+  const eligibility =
+    planStatus === null
+      ? ({ enforcing: false, reason: 'unreadable-plan-status' } as const)
+      : enforcementEligibility({ status: planStatus, clauseCount: aggregate.clauses.total });
+
+  if (aggregate.coverage.staleProof > 0 && eligibility.enforcing) {
     const listed = aggregate.coverage.staleProofClauses
       .slice(0, 5)
       .map((c) => `${c.specId} (proof at r${c.provenRevisions.join('/r')}, clause now r${c.currentRevision})`)
@@ -409,6 +449,72 @@ export async function evaluatePlanSpecCoverageGate(
         `A clause whose behavior genuinely did not change still needs the evidence rebound, because the ` +
         `revision is what records that someone re-checked it. To ship anyway, pass force:{ reason } — it is ` +
         `recorded on the plan.`,
+    };
+  }
+
+  // ── P-013: the `unproven` leg becomes a REFUSAL ─────────────────────────────────────
+  //
+  // This is the widening D-018 scoped to this item. Until now an enforceable clause with
+  // NO evidence at all was reported and shipped anyway — the gate refused a proof bound to
+  // a superseded revision (`spec_proof_stale`) while accepting no proof whatsoever, which
+  // is the weaker condition passing where the stronger one refuses.
+  //
+  // It is ordered AFTER the stale-proof leg so the more specific diagnosis wins: a clause
+  // whose evidence merely went stale gets told to re-prove it, not that it has none.
+  if (aggregate.coverage.unproven > 0 && eligibility.enforcing) {
+    const listed = aggregate.coverage.unprovenSpecIds.slice(0, 5).join(', ');
+    const more =
+      aggregate.coverage.unprovenSpecIds.length > 5
+        ? ` (+${aggregate.coverage.unprovenSpecIds.length - 5} more)`
+        : '';
+    return {
+      satisfied: false,
+      applicable: true,
+      mode: 'enforced',
+      planSlug: input.planSlug,
+      aggregate,
+      code: 'spec_clause_unproven',
+      wouldBlock: [`${aggregate.coverage.unproven}-enforceable-clause(s)-with-no-evidence`],
+      reports,
+      message:
+        `plan '${input.planSlug}' cannot be marked shipped: ${aggregate.coverage.unproven} enforceable spec ` +
+        `clause(s) have NO evidence bound at any revision — ${listed}${more}. A clause with no evidence is an ` +
+        `unproven promise, not a passing one. Run the covering test for each, then bind it with ` +
+        `plans:bind-spec-evidence { slug:'${input.planSlug}', specId:'<spec>', specRevision:<current>, ... }. ` +
+        `If a clause is genuinely not automatable, declare that on the clause (behaviorClass 'non-automated') ` +
+        `rather than shipping it unproven. To ship anyway, pass force:{ reason } — it is recorded on the plan.`,
+    };
+  }
+
+  // NOT eligible: report what WOULD have refused, and say why it did not.
+  //
+  // ⚠ `wouldBlock` is populated here even though nothing refuses — that is its documented
+  // job ("conditions that DID refuse, or WOULD were the gate enforcing"). Leaving it empty
+  // would render an unreconciled plan as indistinguishable from a clean one, which is the
+  // silent-exemption this plan exists to remove: a migration lane has to be VISIBLE to be
+  // migrated.
+  if (!eligibility.enforcing) {
+    const wouldBlock: string[] = [];
+    if (aggregate.coverage.staleProof > 0) {
+      wouldBlock.push(`${aggregate.coverage.staleProof}-clause(s)-proven-only-at-a-superseded-revision`);
+    }
+    if (aggregate.coverage.unproven > 0) {
+      wouldBlock.push(`${aggregate.coverage.unproven}-enforceable-clause(s)-with-no-evidence`);
+    }
+    return {
+      satisfied: true,
+      applicable: true,
+      mode: 'report-only',
+      planSlug: input.planSlug,
+      aggregate,
+      wouldBlock,
+      reports: [...reports, `not-enforcing:${eligibility.reason}`],
+      message:
+        `Report-only: plan '${input.planSlug}'${planStatus ? ` (status '${planStatus}')` : ''} is not yet ` +
+        `subject to spec-coverage enforcement (${eligibility.reason})` +
+        (wouldBlock.length
+          ? `. It WOULD refuse on: ${wouldBlock.join('; ')}.`
+          : `, and nothing would refuse in any case.`),
     };
   }
 

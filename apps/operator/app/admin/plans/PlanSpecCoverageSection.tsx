@@ -15,14 +15,21 @@ import type { PlanSpecCoverageRow } from '@papercusp/operator-core/lib/sync-reso
  * green. This renders the same verdict the ship path enforces, continuously.
  *
  * ⚠ THE RENDERING RULE IS THE DELIVERABLE (D-018). The gate REPORTS far more than it
- * REFUSES, and exactly one finding is a failure:
+ * REFUSES, and the panel must show a blocker for EXACTLY what the gate refuses on — no
+ * more (a human sent to fix something no gate blocks on) and no less (a real refusal
+ * dressed as a note, so the ship fails without warning).
  *
- *   · `spec_proof_stale` — the ONLY failure. Rendered as one.
- *   · `reports[]` — unproven clauses, ungraded adequacy, undeclared falsifiers. ADVISORY.
- *     D-013/D-017 give the uncovered-clause refusal to P-013; showing one as a blocking
- *     error here would show a human a failure no gate is blocking on, and would visually
- *     pre-empt a decision P-013 owns.
+ *   · A REFUSAL is `satisfied === false && mode === 'enforced'` — ASKED OF THE GATE, not
+ *     re-derived from a list of codes kept here. P-013 widened the refusing set from
+ *     `spec_proof_stale` alone to include `spec_clause_unproven`; a hand-kept list would
+ *     have gone quietly stale and under-reported the new one.
+ *   · `reports[]` — ungraded adequacy, undeclared falsifiers, and anything the plan is not
+ *     yet ELIGIBLE to be refused on. ADVISORY. `wouldBlock` on a report-only verdict is
+ *     the migration lane: real findings that do not refuse YET.
  *   · `spec_coverage_unavailable` — a deliberate fail-open degradation, not a refusal.
+ *
+ * Under P-008/D-018 unproven clauses were listed here as permanently advisory because the
+ * refusal was P-013's to make. P-013 made it; they refuse now, on eligible plans.
  *
  * A FLOOR IS NEVER SHOWN AS A TOTAL. When the evidence census truncates, every count
  * becomes a floor and the gate itself degrades to report-only. The truncation notice
@@ -55,9 +62,15 @@ export function PlanSpecCoverageSection({
   });
   const row = query.loading ? null : (query.data?.[0] ?? null);
 
-  // The ONE failing condition. Everything else renders advisory, however alarming it
-  // sounds — see the header.
-  const blocking = row?.code === 'spec_proof_stale';
+  // ⚠ DERIVED from the gate's own verdict, never from a list of codes maintained here.
+  //
+  // This read `row?.code === 'spec_proof_stale'` — correct while that was the only code
+  // that could refuse, and silently wrong the moment P-013 added `spec_clause_unproven`:
+  // the panel would have rendered a REAL ship blocker as an advisory note, which is the
+  // precise failure the header warns about in the other direction. The gate already
+  // publishes `satisfied` and `mode` as its own statement of whether it can refuse, so
+  // asking it beats re-deriving it — and a third refusing code needs no change here.
+  const blocking = row ? !row.satisfied && row.mode === 'enforced' : false;
   const truncated = Boolean(
     row?.bounded?.truncatedByLimit || row?.bounded?.adequacyTruncatedByLimit,
   );

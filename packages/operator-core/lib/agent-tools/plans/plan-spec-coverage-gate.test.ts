@@ -86,6 +86,15 @@ function deps(over: Partial<PlanSpecCoverageDeps> = {}): PlanSpecCoverageDeps {
     listClauses: vi.fn(async () => [] as SpecClauseRevision[]),
     listEvidence: vi.fn(async () => [] as Array<{ specId: string; specRevision: number }>),
     listCards: vi.fn(async () => [] as ScorecardRow[]),
+    // ⚠ MUST be stubbed, and must default to an ENFORCING status.
+    //
+    // The real reader hits the database, and this gate deliberately catches a read failure
+    // and degrades to non-enforcing (a status blip must not freeze every ship). Both
+    // halves are correct, and together they mean an unstubbed dep here does not throw — it
+    // SILENTLY TURNS ENFORCEMENT OFF, and every refusal assertion in this file passes for
+    // the wrong reason while proving nothing. That is a fail-open no typecheck can see, so
+    // the stub is the guard.
+    readPlanStatuses: vi.fn(async ({ planSlugs }) => new Map(planSlugs.map((slug) => [slug, 'active']))),
     ...over,
   };
 }
@@ -133,20 +142,66 @@ describe('evaluatePlanSpecCoverageGate — proof freshness', () => {
     expect(unblocked.aggregate?.coverage.staleProof).toBe(0);
   });
 
-  it('REPORTS an enforceable clause with no evidence without refusing (D-018: widening is P-013’s)', async () => {
+  it('REFUSES an enforceable clause with no evidence (P-013 lands the D-018 widening)', async () => {
     const verdict = await evaluatePlanSpecCoverageGate(
       { harnessSlug: 'papercusp', planSlug: PLAN },
       deps({ listClauses: vi.fn(async () => [clause({ specId: 'SPEC-UNCOVERED' })]) }),
     );
 
-    // Reported, and visibly so — but the ship is NOT refused. Turning this into a
-    // refusal is a deliberate P-013 change, and it must fail this test to land.
-    expect(verdict.satisfied).toBe(true);
-    expect(verdict.code).toBeUndefined();
-    expect(verdict.wouldBlock).toEqual([]);
+    // ⚠ INVERTED from what it asserted under P-008/D-018, deliberately. It read
+    // `satisfied: true, wouldBlock: []` and carried the note "turning this into a refusal
+    // is a deliberate P-013 change, and it must fail this test to land". It did.
+    //
+    // The condition it now refuses on is the WEAKER one: the gate already refused a proof
+    // bound to a superseded revision, while accepting a clause with no proof at all.
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.mode).toBe('enforced');
+    expect(verdict.code).toBe('spec_clause_unproven');
+    expect(verdict.wouldBlock).toEqual(['1-enforceable-clause(s)-with-no-evidence']);
     expect(verdict.aggregate?.coverage.unproven).toBe(1);
     expect(verdict.aggregate?.coverage.unprovenSpecIds).toEqual(['SPEC-UNCOVERED']);
-    expect(verdict.reports.join(' ')).toContain('no-evidence');
+    expect(verdict.message).toContain('SPEC-UNCOVERED');
+  });
+
+  it('does NOT refuse an unproven clause on a plan that is not eligible to enforce', async () => {
+    // The falsifier for the widening above. Enforcement is per-plan (D-018 keeps shipped
+    // plans non-blocking; D-012 keeps drafts candidate-only), so without this case
+    // "refuses unproven clauses" would pass just as happily if eligibility were ignored —
+    // which would refuse every already-shipped plan the admin panel renders.
+    const verdict = await evaluatePlanSpecCoverageGate(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => [clause({ specId: 'SPEC-UNCOVERED' })]),
+        readPlanStatuses: vi.fn(async ({ planSlugs }) => new Map(planSlugs.map((s) => [s, 'shipped']))),
+      }),
+    );
+
+    expect(verdict.satisfied).toBe(true);
+    expect(verdict.mode).toBe('report-only');
+    expect(verdict.code).toBeUndefined();
+    // ...but NOT silently: an exempt plan still names what it would have refused on, or a
+    // migration lane is indistinguishable from a clean plan and never gets migrated.
+    expect(verdict.wouldBlock).toEqual(['1-enforceable-clause(s)-with-no-evidence']);
+    expect(verdict.reports.join(' ')).toContain('not-enforcing:historical');
+  });
+
+  it('degrades to report-only — never to a refusal — when the plan status cannot be read', async () => {
+    // A status blip must not freeze every ship. The risk of a fail-OPEN is that it is
+    // invisible, so the degradation is asserted to be REPORTED, not merely harmless.
+    const verdict = await evaluatePlanSpecCoverageGate(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => [clause({ specId: 'SPEC-UNCOVERED' })]),
+        readPlanStatuses: vi.fn(async () => {
+          throw new Error('pg unreachable');
+        }),
+      }),
+    );
+
+    expect(verdict.satisfied).toBe(true);
+    expect(verdict.mode).toBe('report-only');
+    expect(verdict.reports.join(' ')).toContain('not-enforcing:unreadable-plan-status');
+    expect(verdict.wouldBlock).toEqual(['1-enforceable-clause(s)-with-no-evidence']);
   });
 
   it('withholds the refusal when the evidence census is truncated (a floor is not a verdict)', async () => {
