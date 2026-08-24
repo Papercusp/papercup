@@ -231,6 +231,22 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(parseCheckLine(rendered)).toEqual(downgraded[0]);
   });
 
+  it('keeps running evidence VERIFIED when it supports a queued/running claim', () => {
+    const claim = 'fresh typechecks remain queued';
+    const evidence = "both sessions were 'still running and queued at ~180s'";
+    expect(findVerificationConflict(evidence, claim), evidence).toBeNull();
+    const [row] = normalizeCheckEntries(
+      [{ claim, recheck: 'inspect the typecheck sessions', verified: evidence }],
+      [],
+      Date.parse('2026-08-24T12:00:00.000Z'),
+    );
+    expect(row).toMatchObject({ claim, verified: expect.stringContaining(evidence) });
+    expect(row).not.toHaveProperty('contested');
+    const rendered = renderCheckLine(row!);
+    expect(rendered).toContain('- ✓ ');
+    expect(parseCheckLine(rendered)).toEqual(row);
+  });
+
   it('does not downgrade completed negative measurements that merely mention status vocabulary', () => {
     const cleanEvidence = [
       'no in-flight checkpoint/deploy',

@@ -157,7 +157,7 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    "Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with " +
+    'Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with ' +
     '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal aliases next), { note }, ' +
     'or compatibility alias { checkpoint }; note wins and blank/null clears. Keyed by ownerId. walls/checks default ' +
     "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
@@ -205,7 +205,9 @@ export default defineTool({
         .string()
         .max(32000)
         .nullish()
-        .describe('Compatibility alias for `note`; prefer `note`. Blank/null ⇒ clear, and `note` wins when both are supplied.'),
+        .describe(
+          'Compatibility alias for `note`; prefer `note`. Blank/null ⇒ clear, and `note` wins when both are supplied.',
+        ),
       // WI-7264: the `.max()` here is a SANITY BACKSTOP, not the real limit. The real
       // limit is CARRY_TEXT_SOFT_CAP, applied by TRUNCATION in the handler and reported
       // back as `repairs`. A hard reject discards the whole multi-KB note over one long
@@ -301,28 +303,34 @@ export default defineTool({
             // "nothing happened"; truncation, which does lose bytes, is reported instead.
             return Array.isArray(rows) ? rows.map((row, i) => coerceCarryRowShape(row, `checks[${i}]`, [])) : rows;
           },
-          z.array(
-            z.object({
-              claim: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.claim, 'The external-state claim, stated concretely.', {
-                min: 1,
+          z
+            .array(
+              z.object({
+                claim: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.claim, 'The external-state claim, stated concretely.', {
+                  min: 1,
+                }),
+                id: CARRY_ROW_ID_SCHEMA,
+                recheck: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.recheck,
+                  'Concrete probe to run before relying on the claim.',
+                ).optional(),
+                verified: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.verified,
+                  'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
+                    'NOT a boolean (`true`/`false` is rejected) and NOT `{status, evidence}` — this ONE string field ' +
+                    'carries both the verified/PREDICTED flag and its justification: presence of `verified` (however ' +
+                    'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
+                    'boolean flag to set.',
+                ).optional(),
+                contested: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.contested,
+                  'Evidence that was supplied as verification but contradicts the claim (for example, a green claim ' +
+                    'with "STILL RUNNING"). Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before ' +
+                    'relying on the claim.',
+                ).optional(),
               }),
-              id: CARRY_ROW_ID_SCHEMA,
-              recheck: carryRowTextSchema(CARRY_ROW_SOFT_CAPS.recheck, 'Concrete probe to run before relying on the claim.').optional(),
-              verified: carryRowTextSchema(
-                CARRY_ROW_SOFT_CAPS.verified,
-                'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
-                  'NOT a boolean (`true`/`false` is rejected) and NOT `{status, evidence}` — this ONE string field ' +
-                  'carries both the verified/PREDICTED flag and its justification: presence of `verified` (however ' +
-                  'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
-                  'boolean flag to set.',
-              ).optional(),
-              contested: carryRowTextSchema(
-                CARRY_ROW_SOFT_CAPS.contested,
-                'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
-                  'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
-              ).optional(),
-            }),
-          ).max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
+            )
+            .max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
         )
         .optional()
         .describe(
@@ -330,8 +338,10 @@ export default defineTool({
             'are accepted and mapped to {claim}; the non-owner analog ' +
             'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
-            'relying on it. If its evidence says STILL RUNNING, pending, outstanding, in-flight, unverified, or awaiting, ' +
-            'the writer downgrades it to `contested` and reports the repair; contested rows render ⚠ and require a re-check. ' +
+            'relying on it. If its evidence contains STILL RUNNING, pending, outstanding, in-flight, unverified, or ' +
+            'awaiting while the claim asserts a completed/healthy state, the writer downgrades it to `contested` and ' +
+            'reports the repair; when the claim itself asserts that unresolved state, the evidence remains VERIFIED. ' +
+            'Use `contested` to force an explicit warning; contested rows render ⚠ and require a re-check. ' +
             'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
             'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
             "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows " +
@@ -547,15 +557,14 @@ export default defineTool({
         // the evidence: a conflict marker near the tail must not be truncated away
         // and accidentally restore a false ✓.
         if (typeof out.verified === 'string') {
-          const conflict = findVerificationConflict(out.verified);
+          const conflict = findVerificationConflict(out.verified, out.claim);
           if (conflict) {
             out.contested = out.verified;
             delete out.verified;
             repairs.push({
               field: `${label}[${i}].verified`,
               kind: 'downgraded',
-              detail:
-                `verification evidence contains contradiction marker "${conflict}" — stored as contested evidence; re-check before relying on this claim`,
+              detail: `verification evidence contains contradiction marker "${conflict}" — stored as contested evidence; re-check before relying on this claim`,
             });
           }
         }
@@ -576,7 +585,10 @@ export default defineTool({
         return out;
       });
     const hasStructured =
-      fields.did !== undefined || fields.left !== undefined || fields.insight !== undefined || fields.next !== undefined;
+      fields.did !== undefined ||
+      fields.left !== undefined ||
+      fields.insight !== undefined ||
+      fields.next !== undefined;
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
     // all-blank structured write renders '' ⇒ a clear). Otherwise the raw note verbatim.
     // `checkpoint` is the historical generic carry-note spelling used by
@@ -715,9 +727,10 @@ export default defineTool({
     let verified: true | null = null;
     let contentHash: string | null = null;
     if (stored !== null) {
-      const verifyRead = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId }).catch(
-        () => ({ note: null, updatedAtMs: null }),
-      );
+      const verifyRead = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId }).catch(() => ({
+        note: null,
+        updatedAtMs: null,
+      }));
       if (verifyRead.note !== stored) {
         verifyError =
           `checkpoint_verify_failed — the write did not read back via the reader path a cold wake ` +
@@ -921,19 +934,19 @@ export default defineTool({
         let unreadInbox: number | null = null;
         try {
           const wm = await readWatermark(ownerId);
-        // messages_since_ts advances at turn-END, so this counts messages addressed to you
-        // that arrived since your last settle. filterInbox (inside readInbox) drops own +
-        // notify-kind rows; countPendingInterrupts then drops system machinery — categorized
-        // broadcasts, `auto` lifecycle chatter, intent declares — because WI-4179 showed the
-        // raw count reads a watchdog burst (16 identical severe-event-resolved rows in one
-        // 300ms window) as "16 unread ⇒ pending owner input" and closes the gate while
-        // coord:inbox/orient show nothing pending.
-        // P-007 (fleet-member-dx, EI-9035): ALSO credit the owner's last coord:inbox/
-        // coord:orient READ — use the LATER of the two cursors. A never-settled session
-        // ('' watermark) that just read its inbox no longer gets a false, permanent
-        // "inbox not evaluated"; and a mid-turn read after the last settle correctly
-        // narrows "unread" to what arrived AFTER that read. Neither cursor available ⇒
-        // stays null (blocking — fail safe toward settling, unchanged).
+          // messages_since_ts advances at turn-END, so this counts messages addressed to you
+          // that arrived since your last settle. filterInbox (inside readInbox) drops own +
+          // notify-kind rows; countPendingInterrupts then drops system machinery — categorized
+          // broadcasts, `auto` lifecycle chatter, intent declares — because WI-4179 showed the
+          // raw count reads a watchdog burst (16 identical severe-event-resolved rows in one
+          // 300ms window) as "16 unread ⇒ pending owner input" and closes the gate while
+          // coord:inbox/orient show nothing pending.
+          // P-007 (fleet-member-dx, EI-9035): ALSO credit the owner's last coord:inbox/
+          // coord:orient READ — use the LATER of the two cursors. A never-settled session
+          // ('' watermark) that just read its inbox no longer gets a false, permanent
+          // "inbox not evaluated"; and a mid-turn read after the last settle correctly
+          // narrows "unread" to what arrived AFTER that read. Neither cursor available ⇒
+          // stays null (blocking — fail safe toward settling, unchanged).
           const readTs = await lastInboxReadAt(ownerId);
           const sinceTs = pickUnreadCursor(wm?.messages_since_ts, readTs);
           if (sinceTs) {
@@ -952,12 +965,9 @@ export default defineTool({
         let rewakeGuaranteed: boolean | null = null;
         let nextWakeFresh: boolean | null = null;
         try {
-          const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] =
-            await Promise.all([
-              import('../../turn-end-tracking'),
-              import('../../events/await/store'),
-              import('../../modes/store'),
-            ]);
+          const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] = await Promise.all(
+            [import('../../turn-end-tracking'), import('../../events/await/store'), import('../../modes/store')],
+          );
           const [loop, awaits, modes] = await Promise.all([
             getLoopStatus(ownerId).catch(() => null),
             listActiveAwaits(ownerId).catch(() => []),
@@ -1025,14 +1035,11 @@ export default defineTool({
     // ephemeral, while timeout_verification on event_awaits is durable. Return
     // the latest authoritative stalled/absent evidence on the checkpoint write
     // the owner already performs, including the concrete wake/takeover remedy.
-    const verifiedWaitTakeovers = await withBoundedTimeout(
-      listVerifiedWaitTakeoversForSubscribers([ownerId]),
-      {
-        fallback: [],
-        timeoutMs: CONTINUATION_READ_BUDGET_MS,
-        label: 'loop:checkpoint verified-wait takeovers',
-      },
-    );
+    const verifiedWaitTakeovers = await withBoundedTimeout(listVerifiedWaitTakeoversForSubscribers([ownerId]), {
+      fallback: [],
+      timeoutMs: CONTINUATION_READ_BUDGET_MS,
+      label: 'loop:checkpoint verified-wait takeovers',
+    });
     const verifiedWaitTakeoverRows = verifiedWaitTakeovers.value ?? [];
 
     // WI-3801 lint + P-014 turn-ref verification/origin stamp — both warn-only,
@@ -1062,9 +1069,7 @@ export default defineTool({
             contentHash,
             walls: walls.length,
             checks: checks.length,
-            ...(verifiedWaitTakeoverRows.length > 0
-              ? { verifiedWaitTakeovers: verifiedWaitTakeoverRows }
-              : {}),
+            ...(verifiedWaitTakeoverRows.length > 0 ? { verifiedWaitTakeovers: verifiedWaitTakeoverRows } : {}),
             /** P-013: which row semantics this write actually ran under, so a caller
              *  never has to infer it from the counts. Present only when it was NOT the
              *  default, keeping the common reply shape unchanged. */
