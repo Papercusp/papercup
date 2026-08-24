@@ -352,10 +352,14 @@ export function listAllTools(client: any, { timeoutMs }?: {
  *  is exactly the "completed successfully but emitted no JSON or text" shape
  *  filed as EI-21250765620092599. `stream.errored` exposes the swallowed error. */
 export function stdoutDeliveryError(): Error | null;
-/** Print the result of a tools/call, or its error. Returns the exit code. */
-export function printResult(result: any, { raw, deliveryProbe }?: {
-    deliveryProbe?: typeof stdoutDeliveryError | undefined;
-}): 0 | 1;
+/** Print the result of a tools/call, or its error. Returns the exit code.
+ * WI-39692: the @param types are LOAD-BEARING — ptool.d.mts is generated from
+ * this JSDoc, and without them tsc infers the options shape from the defaults
+ * alone (dropping `raw` entirely, which strands every typed caller).
+ * @param {unknown} result
+ * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null) }} [options]
+ */
+export function printResult(result: unknown, { raw, deliveryProbe }?: unknown): 0 | 1;
 /**
  * A result-door truncation only tells ptool that the operator's reply is not
  * machine-readable. The tool call may already have executed, which is
