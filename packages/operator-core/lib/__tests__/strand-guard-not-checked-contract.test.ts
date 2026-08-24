@@ -192,6 +192,71 @@ describe('strand-guard family — a DECLARED file identical to base proves nothi
   }, 120_000);
 });
 
+/**
+ * EI-21361656341155733 — THE THIRD FORM: the base itself is wrong, and the ✓ says nothing.
+ *
+ * The two blocks above close "the guard examined nothing". This one closes "the guard
+ * examined the wrong PAIR". Both surface as the same clean headline, and this one is
+ * reached by FOLLOWING THE GUARD'S OWN ADVICE: when a named file is byte-identical the
+ * run prints a recipe for re-deriving the base with `git log -S`. That recipe used
+ * `git log -1`, which returns the NEWEST commit whose occurrence count changed — not the
+ * one that INTRODUCED the field. git-sync splits one logical change across commits here,
+ * so the newest match's parent routinely already contains the field, the diff finds
+ * nothing, and the run prints `✓ no required fields added`.
+ *
+ * Measured 2026-08-24 on ONE working tree, two bases, opposite verdicts:
+ *   --base f172703bb7^  (newest -S match)  -> "✓ no required fields added"
+ *   --base 5a199c7a09^  (true introducer)  -> both new required fields detected
+ *
+ * That is strictly worse than examining nothing: the ✓ arrives exactly when the agent is
+ * trying to DISCHARGE the PostToolUse strand warning, so it reads as the confirmation they
+ * were told to go get. Scoped to this one guard deliberately — it is the only member that
+ * prints the `git log -S` recipe, so the family `it.each` would be asserting a contract the
+ * others never opted into.
+ */
+describe('check-required-field-strands — a clean ✓ must not be mistakable for a verified base', () => {
+  const GUARD = 'check-required-field-strands.mjs';
+
+  it('carries a positive control on the no-findings path, naming the base as the thing to suspect', () => {
+    const tmp = makeCleanRepo();
+    try {
+      // A genuine textual diff with NO required-field addition — the real no-findings
+      // path, not the vacuous one the blocks above cover.
+      writeFileSync(join(tmp, FILE_B), 'export interface B { id: string }\n// a genuine textual change\n');
+      const { status, headline, out } = run(tmp, GUARD, [`--files=${FILE_B}`]);
+
+      expect(headline).toContain('✓');
+      expect(status).toBe(0);
+      // The ✓ must not stand alone: a base that ALREADY contains the field produces this
+      // identical line, so the run has to name that possibility itself.
+      expect(out).toContain('suspect the base');
+      expect(out).toContain('yields this same');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('never advises `git log -1` for re-deriving the base — it must select the OLDEST match', () => {
+    const tmp = makeCleanRepo();
+    try {
+      // The byte-identical path is the one that PRINTS the recipe.
+      const { out } = run(tmp, GUARD, [`--files=${FILE_A}`]);
+      expect(out).toContain('NOT CHECKED');
+
+      // FALSIFIABILITY: assert the recipe is present at all before asserting its shape,
+      // or a renamed/removed recipe would satisfy the negative assertion vacuously.
+      expect(out).toContain('git log');
+      expect(out).toContain('-S');
+      expect(out).toContain('tail -1');
+      // The regression itself: `-1` selects the NEWEST match, whose parent can already
+      // contain the field.
+      expect(out).not.toContain('git log -1');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
 describe('strand-guard family — the shared verdict is actually shared', () => {
   it('every guard imports the shared not-checked module rather than re-deriving it', async () => {
     const mod = await import(`file://${resolve(ROOT, 'scripts/lib/not-checked.mjs')}`);
