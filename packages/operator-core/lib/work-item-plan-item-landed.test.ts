@@ -168,6 +168,54 @@ describe('resolvePlanItemRef', () => {
     expect(resolvePlanItemRef({ payload: 'not an object' })).toBeNull();
     expect(resolvePlanItemRef({ payload: { plan_item: 42 } as unknown })).toBeNull();
   });
+
+  // The COLUMN tier. Measured coverage is why it exists at all: the payload stamp
+  // reaches 24 of 119 real work-items and source_plan_slug another 7, so dropping the
+  // columns would leave those 7 resolvable only by prose.
+  it('falls back to the source_plan columns when there is no stamp and no explicit ref', () => {
+    expect(resolvePlanItemRef({ sourcePlanSlug: SLUG, sourcePlanItemIds: [ITEM] })).toEqual({
+      planSlug: SLUG,
+      itemId: ITEM,
+    });
+  });
+
+  it('lets the stamp and explicit arguments outrank the columns', () => {
+    expect(
+      resolvePlanItemRef({
+        payload: { plan_item: { plan_slug: SLUG, item_id: ITEM } },
+        sourcePlanSlug: 'other-plan',
+        sourcePlanItemIds: ['P-001'],
+      }),
+    ).toEqual({ planSlug: SLUG, itemId: ITEM });
+
+    expect(
+      resolvePlanItemRef({
+        planSlug: SLUG,
+        planItemId: ITEM,
+        sourcePlanSlug: 'other-plan',
+        sourcePlanItemIds: ['P-001'],
+      }),
+    ).toEqual({ planSlug: SLUG, itemId: ITEM });
+  });
+
+  // The guard that keeps a false hint off the wire: with several linked plan items
+  // there is no principled pick, and naming the wrong one would assert "already landed"
+  // about work that is not this item's. Staying silent is the cheaper error.
+  it('refuses to guess when the columns name more than one plan item', () => {
+    expect(resolvePlanItemRef({ sourcePlanSlug: SLUG, sourcePlanItemIds: [ITEM, 'P-021'] })).toBeNull();
+  });
+
+  it('ignores blank and empty column ids rather than resolving half a reference', () => {
+    expect(resolvePlanItemRef({ sourcePlanSlug: SLUG, sourcePlanItemIds: [] })).toBeNull();
+    expect(resolvePlanItemRef({ sourcePlanSlug: SLUG, sourcePlanItemIds: ['   '] })).toBeNull();
+    expect(resolvePlanItemRef({ sourcePlanSlug: SLUG, sourcePlanItemIds: null })).toBeNull();
+    expect(resolvePlanItemRef({ sourcePlanItemIds: [ITEM] })).toBeNull();
+    // One real id beside blanks is still exactly one real id.
+    expect(resolvePlanItemRef({ sourcePlanSlug: SLUG, sourcePlanItemIds: ['', ITEM] })).toEqual({
+      planSlug: SLUG,
+      itemId: ITEM,
+    });
+  });
 });
 
 describe('getClaimTimePlanItemLanded', () => {
