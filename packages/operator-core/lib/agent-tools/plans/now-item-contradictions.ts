@@ -13,6 +13,10 @@ const NOW_CLOSED_RE =
   /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
+const NOW_HISTORICAL_RE =
+  /\b(?:histor(?:y|ical)|prior|previous(?:ly)?|earlier|former(?:ly)?|legacy|archived?|record(?:ed)?)\b/i;
+const NOW_ACTION_RE =
+  /\b(?:address|audit|claim|close|complete|continue|finish|fix|handle|implement|investigate|pick(?:\s+up)?|reopen|repair|revisit|review|resume|retry|run|start|validate|verify|work)\b/i;
 
 /**
  * PURE: find terminal plan items that the cold-resume Now block still presents
@@ -67,7 +71,18 @@ export function detectNowItemContradictions(parsed: Pick<ParsedPlan, 'now' | 'it
     const after = clause.slice(refOffset + id.length);
     const closeAfter = NOW_CLOSED_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const closeBefore = NOW_CLOSED_RE.test(before) && !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
-    if (closeAfter || closeBefore) continue;
+    // A terminal ID may also appear in a compact historical ledger reference,
+    // e.g. `Historical promotion record: P-047–P-052/WI-41306–WI-41311`.
+    // That is completion context, not a direction to revisit the item. Keep
+    // action-oriented historical prose guarded: `Historical note: revisit
+    // P-047` must still be rejected as a current-work contradiction.
+    const historicalContext = `${nowText.slice(Math.max(0, clauseStart - 120), clauseStart)}${before}`;
+    const historicalReference =
+      NOW_HISTORICAL_RE.test(historicalContext) &&
+      !NOW_ACTION_RE.test(before.slice(-120)) &&
+      !NOW_ACTION_RE.test(after) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(after);
+    if (closeAfter || closeBefore || historicalReference) continue;
 
     contradictions.push({
       id,

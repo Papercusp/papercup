@@ -80,6 +80,30 @@ describe('detectNowItemContradictions', () => {
   it('allows grouped affirmative completion evidence before unrelated blocked work', () => {
     expect(detectNowItemContradictions(parsePlan(GROUPED_COMPLETION))).toEqual([]);
   });
+
+  it('allows terminal IDs in an explicit historical promotion reference', () => {
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+        '**State:** COMPLETE: all items are terminal. Historical promotion record: P-001–P-001/WI-41306.',
+      ),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it('still flags an action-oriented mention inside a historical note', () => {
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+        '**State:** COMPLETE: the prior run is recorded. Historical note: revisit P-001.',
+      ),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
 });
 
 describe('evaluateSetContent — Now/item contradiction guard', () => {
