@@ -4320,15 +4320,34 @@ export async function gitPipelinePosition(
               }
             }
             const markerBaselineCount = typeof markerBaseline?.count === 'number' ? markerBaseline.count : null;
+            // WI-41208: BOTH sides of the comparison must be a count taken from a tree that
+            // actually HAS the file. `markerAtCommit` returns a DEFINITIVE
+            // `{ present:false, count:0, pathPresent:false }` when `ls-tree` is empty — i.e.
+            // the ref has no such path at all (candidate-contains.ts). That legitimate zero is
+            // not a measurement of your change's occurrences, and feeding it into the count
+            // comparison below made `0 < baseline` read as a "strict net-decrease" and CORRECT
+            // the leg to TRUE. A brand-new file — absent from origin/staging and origin/main,
+            // whose newest commit is an EDIT to it rather than its creation — therefore had
+            // onStaging/inMain/deployed all flipped to true, with `blockedOn`/`nextAction`
+            // going null and the position reading `live`. A ref that does not contain the path
+            // cannot be carrying your change: leave the leg FALSE and let the
+            // `verdict.present === false` branch below say so (path-absence is definitive, not
+            // degraded, so it must NOT become `positionsUnknown`).
+            const refHasPath = verdict.pathPresent === true;
+            const baselineHasPath = markerBaseline?.pathPresent === true;
             // Require a STRICT count change against the pre-change baseline — never
             // bare presence. A count comparison can only under-claim (a change that
             // adds/removes no occurrence of the marker is simply not detected, the
             // pre-existing behaviour), never over-claim, mirroring markerPartialAgainst.
             const strictlyAdded =
+              refHasPath &&
+              baselineHasPath &&
               typeof verdict.count === 'number' &&
               typeof markerBaselineCount === 'number' &&
               verdict.count > markerBaselineCount;
             const strictlyRemoved =
+              refHasPath &&
+              baselineHasPath &&
               typeof verdict.count === 'number' &&
               typeof markerBaselineCount === 'number' &&
               verdict.count < markerBaselineCount;
