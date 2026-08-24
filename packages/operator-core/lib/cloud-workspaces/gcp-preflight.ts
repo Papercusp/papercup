@@ -16,7 +16,20 @@ import { promisify } from 'node:util';
 import type { CloudCredentialRef } from '@papercusp/deployment-driver';
 
 const requireCjs = createRequire(import.meta.url);
-const execFileP = promisify(execFile);
+type ExecFileP = (
+  file: string,
+  args: string[],
+  opts: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExecFileP: ExecFileP | null = null;
+function execFileP(
+  file: string,
+  args: string[],
+  opts: Record<string, unknown>,
+): Promise<{ stdout: string; stderr: string }> {
+  if (!cachedExecFileP) cachedExecFileP = promisify(execFile) as unknown as ExecFileP;
+  return cachedExecFileP(file, args, opts);
+}
 
 export const GCP_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
 export const GCP_WORKSPACE_HOST_REQUIRED_SERVICES = [
