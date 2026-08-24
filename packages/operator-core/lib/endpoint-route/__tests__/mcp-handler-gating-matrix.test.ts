@@ -2177,7 +2177,13 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(textOf(res)).toBe('gatingtest:txless_role-ok');
     expect(txlessRoleProbeSeen).toHaveLength(1);
     expect(txlessRoleProbeSeen[0].tx).toBeUndefined();
-    expect(txlessRoleProbeSeen[0].principal).toBeUndefined();
+    // No DB-backed principal synthesis occurs, but the transport still carries
+    // a lightweight provenance principal for telemetry.
+    expect(txlessRoleProbeSeen[0].principal).toMatchObject({
+      kind: 'system',
+      slug: 'system:operator',
+      workspaceId: 'ws-test',
+    });
     expect(txlessRoleProbeSeen[0].gateBypass?.capability).toBe(true);
     expect(h.withWorkspaceCalls).toEqual([]);
   });
@@ -2293,7 +2299,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     const call = seen[0];
     expect(call.ctx.workspaceId).toBe('*');
     expect(call.ctx.tx).toBeUndefined();
-    expect(call.ctx.principal).toBeUndefined();
+    expect(call.ctx.principal).toBeNull();
     expect(call.alsWorkspace).toBeUndefined();
     expect(h.withWorkspaceCalls).toEqual([]);
     // No SID rode the request → the adv-row fallback is never consulted.
@@ -2527,7 +2533,11 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
     expect(inner?.tool).toBe('gatingtest:txless_scope');
     expect(inner?.ctx.harnessSlug).toBe('papercup');
     expect(inner?.ctx.tx).toBeUndefined();
-    expect(inner?.ctx.principal).toBeUndefined();
+    expect(inner?.ctx.principal).toMatchObject({
+      kind: 'system',
+      slug: 'system:operator',
+      workspaceId: 'ws-test',
+    });
   });
 
   it('recovers the caller harness from the session brief when only a client SID is present (EI-21238811054889658)', async () => {
