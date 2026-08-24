@@ -21,7 +21,9 @@ import {
   readAgentConfig,
   writeAgentConfig,
   effectiveBackend,
+  bulkResolverLaunchProfilesProblem,
   parseBackends,
+  parseBulkResolverLaunchProfiles,
   parseRoleBackends,
   parseSurfaceModels,
   parseTiers,
@@ -108,6 +110,10 @@ export default [
         tiers: parseTiers(body.tiers),
         tierCeilings: parseTierCeilings(body.tierCeilings, body.tiers),
         terminal: body.terminal === undefined ? (current.terminal ?? '') : parseTerminalEmulator(body.terminal),
+        resolverProfiles:
+          body.resolverProfiles === undefined
+            ? current.resolverProfiles
+            : parseBulkResolverLaunchProfiles(body.resolverProfiles, current.resolverProfiles),
       };
       // Strict-save guard: persisting LESS than the body asked for is silent
       // data loss, not normalization. Count the entries the parsers kept.
@@ -137,6 +143,10 @@ export default [
       }
       if (body.terminal != null && !next.terminal) {
         dropped.push('terminal: must be a binary name, not a path or shell command');
+      }
+      if (body.resolverProfiles !== undefined) {
+        const problem = bulkResolverLaunchProfilesProblem(body.resolverProfiles, current.resolverProfiles);
+        if (problem) dropped.push(`resolverProfiles: ${problem}`);
       }
       if (dropped.length > 0) {
         return Response.json(

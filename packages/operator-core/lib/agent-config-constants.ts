@@ -110,8 +110,16 @@ export const DEFAULT_BACKEND_CMDS: Record<AgentBackend, string> = {
  */
 export const DEFAULT_MODEL_TIERS: readonly ModelTier[] = [
   { name: 'quick', spec: 'haiku', when: 'trivial / mechanical work (renames, single-file fixes, mechanical sweeps)' },
-  { name: 'standard', spec: 'sonnet[1m]', when: 'spec-bounded normal features and bugs — the usual pick; omitting tier is equivalent' },
-  { name: 'deep', spec: 'opus[1m]:high', when: 'ambiguous or architectural work, cross-cutting changes, repeat failures on a lower tier' },
+  {
+    name: 'standard',
+    spec: 'sonnet[1m]',
+    when: 'spec-bounded normal features and bugs — the usual pick; omitting tier is equivalent',
+  },
+  {
+    name: 'deep',
+    spec: 'opus[1m]:high',
+    when: 'ambiguous or architectural work, cross-cutting changes, repeat failures on a lower tier',
+  },
   // ⚠ HISTORICAL, NOT the current floor (WI-4495-adjacent staleness caught while
   // resolving WI-4334, 2026-07-26): this tier was ADDED as the committed floor for
   // the autonomous-loop/gym judgment roles (mug/cup/kettle/queen/bee/overwatch/
@@ -134,8 +142,17 @@ export const DEFAULT_MODEL_TIERS: readonly ModelTier[] = [
   // (role-models.ts) or a live override says so. Bare `gpt-5.6-luna:high` (no `[1m]`
   // marker) — that marker is a Claude/CC auto-compact-window signal
   // (`modelWindowForSpec`) with no meaning on the codex backend this tier runs.
-  { name: 'luna', spec: 'gpt-5.6-luna:high', backend: 'codex', when: 'NOT the current autonomous-loop floor (reverted WI-4623) — an available opt-BACK-in option only; do not pick this for a pipeline execution role' },
-  { name: 'max', spec: 'opus[1m]:xhigh', when: 'security-sensitive, migration, or deploy-adjacent work where a mistake is expensive' },
+  {
+    name: 'luna',
+    spec: 'gpt-5.6-luna:high',
+    backend: 'codex',
+    when: 'NOT the current autonomous-loop floor (reverted WI-4623) — an available opt-BACK-in option only; do not pick this for a pipeline execution role',
+  },
+  {
+    name: 'max',
+    spec: 'opus[1m]:xhigh',
+    when: 'security-sensitive, migration, or deploy-adjacent work where a mistake is expensive',
+  },
 ] as const;
 
 /** Validate a `<modelId>[:<effort>]` spec string (loose on the model id —
@@ -184,9 +201,7 @@ export function modelWindowForSpec(spec?: string | null): number {
 /** Resolve the hard window for one tier. Provider-backed tiers may carry the
  * exact window resolved from their backend catalog; legacy/Claude/Codex rows
  * continue through the established spec-only policy. */
-export function modelWindowForTier(
-  tier: Pick<ModelTier, 'spec' | 'contextWindow'>,
-): number {
+export function modelWindowForTier(tier: Pick<ModelTier, 'spec' | 'contextWindow'>): number {
   const catalogWindow = tier.contextWindow;
   if (typeof catalogWindow === 'number' && Number.isFinite(catalogWindow) && catalogWindow > 0) {
     return Math.floor(catalogWindow);
@@ -607,6 +622,73 @@ export function isLaunchAccountValue(v: string): boolean {
   return /^[A-Za-z0-9._:-]{1,120}$/.test(v);
 }
 
+// ── Bulk-resolver launch profiles ──────────────────────────────────────────
+
+/**
+ * The two pane-owned resolver defaults stored in `operator_agent_config`.
+ *
+ * This intentionally mirrors the generalized bulk-run kinds without importing
+ * `attention/bulk-run-store`: that module imports Node + Postgres at module
+ * scope, while this file is the browser-safe launch vocabulary. The focused
+ * config tests pin both keys so a third run kind cannot silently become
+ * unconfigurable.
+ */
+export const BULK_RESOLVER_PROFILE_KINDS = ['inbox-resolve', 'plan-cleanup'] as const;
+export type BulkResolverProfileKind = (typeof BULK_RESOLVER_PROFILE_KINDS)[number];
+
+/** Carry is an editable advanced axis; fresh/headless/su remain fixed launch
+ * invariants and therefore do not belong in the stored profile. */
+export const BULK_RESOLVER_CARRY_MODES = ['warm', 'cold'] as const;
+export type BulkResolverCarryMode = (typeof BULK_RESOLVER_CARRY_MODES)[number];
+
+/**
+ * One pane's saved defaults for its NEXT resolver run. `null` model/effort
+ * means inherit the launcher's default, preserving the pre-configuration
+ * behavior. The compatible backend is DERIVED from `model`, never stored as a
+ * second independently editable truth.
+ */
+export interface BulkResolverLaunchProfile {
+  model: string | null;
+  effort: ModelEffort | null;
+  account: string;
+  carry: BulkResolverCarryMode;
+}
+
+export type BulkResolverLaunchProfiles = Record<BulkResolverProfileKind, BulkResolverLaunchProfile>;
+
+export const DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE: Readonly<BulkResolverLaunchProfile> = {
+  model: null,
+  effort: null,
+  account: 'default',
+  carry: 'warm',
+};
+
+/** Fresh objects: callers may edit one pane's draft without mutating the other
+ * pane or the module-level default. */
+export function defaultBulkResolverLaunchProfiles(): BulkResolverLaunchProfiles {
+  return {
+    'inbox-resolve': { ...DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE },
+    'plan-cleanup': { ...DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE },
+  };
+}
+
+export type LaunchAgentBackend = 'claude' | 'codex' | 'omp';
+
+/**
+ * Infer the CLI backend from the SAME model vocabulary the launch selectors
+ * render. A host-local OMP selector is always `provider/id`; the native aliases
+ * carry their backend on `CLOUD_MODEL_MENU`. Unknown/full ids deliberately
+ * return null so the start-route validator can refuse ambiguity instead of
+ * pairing a model with a guessed CLI.
+ */
+export function launchAgentBackendForModel(model?: string | null): LaunchAgentBackend | null {
+  const split = splitModelSpec(model);
+  const base = split.model?.replace(/\[[^\]]+\]$/, '') ?? null;
+  if (!base) return null;
+  if (base.includes('/')) return 'omp';
+  return CLOUD_MODEL_MENU.find((choice) => choice.value === base)?.backend ?? null;
+}
+
 /**
  * Most members one `fleet:launch-on-plan` call may open — opening more than this
  * in one go is heavy and almost always a mistake (mirrors capability:terminal's
@@ -697,9 +779,7 @@ export function validateCloudModelSpec(spec?: string | null): CloudModelSpecResu
   const suggestion = closeTypo
     ? ` Did you mean \`${effort ? `${near.alias}:${effort}` : `${near.alias}:xhigh`}\`?`
     : '';
-  const markerTip = hadMarker
-    ? ' The `[1m]` 1M-context marker is appended AUTOMATICALLY by psu — do not type it.'
-    : '';
+  const markerTip = hadMarker ? ' The `[1m]` 1M-context marker is appended AUTOMATICALLY by psu — do not type it.' : '';
   return {
     ok: false,
     message:
@@ -757,10 +837,7 @@ export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 200_000;
  * measured effective model window. Unlike the seeded default, this deliberately
  * does not impose the 400k leader/solo role cap: a self-set may use the wider
  * measured runway, while fleet members remain bounded by their 200k role cap. */
-export function selfSetCeilingForWindow(
-  window: number,
-  opts?: { fleetMember?: boolean },
-): number {
+export function selfSetCeilingForWindow(window: number, opts?: { fleetMember?: boolean }): number {
   const finiteWindow = Number.isFinite(window) && window > 0 ? Math.floor(window) : MODEL_WINDOW_DEFAULT;
   const raw = (finiteWindow - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
   const derived = Math.floor(raw / 1000) * 1000;
@@ -773,13 +850,8 @@ export function selfSetCeilingForWindow(
  * for Codex, whose rollout reports 258400 after applying the CLI's 95% effective
  * window to the installed 272k model record. The role cap still wins: fleet
  * members stay at 200k even when the model window could safely allow more. */
-export function defaultCompactionLimitForWindow(
-  window: number,
-  opts?: { fleetMember?: boolean },
-): number {
-  const roleCap = opts?.fleetMember
-    ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP
-    : COMPACTION_LIMIT_DEFAULT_1M_CAP;
+export function defaultCompactionLimitForWindow(window: number, opts?: { fleetMember?: boolean }): number {
+  const roleCap = opts?.fleetMember ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP : COMPACTION_LIMIT_DEFAULT_1M_CAP;
   const finiteWindow = Number.isFinite(window) && window > 0 ? Math.floor(window) : MODEL_WINDOW_DEFAULT;
   const raw = (finiteWindow - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
   const derived = Math.floor(raw / 1000) * 1000;
@@ -813,10 +885,7 @@ export function defaultCompactionLimitForWindow(
  * nor a settings.json model is found). Only null/empty lifts: a NON-null bare
  * `opus`/`sonnet` still derives 158k (the un-normalized 200k-window hazard above).
  */
-export function defaultCompactionLimitForSpec(
-  spec?: string | null,
-  opts?: { fleetMember?: boolean },
-): number {
+export function defaultCompactionLimitForSpec(spec?: string | null, opts?: { fleetMember?: boolean }): number {
   if (spec == null || spec.trim() === '' || spec.includes('[1m]')) {
     return defaultCompactionLimitForWindow(MODEL_WINDOW_1M, opts);
   }
@@ -856,10 +925,7 @@ export function defaultCompactionLimitForTier(
  * `--compaction-limit` / per-tier limits are protected by `explicit` provenance
  * upstream and never reach this test, whatever their value.
  */
-export function supersededDerivedCompactionLimits(
-  spec?: string | null,
-  opts?: { fleetMember?: boolean },
-): number[] {
+export function supersededDerivedCompactionLimits(spec?: string | null, opts?: { fleetMember?: boolean }): number[] {
   // Before codex-1m-context-window-2026-08-17, modelWindowForSpec had no codex
   // branch: `[1m]` is a Claude-only marker and no codex spec carries it, so every
   // codex spec fell to the conservative MODEL_WINDOW_DEFAULT. A spec that is
@@ -905,10 +971,7 @@ export function supersededDerivedCompactionLimits(
  * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP), so a member self-raising past
  * its role cap would route around that.
  */
-export function selfSetCeilingForSpec(
-  spec?: string | null,
-  opts?: { fleetMember?: boolean },
-): number {
+export function selfSetCeilingForSpec(spec?: string | null, opts?: { fleetMember?: boolean }): number {
   if (opts?.fleetMember) return defaultCompactionLimitForSpec(spec, opts);
   if (spec == null || spec.trim() === '' || spec.includes('[1m]')) {
     const raw = (MODEL_WINDOW_1M - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
@@ -935,9 +998,7 @@ export function clampCompactionLimit(
   spec?: string | null,
   opts?: { fleetMember?: boolean; selfSet?: boolean },
 ): number {
-  const cap = opts?.selfSet
-    ? selfSetCeilingForSpec(spec, opts)
-    : defaultCompactionLimitForSpec(spec, opts);
+  const cap = opts?.selfSet ? selfSetCeilingForSpec(spec, opts) : defaultCompactionLimitForSpec(spec, opts);
   return Math.min(Math.max(Math.floor(limit), MIN_COMPACTION_LIMIT_TOKENS), cap);
 }
 

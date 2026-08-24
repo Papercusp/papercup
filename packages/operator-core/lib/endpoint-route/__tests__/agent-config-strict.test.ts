@@ -11,7 +11,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // parsers (they ARE the subject under test via the route's drop detection).
 const { writeMock, readMock, listResumableSessionsMock, readCodexHomeDiagnosticsMock } = vi.hoisted(() => ({
   writeMock: vi.fn(async (cfg: unknown) => cfg),
-  readMock: vi.fn(async () => ({ backend: 'claude-code', cmd: '', models: {}, backends: {}, surfaceModels: {}, tiers: [], tierCeilings: {} })),
+  readMock: vi.fn(async () => ({
+    backend: 'claude-code',
+    cmd: '',
+    models: {},
+    backends: {},
+    surfaceModels: {},
+    tiers: [],
+    tierCeilings: {},
+    resolverProfiles: {
+      'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
+      'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
+    },
+  })),
   listResumableSessionsMock: vi.fn<(_limit?: number) => Promise<unknown[]>>(async () => []),
   readCodexHomeDiagnosticsMock: vi.fn((sessionKey: unknown) => ({
     codexHome: `/codex/session-${sessionKey}`,
@@ -43,7 +55,9 @@ vi.mock('../../agent-config', async () => {
 vi.mock('../../agent-bin-detect', () => ({
   detectBinaries: () => ({ claude: '/usr/bin/claude', codex: '/usr/bin/codex', omp: null, pi: null }),
 }));
-vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('../../adv-sessions')>()),
+  endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   listResumableSessions: (limit?: number) => listResumableSessionsMock(limit),
 }));
 vi.mock('../../codex-home-diagnostics', () => ({
@@ -52,15 +66,17 @@ vi.mock('../../codex-home-diagnostics', () => ({
 
 async function callGet(): Promise<Response> {
   const mod = await import('../routes/agent-config');
-  const route = (mod.default as unknown as Array<{ method: string; handler: (req: Request) => Promise<Response> }>)
-    .find((r) => r.method === 'GET')!;
+  const route = (
+    mod.default as unknown as Array<{ method: string; handler: (req: Request) => Promise<Response> }>
+  ).find((r) => r.method === 'GET')!;
   return route.handler(new Request('http://localhost:3070/api/agent-config', { method: 'GET' }));
 }
 
 async function callPost(body: unknown): Promise<Response> {
   const mod = await import('../routes/agent-config');
-  const route = (mod.default as unknown as Array<{ method: string; handler: (req: Request) => Promise<Response> }>)
-    .find((r) => r.method === 'POST')!;
+  const route = (
+    mod.default as unknown as Array<{ method: string; handler: (req: Request) => Promise<Response> }>
+  ).find((r) => r.method === 'POST')!;
   const req = new Request('http://localhost:3070/api/agent-config', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -75,13 +91,32 @@ const VALID_BODY = {
   models: { worker: 'haiku' },
   backends: { oracle: 'claude-code' },
   surfaceModels: { oracle: 'opus' },
-  tiers: [{ name: 'fast', spec: 'haiku' }, { name: 'smart', spec: 'opus:high', when: 'hard work' }],
+  tiers: [
+    { name: 'fast', spec: 'haiku' },
+    { name: 'smart', spec: 'opus:high', when: 'hard work' },
+  ],
   tierCeilings: { bee: 'fast' },
+  resolverProfiles: {
+    'inbox-resolve': { model: 'sonnet', effort: 'high', account: 'default', carry: 'warm' },
+    'plan-cleanup': { model: 'sol', effort: 'xhigh', account: 'auto', carry: 'cold' },
+  },
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  readMock.mockResolvedValue({ backend: 'claude-code', cmd: '', models: {}, backends: {}, surfaceModels: {}, tiers: [], tierCeilings: {} });
+  readMock.mockResolvedValue({
+    backend: 'claude-code',
+    cmd: '',
+    models: {},
+    backends: {},
+    surfaceModels: {},
+    tiers: [],
+    tierCeilings: {},
+    resolverProfiles: {
+      'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
+      'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
+    },
+  });
   listResumableSessionsMock.mockResolvedValue([] as unknown[]);
 });
 
@@ -121,13 +156,14 @@ describe('POST /agent-config strict save', () => {
     const written = writeMock.mock.calls[0][0] as typeof VALID_BODY;
     expect(written.tiers).toHaveLength(2);
     expect(written.tierCeilings).toEqual({ bee: 'fast' });
+    expect(written.resolverProfiles).toEqual(VALID_BODY.resolverProfiles);
   });
 
   it('rejects (422, no write) a tier row the parser would drop', async () => {
     const res = await callPost({ ...VALID_BODY, tiers: [{ name: 'fast', spec: 'has space' }] });
     expect(res.status).toBe(422);
     expect(writeMock).not.toHaveBeenCalled();
-    const json = await res.json() as { error: string };
+    const json = (await res.json()) as { error: string };
     expect(json.error).toMatch(/tiers/);
   });
 
@@ -135,7 +171,7 @@ describe('POST /agent-config strict save', () => {
     const res = await callPost({ ...VALID_BODY, tierCeilings: { bee: 'nonexistent' } });
     expect(res.status).toBe(422);
     expect(writeMock).not.toHaveBeenCalled();
-    const json = await res.json() as { error: string };
+    const json = (await res.json()) as { error: string };
     expect(json.error).toMatch(/tierCeilings/);
   });
 
@@ -155,5 +191,25 @@ describe('POST /agent-config strict save', () => {
     const res = await callPost({ ...VALID_BODY, tiers: [], tierCeilings: { bee: 'deep' } });
     expect(res.status).toBe(200);
     expect(writeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves resolver defaults when an older full-body client omits the additive field', async () => {
+    const { resolverProfiles: _omitted, ...legacyBody } = VALID_BODY;
+    const res = await callPost(legacyBody);
+    expect(res.status).toBe(200);
+    expect(writeMock.mock.calls[0][0].resolverProfiles).toEqual({
+      'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
+      'plan-cleanup': { model: 'opus', effort: 'high', account: 'auto', carry: 'cold' },
+    });
+  });
+
+  it('rejects invalid resolver settings instead of normalizing them away', async () => {
+    const res = await callPost({
+      ...VALID_BODY,
+      resolverProfiles: { 'inbox-resolve': { model: null, effort: 'high', account: 'default', carry: 'warm' } },
+    });
+    expect(res.status).toBe(422);
+    expect(writeMock).not.toHaveBeenCalled();
+    expect((await res.json()).error).toMatch(/resolverProfiles.*effort requires an explicit model/);
   });
 });

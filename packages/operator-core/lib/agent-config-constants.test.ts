@@ -14,6 +14,8 @@ import {
   MIN_COMPACTION_LIMIT_TOKENS,
   validateCloudModelSpec,
   KNOWN_CLOUD_ALIASES,
+  defaultBulkResolverLaunchProfiles,
+  launchAgentBackendForModel,
 } from './agent-config-constants';
 import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
 
@@ -46,11 +48,35 @@ describe('isDefault1mModelSpec (the FAMILY predicate the [1m] launch normalizer 
     }
   });
   it('is false for versioned sonnet ≤4.x, other families, and nullish specs', () => {
-    for (const spec of ['claude-sonnet-4-5', 'claude-sonnet-4-6:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0', 'haiku', 'gpt-5.5', 'ornith']) {
+    for (const spec of [
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-6:high',
+      'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'haiku',
+      'gpt-5.5',
+      'ornith',
+    ]) {
       expect(isDefault1mModelSpec(spec)).toBe(false);
     }
     expect(isDefault1mModelSpec(null)).toBe(false);
     expect(isDefault1mModelSpec(undefined)).toBe(false);
+  });
+});
+
+describe('bulk resolver client-safe launch vocabulary', () => {
+  it('defaults both panes to the exact pre-configuration launch behavior', () => {
+    expect(defaultBulkResolverLaunchProfiles()).toEqual({
+      'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
+      'plan-cleanup': { model: null, effort: null, account: 'default', carry: 'warm' },
+    });
+  });
+
+  it('derives the CLI from canonical aliases and OMP selectors, including effort specs', () => {
+    expect(launchAgentBackendForModel('sonnet:high')).toBe('claude');
+    expect(launchAgentBackendForModel('sol:xhigh')).toBe('codex');
+    expect(launchAgentBackendForModel('openrouter/anthropic/claude-opus:max')).toBe('omp');
+    expect(launchAgentBackendForModel(null)).toBeNull();
+    expect(launchAgentBackendForModel('unknown-full-id')).toBeNull();
   });
 });
 
@@ -88,8 +114,7 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
   // hard ceiling, so config:set-compaction-limit could never do the one thing its own
   // description promises ("raise it for wide-context work") on this fleet's default spec.
   it('[1m] self-set reaches the real window-derived max (825k), not the 400k default', () => {
-    const windowDerived1m =
-      Math.floor((MODEL_WINDOW_1M - 10_000) / 1.2 / 1000) * 1000;
+    const windowDerived1m = Math.floor((MODEL_WINDOW_1M - 10_000) / 1.2 / 1000) * 1000;
     expect(windowDerived1m).toBe(825_000);
     expect(selfSetCeilingForSpec('opus[1m]')).toBe(825_000);
     expect(selfSetCeilingForSpec('opus[1m]:xhigh')).toBe(825_000);
@@ -112,9 +137,7 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
 
   it('fleet MEMBERS cannot self-raise past their 200k role cap — selfSet does not beat role', () => {
     expect(selfSetCeilingForSpec('opus[1m]', { fleetMember: true })).toBe(200_000);
-    expect(clampCompactionLimit(900_000, 'opus[1m]', { fleetMember: true, selfSet: true })).toBe(
-      200_000,
-    );
+    expect(clampCompactionLimit(900_000, 'opus[1m]', { fleetMember: true, selfSet: true })).toBe(200_000);
   });
 
   it('a real small-window spec is unaffected — self-set still derives from ITS window', () => {
@@ -145,7 +168,7 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     // a 200k-window member still derives from the REAL window, not the role
     expect(defaultCompactionLimitForSpec('haiku', { fleetMember: true })).toBe(158_000);
   });
-  it('a BARE default-1M-family spec derives 158k — BELOW CC\'s own ~167k auto trigger on the real 200k window, so papercusp compacts cleanly first', () => {
+  it("a BARE default-1M-family spec derives 158k — BELOW CC's own ~167k auto trigger on the real 200k window, so papercusp compacts cleanly first", () => {
     expect(defaultCompactionLimitForSpec('opus')).toBe(158_000);
     expect(defaultCompactionLimitForSpec('claude-sonnet-5:high')).toBe(158_000);
     expect(defaultCompactionLimitForSpec('sonnet:medium')).toBe(158_000);
@@ -190,9 +213,7 @@ describe('selfSetCeilingForWindow (measured runtime override ceiling)', () => {
   });
 
   it('keeps fleet members at their role ceiling even with a wider measured window', () => {
-    expect(selfSetCeilingForWindow(828_400, { fleetMember: true })).toBe(
-      COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
-    );
+    expect(selfSetCeilingForWindow(828_400, { fleetMember: true })).toBe(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP);
   });
 
   it('honors the minimum for an invalid or tiny measurement', () => {
@@ -295,12 +316,29 @@ describe('validateCloudModelSpec (tool-boundary cloud model-spec guard — WI-19
   });
   it('accepts valid aliases, effort specs, full/provider ids, [1m] round-trips, local ids, and empty', () => {
     for (const s of [
-      'fable:xhigh', 'opus:max', 'sonnet', 'sonnet:high', 'haiku',
-      'opus[1m]:max', 'sonnet[1m]', 'claude-fable-5:xhigh', 'claude-fable-5[1m]',
-      'claude-sonnet-5:high', 'anthropic.claude-3-5-sonnet-20241022-v2:0',
-      'sol', 'sol:high', 'sol:max', 'terra:xhigh', 'luna', 'luna:medium',
-      'gpt-5.6-sol', 'gpt-5.6-terra:high', 'gpt-5.6-luna:xhigh',
-      'ollama-cc/maxwell1500/ornith-35b:IQ3_M', 'gpt-5-codex', '',
+      'fable:xhigh',
+      'opus:max',
+      'sonnet',
+      'sonnet:high',
+      'haiku',
+      'opus[1m]:max',
+      'sonnet[1m]',
+      'claude-fable-5:xhigh',
+      'claude-fable-5[1m]',
+      'claude-sonnet-5:high',
+      'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      'sol',
+      'sol:high',
+      'sol:max',
+      'terra:xhigh',
+      'luna',
+      'luna:medium',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra:high',
+      'gpt-5.6-luna:xhigh',
+      'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
+      'gpt-5-codex',
+      '',
     ]) {
       expect(validateCloudModelSpec(s).ok, s).toBe(true);
     }
@@ -318,8 +356,12 @@ describe('validateCloudModelSpec (tool-boundary cloud model-spec guard — WI-19
   });
   it('rejects a close-typo alias — incl. transpositions — with a "did you mean" suggestion', () => {
     for (const [bad, want] of [
-      ['fabel', 'fable'], ['sonet', 'sonnet'], ['sonnet5', 'sonnet'],
-      ['opus4', 'opus'], ['opuss', 'opus'], ['fabel5:xhigh', 'fable'],
+      ['fabel', 'fable'],
+      ['sonet', 'sonnet'],
+      ['sonnet5', 'sonnet'],
+      ['opus4', 'opus'],
+      ['opuss', 'opus'],
+      ['fabel5:xhigh', 'fable'],
     ] as const) {
       const r = validateCloudModelSpec(bad);
       expect(r.ok, bad).toBe(false);
@@ -328,8 +370,11 @@ describe('validateCloudModelSpec (tool-boundary cloud model-spec guard — WI-19
   });
   it('rejects version-suffixed GPT-5.6 aliases (sol-5.6, terra-5, luna-5.6) and suggests the bare alias', () => {
     for (const [bad, want] of [
-      ['sol-5.6', 'sol'], ['terra-5', 'terra'], ['luna-5.6', 'luna'],
-      ['sol-5.6:high', 'sol:high'], ['terra-5:xhigh', 'terra:xhigh'],
+      ['sol-5.6', 'sol'],
+      ['terra-5', 'terra'],
+      ['luna-5.6', 'luna'],
+      ['sol-5.6:high', 'sol:high'],
+      ['terra-5:xhigh', 'terra:xhigh'],
     ] as const) {
       const r = validateCloudModelSpec(bad);
       expect(r.ok, bad).toBe(false);
