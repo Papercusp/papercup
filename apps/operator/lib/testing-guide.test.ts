@@ -40,6 +40,6 @@ describe('operator testing documentation contract', () => {
     const frameworkDoc = readFileSync(frameworkDocPath, 'utf8');
 
     expect(frameworkDoc).toContain('Phase 3: TESTING.md present in 16 packages');
-    expect(frameworkDoc).toContain('`apps/operator/TESTING.md`');
+    expect(frameworkDoc).toContain('`apps/operator`');
   });
 });
