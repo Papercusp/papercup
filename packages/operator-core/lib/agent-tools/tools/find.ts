@@ -625,20 +625,6 @@ export default defineTool({
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
 
-    // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched
-    // tools for THIS session so a seeded (small-surface) client can call them.
-    // On a listChanged-capable transport this also fires tools/list_changed so
-    // the client re-fetches tools/list and the surfaced tools become callable.
-    // No-op (returns false) on a full-catalog / un-seeded session — nothing to
-    // expand — and on transports without a mutable surface. NEVER let a surface
-    // failure break discovery: the hits are still returned.
-    let activated = false;
-    try {
-      activated = ctx.activateTools?.(hits.map((h) => h.tool)) ?? false;
-    } catch {
-      /* activation is best-effort; discovery still succeeds */
-    }
-
     // Honest mode marker (never silently pretend semantic ran):
     //   on          — index ready, the semantic leg contributed;
     //   warming      — embedder configured, index still building (lexical-only this call);
@@ -653,17 +639,51 @@ export default defineTool({
       returns: returnsByTool.get(h.tool) ?? null,
       via: h.via,
     }));
-    const howToCall = activated
-      ? 'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
-        'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
-        'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
-        'on every client via server-side dispatch. After the client refreshes (often next turn), the ' +
-        'direct wrapper may also be available.'
-      : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
-        'fail with unknown/not-found. Call them with ' +
-        'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
-        "the tool's real (colon-form) name; works on every client, needs no load step. " +
-        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
+
+    const activatedHowToCall =
+      'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
+      'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
+      'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
+      'on every client via server-side dispatch. After the client refreshes (often next turn), the ' +
+      'direct wrapper may also be available.';
+    const inactiveHowToCall =
+      'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
+      'fail with unknown/not-found. Call them with ' +
+      'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
+      "the tool's real (colon-form) name; works on every client, needs no load step. " +
+      'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
+
+    // Bound the candidate names before activating them. Otherwise a large schema
+    // can cause the response to omit a matched tool while still adding that
+    // invisible tool to the session surface (the activation contract is about
+    // the hits the caller can actually see and invoke).
+    const activationCandidate = boundDiscoveryHits(
+      {
+        query: args.query,
+        semantic,
+        registry,
+        activated: true,
+        howToCall: activatedHowToCall,
+        totalMatches: hits.length,
+      },
+      projectedHits,
+    );
+
+    // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched
+    // tools for THIS session so a seeded (small-surface) client can call them.
+    // On a listChanged-capable transport this also fires tools/list_changed so
+    // the client re-fetches tools/list and the surfaced tools become callable.
+    // No-op (returns false) on a full-catalog / un-seeded session — nothing to
+    // expand — and on transports without a mutable surface. NEVER let a surface
+    // failure break discovery: the hits are still returned.
+    let activated = false;
+    try {
+      activated = ctx.activateTools?.(activationCandidate.hits.map((h) => h.tool)) ?? false;
+    } catch {
+      /* activation is best-effort; discovery still succeeds */
+    }
+
+    const howToCall = activated ? activatedHowToCall : inactiveHowToCall;
     const bounded = boundDiscoveryHits(
       { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
       projectedHits,
