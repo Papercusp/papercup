@@ -3,6 +3,8 @@ import { DISPLAY_TERMINAL_LAUNCH } from '../../../adv-sessions';
 import {
   classifyPrePinnedOwnerRows,
   describePrePinnedConflicts,
+  resolvePrePinnedOwnerLiveness,
+  describePrePinnedConflicts,
   type PrePinnedOwnerRow,
 } from './pre-pinned-owner-rows';
 
@@ -132,5 +134,47 @@ describe('describePrePinnedConflicts', () => {
     expect(describePrePinnedConflicts([{ id: '7', display: null, has_session: false }])).toContain(
       'display=null',
     );
+  });
+});
+
+describe('resolvePrePinnedOwnerLiveness', () => {
+  const witnessWith = (over: {
+    findHost?: (id: string) => unknown;
+    beat?: { pid?: number | null; host?: string | null } | null;
+    probe?: (r: { host?: string | null; pid?: number | null }) => boolean | null;
+  }) => ({
+    findHost: over.findHost ?? (() => null),
+    beat: over.beat === undefined ? null : over.beat,
+    probeBeat: over.probe ?? (() => null),
+  });
+
+  it('a live pty host is positive live evidence and settles the verdict before probing', () => {
+    let probed = false;
+    const verdict = resolvePrePinnedOwnerLiveness(
+      'su-x01',
+      witnessWith({ findHost: () => ({ ownerId: 'su-x01' }), probe: () => (probed = true) && false }),
+    );
+    expect(verdict).toBe('live');
+    expect(probed).toBe(false);
+  });
+
+  it('an authoritative ESRCH on the supervisor-beat pid is the ONLY dead verdict', () => {
+    expect(
+      resolvePrePinnedOwnerLiveness('su-x02', witnessWith({ beat: { pid: 17840, host: 'this-box' }, probe: () => false })),
+    ).toBe('dead');
+  });
+
+  it('a living beat pid reads live even without a pty host — headless between wakes is alive', () => {
+    expect(
+      resolvePrePinnedOwnerLiveness('su-x03', witnessWith({ beat: { pid: 1, host: 'this-box' }, probe: () => true })),
+    ).toBe('live');
+  });
+
+  it('every inconclusive shape stays unknown: no beat, foreign host, EPERM', () => {
+    expect(resolvePrePinnedOwnerLiveness('su-x04', witnessWith({}))).toBe('unknown');
+    expect(
+      resolvePrePinnedOwnerLiveness('su-x05', witnessWith({ beat: { pid: 2, host: 'elsewhere' }, probe: () => null })),
+    ).toBe('unknown');
+    expect(resolvePrePinnedOwnerLiveness('su-x06', witnessWith({ beat: { pid: 3, host: 'this-box' }, probe: () => null }))).toBe('unknown');
   });
 });
