@@ -32,6 +32,12 @@ const valid = {
     invalidOutput: { itemId: 42, candidates: [] },
   },
   boot: { mode: "attach", discoveryFile: "~/.quartermaster/operator.json" },
+  nativeDesktop: {
+    cargoManifest: "apps/desktop/src-tauri/Cargo.toml",
+    cargoLock: "apps/desktop/src-tauri/Cargo.lock",
+    tauriConfig: "apps/desktop/src-tauri/tauri.conf.json",
+    icons: ["apps/desktop/src-tauri/icons/icon.png"],
+  },
   gym: {
     blueprint: "blueprints/quartermaster-ops/blueprint.yaml",
     requiredSignals: ["no-checkout-reach"],
@@ -82,6 +88,7 @@ describe("validateChecksConfig", () => {
       app: {},
       confinement: { blueprints: [], dangerousCapabilities: "cart" },
       boot: { mode: "spawn", discoveryFile: "" },
+      nativeDesktop: { cargoManifest: "", icons: [] },
       gym: { requiredSignals: [] },
     });
     expect(errors).toContain("app.name: required non-empty string");
@@ -93,6 +100,10 @@ describe("validateChecksConfig", () => {
       "boot.command: required (list of strings) in spawn mode",
     );
     expect(errors).toContain("boot.discoveryFile: required non-empty string");
+    expect(errors).toContain("nativeDesktop.cargoManifest: required non-empty string");
+    expect(errors).toContain("nativeDesktop.cargoLock: required non-empty string");
+    expect(errors).toContain("nativeDesktop.tauriConfig: required non-empty string");
+    expect(errors).toContain("nativeDesktop.icons: must be non-empty");
     expect(errors).toContain("gym.blueprint: required non-empty string");
     expect(errors).toContain("gym.requiredSignals: must be non-empty");
   });
