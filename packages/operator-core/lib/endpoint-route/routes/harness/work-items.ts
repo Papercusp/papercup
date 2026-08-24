@@ -228,6 +228,13 @@ const postWorkItem = defineTool({
     if (!title) return Response.json({ ok: false, error: 'title required' }, { status: 400 });
     try {
       const item = await createWorkItem({
+        // Born-pending (work-queue-admission-and-bulk-dedup-2026-08-24 P-002). This is
+        // a SIDECAR enqueue seam — a machine emitter filing one item per survivor of
+        // its own dedup pass — which is the population the admission gate exists for.
+        // Nothing here has passed review, so it lands pending and the promoter judges
+        // it on corpus-wide evidence. Deliberately NOT caller-overridable: an emitter
+        // asserting its own admission is the bypass this gate replaces.
+        admission: 'pending',
         kind,
         title,
         summary: typeof body.summary === 'string' ? body.summary : undefined,
