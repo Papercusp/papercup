@@ -345,7 +345,23 @@ interface EvidenceRow extends CurrentnessRow {
 
 export interface ListSpecEvidenceOptions {
   harnessSlug?: string;
-  planSlug: string;
+  /**
+   * The plan namespaces to read evidence from — an ARRAY, not a single slug, since P-013.
+   *
+   * WHY IT HAD TO WIDEN. D-012/D-013 made a work item's contract span plan namespaces: an
+   * edge can name a clause in a plan the item is not stamped with. Once the completion
+   * gate ENFORCES those cross-namespace clauses (P-013), a single-plan evidence read makes
+   * every one of them find ZERO rows and refuse SPURIOUSLY — the gate would demand proof it
+   * had just made itself unable to see. So the enforced clause set and the evidence read
+   * must be scoped by the SAME set of namespaces, always.
+   *
+   * It is one query with `plan_slug = ANY(...)`, deliberately, not an N-plan fan-out: the
+   * 1000-row safety limit callers apply is a limit on the WHOLE selection, and N separate
+   * capped queries cannot honour one shared cap.
+   *
+   * An EMPTY array selects nothing, which is the honest reading of "no eligible namespace".
+   */
+  planSlugs: string[];
   workItemIds?: string[];
   specIds?: string[];
   sourceValIds?: string[];
@@ -405,7 +421,13 @@ export async function listWorkItemSpecRevisionEdges(options: {
 }
 
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
+  // No namespace selected can never match a row, so say so without a round-trip. Kept
+  // explicit rather than leaning on `= ANY('{}')`: a reader must not have to know that
+  // Postgres happens to return nothing, and the alternative reading — an empty filter
+  // meaning "every plan" — is the exact silent-widening this whole plan exists to remove.
+  if (options.planSlugs.length === 0) return [];
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const planSlugs = options.planSlugs;
   const workItemIds = options.workItemIds ?? [];
   const specIds = options.specIds ?? [];
   const sourceValIds = options.sourceValIds ?? [];
@@ -443,7 +465,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
        AND r.revision = b.spec_revision
      WHERE b.workspace_id = ${scope.workspaceId}
        AND b.harness_slug = ${scope.harnessSlug}
-       AND b.plan_slug = ${options.planSlug}
+       AND b.plan_slug = ANY(${planSlugs}::text[])
        AND (${workItemIds.length} = 0 OR b.work_item_id = ANY(${workItemIds}::text[]))
        AND (${specIds.length} = 0 OR b.spec_id = ANY(${specIds}::text[]))
        AND (${sourceValIds.length} = 0 OR c.source_val_id = ANY(${sourceValIds}::text[]))
