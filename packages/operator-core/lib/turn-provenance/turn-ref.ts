@@ -141,6 +141,29 @@ export type RecordedTurnVerdict =
  */
 export const OWNER_DIALOG_TURN_MARKER = '⟦owner-dialog-answer⟧';
 
+/**
+ * Persisted verdicts that a turn WHICH MIGHT BE OWNER SPEECH can carry.
+ *
+ * `owner-typed` / `owner-dialog` are proven. `unenrolled-origin` is the honest
+ * third state, and omitting it is what makes a provenance-filtered search lie:
+ * a file-backed CLI row (claude/omp/codex) cannot carry an enrolment envelope,
+ * so ingest downgrades its `owner-typed` residual to `unenrolled-origin` rather
+ * than assert authorship it cannot prove. A typed owner directive in a psu
+ * session is therefore stored under the third value, and a query restricted to
+ * the first two returns zero rows however much the owner actually said.
+ *
+ * So this set — not `{owner-typed, owner-dialog}` — is the one to filter on
+ * when the question is "did the owner say X", including when the answer sought
+ * is NO. It is deliberately still narrower than "any user turn": it excludes
+ * agent-injected and machine-surface rows, which is what stops an agent's own
+ * replayed loop goal from reading back as the owner's words.
+ */
+export const OWNER_CANDIDATE_TURN_VERDICTS: readonly string[] = [
+  'owner-typed',
+  'owner-dialog',
+  'unenrolled-origin',
+];
+
 export interface RecordedTurnClass {
   verdict: RecordedTurnVerdict;
   /** The envelope's origin when agent-injected (e.g. 'wake-pump'). */
