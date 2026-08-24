@@ -2816,6 +2816,44 @@ async function terminalSessionVerdict(ownerId: string): Promise<{ sessionTermina
   }
 }
 
+/**
+ * WI-41197 — give a TERMINAL-launched psu session a task-ledger row, from the
+ * one signal that already carries what enrolment needs.
+ *
+ * A session the owner starts by typing `psu` crosses no spawn chokepoint, so
+ * `managedSpawn` / `beginSyncEnrolment` / `lint:no-unenrolled-spawn` all miss
+ * it: measured 2026-08-24, 49 live sessions with no ledger row, hence no
+ * `taskId`, hence no provenance, no safe `processes:kill { taskId }`, and
+ * nothing that notices when one dies (the mechanism behind a 118-process
+ * residue pileup the day before).
+ *
+ * The beat is the right seam because it already reports the launcher's OWN pid
+ * — see the `pid`/`host` note above — so the sessions running RIGHT NOW enrol
+ * within one interval, with no change to `psu-launcher.mjs` and no re-launch.
+ * Full rationale: plan terminal-psu-session-enrolment-2026-08-24 D-002.
+ *
+ * Awaited, but structurally unable to fail the beat: `adoptTerminalSession` is
+ * non-throwing by contract, and this wrapper still catches, because a missed
+ * beat is a presence-warmth problem while a FAILED beat would break the
+ * liveness signal for a live agent. After the first call per owner it is a Map
+ * lookup, not a query. Imported lazily like `touchHeartbeat` above so the
+ * route module does not pull the task-manager graph in eagerly.
+ */
+async function adoptTerminalSessionSoft(input: {
+  ownerId: string;
+  pid?: number;
+  host?: string;
+  tty?: string;
+}): Promise<void> {
+  if (input.pid == null) return;
+  try {
+    const { adoptTerminalSession } = await import('../../../task-manager/adopt-terminal-session');
+    await adoptTerminalSession(input);
+  } catch {
+    /* never let enrolment cost a live agent its heartbeat */
+  }
+}
+
 const heartbeat = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/bootstrap-su/heartbeat',
@@ -2851,6 +2889,7 @@ const heartbeat = defineTool({
         ownerId,
         pid != null || host != null || tty != null ? { pid, host, tty } : undefined,
       );
+      await adoptTerminalSessionSoft({ ownerId, pid, host, tty });
       return jsonRes({ ok: true, ...(await terminalSessionVerdict(ownerId)) });
     } catch (err) {
       // Best-effort contract: the launcher treats any failure as a missed

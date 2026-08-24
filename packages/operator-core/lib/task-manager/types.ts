@@ -66,6 +66,29 @@ export function isLiveOwnedState(state: TaskState): boolean {
 }
 
 /**
+ * Is this row exempt from AUTOMATED reaping?
+ *
+ * `isLiveOwnedState` above answers "may we signal this at all". This answers a
+ * strictly narrower question: may a TIMER signal it, unattended. The two are not
+ * the same, and conflating them is what this predicate exists to prevent.
+ *
+ * Stamped by `adopt-terminal-session`, which enrols the psu sessions a human
+ * started by typing in a terminal. Those rows exist so the sessions are VISIBLE
+ * and so a person or an agent can make a DELIBERATE `processes:kill { taskId }`
+ * — never so something kills the owner's terminals on a schedule. We do not own
+ * a `vte-spawn` scope's lifetime (the terminal window does), so auto-reaping one
+ * closes a window and takes the live agent inside it with it.
+ *
+ * Deliberately NOT consulted by `killTask`: an explicit kill must still work, or
+ * enrolment would remove the very handle it was added to provide. Automated
+ * callers are the ones that must ask. See plan
+ * terminal-psu-session-enrolment-2026-08-24 D-001 (owner ruling, 2026-08-24).
+ */
+export function isAutoReapExempt(row: Pick<TaskRow, 'detail'>): boolean {
+  return row.detail?.autoReapExempt === true;
+}
+
+/**
  * What a task IS. Deliberately an open union (`string & {}`) rather than a closed
  * enum + DB CHECK: new root seams enrol over time and a migration per spawn site
  * would be friction with no safety win. The scheduled-registry's `ManagedCategory`

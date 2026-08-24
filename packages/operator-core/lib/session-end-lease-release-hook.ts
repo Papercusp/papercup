@@ -20,6 +20,7 @@ import { fileLockCoordinationDomain, lockDomainForProjectDir } from './agent-too
 import { releaseAllOwnedLocks } from './agent-tools/locks/release-all-owned';
 import { killTask } from './task-manager/control';
 import { listTasks } from './task-manager/store';
+import { isAutoReapExempt } from './task-manager/types';
 
 export const SESSION_END_LEASE_RELEASE_DELAY_MS = 15_000;
 /**
@@ -75,6 +76,11 @@ export interface SessionEndLeaseReleaseResult {
   agentSessionTaskIds?: string[];
   reapedTaskIds?: string[];
   failedTaskIds?: string[];
+  /** Live rows this session owned that were deliberately NOT reaped because they
+   *  are auto-reap exempt (terminal-launched psu sessions — D-001). Reported
+   *  rather than silently dropped: "we skipped 3" and "there were none" are
+   *  different facts, and only one of them means the exemption is working. */
+  exemptTaskIds?: string[];
   failedEffects?: Array<'locks' | 'work-items' | 'tasks'>;
 }
 
@@ -160,15 +166,38 @@ export async function runSessionEndLeaseRelease(
   const reapAgentSessionTasks = async () => {
     const sessionId = row.sessionId?.trim() ?? '';
     if (!sessionId) {
-      return { taskIds: [] as string[], reapedTaskIds: [] as string[], failedTaskIds: [] as string[] };
+      return {
+        taskIds: [] as string[],
+        reapedTaskIds: [] as string[],
+        failedTaskIds: [] as string[],
+        exemptTaskIds: [] as string[],
+      };
     }
-    const tasks = await (deps.listTasks ?? listTasks)({
+    const listed = await (deps.listTasks ?? listTasks)({
       workspaceId: row.workspaceId,
       sessionId,
       states: ['pending', 'running'],
       classes: ['agent-session'],
       limit: 2_000,
     });
+    // ⛔ OWNER RULING (terminal-psu-session-enrolment-2026-08-24 D-001, avi
+    // 2026-08-24): a TERMINAL-launched session enrolled by
+    // `adopt-terminal-session` is VISIBLE ONLY and must never be auto-reaped.
+    //
+    // This is the ONE automated killer of live `agent-session` rows, so it is
+    // where the exemption has to live. It deliberately does NOT live inside
+    // `killTask`: a DELIBERATE `processes:kill { taskId }` by an agent or the
+    // owner must keep working, and that kill path is the entire reason those
+    // sessions are enrolled in the first place.
+    //
+    // The stakes are asymmetric and physical. We do not own a `vte-spawn`
+    // scope's lifetime — the terminal window does — so reaping one of these
+    // rows closes the owner's terminal window and takes the live agent inside
+    // it with it. Auto-reaping was put to the owner in two forms
+    // (reap-when-provably-dead, reap-fleet-spawned-only) and both were
+    // declined. Do not widen this without a fresh owner ruling.
+    const exempt = listed.filter(isAutoReapExempt);
+    const tasks = listed.filter((task) => !isAutoReapExempt(task));
     const outcomes = await Promise.allSettled(
       tasks.map((task) => (deps.killTask ?? killTask)(task.taskId, { reapTerminalResidue: true })),
     );
@@ -179,7 +208,12 @@ export async function runSessionEndLeaseRelease(
       if (outcome?.status === 'fulfilled' && outcome.value.ok) reapedTaskIds.push(tasks[index].taskId);
       else failedTaskIds.push(tasks[index].taskId);
     }
-    return { taskIds: tasks.map((task) => task.taskId), reapedTaskIds, failedTaskIds };
+    return {
+      taskIds: tasks.map((task) => task.taskId),
+      reapedTaskIds,
+      failedTaskIds,
+      exemptTaskIds: exempt.map((task) => task.taskId),
+    };
   };
 
   const primaryCoordinationDomain = row.cwd?.trim()
@@ -207,6 +241,7 @@ export async function runSessionEndLeaseRelease(
     agentSessionTaskIds: tasks.status === 'fulfilled' ? tasks.value.taskIds : [],
     reapedTaskIds: tasks.status === 'fulfilled' ? tasks.value.reapedTaskIds : [],
     failedTaskIds: tasks.status === 'fulfilled' ? tasks.value.failedTaskIds : [],
+    exemptTaskIds: tasks.status === 'fulfilled' ? tasks.value.exemptTaskIds : [],
   };
 }
 
