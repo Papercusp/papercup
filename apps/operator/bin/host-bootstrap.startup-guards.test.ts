@@ -174,22 +174,22 @@ describe('hono-host absorbs a dead stdio peer before process-level fault handlin
   });
 });
 
-describe('hono-host exposes a non-zero desktop-dev recycle contract', () => {
-  it('handles Linux desktop-dev SIGUSR2 with a bounded exit-75 recycle before listening', () => {
-    // WI-41422: a raw SIGKILL of the inner tsx child was observed to make npx
-    // return 0, so the wrapper stopped instead of restarting. The entrypoint
-    // must translate the tool's signal into an explicit non-zero process exit,
-    // and the handler must exist before :3270 accepts a request.
+describe('hono-host exposes a no-native-teardown desktop-dev recycle contract', () => {
+  it('handles Linux desktop-dev SIGUSR2 with a bounded hard-exit recycle before listening', () => {
+    // WI-41422: process.exit(75) reached native addon teardown and aborted with
+    // exit 134. The wrapper restarts after every child-only exit, so the
+    // entrypoint must drain and then use the no-teardown hard-exit path. The
+    // handler must exist before :3270 accepts a request.
     const handler = honoHostSrc.indexOf("process.on('SIGUSR2'");
     const listen = honoHostSrc.indexOf('listenWithEaddrinuseRetry(');
     const marker = honoHostSrc.indexOf("process.env.DBOS__VMID === `desktop-dev-${port}`");
     const exitCode = honoHostSrc.indexOf('recycleExitCode: 75', handler);
-    const explicitExit = honoHostSrc.indexOf('hardExitOnRecycle: false', handler);
+    const hardExit = honoHostSrc.indexOf('hardExitOnRecycle: true', handler);
 
     expect(marker).toBeGreaterThan(-1);
     expect(handler).toBeGreaterThan(marker);
     expect(exitCode).toBeGreaterThan(handler);
-    expect(explicitExit).toBeGreaterThan(handler);
+    expect(hardExit).toBeGreaterThan(handler);
     expect(handler).toBeLessThan(listen);
   });
 });

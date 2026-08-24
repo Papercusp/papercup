@@ -262,10 +262,10 @@ export async function resolveDesktopDevListener(deps: DesktopDevRestartDeps = {}
 }
 
 /**
- * Resolve, re-resolve, and request a NON-ZERO graceful recycle from only the
- * verified desktop listener child. The Hono entrypoint owns SIGUSR2 and exits
- * 75 after its bounded HTTP drain; dev-operator-ifneeded.sh therefore sees a
- * non-zero command result and restarts it. Success means a DIFFERENT verified
+ * Resolve, re-resolve, and request a bounded recycle from only the verified
+ * desktop listener child. The Hono entrypoint owns SIGUSR2, drains HTTP, then
+ * hard-exits without Node's native-addon teardown; dev-operator-ifneeded.sh
+ * restarts after every child-only exit. Success means a DIFFERENT verified
  * listener appeared — a delivered signal alone is not a restart verdict.
  */
 export async function restartDesktopDev(deps: DesktopDevRestartDeps = {}): Promise<DesktopDevRestartResult> {
