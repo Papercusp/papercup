@@ -26,6 +26,11 @@ import { summarizeForcedPast } from './forced-past-stamp';
 import { writePlanIndexRows } from './plan-index-rows';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
 import {
+  conversationAuditRequiredValue,
+  entersActivationPlanStatus,
+  evaluateConversationActivationGate,
+} from './plan-activation-gate';
+import {
   resolvePlanScope,
   syntheticPlanPath,
   deriveIndexFromContent,
@@ -311,6 +316,32 @@ export async function withPlanLock<T>(
       cur?.content ?? null,
       meta,
     );
+
+    // P-004: ONE content-write chokepoint covers set-plan-status, raw
+    // set-content/edit/frontmatter writes, and direct creation as ready/active.
+    // Later edits while already ready/active are intentionally allowed (D-002).
+    if (newBody !== null) {
+      const beforeStatus = cur ? deriveIndexFromContent(cur.content).status : null;
+      const afterStatus = deriveIndexFromContent(newBody).status;
+      if (entersActivationPlanStatus(beforeStatus, afterStatus)) {
+        const gate = await evaluateConversationActivationGate(tx as never, {
+          workspaceId,
+          harnessSlug,
+          planSlug: slug,
+        });
+        if (!gate.satisfied) {
+          return {
+            kind: 'applied',
+            value: conversationAuditRequiredValue(slug) as T,
+            filePath,
+            version: curVersion,
+            scope: { workspaceId, harnessSlug },
+            writtenBody: null,
+            priorBody: cur?.content ?? null,
+          } satisfies AppliedResult<T> & { writtenBody: string | null; priorBody: string | null };
+        }
+      }
+    }
     // A structured template_data write (plans:set-template-data, P-005). Present
     // (even with data:null = clear) ⇒ write the jsonb column.
     const writesTemplateData = templateData !== undefined;

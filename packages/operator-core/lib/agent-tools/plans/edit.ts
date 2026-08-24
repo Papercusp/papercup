@@ -34,6 +34,7 @@ import type { ResolveIdentityCtx } from '../coordination/identity';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
+import { domainFailureMessage } from './plan-activation-gate';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { evaluateSetContent, type SetContentValue } from './set-content';
 
@@ -184,6 +185,8 @@ export default defineTool({
     const v = result.value;
     if (!v.ok) {
       const payload: Record<string, unknown> = { error: v.code, slug: args.slug };
+      const domainMessage = domainFailureMessage(v);
+      if (domainMessage) payload.message = domainMessage;
       if (v.code === 'stale') {
         payload.currentContent = v.currentContent;
         payload.currentHash = v.currentHash;

@@ -43,6 +43,7 @@ import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolvePlanWriteScope } from './_write-scope';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
+import { evaluateConversationActivationGate } from './plan-activation-gate';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
@@ -159,6 +160,29 @@ export default defineTool({
             status: lifecycle,
             message: `Plan is ${lifecycle}; reopen it (set status back to ready/draft) before starting.`,
           };
+        }
+
+        // P-004: start is an execution/auto-approval door, so legacy ready
+        // rows and draft→ready auto-approval cannot bypass the same audit gate
+        // enforced by the content-write chokepoint.
+        if (read) {
+          const conversationGate = await withWorkspace(startWorkspaceId, (tx) =>
+            evaluateConversationActivationGate(tx as never, {
+              workspaceId: startWorkspaceId,
+              harnessSlug,
+              planSlug: slug,
+            }),
+          );
+          if (!conversationGate.satisfied) {
+            ctxAny.metadata?.({ slug, harnessSlug, refused: conversationGate.code });
+            return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: conversationGate.code ?? 'conversation_audit_required',
+              message: conversationGate.message,
+            };
+          }
         }
 
         // P-006 start gate. `start` is gated even though it only flips status

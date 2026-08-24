@@ -37,6 +37,7 @@ import { launchAcceptanceGrader, resolveAcceptanceGrader, type AcceptanceGraderL
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { domainFailureMessage } from './plan-activation-gate';
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
 const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
@@ -433,7 +434,14 @@ export default defineTool({
         // Domain failures return ok:false as a normal result so callers read
         // per-item status instead of catching.
         if (!result.value.ok) {
-          return { ok: false as const, slug, error: result.value.code, current: result.value.current ?? null };
+          const message = domainFailureMessage(result.value);
+          return {
+            ok: false as const,
+            slug,
+            error: result.value.code,
+            current: result.value.current ?? null,
+            ...(message ? { message } : {}),
+          };
         }
 
         if (result.value.changed) {

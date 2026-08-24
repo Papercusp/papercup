@@ -19,6 +19,7 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
+import { domainFailureMessage } from './plan-activation-gate';
 import { listPlanIndexRows, resolvePlanScope } from './source';
 import { withWorkspace } from '@papercusp/db-org';
 import { validatePropertySchemaDeclaration } from '../../typed-properties-db';
@@ -496,11 +497,12 @@ export default defineTool({
 
     const value = result.value;
     if (!value.ok) {
+      const message = domainFailureMessage(value);
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ error: value.code, slug }),
+            text: JSON.stringify({ error: value.code, slug, ...(message ? { message } : {}) }),
           },
         ],
         isError: true,

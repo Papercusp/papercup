@@ -30,6 +30,7 @@ import { hardText, LIMITS } from '../limits';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
+import { domainFailureMessage } from './plan-activation-gate';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
@@ -193,11 +194,12 @@ export default defineTool({
     }
 
     if (!result.value.ok) {
+      const message = domainFailureMessage(result.value);
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ error: result.value.code, slug: args.slug }),
+            text: JSON.stringify({ error: result.value.code, slug: args.slug, ...(message ? { message } : {}) }),
           },
         ],
         isError: true,

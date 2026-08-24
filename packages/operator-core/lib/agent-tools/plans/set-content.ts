@@ -37,6 +37,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
+import { domainFailureMessage } from './plan-activation-gate';
 import { parsePlan, type ParsedPlan } from './parser';
 import { detectItemTextChanges, type PlanItemTextChange } from '../../plan-items/text-drift';
 import { planItemTextDriftForWrite } from '../../plan-items/text-drift-report';
@@ -577,6 +578,8 @@ export default defineTool({
       // Domain failures all use the `error` key (the plans:* convention);
       // stale + lint_failed carry their extra payload alongside it.
       const payload: Record<string, unknown> = { error: v.code, slug: args.slug };
+      const domainMessage = domainFailureMessage(v);
+      if (domainMessage) payload.message = domainMessage;
       if (v.code === 'stale') {
         payload.currentContent = v.currentContent;
         payload.currentHash = v.currentHash;
