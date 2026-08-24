@@ -82,25 +82,29 @@ describe('decideMeshCapacity', () => {
     expect(d.ok).toBe(true);
   });
 
-  it('STILL REFUSES the 96- and 128-peer configs whose verdicts were swap artifacts', () => {
-    // The measurement moved the boundary; it did not remove it. These two were the
-    // configs that actually produced unquotable swap-driven verdicts, and they are
-    // still refused under the growth-aware model.
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: these three USED to assert
+  // ok:false. Memory no longer refuses a run — it only warns that the resulting convergence
+  // number may be swap-distorted. So the over-budget signal is now `reason` being PRESENT,
+  // and `ok` must stay true even for a mesh far past the budget. Coverage of the arithmetic
+  // and of the EXTRAPOLATED caveat is preserved exactly; only the disposition changed.
+  it('WARNS but no longer refuses the 96- and 128-peer configs whose verdicts were swap artifacts', () => {
     for (const peers of [96, 128]) {
-      expect(decideMeshCapacity({ peers, availableBytes: MEASURED_AVAILABLE }).ok).toBe(false);
+      const d = decideMeshCapacity({ peers, availableBytes: MEASURED_AVAILABLE });
+      expect(d.ok).toBe(true);
+      expect(d.reason).toMatch(/ADVISORY \(not a refusal/);
     }
   });
 
-  it('marks a >64 projection as EXTRAPOLATED in the refusal, so it is not quoted as measured', () => {
+  it('marks a >64 projection as EXTRAPOLATED in the advisory, so it is not quoted as measured', () => {
     const d = decideMeshCapacity({ peers: 128, availableBytes: MEASURED_AVAILABLE });
-    expect(d.ok).toBe(false);
+    expect(d.ok).toBe(true);
     expect(d.reason).toMatch(/EXTRAPOLATED past the 64-peer measurement envelope/);
   });
 
   it('does NOT claim extrapolation when the caller supplied their own per-peer figure', () => {
     // The caveat is about OUR model. An operator-supplied number is theirs to own.
     const d = decideMeshCapacity({ peers: 128, availableBytes: 1e9, perPeerBytes: 400e6 });
-    expect(d.ok).toBe(false);
+    expect(d.reason).toBeDefined();
     expect(d.reason).not.toMatch(/EXTRAPOLATED/);
   });
 

@@ -101,6 +101,19 @@ describe('emitted state:subscribe handles', () => {
     expect(rejected).toEqual([]);
   });
 
+  it('no emitted selector carries the RETIRED `of` knob — the schema check cannot catch this one', () => {
+    // P-005/D-014 §4 renamed `of` to `target`, and `of` survives in the schema as a
+    // plain string PURELY so the handler can refuse it by name. That means the
+    // schema-acceptance assertion above would keep passing for an emitted
+    // `of:'material'` handle while every agent that followed it got refused at
+    // runtime — a guard that reads green about exactly the failure it exists to
+    // prevent. Checked structurally instead.
+    const stale = handles.filter((h) => typeof h.args === 'object' && h.args !== null && 'of' in h.args);
+    expect(stale.map((h) => `${h.file}: ${h.selector}`)).toEqual([]);
+    // Calibration: the predicate can see an `of` when one is there.
+    expect('of' in ({ cell: 'x', of: 'material' } as Record<string, unknown>)).toBe(true);
+  });
+
   it('CONTROL — the same check REJECTS a handle the tool would refuse', () => {
     // Calibration for the assertion above: it must be able to fail. A guard that has
     // never failed is a guard nobody has tested, and "every selector parsed" is exactly

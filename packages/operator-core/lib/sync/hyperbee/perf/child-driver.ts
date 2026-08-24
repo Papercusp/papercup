@@ -319,10 +319,11 @@ export async function spawnProcMesh(opts: {
     availableBytes: opts.availableBytes !== undefined ? opts.availableBytes : readMemAvailableBytes(),
     ...capacityOverridesFromEnv(),
   });
-  if (!capacity.ok) {
-    opts.log(`[mesh] REFUSED: ${capacity.reason}`);
-    throw new HostCapacityError(capacity.reason ?? 'host capacity exceeded', capacity);
-  }
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: ADVISORY, never a refusal.
+  // This used to throw HostCapacityError. A memory projection may warn that a resulting
+  // convergence number could be swap-distorted and therefore unquotable — it must not decide
+  // that the operator may not run the mesh at all.
+  if (capacity.reason) opts.log(`[mesh] ${capacity.reason}`);
 
   let ownedTestnet: { destroy(): Promise<void> } | null = null;
   let bootstrap = opts.bootstrap;
