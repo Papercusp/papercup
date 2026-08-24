@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   selectSpecTriadFilings,
+  selectSpecTriadReconciliations,
+  planRowIsSweepLive,
   planRef,
   SPEC_TRIAD_MAX_FILINGS_PER_RUN,
   LIVE_PLAN_STATUSES,
   type PlanContentRow,
+  type SpecTriadOpenFiling,
+  type SpecTriadPlanLocator,
 } from './spec-triad-sweep';
 
 const EPOCH = new Date('2026-08-09T00:00:00.000Z');
@@ -188,5 +192,105 @@ describe('LIVE_PLAN_STATUSES — the sweep never files against an UNAPPROVED pla
 
     // ...and the calibration case: the real value must pass the same predicate.
     expect(LIVE_PLAN_STATUSES.filter((s) => NOT_YET_APPROVED.includes(s))).toEqual([]);
+  });
+});
+
+describe('selectSpecTriadReconciliations — dangling/moot filings close, live ones are kept', () => {
+  // The class this guards (WI-38838/WI-39038): the 2026-08-14 harness re-home
+  // raced the sweep, two filings landed with the pre-move harness in their ref,
+  // and — because dedupe is exact-ref — they could never be adopted or matched
+  // again: open, claimable, and unactionable forever.
+
+  const filing = (o: { id?: string; ws?: string; harness?: string; ref: string }): SpecTriadOpenFiling => ({
+    feature_id: o.id ?? 'WI-1',
+    workspace_id: o.ws ?? 'ws',
+    harness_slug: o.harness ?? 'hive',
+    ref: o.ref,
+  });
+
+  const locator = (o: Partial<SpecTriadPlanLocator> & { slug: string }): SpecTriadPlanLocator => ({
+    workspace_id: o.workspace_id ?? 'ws',
+    harness_slug: o.harness_slug ?? 'home',
+    plan_slug: o.slug,
+    status: o.status === undefined ? 'active' : o.status,
+    archived: o.archived ?? false,
+    is_legacy: o.is_legacy ?? false,
+  });
+
+  const sel = (
+    openFilings: SpecTriadOpenFiling[],
+    plans: SpecTriadPlanLocator[],
+    maxCloses = SPEC_TRIAD_MAX_FILINGS_PER_RUN,
+  ) => selectSpecTriadReconciliations({ openFilings, plans, maxCloses });
+
+  it('closes a filing whose ref resolves to NO row, naming the slug\'s real home (the re-home race)', () => {
+    // Filing stamped under 'hive'; the plan's only row lives under 'home'.
+    const s = sel([filing({ ref: 'ws/hive/p' })], [locator({ slug: 'p', harness_slug: 'home' })]);
+    expect(s.toClose).toHaveLength(1);
+    expect(s.toClose[0].reason).toBe('plan-missing');
+    expect(s.toClose[0].detail).toContain('ws/home');
+    expect(s.kept).toBe(0);
+  });
+
+  it('closes a filing for a deleted plan (no row anywhere) without a phantom home', () => {
+    const s = sel([filing({ ref: 'ws/hive/gone' })], []);
+    expect(s.toClose).toHaveLength(1);
+    expect(s.toClose[0].reason).toBe('plan-missing');
+    expect(s.toClose[0].detail).not.toContain('now lives under');
+  });
+
+  it('closes a filing whose plan shipped in place', () => {
+    const s = sel([filing({ ref: 'ws/home/p', harness: 'home' })], [locator({ slug: 'p', status: 'shipped' })]);
+    expect(s.toClose).toHaveLength(1);
+    expect(s.toClose[0].reason).toBe('plan-not-live');
+    expect(s.toClose[0].detail).toContain("status 'shipped'");
+  });
+
+  it('closes when the plan is archived, even in a live status', () => {
+    const s = sel([filing({ ref: 'ws/home/p' })], [locator({ slug: 'p', status: 'active', archived: true })]);
+    expect(s.toClose).toHaveLength(1);
+    expect(s.toClose[0].detail).toContain('archived');
+  });
+
+  it('KEEPS a filing whose plan is live at the exact ref — including status NULL (phase-1 parity)', () => {
+    const s = sel(
+      [filing({ id: 'WI-a', ref: 'ws/home/p' }), filing({ id: 'WI-b', ref: 'ws/home/q' })],
+      [locator({ slug: 'p', status: 'active' }), locator({ slug: 'q', status: null })],
+    );
+    expect(s.toClose).toHaveLength(0);
+    expect(s.kept).toBe(2);
+  });
+
+  it('never closes an unparseable ref — a ref it cannot resolve is a ref it must not act on', () => {
+    const s = sel([filing({ ref: 'just-a-slug' }), filing({ ref: 'ws//p' })], []);
+    expect(s.toClose).toHaveLength(0);
+    expect(s.unparseable).toBe(2);
+  });
+
+  it('caps closes and reports the remainder as deferred, never dropping it silently', () => {
+    const filings = Array.from({ length: 4 }, (_, i) => filing({ id: `WI-${i}`, ref: `ws/hive/p-${i}` }));
+    const s = sel(filings, [], 2);
+    expect(s.toClose).toHaveLength(2);
+    expect(s.deferred).toBe(2);
+  });
+
+  it('is a no-op on empty input rather than throwing', () => {
+    expect(sel([], [])).toEqual({ toClose: [], kept: 0, unparseable: 0, deferred: 0 });
+  });
+
+  it('PARITY: the liveness predicate tracks LIVE_PLAN_STATUSES in both directions', () => {
+    // Every status the sweep files for must KEEP a filing open here — derived
+    // from the real list, so widening LIVE_PLAN_STATUSES flows through without
+    // this test needing to know the new value...
+    for (const status of LIVE_PLAN_STATUSES) {
+      expect(planRowIsSweepLive({ status, archived: false, is_legacy: false })).toBe(true);
+    }
+    // ...and the statuses the sweep refuses to file for must close one. This
+    // half is the control: a predicate regressed to `always live` fails here.
+    for (const status of ['shipped', 'superseded', 'draft', 'proposed', 'needs-human']) {
+      expect(planRowIsSweepLive({ status, archived: false, is_legacy: false })).toBe(false);
+    }
+    expect(planRowIsSweepLive({ status: 'active', archived: true, is_legacy: false })).toBe(false);
+    expect(planRowIsSweepLive({ status: 'active', archived: false, is_legacy: true })).toBe(false);
   });
 });

@@ -110,26 +110,18 @@ function resolveScope(scope: PrerequisiteScope): ResolvedScope {
   };
 }
 
-/**
- * Select the stored columns as an {@link ExternalPrerequisiteAttestationRow}.
+/*
+ * NOTE ON THE TWO INSTANT COLUMNS, repeated in both SELECTs below.
  *
- * The two instants are rendered as explicit ISO-8601 UTC rather than `::text`.
- * `rowToAttestation` parses them with `Date.parse`, and a bare `::text` render of a
- * timestamptz is Postgres' own display format in the session's timezone — which
- * `Date.parse` handles by implementation-defined behaviour, and which would silently
- * carry a non-UTC offset. The contract on both fields says "ISO-8601 UTC instant", so
- * the query produces exactly that.
+ * They are rendered as explicit ISO-8601 UTC rather than `::text`. `rowToAttestation`
+ * parses them with `Date.parse`, and a bare `::text` render of a timestamptz is
+ * Postgres' own display format in the SESSION's timezone — which `Date.parse` handles
+ * by implementation-defined behaviour, and which would silently carry a non-UTC
+ * offset. The contract on both fields says "ISO-8601 UTC instant", so the query
+ * produces exactly that. The column list is written out in each query rather than
+ * shared through `sql.unsafe()`: an interpolated raw fragment is a SQL-injection shape
+ * that reviewers must then re-audit, and this is eight literal columns.
  */
-const ROW_COLUMNS = `
-  prerequisite_key,
-  capability_kind,
-  present,
-  binding,
-  to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS observed_at,
-  to_char(expires_at  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
-  provenance,
-  probe_ref
-`;
 
 async function orgSql() {
   // Imported lazily: this module sits in the release tree and is reached from gate
@@ -153,7 +145,14 @@ async function defaultLoadRow(
   const sql = await orgSql();
   const ws = await resolveWorkspaceId(scope);
   const rows = await sql<ExternalPrerequisiteAttestationRow[]>`
-    SELECT ${sql.unsafe(ROW_COLUMNS)}
+    SELECT prerequisite_key,
+           capability_kind,
+           present,
+           binding,
+           to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS observed_at,
+           to_char(expires_at  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
+           provenance,
+           probe_ref
       FROM harness_shared.external_prerequisite_attestations
      WHERE workspace_id = ${ws}
        AND harness_slug = ${scope.harnessSlug}
@@ -172,7 +171,14 @@ async function defaultLoadRows(
   // Uses external_prerequisite_attestations_scope_expiry_key — the index P-002 built
   // for exactly this read ("which prerequisites in this scope are still standing?").
   return await sql<ExternalPrerequisiteAttestationRow[]>`
-    SELECT ${sql.unsafe(ROW_COLUMNS)}
+    SELECT prerequisite_key,
+           capability_kind,
+           present,
+           binding,
+           to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS observed_at,
+           to_char(expires_at  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS expires_at,
+           provenance,
+           probe_ref
       FROM harness_shared.external_prerequisite_attestations
      WHERE workspace_id = ${ws}
        AND harness_slug = ${scope.harnessSlug}

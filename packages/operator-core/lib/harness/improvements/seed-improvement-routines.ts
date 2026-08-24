@@ -36,27 +36,64 @@ import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { isCliEntry } from '../../util/cli-entry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { LEARNING_ROUTINE_GROUP } from './loop-control';
 
 const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
-const ROUTINES = [
-  { name: 'improvement-watchdog', target: 'system:improvement-watchdog', cron: '0 */15 * * * *', arm: 'safe' }, // every 15 min
+export const IMPROVEMENT_ROUTINES = [
+  {
+    name: 'improvement-watchdog',
+    target: 'system:improvement-watchdog',
+    cron: '0 */15 * * * *',
+    arm: 'safe',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // every 15 min
   // The scheduled triage pass (learning-system-audit P-011): persists the
   // deterministic type-route on untriaged open items — routing metadata only
   // (never rejects, never dispatches), so it arms with the safe tier.
-  { name: 'improvement-triage', target: 'system:improvement-triage', cron: '0 0 */6 * * *', arm: 'safe' }, // every 6 h
+  {
+    name: 'improvement-triage',
+    target: 'system:improvement-triage',
+    cron: '0 0 */6 * * *',
+    arm: 'safe',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // every 6 h
   // WI-5017: aggregates tool_invocations invalid-input rows into (tool, offending
   // key) recurrence signals — capture only (kind=change), so it arms with the
   // safe tier like the watchdog/triage passes. Weekly: the signal is a slow
   // cross-agent DX pattern, not something sub-hour freshness would help.
-  { name: 'improvement-invalid-args-miner', target: 'system:improvement-invalid-args-miner', cron: '0 0 4 * * 0', arm: 'safe' }, // weekly, Sun 04:00
+  {
+    name: 'improvement-invalid-args-miner',
+    target: 'system:improvement-invalid-args-miner',
+    cron: '0 0 4 * * 0',
+    arm: 'safe',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // weekly, Sun 04:00
   // knowledge-pack-loop-integrity-2026-07-19 P-006/P-008 (registered in
   // routines/knowledge-pack-actions.ts): the fleet-lessons last-mile delivery
   // pass (bounded, D-003-preserving — clashes always skip) and the
   // knowledge-hygiene cleanup (stale-item re-review + contradiction sweep +
   // dismissed-candidate prune). Both conservative-by-construction ⇒ safe tier.
-  { name: 'knowledge-pack-delivery', target: 'system:knowledge-pack-delivery', cron: '0 30 */6 * * *', arm: 'safe' }, // every 6 h at :30 (offset from triage)
-  { name: 'knowledge-pack-hygiene', target: 'system:knowledge-pack-hygiene', cron: '0 0 5 * * *', arm: 'safe' }, // daily 05:00
-  { name: 'improvement-implement', target: 'system:improvement-implement', cron: '0 */30 * * * *', arm: 'owner' }, // every 30 min
+  {
+    name: 'knowledge-pack-delivery',
+    target: 'system:knowledge-pack-delivery',
+    cron: '0 30 */6 * * *',
+    arm: 'safe',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // every 6 h at :30 (offset from triage)
+  {
+    name: 'knowledge-pack-hygiene',
+    target: 'system:knowledge-pack-hygiene',
+    cron: '0 0 5 * * *',
+    arm: 'safe',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // daily 05:00
+  {
+    name: 'improvement-implement',
+    target: 'system:improvement-implement',
+    cron: '0 */30 * * * *',
+    arm: 'owner',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // every 30 min
 ] as const;
 
 /**
@@ -89,26 +126,36 @@ async function main(): Promise<void> {
   // Admin connection (bypasses RLS) + explicit workspace_id — operator infra config,
   // the same path migrations/cross-workspace tooling use (mirrors seed-release-routines).
   const { sql } = getOrgPg();
-  for (const r of ROUTINES) {
+  // Keep the seed's group row present before the composite FK is used below. This
+  // also makes a fresh install self-healing when the seed runs after migration 617.
+  await sql`
+    INSERT INTO harness_shared.routine_groups (workspace_id, slug)
+    VALUES (${ws}, ${LEARNING_ROUTINE_GROUP})
+    ON CONFLICT (workspace_id, slug) DO NOTHING
+  `;
+  for (const r of IMPROVEMENT_ROUTINES) {
     const id = `rt_${SLUG}_${r.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
     const rowActive = resolveImprovementRoutineActive(r, { active, armImplement, platformLoopsOn });
     await sql`
       INSERT INTO harness_shared.routines
         (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-         concurrency, catchup, active, next_fire_at)
+         concurrency, catchup, active, next_fire_at, group_slug)
       VALUES (${id}, ${SLUG}, ${ws}, ${r.name}, 'cron', ${JSON.stringify({ cron: r.cron })}::text::jsonb, ${r.target},
-              'skip', 'skip-old', ${rowActive}, now())
+              'skip', 'skip-old', ${rowActive}, now(), ${r.group})
       ON CONFLICT (install_slug, name) DO UPDATE SET
         target_role = EXCLUDED.target_role,
         trigger_config = EXCLUDED.trigger_config,
         -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
         -- re-seed must never clobber an operator's runtime pause/resume of this routine.
         workspace_id = EXCLUDED.workspace_id,
+        -- Membership is part of the Learning tab's control contract: repair a
+        -- pre-617 row that was seeded ungrouped or under health on every seed.
+        group_slug = EXCLUDED.group_slug,
         updated_at = now()
     `;
   }
   console.log(
-    `[seed-improvement-routines] seeded ${ROUTINES.map((r) => r.name).join(' + ')} for "${SLUG}" (ws=${ws}, active=${active}, armImplement=${armImplement}, platformLoopsOn=${platformLoopsOn}). ` +
+    `[seed-improvement-routines] seeded ${IMPROVEMENT_ROUTINES.map((r) => r.name).join(' + ')} for "${SLUG}" (ws=${ws}, active=${active}, armImplement=${armImplement}, platformLoopsOn=${platformLoopsOn}). ` +
       (!platformLoopsOn
         ? 'Held INACTIVE — platform-improvement loops are OFF (PLATFORM_IMPROVEMENT_LOOPS / PAPERCUSP_PLATFORM_MODE=off). Opt into platform mode to arm (P-070).'
         : active

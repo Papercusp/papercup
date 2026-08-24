@@ -40,6 +40,7 @@ import { FLAGS } from '@papercusp/flags';
 import { describeSpecTriadGap } from '@papercusp/plan-parser';
 import { specTriadGate, specTriadEpoch, planInSpecTriadScope } from './spec-triad-policy';
 import { ensureSpecTriadFiling, SPEC_TRIAD_NON_TERMINAL_STATUSES } from './spec-triad-filing';
+import { setWorkItemState } from '../../work-items';
 
 /** Upper bound on work items filed in a single run. See the rails note above. */
 export const SPEC_TRIAD_MAX_FILINGS_PER_RUN = 25;
@@ -85,6 +86,12 @@ export interface SpecTriadSweepResult {
   alreadyFiled: number;
   /** Owing plans left unfiled because the per-run cap was hit. */
   deferred: number;
+  /** Open filings closed because their plan ref no longer resolves to a live plan. */
+  reconciled: number;
+  /** Reconciliation closes that failed (non-fatal; retried next run). */
+  reconcileFailed: number;
+  /** Reconcilable filings left unclosed past the per-run cap. */
+  reconcileDeferred: number;
   filedIds: string[];
   summary: string;
 }
@@ -181,6 +188,229 @@ export function selectSpecTriadFilings(input: {
   };
 }
 
+/** Lifecycle actor for reconciliation closes — matches the filings' `createdBy`. */
+export const SPEC_TRIAD_ACTOR = 'system:spec-triad';
+
+/** One open triad filing, as the reconciliation leg reads it. */
+export interface SpecTriadOpenFiling {
+  feature_id: string;
+  workspace_id: string;
+  harness_slug: string;
+  /** `payload.specTriadPlan` — the `workspace/harness/slug` ref stamped at filing time. */
+  ref: string;
+}
+
+/** Where a plan row actually lives, plus the fields the liveness predicate reads. */
+export interface SpecTriadPlanLocator {
+  workspace_id: string;
+  harness_slug: string;
+  plan_slug: string;
+  status: string | null;
+  archived: boolean;
+  is_legacy: boolean;
+}
+
+/**
+ * EXACT mirror of the sweep's phase-1 candidate predicate (a NULL status counts
+ * as live, matching `status IS NULL OR status = ANY(LIVE_PLAN_STATUSES)`). The
+ * reconciliation leg must answer "would the sweep file for this row TODAY?"
+ * with the sweep's own test, or the two legs fight each other.
+ */
+export function planRowIsSweepLive(
+  p: Pick<SpecTriadPlanLocator, 'status' | 'archived' | 'is_legacy'>,
+): boolean {
+  return !p.archived && !p.is_legacy && (p.status === null || LIVE_PLAN_STATUSES.includes(p.status));
+}
+
+export type SpecTriadReconcileReason = 'plan-missing' | 'plan-not-live';
+
+export interface SpecTriadReconciliation {
+  filing: SpecTriadOpenFiling;
+  reason: SpecTriadReconcileReason;
+  /** The close's completionRef — states the resolved facts, not just a verdict. */
+  detail: string;
+}
+
+export interface SpecTriadReconcileSelection {
+  /** The ≤maxCloses filings this run will close. */
+  toClose: SpecTriadReconciliation[];
+  /** Filings whose ref resolves to a live plan — legitimate, untouched. */
+  kept: number;
+  /** Filings whose ref did not parse as workspace/harness/slug — NEVER closed. */
+  unparseable: number;
+  /** Reconcilable filings past the cap, reported rather than silently dropped. */
+  deferred: number;
+}
+
+/**
+ * RECONCILIATION decision, as a pure function over rows it was handed (the same
+ * extraction rationale as `selectSpecTriadFilings` above).
+ *
+ * The defect this closes (WI-38838 / WI-39038): a filing can outlive its plan's
+ * coordinates. The 2026-08-14 sb-devboard-hive→sidestage re-home raced the sweep
+ * mid-run, so two filings landed with the PRE-move harness in their
+ * `specTriadPlan` ref. The exact-ref dedupe then never matches them again — the
+ * sweep correctly files a fresh item at the plan's live home (self-healing
+ * FORWARD) — but the orphaned filing stays open and claimable forever, sending
+ * its claimer on a cross-harness goose chase it cannot act on. The same shape
+ * covers a plan deleted, archived, or moved to a terminal/unapproved status
+ * (shipped / superseded / demoted to draft) while its filing was open: in every
+ * case the sweep would not file for that row today, so the standing filing is
+ * moot and closing it is safe — if the plan comes back live and still owes the
+ * triad, the next run files afresh (dedupe checks only non-terminal filings).
+ *
+ * Deliberately NOT handled here: a LIVE plan that no longer owes the triad
+ * (triad written / `exempt` declared while the filing was open). That close
+ * belongs to whoever did the writing, with their evidence — auto-closing it
+ * would erase the paper trail the filing body explicitly asks for.
+ */
+export function selectSpecTriadReconciliations(input: {
+  openFilings: SpecTriadOpenFiling[];
+  plans: SpecTriadPlanLocator[];
+  maxCloses: number;
+}): SpecTriadReconcileSelection {
+  const { openFilings, plans, maxCloses } = input;
+  const byRef = new Map<string, SpecTriadPlanLocator>();
+  for (const p of plans) byRef.set(`${p.workspace_id}/${p.harness_slug}/${p.plan_slug}`, p);
+
+  const candidates: SpecTriadReconciliation[] = [];
+  let kept = 0;
+  let unparseable = 0;
+
+  for (const f of openFilings) {
+    const parts = f.ref.split('/');
+    if (parts.length !== 3 || parts.some((s) => s.length === 0)) {
+      // A ref we cannot resolve is a ref we must not act on.
+      unparseable++;
+      continue;
+    }
+    const slug = parts[2];
+    const row = byRef.get(f.ref);
+    if (!row) {
+      const homes = plans
+        .filter((p) => p.plan_slug === slug)
+        .map((p) => `${p.workspace_id}/${p.harness_slug}`);
+      candidates.push({
+        filing: f,
+        reason: 'plan-missing',
+        detail:
+          `spec-triad reconciliation: ref '${f.ref}' resolves to no plan row — the plan was ` +
+          `re-homed or deleted after filing` +
+          (homes.length > 0 ? ` (slug '${slug}' now lives under: ${homes.join(', ')})` : '') +
+          `. If it still owes the triad in a live home, the sweep files a correctly-scoped ` +
+          `item there (exact-ref dedupe). Class: the 2026-08-14 harness re-home race ` +
+          `(WI-38838/WI-39038).`,
+      });
+      continue;
+    }
+    if (!planRowIsSweepLive(row)) {
+      const why = row.archived ? 'archived' : row.is_legacy ? 'legacy' : `status '${row.status}'`;
+      candidates.push({
+        filing: f,
+        reason: 'plan-not-live',
+        detail:
+          `spec-triad reconciliation: plan '${slug}' at '${f.ref}' is ${why} — the sweep ` +
+          `only gates ready/active plans, so this filing's lane is settled or unapproved and ` +
+          `the filing is moot. A plan re-approved while still owing the triad gets a fresh ` +
+          `filing (exact-ref dedupe checks only non-terminal filings).`,
+      });
+      continue;
+    }
+    kept++;
+  }
+
+  const toClose = candidates.slice(0, Math.max(0, maxCloses));
+  return { toClose, kept, unparseable, deferred: candidates.length - toClose.length };
+}
+
+interface SpecTriadReconcileOutcome {
+  reconciled: number;
+  reconcileFailed: number;
+  reconcileDeferred: number;
+  reconciledIds: string[];
+}
+
+/**
+ * The reconciliation leg's I/O: read open filings + the plan rows their refs
+ * name, decide via the pure selector, close via the canonical lifecycle writer.
+ *
+ * Closes go through `setWorkItemState` WITH `by` + `completionRef` (the
+ * condition-upsert stand-down precedent) rather than `skipCompletionGate`, so
+ * every reconciliation close carries a real evidence ref and lands in no
+ * completion-audit bucket. Never throws — same rail as the rest of the sweep.
+ */
+async function reconcileDanglingSpecTriadFilings(
+  maxCloses: number,
+): Promise<SpecTriadReconcileOutcome> {
+  const zero: SpecTriadReconcileOutcome = {
+    reconciled: 0,
+    reconcileFailed: 0,
+    reconcileDeferred: 0,
+    reconciledIds: [],
+  };
+  try {
+    const { sql } = getOrgPg();
+    const filings = (await sql`
+      SELECT feature_id, workspace_id, harness_slug, payload->>'specTriadPlan' AS ref
+        FROM harness_shared.work_items
+       WHERE payload->>'specTriadPlan' IS NOT NULL
+         AND status = ANY(${SPEC_TRIAD_NON_TERMINAL_STATUSES})
+    `) as unknown as SpecTriadOpenFiling[];
+    if (filings.length === 0) return zero;
+
+    const slugs = [
+      ...new Set(
+        filings
+          .map((f) => f.ref.split('/'))
+          .filter((p) => p.length === 3 && p.every((s) => s.length > 0))
+          .map((p) => p[2]),
+      ),
+    ];
+    // The ANY(slugs) read deliberately crosses tenants: resolution is by FULL
+    // ref in the selector, and the extra rows are what let a 'plan-missing'
+    // close name the slug's real home in its evidence.
+    const plans =
+      slugs.length === 0
+        ? []
+        : ((await sql`
+            SELECT workspace_id, harness_slug, plan_slug, status, archived, is_legacy
+              FROM harness_shared.harness_plans
+             WHERE plan_slug = ANY(${slugs})
+          `) as unknown as SpecTriadPlanLocator[]);
+
+    const sel = selectSpecTriadReconciliations({ openFilings: filings, plans, maxCloses });
+
+    let failed = 0;
+    const ids: string[] = [];
+    for (const { filing, detail } of sel.toClose) {
+      try {
+        await setWorkItemState(filing.feature_id, 'dropped', {
+          harness: filing.harness_slug,
+          by: SPEC_TRIAD_ACTOR,
+          completionRef: detail,
+        });
+        ids.push(filing.feature_id);
+      } catch (err) {
+        failed++;
+        console.warn(
+          `[spec-triad-sweep] reconciliation close of ${filing.feature_id} failed (non-fatal): ${(err as Error).message}`,
+        );
+      }
+    }
+    return {
+      reconciled: ids.length,
+      reconcileFailed: failed,
+      reconcileDeferred: sel.deferred,
+      reconciledIds: ids,
+    };
+  } catch (err) {
+    console.warn(
+      `[spec-triad-sweep] reconciliation skipped (non-fatal): ${(err as Error).message}`,
+    );
+    return zero;
+  }
+}
+
 export interface SpecTriadSweepOptions {
   /** Override the per-run filing cap (tests). */
   maxFilings?: number;
@@ -200,6 +430,9 @@ export async function runSpecTriadSweepOnce(
     filed: 0,
     alreadyFiled: 0,
     deferred: 0,
+    reconciled: 0,
+    reconcileFailed: 0,
+    reconcileDeferred: 0,
     filedIds: [],
     summary: `skipped: ${skipReason}`,
   });
@@ -222,6 +455,19 @@ export async function runSpecTriadSweepOnce(
   const epoch = specTriadEpoch();
   const maxFilings = opts.maxFilings ?? SPEC_TRIAD_MAX_FILINGS_PER_RUN;
   const { sql } = getOrgPg();
+
+  // Reconciliation FIRST, and independent of the candidate pipeline: dangling
+  // filings exist precisely when their plan is NOT among the live candidates,
+  // so this must run even when the scan below finds nothing in scope. Running
+  // before the dedupe read also means a filing closed here can be replaced by
+  // a correctly-scoped one in this same run.
+  const recon = await reconcileDanglingSpecTriadFilings(maxFilings);
+  const reconNote =
+    recon.reconciled + recon.reconcileFailed + recon.reconcileDeferred > 0
+      ? ` · ${recon.reconciled} dangling filing(s) reconciled` +
+        (recon.reconcileFailed > 0 ? ` (${recon.reconcileFailed} close(s) FAILED)` : '') +
+        (recon.reconcileDeferred > 0 ? ` (${recon.reconcileDeferred} deferred past the cap)` : '')
+      : '';
 
   // Phase 1 — metadata only. `content` is deliberately NOT selected here; the
   // `specTriad:` probe is pushed into SQL as a boolean so a pre-epoch plan that
@@ -261,8 +507,11 @@ export async function runSpecTriadSweepOnce(
       filed: 0,
       alreadyFiled: 0,
       deferred: 0,
+      reconciled: recon.reconciled,
+      reconcileFailed: recon.reconcileFailed,
+      reconcileDeferred: recon.reconcileDeferred,
       filedIds: [],
-      summary: `${metas.length} live plan(s) scanned, none in scope for the spec triad`,
+      summary: `${metas.length} live plan(s) scanned, none in scope for the spec triad${reconNote}`,
     };
   }
 
@@ -329,7 +578,8 @@ export async function runSpecTriadSweepOnce(
   const summary =
     `${metas.length} live plan(s) scanned · ${inScope} in scope · ${owing.length} owing the triad · ` +
     `${filedIds.length} filed · ${alreadyFiled} already filed` +
-    (deferred > 0 ? ` · ${deferred} DEFERRED past the ${maxFilings}/run cap` : '');
+    (deferred > 0 ? ` · ${deferred} DEFERRED past the ${maxFilings}/run cap` : '') +
+    reconNote;
 
   return {
     skipped: false,
@@ -339,6 +589,9 @@ export async function runSpecTriadSweepOnce(
     filed: filedIds.length,
     alreadyFiled,
     deferred,
+    reconciled: recon.reconciled,
+    reconcileFailed: recon.reconcileFailed,
+    reconcileDeferred: recon.reconcileDeferred,
     filedIds,
     summary,
   };
