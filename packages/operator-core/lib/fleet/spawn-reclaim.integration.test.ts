@@ -984,12 +984,17 @@ describe('reclaimWedgedSpawns (RECLAIM_STALLED — wedged-but-alive reclaim, rea
       host?: string;
       bootId?: string;
       pid?: number;
+      /** WI-6113: real durable-spawn rows carry an `invoke-*` run_id. Left unset, insertSpawn
+       *  defaults to `r-<spawnId>`, a shape that does not occur in production — which is
+       *  exactly how the sibling reaper's exclusion test once passed for the wrong reason. */
+      runId?: string;
     } = {},
   ) {
     await insertSpawn(spawnId, over.status ?? 'running', over.heartbeatAgoSec ?? 5, {
       host: over.host ?? ME2,
       bootId: over.bootId ?? BOOT,
       pid: over.pid ?? CHILD_PID,
+      runId: over.runId,
       lastOutputAgoSec: over.lastOutputAgoSec ?? 31 * 60, // silent 31 min > 30-min action window
     });
   }
@@ -1085,6 +1090,54 @@ describe('reclaimWedgedSpawns (RECLAIM_STALLED — wedged-but-alive reclaim, rea
     const second = await reclaimWedgedSpawns(db.sql, fn, SILENT);
     expect(second.reclaimed).toBe(0); // already terminal → never offered again
     expect(seen).toHaveLength(0);
+  });
+
+  /**
+   * WI-6113 (2026-08-24) — the class exclusion this reaper never had.
+   *
+   * Until now the ONLY thing keeping in-process/durable-spawn rows out of this reaper was
+   * its `last_output_at IS NOT NULL` SQL predicate, and that protection is INCIDENTAL: a
+   * property of the data, not an expressed intent. `last_output_at` is NULL on 3,017 of
+   * 3,017 `durable-spawn:*` rows (measured 2026-08-24) purely because the class has no
+   * writer for it. WI-6113's own charter is to ADD that writer.
+   *
+   * So this test deliberately builds the POST-WI-6113 world: a real durable-spawn row that
+   * HAS a populated, stale `last_output_at`. In that world every remaining predicate is
+   * satisfied — the heartbeat is always fresh (dbos/durable-spawn.ts runs an unconditional
+   * 60s keepalive decoupled from progress), the host/boot-id/pid all match — so without an
+   * explicit class filter this reaper SIGTERMs healthy durable spawns the moment the
+   * progress signal lands. It must not.
+   *
+   * The `invoke-*` run_id is load-bearing and is why this is not a copy of the sibling
+   * test's mistake: `insertSpawn` defaults runId to `r-<spawnId>`, and `spawnRowKind`
+   * short-circuits to 'spawn' on an `invoke-` prefix BEFORE its `durable-spawn:` test. 56
+   * of 79 real rows carry that prefix. A fixture that omits it passes against a filter that
+   * does not work.
+   *
+   * This test FAILS against the pre-fix reaper — that is the point of it.
+   */
+  it('does NOT reap a durable-spawn with a REAL `invoke-*` run_id once last_output_at is populated (the post-WI-6113 world)', async () => {
+    await insertWedged('durable-spawn:implement:EI-21177555351818650:de1401107', {
+      runId: 'invoke-implement-1787500000000',
+    });
+    const { fn, seen } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  /**
+   * Positive control for the test above: the exclusion must remove ONLY the in-process
+   * class. A genuinely supervised bee, silent past the action window, is still reaped —
+   * otherwise the test above would pass just as well against a reaper that had been
+   * accidentally disabled altogether.
+   */
+  it('STILL reaps a genuinely supervised-bee spawn_id (`opspawn-...`) with a plain run_id', async () => {
+    await insertWedged('opspawn-1785179384123-x9y8z7', { runId: 'r-opspawn-test' });
+    const { fn, seen } = recordingReap();
+    const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
+    expect(r.reclaimed).toBe(1);
+    expect(seen).toHaveLength(1);
   });
 
   it('reaps restarting rows too (they also hold a concurrency slot)', async () => {
