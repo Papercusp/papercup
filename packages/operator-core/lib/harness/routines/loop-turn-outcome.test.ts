@@ -499,6 +499,75 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     );
     expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
   });
+
+  // EI-21331509652694202. `auth` is marked NOT retryable by the shared taxonomy ("401/403 — NOT
+  // retryable without new creds") but used to land in the re-arm branch, where
+  // computeDeathRearmMs special-cases only rate_limited/usage_limit — so it fell through to the
+  // PLAIN interval and respawned a CLI into the same rejected credential every intervalSec
+  // forever. Measured live on loop-su-173ff9eb: 0 real turns in 18 minutes on a ~77s cadence.
+  it('an auth-wall death pauses the loop and never re-arms into the rejected credential', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    mockResolvedTyped(vi.mocked(captureImprovement), CAPTURE_OK);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const autoPause = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      // A CLEAN exit whose stdout carries the auth wall — the exact shape observed live, and the
+      // path classifyWedgeText scans before a zero exit is trusted as success.
+      deathRaw({
+        exitCode: 0,
+        signal: null,
+        stdoutTail: 'Your organization has disabled Claude Code. Please ask your admin to enable it.',
+        stderrTail: '',
+      }),
+      { sql: sql as never, recordFire, autoPause },
+    );
+
+    expect(res).toMatchObject({ handled: true, class: 'auth' });
+    // The regression this pins: no re-arm delay was computed, and no rearm UPDATE was issued.
+    expect(res.rearmedMs).toBeUndefined();
+    expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
+    expect(autoPause).toHaveBeenCalledWith(
+      sql,
+      'loop_su_owner',
+      expect.stringContaining('auth wall'),
+      'loop-turn-outcome',
+    );
+    // Pausing must remove the futile respawn WITHOUT silencing the operator-facing alert.
+    expect(captureImprovement).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'bug', title: expect.stringContaining('LOOP WEDGED') }),
+    );
+  });
+
+  // NEGATIVE CONTROL for the test above, kept permanently in-file. Without it, a fix that simply
+  // paused EVERY death would satisfy the auth assertions and look correct. This is the same
+  // clean-exit wedge shape, differing only in the stdout text, and it must still RE-ARM.
+  it('control: a usage_limit wedge (same clean-exit shape) still re-arms and is NOT paused', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    mockResolvedTyped(vi.mocked(captureImprovement), CAPTURE_OK);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const autoPause = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({
+        exitCode: 0,
+        signal: null,
+        stdoutTail: "You've hit your session limit · resets 5:40am (America/New_York)",
+        stderrTail: '',
+      }),
+      { sql: sql as never, recordFire, autoPause },
+    );
+
+    expect(res).toMatchObject({ handled: true, class: 'usage_limit' });
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(res.rearmedMs).toBeGreaterThan(0);
+  });
 });
 
 describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () => {

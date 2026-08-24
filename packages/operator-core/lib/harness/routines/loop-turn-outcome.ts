@@ -475,22 +475,37 @@ export async function handleLoopResumeTurnExit(
       ),
     ).catch((e) => log(`recordFire failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
 
-    // 2. Context-window deaths and stale resume targets are terminal for THIS loop instance.
-    // Re-arming the same warm transcript or missing native session at the normal cadence only
-    // repeats a known wall. Pause the routine so the operator/overwatch path can arrange a
-    // fresh carry-respawn or corrected launch; all other classes keep the existing
-    // retry-after-aware re-arm below. The classifier lives in the shared turn taxonomy, but
-    // use a string comparison for context overflow so this protection remains fail-safe while
-    // mixed-version operator processes roll forward to the new class.
+    // 2. Context-window deaths, stale resume targets and AUTH WALLS are terminal for THIS loop
+    // instance. Re-arming the same warm transcript, missing native session, or rejected
+    // credential at the normal cadence only repeats a known wall. Pause the routine so the
+    // operator/overwatch path can arrange a fresh carry-respawn or corrected launch; all other
+    // classes keep the existing retry-after-aware re-arm below. The classifier lives in the
+    // shared turn taxonomy, but use a string comparison for context overflow so this protection
+    // remains fail-safe while mixed-version operator processes roll forward to the new class.
+    //
+    // EI-21331509652694202: `auth` was the one class the shared taxonomy marks NOT retryable
+    // ("401/403 — NOT retryable without new creds", turn-error.ts) that still landed in the
+    // re-arm branch — and `computeDeathRearmMs` special-cases ONLY rate_limited/usage_limit, so
+    // it fell through to the PLAIN interval. An auth-walled loop therefore respawned a CLI every
+    // `intervalSec` forever, each process dying on the same rejected credential. Measured live on
+    // loop-su-173ff9eb: 0 real turns across 18 minutes while the loop kept firing on a ~77s
+    // cadence (60s interval + reconcile tick), the session reading `wakeable` the whole time.
+    // Time cannot clear an org/subscription disable — only new credentials or a relaunch on a
+    // different account can — so this pauses instead, exactly like the two walls beside it. The
+    // wedge alert below still fires (auth is in SURFACE_TO_USER), so pausing removes the futile
+    // respawn, never the notification.
     const contextOverflow = String(klass) === 'context_overflow';
+    const authWall = String(klass) === 'auth';
     let delayMs: number | undefined;
     let rearmed = false;
     let recovery: ContextOverflowRecoveryResult | undefined;
-    if (contextOverflow || staleResumeTarget) {
+    if (contextOverflow || staleResumeTarget || authWall) {
       const autoPause = deps.autoPause ?? defaultAutoPauseLoopRoutine;
       const pauseReason = contextOverflow
         ? `loop-turn-outcome: context overflow (${outcome.error.message}); paused to prevent repeated oversized warm wakes`
-        : `loop-turn-outcome: stale resume target (${outcome.error.message}); paused to prevent repeated resumes of a missing session`;
+        : authWall
+          ? `loop-turn-outcome: auth wall (${outcome.error.message}); paused to prevent repeated resumes into a rejected credential — needs new creds or a relaunch on a different account`
+          : `loop-turn-outcome: stale resume target (${outcome.error.message}); paused to prevent repeated resumes of a missing session`;
       await autoPause(
         sql,
         routineId,
@@ -515,7 +530,7 @@ export async function handleLoopResumeTurnExit(
       });
     }
     log(
-      `loop '${routineId}' turn DIED (${klass}) → recorded error + ${contextOverflow ? 'paused for fresh-context recovery' : staleResumeTarget ? 'paused for stale resume target' : rearmed ? `re-armed +${Math.round(delayMs! / 1000)}s` : 'not re-armed (already advanced)'}`,
+      `loop '${routineId}' turn DIED (${klass}) → recorded error + ${contextOverflow ? 'paused for fresh-context recovery' : staleResumeTarget ? 'paused for stale resume target' : authWall ? 'paused for auth wall (needs new creds / different account)' : rearmed ? `re-armed +${Math.round(delayMs! / 1000)}s` : 'not re-armed (already advanced)'}`,
     );
 
     // 3. EI-13818 (c): raise a LOUD, debounced signal the first time this loop is observed
@@ -541,8 +556,8 @@ export async function handleLoopResumeTurnExit(
     // structurally cannot see: the delay computed for THIS fire is long enough that a human
     // needs to know regardless of class. See CHRONIC_BACKOFF_ALERT_FLOOR_MS's own doc for why.
     const chronicBackoff =
-      !contextOverflow && !staleResumeTarget && !outcome.error.surfaceToUser && delayMs! >= CHRONIC_BACKOFF_ALERT_FLOOR_MS;
-    if (contextOverflow || staleResumeTarget || outcome.error.surfaceToUser || chronicBackoff) {
+      !contextOverflow && !staleResumeTarget && !authWall && !outcome.error.surfaceToUser && delayMs! >= CHRONIC_BACKOFF_ALERT_FLOOR_MS;
+    if (contextOverflow || staleResumeTarget || authWall || outcome.error.surfaceToUser || chronicBackoff) {
       try {
         const { claimWatchdogFire } = await import('../../pot/watchdog');
         const claimed = await claimWatchdogFire({
