@@ -66,6 +66,16 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
  */
 const eventsWs = (): string => DEFAULT_COORD_WORKSPACE;
 
+// events:await performs these two best-effort store calls before it can create
+// the durable await row. Keep their pool acquisition and SQL execution inside a
+// short bounded transaction so a saturated admin pool cannot consume the whole
+// interactive tool deadline before registration starts.
+const AWAIT_PRE_REGISTRATION_TXN_OPTIONS = {
+  acquireTimeoutMs: 5_000,
+  statementTimeoutMs: 5_000,
+  lockTimeoutMs: 5_000,
+} as const;
+
 /** jsonb arrives parsed OR as text depending on the postgres-js client config
  *  (the repo's known sql.json quirk) — tolerate both. */
 function parseJsonb<T>(v: unknown): T | null {
@@ -542,25 +552,29 @@ export async function cancelAwaitsForSubscribersOnKeys(
   } = {},
 ): Promise<number> {
   if (subscriberIds.length === 0 || eventKeys.length === 0) return 0;
-  const { sql } = getOrgPg();
   const ws = eventsWs();
-  const noteFilter =
-    options.includeNotePrefix != null
-      ? sql`AND note LIKE ${options.includeNotePrefix + '%'}`
-      : options.excludeNotePrefix != null
-        ? sql`AND (note IS NULL OR note NOT LIKE ${options.excludeNotePrefix + '%'})`
-        : sql``;
-  const rows = await sql`
-    UPDATE harness_shared.event_awaits
-       SET cancelled_at = now()
-     WHERE workspace_id = ${ws}
-       AND subscriber_id = ANY(${sql.array([...subscriberIds])}::text[])
-       AND event_key = ANY(${sql.array([...eventKeys])}::text[])
-       AND policy <> 'announce'
-       AND fired_at IS NULL AND cancelled_at IS NULL
-       ${noteFilter}
-    RETURNING id
-  `;
+  const rows = await boundedOrgTxn(
+    (tx) => {
+      const noteFilter =
+        options.includeNotePrefix != null
+          ? tx`AND note LIKE ${options.includeNotePrefix + '%'}`
+          : options.excludeNotePrefix != null
+            ? tx`AND (note IS NULL OR note NOT LIKE ${options.excludeNotePrefix + '%'})`
+            : tx``;
+      return tx`
+        UPDATE harness_shared.event_awaits
+           SET cancelled_at = now()
+         WHERE workspace_id = ${ws}
+           AND subscriber_id = ANY(${tx.array([...subscriberIds])}::text[])
+           AND event_key = ANY(${tx.array([...eventKeys])}::text[])
+           AND policy <> 'announce'
+           AND fired_at IS NULL AND cancelled_at IS NULL
+           ${noteFilter}
+        RETURNING id
+      `;
+    },
+    AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
+  );
   return rows.length;
 }
 
@@ -1964,23 +1978,26 @@ export async function findAnnouncementsForKey(
   eventKey: string,
   opts?: { includeSuperseded?: boolean },
 ): Promise<AwaitRow[]> {
-  const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = opts?.includeSuperseded
-    ? await sql`
-        SELECT * FROM harness_shared.event_awaits
-         WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
-           AND cancelled_at IS NULL
-         ORDER BY causal_generation DESC NULLS LAST, created_at DESC
-         LIMIT 50
-      `
-    : await sql`
-        SELECT * FROM harness_shared.event_awaits
-         WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
-           AND cancelled_at IS NULL AND superseded_at IS NULL
-         ORDER BY causal_generation DESC NULLS LAST, created_at DESC
-         LIMIT 1
-      `;
+  const rows = await boundedOrgTxn(
+    (tx) =>
+      opts?.includeSuperseded
+        ? tx`
+            SELECT * FROM harness_shared.event_awaits
+             WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
+               AND cancelled_at IS NULL
+             ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+             LIMIT 50
+          `
+        : tx`
+            SELECT * FROM harness_shared.event_awaits
+             WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
+               AND cancelled_at IS NULL AND superseded_at IS NULL
+             ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+             LIMIT 1
+          `,
+    AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
+  );
   return rows.map(mapAwait);
 }
 
