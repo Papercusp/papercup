@@ -82,7 +82,12 @@ import {
 import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
-import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
+import {
+  dispatchNeedsTx,
+  effectiveDispatchWorkspace,
+  synthesizeDispatchPrincipal,
+  synthesizeTransportPrincipal,
+} from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
 import { unknownToolReferral } from '../../../agent-tools/tools/unknown-tool-referral';
@@ -1195,7 +1200,10 @@ async function dispatchWithSynthesizedTx<T>(
     baseCtx.gateBypass?.capability === true &&
     dispatchNeedsTx(spawnCtx)
   ) {
-    const ctx: UnifiedToolContext = { ...baseCtx, tx: undefined, principal: undefined };
+    // Keep the transport-auth principal synthesized by buildMcpToolContext.
+    // This branch deliberately skips the DB probe, but telemetry still needs
+    // the caller provenance on its settled row.
+    const ctx: UnifiedToolContext = { ...baseCtx, tx: undefined };
     return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(ctx));
   }
   // EI-18666279107998059: same needsTx scoping as below, but the principal is
@@ -1662,6 +1670,10 @@ async function buildMcpToolContext(
     dispatchTool,
     workspaceId: spawn.workspaceId,
     harnessSlug: spawn.harnessSlug,
+    // No-tx tools still need a principal-shaped provenance stamp for
+    // tool_invocations. Transaction-backed dispatch replaces this lightweight
+    // value with the capability-enriched principal below.
+    principal: synthesizeTransportPrincipal(spawn),
     projectDir: paths.projectDir,
     stateDir: paths.stateDir,
     role: spawn.role,
