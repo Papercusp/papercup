@@ -3294,7 +3294,7 @@
           "POST"
         ]
       },
-      "description": "Read a file with line-numbered text windows, or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.",
+      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.",
       "capabilities": [
         "capability:fs-read"
       ],
@@ -3356,7 +3356,7 @@
         "judge"
       ],
       "guidance": {
-        "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.",
+        "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.",
         "notWhen": "To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.",
         "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite)."
       }
@@ -15954,7 +15954,7 @@
           "POST"
         ]
       },
-      "description": "Read or write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { read:true, ownerId?, harness? } to read, or { did, left, insight, next } (goal aliases next) or { note }; blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, then supplied win and ? PREDICTED yields before ✓ VERIFIED); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
+      "description": "Read or write/clear the su AUTO loop carry-note read by a COLD wake after reset/recycle. Pass { read:true, ownerId?, harness? } to read, or { did, left, insight, next } (goal aliases next) or { note }; `checkpoint` is accepted as a compatibility alias for `note` (note wins when both are supplied); blank/null clears. Keyed by ownerId. { walls }/{ checks } default to rowsMode:'merge' (add/update; carried rows survive to the row cap, then supplied win and ? PREDICTED yields before ✓ VERIFIED); rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks } and verifies reads. PostgreSQL lock/pool contention returns { ok:false, error:'timeout', retryable:true }, not a transport hang.",
       "capabilities": [
         "routines:write"
       ],
