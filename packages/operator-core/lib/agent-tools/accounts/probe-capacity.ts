@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { DRAIN_FULL_UTIL } from '../../deployment/account-pool';
+import { DRAIN_FULL_UTIL, type AccountProvider } from '../../deployment/account-pool';
 import { probeCapacityForAccounts, type CapacityProbeResult } from '../../inference-gateway/capacity-probe';
 import { trackDetached } from '../../detached-imports';
 
@@ -47,7 +47,7 @@ const gwBase = () => `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PO
  * Reports what actually happened (never assumed): an unreachable gateway is a WARNING on an otherwise
  * successful probe, because the projection write did land and is the durable half.
  */
-async function readmitIntoGateway(accountIds: string[]): Promise<{
+async function readmitIntoGateway(accountIds: string[], provider: AccountProvider): Promise<{
   converged: boolean;
   readmitted: string[];
   healthyAccounts: number | null;
@@ -58,10 +58,11 @@ async function readmitIntoGateway(accountIds: string[]): Promise<{
   let healthyAccounts: number | null = null;
   for (const accountId of accountIds) {
     try {
-      // The gateway defaults this endpoint to Claude. Keep the account selector on every request so a
-      // successful probe cannot reopen confirmed-walled accounts (or a different provider's account) by
-      // accidentally invoking the endpoint's all-account form.
-      const r = await fetch(`${gwBase()}/admin/readmit?account=${encodeURIComponent(accountId)}`, {
+      // Keep the account selector on every request so a successful probe cannot reopen confirmed-walled
+      // accounts (or a different provider's account) by accidentally invoking the endpoint's all-account
+      // form. The gateway defaults this endpoint to Claude, so Codex must carry its provider explicitly.
+      const providerQuery = provider === 'claude' ? '' : `&provider=${encodeURIComponent(provider)}`;
+      const r = await fetch(`${gwBase()}/admin/readmit?account=${encodeURIComponent(accountId)}${providerQuery}`, {
         method: 'POST',
         signal: AbortSignal.timeout(5000),
       });
@@ -111,13 +112,11 @@ function reportRow(r: CapacityProbeResult) {
 export default defineTool({
   name: 'accounts:probe-capacity',
   description:
-    "Ask UPSTREAM for each pooled Claude account's REAL unified-5h/7d budget and record it into the account-pool projection. Sends one minimal (1-token) request per account through that account's own egress + credential and reads the authoritative `anthropic-ratelimit-unified-*` headers (present on 200s, not just 429s). This is the ONLY way a usage-walled account gets a fresh reading: it is routed no live traffic, so its projection can never self-heal — it stays walled until its PROJECTED reset (days), even after a real capacity reset. Prefer this over `accounts:reset-rate { resetWindows }`, which merely ASSERTS a reset; this PROVES it (and a 429 reply CONFIRMS a genuine wall instead). Runs out-of-process — no gateway restart needed. `apply:false` for a read-only dry run. Returns { ok, probed, unwalled, applied, rows[] }.",
+    "Probe upstream capacity for the selected account pool and write it to the projection. Default Claude; pass `provider:'codex'` for ChatGPT-subscription `codex-cli:<home>` accounts and x-codex headers. Sends one minimal request per selected account; a 429 confirms a wall. `apply:false` is read-only. Returns { ok, provider, probed, serving, rows[] }.",
   guidance: {
-    when: 'After a capacity/quota reset, or whenever an account reads usageWalled / healthyAccounts is 0 but you suspect the projection is STALE. Also the durable self-heal a schedule should call.',
-    notWhen:
-      'Clearing a stale rate-limit PAUSE (accounts:reset-rate — a different meter). Clearing the gateway’s IN-MEMORY exhaustedUntil (POST /admin/readmit or a gateway restart — a different process).',
-    chaining:
-      'accounts:probe-capacity { walledOnly:true } → accounts:status (confirm usageWalled cleared) → if upstream CONFIRMS the wall, do NOT force it; if the probe cannot run at all, accounts:reset-rate { resetWindows:true } is the deliberate override.',
+    when: "Refresh stale budget readings before `fleet:capacity`; use `provider:'codex'` for Codex.",
+    notWhen: 'Clearing local pauses (`accounts:reset-rate`) or gateway exclusions (POST `/admin/readmit`).',
+    chaining: "`accounts:probe-capacity { provider:'codex' }` → `fleet:capacity { provider:'codex' }`; leave confirmed walls walled.",
     seeAlso: [
       'accounts:status (the projection this tool corrects)',
       'accounts:reset-rate (clears the PAUSE meter; resetWindows is the manual unwall override)',
@@ -130,10 +129,14 @@ export default defineTool({
   args: z.object({
     id: z.string().min(1).optional().describe('Probe a single account id.'),
     ids: z.array(z.string().min(1)).min(1).max(100).optional().describe('Probe these account ids.'),
+    provider: z
+      .enum(['claude', 'codex'])
+      .optional()
+      .describe("Provider pool to refresh (default 'claude'; codex probes ChatGPT-subscription codex-cli accounts)."),
     walledOnly: z
       .boolean()
       .optional()
-      .describe('Probe only accounts whose stored projection reads at/over the full-utilization threshold (default false ⇒ probe all Claude accounts).'),
+      .describe('Probe only selected-provider accounts whose stored projection reads at/over the full-utilization threshold (default false).'),
     apply: z
       .boolean()
       .optional()
@@ -146,10 +149,12 @@ export default defineTool({
     const { recordAccountWindowWithBurnAlert } = await import('../../inference-gateway/burn-alert');
     const ws = args.workspace ?? activeWorkspaceId();
     const apply = args.apply ?? true;
+    const provider: AccountProvider = args.provider ?? 'claude';
 
     const pool = await loadAccountPool(ws);
     const wanted = new Set([...(args.id ? [args.id] : []), ...(args.ids ?? [])]);
-    const accounts = wanted.size > 0 ? pool.accounts.filter((a) => wanted.has(a.id)) : pool.accounts;
+    const providerAccounts = pool.accounts.filter((a) => (a.provider ?? 'claude') === provider);
+    const accounts = wanted.size > 0 ? providerAccounts.filter((a) => wanted.has(a.id)) : providerAccounts;
 
     const results = await probeCapacityForAccounts(accounts, {
       walledOnly: args.walledOnly ?? false,
@@ -198,18 +203,19 @@ export default defineTool({
     }
 
     // Converge the gateway's in-memory exclusions with the projection we just wrote (see
-    // readmitIntoGateway). Only for Claude accounts that actually PROVED they serve — a 429 reply confirms
-    // a real wall, and readmitting that would just send the fleet back to hammer a capped account. The
-    // gateway endpoint defaults to Claude, so Codex accounts must not be sent to this readmit path either.
-    const serving = results.filter((r) => r.ok && r.status !== 429).map((r) => r.accountId);
-    const providerByAccountId = new Map(accounts.map((account) => [account.id, account.provider ?? 'claude']));
-    const servingClaude = serving.filter((accountId) => providerByAccountId.get(accountId) === 'claude');
+    // readmitIntoGateway). Only accounts that actually PROVED they serve are readmitted — a 429 reply
+    // confirms a real wall, and readmitting that account would just send the fleet back to hammer it.
+    const selectedAccountIds = new Set(accounts.map((account) => account.id));
+    const serving = results
+      .filter((r) => selectedAccountIds.has(r.accountId) && r.ok && r.status !== 429)
+      .map((r) => r.accountId);
     const gateway = apply
-      ? await readmitIntoGateway(servingClaude)
+      ? await readmitIntoGateway(serving, provider)
       : { converged: false, readmitted: [], healthyAccounts: null as number | null };
 
     return ok({
       probed: results.length,
+      provider,
       // ⚠ `unwalled` is a DELTA — accounts this call CORRECTED. A healthy account was never walled, so it
       // never appears here, and an empty array means "nothing needed fixing", NOT "nothing works". Judge
       // capacity from `serving` (a STATE array) or from rows[].status, never from this one. A gate phrased

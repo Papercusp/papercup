@@ -116,9 +116,40 @@ describe('accounts:probe-capacity — failure persistence', () => {
 
     const out = body((await tool.handler({} as never, {} as never)) as Out);
 
-    expect(out.serving).toEqual(['a', 'codex-account']);
+    expect(out.serving).toEqual(['a']);
     expect(gatewayFetchM).toHaveBeenCalledTimes(1);
     expect(gatewayFetchM.mock.calls[0]?.[0]).toBe('http://127.0.0.1:8788/admin/readmit?account=a');
     expect(out.gatewayReadmitted).toEqual(['a']);
+  });
+
+  it('provider:codex scopes the probe and readmits through the Codex gateway path', async () => {
+    pool = registerAccount(
+      pool,
+      { id: 'codex-account', provider: 'codex', credentialRef: 'codex-cli:/tmp/codex' },
+      T0 + 1,
+    );
+    probeM.mockResolvedValue([
+      { accountId: 'codex-account', ok: true, status: 200, windows: {}, before: {}, unwalls: false },
+    ]);
+    gatewayFetchM.mockResolvedValue(
+      new Response(JSON.stringify({ readmitted: ['codex-account'], healthyAccounts: 1 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    const out = body((await tool.handler({ provider: 'codex' } as never, {} as never)) as Out);
+
+    expect(out.provider).toBe('codex');
+    expect(out.probed).toBe(1);
+    expect(out.serving).toEqual(['codex-account']);
+    expect(probeM).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: 'codex-account', provider: 'codex' })],
+      expect.objectContaining({ walledOnly: false }),
+    );
+    expect(gatewayFetchM).toHaveBeenCalledTimes(1);
+    expect(gatewayFetchM.mock.calls[0]?.[0]).toBe(
+      'http://127.0.0.1:8788/admin/readmit?account=codex-account&provider=codex',
+    );
   });
 });

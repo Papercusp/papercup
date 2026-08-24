@@ -803,6 +803,32 @@ test('EI-19281217347369076 — no accountAvailability cross-check at all ⇒ bli
   assert.equal(r.advice, 'abundant → place broadly up to your ceiling');
 });
 
+test('EI-21282868699055979 — Codex blind advice names a provider-scoped probe', () => {
+  const hr = {
+    reachable: true,
+    utilization: 0.2,
+    queueDepth: 0,
+    inFlight: 0,
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 0, queued: 1 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 10,
+    accountAvailability: {
+      provider: 'codex',
+      total: 4,
+      available: 0,
+      usable: 0,
+      edgeThrottledCount: 4,
+      blindCount: 4,
+    },
+  });
+
+  assert.equal(r.blind, true);
+  assert.match(r.advice, /RE-RUN accounts:probe-capacity \{ provider:'codex' \}/);
+  assert.doesNotMatch(r.advice, /provider:'claude'/);
+});
+
 test('EI-19281217347369076 — gateway unreachable ⇒ blind:false, resetInSecActionable:true (fail-safe early return)', () => {
   const r = buildCapacityReport({ reachable: false }, { clampArmed: false, accountAvailability: { provider: 'claude', total: 3, available: 0, usable: 0, blindCount: 3 } });
   assert.equal(r.reachable, false);

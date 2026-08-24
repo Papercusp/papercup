@@ -742,6 +742,15 @@ export function buildCapacityReport(
   // capacityFactor (capacity-oracle-false-saturation-2026-06-29).
   const boundAccountBlockedButPoolHasCapacity = (hr.rejected || hr.paused) && tieredSpareCapacity;
   const poolBlocked = (hr.paused || hr.rejected) && !boundAccountBlockedButPoolHasCapacity;
+  // Keep the blind-reading remedy scoped to the same provider as the reading. The probe tool defaults to
+  // Claude for backwards compatibility, so an unqualified call from a Codex capacity report refreshes the
+  // wrong pool and can make the caller believe the blind verdict was resolved when it was not.
+  const blindRefreshInstruction =
+    acct?.provider === 'codex'
+      ? "RE-RUN accounts:probe-capacity { provider:'codex' } first"
+      : acct?.provider === 'claude' || acct?.provider == null
+        ? "RE-RUN accounts:probe-capacity { provider:'claude' } first"
+        : `no provider-scoped capacity probe is registered for '${acct.provider}' — do not treat this reading as resolved`;
 
   let recommendedHeadroom: number | null = null;
   let throttled: boolean | null = null;
@@ -857,7 +866,7 @@ export function buildCapacityReport(
           ` — ${edge}/${acct!.total} edge-throttled, which WOULD point at a broken egress path — but ` +
           `${acct!.blindCount}/${acct!.total} account(s) currently have an UNRELIABLE reading, so this ` +
           `count is not measured, it is inferred from stale/missing data. NOT an owner escalation: ` +
-          `re-run accounts:probe-capacity first and re-read this advice. A merely-stale reading is ` +
+          `${blindRefreshInstruction} and re-read this advice. A merely-stale reading is ` +
           `indistinguishable from a real wall until you re-measure (2026-08-09: a blind read here ` +
           `asserted an owner-gated egress fault while 3 of 4 accounts answered 200).`
         );
@@ -891,8 +900,8 @@ export function buildCapacityReport(
       `UNRELIABLE reading (an unresolved accounts:probe-capacity 'no-reading' failure, and/or a usage-window ` +
       `observation that has simply gone stale from lack of a recent refresh) — their available/usageWalled ` +
       `verdict rests on OLD OR MISSING data, not a live measurement. Do NOT wait on resetInSec or treat a ` +
-      `quota-exhaustion or owner-escalation reading below as confirmed until you have RE-RUN ` +
-      `accounts:probe-capacity to refresh these accounts — a merely-stale-but-fine reading looks identical to ` +
+      `quota-exhaustion or owner-escalation reading below as confirmed until you ${blindRefreshInstruction} ` +
+      `and re-read this advice — a merely-stale-but-fine reading looks identical to ` +
       `a real wall until you re-measure it (EI-19928050541357086: one probe call flipped poolExhausted from ` +
       `true to false here with no other change). accounts:test-egress on the affected accounts checks for a ` +
       `shared/down egress IP if the refreshed reading still looks exhausted. `
