@@ -253,6 +253,11 @@ export function deriveVerdict(
       liveTurn: w.liveTurn,
       hardStale: isHardStale(hbMs, nowMs),
       pidConfirmedDead: probePidFn({ host: subject.host, pid: subject.pid }) === false,
+      // EI-21356139961831796: this signal was already computed by the
+      // wakeability leg and emitted on the verdict below, but was never fed
+      // INTO the state machine — so a session we woke that never took a turn
+      // kept scoring `parked`.
+      wakeAttemptMiss: w.wakeAttemptMiss === true,
       claimsHeld: !!subject.claimsHeld,
     });
     // P-005: the psu-host authority leg — a `parked` verdict for a known
