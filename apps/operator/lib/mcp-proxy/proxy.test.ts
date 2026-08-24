@@ -12,6 +12,7 @@ import {
   createMcpProxy,
   prepareForward,
   postConnectRetryable,
+  READ_ONLY_TOOLS,
   MAX_POST_CONNECT_RETRIES,
   isBackpressureStatus,
   backpressureRetryable,
@@ -123,6 +124,32 @@ describe('prepareForward — classify + inject idempotencyKey', () => {
     const body = Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'x', arguments: { big: 'y'.repeat(300 * 1024) } } }));
     expect(prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen }).klass).toBe('opaque');
   });
+  // EI-21268234394605529: a provably read-only tools/call replays safely without key machinery.
+  it('every call naming a READ_ONLY_TOOLS verb → "readonly", body untouched', () => {
+    const body = Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck","arguments":{}}}');
+    const r = prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen });
+    expect(r.klass).toBe('readonly');
+    expect(r.body).toBe(body); // no idempotencyKey injection — replay re-executes the read
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+  });
+  it('a batch mixing a read-only call with an unknown tool degrades to "keyed" (conservative)', () => {
+    const body = Buffer.from(JSON.stringify([
+      { method: 'tools/call', params: { name: 'build:typecheck' } },
+      { method: 'tools/call', params: { name: 'work_items:create' } },
+    ]));
+    const r = prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen });
+    expect(r.klass).toBe('keyed');
+    expect(JSON.parse(r.body.toString())[1].params._meta.idempotencyKey).toBe('KEY123');
+  });
+  it('a malformed tools/call with no name is NOT readonly', () => {
+    const body = Buffer.from(JSON.stringify({ method: 'tools/call', params: {} }));
+    expect(prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen }).klass).toBe('keyed');
+  });
+  it('readonlyRetryEnabled:false falls back to the keyed path (kill-switch honored)', () => {
+    const body = Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck"}}');
+    const r = prepareForward('POST', {}, body, { keyingEnabled: true, readonlyRetryEnabled: false, genKey: gen });
+    expect(r.klass).toBe('keyed');
+  });
 });
 
 describe('WI-41045 — refresh the superuser bearer at the proxy boundary', () => {
@@ -171,6 +198,35 @@ describe('postConnectRetryable — write-free requests only', () => {
   });
   it('does not replay past the window', () => {
     expect(postConnectRetryable('idempotent', 0, 1, 6_000, 5_000)).toBe(false);
+  });
+  it('EI-21268234394605529: readonly replays like idempotent — bounded, in-window', () => {
+    expect(postConnectRetryable('readonly', 0, 1, 100, 5_000)).toBe(true);
+    expect(postConnectRetryable('readonly', 1, 1, 100, 5_000)).toBe(false);
+    expect(postConnectRetryable('readonly', 0, 1, 6_000, 5_000)).toBe(false);
+  });
+});
+
+// EI-21268234394605529 guard: the curated allowlist must NEVER contain a mutating verb —
+// a write wrongly listed here would be silently double-applied on a post-connect replay.
+describe('READ_ONLY_TOOLS — writer-exclusion guard', () => {
+  it('never lists a known-mutating tool', () => {
+    const writers = [
+      'capability:bash', 'capability:edit', 'capability:git', 'capability:write',
+      'chat:ask_choice', 'coord:ack', 'coord:ask-owner', 'coord:declare-intent',
+      'coord:dispatch', 'coord:orient', 'coord:send', 'db:migrate', 'dev:restart',
+      'events:await', 'events:emit', 'flags:set', 'improvements:capture',
+      'loop:arm', 'loop:end', 'loop:checkpoint', 'memory:forget', 'memory:remember',
+      'plans:add-decision', 'plans:add-item', 'plans:new', 'plans:set-now', 'plans:set-status',
+      'release:checkpoint-run', 'release:deploy', 'scheduler:get_next', 'scheduler:set_claim_spec',
+      'session:request-compaction', 'tools:invoke', 'watch:create',
+      'work_items:checkpoint', 'work_items:claim', 'work_items:claim_next', 'work_items:comment',
+      'work_items:complete', 'work_items:create', 'work_items:release', 'work_items:set_state',
+      'work_items:update',
+    ];
+    for (const w of writers) expect([...READ_ONLY_TOOLS]).not.toContain(w);
+  });
+  it('entries are lowercase namespaced verbs', () => {
+    for (const t of READ_ONLY_TOOLS) expect(t).toMatch(/^[a-z0-9_-]+:[a-z0-9_-]+$/);
   });
 });
 
@@ -801,6 +857,43 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     }),
   );
 
+  // EI-21268234394605529: the reported failure — build:typecheck (read-only) died with
+  // "read ECONNRESET after connecting; attempts=1, retries=0". A read-only tools/call must
+  // now absorb ONE post-connect reset and succeed instead of surfacing a 502.
+  it(
+    'EI-21268234394605529: a READ-ONLY tools/call retries once after a post-connect reset',
+    async () => {
+      const upstream = resetOnceUpstream('{"result":"readonly-recovered"}') as http.Server & { hits: () => number };
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 40, log: () => {} }));
+      await listen(proxy);
+      const r = await request(port(proxy), '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck","arguments":{}}}');
+      expect(r.status).toBe(200);
+      expect(upstream.hits()).toBe(2);
+    },
+  );
+
+  it(
+    'EI-21268234394605529: PAPERCUSP_MCP_PROXY_READONLY_RETRY=0 restores 502 surfacing (kill-switch)',
+    async () => {
+      const prev = process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY;
+      process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY = '0';
+      try {
+        const upstream = resetOnceUpstream('{"result":"should-not-reach"}') as http.Server & { hits: () => number };
+        await listen(upstream);
+        const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 2_000, retryBackoffMs: 40, log: () => {} }));
+        await listen(proxy);
+        const r = await request(port(proxy), '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck","arguments":{}}}');
+        expect(r.status).toBe(502);
+        expect(r.body).toContain('mcp_proxy_upstream_error');
+        expect(upstream.hits()).toBe(1);
+      } finally {
+        if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY;
+        else process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY = prev;
+      }
+    },
+  );
+
   it('WI-41045: rereads the rotated bearer before a post-connect retry', async () => {
     const fs = await import('node:fs');
     const os = await import('node:os');
@@ -951,6 +1044,10 @@ describe('WI-6740: upstream silence — bounded + replayed for the handshake, ne
     // silence tells us nothing about whether it ran, so it must never be replayed.
     expect(handshakeTimeoutRetryable('opaque', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
     expect(handshakeTimeoutRetryable('keyed', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
+    // EI-21268234394605529: 'readonly' is deliberately NOT handshake-timeout-retryable —
+    // its members legitimately run minutes (~160s typecheck), so they ride maxHoldMs and
+    // must never inherit this 8s control-plane bound.
+    expect(handshakeTimeoutRetryable('readonly', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
     expect(handshakeTimeoutRetryable('idempotent', MAX_HANDSHAKE_TIMEOUT_RETRIES, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
     expect(handshakeTimeoutRetryable('idempotent', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 6_000, 5_000)).toBe(false);
   });

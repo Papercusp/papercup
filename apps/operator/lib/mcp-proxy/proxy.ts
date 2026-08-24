@@ -27,6 +27,11 @@
  *     → the key preserves a completed result for a later explicit retry, but the proxy does
  *     NOT retry immediately: the original handler may still be running and its result row
  *     does not exist until it settles, so a concurrent replay can execute the mutation twice.
+ *   - 'readonly' (EI-21268234394605529: EVERY tools/call in the batch names a verb in
+ *     READ_ONLY_TOOLS) → re-running the call cannot double-apply anything, so a post-connect
+ *     socket error IS retried once, in-window — while the timeout path stays on maxHoldMs
+ *     exactly like 'keyed'/'opaque': `build:typecheck` legitimately runs ~160s and must never
+ *     inherit the 8s handshake bound.
  *   - 'opaque' (a tools/call with no usable key — keying kill-switched off, body unparseable,
  *     or oversized) → the original invariant stands: NEVER replay a post-connect failure.
  * Kill-switch: PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces every tools/call to 'opaque'
@@ -364,10 +369,12 @@ function isValidIdemKey(v: unknown): v is string {
 
 /** How a forwarded request may be retried AFTER the socket connected:
  *  - 'idempotent' — no tools/call present → replaying has no side effect, always safe.
+ *  - 'readonly'   — every tools/call names a READ_ONLY_TOOLS verb → a replay re-executes a
+ *                   side-effect-free call, so it can never double-apply (EI-21268234394605529).
  *  - 'keyed'      — every tools/call carries a valid idempotencyKey → a replay dedups
  *                   server-side instead of double-applying the write.
  *  - 'opaque'     — a tools/call with no usable key → NEVER replay (write-safety default). */
-export type ForwardClass = 'idempotent' | 'keyed' | 'opaque';
+export type ForwardClass = 'idempotent' | 'readonly' | 'keyed' | 'opaque';
 
 export interface PreparedForward {
   body: Buffer;
@@ -376,17 +383,66 @@ export interface PreparedForward {
 }
 
 /**
+ * EI-21268234394605529 — verbs whose handler is PROVABLY side-effect-free, eligible for a
+ * bounded post-connect socket-error replay ('readonly' class). CURATED ON PURPOSE: this
+ * proxy is a dependency-free passthrough (node:http/node:crypto only), so it must not import
+ * the tool catalog to derive effects. The safe failure direction is omission — a read
+ * missing from this set keeps today's exact 'keyed' behavior, while a WRITE wrongly added
+ * here could be silently double-applied on a replay. The writer-exclusion guard test in
+ * proxy.test.ts pins known mutators OUT; when adding a name here, verify its handler
+ * performs no writes (no PG mutations, no fs writes outside tmp, no external sends).
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  // build/type diagnostics (the reported failure: scoped tsc runs are pure reads)
+  'build:typecheck',
+  // dev observability reads
+  'dev:pipeline_position', 'dev:pg_query', 'dev:service_health', 'dev:listening_ports',
+  'dev:build_status', 'dev:migrations', 'dev:rate_governor_status',
+  // documentation + search reads
+  'docs:get', 'docs:search', 'docs:outline', 'search:fulltext', 'search:semantic',
+  // memory recall (search ONLY — remember/forget mutate the store)
+  'memory:search',
+  // work-item / plan reads
+  'work_items:list', 'work_items:get', 'work_items:claimable',
+  'plans:get', 'plans:list', 'plans:items',
+  // test-run history
+  'testing:runs',
+  // harness / fleet status snapshots
+  'harness:list', 'harness:status', 'harness:get',
+  'fleet:assignments', 'fleet:status',
+  // coordination/state reads (presence/glance are pure snapshots;
+  // coord:inbox EXCLUDED — reading marks messages read)
+  'coord:presence', 'coord:glance',
+  'events:catalog', 'facts:list', 'state:read',
+  'locks:list', 'locks:queue',
+  // capability discovery (find ONLY — tools:invoke EXECUTES arbitrary tools)
+  'tools:find',
+]);
+
+function isReadOnlyToolCall(m: unknown): boolean {
+  if (!m || typeof m !== 'object') return false;
+  const params = (m as { params?: unknown }).params;
+  if (!params || typeof params !== 'object') return false;
+  const name = (params as { name?: unknown }).name;
+  return typeof name === 'string' && READ_ONLY_TOOLS.has(name);
+}
+/**
  * Classify a forward and, for a tools/call, inject a per-request `_meta.idempotencyKey`
  * so a post-connect retry is write-safe (:3070 replays the stored result). PURE +
  * unit-tested; `genKey` is injected for determinism. A VALID client-supplied key is
  * respected (never overwritten); an INVALID one (the server would ignore it) drops the
  * whole request to 'opaque'. Only a POST JSON body can carry a tools/call.
+ *
+ * EI-21268234394605529: a batch whose every tools/call names a READ_ONLY_TOOLS verb
+ * classifies 'readonly' BEFORE any key logic — replay safety comes from the tool's own
+ * side-effect freedom, not stored-result dedup, so keys are neither needed nor injected
+ * and the body is returned untouched.
  */
 export function prepareForward(
   method: string,
   headers: http.IncomingHttpHeaders,
   body: Buffer,
-  opts: { keyingEnabled: boolean; genKey: () => string },
+  opts: { keyingEnabled: boolean; readonlyRetryEnabled?: boolean; genKey: () => string },
 ): PreparedForward {
   if (method !== 'POST' || body.length === 0) return { body, headers, klass: 'opaque' };
   let parsed: unknown;
@@ -403,6 +459,14 @@ export function prepareForward(
 
   if (!opts.keyingEnabled) return { body, headers, klass: 'opaque' }; // kill-switch → refused-only
   if (body.length > INJECT_MAX_BODY_BYTES) return { body, headers, klass: 'opaque' };
+  // EI-21268234394605529: a provably read-only tools/call may be replayed on a post-connect
+  // socket error (re-executing a read cannot double-apply). Gated behind BOTH switches: the
+  // keying master switch above (PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 = pre-P-005 refused-only)
+  // and its own PAPERCUSP_MCP_PROXY_READONLY_RETRY=0. Unknown / oversized / switched-off
+  // bodies fall through to the existing keyed/opaque path unchanged.
+  if (opts.readonlyRetryEnabled !== false && calls.every(isReadOnlyToolCall)) {
+    return { body, headers, klass: 'readonly' }; // body untouched — no key injection needed
+  }
 
   let mutated = false;
   for (const m of calls) {
@@ -425,9 +489,11 @@ export function prepareForward(
 }
 
 /**
- * Post-connect retry decision (PURE + unit-tested): only a write-free 'idempotent'
- * request may be replayed. A keyed tools/call is recoverable only AFTER its first
- * execution stores a result; an immediate retry can overlap that still-running call.
+ * Post-connect retry decision (PURE + unit-tested): only a write-free request may be
+ * replayed — the 'idempotent' control-plane class, or EI-21268234394605529's 'readonly'
+ * class (every tools/call names a READ_ONLY_TOOLS verb, so re-execution cannot double-apply).
+ * A keyed tools/call remains recoverable only AFTER its first execution stores a result; an
+ * immediate retry can overlap that still-running call and double-apply the mutation.
  */
 export function postConnectRetryable(
   klass: ForwardClass,
@@ -436,7 +502,7 @@ export function postConnectRetryable(
   elapsedMs: number,
   windowMs: number,
 ): boolean {
-  if (klass !== 'idempotent') return false;
+  if (klass !== 'idempotent' && klass !== 'readonly') return false;
   if (retriesUsed >= maxRetries) return false;
   return elapsedMs < windowMs;
 }
@@ -478,8 +544,10 @@ export const MAX_HANDSHAKE_TIMEOUT_RETRIES = 2;
 
 /**
  * Whether an upstream-silence timeout should be replayed (PURE + unit-tested). Only the
- * write-free 'idempotent' class qualifies: a 'keyed'/'opaque' batch carries a tools/call
- * whose side effect may already have landed, so it surfaces honestly instead of replaying.
+ * write-free 'idempotent' control-plane class qualifies: any tools/call — including
+ * 'readonly' (EI-21268234394605529), whose members legitimately run minutes
+ * (`build:typecheck` ~160s) — stays on the generous maxHoldMs ceiling, never this 8s
+ * handshake bound, and surfaces honestly instead of being replayed blind.
  */
 export function handshakeTimeoutRetryable(
   klass: ForwardClass,
@@ -1085,10 +1153,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // replay instead of double-applying the write. Kill-switch:
           // PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces tools/call to 'opaque' (refused-only).
           const keyingEnabled = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== '0';
+          // EI-21268234394605529: replay a provably read-only tools/call once on a
+          // post-connect socket error (own kill-switch; the keying master switch above
+          // disables it too). Defaults ON.
+          const readonlyRetryEnabled =
+            keyingEnabled && process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY !== '0';
           // P-010: absorb an admission-control 429 by retrying (kill-switch to opt out).
           const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
           const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
-          const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, genKey: randomUUID });
+          const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID });
           // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
           // restart-sized window (~30 attempts) and amplifying a transient stall ~30x.
           const retryWindowMs = effectiveRetryWindowMs(req.url ?? '/', opts.retryWindowMs);
@@ -1099,7 +1172,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           let handshakeTimeoutRetries = 0;
           let last: ForwardOutcome | undefined;
           // Retry loop: refused → replay across the window (shouldRetry); post-connect →
-          // replay only an idempotent/keyed request, bounded (postConnectRetryable);
+          // replay only an idempotent/readonly request, bounded (postConnectRetryable);
           // upstream 429 (admission-control backpressure) → absorb + retry (P-010).
           // eslint-disable-next-line no-constant-condition
           while (true) {
