@@ -816,6 +816,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'scheduler:get_next',
   'coord:orient',
   'coord:send',
+  'fleet:assignments',
   'loop:checkpoint',
   'session:request-compaction',
   'tools:find',

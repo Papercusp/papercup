@@ -1265,6 +1265,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:send'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('fleet:assignments'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:checkpoint'))).toBe(true);
     expect(isReservedControlPlaneCall(call('session:request-compaction'))).toBe(true);
     expect(isReservedControlPlaneCall(call('tools:find'))).toBe(true);
@@ -1365,7 +1366,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ])))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'session:request-compaction', 'tools:find', 'tools:invoke → tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'fleet:assignments', 'loop:checkpoint', 'session:request-compaction', 'tools:find', 'tools:invoke → tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
