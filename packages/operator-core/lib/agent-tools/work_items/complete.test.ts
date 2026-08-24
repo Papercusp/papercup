@@ -3142,6 +3142,27 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(descriptions).toContain('record-only');
     });
 
+    it('publishes completion.status as optional while retaining the runtime done default', () => {
+      const json = z.toJSONSchema(complete.args as never) as {
+        anyOf?: Array<{ properties?: Record<string, { required?: string[] }> }>;
+        oneOf?: Array<{ properties?: Record<string, { required?: string[] }> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const completionSchemas = branches.map((branch) => branch.properties?.completion).filter(Boolean);
+
+      expect(completionSchemas).toHaveLength(2);
+      for (const schema of completionSchemas) {
+        expect(schema?.required ?? []).not.toContain('status');
+      }
+
+      const parsed = (complete.args as { safeParse: (x: unknown) => { success: boolean; data?: any } }).safeParse({
+        id: 'WI-1',
+        completion: { summary: 'progress note' },
+      });
+      expect(parsed.success).toBe(true);
+      expect(parsed.data?.completion?.status).toBe('done');
+    });
+
     it('documents the live-drove-ui artifact requirement in both published branches', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ properties?: Record<string, { description?: string }> }>;

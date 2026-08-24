@@ -132,10 +132,19 @@ import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 // refused: converting it to `{ summary }` loses the caller's evidence shape and can
 // close an item with authority:'proposed' without the caller realising it. JSON-object
 // strings remain supported by coerceCompletionShape.
+function defaultCompletionStatus(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  // Zod 4 publishes defaulted fields as required in JSON Schema. Supply the same
+  // runtime default at the preprocess boundary, so the public override below can
+  // honestly advertise status as optional without changing parsed completions.
+  return record.status === undefined ? { ...record, status: 'done' } : value;
+}
+
 const completionSpec = z
   .preprocess(
     (raw, ctx) => {
-      const coerced = coerceCompletionShape(raw);
+      const coerced = defaultCompletionStatus(coerceCompletionShape(raw));
       // A JSON-object string (including a recoverable truncated object) becomes an
       // object and continues through normal coercion. A prose/string value remains a
       // string, so reject it with the exact object-form repair example before Zod's
@@ -147,6 +156,9 @@ const completionSpec = z
     },
     CompletionRecordSchema.extend({
       workItem: z.string().min(1).optional(),
+      // The preprocess above owns the default so Zod 4 does not publish this
+      // defaulted field as required to completion callers.
+      status: z.string().min(1).optional(),
       // EI-20724228359175431: 'truncated-json' marks a
       // JSON-stringified completion whose tail was cut off and whose closers were
       // rebuilt, so the caller can be told the record may be missing a field that
