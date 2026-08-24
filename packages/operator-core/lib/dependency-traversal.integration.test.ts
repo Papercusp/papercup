@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 
@@ -204,4 +205,47 @@ describe('traverseDependencies — real PostgreSQL', () => {
       ]),
     );
   });
+
+  it('dedupes a dense converging graph once per frontier instead of once per path', async () => {
+    const startId = 'WI-50000';
+    const layers = Array.from({ length: 6 }, (_, layer) =>
+      Array.from({ length: 8 }, (_, branch) => `WI-${50100 + layer * 100 + branch}`),
+    );
+    const ids = layers.flat();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, payload)
+      SELECT ${WS}, ${H}, id, 'bug', id, 'open', '{}'::jsonb
+        FROM unnest(${[startId, ...ids]}::text[]) AS rows(id)`;
+
+    for (const id of layers[0]!) {
+      await db.sql`
+        INSERT INTO harness_shared.work_item_deps
+          (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+        VALUES (${DEFAULT_COORD_WORKSPACE}, 'issue', ${id}, 'issue', 'WI-50000', 'blocks', 'tester')`;
+    }
+    for (let layer = 1; layer < layers.length; layer += 1) {
+      for (const blocked of layers[layer]!) {
+        await db.sql`
+          INSERT INTO harness_shared.work_item_deps
+            (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+          SELECT ${DEFAULT_COORD_WORKSPACE}, 'issue', ${blocked}, 'issue', blocker, 'blocks', 'tester'
+            FROM unnest(${layers[layer - 1]}::text[]) AS blockers(blocker)`;
+      }
+    }
+
+    const result = await traverseDependencies({
+      workspaceId: WS,
+      harnessSlug: H,
+      start: { kind: 'work_item', id: startId },
+      direction: 'blocked',
+      maxDepth: layers.length,
+    });
+
+    expect(result.found).toBe(true);
+    expect(result.truncated).toBe(false);
+    expect(result.nodes).toHaveLength(1 + ids.length);
+    expect(new Set(result.nodes.map((node) => node.key)).size).toBe(result.nodes.length);
+    expect(Math.max(...result.nodes.map((node) => node.depth))).toBe(layers.length);
+  }, 30_000);
 });
