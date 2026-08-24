@@ -62,7 +62,7 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-    const evidence = await listSpecEvidence({ ...args, planSlug: args.slug, harnessSlug });
+    const evidence = await listSpecEvidence({ ...args, planSlugs: [args.slug], harnessSlug });
     const counts = { current: 0, stale: 0, unknown: 0 };
     for (const row of evidence) counts[row.currentness.overall] += 1;
     return {

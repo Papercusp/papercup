@@ -56,7 +56,7 @@ export default defineTool({
     const evidenceLimit = args.limit ?? 1000;
     const allEvidence = await listSpecEvidence({
       harnessSlug,
-      planSlug: args.slug,
+      planSlugs: [args.slug],
       workItemIds: args.workItemIds,
       specIds: args.specIds,
       current: args.current,
