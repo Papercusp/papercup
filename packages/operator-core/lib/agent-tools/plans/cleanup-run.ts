@@ -10,12 +10,14 @@ import { getFlag } from '@papercusp/flags/server';
 import { defineTool } from '@papercusp/agent-mcp';
 import { bulkContent, runBulk } from '@papercusp/agent-mcp/_bulk';
 import { COORD_ROLES } from '../coordination/roles';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { inProcessCall } from '../_compound-dispatch';
 import { clampText, LIMITS, softText } from '../limits';
 import {
   getActiveRun,
   getRun,
-  setRunPhase,
+  failRunIfExecuting,
+  recordRunHeartbeat,
   settleRunPhase,
   type BulkRunRow,
 } from '../../attention/bulk-run-store';
@@ -63,22 +65,38 @@ export const cleanupManifest = defineTool({
     runId: z.string().min(1).optional(),
     includeReported: z.boolean().optional(),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
     const featureEnabled = await cleanupEnabled();
     const runId = await resolveRunId(args.runId);
     if (!runId) return toolJson({ ok: false, error: 'no_active_run' });
 
-    const run = await getRun(runId);
-    if (!run) return toolJson({ ok: false, error: 'run_not_found', runId });
-    if (run.runKind !== 'plan-cleanup') {
-      return toolJson({ ok: false, error: 'run_wrong_kind', runId, runKind: run.runKind });
+    const storedRun = await getRun(runId);
+    if (!storedRun) return toolJson({ ok: false, error: 'run_not_found', runId });
+    if (storedRun.runKind !== 'plan-cleanup') {
+      return toolJson({ ok: false, error: 'run_wrong_kind', runId, runKind: storedRun.runKind });
     }
+    const executing = isExecuting(storedRun);
+    const heartbeat = featureEnabled && executing
+      ? await recordRunHeartbeat({
+          runId,
+          resolverOwner: identity.ownerId,
+          workspaceId: storedRun.workspaceId,
+        }).catch(() => null)
+      : null;
+    const ownershipRevoked = featureEnabled && executing && heartbeat === null;
+    const run = heartbeat ?? storedRun;
 
     const scan = await scanCleanupRun(run);
     let rows = await getRunFindings(runId, run.workspaceId);
     let seedRefused: string | null = null;
     if (rows.length === 0 && isExecuting(run)) {
-      const seeded = await seedFindings({ runId, findings: scan, workspaceId: run.workspaceId });
+      const seeded = await seedFindings({
+        runId,
+        findings: scan,
+        resolverOwner: identity.ownerId,
+        workspaceId: run.workspaceId,
+      });
       seedRefused = seeded.refused?.reason ?? null;
       rows = await getRunFindings(runId, run.workspaceId);
     }
@@ -106,11 +124,14 @@ export const cleanupManifest = defineTool({
         recommended: run.recommended,
         skipped: run.skipped,
         failed: run.failed,
+        heartbeatAt: run.heartbeatAt,
+        resolverOwner: run.resolverOwner,
       },
       findings,
       remaining: rows.filter((row) => row.outcome === 'pending').length,
       featureDisabled: !featureEnabled,
-      stopped: !featureEnabled || !isExecuting(run),
+      ownershipRevoked,
+      stopped: !featureEnabled || ownershipRevoked || !isExecuting(run),
       ...(seedRefused ? { seedRefused } : {}),
     });
   },
@@ -133,6 +154,7 @@ export const cleanupAct = defineTool({
     rationale: softText(LIMITS.ANNOTATION),
   }),
   async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
     const runId = await resolveRunId(args.runId);
     if (!runId) return toolJson({ ok: false, error: 'no_active_run' });
     if (!(await cleanupEnabled())) {
@@ -152,6 +174,19 @@ export const cleanupAct = defineTool({
     if (run.runKind !== 'plan-cleanup') {
       return toolJson({ ok: false, error: 'run_wrong_kind', runId, runKind: run.runKind });
     }
+    const heartbeat = await recordRunHeartbeat({
+      runId,
+      resolverOwner: identity.ownerId,
+      workspaceId: run.workspaceId,
+    }).catch(() => null);
+    if (!heartbeat) {
+      return toolJson({
+        ok: false,
+        refused: 'resolver_owner_mismatch_or_not_executing',
+        runId,
+        actionDispatched: false,
+      });
+    }
 
     const call = inProcessCall(ctx);
     let actionDispatched = false;
@@ -159,6 +194,7 @@ export const cleanupAct = defineTool({
       const result = await executeCleanupFindingAction({
         runId,
         findingId: args.findingId,
+        resolverOwner: identity.ownerId,
         workspaceId: run.workspaceId,
         async execute(locked) {
           const fresh = (await scanCleanupRun(run, [locked.planSlug])).find(
@@ -259,7 +295,8 @@ export const cleanupReport = defineTool({
     .refine((args) => Boolean(args.items?.length) || (Boolean(args.findingId) && Boolean(args.outcome)), {
       message: 'pass one { findingId, outcome } or items:[...]',
     }),
-  async handler(args) {
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
     const runId = await resolveRunId(args.runId);
     if (!runId) return toolJson({ ok: false, error: 'no_active_run' });
     if (!(await cleanupEnabled())) {
@@ -267,6 +304,22 @@ export const cleanupReport = defineTool({
         ok: false,
         refused: 'feature_disabled',
         flag: FLAGS.PLAN_CLEANUP,
+        runId,
+        wrote: 0,
+      });
+    }
+    const run = await getRun(runId);
+    const heartbeat = run
+      ? await recordRunHeartbeat({
+          runId,
+          resolverOwner: identity.ownerId,
+          workspaceId: run.workspaceId,
+        }).catch(() => null)
+      : null;
+    if (!heartbeat) {
+      return toolJson({
+        ok: false,
+        refused: 'resolver_owner_mismatch_or_not_executing',
         runId,
         wrote: 0,
       });
@@ -309,7 +362,12 @@ export const cleanupReport = defineTool({
     );
 
     if (accepted.length === 0) return bulkContent(env);
-    const result = await reportFindingOutcomes({ runId, reports: accepted });
+    const result = await reportFindingOutcomes({
+      runId,
+      reports: accepted,
+      resolverOwner: identity.ownerId,
+      workspaceId: heartbeat.workspaceId,
+    });
     if (result.refused) {
       return toolJson({
         ok: false,
@@ -349,25 +407,33 @@ export const cleanupSettle = defineTool({
     failed: z.boolean().optional(),
     error: softText(LIMITS.ANNOTATION).optional(),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
     const runId = await resolveRunId(args.runId);
     if (!runId) return toolJson({ ok: false, error: 'no_active_run' });
     const run = args.failed
-      ? await setRunPhase({
+      ? await failRunIfExecuting({
           runId,
-          phase: 'failed',
+          resolverOwner: identity.ownerId,
           error: clampText(args.error, LIMITS.ANNOTATION)?.trim() || 'resolver abandoned the run',
         })
-      : await settleRunPhase({ runId });
+      : await settleRunPhase({ runId, resolverOwner: identity.ownerId });
+    if (!run) {
+      return toolJson({
+        ok: false,
+        refused: 'resolver_owner_mismatch_or_not_executing',
+        runId,
+      });
+    }
     await notifyPlanCleanupRunChanged().catch(() => undefined);
     return toolJson({
       ok: true,
       runId,
-      phase: run?.phase ?? null,
-      autoApplied: run?.autoResolved ?? 0,
-      recommended: run?.recommended ?? 0,
-      skipped: run?.skipped ?? 0,
-      failed: run?.failed ?? 0,
+      phase: run.phase,
+      autoApplied: run.autoResolved,
+      recommended: run.recommended,
+      skipped: run.skipped,
+      failed: run.failed,
     });
   },
 });
