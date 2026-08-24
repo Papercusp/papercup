@@ -368,6 +368,56 @@ describe('capability:bash_output — durable task attachment', () => {
     expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
+  it('recovers a terminal bash row when its durable detail lacks bashJobId', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-terminal-without-handle-'));
+    const logPath = join(stateDir, 'terminal.log');
+    try {
+      writeFileSync(logPath, 'completed output\n');
+      store.getTask.mockResolvedValue(
+        taskRow({
+          state: 'exited',
+          exitCode: 0,
+          detail: {},
+          logPath,
+        }),
+      );
+      jobs.getJob.mockReturnValue(null);
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx());
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({
+        ok: true,
+        task_id: 'task-carry-1',
+        status: 'completed',
+        exit_code: 0,
+        running: false,
+        recovered_from_ledger: true,
+        log_path: logPath,
+        output_tail: 'completed output\n',
+        output: 'completed output\n',
+      });
+      expect(payload).not.toHaveProperty('reason', 'task_not_attachable');
+      expect(jobs.getJob).not.toHaveBeenCalled();
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps live bash rows without a durable handle non-attachable', async () => {
+    store.getTask.mockResolvedValue(taskRow({ detail: {} }));
+
+    const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx());
+    const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('task_not_attachable');
+    expect(jobs.getJob).not.toHaveBeenCalled();
+    expect(jobs.startBackground).not.toHaveBeenCalled();
+  });
+
   it('reports ledger failure as unknown, never as a healthy miss or a restart', async () => {
     store.getTask.mockRejectedValue(new Error('db unavailable'));
 

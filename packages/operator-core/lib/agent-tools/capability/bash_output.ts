@@ -435,6 +435,44 @@ export function terminalStatusFromLedger(
   }
 }
 
+/**
+ * Recover a terminal bash task when the durable detail bag did not carry its
+ * process-local bash id. The ledger state is still authoritative for status;
+ * the log path is the only remaining bounded output source. Live rows and
+ * non-bash rows deliberately return null so their existing refusal paths stay
+ * intact.
+ */
+function terminalBashTaskRecovery(
+  row: TaskRow,
+  filter: string | undefined,
+): { payload: Record<string, unknown>; isError: boolean } | null {
+  if (row.class !== 'bash-job') return null;
+  const terminal = terminalStatusFromLedger(row);
+  if (!terminal) return null;
+
+  const stranded = row.logPath ? strandedJobLookupAtPath(row.logPath) : null;
+  const inspected: StrandedJobLogInspection = stranded
+    ? inspectStrandedJobLog(stranded, filter)
+    : { terminal: null, output: '' };
+  const output = !filter && inspected.output.length === 0 && stranded?.tail ? stranded.tail : inspected.output;
+  return {
+    payload: {
+      ok: terminal.status === 'completed',
+      task_id: row.taskId,
+      status: terminal.status,
+      exit_code: terminal.exitCode,
+      running: false,
+      ...(stranded ? { total_bytes: stranded.sizeBytes, total_bytes_written: stranded.sizeBytes } : {}),
+      ...(row.logPath ? { log_path: row.logPath } : {}),
+      recovered_from_ledger: true,
+      ...(inspected.filterError ? { filter_error: inspected.filterError } : {}),
+      output_tail: output,
+      output,
+    },
+    isError: terminal.status !== 'completed',
+  };
+}
+
 export interface StrandedJobLogInspection {
   terminal: { status: RecoveredJobStatus; exitCode: number | null } | null;
   /** A ledger-confirmed unobserved terminal marker appended by recovery. */
@@ -727,6 +765,13 @@ export default defineTool({
       }
       const durableBashId = attachedLedgerRow.detail?.bashJobId;
       if (attachedLedgerRow.class !== 'bash-job' || typeof durableBashId !== 'string' || durableBashId.length === 0) {
+        const terminalRecovery = terminalBashTaskRecovery(attachedLedgerRow, args.filter);
+        if (terminalRecovery) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify(terminalRecovery.payload) }],
+            ...(terminalRecovery.isError ? { isError: true } : {}),
+          };
+        }
         return {
           content: [
             {

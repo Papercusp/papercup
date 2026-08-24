@@ -44,13 +44,33 @@ function assertState(state: TaskState): void {
   }
 }
 
+function jsonObject(value: unknown): Record<string, unknown> {
+  const parsed =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : value;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+}
+
 /** Postgres row -> TaskRow. Kept explicit (not a spread-rename) so a column added
  *  to the table without a mapping here fails review rather than silently vanishing. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toRow(r: any): TaskRow {
   const iso = (v: unknown): string | null => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
   const num = (v: unknown): number | null => (v == null ? null : Number(v));
-  const detail = typeof r.detail === 'object' && r.detail ? r.detail : {};
+  // postgres-js normally decodes jsonb objects for us, but a worker/transaction
+  // boundary can hand this mapper the raw JSON text instead. Losing that bag
+  // drops detail.bashJobId and makes a known terminal bash task look like an
+  // unrelated, non-attachable task to capability:bash_output.
+  const detail = jsonObject(r.detail);
   return {
     taskId: r.task_id,
     workspaceId: r.workspace_id,
