@@ -28,7 +28,7 @@ import {
  * `adopted` are reported as work, never as compliance:
  *
  *   · `adopted`              — has clauses; censused through P-008's gate.
- *   · `legacy-val-only`      — still carries VAL-*/coversVALs text, ZERO clauses. Backfill.
+ *   · `legacy-val-only`      — still carries VAL-* / coversVALs text, ZERO clauses. Backfill.
  *   · `no-behavior-declared` — neither. NOT a pass; a plan that promised nothing.
  *
  * WHAT THIS MODULE DOES NOT DO, deliberately:
@@ -161,7 +161,7 @@ function actionsForUnadopted(adoption: Exclude<AdoptionState, 'adopted'>): Recon
       {
         kind: 'backfill-val-clauses',
         detail:
-          'Plan still carries VAL-*/coversVALs text but has zero first-class clauses. ' +
+          'Plan still carries VAL-* / coversVALs text but has zero first-class clauses. ' +
           'Promote the parseable assertions into clauses, preserving source_val_id provenance; ' +
           'classify anything unparseable rather than dropping it.',
       },

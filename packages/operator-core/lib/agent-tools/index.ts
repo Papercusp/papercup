@@ -1214,6 +1214,7 @@ import './plans/set-property';
 // first-class-spec-clauses-and-prior-attempt-briefs P-002 — stable clause
 // identities + immutable revisions, with exact/current/history reads.
 import './plans/get-specs';
+import './plans/spec-reconciliation-tool';
 import './plans/set-specs';
 // P-005 — exact many-to-many work-item/spec-revision coverage plus immutable
 // proof fingerprints and computed (never stored) currentness.
