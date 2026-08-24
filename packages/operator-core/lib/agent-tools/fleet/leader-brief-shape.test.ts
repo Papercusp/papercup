@@ -164,6 +164,98 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
   });
 
+  it('keeps the measured dependency ranking and its population contract together', () => {
+    const out = shapeLeaderBrief({
+      ok: true,
+      dependencyBottlenecks: {
+        status: 'measured',
+        population: {
+          kind: 'exact-plan-open-roots',
+          planSlug: 'one-plan',
+          harnessSlug: 'papercusp',
+          basis: 'unified-dependency-graph',
+          openRoots: 7,
+          candidates: 9,
+          shown: 8,
+          limit: 8,
+          truncated: true,
+          depthLimited: false,
+          maxDepth: 64,
+          progressBasis: 'harness_shared.work_items.last_progress_at',
+          holderBasis: 'reconciled-fleet-assignment-claims',
+        },
+        rows: Array.from({ length: 8 }, (_, index) => ({
+          rank: index + 1,
+          key: `work_item:WI-${index}`,
+          kind: 'work_item',
+          ref: `WI-${index}`,
+          status: 'open',
+          title: 'ranked dependency '.repeat(40),
+          workItemRefs: Array.from({ length: 9 }, (__, refIndex) => `WI-${index}-${refIndex}`),
+          openBlockedCount: 8 - index,
+          lastProgressAt: '2026-08-20T01:02:03.000Z',
+          hoursSinceProgress: 100 + index,
+          holder: {
+            state: 'held',
+            count: 4,
+            agents: Array.from({ length: 4 }, (__, agentIndex) => ({
+              agentId: `su-${agentIndex}`,
+              label: `member-${agentIndex}`,
+              alive: agentIndex === 0,
+              sessionState: agentIndex === 0 ? 'live' : 'ended',
+              verdict: agentIndex === 0 ? 'speaking' : 'dead',
+            })),
+            truncated: true,
+          },
+        })),
+      },
+    }, 'trimmed') as Record<string, unknown>;
+
+    const bottlenecks = out.dependencyBottlenecks as {
+      rows: Array<Record<string, unknown>>;
+      rowsTruncated: { total: number; shown: number };
+    };
+    expect(bottlenecks).toMatchObject({
+      status: 'measured',
+      population: {
+        planSlug: 'one-plan',
+        openRoots: 7,
+        candidates: 9,
+        progressBasis: 'harness_shared.work_items.last_progress_at',
+        holderBasis: 'reconciled-fleet-assignment-claims',
+      },
+      rowsTruncated: { total: 8, shown: 4 },
+    });
+    expect(bottlenecks.rows).toHaveLength(4);
+    expect(bottlenecks.rows[0]).toMatchObject({
+      rank: 1,
+      ref: 'WI-0',
+      openBlockedCount: 8,
+      workItemRefsTruncated: { total: 9, shown: 4 },
+      holder: { state: 'held', count: 4 },
+    });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+
+  it('keeps an unknown dependency read explicit instead of emitting an empty measured table', () => {
+    const out = shapeLeaderBrief({
+      ok: true,
+      dependencyBottlenecks: {
+        status: 'unknown',
+        reason: 'read-failed',
+        planSlug: 'one-plan',
+        harnessSlug: 'papercusp',
+      },
+    }, 'trimmed') as Record<string, unknown>;
+
+    expect(out.dependencyBottlenecks).toEqual({
+      status: 'unknown',
+      reason: 'read-failed',
+      planSlug: 'one-plan',
+      harnessSlug: 'papercusp',
+    });
+  });
+
   it('keeps every typed terminal audit-feed field through campaign compaction', () => {
     const row = {
       id: 'WI-42',
@@ -340,6 +432,37 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     }));
     (input as Record<string, unknown>).admissionBlockedAction =
       'NOT member discipline — widen the lane with scheduler:set_claim_spec, then let the member self-claim.';
+    (input as Record<string, unknown>).dependencyBottlenecks = {
+      status: 'measured',
+      population: {
+        kind: 'exact-plan-open-roots',
+        planSlug: 'one-plan',
+        harnessSlug: 'papercusp',
+        basis: 'unified-dependency-graph',
+        openRoots: 8,
+        candidates: 8,
+        shown: 8,
+        limit: 8,
+        truncated: false,
+        depthLimited: false,
+        maxDepth: 64,
+        progressBasis: 'harness_shared.work_items.last_progress_at',
+        holderBasis: 'reconciled-fleet-assignment-claims',
+      },
+      rows: Array.from({ length: 8 }, (_, index) => ({
+        rank: index + 1,
+        key: `work_item:WI-${index}`,
+        kind: 'work_item',
+        ref: `WI-${index}`,
+        status: 'open',
+        title: 'x'.repeat(500),
+        workItemRefs: [`WI-${index}`],
+        openBlockedCount: 8 - index,
+        lastProgressAt: null,
+        hoursSinceProgress: null,
+        holder: { state: 'unowned', count: 0, agents: [], truncated: false },
+      })),
+    };
     input.campaign.axes = Object.fromEntries(
       Array.from({ length: 200 }, (_, index) => [
         `axis-${index}`,
@@ -384,6 +507,12 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     ]);
     expect(out.admissionBlockedTruncated).toMatchObject({ total: 6, shown: 1 });
     expect(out.admissionBlockedAction).toContain('scheduler:set_claim_spec');
+    expect(out.dependencyBottlenecks).toMatchObject({
+      status: 'measured',
+      population: { planSlug: 'one-plan', openRoots: 8 },
+      rows: [expect.objectContaining({ rank: 1, ref: 'WI-0', openBlockedCount: 8 })],
+      rowsTruncated: { total: 8, shown: 1 },
+    });
     expect(out.membersTruncated).toMatchObject({ total: 53, shown: 0 });
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
   });

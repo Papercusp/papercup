@@ -76,6 +76,8 @@ export interface DependencyBottleneckCandidate {
   title: string | null;
   /** Work-item identities represented by this graph node (itself and/or coverage twins). */
   workItemRefs: string[];
+  /** Canonical work-item progress, sourced only from work_items.last_progress_at. */
+  lastProgressAt: string | null;
   /** Distinct nonterminal plan items transitively blocked behind this node. */
   openBlockedCount: number;
 }
@@ -130,6 +132,7 @@ interface DependencyBottleneckRow {
   blocker_status: string | null;
   blocker_title: string | null;
   work_item_refs: string[] | null;
+  last_progress_at: string | null;
   open_blocked_count: number | string | null;
   open_root_count: number | string;
   candidate_count: number | string;
@@ -231,6 +234,7 @@ work_nodes AS (
          wi.payload,
          wi.source_plan_slug,
          wi.source_plan_item_ids,
+         wi.last_progress_at,
          CASE WHEN wi.item_kind = ANY($7::text[]) THEN 'issue' ELSE 'feature' END AS endpoint_kind,
          CASE WHEN wi.item_kind = ANY($7::text[])
               THEN upper(wi.feature_id)
@@ -320,6 +324,32 @@ work_edges AS (
       ON blocker.endpoint_kind = dep.blocker_kind AND blocker.endpoint_ref = dep.blocker_ref
    WHERE dep.workspace_id = $3 AND dep.dep_type = 'blocks'
 ),
+link_block_edges AS (
+  SELECT 'coord-link-blocks:' || link.id AS edge_key,
+         COALESCE(blocked_work.node_key, blocked_plan.node_key,
+                  'dependency:' || link.dst_kind || ':' || link.dst_ref) AS subject_key,
+         COALESCE(blocker_work.node_key, blocker_plan.node_key,
+                  'dependency:' || link.src_kind || ':' || link.src_ref) AS dependency_key,
+         'work-item-blocks'::text AS relation,
+         NULL::text AS external_ref
+    FROM harness_shared.coord_links link
+    LEFT JOIN work_nodes blocker_work
+      ON blocker_work.endpoint_kind = link.src_kind AND blocker_work.endpoint_ref = link.src_ref
+    LEFT JOIN work_nodes blocked_work
+      ON blocked_work.endpoint_kind = link.dst_kind AND blocked_work.endpoint_ref = link.dst_ref
+    LEFT JOIN plan_nodes blocker_plan
+      ON link.src_kind = 'plan_item'
+     AND blocker_plan.plan_slug || '#' || blocker_plan.item_id = link.src_ref
+    LEFT JOIN plan_nodes blocked_plan
+      ON link.dst_kind = 'plan_item'
+     AND blocked_plan.plan_slug || '#' || blocked_plan.item_id = link.dst_ref
+   WHERE link.workspace_id IN ($1, $3)
+     AND link.rel = 'blocks'
+     -- work_item_deps is authoritative when BOTH endpoints resolve to work
+     -- items. coord_links remains authoritative for polymorphic blocks such as
+     -- issue -> plan_item, and for an endpoint outside this harness's graph.
+     AND NOT (blocker_work.node_key IS NOT NULL AND blocked_work.node_key IS NOT NULL)
+),
 external_edge_data AS (
   SELECT wn.node_key AS subject_key,
          blocker ->> 'ref' AS external_ref,
@@ -348,12 +378,13 @@ external_edges AS (
 all_edges AS (
   SELECT * FROM plan_edges
   UNION ALL SELECT * FROM work_edges
+  UNION ALL SELECT * FROM link_block_edges
   UNION ALL SELECT * FROM coverage_edges
   UNION ALL SELECT * FROM external_edges
 ),
 placeholder_nodes AS (
   SELECT DISTINCT edge_key AS node_key,
-         CASE WHEN edge_key LIKE 'external:%' THEN 'external' ELSE 'plan_item' END AS node_kind,
+         CASE WHEN edge_key LIKE 'plan_item:%' THEN 'plan_item' ELSE 'external' END AS node_kind,
          CASE WHEN edge_key LIKE 'plan_item:%#%'
               THEN substring(edge_key from '#(P-[0-9]+)$')
               ELSE regexp_replace(edge_key, '^[^:]+:[^:]*:', '')
@@ -379,16 +410,18 @@ placeholder_nodes AS (
 ),
 all_nodes AS (
   SELECT pn.node_key, 'plan_item'::text AS node_kind, pn.item_id AS ref,
-         pn.status, pn.title, $2::text AS harness_slug, pn.plan_slug, pn.item_id
+         pn.status, pn.title, $2::text AS harness_slug, pn.plan_slug, pn.item_id,
+         NULL::timestamptz AS last_progress_at
     FROM plan_nodes pn
   UNION ALL
   SELECT wn.node_key, 'work_item'::text AS node_kind, wn.item_id AS ref,
-         wn.status, wn.title, wn.harness_slug, NULL::text AS plan_slug, wn.item_id
+         wn.status, wn.title, wn.harness_slug, NULL::text AS plan_slug, wn.item_id,
+         wn.last_progress_at
     FROM work_nodes wn
   UNION ALL
   SELECT placeholder.node_key, placeholder.node_kind, placeholder.ref,
          placeholder.status, placeholder.title, placeholder.harness_slug,
-         placeholder.plan_slug, placeholder.item_id
+         placeholder.plan_slug, placeholder.item_id, NULL::timestamptz AS last_progress_at
     FROM placeholder_nodes placeholder
 )
 `;
@@ -472,6 +505,12 @@ SELECT node.node_key,
 const DEPENDENCY_BOTTLENECK_SQL = String.raw`
 WITH RECURSIVE
 ${DEPENDENCY_GRAPH_CTES},
+-- The shared graph parameter contract reserves $4/$5 for traversal start and
+-- direction. This ranking query does not consume either value, but PostgreSQL
+-- still requires every supplied positional parameter to have a resolvable type.
+parameter_contract AS (
+  SELECT $4::text AS unused_start_key, $5::text AS unused_direction
+),
 plan_roots AS (
   SELECT node_key
     FROM plan_nodes
@@ -541,6 +580,13 @@ ranked AS (
               AND represented.node_kind = 'work_item'
             ORDER BY represented.ref
          ) AS work_item_refs,
+         (
+           SELECT max(represented.last_progress_at)::text
+             FROM candidate_identity identity
+             JOIN all_nodes represented ON represented.node_key = identity.identity_key
+            WHERE identity.blocker_key = candidate.blocker_key
+              AND represented.node_kind = 'work_item'
+         ) AS last_progress_at,
          count(DISTINCT root.node_key)::int AS open_blocked_count,
          bool_or(
            walk.depth = $6 AND EXISTS (
@@ -590,6 +636,7 @@ SELECT 'population'::text AS row_kind,
        NULL::text AS blocker_status,
        NULL::text AS blocker_title,
        NULL::text[] AS work_item_refs,
+       NULL::text AS last_progress_at,
        NULL::int AS open_blocked_count,
        population.open_root_count,
        population.candidate_count,
@@ -603,6 +650,7 @@ SELECT 'bottleneck'::text AS row_kind,
        ordered.blocker_status,
        ordered.blocker_title,
        ordered.work_item_refs,
+       ordered.last_progress_at,
        ordered.open_blocked_count,
        population.open_root_count,
        population.candidate_count,
@@ -743,6 +791,7 @@ export async function readDependencyBottlenecks(
         status: row.blocker_status,
         title: row.blocker_title,
         workItemRefs: row.work_item_refs ?? [],
+        lastProgressAt: row.last_progress_at,
         openBlockedCount: Number(row.open_blocked_count),
       };
     });

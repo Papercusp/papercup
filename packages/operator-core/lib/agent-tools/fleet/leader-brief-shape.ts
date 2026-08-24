@@ -113,6 +113,77 @@ function compactClaimableNow(value: unknown): unknown {
   return out;
 }
 
+/** P-006: keep the ranked dependency answer as one measured|unknown unit. The
+ * graph reader already bounds rows, but each row can still carry long titles,
+ * many coverage-twin work items, and several holder identities. */
+function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+
+  if (source.status !== 'measured') {
+    return pick(source, ['status', 'reason', 'planSlug', 'harnessSlug'], 180) ?? source;
+  }
+
+  const out: Dict = { status: 'measured' };
+  const population = pick(source.population, [
+    'kind',
+    'planSlug',
+    'harnessSlug',
+    'basis',
+    'openRoots',
+    'candidates',
+    'shown',
+    'limit',
+    'truncated',
+    'depthLimited',
+    'maxDepth',
+    'progressBasis',
+    'holderBasis',
+  ], 180);
+  if (population) out.population = population;
+
+  const rows = Array.isArray(source.rows) ? source.rows : [];
+  out.rows = rows.slice(0, rowCap).map((value) => {
+    const row = asDict(value);
+    if (!row) return value;
+    const compact = pick(row, [
+      'rank',
+      'key',
+      'kind',
+      'ref',
+      'status',
+      'title',
+      'openBlockedCount',
+      'lastProgressAt',
+      'hoursSinceProgress',
+    ], 160) ?? {};
+    if (Array.isArray(row.workItemRefs)) {
+      const refs = row.workItemRefs.filter((ref): ref is string => typeof ref === 'string');
+      compact.workItemRefs = refs.slice(0, 4);
+      if (refs.length > 4) compact.workItemRefsTruncated = { total: refs.length, shown: 4 };
+    }
+    const holder = asDict(row.holder);
+    if (holder) {
+      const compactHolder = pick(holder, ['state', 'count', 'truncated'], 120) ?? {};
+      if (Array.isArray(holder.agents)) {
+        compactHolder.agents = holder.agents.slice(0, 3).map((agent) =>
+          pick(agent, ['agentId', 'label', 'alive', 'sessionState', 'verdict'], 120) ?? agent,
+        );
+      }
+      compact.holder = compactHolder;
+    }
+    return compact;
+  });
+  if (rows.length > rowCap) {
+    out.rowsTruncated = {
+      total: rows.length,
+      shown: rowCap,
+      more: 'fleet:leader-brief { payloadTier:"full" }',
+    };
+  }
+  return out;
+}
+
 function compactSummary(value: unknown, ultra = false): unknown {
   const source = asDict(value);
   if (!source) return value;
@@ -391,6 +462,12 @@ function buildProjection(
     out.monitoringBlindAdvisory = compactMonitoringBlindAdvisory(data.monitoringBlindAdvisory);
   }
   if ('summary' in data) out.summary = compactSummary(data.summary);
+  if ('dependencyBottlenecks' in data) {
+    out.dependencyBottlenecks = compactDependencyBottlenecks(
+      data.dependencyBottlenecks,
+      tightDecisionCore ? 2 : tier === 'trimmed' ? 4 : 8,
+    );
+  }
   if (Array.isArray(data.benchSuggestions)) {
     out.benchSuggestions = data.benchSuggestions.map(compactBenchSuggestion);
   }
@@ -490,6 +567,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }
       : {}),
     ...(source.summary !== undefined ? { summary: compactSummary(source.summary, true) } : {}),
+    ...(source.dependencyBottlenecks !== undefined
+      ? { dependencyBottlenecks: compactDependencyBottlenecks(source.dependencyBottlenecks, 1) }
+      : {}),
     leaderBriefProjection: {
       tier,
       emergency: true,

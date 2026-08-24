@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   dependencyTraversalStartKey,
+  readDependencyBottlenecks,
   traverseDependencies,
   workItemIdFromExternalBlockerRef,
 } from './dependency-traversal';
@@ -80,3 +81,76 @@ describe('traverseDependencies result shaping', () => {
   });
 });
 
+describe('readDependencyBottlenecks result shaping', () => {
+  it('preserves the population contract, canonical progress, and ranked row', async () => {
+    const query = vi.fn(async () => [
+      {
+        row_kind: 'population' as const,
+        blocker_key: null,
+        blocker_kind: null,
+        blocker_ref: null,
+        blocker_status: null,
+        blocker_title: null,
+        work_item_refs: null,
+        last_progress_at: null,
+        open_blocked_count: null,
+        open_root_count: 7,
+        candidate_count: 4,
+        depth_limited: false,
+      },
+      {
+        row_kind: 'bottleneck' as const,
+        blocker_key: 'work_item:WI-41117',
+        blocker_kind: 'work_item' as const,
+        blocker_ref: 'WI-41117',
+        blocker_status: 'open',
+        blocker_title: 'Shared dependency',
+        work_item_refs: ['WI-41117'],
+        last_progress_at: '2026-08-23T01:02:03.000Z',
+        open_blocked_count: 5,
+        open_root_count: 7,
+        candidate_count: 4,
+        depth_limited: false,
+      },
+    ]);
+
+    const result = await readDependencyBottlenecks(
+      {
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'papercusp',
+        planSlug: 'fleet-plan',
+        maxDepth: 12,
+        limit: 3,
+      },
+      { query: query as never },
+    );
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]?.[1]).toEqual(expect.arrayContaining(['fleet-plan', 3]));
+    expect(result).toEqual({
+      population: {
+        kind: 'exact-plan-open-roots',
+        planSlug: 'fleet-plan',
+        harnessSlug: 'papercusp',
+        basis: 'unified-dependency-graph',
+        openRoots: 7,
+        candidates: 4,
+        shown: 1,
+        limit: 3,
+        truncated: true,
+        depthLimited: false,
+        maxDepth: 12,
+      },
+      rows: [{
+        key: 'work_item:WI-41117',
+        kind: 'work_item',
+        ref: 'WI-41117',
+        status: 'open',
+        title: 'Shared dependency',
+        workItemRefs: ['WI-41117'],
+        lastProgressAt: '2026-08-23T01:02:03.000Z',
+        openBlockedCount: 5,
+      }],
+    });
+  });
+});

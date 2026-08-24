@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildLeaderDependencyBottleneckView,
   computeBenchSuggestion,
   computeDarkFleetAlert,
   computeDormantAlert,
@@ -40,6 +41,7 @@ import {
 } from './leader-brief';
 import leaderBriefTool from './leader-brief';
 import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
+import type { DependencyBottleneckResult } from '../../dependency-traversal';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -100,6 +102,105 @@ describe('exactPositiveSinglePlanSlugFromFilter (WI-41173 / P-011)', () => {
       { not: { field: 'plan', op: '=', value: 'one-plan' } },
       { field: 'kind', op: '=', value: 'bug' },
     ]) expect(exactPositiveSinglePlanSlugFromFilter(filter as never)).toBeNull();
+  });
+});
+
+describe('buildLeaderDependencyBottleneckView (WI-41168 / P-006)', () => {
+  it('joins canonical work-item identities to reconciled holders and derives age only from progress', () => {
+    const result: DependencyBottleneckResult = {
+      population: {
+        kind: 'exact-plan-open-roots',
+        planSlug: 'one-plan',
+        harnessSlug: 'papercusp',
+        basis: 'unified-dependency-graph',
+        openRoots: 6,
+        candidates: 2,
+        shown: 2,
+        limit: 8,
+        truncated: false,
+        depthLimited: false,
+        maxDepth: 64,
+      },
+      rows: [
+        {
+          key: 'work_item:WI-41117',
+          kind: 'work_item',
+          ref: 'WI-41117',
+          status: 'open',
+          title: 'Shared dependency',
+          workItemRefs: ['WI-41117'],
+          lastProgressAt: '2026-08-22T04:59:00.000Z',
+          openBlockedCount: 5,
+        },
+        {
+          key: 'plan_item:one-plan#P-001',
+          kind: 'plan_item',
+          ref: 'P-001',
+          status: 'todo',
+          title: 'Unowned prerequisite',
+          workItemRefs: [],
+          lastProgressAt: null,
+          openBlockedCount: 1,
+        },
+      ],
+    };
+    const holders = [baseAgent({
+      agentId: 'su-holder',
+      label: 'holder',
+      alive: false,
+      sessionState: 'ended',
+      verdict: 'dead',
+      claims: [{
+        type: 'work-item',
+        harnessSlug: 'papercusp',
+        planSlug: 'one-plan',
+        id: 'wi-41117',
+        itemKind: 'bug',
+        detail: 'Shared dependency',
+        status: 'open',
+        acquiredTs: null,
+        expiresTs: null,
+        active: true,
+        orphaned: false,
+        stalled: false,
+        lastProgressAt: '2099-01-01T00:00:00.000Z',
+        activity: 'dead',
+        rank: null,
+        rankWriter: null,
+      }],
+    })];
+
+    const view = buildLeaderDependencyBottleneckView(
+      result,
+      holders,
+      Date.parse('2026-08-24T05:00:00.000Z'),
+    );
+
+    expect(view).toMatchObject({
+      status: 'measured',
+      population: {
+        progressBasis: 'harness_shared.work_items.last_progress_at',
+        holderBasis: 'reconciled-fleet-assignment-claims',
+      },
+      rows: [
+        {
+          rank: 1,
+          ref: 'WI-41117',
+          hoursSinceProgress: 48,
+          holder: {
+            state: 'held',
+            count: 1,
+            agents: [{ agentId: 'su-holder', alive: false, sessionState: 'ended', verdict: 'dead' }],
+          },
+        },
+        {
+          rank: 2,
+          ref: 'P-001',
+          hoursSinceProgress: null,
+          holder: { state: 'unowned', count: 0, agents: [] },
+        },
+      ],
+    });
   });
 });
 

@@ -19,7 +19,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { traverseDependencies } = await import('./dependency-traversal');
+const { readDependencyBottlenecks, traverseDependencies } = await import('./dependency-traversal');
 
 const WS = 'test-workspace';
 const H = 'papercusp';
@@ -85,19 +85,26 @@ beforeEach(async () => {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, status,
-       source_plan_slug, source_plan_item_ids, payload)
+       source_plan_slug, source_plan_item_ids, payload, last_progress_at)
     VALUES
       (${WS}, ${H}, 'WI-40474', 'feature', 'P-046 implementation', 'blocked',
        ${PLAN}, ARRAY['P-046'], ${db.sql.json({
          plan_item: { plan_slug: PLAN, item_id: 'P-046', harness_slug: H },
          externalBlockers: [externalBlocker],
-       })}),
-      (${WS}, ${H}, 'WI-40086', 'bug', 'Gate owner', 'open', NULL, NULL, '{}'::jsonb),
-      (${WS}, ${H}, 'WI-41117', 'bug', 'Gate materialization timeout', 'open', NULL, NULL, '{}'::jsonb)`;
+       })}, NULL),
+      (${WS}, ${H}, 'WI-40086', 'bug', 'Gate owner', 'open', NULL, NULL, '{}'::jsonb, NULL),
+      (${WS}, ${H}, 'WI-41117', 'bug', 'Gate materialization timeout', 'open', NULL, NULL, '{}'::jsonb,
+       '2026-08-20T01:02:03.000Z'::timestamptz)`;
   await db.sql`
     INSERT INTO harness_shared.work_item_deps
       (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
     VALUES ('default', 'issue', 'WI-40086', 'issue', 'WI-41117', 'blocks', 'tester')`;
+  // Polymorphic blocking stays canonical in coord_links: WI-41117 also blocks
+  // P-001, so it should rank above candidates that reach only P-046.
+  await db.sql`
+    INSERT INTO harness_shared.coord_links
+      (workspace_id, src_kind, src_ref, rel, dst_kind, dst_ref, created_by)
+    VALUES (${WS}, 'issue', 'WI-41117', 'blocks', 'plan_item', ${`${PLAN}#P-001`}, 'tester')`;
 });
 
 describe('traverseDependencies — real PostgreSQL', () => {
@@ -134,6 +141,11 @@ describe('traverseDependencies — real PostgreSQL', () => {
         subjectKey: 'work_item:WI-40086',
         dependencyKey: 'work_item:WI-41117',
       }),
+      expect.objectContaining({
+        relation: 'work-item-blocks',
+        subjectKey: `plan_item:${PLAN}#P-001`,
+        dependencyKey: 'work_item:WI-41117',
+      }),
     ]));
   });
 
@@ -149,5 +161,29 @@ describe('traverseDependencies — real PostgreSQL', () => {
       expect.arrayContaining(['WI-41117', 'WI-40086', 'WI-40474', 'P-046']),
     );
   });
-});
 
+  it('ranks the polymorphic blocker by transitive open roots and carries canonical progress', async () => {
+    const result = await readDependencyBottlenecks({
+      workspaceId: WS,
+      harnessSlug: H,
+      planSlug: PLAN,
+      limit: 10,
+    });
+
+    expect(result.population).toMatchObject({
+      kind: 'exact-plan-open-roots',
+      planSlug: PLAN,
+      harnessSlug: H,
+      openRoots: 2,
+      truncated: false,
+      depthLimited: false,
+    });
+    expect(result.rows[0]).toMatchObject({
+      key: 'work_item:WI-41117',
+      ref: 'WI-41117',
+      workItemRefs: ['WI-41117'],
+      openBlockedCount: 2,
+    });
+    expect(new Date(result.rows[0]!.lastProgressAt!).toISOString()).toBe('2026-08-20T01:02:03.000Z');
+  });
+});
