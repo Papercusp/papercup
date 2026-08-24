@@ -257,12 +257,32 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
       'the checkpoint is in-flight',
       'status: pending',
       'pending final verdict',
+      'the exact rerun was pending',
       'the result is unverified',
       'awaiting final review',
     ];
 
     for (const evidence of unresolvedEvidence) {
       expect(findVerificationConflict(evidence), evidence).not.toBeNull();
+    }
+  });
+
+  it('keeps a pending rerun VERIFIED when it supports an explicit non-admission assertion', () => {
+    const nonAdmissionEvidence = [
+      'Stable C remains non-admitting; exact rerun was pending.',
+      'Stable C remains non-admission; the exact verification rerun is pending.',
+      'Stable C is not yet admitted because the validation rerun was pending.',
+    ];
+
+    for (const evidence of nonAdmissionEvidence) {
+      expect(findVerificationConflict(evidence), evidence).toBeNull();
+      const [row] = normalizeCheckEntries(
+        [{ claim: 'Stable C remains non-admitting', recheck: 'repeat the exact rerun', verified: evidence }],
+        [],
+        Date.parse('2026-07-19T05:00:00.000Z'),
+      );
+      expect(row?.verified, evidence).toContain(evidence);
+      expect(row, evidence).not.toHaveProperty('contested');
     }
   });
 
