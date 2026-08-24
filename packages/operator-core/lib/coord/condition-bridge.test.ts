@@ -173,7 +173,9 @@ describe('isTerminalStatus derives from the shared SSOT', () => {
     const src = await readFile(new URL('./condition-bridge.ts', import.meta.url), 'utf8');
     const body = src.slice(src.indexOf('export async function acquireConditionOwner'));
     const mint = body.slice(body.indexOf('createWorkItem('));
-    expect(mint.slice(0, 600)).toMatch(/BRIDGE_MINT_MARKER/);
+    const callEnd = mint.indexOf('} as Parameters<typeof createWorkItem>[0]);');
+    expect(callEnd, 'the bridge mint must keep one inspectable createWorkItem call').toBeGreaterThan(-1);
+    expect(mint.slice(0, callEnd)).toMatch(/payload:\s*\{\s*\[BRIDGE_MINT_MARKER\]/);
   });
 
   it('fails SAFE — isBridgeMinted returns false rather than throwing on a store error', async () => {

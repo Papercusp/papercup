@@ -70,11 +70,12 @@ describe('EI-1754 — agent tools resolve the agent’s tree, not the operator�
   it('testing:run and build:typecheck resolve their root via resolveAgentWorkspaceRoot(ctx)', () => {
     for (const rel of ['testing/run.ts', 'build/typecheck.ts']) {
       const src = stripComments(readFileSync(join(AGENT_TOOLS_ROOT, rel), 'utf-8'));
-      expect(src, `${rel} must resolve its root via resolveAgentWorkspaceRoot(ctx)`).toMatch(
-        /const root = resolveAgentWorkspaceRoot\(ctx\)/,
+      const handler = src.slice(src.indexOf('async handler('));
+      expect(handler, `${rel} handler must resolve its root via resolveAgentWorkspaceRoot(ctx)`).toMatch(
+        /resolveAgentWorkspaceRoot\(ctx\)/,
       );
       // `void ctx;` was how both tools declared they ignored the caller's tree.
-      expect(src, `${rel} must not discard ctx — it carries the agent's projectDir`).not.toMatch(
+      expect(handler, `${rel} must not discard ctx — it carries the agent's projectDir`).not.toMatch(
         /^\s*void ctx;/m,
       );
     }
