@@ -1551,6 +1551,17 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
 });
 
 describe('coord:send endTurn safety gate (EI-20271510434650928)', () => {
+  it('documents the required explicit wake coupling in the model-facing endTurn field', () => {
+    const argsOut = (tool.args as unknown as { out: { shape: Record<string, { description?: string }> } }).out;
+    const description = argsOut.shape.endTurn?.description ?? '';
+
+    expect(description).toContain('endTurn: true');
+    expect(description).toContain('REQUIRES an explicit wake mode');
+    expect(description).toContain("wake: 'required'");
+    expect(description).toContain("wake: 'optimistic'");
+    expect(description).toContain('wake: false');
+  });
+
   it('refuses an endTurn request without an explicit wake mode', () => {
     const r = tool.args.safeParse({
       to: ['bee-1'],
