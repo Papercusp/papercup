@@ -266,10 +266,16 @@ describe('wiring into scripts/affected-tests.mjs', () => {
 
   it('emits the advisory marker BEFORE the verdict line, and never inside it', () => {
     const markerCall = src.lastIndexOf('formatLoadSuspectMarker({');
-    const failedVerdict = src.indexOf("errSync(resultLine('failed'))");
     expect(markerCall).toBeGreaterThan(0);
-    expect(failedVerdict).toBeGreaterThan(0);
-    expect(markerCall).toBeLessThan(failedVerdict);
+    // The script now has TWO failed-verdict sites: the undetermined-only early exit
+    // (`!failed && undeterminedTasks`) sits BEFORE the marker and structurally cannot
+    // carry load-suspect residue — load-suspect tasks stay counted in `failed` (see the
+    // gate-holds test below), so `!failed` excludes them. The property this guard pins
+    // is that the marker precedes ITS OWN verdict emission, so anchor the search at the
+    // marker call: a marker moved after (or into) every verdict leaves no verdict to
+    // find past it and fails here.
+    const failedVerdict = src.indexOf("errSync(resultLine('failed'))", markerCall);
+    expect(failedVerdict).toBeGreaterThan(markerCall);
     // The verdict template must stay exactly as affected-tests-result-line.test.ts pins it:
     // no load-suspect field may be smuggled onto the line green-checkpoint parses.
     expect(src).not.toMatch(/AFFECTED_TESTS_RESULT status=\$\{status\}[^`]*loadSuspect/);
