@@ -86,20 +86,20 @@ const TIER_TARGET_CHARS = { trimmed: RESULT_DOOR_BUDGET_CHARS, standard: RESULT_
  */
 const DEGRADATION_LADDER = {
   trimmed: [
-    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400 },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200 },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600 },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0 },
-    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0 },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0 },
+    { fullRows: 100, checkpointTotal: 6_000, summaryTotal: 2_400, lifecycleTotal: 2_400 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300 },
+    { fullRows: 3, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0 },
   ],
   standard: [
-    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000 },
-    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400 },
-    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200 },
-    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600 },
-    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0 },
-    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0 },
+    { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000, lifecycleTotal: 4_000 },
+    { fullRows: 50, checkpointTotal: 8_000, summaryTotal: 2_400, lifecycleTotal: 2_400 },
+    { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200, lifecycleTotal: 1_200 },
+    { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600, lifecycleTotal: 600 },
+    { fullRows: 6, checkpointTotal: 600, summaryTotal: 0, lifecycleTotal: 300 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0, lifecycleTotal: 0 },
   ],
 } as const;
 
@@ -112,6 +112,19 @@ const DEGRADATION_LADDER = {
  * without a per-row-count special case.
  */
 const SUMMARY_USEFUL_MIN_CHARS = 200;
+
+/**
+ * EI-21349427754992019: below this, a lifecycle section's share of its rung
+ * budget buys nothing — one verbose audit event is not a smaller answer to
+ * "what happened to this item", and a fragment costs the marker bytes saying
+ * it was cut. A share under this floor DROPS the events entirely (the always-
+ * kept `coverage`/`flags` remain), disclosed exactly like a summary drop.
+ * This is what makes the ladder CONVERGE: lifecycle events were previously the
+ * one bulk field outside every budget (count-capped only), so three items with
+ * chatty timelines kept every non-floor rung over the door and collapsed a
+ * multi-id detail read to id-only stubs.
+ */
+const LIFECYCLE_USEFUL_MIN_CHARS = 200;
 
 /**
  * Per-row caps for the fields whose size does NOT scale with the row count in a
@@ -538,6 +551,7 @@ function projectRow(
   caps: FieldCaps,
   checkpointChars: number,
   summaryChars: number,
+  lifecycleChars: number,
   dropped: Set<string>,
 ): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
@@ -561,16 +575,40 @@ function projectRow(
   if (lifecycle && typeof lifecycle === "object") {
     const events = Array.isArray(lifecycle.events) ? lifecycle.events : [];
     if (events.length > caps.lifecycleEvents) dropped.add("lifecycle.events");
+    // EI-21349427754992019: events are CHAR-budgeted per rung (ladder-shared,
+    // like summary), not merely count-sliced — verbose audit entries used to be
+    // the unbounded bulk that pushed every non-floor rung over the result door
+    // and stubbed whole multi-id reads. `coverage`/`flags` are kept whole: they
+    // qualify the timeline and an unqualified empty events array is precisely
+    // the misreading they exist to prevent.
+    const keptEvents: unknown[] = [];
+    let lifecycleSpent = 0;
+    let lifecycleClipped = false;
+    if (lifecycleChars <= 0) {
+      if (events.length > 0) dropped.add("lifecycle.events");
+    } else {
+      for (const ev of events.slice(0, caps.lifecycleEvents)) {
+        const cost = jsonLen(ev) + 1;
+        if (lifecycleSpent + cost > lifecycleChars) {
+          lifecycleClipped = true;
+          break;
+        }
+        keptEvents.push(ev);
+        lifecycleSpent += cost;
+      }
+      if (keptEvents.length === 0) {
+        // Not even one event fits the share — same verdict as a zero budget.
+        dropped.add("lifecycle.events");
+      } else if (lifecycleClipped || keptEvents.length < Math.min(events.length, caps.lifecycleEvents)) {
+        dropped.add("lifecycle.events(clipped)");
+      }
+    }
     shapedLifecycle = {
-      // `coverage` and `flags` are the fields this tool's contract says must be
-      // read BEFORE concluding anything from an empty timeline. Never drop them
-      // to make room for the events they qualify — an unqualified empty
-      // `events` is precisely the misreading they exist to prevent.
       coverage: lifecycle.coverage ?? null,
       flags: lifecycle.flags ?? null,
-      events: events.slice(0, caps.lifecycleEvents),
-      ...(events.length > caps.lifecycleEvents
-        ? { eventsTruncated: { shown: caps.lifecycleEvents, total: events.length } }
+      events: keptEvents,
+      ...(events.length > keptEvents.length
+        ? { eventsTruncated: { shown: keptEvents.length, total: events.length } }
         : {}),
     };
   }
@@ -651,7 +689,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
 
   for (let attempt = 0; attempt < attempts.length; attempt += 1) {
     const { rung, withSummary } = attempts[attempt];
-    const { fullRows, checkpointTotal, summaryTotal } = ladder[rung];
+    const { fullRows, checkpointTotal, summaryTotal, lifecycleTotal } = ladder[rung];
     const dropped = new Set<string>();
     const carrying = rows
       .slice(0, fullRows)
@@ -665,22 +703,21 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     // the tool's payload readable at all — a summary below the useful floor is
     // worth less than the bytes it costs, so the share is taken to zero and the
     // drop is disclosed instead.
-    const carryingSummaries = rows
+    const carryingLifecycle = rows
       .slice(0, fullRows)
       .filter((r) => {
-        const s = (r.workItem as Row | undefined)?.summary;
-        return typeof s === "string" && s.length > 0;
+        const lc = (r.lifecycle as Row | undefined)?.events;
+        return Array.isArray(lc) && lc.length > 0;
       }).length;
-    const summaryShare =
-      !withSummary || carryingSummaries === 0
-        ? 0
-        : Math.floor(summaryTotal / carryingSummaries);
-    const summaryChars = summaryShare >= SUMMARY_USEFUL_MIN_CHARS ? summaryShare : 0;
+    const lifecycleShare =
+      carryingLifecycle === 0 ? 0 : Math.floor(lifecycleTotal / carryingLifecycle);
+    const lifecycleChars =
+      lifecycleShare >= LIFECYCLE_USEFUL_MIN_CHARS ? lifecycleShare : 0;
 
     const singleItemFloor = rows.length === 1 && fullRows === 0;
     const projected = rows.map((r, i) =>
       i < fullRows
-        ? projectRow(r, caps, checkpointChars, summaryChars, dropped)
+        ? projectRow(r, caps, checkpointChars, summaryChars, lifecycleChars, dropped)
         : singleItemFloor
           ? compactSingleRow(r, caps, tier, dropped)
           : stubRow(r),
@@ -697,6 +734,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
               tier,
               checkpointCharsPerRow: checkpointChars,
               summaryCharsPerRow: summaryChars,
+              lifecycleCharsPerRow: lifecycleChars,
               dropped: [...dropped].sort(),
               ...(stubbedCount > 0
                 ? {

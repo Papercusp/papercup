@@ -938,4 +938,49 @@ describe("shapeWorkItemsGet — priorAttemptRefResolution", () => {
       expect.arrayContaining(["priorAttemptRefResolution.records"]),
     );
   });
+
+  // EI-21349427754992019: three detail rows with chatty lifecycle timelines used
+  // to descend the WHOLE ladder — lifecycle events were count-capped but never
+  // char-budgeted, so every non-floor rung exceeded the door and ALL rows
+  // collapsed to {id,_stub}. Lifecycle is ladder-budgeted now; some rung must
+  // fit with reduced identity intact.
+  it("keeps reduced identity rows when fat lifecycle events would force stubbing", () => {
+    const fatEvent = () => ({
+      at: "2026-08-24T00:00:00Z",
+      kind: "comment",
+      by: "agA",
+      body: "x".repeat(1_500),
+    });
+    const rows = ["EI-1", "WI-2", "WI-3"].map((id) =>
+      row({
+        id,
+        checkpoint: "C".repeat(3_000),
+        lifecycle: { coverage: "full", flags: {}, events: [fatEvent(), fatEvent(), fatEvent(), fatEvent()] },
+        workItem: {
+          id,
+          kind: "bug",
+          state: "open",
+          title: `title for ${id}`,
+          severity: "major",
+          origin: "local",
+          assignee: "su-1",
+          summary: "S".repeat(1_200),
+          payload: { big: "P".repeat(2_000) },
+        },
+      }),
+    );
+    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    expect(out.results.filter((r) => (r as Record<string, unknown>)._stub)).toHaveLength(0);
+    for (const r of out.results) {
+      const w = r.workItem as Record<string, unknown>;
+      expect(w.title).toBeTruthy();
+      expect(w.state).toBeTruthy();
+    }
+    // The bulk that gave way is NAMED, never silently gone (D-004).
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["lifecycle.events", "workItem.summary"]),
+    );
+    // And the shaped result actually fits the door it is graded against.
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+  });
 });
