@@ -27,7 +27,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
@@ -38,7 +38,12 @@ import {
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
 } from './release/green-checkpoint-schedule';
 import { quietCutSecFromEnv } from './release/quiet-cut';
-import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
+import {
+  GATE_VERDICT_HARNESS_ENV,
+  GATE_VERDICT_WORKSPACE_ENV,
+  gateVerdictEnv,
+  type GateVerdictTarget,
+} from './release/gate-verdict-target';
 import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import {
   callerEditsInCandidate,
