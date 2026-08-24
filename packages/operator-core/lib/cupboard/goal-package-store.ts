@@ -80,6 +80,11 @@ export interface LocalGoalPackage {
   launchSettings: Record<string, unknown> | null;
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
+  /** Typed property DECLARATIONS (P-023 shape: name → { datatype, default?,
+   *  editable_by }), landed on the seeded/minted goal row's `property_schema`.
+   *  Declarations are SHAPE — the runtime `properties` VALUES are live state
+   *  and never ship in a package. */
+  propertySchema: Record<string, unknown> | null;
   description: string;
   /** The rubric dependency declaration (worker migration 015/016). */
   requiresRubrics: RubricRequirement[];
@@ -227,6 +232,8 @@ function readGoalPackageDir(
   if (inputSchema === undefined) return null;
   const outputSchema = readObjectField(manifest.outputSchema);
   if (outputSchema === undefined) return null;
+  const propertySchema = readObjectField(manifest.propertySchema);
+  if (propertySchema === undefined) return null;
 
   const listing = readJsonOrNull(join(dir, 'listing.json')) ?? {};
   // The declaration is listing.json's when it carries one (the publisher's
@@ -250,6 +257,7 @@ function readGoalPackageDir(
     launchSettings,
     inputSchema,
     outputSchema,
+    propertySchema,
     description: str(listing.description) ?? '',
     requiresRubrics,
     version: str(listing.version) ?? '0.1.0',
@@ -305,6 +313,9 @@ export interface GoalPackageExport {
   launchSettings: Record<string, unknown> | null;
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
+  /** Typed property declarations (SHAPE) — runtime `properties` values are live
+   *  state and are never exported. */
+  propertySchema: Record<string, unknown> | null;
   description: string;
   requiresRubrics: RubricRequirement[];
 }
@@ -352,6 +363,9 @@ export function writeGoalPackageDir(
         ...(exported.launchSettings ? { launchSettings: exported.launchSettings } : {}),
         ...(exported.inputSchema ? { inputSchema: exported.inputSchema } : {}),
         ...(exported.outputSchema ? { outputSchema: exported.outputSchema } : {}),
+        ...(exported.propertySchema && Object.keys(exported.propertySchema).length > 0
+          ? { propertySchema: exported.propertySchema }
+          : {}),
       },
       null,
       2,
