@@ -35,6 +35,7 @@ const PROMPT_ENV = 'PAPERCUSP_PARITY_PROMPT_B64';
 const RUN_ID_ENV = 'PAPERCUSP_PARITY_RUN_ID';
 const ARM_ENV = 'PAPERCUSP_PARITY_ARM';
 const MODEL_ENV = 'PAPERCUSP_PARITY_MODEL';
+const CHUNK_ENV = 'PAPERCUSP_PARITY_CHUNK_ID';
 
 interface CliArgs {
   execute: boolean;
@@ -158,7 +159,7 @@ async function runIsolatedArm(args: CliArgs): Promise<void> {
       log: (message) => logger.log(`[worker-parity:${arm}] ${message}`),
     };
     const startedAt = Date.now();
-    const result = await orchestrator.invoke(ctx, 'worker', [], {
+    const result = await orchestrator.invoke(ctx, 'worker', [`CHUNK_ID=${requiredEnv(CHUNK_ENV)}`], {
       inlinePrompt: prompt,
       idempotencyKey: runId,
       cwd: projectDir,
@@ -186,6 +187,7 @@ async function spawnArmProcess(input: WorkerParityArmInput, args: CliArgs, baseC
     [MODEL_ENV]: input.model,
     [PROMPT_ENV]: Buffer.from(input.prompt, 'utf8').toString('base64'),
     [RUN_ID_ENV]: input.runId,
+    [CHUNK_ENV]: input.chunkId,
     PAPERCUSP_PARITY_PAIR_INDEX: String(input.pairIndex),
     PAPERCUSP_PARITY_PROJECT_DIR: projectDir,
     PAPERCUSP_SPAWN_MODEL: input.model,

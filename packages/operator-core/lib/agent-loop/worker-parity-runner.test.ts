@@ -117,6 +117,7 @@ describe('paired invocation contract', () => {
     expect(workerParityArmEnv({ PAPERCUSP_OMP_MODEL_SELECTOR: 'gateway/model' })).toEqual({
       PAPERCUSP_OMP_MODEL_SELECTOR: 'gateway/model',
       PAPERCUSP_FLEET_SANDBOX: '0',
+      PAPERCUSP_FLEET_CAPABILITY_ONLY: '1',
     });
   });
 
@@ -148,11 +149,14 @@ describe('paired invocation contract', () => {
     expect(seen[0].prompt).toBe(seen[1].prompt);
     expect(seen[2].prompt).toBe(seen[3].prompt);
     expect(seen[0].prompt).not.toBe(seen[2].prompt);
+    expect(seen[0].chunkId).toBe(seen[1].chunkId);
+    expect(seen[0].chunkId).not.toBe(seen[2].chunkId);
     expect(seen.every((entry) => entry.model === 'claude-haiku-4-5')).toBe(true);
   });
 
   it('builds a read-only, one-tool prompt', () => {
-    expect(workerParityPrompt(7)).toContain('capability:read exactly once');
+    expect(workerParityPrompt(7)).toContain('capability:git exactly once');
+    expect(workerParityPrompt(7)).toContain('"status","--short"');
     expect(workerParityPrompt(7)).toContain('PARITY_OK_07');
     expect(workerParityPrompt(7)).toContain('do not modify anything');
   });

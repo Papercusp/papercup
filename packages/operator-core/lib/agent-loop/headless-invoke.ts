@@ -22,12 +22,18 @@ import {
 import { runLoopChatTurn } from './chat-engine';
 import type { ModelPort } from './model-port';
 import type { ApprovalPort, LoopTool } from './loop';
+import {
+  flushPendingTelemetry,
+  PROJECTED_DEPS,
+} from '../projected-tool-deps';
 
 export interface OperatorOwnedLoopPortOptions {
   /** Test seam; production uses createRoutedModelPort inside chat-engine. */
   modelPort?: ModelPort;
   /** Test/specialized-host seam; production derives capability:* tools. */
   tools?: LoopTool[];
+  /** Test seam. Production flushes the shared deferred tool ledger once/turn. */
+  flushTelemetry?: () => Promise<void>;
 }
 
 const unattendedApprovalPort: ApprovalPort = {
@@ -49,6 +55,7 @@ function buildCapabilityTools(
     runId: request.runId,
     spawnId: (process.env.PAPERCUSP_SPAWN_ID ?? '').trim() || `agent-loop-${request.runId}`,
     featureId: request.featureId,
+    chunkId: request.chunkId,
     log: () => { /* */ },
     progress: () => { /* */ },
     emit: () => { /* */ },
@@ -70,7 +77,16 @@ function buildCapabilityTools(
         content: [{ type: 'text', text: `unknown tool: ${name}` }],
       };
     }
-    const result = await dispatchProjectedTool(tool, name, args, dispatchCtx as never, {});
+    // The direct in-process host must carry the SAME dispatch deps as MCP/HTTP.
+    // Passing `{}` here used to execute the tool successfully while silently
+    // skipping tool_invocations telemetry, making D-015's MCP gate impossible.
+    const result = await dispatchProjectedTool(
+      tool,
+      name,
+      args,
+      dispatchCtx as never,
+      PROJECTED_DEPS,
+    );
     if (!result.ok || !result.result) {
       return {
         isError: true,
@@ -89,36 +105,43 @@ export function createOperatorOwnedLoopPort(
   return {
     async invoke(request) {
       const tools = options.tools ?? buildCapabilityTools(request);
-      const result = await runLoopChatTurn({
-        chatId: request.runId,
-        workspaceId: request.workspaceId,
-        // invoke.ts's assembled prompt is already the subprocess USER message
-        // (persona + runtime context + task). Keep that priority unchanged.
-        system: '',
-        transcript: [{
-          role: 'user',
-          content: request.prompt,
-          ts: new Date().toISOString(),
-        }],
-        sink: {
-          event(_name, data) {
-            request.emit(data);
+      const flushTelemetry = options.flushTelemetry ?? flushPendingTelemetry;
+      try {
+        const result = await runLoopChatTurn({
+          chatId: request.runId,
+          workspaceId: request.workspaceId,
+          // invoke.ts's assembled prompt is already the subprocess USER message
+          // (persona + runtime context + task). Keep that priority unchanged.
+          system: '',
+          transcript: [{
+            role: 'user',
+            content: request.prompt,
+            ts: new Date().toISOString(),
+          }],
+          sink: {
+            event(_name, data) {
+              request.emit(data);
+            },
           },
-        },
-        model: request.model,
-        ...(request.signal !== undefined ? { signal: request.signal } : {}),
-        tools,
-        approvals: unattendedApprovalPort,
-        ...(options.modelPort ? { port: options.modelPort } : {}),
-      });
+          model: request.model,
+          ...(request.signal !== undefined ? { signal: request.signal } : {}),
+          tools,
+          approvals: unattendedApprovalPort,
+          ...(options.modelPort ? { port: options.modelPort } : {}),
+        });
 
-      if (result.errorMessage) {
-        return { exitCode: 1, stderr: result.errorMessage };
+        if (result.errorMessage) {
+          return { exitCode: 1, stderr: result.errorMessage };
+        }
+        if (result.stopReason === 'aborted') {
+          return { exitCode: 130, stderr: 'owned-loop turn aborted' };
+        }
+        return { exitCode: 0 };
+      } finally {
+        // The writer is deferred per tool for latency; the one-shot worker
+        // boundary is the honest place to make its whole run durable.
+        await flushTelemetry();
       }
-      if (result.stopReason === 'aborted') {
-        return { exitCode: 130, stderr: 'owned-loop turn aborted' };
-      }
-      return { exitCode: 0 };
     },
   };
 }

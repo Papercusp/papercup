@@ -43,6 +43,7 @@ export interface WorkerParityArmInput {
   arm: WorkerParityArm;
   pairIndex: number;
   runId: string;
+  chunkId: string;
   prompt: string;
   model: string;
   routeEnv: Record<string, string>;
@@ -225,6 +226,9 @@ export function workerParityArmEnv(routeEnv: Record<string, string>): Record<str
   return {
     ...routeEnv,
     PAPERCUSP_FLEET_SANDBOX: '0',
+    // Remove OMP's native bash/edit/write/fetch tools so the requested
+    // capability:git call cannot be silently substituted with a native shell.
+    PAPERCUSP_FLEET_CAPABILITY_ONLY: '1',
   };
 }
 
@@ -236,10 +240,10 @@ export function workerParityPrompt(pairIndex: number): string {
   const pair = String(pairIndex).padStart(2, '0');
   return [
     `Worker parity canary pair ${pair}.`,
-    'Call capability:read exactly once with this input:',
-    '{"file_path":"package.json","offset":1,"limit":1,"raw":true}',
+    'Call the MCP tool capability:git exactly once with this input:',
+    '{"args":["status","--short"]}',
     `After the tool succeeds, reply exactly PARITY_OK_${pair}.`,
-    'Do not call any other tool and do not modify anything.',
+    'Do not use a native shell or any other tool, and do not modify anything.',
   ].join('\n');
 }
 
@@ -273,6 +277,7 @@ export async function runWorkerParityCohort(input: {
       arm,
       pairIndex,
       runId: `worker-parity-${cohortId}-${pair}-${arm}`,
+      chunkId: `worker-parity-${cohortId}-${pair}`,
       prompt,
       model: input.route.model,
       routeEnv: arm === 'omp' ? input.route.ompEnv : input.route.loopEnv,

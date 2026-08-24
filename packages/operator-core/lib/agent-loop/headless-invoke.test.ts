@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ModelPort, ModelRequest } from './model-port';
 import { createOperatorOwnedLoopPort } from './headless-invoke';
 
@@ -16,7 +16,8 @@ describe('createOperatorOwnedLoopPort', () => {
         };
       },
     };
-    const port = createOperatorOwnedLoopPort({ modelPort, tools: [] });
+    const flushTelemetry = vi.fn(async () => {});
+    const port = createOperatorOwnedLoopPort({ modelPort, tools: [], flushTelemetry });
     const events: unknown[] = [];
 
     const outcome = await port.invoke({
@@ -25,6 +26,7 @@ describe('createOperatorOwnedLoopPort', () => {
       model: 'claude-sonnet-4-6',
       runId: 'run-010',
       featureId: 'F-010',
+      chunkId: 'ck-010',
       workspaceId: 'ws',
       harnessSlug: 'papercusp',
       projectDir: '/repo',
@@ -57,6 +59,7 @@ describe('createOperatorOwnedLoopPort', () => {
       stepCount: 1,
     });
     expect(done.messages).toBeUndefined();
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
   });
 
   it('maps an in-loop error to a non-zero one-shot outcome', async () => {
@@ -66,12 +69,14 @@ describe('createOperatorOwnedLoopPort', () => {
       },
     };
     const events: unknown[] = [];
-    const outcome = await createOperatorOwnedLoopPort({ modelPort, tools: [] }).invoke({
+    const flushTelemetry = vi.fn(async () => {});
+    const outcome = await createOperatorOwnedLoopPort({ modelPort, tools: [], flushTelemetry }).invoke({
       role: 'worker',
       prompt: 'do work',
       model: 'claude-sonnet-4-6',
       runId: 'run-error',
       featureId: null,
+      chunkId: null,
       workspaceId: 'ws',
       harnessSlug: 'papercusp',
       projectDir: '/repo',
@@ -82,5 +87,6 @@ describe('createOperatorOwnedLoopPort', () => {
 
     expect(outcome).toEqual({ exitCode: 1, stderr: 'provider unavailable' });
     expect(events.some((event) => (event as { type?: string }).type === 'error')).toBe(true);
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
   });
 });
