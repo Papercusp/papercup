@@ -56,7 +56,10 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
 /**
  * A resume can be launched successfully and still point at a session that has already
  * been reaped (or whose transcript was never archived). The CLIs report that as
- * `Session "<id>" not found` (claude/omp), `codex_rollout::list: state db returned
+ * `Session "<id>" not found` (claude/omp), `No conversation found with session ID: <id>`
+ * (claude -r — word order reversed, "found" precedes "session", so the first alternation
+ * cannot match it; EI-21306279681556443: this shape re-armed as a retryable agent_crash
+ * and only alerted via the chronic-backoff floor), `codex_rollout::list: state db returned
  * stale rollout path for thread <id>` (codex, rollout row present but file gone), or
  * `thread/resume failed: no rollout found for thread id <id>` (codex -32600, rollout
  * row itself gone — EI-21264970189305370: this shape re-armed as a retryable
@@ -65,7 +68,7 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
  * Keep this narrow so ordinary agent errors remain retryable crashes.
  */
 const STALE_RESUME_TARGET_RE =
-  /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b|\bcodex_rollout::list:\s+state db returned stale rollout path for thread\b|\bno rollout found for thread\b/i;
+  /\bsession\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s+not found\b|\bno conversation found with session id\b|\bcodex_rollout::list:\s+state db returned stale rollout path for thread\b|\bno rollout found for thread\b/i;
 
 export function isStaleResumeTargetMessage(message: string): boolean {
   return STALE_RESUME_TARGET_RE.test(message);

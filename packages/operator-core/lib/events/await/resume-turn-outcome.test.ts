@@ -121,6 +121,27 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
     }
   });
 
+  it('classifies the claude no-conversation-found stderr as permanent, not a retryable crash', () => {
+    // EI-21306279681556443 verbatim: `claude -r <id>` reports a reaped/never-archived
+    // transcript as "No conversation found with session ID: <id>" — a FOURTH stale-target
+    // shape whose word order is reversed ("found" precedes "session"), so the
+    // `session <id> not found` alternation can never match it. Before the fourth
+    // alternation this classified agent_crash (retryable) and the owning loop re-armed
+    // into the same wall, alerting only via the chronic-backoff floor (15min re-arm).
+    const out = classifyResumeTurnExit(
+      raw({
+        exitCode: 1,
+        stderrTail: 'No conversation found with session ID: e57d91cd-07ea-4077-a84a-da1baa3c8337\n',
+      }),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.class).toBe('permanent');
+      expect(out.error.retryable).toBe(false);
+      expect(out.error.surfaceToUser).toBe(true);
+    }
+  });
+
   it('classifies a prompt-overflow death as context_overflow, not agent_crash', () => {
     const out = classifyResumeTurnExit(raw({ exitCode: 1, stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }));
     expect(out.ok).toBe(false);
