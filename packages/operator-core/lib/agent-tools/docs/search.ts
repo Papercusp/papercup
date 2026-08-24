@@ -144,34 +144,55 @@ export async function resolveAdapter(
   };
 }
 
-const argsSchema = z.object({
-  query: z.string().min(2).max(200).describe('Keyword query. Whitespace-separated tokens; tokens <2 chars dropped.'),
-  limit: z.number().int().min(1).max(20).default(8).describe('Max hits returned. Default 8.'),
-  harness: z
-    .string()
-    .optional()
-    .describe(
-      "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
-        "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*' " +
-        "(EI-12898). To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' " +
-        "instead — a distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the " +
-        "session is already scoped to a harness — otherwise you'll get harness_required.",
-    ),
-  semantic: z
-    .boolean()
-    .optional()
-    .describe(
-      'Fuse an embedding-cosine leg with the keyword leg (RRF), so a topically-exact page whose words ' +
-        "never appear verbatim still ranks. Hits found ONLY that way are marked semantic:true. " +
-        'Default on (off under vitest); false = lexical-only. Read `legs` on the response for whether ' +
-        'it actually ran: legs.degraded=true means the ranking is NOT the one this promises.',
-    ),
-});
+/**
+ * Normalize the legacy `q` spelling before the strict args schema runs.
+ *
+ * `docs:search` has always consumed `query`, but several callers learned the
+ * shorter `q` spelling from other search tools. Keep the canonical output
+ * shape (and its published JSON schema) while accepting that legacy input.
+ * When both spellings are supplied, the explicit canonical `query` wins and
+ * the alias is discarded rather than becoming an unknown strict arg.
+ */
+export function normalizeDocsSearchArgs(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const args = raw as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(args, 'q')) return raw;
+
+  const { q, ...rest } = args;
+  return rest.query !== undefined ? rest : { ...rest, query: q };
+}
+
+const argsSchema = z.preprocess(
+  normalizeDocsSearchArgs,
+  z.object({
+    query: z.string().min(2).max(200).describe('Keyword query. Legacy alias: `q`. Whitespace-separated tokens; tokens <2 chars dropped.'),
+    limit: z.number().int().min(1).max(20).default(8).describe('Max hits returned. Default 8.'),
+    harness: z
+      .string()
+      .optional()
+      .describe(
+        "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
+          "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*' " +
+          "(EI-12898). To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' " +
+          "instead — a distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the " +
+          "session is already scoped to a harness — otherwise you'll get harness_required.",
+      ),
+    semantic: z
+      .boolean()
+      .optional()
+      .describe(
+        'Fuse an embedding-cosine leg with the keyword leg (RRF), so a topically-exact page whose words ' +
+          "never appear verbatim still ranks. Hits found ONLY that way are marked semantic:true. " +
+          'Default on (off under vitest); false = lexical-only. Read `legs` on the response for whether ' +
+          'it actually ran: legs.degraded=true means the ranking is NOT the one this promises.',
+      ),
+  }),
+);
 
 export default defineTool({
   name: 'docs:search',
   description:
-    "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'`/`harness:'engineering'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\". A workspace-scoped session gets `harness_forbidden` for `harness:'all'` — pass `harness:'engineering'` instead to reach the same corpus.",
+    "Keyword search across your context's documentation — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Pass `query` (or legacy alias `q`; `query` wins when both are supplied). Returns ranked hits (slug, title, description, excerpt). A harness/project-scoped call does NOT include agent-insights/ or the framework docs (a separate `harness:'all'`/`harness:'engineering'` surface) — a weak result carries a `scopeNote` saying so; don't read it as \"no such page\". A workspace-scoped session gets `harness_forbidden` for `harness:'all'` — pass `harness:'engineering'` instead to reach the same corpus.",
   guidance: {
     when: 'You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.',
     notWhen:

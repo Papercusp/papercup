@@ -572,6 +572,26 @@ describe('docs:search handler', () => {
     expect(mod.default.args.safeParse({ query: 'ab' }).success).toBe(true);
   });
 
+  it('accepts legacy q and normalizes it to the canonical query arg', async () => {
+    const mod = await import('../search');
+    const parsed = mod.default.args.safeParse({ q: 'auth flow' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.query).toBe('auth flow');
+      expect(parsed.data).not.toHaveProperty('q');
+    }
+  });
+
+  it('prefers query over legacy q when both spellings are supplied', async () => {
+    const mod = await import('../search');
+    const parsed = mod.default.args.safeParse({ query: 'canonical term', q: 'legacy term' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.query).toBe('canonical term');
+      expect(parsed.data).not.toHaveProperty('q');
+    }
+  });
+
   // EI-18804433041289369: a harness-scoped search (the natural, "pass my own harness slug" call) does
   // NOT reach agent-insights/ — a caller who does not know that reads "no hits I recognize" as "no such
   // page exists". A `scopeNote` on every non-engineering-surface response makes that scope explicit
