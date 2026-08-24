@@ -121,6 +121,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
@@ -136,6 +137,10 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:orient',
       args: {},
+    })).toBe(60_000);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'computer:provision_desktop',
+      args: { pot: 'papercusp', apps: [] },
     })).toBe(60_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'backup:snapshot_create',

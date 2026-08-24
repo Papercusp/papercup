@@ -858,6 +858,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // instead of returning an ambiguous may-have-executed timeout.
   ['capability:launch-agent', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // Provisioning starts Xvfb, waits for the display, and may launch a window
+  // manager plus apps. The ordinary 30s client deadline can return an
+  // ambiguous timeout while the lease is still being created; keep the
+  // caller outside the transport cap so it receives the structured result.
+  ['computer:provision_desktop', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
   ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
