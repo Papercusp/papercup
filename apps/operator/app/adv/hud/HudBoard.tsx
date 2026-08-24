@@ -465,7 +465,10 @@ export default function HudBoard({
           It is also a SIBLING of .hud__tabs rather than a child: that strip runs
           padding-bottom:0 + align-items:flex-end + a bottom border so the selected
           tab can BRIDGE the border (.hud__tab--on). A second line inside it would
-          land under that border and break the bridge. */}
+          land under that border and break the bridge. The launch row and its
+          control cluster both declare `justify-content:flex-start` in hud.css;
+          that causal contract is what a live layout check should verify, not
+          a bounding-rectangle gap that becomes degenerate when the rail is full. */}
       {headerAction ? <div className="hud__launchrow">{headerAction}</div> : null}
 
       {/* The tab strip owns its own row above the controls, not a slot inside

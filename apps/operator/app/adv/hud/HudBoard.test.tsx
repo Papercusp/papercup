@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 /**
  * HudBoard render coverage (adv-hud-fleet-board-2026-07-25 P-005).
  *
@@ -62,6 +64,12 @@ afterEach(cleanup);
 
 const NOW = Date.parse('2026-07-25T12:00:00.000Z');
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+const HUD_CSS = readFileSync(resolve(process.cwd(), 'app/adv/hud/hud.css'), 'utf8');
+
+function cssDeclarations(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return HUD_CSS.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+}
 
 function entry(over: Partial<HudRosterEntry> = {}): HudRosterEntry {
   return {
@@ -797,5 +805,36 @@ describe('header layout (owner asks 2026-07-27)', () => {
     // would re-open the gap the owner asked to close.
     const { container } = renderBoard(withPlans());
     expect(container.querySelector('.hud__top .hud__spacer')).toBeNull();
+  });
+
+  it('pins launcher alignment to the causal flex mechanism, not rail geometry', () => {
+    const { container } = renderBoard([entry()], {
+      headerAction: (
+        <div className="pc-new-session-launcher">
+          <span data-testid="launcher-control" />
+        </div>
+      ),
+    });
+    const launchRow = container.querySelector('.hud__launchrow');
+    const launcher = container.querySelector('.pc-new-session-launcher');
+    expect(launchRow).toBeTruthy();
+    expect(launcher).toBeTruthy();
+    // A spacer or an auto margin would push the cluster right while producing
+    // the same left/right slack when this rail is completely filled.
+    expect(launchRow!.querySelector('.hud__spacer')).toBeNull();
+    expect(launcher!.querySelector('.hud__spacer')).toBeNull();
+    expect(launchRow!.querySelector('[style*="margin-left"]')).toBeNull();
+    expect(launcher!.querySelector('[style*="margin-left"]')).toBeNull();
+
+    // jsdom cannot compute the stylesheet, so keep this source-backed guard
+    // alongside the DOM contract. The live Tauri check in agent-e2e.md verifies
+    // the computed value and supplies the rendered-environment evidence.
+    for (const selector of ['.hud__launchrow', '.pc-new-session-launcher']) {
+      const declarations = cssDeclarations(selector);
+      expect(declarations, `${selector} must have a CSS rule`).toMatch(
+        /justify-content:\s*flex-start\s*;/,
+      );
+      expect(declarations).not.toMatch(/justify-content:\s*(?:flex-end|right|end)\s*;/);
+    }
   });
 });

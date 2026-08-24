@@ -322,10 +322,11 @@
    The pickers became searchable Comboboxes under
    hud-session-launcher-and-board-tabs-2026-07-26 P-003/P-008. */
 
-/* LEFTMOST in the strip, ahead of the tabs (owner ask 2026-07-26). The divider
-   is on the RIGHT because the cluster now leads: it separates the launcher from
-   the tab axis that follows, so "Sessions | Plans | Work items" still reads as
-   one group rather than running on from the plan/model/effort pickers.
+/* LEFTMOST in the header block, above the tabs (owner ask 2026-07-26). The
+   divider is on the RIGHT because the cluster now leads: it separates the
+   launcher from the tab axis that follows, so "Sessions | Plans | Work items"
+   still reads as one group rather than running on from the plan/model/effort
+   pickers.
 
    padding-bottom restores the vertical rhythm .hud__tabs gave up: that strip now
    has padding-bottom:0 and align-items:flex-end so the TABS can bridge its bottom
@@ -349,6 +350,10 @@
 .hud__launchrow {
   display: flex;
   align-items: center;
+  /* Causal alignment contract: keep the launcher at the row's start. Do not
+     infer this from sibling geometry — the row can be completely filled, so a
+     right-pushed row can produce the same bounding rectangles. */
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 6px;
   padding: 8px 14px 6px;
@@ -358,7 +363,7 @@
 
 /* Owner ask 2026-07-27 (restated after two misreads): plan + model + effort +
    "+ New session" all sit together on ONE line, and that line is .hud__launchrow
-   — the row BELOW the tab strip. An earlier pass made this a COLUMN, splitting
+   — the row ABOVE the tab strip. An earlier pass made this a COLUMN, splitting
    the plan picker off onto its own line; that answered "the row below" about the
    wrong row. A single wrapping row: on a narrow rail the controls wrap among
    themselves rather than forcing the strip wider. */
@@ -366,6 +371,9 @@
   display: flex;
   flex-direction: row;
   align-items: center;
+  /* Keep the control cluster's own flex axis explicit as well as its parent.
+     This is the mechanism the live check should verify. */
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 6px;
 }
