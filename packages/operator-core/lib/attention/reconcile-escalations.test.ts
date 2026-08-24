@@ -564,9 +564,16 @@ describe('rerouteUnackedEscalationsOnce (EI-7024)', () => {
     expect(send.mock.calls[0][1]).toMatchObject({
       to: ['su-driver'],
       msgId: 'escalation-sla-reroute:e-1',
-      related_msg_id: 'e-1',
-      extra: { expects: 'action', lifecycle: 'escalation-sla-reroute' },
+      extra: {
+        expects: 'action',
+        lifecycle: 'escalation-sla-reroute',
+        escalationRerouteOf: 'e-1',
+      },
     });
+    expect(send.mock.calls[0][1].related_msg_id).toBeUndefined();
+    expect(send.mock.calls[0][1].body).toContain(
+      "coord:ack { msg_id: 'escalation-sla-reroute:e-1' }",
+    );
     expect(batchMock).not.toHaveBeenCalled();
     expect(wake).toHaveBeenCalledWith(
       ['su-driver'],

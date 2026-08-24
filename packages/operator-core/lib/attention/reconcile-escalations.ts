@@ -434,6 +434,8 @@ export const ESCALATION_REROUTE_BATCH_LIMIT = 200;
 
 const AGENT_ESCALATION_AUTHOR_RE = new RegExp(AGENT_SESSION_SENDER_PATTERN, 'i');
 export const ESCALATION_REROUTE_OWNER = 'system:escalation-sla-reroute';
+const ESCALATION_REROUTE_MSG_PREFIX = 'escalation-sla-reroute:';
+const ESCALATION_REROUTE_MARKER_FIELD = 'escalationRerouteOf';
 
 const ESCALATION_REROUTE_IDENTITY: AgentIdentity = {
   ownerId: ESCALATION_REROUTE_OWNER,
@@ -561,28 +563,46 @@ export function selectEscalationSlaReroutes(
 }
 
 /** Any messages-surface sibling carrying related_msg_id retires rerouting for
- * the escalation. The explicit key-presence predicate is required by the live
- * partial index; keep it even though the equality looks sufficient. */
+ * the escalation. A reroute notice cannot use related_msg_id when the original
+ * escalation has been pruned, so its explicit lifecycle marker does the same
+ * job. The explicit key-presence predicate is required by the live partial
+ * index; keep it even though the equality looks sufficient. */
 async function readEscalationResponseMarkers(msgIds: readonly string[]): Promise<Set<string>> {
   const ids = [...new Set(msgIds.filter(Boolean))];
   if (ids.length === 0) return new Set();
   try {
     const sql = coordSql();
-    const rows = await sql<{ related_msg_id: string | null }[]>`
-      SELECT DISTINCT body->>'related_msg_id' AS related_msg_id
+    const rows = await sql<{
+      related_msg_id: string | null;
+      escalation_reroute_of: string | null;
+    }[]>`
+      SELECT DISTINCT
+             body->>'related_msg_id' AS related_msg_id,
+             body->>'${ESCALATION_REROUTE_MARKER_FIELD}' AS escalation_reroute_of
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
-         AND body ? 'related_msg_id'
-         AND body->>'related_msg_id' = ANY(${ids})
+         AND (
+           (body ? 'related_msg_id' AND body->>'related_msg_id' = ANY(${ids}))
+           OR
+           (body ? '${ESCALATION_REROUTE_MARKER_FIELD}' AND body->>'${ESCALATION_REROUTE_MARKER_FIELD}' = ANY(${ids}))
+         )
     `;
-    return new Set(rows.map((row) => row.related_msg_id).filter((id): id is string => typeof id === 'string'));
+    return new Set(
+      rows
+        .flatMap((row) => [row.related_msg_id, row.escalation_reroute_of])
+        .filter((id): id is string => typeof id === 'string'),
+    );
   } catch {
     const idSet = new Set(ids);
     const lines = await coordLog.readLines('messages');
-    return new Set(
-      lines.map((line) => line.related_msg_id).filter((id): id is string => typeof id === 'string' && idSet.has(id)),
-    );
+    return new Set(lines.flatMap((line) => {
+      const marker = (line as unknown as Record<string, unknown>)[ESCALATION_REROUTE_MARKER_FIELD];
+      return [
+        line.related_msg_id,
+        typeof marker === 'string' ? marker : null,
+      ].filter((id): id is string => typeof id === 'string' && idSet.has(id));
+    }));
   }
 }
 
@@ -684,10 +704,11 @@ export async function rerouteUnackedEscalationsOnce(
   let failed = 0;
   for (const route of batch) {
     const { escalation } = route;
+    const noticeMsgId = `${ESCALATION_REROUTE_MSG_PREFIX}${escalation.msg_id}`;
     try {
       const notice = await sendFn(ESCALATION_REROUTE_IDENTITY, {
         to: [route.targetOwnerId],
-        msgId: `escalation-sla-reroute:${escalation.msg_id}`,
+        msgId: noticeMsgId,
         summary:
           `⏰ escalation needs a live driver (${route.reason}, ~${Math.round(route.overdueMinutes)}m): ` +
           `${escalation.summary ?? escalation.msg_id}`,
@@ -695,15 +716,17 @@ export async function rerouteUnackedEscalationsOnce(
           `Escalation ${escalation.msg_id} from ${escalation.from ?? 'an agent'} has remained open without ` +
           `any related coord acknowledgement for ~${Math.round(route.overdueMinutes)} minutes. You were selected ` +
           `as the closest live su (${route.reason}). Inspect it and drive the next action. Keep the original ` +
-          'escalation open: only the human resolution path is authoritative.',
+          'escalation open: only the human resolution path is authoritative. After taking ownership, acknowledge ' +
+          `this reroute notice with coord:ack { msg_id: '${noticeMsgId}' }; that stable target remains valid even ` +
+          'when the original escalation message has been pruned.',
         plan_slug: concrete(escalation.plan_slug) ?? undefined,
-        related_msg_id: escalation.msg_id,
         harnessSlug: concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? undefined,
         extra: {
           auto: true,
           lifecycle: 'escalation-sla-reroute',
           expects: 'action',
           escalationRerouteReason: route.reason,
+          [ESCALATION_REROUTE_MARKER_FIELD]: escalation.msg_id,
         },
       });
       rerouted += 1;
