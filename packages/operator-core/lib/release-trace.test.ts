@@ -685,6 +685,7 @@ describe('buildReleaseTrace', () => {
                 unknown: null,
                 takenBy: 'su-c58f545d-f8a4-4afe-b755-1bf613bd8083',
                 takenAt: '2026-08-23T00:58:23.745Z',
+                lastProgressAt: null,
                 expiresAt: null,
                 holderSessionState: 'live',
                 duplicates: [],
