@@ -138,6 +138,33 @@ describe('mergeRosterEntries', () => {
     expect(entry.feature).toBeNull();
     expect(entry.currentPlanSlug).toBe('live-plan'); // from presence
     expect(entry.liveness).toBe('live');
+    expect(entry.liveTurn).toBeNull();
+  });
+
+  it('carries the shared oracle live-turn activity beside its session-state verdict', () => {
+    const [entry] = mergeRosterEntries(
+      [presence()],
+      new Map(),
+      NOW,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        verdictByOwner: new Map([
+          ['su-1', { sessionState: 'live', liveTurn: true, heartbeatFresh: true }],
+        ]),
+      },
+    );
+    expect(entry.sessionState).toBe('live');
+    expect(entry.liveTurn).toBe(true);
+    expect(entry.heartbeatFresh).toBe(true);
   });
 
   it('joins adv_sessions enrichment by owner id', () => {

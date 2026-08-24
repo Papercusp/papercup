@@ -119,6 +119,12 @@ export interface HudRosterEntry {
    * for a session that has not taken a turn in days. Prefer this field.
    */
   sessionState?: string | null;
+  /**
+   * Current-turn activity from the same shared oracle. This is orthogonal to
+   * liveness: `sessionState` is the verdict, while `liveTurn` explains whether
+   * that verdict is backed by an in-flight turn. Optional for older payloads.
+   */
+  liveTurn?: boolean | null;
   stale: boolean;
   lastActiveAt: string | null;
   intentDeclaredAt: string | null;
@@ -1225,21 +1231,24 @@ export function deriveColumn(
     };
   }
 
-  // 4. Working — taking turns, thinking, or carried by an armed loop.
+  // 4. Working — taking turns or carried by an armed loop.
   //
   // WI-6636: this must consult the oracle for the same reason step 3 does, and
   // it is the half that makes the fix safe. Dropping parked agents out of
   // `stalled` without touching this test would have sent all 110 straight into
   // `working` — `liveness` reads 'live' for every one of them — turning a board
   // that overstated stalls into one that overstates progress, which is worse.
-  // `thinking` is kept as an independent override: it is a direct in-flight
-  // signal (transcript appended within the thinking window) that can lead the
-  // oracle, never trail it.
+  // `thinking` is only transcript-MTIME freshness. It may decorate an older or
+  // degraded payload, but it must NEVER overturn an available oracle verdict:
+  // a parked/ended session can receive a final transcript write and otherwise
+  // masquerade as working for the freshness window.
   const oracleWorking =
     e.sessionState != null
-      ? e.sessionState === 'live' || e.sessionState === 'recorded'
-      : e.liveness === 'live';
-  if (oracleWorking || e.thinking || (e.loopArmed && e.liveness !== 'stale')) {
+      ? e.sessionState === 'live'
+      : e.liveTurn === true || e.liveness === 'live';
+  const transcriptFreshFallback =
+    e.sessionState == null && e.liveTurn == null && e.thinking;
+  if (oracleWorking || transcriptFreshFallback || (e.loopArmed && e.liveness !== 'stale')) {
     return {
       column: 'working',
       reason: e.intent?.trim() || 'Running',

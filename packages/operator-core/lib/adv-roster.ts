@@ -176,6 +176,12 @@ export interface RosterEntry {
    * column on the default board (WI-6636); `sessionState` is 'parked' for them.
    */
   sessionState: SessionState | null;
+  /**
+   * Whether the shared oracle observed a turn in flight. This is an ACTIVITY
+   * signal, not a second liveness verdict: `sessionState` remains authoritative.
+   * null means the oracle degraded or the payload predates this field.
+   */
+  liveTurn: boolean | null;
   /** RAW heartbeat freshness from the same oracle — a process-keepalive signal,
    *  NOT a liveness verdict. Named to make that impossible to misread. */
   heartbeatFresh: boolean | null;
@@ -636,7 +642,11 @@ export function mergeRosterEntries(
     /** WI-6636: the shared liveness oracle's verdict per owner. Absent (or
      *  missing an owner) degrades to sessionState null, which every reader
      *  must treat as "unknown", never as "not live". */
-    verdictByOwner?: Map<string, { sessionState: SessionState; heartbeatFresh: boolean }>;
+    verdictByOwner?: Map<string, {
+      sessionState: SessionState;
+      liveTurn: boolean;
+      heartbeatFresh: boolean;
+    }>;
     /** P-003: the workspace's dynamic account pins, keyed by ownerId. Absent
      *  degrades every entry to `accountPin: null` — "no dynamic pin", which is
      *  what an unpinned agent reads as anyway. */
@@ -703,6 +713,7 @@ export function mergeRosterEntries(
       lastActiveAt: p.lastActiveAt ?? null,
       liveness,
       sessionState: extra.verdictByOwner?.get(p.ownerId)?.sessionState ?? null,
+      liveTurn: extra.verdictByOwner?.get(p.ownerId)?.liveTurn ?? null,
       heartbeatFresh: extra.verdictByOwner?.get(p.ownerId)?.heartbeatFresh ?? null,
       stale: p.stale,
       loopArmed: loopArmedOwners.has(p.ownerId),

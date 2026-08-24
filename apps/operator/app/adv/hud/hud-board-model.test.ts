@@ -437,12 +437,46 @@ describe('deriveColumn — precedence', () => {
       }
     });
 
-    it('treats a `recorded` session as working, not parked', () => {
-      // `recorded` means authoritatively-live-per-session-log (alive, just not
-      // inbox-wake-dispatchable) — classifying it as idle would be the same
-      // false-negative in the other direction.
+    it('treats a `recorded` session with no live turn as parked, not working', () => {
+      // `recorded` means the session log says the process exists, not that a
+      // turn is in flight. It is a liveness verdict, not an activity override.
       const v = deriveColumn(
-        entry({ sessionState: 'recorded', lastActiveAt: iso(5_000), intentDeclaredAt: iso(60_000) }),
+        entry({
+          sessionState: 'recorded',
+          liveTurn: false,
+          lastActiveAt: iso(5_000),
+          intentDeclaredAt: iso(60_000),
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('parked');
+    });
+
+    it('does not let transcript freshness override a parked oracle verdict', () => {
+      const v = deriveColumn(
+        entry({
+          sessionState: 'parked',
+          liveTurn: false,
+          thinking: true,
+          liveness: 'live',
+          lastActiveAt: iso(5_000),
+        }),
+        undefined,
+        OPTS,
+      );
+      expect(v.column).toBe('parked');
+    });
+
+    it('keeps transcript freshness only as an older-payload fallback', () => {
+      const v = deriveColumn(
+        entry({
+          sessionState: null,
+          liveTurn: null,
+          thinking: true,
+          liveness: 'idle',
+          lastActiveAt: iso(5_000),
+        }),
         undefined,
         OPTS,
       );
