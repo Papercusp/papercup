@@ -113,7 +113,7 @@ import { STANDALONE_PACKAGE_DIRS } from "../../../../scripts/lib/test-runner-cla
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
-// @ts-ignore -- plain .mjs policy module, no type declarations; keep immediately above the module specifier.
+  // @ts-ignore -- plain .mjs policy module, no type declarations; keep immediately above the module specifier.
 } from "../../../../scripts/lib/batch-watchdog.mjs";
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
@@ -858,9 +858,9 @@ export function buildTerminalFailureCheckpointResult(opts: {
       ? (opts.error.stack ?? opts.error.message)
       : String(opts.error);
   const materializationDeferred =
-    detail.includes('pc-heavy.sh --exclusive-all-slots') &&
-    detail.includes('exited 75') &&
-    detail.includes('[pc-heavy] REFUSED materialization');
+    detail.includes("pc-heavy.sh --exclusive-all-slots") &&
+    detail.includes("exited 75") &&
+    detail.includes("[pc-heavy] REFUSED materialization");
 
   if (!materializationDeferred) return buildCrashCheckpointResult(opts);
 
@@ -869,11 +869,11 @@ export function buildTerminalFailureCheckpointResult(opts: {
     candidate: opts.candidate,
     from: null,
     green: null,
-    reason: 'infra-inconclusive',
+    reason: "infra-inconclusive",
     runId: opts.runId,
     summary:
-      'green-checkpoint deferred before the suite: pc-heavy could not drain pre-existing ' +
-      'heavy holders for isolated dependency materialization. No code verdict was rendered; ' +
+      "green-checkpoint deferred before the suite: pc-heavy could not drain pre-existing " +
+      "heavy holders for isolated dependency materialization. No code verdict was rendered; " +
       `the next run retries after the admission window clears. ${detail}`,
   };
 }
@@ -4675,7 +4675,8 @@ export async function attemptFlakeAbsorption(
         // saturated (>= 1.0 loadavg/core) would still read "consistent with ambient host
         // load" — technically true about the box, false about the CAUSE of THIS failure.
         const hasDeterministicFailureEvidence =
-          result.hasAssertionSignature || result.hasDeterministicFailureSignature;
+          result.hasAssertionSignature ||
+          result.hasDeterministicFailureSignature;
         const deterministicEvidence = result.hasAssertionSignature
           ? "a deterministic AssertionError"
           : "deterministic failure evidence";
@@ -6484,8 +6485,9 @@ export async function runGreenCheckpoint(
   let repairPromotionAdvance: AdvanceResult | null = null;
   const reserveFrozenRepairFixer = deps.reserveFrozenRepairFixer;
   const finalizeFrozenRepairFixer = deps.finalizeFrozenRepairFixer;
-  const hasFrozenRepairDispatchReservation =
-    Boolean(reserveFrozenRepairFixer && finalizeFrozenRepairFixer);
+  const hasFrozenRepairDispatchReservation = Boolean(
+    reserveFrozenRepairFixer && finalizeFrozenRepairFixer,
+  );
 
   type FrozenRepairDispatchResult = {
     spawnId: string | null;
@@ -6509,7 +6511,9 @@ export async function runGreenCheckpoint(
     if (hasFrozenRepairDispatchReservation) {
       let reserved: FrozenCandidateRepairQueue | null = null;
       try {
-        reserved = await reserveFrozenRepairFixer!(queue, { allowCreateIfAbsent });
+        reserved = await reserveFrozenRepairFixer!(queue, {
+          allowCreateIfAbsent,
+        });
       } catch (error) {
         deps.log(
           `frozen repair dispatch reservation failed — holding without launch: ${
@@ -6534,7 +6538,10 @@ export async function runGreenCheckpoint(
 
     if (hasFrozenRepairDispatchReservation) {
       try {
-        const finalized = await finalizeFrozenRepairFixer!(dispatchQueue, fired);
+        const finalized = await finalizeFrozenRepairFixer!(
+          dispatchQueue,
+          fired,
+        );
         if (finalized) dispatchQueue = finalized;
       } catch (error) {
         // Keep the reservation in the returned queue and fail closed. The next tick will
@@ -6589,10 +6596,7 @@ export async function runGreenCheckpoint(
       runId: result.runId ?? deps.runId ?? null,
       lineage: result.lineage ?? null,
     };
-    const cancelSiblingKeysFor = [
-      "release:green",
-      `release:green:${pipeline}`,
-    ];
+    const cancelSiblingKeysFor = ["release:green", `release:green:${pipeline}`];
     try {
       await deps.emitEvent?.({
         key: "green-checkpoint:red",
@@ -6876,7 +6880,8 @@ export async function runGreenCheckpoint(
         // process returns the live reservation (rather than a stale unassigned snapshot),
         // and never runs a second fixer or suite while the winner is preparing it.
         repairQueue =
-          (await repairReservationHold(repairQueue, "existing queue")) ?? repairQueue;
+          (await repairReservationHold(repairQueue, "existing queue")) ??
+          repairQueue;
         const reservation = repairQueue.dispatchReservation;
         const summary = reservation
           ? `frozen repair fixer dispatch is reserved by another checkpoint until ${reservation.expiresAtMs}; candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`
@@ -7149,7 +7154,9 @@ export async function runGreenCheckpoint(
     });
     await deps.writeFrozenRepairQueue(repairQueue);
     initialCandidateVerification = true;
-    deps.log(`stable-candidate queue persisted ${candidate.slice(0, 8)} before its first suite`);
+    deps.log(
+      `stable-candidate queue persisted ${candidate.slice(0, 8)} before its first suite`,
+    );
   }
 
   deps.log(
@@ -7637,7 +7644,10 @@ export async function runGreenCheckpoint(
           failingTests,
           nowMs: Date.now(),
         });
-      } else if (initialCandidateVerification && repairQueue?.phase === "ready-to-test") {
+      } else if (
+        initialCandidateVerification &&
+        repairQueue?.phase === "ready-to-test"
+      ) {
         repairQueue = markFrozenCandidateVerificationRed(repairQueue, {
           failingTests,
           nowMs: Date.now(),
@@ -7666,7 +7676,8 @@ export async function runGreenCheckpoint(
         const dispatch = await dispatchFrozenRepair(repairQueue, true);
         if (dispatch.reservationBlocked) {
           repairQueue =
-            (await repairReservationHold(repairQueue, "new queue")) ?? repairQueue;
+            (await repairReservationHold(repairQueue, "new queue")) ??
+            repairQueue;
           const reservation = repairQueue.dispatchReservation;
           const reservationSummary = reservation
             ? `frozen repair queue ${repairQueue.candidate.slice(0, 8)} is reserved by another checkpoint until ${reservation.expiresAtMs}; no second fixer launch was attempted`
@@ -10810,9 +10821,8 @@ export function realCheckpointDeps(
   const sampleCheckpointDisk =
     sampleDiskSnapshotsOverride ??
     (async (): Promise<CheckpointDiskSnapshot[]> => {
-      const { sampleDiskSnapshots, watchedPaths } = await import(
-        "@papercusp/operator-core/lib/storage/disk-space-alarm"
-      );
+      const { sampleDiskSnapshots, watchedPaths } =
+        await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
       // Reuse the alarm's canonical watched set. The checkpoint writes through the
       // temp filesystem, but that filesystem can share a backing volume with the
       // workspace root, backups, or operator-configured paths; sampling only
@@ -10820,9 +10830,8 @@ export function realCheckpointDeps(
       return sampleDiskSnapshots(watchedPaths());
     });
   const checkpointDiskPolicy = async (): Promise<DiskInfraFaultPolicy> => {
-    const { diskPolicyFromEnv } = await import(
-      "@papercusp/operator-core/lib/storage/disk-space-alarm"
-    );
+    const { diskPolicyFromEnv } =
+      await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
     const policy = diskPolicyFromEnv();
     return {
       freePctMin: policy.freePctMin,
@@ -11092,9 +11101,8 @@ export function realCheckpointDeps(
     workspaceRerun,
     runId,
     async checkDiskHeadroom() {
-      const { detectCriticalWriteHeadroom, diskPolicyFromEnv } = await import(
-        "@papercusp/operator-core/lib/storage/disk-space-alarm"
-      );
+      const { detectCriticalWriteHeadroom, diskPolicyFromEnv } =
+        await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
       const snapshots = await sampleCheckpointDisk();
       if (snapshots.length === 0) {
         return {
@@ -11159,15 +11167,26 @@ export function realCheckpointDeps(
           ) {
             const { reserveFrozenCandidateRepairFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-            return reserveFrozenCandidateRepairFixer(repairTarget, queue, options);
+            return reserveFrozenCandidateRepairFixer(
+              repairTarget,
+              queue,
+              options,
+            );
           },
           async finalizeFrozenRepairFixer(
             queue: FrozenCandidateRepairQueue,
-            fired: { spawnId: string | null; runId: string | null } | null | undefined,
+            fired:
+              | { spawnId: string | null; runId: string | null }
+              | null
+              | undefined,
           ) {
             const { finalizeFrozenCandidateRepairFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-            return finalizeFrozenCandidateRepairFixer(repairTarget, queue, fired);
+            return finalizeFrozenCandidateRepairFixer(
+              repairTarget,
+              queue,
+              fired,
+            );
           },
           async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
             if (existsSync(path.join(queue.worktreePath, ".git"))) return;
@@ -11672,10 +11691,7 @@ export function realCheckpointDeps(
         stdout: "",
         stderr: "",
       };
-      const relaySetupOutput = (
-        stream: "stdout" | "stderr",
-        text: string,
-      ) => {
+      const relaySetupOutput = (stream: "stdout" | "stderr", text: string) => {
         const lines = `${setupOutputRemainders[stream]}${text}`.split(/\r?\n/);
         setupOutputRemainders[stream] = lines.pop() ?? "";
         for (const line of lines) {
@@ -12278,7 +12294,9 @@ export function realCheckpointDeps(
       env.VITEST_MAX_THREADS = "1";
       const summaries: string[] = [headNote];
       for (const [workspace, wsFiles] of byWorkspace) {
-        const bashFiles = wsFiles.filter((file) => /\.selftest\.sh$/.test(file));
+        const bashFiles = wsFiles.filter((file) =>
+          /\.selftest\.sh$/.test(file),
+        );
         const vitestFiles = wsFiles.filter(
           (file) => !/\.selftest\.sh$/.test(file),
         );
