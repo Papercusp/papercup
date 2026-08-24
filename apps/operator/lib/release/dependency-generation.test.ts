@@ -140,8 +140,9 @@ describe('immutable dependency generation', () => {
     expect(entries.filter((entry) => entry.startsWith('.build-'))).toEqual([]);
   });
 
-  it('ignores and prunes Vitest cache churn without weakening dependency drift detection', () => {
+  it('ignores and prunes npm/Vitest metadata churn without weakening dependency drift detection', () => {
     const integration = makeIntegration();
+    const npmMetadata = join(integration, 'node_modules/.package-lock.json');
     const tempCache = join(
       integration,
       'packages/a/node_modules/.vite-temp',
@@ -150,19 +151,24 @@ describe('immutable dependency generation', () => {
       integration,
       'packages/a/node_modules/.vite/vitest/project-hash',
     );
+    writeFileSync(npmMetadata, '{"before":true}\n');
     mkdirSync(tempCache, { recursive: true });
     mkdirSync(resultsCache, { recursive: true });
     writeFileSync(join(tempCache, 'before.tmp'), 'ephemeral\n');
     writeFileSync(join(resultsCache, 'results.json'), '{}\n');
     const result = publish(integration, {
+      DG_TEST_NPM_METADATA: npmMetadata,
       DG_TEST_TEMP_CACHE: tempCache,
       DG_TEST_RESULTS_CACHE: resultsCache,
       DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
-        'printf "churn\\n" > "$DG_TEST_TEMP_CACHE/during.tmp"; printf "{\\"updated\\":true}\\n" > "$DG_TEST_RESULTS_CACHE/results.json"',
+        'printf "{\\"during\\":true}\\n" > "$DG_TEST_NPM_METADATA"; printf "churn\\n" > "$DG_TEST_TEMP_CACHE/during.tmp"; printf "{\\"updated\\":true}\\n" > "$DG_TEST_RESULTS_CACHE/results.json"',
     });
 
     expect(result.status, result.stderr).toBe(0);
     const generation = publishedPath(result.stdout);
+    expect(
+      existsSync(join(generation, 'tree/node_modules/.package-lock.json')),
+    ).toBe(false);
     expect(
       existsSync(
         join(generation, 'tree/packages/a/node_modules/.vite-temp'),

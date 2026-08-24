@@ -63,6 +63,7 @@ dependency_generation_tree_fingerprint() {
         \( -type d \( -name .vite -o -name .vite-temp \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
+        ! -path './.package-lock.json' \
         -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \) \
         | dependency_generation_sha256
     else
@@ -71,7 +72,8 @@ dependency_generation_tree_fingerprint() {
       LC_ALL=C find . -xdev -mindepth 1 \
         \( -type d \( -name .vite -o -name .vite-temp \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
-        ! -path './.papercusp-dependency-generation' -print0 \) \
+        ! -path './.papercusp-dependency-generation' \
+        ! -path './.package-lock.json' -print0 \) \
         | while IFS= read -r -d '' path; do
             local_path="${path#./}"
             if stat_record="$(stat -c '%F|%a|%U|%G|%s|%Y|%i' "$path" 2>/dev/null)"; then
@@ -253,10 +255,12 @@ dependency_generation_copy_independent() {
 dependency_generation_prune_ephemeral() {
   local root="$1"
   [ -d "$root" ] || return 0
-  # Vitest creates workspace-local node_modules/.vite-temp transform scratch and
-  # writes node_modules/.vite/vitest/*/results.json at test completion. Both are
-  # cache state, not installed dependencies; copying either can capture partial
-  # state and their metadata churn makes a stable generation fail rc75.
+  # npm rewrites node_modules/.package-lock.json during install bookkeeping. It
+  # is internal metadata, not a runtime dependency, and older hardlink-based
+  # release trees can share its inode with the integration tree. Vitest likewise
+  # mutates .vite/.vite-temp cache state. None belong in an immutable generation:
+  # retaining or fingerprinting them can false-fail rc75 on unrelated churn.
+  rm -f -- "$root/.package-lock.json"
   find "$root" -type d \( -name .vite -o -name .vite-temp \) -exec rm -rf -- {} +
 }
 
