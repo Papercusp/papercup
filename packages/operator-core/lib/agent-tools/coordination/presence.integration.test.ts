@@ -182,7 +182,14 @@ describe('fetchWakeability (real PG)', () => {
     await seedAwait('live');
     await seedActivity('live', { kind: 'tool', summary: '▶ npm test', agoSec: 3 });
     const m = await fetchWakeability([own('live')]);
-    expect(m.get(own('live'))).toEqual({ wakeable: true, liveTurn: true });
+    // lastActivityMs (EI-21356812816484561) is emitted whenever the owner has
+    // activity in the window. Asserted as a matcher rather than relaxing this
+    // to toMatchObject, so the exact-shape guard still catches field growth.
+    expect(m.get(own('live'))).toEqual({
+      wakeable: true,
+      liveTurn: true,
+      lastActivityMs: expect.any(Number),
+    });
   });
 
   it('a cancelled / fired / expired await is NOT wakeable (it would be the `ended` row)', async () => {
@@ -212,7 +219,11 @@ describe('fetchWakeability (real PG)', () => {
     await seedAwait('justended');
     await seedActivity('justended', { kind: 'lifecycle', summary: '■ session ended', agoSec: 5 });
     const m = await fetchWakeability([own('justended')]);
-    expect(m.get(own('justended'))).toEqual({ wakeable: true, liveTurn: false });
+    expect(m.get(own('justended'))).toEqual({
+      wakeable: true,
+      liveTurn: false,
+      lastActivityMs: expect.any(Number),
+    });
   });
 
   it('activity AFTER the end-marker → liveTurn=true (a new turn resumed)', async () => {
@@ -220,7 +231,11 @@ describe('fetchWakeability (real PG)', () => {
     await seedActivity('resumed', { kind: 'lifecycle', summary: '■ session ended', agoSec: 30 });
     await seedActivity('resumed', { kind: 'tool', summary: '✎ x.ts', agoSec: 2 });
     const m = await fetchWakeability([own('resumed')]);
-    expect(m.get(own('resumed'))).toEqual({ wakeable: true, liveTurn: true });
+    expect(m.get(own('resumed'))).toEqual({
+      wakeable: true,
+      liveTurn: true,
+      lastActivityMs: expect.any(Number),
+    });
   });
 
   // EI-12979: the end-marker match must be EXACT, never an unanchored substring.
@@ -233,7 +248,11 @@ describe('fetchWakeability (real PG)', () => {
     await seedAwait('substringtrap');
     await seedActivity('substringtrap', { kind: 'lifecycle', summary: 'recommend a fix', agoSec: 5 });
     const m = await fetchWakeability([own('substringtrap')]);
-    expect(m.get(own('substringtrap'))).toEqual({ wakeable: true, liveTurn: true });
+    expect(m.get(own('substringtrap'))).toEqual({
+      wakeable: true,
+      liveTurn: true,
+      lastActivityMs: expect.any(Number),
+    });
   });
 
   it('an owner with no rows is present in the map as { wakeable:false, liveTurn:false }', async () => {
