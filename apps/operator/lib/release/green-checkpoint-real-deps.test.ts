@@ -139,6 +139,8 @@ interface ExecResp {
   stderr?: string;
 }
 
+const FIXTURE_DEPENDENCY_GENERATION_ID = `v1-${"d".repeat(64)}`;
+
 /** A fake exec returning programmed results in call order, recording every call. */
 function makeExec(responses: ExecResp[]) {
   const calls: Array<{
@@ -149,17 +151,31 @@ function makeExec(responses: ExecResp[]) {
   let i = 0;
   const exec: CheckpointExec = async (cmd, args, opts) => {
     calls.push({ cmd, args, opts });
-    const programmed = responses[i++];
+    const isDependencyGenerationPublisher =
+      cmd === "bash" &&
+      args[0]?.endsWith("dependency-generation.sh") &&
+      args.includes("--integration");
+    // Exact-generation selection is now a setup precondition, not part of the
+    // downstream command sequence each older fixture is programming. Give it a
+    // stable successful identity by default so those fixtures keep describing
+    // their own seam; the dedicated setupTree tests assert the publisher call.
+    const programmed = isDependencyGenerationPublisher
+      ? undefined
+      : responses[i++];
     const isSetupRelease =
       cmd === "bash" &&
       args.some((arg) => arg.endsWith("setup-release-checkout.sh"));
-    const r =
-      programmed ??
+    const r = isDependencyGenerationPublisher
+      ? {
+          code: 0,
+          stdout: `DEPENDENCY_GENERATION_RESULT schema=1 identity=${FIXTURE_DEPENDENCY_GENERATION_ID} source=fixture reused=true path=/fixture/${FIXTURE_DEPENDENCY_GENERATION_ID}`,
+        }
+      : programmed ??
       (isSetupRelease
         ? {
             code: 0,
             stdout:
-              "[setup-release] DEPENDENCY_GENERATION_PIN identity=v1-fixture",
+              `[setup-release] DEPENDENCY_GENERATION_PIN identity=${FIXTURE_DEPENDENCY_GENERATION_ID}`,
           }
         : { code: 0 });
     return { code: r.code, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -2041,22 +2057,34 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 });
 
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
-  it("setupTree shells setup-release-checkout.sh with the integration/checkpoint/ref flags", async () => {
+  const generationId = FIXTURE_DEPENDENCY_GENERATION_ID;
+
+  it("setupTree publishes an identity before the capacity wait and transports that exact pin into setup", async () => {
     const { exec, calls } = makeExec([
       {
         code: 0,
         stdout:
-          "copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=v1-deadbeef",
+          `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
       },
     ]);
     const setup = await realCheckpointDeps(cfg, exec).setupTree("cand123");
     expect(calls[0].cmd).toBe("bash");
+    expect(calls[0].args).toEqual([
+      expect.stringMatching(
+        /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
+      ),
+      "--integration",
+      "/int",
+    ]);
+    expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
+    expect(calls[0].opts?.killProcessGroupOnTimeout).toBe(true);
+    expect(calls[1].cmd).toBe("bash");
     expect(
-      calls[0].args[0].endsWith(
+      calls[1].args[0].endsWith(
         "scripts/pc-heavy.sh",
       ),
     ).toBe(true);
-    expect(calls[0].args).toEqual(
+    expect(calls[1].args).toEqual(
       // `force` (not `auto`): the checkpoint tree must always re-copy node_modules — the
       // `auto` heuristic is blind to nested-dep drift and spuriously red the gate (EI-2699).
       expect.arrayContaining([
@@ -2076,15 +2104,17 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         "copy",
         "--node-modules-generation",
         "required",
+        "--node-modules-generation-id",
+        generationId,
       ]),
     );
-    expect(calls[0].opts?.onOutput).toBeTypeOf("function");
-    expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
-    expect(calls[0].opts?.killProcessGroupOnTimeout).toBe(true);
+    expect(calls[1].opts?.onOutput).toBeTypeOf("function");
+    expect(calls[1].opts?.timeoutMs).toBeTypeOf("number");
+    expect(calls[1].opts?.killProcessGroupOnTimeout).toBe(true);
     expect(setup).toEqual({
-      identity: "setup-release-checkout:cand123:deps=v1-deadbeef",
+      identity: `setup-release-checkout:cand123:deps=${generationId}`,
       output:
-        "copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=v1-deadbeef",
+        `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
     });
   });
 
@@ -2097,6 +2127,22 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       realCheckpointDeps(cfg, exec).setupTree("cand-without-generation"),
     ).rejects.toThrow(
       "completed without a pinned dependency-generation identity",
+    );
+  });
+
+  it("P-006: setupTree fails closed if setup pins a different generation than the preselected identity", async () => {
+    const differentGeneration = `v1-${"e".repeat(64)}`;
+    const { exec } = makeExec([
+      {
+        code: 0,
+        stdout: `[setup-release] DEPENDENCY_GENERATION_PIN identity=${differentGeneration}`,
+      },
+    ]);
+
+    await expect(
+      realCheckpointDeps(cfg, exec).setupTree("cand-moved-generation"),
+    ).rejects.toThrow(
+      `expected selected identity ${generationId}`,
     );
   });
 

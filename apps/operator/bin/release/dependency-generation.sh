@@ -159,6 +159,37 @@ dependency_generation_marker_matches() {
     && [ -n "$(dependency_generation_read_field "$marker" snapshot)" ]
 }
 
+# Open one already-published immutable generation by its exact identity without
+# consulting the mutable live node_modules tree. Checkpoint setup selects the
+# identity before it waits for exclusive materialization capacity, then calls
+# this helper after the wait; re-deriving an identity at that later point would
+# silently move the input if an install landed in between (P-006 / WI-41199).
+# Sets the same DEPENDENCY_GENERATION_* outputs as dependency_generation_ensure.
+dependency_generation_select() {
+  local generation_root="$1" identity="$2"
+  local generation marker source
+  if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
+    dependency_generation_log "FATAL: invalid dependency-generation identity: $identity"
+    return 2
+  fi
+  generation="$generation_root/$identity"
+  if ! dependency_generation_is_valid "$generation" "$identity"; then
+    dependency_generation_log "FATAL: dependency generation $identity is missing or invalid"
+    return 74
+  fi
+  marker="$generation/.papercusp-dependency-generation"
+  source="$(dependency_generation_read_field "$marker" source)"
+  if [ -z "$source" ]; then
+    dependency_generation_log "FATAL: dependency generation $identity has no source fingerprint"
+    return 74
+  fi
+  DEPENDENCY_GENERATION_ID="$identity"
+  DEPENDENCY_GENERATION_PATH="$generation"
+  DEPENDENCY_GENERATION_TREE="$generation/tree"
+  DEPENDENCY_GENERATION_SOURCE_FINGERPRINT="$source"
+  DEPENDENCY_GENERATION_REUSED='true'
+}
+
 dependency_generation_writer_is_live() {
   local marker="$1" expected_host="$2" owner_host owner_pid
   [ -f "$marker" ] || return 1

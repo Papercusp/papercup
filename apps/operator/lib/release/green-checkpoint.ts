@@ -11039,6 +11039,38 @@ export function realCheckpointDeps(
       return { workspace, passed: false, crashedAgain: true };
     return { workspace, passed: false, realFailure: true };
   };
+  // P-006 / WI-41199: choose and publish the immutable dependency input
+  // BEFORE any caller waits for the exclusive materialization barrier. The
+  // selected identity is then transported into setup-release, so a later
+  // install cannot silently move the checkpoint/repair-worktree input.
+  const publishDependencyGeneration = async (ref: string): Promise<string> => {
+    const generationScript = path.join(
+      toolingRoot(),
+      "apps/operator/bin/release/dependency-generation.sh",
+    );
+    const publishedGeneration = await exec(
+      "bash",
+      [generationScript, "--integration", cfg.integrationRoot],
+      {
+        timeoutMs: SETUP_TREE_TIMEOUT_MS,
+        killProcessGroupOnTimeout: true,
+      },
+    );
+    const publishedGenerationOutput =
+      publishedGeneration.stdout + publishedGeneration.stderr;
+    const selectedDependencyGeneration = publishedGenerationOutput.match(
+      /DEPENDENCY_GENERATION_RESULT\s+schema=1\s+identity=([^\s]+)/,
+    )?.[1];
+    if (!selectedDependencyGeneration) {
+      throw new Error(
+        `dependency-generation publisher completed without an identity for ${ref.slice(0, 64)}`,
+      );
+    }
+    log(
+      `selected immutable dependency generation ${selectedDependencyGeneration} for ${ref.slice(0, 12)}`,
+    );
+    return selectedDependencyGeneration;
+  };
   const repairTarget = gateVerdictTargetFromEnv();
   return {
     isolationRun,
@@ -11195,6 +11227,8 @@ export function realCheckpointDeps(
             // the repair tree is committed after the fixer exits and must not share inodes with
             // a concurrent install in staging. `--prepare-existing` preserves the worktree and
             // the submodules initialized above while still rebuilding every node_modules tree.
+            const selectedDependencyGeneration =
+              await publishDependencyGeneration(queue.repairHead);
             const dependencies = await exec(
               "bash",
               [
@@ -11218,6 +11252,8 @@ export function realCheckpointDeps(
                 "copy",
                 "--node-modules-generation",
                 "required",
+                "--node-modules-generation-id",
+                selectedDependencyGeneration,
                 "--prepare-existing",
               ],
               {
@@ -11639,6 +11675,8 @@ export function realCheckpointDeps(
           setupOutputRemainders[stream] = "";
         }
       };
+      const selectedDependencyGeneration =
+        await publishDependencyGeneration(ref);
       let setup: CheckpointExecResult;
       try {
         setup = await exec(
@@ -11661,6 +11699,8 @@ export function realCheckpointDeps(
             "copy",
             "--node-modules-generation",
             "required",
+            "--node-modules-generation-id",
+            selectedDependencyGeneration,
           ],
           {
             timeoutMs: SETUP_TREE_TIMEOUT_MS,
@@ -11678,6 +11718,11 @@ export function realCheckpointDeps(
       if (!dependencyGeneration) {
         throw new Error(
           `setup-release-checkout completed without a pinned dependency-generation identity for ${ref.slice(0, 64)}`,
+        );
+      }
+      if (dependencyGeneration !== selectedDependencyGeneration) {
+        throw new Error(
+          `setup-release-checkout pinned dependency generation ${dependencyGeneration}, expected selected identity ${selectedDependencyGeneration}`,
         );
       }
       return {

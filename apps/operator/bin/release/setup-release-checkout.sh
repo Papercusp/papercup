@@ -51,6 +51,7 @@
 #   setup-release-checkout.sh [--ref <commit-ish>] [--node-modules auto|force|skip]
 #                             [--node-modules-copy hardlink|copy]
 #                             [--node-modules-generation required|off]
+#                             [--node-modules-generation-id <v1-sha256>]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #
@@ -81,6 +82,7 @@ NODE_MODULES_COPY_MODE="${NODE_MODULES_COPY_MODE:-hardlink}"
 # Independent checkpoint copies pin an immutable dependency generation by
 # default. The live deploy's `hardlink` mode keeps its existing fast path.
 NODE_MODULES_GENERATION_MODE="${NODE_MODULES_GENERATION_MODE:-required}"
+NODE_MODULES_GENERATION_ID="${NODE_MODULES_GENERATION_ID:-}"
 DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
 
 BUILD_SPA="0"
@@ -93,6 +95,7 @@ while [ $# -gt 0 ]; do
     --node-modules) NODE_MODULES_MODE="$2"; shift 2 ;;
     --node-modules-copy) NODE_MODULES_COPY_MODE="$2"; shift 2 ;;
     --node-modules-generation) NODE_MODULES_GENERATION_MODE="$2"; shift 2 ;;
+    --node-modules-generation-id) NODE_MODULES_GENERATION_ID="$2"; shift 2 ;;
     --dependency-generation-root) DEPENDENCY_GENERATION_ROOT="$2"; shift 2 ;;
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
@@ -110,6 +113,11 @@ case "$NODE_MODULES_GENERATION_MODE" in
   required|off) ;;
   *) echo "[setup-release] bad --node-modules-generation mode: $NODE_MODULES_GENERATION_MODE" >&2; exit 2 ;;
 esac
+if [ -n "$NODE_MODULES_GENERATION_ID" ] \
+  && { [ "$NODE_MODULES_GENERATION_MODE" != "required" ] || [ "$NODE_MODULES_COPY_MODE" != "copy" ]; }; then
+  echo "[setup-release] --node-modules-generation-id requires --node-modules-generation required and --node-modules-copy copy" >&2
+  exit 2
+fi
 
 log() { echo "[setup-release] $*"; }
 
@@ -737,7 +745,11 @@ if need_node_modules; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
     DEPENDENCY_GENERATION_ROOT="${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}"
-    dependency_generation_ensure "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT"
+    if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
+      dependency_generation_select "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
+    else
+      dependency_generation_ensure "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT"
+    fi
     PINNED_DEPENDENCY_GENERATION_ID="$DEPENDENCY_GENERATION_ID"
     NODE_MODULES_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
     log "pinned immutable dependency generation $PINNED_DEPENDENCY_GENERATION_ID (reused=$DEPENDENCY_GENERATION_REUSED)"

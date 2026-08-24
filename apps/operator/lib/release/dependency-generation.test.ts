@@ -69,6 +69,38 @@ function publishedPath(stdout: string): string {
   return match[1];
 }
 
+function publishedIdentity(stdout: string): string {
+  const match = stdout.match(/\bidentity=(v1-[0-9a-f]{64})\b/);
+  if (!match) throw new Error(`missing generation identity in: ${stdout}`);
+  return match[1];
+}
+
+function selectGeneration(
+  generationRoot: string,
+  identity: string,
+): ShellResult {
+  const wrapper = [
+    'set -euo pipefail',
+    'source "$SCRIPT"',
+    'dependency_generation_select "$GENERATION_ROOT" "$GENERATION_ID"',
+    'printf "SELECTED identity=%s source=%s path=%s\\n" "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" "$DEPENDENCY_GENERATION_PATH"',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', wrapper], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      SCRIPT,
+      GENERATION_ROOT: generationRoot,
+      GENERATION_ID: identity,
+    },
+  });
+  return {
+    status: result.status,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -117,6 +149,46 @@ describe('immutable dependency generation', () => {
     expect(second.status, second.stderr).toBe(0);
     expect(second.stdout).toContain('reused=true');
     expect(publishedPath(second.stdout)).toBe(generation);
+  });
+
+  it('selects an exact published identity without re-reading mutable live node_modules', () => {
+    const integration = makeIntegration();
+    const published = publish(integration);
+    expect(published.status, published.stderr).toBe(0);
+    const identity = publishedIdentity(published.stdout);
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+
+    // Selection happens after the checkpoint may have waited for capacity. The
+    // live source can disappear or change during that wait; the exact immutable
+    // generation must remain the input.
+    rmSync(join(integration, 'node_modules'), { recursive: true, force: true });
+    rmSync(join(integration, 'packages/a/node_modules'), {
+      recursive: true,
+      force: true,
+    });
+
+    const selected = selectGeneration(generationRoot, identity);
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(selected.stdout).toContain(`SELECTED identity=${identity}`);
+    expect(selected.stdout).toContain(
+      `path=${join(generationRoot, identity)}`,
+    );
+  });
+
+  it('rejects a malformed explicit identity before it can escape the generation root', () => {
+    const integration = makeIntegration();
+    const selected = selectGeneration(
+      join(integration, '.papercusp/dependency-generations'),
+      '../../node_modules',
+    );
+
+    expect(selected.status).toBe(2);
+    expect(selected.stderr).toContain(
+      'invalid dependency-generation identity',
+    );
   });
 
   it('refuses a torn source with rc75 and publishes no partial generation', () => {
