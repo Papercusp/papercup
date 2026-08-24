@@ -54,6 +54,7 @@ import {
   resolveHarnessContentPath,
   type HarnessRegistry,
 } from './harness-registry';
+import { discoverKnownHiveCheckoutRoots } from './agent-tools/testing/run';
 // The monorepo-root walk-up lives in the docs tool helper only because that is where
 // it was first needed; it is imported rather than re-derived so there stays exactly
 // ONE implementation of "where is the repo root" rather than two that can disagree.
@@ -499,18 +500,64 @@ export function harnessCitationRepoRoot(
   return resolveHarnessContentPath(reg, harnessSlug) ?? null;
 }
 
+/**
+ * Select a citation root for a repo-less Hive when its registry-selected member path is stale.
+ *
+ * The registry path remains authoritative when every verifying citation resolves there. Only a
+ * repo-less Hive may fall back to discovered Hive checkouts, and only when exactly one candidate
+ * resolves every verifying citation. Pointer-file worktrees (checkpoint/release artifacts) are
+ * excluded; a tie is refused rather than turning a citation into evidence from an arbitrary tree.
+ */
+export function selectHarnessCitationRepoRoot(
+  reg: Pick<HarnessRegistry, 'projects'>,
+  harnessSlug: string,
+  citations: readonly AuditCitation[],
+  discoveredRoots: readonly string[] = [],
+): string | null {
+  const canonical = harnessCitationRepoRoot(reg, harnessSlug);
+  if (!canonical) return null;
+
+  const verifying = citations.filter(isVerifyingCitation);
+  const resolvesEveryCitation = (root: string): boolean => {
+    const deps = repoCitationDeps(root);
+    return verifying.every((citation) => resolveCitation(citation, deps).ok);
+  };
+
+  // Preserve the registry's canonical precedence whenever it contains the cited evidence.
+  if (verifying.length === 0 || resolvesEveryCitation(canonical)) return canonical;
+
+  const project = reg.projects.find((entry) => entry.slug === harnessSlug);
+  if (!project || project.harness_kind !== 'hive' || project.self_repo) return null;
+
+  const candidates = [...new Set(discoveredRoots.map((root) => path.resolve(root)))].filter((root) => {
+    try {
+      // A .git pointer identifies a worktree/deploy artifact, not an independent Hive checkout.
+      return fs.statSync(path.join(root, '.git')).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  const matches = candidates.filter((root) => resolvesEveryCitation(root));
+  return matches.length === 1 ? matches[0]! : null;
+}
+
 /** Citation context shared by audit-write and ship-time revalidation.
  * An explicit but unregistered harness fails closed instead of silently validating
  * against Papercusp's own checkout. */
 export async function repoCitationContextForHarness(
   harnessSlug: string | null | undefined,
+  citations: readonly AuditCitation[] = [],
 ): Promise<{ repoRoot: string; deps: CitationDeps } | null> {
   if (!harnessSlug || harnessSlug === '*') {
     return { repoRoot: REPO_ROOT, deps: repoCitationDeps(REPO_ROOT) };
   }
   try {
     const reg = await loadHarnessRegistry();
-    const repoRoot = harnessCitationRepoRoot(reg, harnessSlug);
+    const project = reg.projects.find((entry) => entry.slug === harnessSlug);
+    const fallbackRoots = project?.harness_kind === 'hive' && !project.self_repo
+      ? discoverKnownHiveCheckoutRoots()
+      : [];
+    const repoRoot = selectHarnessCitationRepoRoot(reg, harnessSlug, citations, fallbackRoots);
     return repoRoot ? { repoRoot, deps: repoCitationDeps(repoRoot) } : null;
   } catch {
     return null;

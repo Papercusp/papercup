@@ -348,7 +348,10 @@ export default defineTool({
     }
     const known = new Set(planItems.map((i) => i.itemId));
 
-    const citationContext = await repoCitationContextForHarness(harnessSlug);
+    const citationContext = await repoCitationContextForHarness(
+      harnessSlug,
+      (args.items ?? []).flatMap((item) => item.citations ?? []) as AuditCitation[],
+    );
     if (!citationContext) {
       return { data: {
         ok: false as const,

@@ -228,7 +228,12 @@ export async function evaluatePlanAcceptanceGate(
       const hasVerifyingCitations = effectiveAudits.some(({ entry }) =>
         entry.citations.some((citation) => citation.kind === 'code' || citation.kind === 'test'),
       );
-      const citationContext = hasVerifyingCitations ? await repoCitationContextForHarness(audit.harnessSlug) : null;
+      const citationContext = hasVerifyingCitations
+        ? await repoCitationContextForHarness(
+            audit.harnessSlug,
+            effectiveAudits.flatMap(({ entry }) => entry.citations),
+          )
+        : null;
 
       if (hasVerifyingCitations && !citationContext) {
         broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);

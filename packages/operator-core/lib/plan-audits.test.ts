@@ -21,6 +21,7 @@ import {
   foldEffectiveItemAudits,
   gitBlobSha,
   harnessCitationRepoRoot,
+  selectHarnessCitationRepoRoot,
   planItemTextHash,
   prepareAuditPassEntries,
   recordPlanAudit,
@@ -172,6 +173,68 @@ describe('harnessCitationRepoRoot — canonical registry precedence (WI-38854)',
 
   it('fails closed for an unregistered explicit harness', () => {
     expect(harnessCitationRepoRoot({ projects: [] }, 'missing')).toBeNull();
+  });
+
+  it('selects the sole real Hive checkout when the registry member path is stale', () => {
+    const stale = path.join(workspaceRoot, 'missing-devboard');
+    const fallback = path.join(workspaceRoot, 'sidestage-fallback');
+    fs.mkdirSync(path.join(fallback, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(fallback, 'apps', 'web', 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fallback, 'apps', 'web', 'src', 'BuyerProductRail.css'),
+      '.rail { display: grid; }\n',
+    );
+
+    expect(
+      selectHarnessCitationRepoRoot(
+        { projects: [{ slug: 'sb-devboard-hive', path: stale, harness_kind: 'hive' }] },
+        'sb-devboard-hive',
+        [code('apps/web/src/BuyerProductRail.css')],
+        [fallback],
+      ),
+    ).toBe(fallback);
+  });
+
+  it('refuses an ambiguous tie between two real Hive checkouts', () => {
+    const stale = path.join(workspaceRoot, 'missing-devboard-ambiguous');
+    const first = path.join(workspaceRoot, 'hive-first');
+    const second = path.join(workspaceRoot, 'hive-second');
+    for (const root of [first, second]) {
+      fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'apps', 'web', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'apps', 'web', 'src', 'BuyerProductRail.css'), '.rail {}\n');
+    }
+
+    expect(
+      selectHarnessCitationRepoRoot(
+        { projects: [{ slug: 'sb-devboard-hive', path: stale, harness_kind: 'hive' }] },
+        'sb-devboard-hive',
+        [code('apps/web/src/BuyerProductRail.css')],
+        [first, second],
+      ),
+    ).toBeNull();
+  });
+
+  it('excludes pointer-file worktrees from Hive fallback candidates', () => {
+    const stale = path.join(workspaceRoot, 'missing-devboard-worktree');
+    const real = path.join(workspaceRoot, 'hive-real');
+    const worktree = path.join(workspaceRoot, 'hive-checkpoint');
+    fs.mkdirSync(path.join(real, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(real, 'apps', 'web', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(real, 'apps', 'web', 'src', 'BuyerProductRail.css'), '.rail {}\n');
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.writeFileSync(path.join(worktree, '.git'), 'gitdir: /tmp/other-worktree\n');
+    fs.mkdirSync(path.join(worktree, 'apps', 'web', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(worktree, 'apps', 'web', 'src', 'BuyerProductRail.css'), '.checkpoint {}\n');
+
+    expect(
+      selectHarnessCitationRepoRoot(
+        { projects: [{ slug: 'sb-devboard-hive', path: stale, harness_kind: 'hive' }] },
+        'sb-devboard-hive',
+        [code('apps/web/src/BuyerProductRail.css')],
+        [real, worktree],
+      ),
+    ).toBe(real);
   });
 });
 
