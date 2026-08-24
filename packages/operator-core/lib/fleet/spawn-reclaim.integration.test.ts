@@ -29,6 +29,7 @@ import {
   sweepStaleSpawnClaims,
   reclaimCeilingJamDebits,
   spawnRowKind,
+  isInProcessLaunchIdentity,
   reapTerminalSpawnResultArtifacts,
   SPAWN_RESULT_ARTIFACT_RETENTION_MS,
 } from './spawn-reclaim';
@@ -1117,9 +1118,24 @@ describe('reclaimWedgedSpawns (RECLAIM_STALLED — wedged-but-alive reclaim, rea
    * This test FAILS against the pre-fix reaper — that is the point of it.
    */
   it('does NOT reap a durable-spawn with a REAL `invoke-*` run_id once last_output_at is populated (the post-WI-6113 world)', async () => {
-    await insertWedged('durable-spawn:implement:EI-21177555351818650:de1401107', {
-      runId: 'invoke-implement-1787500000000',
-    });
+    const SPAWN_ID = 'durable-spawn:implement:EI-21177555351818650:de1401107';
+    const RUN_ID = 'invoke-implement-1787500000000';
+
+    // FALSIFIABILITY CONTROL. A guard that has never failed is not a tested guard, and the
+    // specific way this KIND of test goes vacuous is documented one describe-block down:
+    // the sibling reaper's exclusion test passed for years against a filter that did not
+    // work, because its fixture used a run_id shape that never occurs in production. These
+    // two assertions make that impossible here by pinning WHY the row is excluded.
+    //
+    //   1. `spawnRowKind` classifies it 'spawn' — i.e. it LOOKS like a supervised bee, so
+    //      `isSupervisedBeeRow` admits it and the PRE-FIX filter would have reaped it.
+    //   2. `isInProcessLaunchIdentity` is therefore the ONLY predicate rejecting it.
+    //
+    // Delete the `&& !isInProcessLaunchIdentity(c)` conjunct and this test goes red.
+    expect(spawnRowKind({ spawnId: SPAWN_ID, runId: RUN_ID, pid: CHILD_PID })).toBe('spawn');
+    expect(isInProcessLaunchIdentity({ spawn_id: SPAWN_ID, run_id: RUN_ID })).toBe(true);
+
+    await insertWedged(SPAWN_ID, { runId: RUN_ID });
     const { fn, seen } = recordingReap();
     const r = await reclaimWedgedSpawns(db.sql, fn, SILENT);
     expect(r.reclaimed).toBe(0);
