@@ -215,6 +215,7 @@ export interface GateVerdictFreshness {
     | 'pin-advance'
     | 'pin-advance-unordered'
     | 'writer-starved'
+    | 'run-in-flight'
     | 'retriage-proven'
     | 'refire-in-flight'
     | 'candidate-fossil'
@@ -224,6 +225,48 @@ export interface GateVerdictFreshness {
    *  ordinary ~30min structural window (a real, load-bearing property of every verdict this gate
    *  produces) without waiting for the outlier threshold to trip. */
   candidateAgeMs?: number | null;
+}
+
+/**
+ * The liveness reading that may refine a freshness verdict. `activeSource` is deliberately
+ * optional: cache-backed readings describe the past and must not be promoted to measured
+ * liveness merely because their `active` bit is true.
+ */
+export interface CheckpointRunLivenessReading {
+  active: boolean;
+  activeSource?: 'run-lock';
+}
+
+/**
+ * PURE: distinguish healthy contention from true writer starvation when the caller has a
+ * measured live run-lock reading. A verdict is necessarily unwritten while its checkpoint run
+ * is still executing, so the same frozen `observedAt`/`lastFiredAt` pair that correctly identifies
+ * a skipped fire also occurs during every healthy long-running suite.
+ *
+ * Only the combination of `writer-starved` + `active:true` from the LIVE run lock earns the new
+ * `run-in-flight` classification. Cache-only activity, measured idle, unknown liveness, and all
+ * stronger freshness rules preserve the original result and its evidence.
+ */
+export function reconcileGateVerdictFreshnessWithCheckpointRun(
+  freshness: GateVerdictFreshness,
+  measuredActive: CheckpointRunLivenessReading | null | undefined,
+): GateVerdictFreshness {
+  if (
+    freshness.reasonCode !== 'writer-starved' ||
+    measuredActive?.active !== true ||
+    measuredActive.activeSource !== 'run-lock'
+  ) {
+    return freshness;
+  }
+
+  return {
+    ...freshness,
+    reason:
+      `the recorded red is unverified because a green-checkpoint run is IN FLIGHT (measured live ` +
+      `via the run lock), so its verdict is pending — do NOT fire release:checkpoint-run or fix ` +
+      `the named tests while it runs; wait for this active run's verdict`,
+    reasonCode: 'run-in-flight',
+  };
 }
 
 const short = (sha: string): string => sha.slice(0, 12);

@@ -49,6 +49,7 @@ import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contrac
 import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
 import { describeRefireBudget } from './release/in-flight-retriage';
 import { gateAbortLever, gateAbortRefireClause } from './release/gate-abort-status';
+import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-verdict-freshness';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
 import { listRuntimeVintage, type RuntimeVintageRow } from './runtime-vintage';
@@ -1098,6 +1099,7 @@ export interface PipelinePosition {
       | 'pin-advance'
       | 'pin-advance-unordered'
       | 'writer-starved'
+      | 'run-in-flight'
       | 'retriage-proven'
       | 'refire-in-flight'
       | 'candidate-fossil'
@@ -4492,6 +4494,19 @@ export async function gitPipelinePosition(
     // authoritative candidate instead of the `'run-probe'` inference.
     snap.gate.inFlightCandidate,
   );
+  // The freshness evaluator only sees the cached gate-health timestamps. During every healthy
+  // long-running suite those timestamps necessarily look writer-starved until the run completes.
+  // Reconcile that one ambiguous classification with the LIVE run-lock measurement, while
+  // preserving cache-only/unknown liveness and every stronger freshness rule.
+  const gateFreshness = reconcileGateVerdictFreshnessWithCheckpointRun(
+    {
+      stale: snap.gate.verdictStale,
+      reason: snap.gate.verdictStaleReason,
+      reasonCode: snap.gate.verdictStaleReasonCode ?? null,
+      candidateAgeMs: snap.gate.candidateAgeMs,
+    },
+    checkpointRunInFlight,
+  );
   const gate = {
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
@@ -4511,9 +4526,9 @@ export async function gitPipelinePosition(
     // were dropped here, so a caller of THIS tool (the one every agent role is told to reach for)
     // saw only an undifferentiated red while /admin/git, reading the same snapshot directly,
     // already showed the full staleness verdict.
-    verdictStale: snap.gate.verdictStale,
-    verdictStaleReason: snap.gate.verdictStaleReason,
-    verdictStaleReasonCode: snap.gate.verdictStaleReasonCode ?? null,
+    verdictStale: gateFreshness.stale,
+    verdictStaleReason: gateFreshness.reason,
+    verdictStaleReasonCode: gateFreshness.reasonCode,
     candidateAgeMs: snap.gate.candidateAgeMs,
     commitsBehindTip: snap.gate.commitsBehindTip,
     observedCandidate: snap.gate.observedCandidate,
@@ -4596,7 +4611,9 @@ export async function gitPipelinePosition(
           : '.') +
         (gate.verdictStaleReasonCode === 'pin-advance'
           ? ' This reason is HARD PROOF a green already happened — the streak may be safely treated as reset.'
-          : ' Re-judge at tip (release:checkpoint-run) or wait for the next verdict before spending time on the named failure.'),
+          : gate.verdictStaleReasonCode === 'run-in-flight'
+            ? ' A green-checkpoint run is already active and its verdict is pending — do NOT fire release:checkpoint-run or fix the named failure while it runs; wait for this run to finish.'
+            : ' Re-judge at tip (release:checkpoint-run) or wait for the next verdict before spending time on the named failure.'),
     );
   }
 

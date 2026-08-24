@@ -12,7 +12,11 @@
  * fires on the healthy case is worse than none).
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateGateVerdictFreshness, GATE_FIRE_INTERVAL_MS } from './gate-verdict-freshness';
+import {
+  evaluateGateVerdictFreshness,
+  GATE_FIRE_INTERVAL_MS,
+  reconcileGateVerdictFreshnessWithCheckpointRun,
+} from './gate-verdict-freshness';
 // EI-20571364274022293: the reasonCode's whole contract is what this correction does with it, so
 // the two are asserted together rather than each against its own private idea of the other.
 import { pinProvenGateCorrection } from '../git-pipeline-stats';
@@ -457,6 +461,50 @@ describe('evaluateGateVerdictFreshness', () => {
       };
       expect(evaluateGateVerdictFreshness(base).stale).toBe(false);
       expect(evaluateGateVerdictFreshness({ ...base, fossilAgeMs: 30 * 60_000 }).stale).toBe(true);
+    });
+  });
+
+  describe('reconcileGateVerdictFreshnessWithCheckpointRun — measured contention', () => {
+    const writerStarved = evaluateGateVerdictFreshness(LIVE_INCIDENT);
+
+    it('reclassifies only writer-starved with measured active run-lock liveness', () => {
+      const out = reconcileGateVerdictFreshnessWithCheckpointRun(writerStarved, {
+        active: true,
+        activeSource: 'run-lock',
+      });
+
+      expect(out.stale).toBe(true);
+      expect(out.reasonCode).toBe('run-in-flight');
+      expect(out.reason).toMatch(/verdict is pending/);
+      expect(out.reason).toMatch(/do NOT fire release:checkpoint-run/);
+    });
+
+    it.each([
+      ['measured idle', { active: false, activeSource: 'run-lock' as const }],
+      ['unknown', null],
+      ['cache-only active', { active: true }],
+    ])('preserves writer-starved for %s liveness', (_label, reading) => {
+      expect(reconcileGateVerdictFreshnessWithCheckpointRun(writerStarved, reading)).toEqual(writerStarved);
+    });
+
+    it('preserves a stronger freshness rule even when a run-lock is active', () => {
+      const stronger = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: Date.now() - 60_000,
+        inFlightRetriage: {
+          fromCandidate: LIVE_INCIDENT.observedFromPin,
+          refiringCandidate: '221dc407abcd',
+          refireAttempt: 1,
+          maxRefires: 2,
+          failingFiles: ['a.test.ts'],
+          observedAtMs: Date.now(),
+        },
+      });
+
+      expect(stronger.reasonCode).toBe('refire-in-flight');
+      expect(
+        reconcileGateVerdictFreshnessWithCheckpointRun(stronger, { active: true, activeSource: 'run-lock' }),
+      ).toEqual(stronger);
     });
   });
 });
