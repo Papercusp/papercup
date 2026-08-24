@@ -3,6 +3,13 @@ import {
   type PlanSpecCoverageAggregate,
   type PlanSpecCoverageDeps,
 } from './plan-spec-coverage-gate';
+import {
+  adoptionOf,
+  laneOf,
+  type AdoptionState,
+  type PlanAdoptionRow,
+  type ReconciliationLane,
+} from './spec-enforcement-eligibility';
 
 /**
  * P-012 — the spec reconciliation ledger.
@@ -80,13 +87,14 @@ import {
  */
 export const LEGACY_VAL_TEXT_PATTERN = '\\mVAL-[A-Za-z0-9]';
 
-/** Terminal statuses: visible, never blocking (P-012 rollout rule). */
-const HISTORICAL_STATUSES = new Set(['shipped', 'superseded']);
-/** Candidate inputs — reported, but never enforceable until promotion (D-012). */
-const PRE_ENFORCEMENT_STATUSES = new Set(['draft']);
-
-export type ReconciliationLane = 'enforceable' | 'pre-enforcement' | 'historical';
-export type AdoptionState = 'adopted' | 'legacy-val-only' | 'no-behavior-declared';
+/**
+ * The lane/adoption vocabulary now lives in `spec-enforcement-eligibility.ts` (P-013),
+ * because the completion gate and its sync-resolver view need the SAME classification to
+ * decide what may refuse — and this file cannot be their source, since it imports the
+ * coverage gate (`SpecReconciliationDeps extends PlanSpecCoverageDeps`) and would close a
+ * cycle. Re-exported here so existing importers of these names keep working unchanged.
+ */
+export type { ReconciliationLane, AdoptionState, PlanAdoptionRow } from './spec-enforcement-eligibility';
 
 export type ReconciliationActionKind =
   | 'backfill-val-clauses'
@@ -101,15 +109,6 @@ export interface ReconciliationAction {
   detail: string;
   /** The exact clauses this action names, when it names any. */
   specIds?: string[];
-}
-
-/** One plan's adoption inputs, read once for the whole population. */
-export interface PlanAdoptionRow {
-  planSlug: string;
-  status: string;
-  clauseCount: number;
-  /** Legacy VAL-* / coversVALs signals still present in the plan's text or items. */
-  legacyValSignal: boolean;
 }
 
 export interface SpecReconciliationRow {
@@ -168,17 +167,8 @@ export interface SpecReconciliationDeps extends PlanSpecCoverageDeps {
 
 export const RECONCILIATION_PLAN_LIMIT = 2_000;
 
-function laneOf(status: string): ReconciliationLane {
-  if (HISTORICAL_STATUSES.has(status)) return 'historical';
-  if (PRE_ENFORCEMENT_STATUSES.has(status)) return 'pre-enforcement';
-  return 'enforceable';
-}
-
-function adoptionOf(row: PlanAdoptionRow): AdoptionState {
-  if (row.clauseCount > 0) return 'adopted';
-  if (row.legacyValSignal) return 'legacy-val-only';
-  return 'no-behavior-declared';
-}
+// laneOf / adoptionOf are imported from ./spec-enforcement-eligibility — the ledger and the
+// enforcement gates MUST classify identically, so there is exactly one implementation.
 
 /**
  * Actions for a plan that has NOT adopted clauses. Both states are work, and neither is
