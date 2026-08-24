@@ -39,6 +39,7 @@ import {
   mainBufferIsStale,
   mainBufferStallReason,
   mapCheckpointRunInFlight,
+  markerNetChange,
   reconcileGateCandidates,
   MAIN_BUFFER_STALL_MS,
   type GitRunner,
@@ -50,6 +51,7 @@ import {
   type StageState,
   type SweepExposure,
 } from './git-pipeline-position';
+import type { MarkerContainment } from './candidate-contains';
 import type { DevDeployState } from './dev-deploy-state';
 import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
@@ -635,6 +637,79 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.notes.join('\n')).toMatch(/inMain: confirmed NOT present/);
       expect(res.notes.join('\n')).toMatch(/deployed: confirmed NOT present/);
       expect(res.notes.join('\n')).not.toMatch(/CORRECTED to true by the marker/);
+    });
+
+    /**
+     * WI-41208, unit half. `markerNetChange` is the boolean that decides whether a FALSE
+     * position leg is CORRECTED to true, so it is the one guard here that must be
+     * provably falsifiable. The prescribed tier for a module under test is a
+     * deliberately-wrong implementation kept permanently beside it as a control, plus a
+     * calibration the real subject must pass — mutating the shared tree to prove this is
+     * both unnecessary and unsafe here.
+     *
+     * WRONG_markerNetChange is the pre-fix logic verbatim: a strict count comparison with
+     * no `pathPresent` gate. Every case below is asserted against BOTH, so the two must
+     * disagree exactly where the bug lived and agree everywhere else. If the real
+     * implementation ever regresses to the wrong one, the `not.toBe` rows fail; if the
+     * control is silently "fixed" to match, the calibration rows keep it honest.
+     */
+    const marker = (over: Partial<MarkerContainment> = {}): MarkerContainment => ({
+      marker: 'looksDeadOrStuck',
+      sha: 'ref0000000',
+      present: true,
+      count: 1,
+      pathPresent: true,
+      unknownReason: null,
+      ...over,
+    });
+    const WRONG_markerNetChange = (
+      atRef: MarkerContainment | null | undefined,
+      baseline: MarkerContainment | null | undefined,
+    ): 'added' | 'removed' | null => {
+      if (!atRef || !baseline) return null;
+      if (typeof atRef.count !== 'number' || typeof baseline.count !== 'number') return null;
+      if (atRef.count > baseline.count) return 'added';
+      if (atRef.count < baseline.count) return 'removed';
+      return null;
+    };
+
+    it('WI-41208 unit: markerNetChange refuses a PATH-ABSENT ref where the pre-fix logic said "removed"', () => {
+      // THE PRODUCTION SHAPE: the ref has no such path (a definitive count of 0), while
+      // the baseline — the file immediately before the change — carried the marker.
+      const pathAbsentAtRef = marker({ present: false, count: 0, pathPresent: false });
+      const baselineWithMarker = marker({ count: 1 });
+
+      expect(markerNetChange(pathAbsentAtRef, baselineWithMarker)).toBe(null);
+      // The control convicts: without the pathPresent gate this reads as a net-decrease,
+      // which is what corrected onStaging/inMain/deployed to true for an unpushed file.
+      expect(WRONG_markerNetChange(pathAbsentAtRef, baselineWithMarker)).toBe('removed');
+      expect(markerNetChange(pathAbsentAtRef, baselineWithMarker)).not.toBe(
+        WRONG_markerNetChange(pathAbsentAtRef, baselineWithMarker),
+      );
+
+      // The mirror case: a baseline whose own tree lacks the path cannot anchor anything.
+      const baselineAbsent = marker({ present: false, count: 0, pathPresent: false });
+      expect(markerNetChange(marker({ count: 2 }), baselineAbsent)).toBe(null);
+      expect(WRONG_markerNetChange(marker({ count: 2 }), baselineAbsent)).toBe('added');
+    });
+
+    it('WI-41208 unit: CALIBRATION — the real net-change verdicts still fire when both trees have the file', () => {
+      // Without these rows the test above would pass on a subject that always returns
+      // null, i.e. a guard that had silently disabled every marker correction.
+      const added = markerNetChange(marker({ count: 2 }), marker({ count: 0, present: false }));
+      const removed = markerNetChange(marker({ count: 0, present: false }), marker({ count: 1 }));
+      expect(added).toBe('added');
+      expect(removed).toBe('removed');
+      // Where the file is present on both sides, right and wrong must AGREE — that is
+      // what makes the disagreement above attributable to `pathPresent` alone.
+      expect(added).toBe(WRONG_markerNetChange(marker({ count: 2 }), marker({ count: 0, present: false })));
+      expect(removed).toBe(WRONG_markerNetChange(marker({ count: 0, present: false }), marker({ count: 1 })));
+
+      // Unmeasured counts and an equal count are never a verdict, in either direction.
+      expect(markerNetChange(marker({ count: 1 }), marker({ count: 1 }))).toBe(null);
+      expect(markerNetChange(marker({ count: null, present: null }), marker({ count: 1 }))).toBe(null);
+      expect(markerNetChange(null, marker())).toBe(null);
+      expect(markerNetChange(marker(), undefined)).toBe(null);
     });
 
     /**

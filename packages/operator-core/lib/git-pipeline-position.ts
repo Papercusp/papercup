@@ -2102,6 +2102,40 @@ export function markerPartialAgainst(
   return judged.count < tip.count;
 }
 
+/**
+ * WI-41208. Does `atRef` show a STRICT net change in marker occurrences against
+ * `baseline` — i.e. positive evidence that the caller's own change reached that ref?
+ *
+ * Extracted as a pure predicate for one reason: it is the boolean that decides whether
+ * a `false` position leg is CORRECTED to `true`, and correcting it wrongly reports
+ * unshipped work as live. A guard that decides that must be directly falsifiable, and
+ * the marker legs it feeds are reachable only through a full `gitPipelinePosition` run.
+ *
+ * BOTH sides must be counts taken from a tree that actually HAS the file.
+ * `markerAtCommit` returns a DEFINITIVE `{ present:false, count:0, pathPresent:false }`
+ * when `ls-tree` is empty — the ref has no such path at all. That legitimate zero is not
+ * a measurement of the change's occurrences, and admitting it made `0 < baseline` read as
+ * a "strict net-decrease": a brand-new file, absent from `origin/staging` and
+ * `origin/main`, had `onStaging`/`inMain`/`deployed` all corrected to true, with
+ * `blockedOn`/`nextAction` going null and the position rendering `live`.
+ *
+ * Like `markerPartialAgainst`, this can only ever UNDER-claim: a change that adds or
+ * removes no occurrence of the marker is simply not detected, which is the pre-existing
+ * behaviour and is safe. Returns null whenever either side is unmeasured or path-absent —
+ * never invent a verdict from a missing count.
+ */
+export function markerNetChange(
+  atRef: MarkerContainment | null | undefined,
+  baseline: MarkerContainment | null | undefined,
+): 'added' | 'removed' | null {
+  if (!atRef || !baseline) return null;
+  if (atRef.pathPresent !== true || baseline.pathPresent !== true) return null;
+  if (typeof atRef.count !== 'number' || typeof baseline.count !== 'number') return null;
+  if (atRef.count > baseline.count) return 'added';
+  if (atRef.count < baseline.count) return 'removed';
+  return null;
+}
+
 /** The two candidate shas the gate machinery can name, resolved together. */
 export interface GateCandidates {
   /** Candidate of the run in flight right now, or null when none is. */
@@ -4320,37 +4354,13 @@ export async function gitPipelinePosition(
               }
             }
             const markerBaselineCount = typeof markerBaseline?.count === 'number' ? markerBaseline.count : null;
-            // WI-41208: BOTH sides of the comparison must be a count taken from a tree that
-            // actually HAS the file. `markerAtCommit` returns a DEFINITIVE
-            // `{ present:false, count:0, pathPresent:false }` when `ls-tree` is empty — i.e.
-            // the ref has no such path at all (candidate-contains.ts). That legitimate zero is
-            // not a measurement of your change's occurrences, and feeding it into the count
-            // comparison below made `0 < baseline` read as a "strict net-decrease" and CORRECT
-            // the leg to TRUE. A brand-new file — absent from origin/staging and origin/main,
-            // whose newest commit is an EDIT to it rather than its creation — therefore had
-            // onStaging/inMain/deployed all flipped to true, with `blockedOn`/`nextAction`
-            // going null and the position reading `live`. A ref that does not contain the path
-            // cannot be carrying your change: leave the leg FALSE and let the
-            // `verdict.present === false` branch below say so (path-absence is definitive, not
-            // degraded, so it must NOT become `positionsUnknown`).
-            const refHasPath = verdict.pathPresent === true;
-            const baselineHasPath = markerBaseline?.pathPresent === true;
             // Require a STRICT count change against the pre-change baseline — never
-            // bare presence. A count comparison can only under-claim (a change that
-            // adds/removes no occurrence of the marker is simply not detected, the
-            // pre-existing behaviour), never over-claim, mirroring markerPartialAgainst.
-            const strictlyAdded =
-              refHasPath &&
-              baselineHasPath &&
-              typeof verdict.count === 'number' &&
-              typeof markerBaselineCount === 'number' &&
-              verdict.count > markerBaselineCount;
-            const strictlyRemoved =
-              refHasPath &&
-              baselineHasPath &&
-              typeof verdict.count === 'number' &&
-              typeof markerBaselineCount === 'number' &&
-              verdict.count < markerBaselineCount;
+            // bare presence, and never a count from a tree that does not have the file
+            // at all. `markerNetChange` owns both rules and is unit-tested against a
+            // deliberately-wrong control; see WI-41208 for the failure it exists to stop.
+            const netChange = markerNetChange(verdict, markerBaseline);
+            const strictlyAdded = netChange === 'added';
+            const strictlyRemoved = netChange === 'removed';
             if (strictlyAdded || strictlyRemoved) {
               positions[leg] = true;
               notes.push(
