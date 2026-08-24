@@ -159,6 +159,39 @@ function isEnforceable(clause: SpecClauseRevision): boolean {
 }
 
 /**
+ * Default plan-status read: ONE query for every namespace in scope.
+ *
+ * Deliberately narrow — only `status`, because that is all eligibility needs (the other
+ * input, whether the plan adopted clauses, is already resolved as `group.clauses`). A
+ * plan that does not come back is simply absent from the map, which the caller reads as
+ * non-enforcing; this function never invents a status for a row it did not see.
+ */
+async function defaultListPlanStatuses(input: {
+  harnessSlug?: string;
+  planSlugs: string[];
+}): Promise<Map<string, string>> {
+  if (input.planSlugs.length === 0) return new Map();
+  const { resolvePlanScope } = await import('./source');
+  const { withWorkspace } = await import('@papercusp/db-org');
+  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
+
+  const rows = await withWorkspace(
+    scope.workspaceId,
+    async (tx) => tx<{ plan_slug: string; status: string | null }[]>`
+      SELECT p.plan_slug, p.status
+        FROM harness_shared.harness_plans p
+       WHERE p.workspace_id = ${scope.workspaceId}
+         AND p.harness_slug = ${scope.harnessSlug}
+         AND p.plan_slug = ANY(${input.planSlugs})
+    `,
+  );
+
+  return new Map(
+    rows.flatMap((row) => (row.status ? [[row.plan_slug, row.status] as const] : [])),
+  );
+}
+
+/**
  * Resolve every behavior clause a work item is on the hook for, across plan namespaces.
  *
  * Returns a REPORT. See the module header: no result of this function is a refusal.
@@ -169,6 +202,7 @@ export async function resolveWorkItemBehaviorContract(
 ): Promise<WorkItemBehaviorContract> {
   const listEdges = deps.listEdges ?? listWorkItemSpecRevisionEdges;
   const listClauses = deps.listClauses ?? listSpecClauses;
+  const listPlanStatuses = deps.listPlanStatuses ?? defaultListPlanStatuses;
   const stamp = planStampOf(workItem);
   const harnessSlug = stamp?.harnessSlug ?? workItem.harness?.trim() ?? undefined;
 
@@ -185,6 +219,12 @@ export async function resolveWorkItemBehaviorContract(
   // BACK-COMPAT LEG: the source-plan stamp contributes its namespace even with no edge,
   // so plan-item-owned clauses authored before edges existed still resolve.
   if (stamp && !byPlan.has(stamp.planSlug)) byPlan.set(stamp.planSlug, []);
+
+  // P-013: one batched status read for every namespace in scope. Batched rather than
+  // per-group so a contract spanning several plans stays one query, and read BEFORE the
+  // groups are built so eligibility is present on every return path — including the
+  // observation-lane and non-behavior-changing early returns below.
+  const planStatuses = await listPlanStatuses({ harnessSlug, planSlugs: [...byPlan.keys()] });
 
   const groups = await Promise.all(
     [...byPlan.entries()].map(async ([planSlug, planEdges]): Promise<BehaviorContractGroup> => {
@@ -212,12 +252,24 @@ export async function resolveWorkItemBehaviorContract(
         return [{ specId: edge.specId, edgeRevision: edge.specRevision, currentRevision: clause.revision }];
       });
 
+      // An unreadable plan (absent from the map) must not enforce. Passing a sentinel
+      // status here rather than `''` keeps that explicit: `laneOf` maps any unrecognized
+      // status to `enforceable`, so a blank would have QUIETLY enforced on a plan we
+      // could not read — the opposite of the intended failure direction.
+      const planStatus = planStatuses.get(planSlug) ?? null;
+      const eligibility: EnforcementEligibility =
+        planStatus === null
+          ? { enforcing: false, lane: 'pre-enforcement', adoption: 'no-behavior-declared', reason: 'pre-enforcement' }
+          : enforcementEligibility({ status: planStatus, clauseCount: clauses.length });
+
       return {
         planSlug,
         via: planEdges.length === 0 ? 'plan-stamp' : isStampPlan ? 'edge+plan-stamp' : 'edge',
         edges: planEdges,
         clauses,
         staleEdges,
+        planStatus,
+        eligibility,
       };
     }),
   );
