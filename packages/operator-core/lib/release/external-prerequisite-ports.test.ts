@@ -12,6 +12,7 @@ import {
   allPrerequisitesSatisfied,
   createProbeRunnerPorts,
   readScopePrerequisiteReadiness,
+  refusePrerequisites,
   unsatisfiedPrerequisites,
   type ProbeRunnerPortDeps,
   type ResolvedScope,
@@ -193,13 +194,19 @@ describe('readScopePrerequisiteReadiness — the gate PULLS a derived verdict', 
     loadRows: async () => rows,
   });
 
-  it('resolves a live receipt as ready/satisfied', async () => {
+  it('resolves a live receipt as ready/satisfied, carrying the spec identity forward', async () => {
     const got = await readScopePrerequisiteReadiness(SCOPE, [spec()], {
       nowMs: NOW,
       deps: deps([row()]),
     });
     expect(got).toEqual([
-      { key: 'stripe-webhook', readiness: expect.objectContaining({ state: 'ready' }), satisfied: true },
+      {
+        key: 'stripe-webhook',
+        capabilityKind: 'stripe-endpoint',
+        owningWorkItem: 'WI-1',
+        readiness: expect.objectContaining({ state: 'ready' }),
+        satisfied: true,
+      },
     ]);
   });
 
@@ -291,5 +298,83 @@ describe('scope predicates', () => {
     });
     expect(allPrerequisitesSatisfied(got)).toBe(false);
     expect(unsatisfiedPrerequisites(got).map((s) => s.key)).toEqual(['b']);
+  });
+});
+
+describe('refusePrerequisites — a TYPED, NAMED refusal, not a prose wall', () => {
+  it('returns null when everything is standing, so a caller cannot mistake empty for refused', async () => {
+    const got = await readScopePrerequisiteReadiness(SCOPE, [spec()], {
+      nowMs: NOW,
+      deps: { loadRows: async () => [row()] },
+    });
+    expect(refusePrerequisites(got)).toBeNull();
+  });
+
+  it('names each failing prerequisite AND the work-item accountable for it', async () => {
+    // The point of the item text: an operator must not have to re-read work items to
+    // discover which lane owns the wall. The owner is IN the refusal.
+    const got = await readScopePrerequisiteReadiness(
+      SCOPE,
+      [
+        spec({ key: 'live', owningWorkItem: 'WI-live' }),
+        spec({ key: 'never-probed', owningWorkItem: 'WI-absent' }),
+        spec({ key: 'lapsed', owningWorkItem: 'WI-expired' }),
+      ],
+      {
+        nowMs: Date.parse('2026-08-24T14:00:00.000Z'),
+        deps: {
+          loadRows: async () => [
+            row({ prerequisite_key: 'live', expires_at: '2026-08-24T15:00:00.000Z' }),
+            row({ prerequisite_key: 'lapsed', expires_at: '2026-08-24T13:00:00.000Z' }),
+          ],
+        },
+      },
+    );
+
+    const refusal = refusePrerequisites(got);
+    expect(refusal).not.toBeNull();
+    expect(refusal!.refused).toBe(true);
+    expect(refusal!.code).toBe('external-prerequisite-not-standing');
+    expect(refusal!.prerequisites).toEqual([
+      {
+        key: 'never-probed',
+        capabilityKind: 'stripe-endpoint',
+        owningWorkItem: 'WI-absent',
+        state: 'absent',
+        reason: 'no-attestation',
+      },
+      {
+        key: 'lapsed',
+        capabilityKind: 'stripe-endpoint',
+        owningWorkItem: 'WI-expired',
+        state: 'expired',
+        reason: 'receipt-expired',
+        expiredAt: '2026-08-24T13:00:00.000Z',
+      },
+    ]);
+    // The satisfied one is absent from the refusal entirely.
+    expect(refusal!.prerequisites.map((p) => p.key)).not.toContain('live');
+  });
+
+  it('distinguishes a probe-observed absence from a never-probed one IN THE REASON', async () => {
+    const got = await readScopePrerequisiteReadiness(SCOPE, [spec({ key: 'down' })], {
+      nowMs: NOW,
+      deps: { loadRows: async () => [row({ prerequisite_key: 'down', present: false })] },
+    });
+    const refusal = refusePrerequisites(got);
+    expect(refusal!.prerequisites[0].reason).toBe('probe-reported-absent');
+  });
+
+  it('renders a summary DERIVED from the entries, never as the only place the data lives', async () => {
+    const got = await readScopePrerequisiteReadiness(SCOPE, [spec({ key: 'x', owningWorkItem: 'WI-9' })], {
+      nowMs: NOW,
+      deps: { loadRows: async () => [] },
+    });
+    const refusal = refusePrerequisites(got)!;
+    expect(refusal.summary).toContain('x');
+    expect(refusal.summary).toContain('WI-9');
+    expect(refusal.summary).toContain('1 external prerequisite not standing');
+    // Every fact in the summary is independently readable as structured data.
+    expect(refusal.prerequisites[0].owningWorkItem).toBe('WI-9');
   });
 });
