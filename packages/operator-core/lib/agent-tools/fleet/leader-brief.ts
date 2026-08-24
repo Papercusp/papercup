@@ -115,6 +115,10 @@ import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
+import {
+  readDependencyBottlenecks,
+  type DependencyBottleneckResult,
+} from '../../dependency-traversal';
 
 // EI-20226510994156306: a 50-member leader brief previously serialized ~66KB
 // before the transport's own result cap. Keep the detailed, verbose rows small;
@@ -2098,6 +2102,114 @@ export type DecoratedAgent = AgentAssignment & {
   intentDivergent?: boolean | null;
 };
 
+export interface LeaderDependencyBottleneckHolder {
+  agentId: string;
+  label: string | null;
+  alive: boolean;
+  sessionState: SessionState | null;
+  verdict: MemberVerdict | null;
+}
+
+export interface LeaderDependencyBottleneckRow {
+  rank: number;
+  key: string;
+  kind: 'plan_item' | 'work_item' | 'external';
+  ref: string;
+  status: string | null;
+  title: string | null;
+  workItemRefs: string[];
+  openBlockedCount: number;
+  lastProgressAt: string | null;
+  hoursSinceProgress: number | null;
+  holder: {
+    state: 'held' | 'unowned';
+    count: number;
+    agents: LeaderDependencyBottleneckHolder[];
+    truncated: boolean;
+  };
+}
+
+export type LeaderDependencyBottleneckView =
+  | {
+      status: 'measured';
+      population: DependencyBottleneckResult['population'] & {
+        progressBasis: 'harness_shared.work_items.last_progress_at';
+        holderBasis: 'reconciled-fleet-assignment-claims';
+      };
+      rows: LeaderDependencyBottleneckRow[];
+    }
+  | {
+      status: 'unknown';
+      reason: 'claim-spec-unread' | 'claim-spec-not-exact-plan' | 'plan-harness-unresolved' | 'read-failed';
+      planSlug?: string;
+      harnessSlug?: string;
+    };
+
+/**
+ * Join the graph-ranked blockers to the ALREADY reconciled fleet roster. Progress
+ * age is derived only from the graph reader's canonical work_items.last_progress_at
+ * value — never from a heartbeat, claim acquisition, or tool-call timestamp.
+ */
+export function buildLeaderDependencyBottleneckView(
+  result: DependencyBottleneckResult,
+  members: readonly DecoratedAgent[],
+  nowMs = Date.now(),
+): LeaderDependencyBottleneckView {
+  const rows = result.rows.map((row, index): LeaderDependencyBottleneckRow => {
+    const refs = new Set(row.workItemRefs.map((ref) => ref.toUpperCase()));
+    const holdersById = new Map<string, LeaderDependencyBottleneckHolder>();
+    for (const member of members) {
+      const holds = member.claims.some(
+        (claim) =>
+          claim.type === 'work-item' &&
+          claim.active &&
+          claim.id != null &&
+          refs.has(claim.id.toUpperCase()),
+      );
+      if (!holds) continue;
+      holdersById.set(member.agentId, {
+        agentId: member.agentId,
+        label: member.label,
+        alive: member.alive,
+        sessionState: member.sessionState ?? null,
+        verdict: member.verdict ?? null,
+      });
+    }
+    const allHolders = [...holdersById.values()].sort((a, b) => a.agentId.localeCompare(b.agentId));
+    const progressMs = row.lastProgressAt == null ? Number.NaN : Date.parse(row.lastProgressAt);
+    const hoursSinceProgress = Number.isFinite(progressMs)
+      ? Math.max(0, Math.floor((nowMs - progressMs) / 3_600_000))
+      : null;
+    return {
+      rank: index + 1,
+      key: row.key,
+      kind: row.kind,
+      ref: row.ref,
+      status: row.status,
+      title: row.title,
+      workItemRefs: row.workItemRefs,
+      openBlockedCount: row.openBlockedCount,
+      lastProgressAt: row.lastProgressAt,
+      hoursSinceProgress,
+      holder: {
+        state: allHolders.length > 0 ? 'held' : 'unowned',
+        count: allHolders.length,
+        agents: allHolders.slice(0, 3),
+        truncated: allHolders.length > 3,
+      },
+    };
+  });
+  return {
+    status: 'measured',
+    population: {
+      ...result.population,
+      progressBasis: 'harness_shared.work_items.last_progress_at',
+      holderBasis: 'reconciled-fleet-assignment-claims',
+    },
+    rows,
+  };
+}
+
 /**
  * EI-18732218464905145 (the WI-6095/EI-18731480441007330 false-deadlock incident):
  * a composed `events:await { spec }` registration stores ONE root node (its own
@@ -3066,6 +3178,12 @@ export async function buildLeaderBrief(
   let fleetHeadcountVsExecutableFrontierAlert:
     | FleetHeadcountVsExecutableFrontierEvaluation
     | undefined;
+  // P-006: always in-band. A missing/exploded dependency read is UNKNOWN,
+  // never an omitted field that a leader can mistake for a measured empty view.
+  let dependencyBottlenecks: LeaderDependencyBottleneckView = {
+    status: 'unknown',
+    reason: 'claim-spec-unread',
+  };
   try {
     const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
     const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
@@ -3113,7 +3231,31 @@ export async function buildLeaderBrief(
     // for a provably exact one-plan lane. Every unknown suppresses the detector.
     const exactPlanSlug = exactPositiveSinglePlanSlugFromFilter(rec.spec.view?.filter);
     const planHarness = args.harness ?? rec.harnessSlug ?? fleetLaneHealth?.spec.harness ?? null;
-    if (exactPlanSlug && planHarness) {
+    if (!exactPlanSlug) {
+      dependencyBottlenecks = { status: 'unknown', reason: 'claim-spec-not-exact-plan' };
+    } else if (!planHarness) {
+      dependencyBottlenecks = {
+        status: 'unknown',
+        reason: 'plan-harness-unresolved',
+        planSlug: exactPlanSlug,
+      };
+    } else {
+      try {
+        const measured = await readDependencyBottlenecks({
+          workspaceId,
+          harnessSlug: planHarness,
+          planSlug: exactPlanSlug,
+          limit: 8,
+        });
+        dependencyBottlenecks = buildLeaderDependencyBottleneckView(measured, grouped);
+      } catch {
+        dependencyBottlenecks = {
+          status: 'unknown',
+          reason: 'read-failed',
+          planSlug: exactPlanSlug,
+          harnessSlug: planHarness,
+        };
+      }
       try {
         const [{ getPlanRow, planItemsForRow }, { analyzePlanDagParallelism }] = await Promise.all([
           import('../plans/source'),
@@ -3300,6 +3442,10 @@ export async function buildLeaderBrief(
         floorStarvedAlert: floorStarvedAlert != null,
         ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
       },
+      // P-006/D-005: static PULL view over the exact-plan claim-spec. Its
+      // measured|unknown discriminator survives shaping; an unread graph never
+      // becomes rows:[] or an absent field that looks like "no bottlenecks".
+      dependencyBottlenecks,
       // P-022: placed directly under the summary it differences. `deltaSummary` is the
       // one-line "since your last wake — members ±N, closes +N, spec rev X→Y, pool factor
       // A→B" a monitor tick actually reads; `delta` carries the per-axis availability so a
