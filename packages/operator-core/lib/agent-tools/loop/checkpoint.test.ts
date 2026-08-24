@@ -520,6 +520,11 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   it('EI-21183575241304993: uses the durable session scope before an unrelated owner loop under wildcard transport', async () => {
     getSessionBrief.mockResolvedValueOnce({ harnessSlug: 'papercusp' } as never);
     getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: false } as never);
+    withBoundedTimeout.mockImplementationOnce(async (work: unknown) => ({
+      value: await (work as () => Promise<unknown>)(),
+      degraded: false,
+      elapsedMs: 0,
+    }));
 
     await call({ next: 'x' }, { harnessSlug: '*', workspaceId: 'ws-1' });
 
@@ -530,13 +535,12 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
-  it('EI-21189207633735449: an active routine install_slug wins over a stale session scope', async () => {
-    getSessionBrief.mockResolvedValueOnce({ harnessSlug: 'papercusp' } as never);
+  it('EI-21189207633735449: an active routine install_slug skips the stale session-scope read', async () => {
     getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: true } as never);
 
     await call({ next: 'x' }, { harnessSlug: '*', workspaceId: 'ws-1' });
 
-    expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-caller' });
+    expect(getSessionBrief).not.toHaveBeenCalled();
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'sb-devboard-hive', ownerId: 'su-caller' }),
       expect.any(String),
@@ -545,6 +549,11 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
   it('EI-21270894164573688: an ended routine does not hijack wildcard checkpoint fallback', async () => {
     getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: false } as never);
+    withBoundedTimeout.mockImplementationOnce(async (work: unknown) => ({
+      value: await (work as () => Promise<unknown>)(),
+      degraded: false,
+      elapsedMs: 0,
+    }));
 
     // Delayed reconciliation can arrive after the loop ended. The wildcard transport
     // carries no concrete harness, and there is no successor brief to consult; the
@@ -555,6 +564,32 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'home-hive', ownerId: 'su-caller' }),
       expect.any(String),
+    );
+  });
+
+  it('EI-21371395040636011: bounds a hanging durable session-scope fallback', async () => {
+    const neverSettles = new Promise<never>(() => undefined);
+    getSessionBrief.mockReturnValueOnce(neverSettles);
+    withBoundedTimeout.mockImplementationOnce(async (work: unknown, options: unknown) => {
+      // Start the thunk to prove the handler supplies lazy work to the bounded helper,
+      // then return its fallback as the real helper would after the deadline.
+      if (typeof work === 'function') void (work as () => Promise<unknown>)();
+      const fallback = (options as { fallback: unknown }).fallback;
+      return { value: fallback, degraded: true, reason: 'timeout' as const, elapsedMs: 5_000 };
+    });
+
+    const b = body(await call({ next: 'continue without a durable scope' }, { harnessSlug: '*', workspaceId: 'ws-1' }));
+
+    expect(b).toMatchObject({ ok: true, harness: 'home-hive' });
+    expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-caller' });
+    const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');
+    expect(withBoundedTimeout).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        fallback: null,
+        timeoutMs: CONTINUATION_READ_BUDGET_MS,
+        label: 'loop:checkpoint session-scope read',
+      }),
     );
   });
 

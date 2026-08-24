@@ -443,9 +443,23 @@ export default defineTool({
     // EI-211835's wildcard transport behavior by consulting the durable session
     // scope before the normal session-context/home fallback.
     const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
-    const activeRoutineHarness = armedRoutine?.active === true ? armedRoutine.harnessSlug : null;
-    const sessionBrief =
-      !explicitHarness && !contextHarness ? await getSessionBrief({ ownerId }).catch(() => null) : null;
+    const activeRoutine = armedRoutine?.active === true;
+    const activeRoutineHarness = activeRoutine ? armedRoutine.harnessSlug : null;
+    // An active routine already carries the cold reader's authoritative install scope, so
+    // do not spend a second database read on the durable session brief. When no routine,
+    // explicit harness, or concrete session context is available, the brief is only a
+    // best-effort fallback: keep its raw PG read inside the same bounded budget as the
+    // continuation reads so a degraded operator cannot hold loop:checkpoint until the
+    // transport's 120-second connection timeout (EI-21371395040636011).
+    const sessionBriefRead =
+      !activeRoutine && !explicitHarness && !contextHarness
+        ? await withBoundedTimeout(() => getSessionBrief({ ownerId }), {
+            fallback: null,
+            timeoutMs: CONTINUATION_READ_BUDGET_MS,
+            label: 'loop:checkpoint session-scope read',
+          })
+        : null;
+    const sessionBrief = sessionBriefRead?.value ?? null;
     const briefHarness = hasConcreteContextHarness(sessionBrief?.harnessSlug)
       ? resolvePotHomeSlug(sessionBrief!.harnessSlug, undefined)
       : null;
