@@ -397,6 +397,15 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
  * generic advisory entirely rather than try to "fix" it into a still-wrong
  * predicate.
  *
+ * ⚠ Sibling instrument trap on `event_awaits` (WI-41247, 2026-08-24):
+ * `fired_at` is stamped ONLY on one-shot rows (`once = true`). A STANDING
+ * watch (`once = false`) matches without consuming — `fireAwaitsForKey`'s
+ * standing leg never writes `fired_at` — so a healthy standing watch reads
+ * `fired_at IS NULL` forever. Measuring delivery/efficacy via `fired_at`
+ * manufactured a false "324 armed / 0 fired" verdict against a tier that had
+ * 639 real deliveries in the same window. Delivery ground truth for standing
+ * rows is `event_wake_deliveries` (join on `await_id`), never `fired_at`.
+ *
  * ⚠ Deliberately a hardcoded per-table registry, like TENANT_SCOPE_OVERRIDES
  * above, NOT a runtime-derived check (e.g. "does this column have exactly one
  * distinct value") — that would require a live cardinality probe on every
