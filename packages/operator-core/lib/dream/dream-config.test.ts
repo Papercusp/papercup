@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import {
   DEFAULT_DREAM_CYCLE_CONFIG,
   DEFAULT_DREAM_PASS_CONFIG,
@@ -98,7 +99,7 @@ describe('resolveDreamPassConfig', () => {
 describe('resolveDreamReviewConfig', () => {
   it('ships a stricter independent-review default than the cheap dreamer', () => {
     expect(DEFAULT_DREAM_REVIEW_CONFIG).toEqual({
-      model: 'claude-opus-5',
+      model: LEARNING_MODEL_SPEC,
       duplicateSimilarityThreshold: 0.85,
       minTotalScore: 5,
       maxNoteChars: 600,

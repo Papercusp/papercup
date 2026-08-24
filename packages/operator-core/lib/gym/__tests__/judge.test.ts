@@ -3,7 +3,7 @@ import { buildJudgePrompt, judgeGymRun, type JudgeLlmCall, type GymJudgeInput } 
 import { GYM_JUDGE_RUBRIC_V1, rubricHash, composite } from '../judge-scoring';
 
 /**
- * The frozen Opus judge runner (P-008). The LLM call is injected so the build →
+ * The frozen judge runner (P-008). The LLM call is injected so the build →
  * call → parse → composite flow is unit-tested without the network. The judge
  * reasons generically over a DISTILLED trace (③b) and emits per-dim scores +
  * rationale; composite is the reward.
@@ -59,7 +59,7 @@ describe('judgeGymRun', () => {
       d2: 6,
       d3: 4,
       rationale: 'solid intent, minor debt',
-      judgeModel: 'claude-opus-4-8',
+      judgeModel: GYM_JUDGE_RUBRIC_V1.model,
       judgeTemp: GYM_JUDGE_RUBRIC_V1.temperature,
       rubricHash: rubricHash(GYM_JUDGE_RUBRIC_V1),
       costUsd: 0.42,
@@ -72,7 +72,7 @@ describe('judgeGymRun', () => {
     const { call, calls } = fakeLlm({ json: { d1: 5, d2: 5, d3: 5, rationale: 'r' } });
     await judgeGymRun(input, { llmCall: call });
     expect(calls).toHaveLength(1);
-    expect(calls[0].model).toBe('claude-opus-4-8');
+    expect(calls[0].model).toBe(GYM_JUDGE_RUBRIC_V1.model);
     expect(calls[0].thinkingBudgetTokens).toBe(GYM_JUDGE_RUBRIC_V1.thinkingBudgetTokens);
     expect(calls[0].responseFormat).toBe('json');
   });

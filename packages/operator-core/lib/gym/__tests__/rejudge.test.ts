@@ -15,7 +15,7 @@ function deps(over: Partial<ReJudgeDeps> = {}): { d: ReJudgeDeps; calls: string[
   const saved: GymScore[] = [];
   const score: GymScore = {
     d1: 8, d2: 7, d3: 6, composite: 7.25, rationale: 'r',
-    judgeModel: 'claude-opus-4-8', rubricHash: targetHash, judgeTemp: 0,
+    judgeModel: GYM_JUDGE_RUBRIC_V1.model, rubricHash: targetHash, judgeTemp: 0,
     weights: GYM_JUDGE_RUBRIC_V1.weights, costUsd: 0.5, inputTokens: 1, outputTokens: 1,
   };
   const d: ReJudgeDeps = {
@@ -36,7 +36,7 @@ describe('reJudgeFromCache', () => {
     expect(res.rubricHash).toBe(targetHash);
     expect(res.score?.composite).toBe(7.25);
     expect(calls).toContain('load');
-    expect(calls).toContain('judge:claude-opus-4-8');
+    expect(calls).toContain(`judge:${GYM_JUDGE_RUBRIC_V1.model}`);
     expect(saved).toHaveLength(1);
   });
 
@@ -62,6 +62,6 @@ describe('reJudgeFromCache', () => {
     });
     await reJudgeFromCache({ runId: 'run-1', rubric: GYM_JUDGE_RUBRIC_V1 }, d);
     expect(seen.intent).toBe('i');
-    expect(seen.model).toBe('claude-opus-4-8');
+    expect(seen.model).toBe(GYM_JUDGE_RUBRIC_V1.model);
   });
 });

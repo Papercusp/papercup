@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { runGymJudge } from '../judge';
 import signalsTool from '../signals';
-import type { JudgeLlmCall } from '../../../gym/primitives';
+import { GYM_JUDGE_RUBRIC_V1, type JudgeLlmCall } from '../../../gym/primitives';
 
 /**
  * P-012 — the gym agent tools (re-exposed lib/gym primitives). gym:signals is pure;
@@ -96,7 +96,7 @@ describe('gym:judge runGymJudge (inner, fake llmCall)', () => {
     expect(score.d3).toBe(7);
     // V1 weights 0.5/0.25/0.25 → (8*.5 + 6*.25 + 7*.25) = 7.25
     expect(score.composite).toBeCloseTo(7.25, 5);
-    expect(score.judgeModel).toBe('claude-opus-4-8');
+    expect(score.judgeModel).toBe(GYM_JUDGE_RUBRIC_V1.model);
     expect(score.costUsd).toBe(0.12);
   });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CorpusEntry } from '../scout/critique-core';
 import type { ScoutLlmCall } from '../scout/types';
+import { DEFAULT_DREAM_REVIEW_CONFIG } from './dream-config';
 import { buildDreamReviewPrompt, parseDreamReviewPayload, runDreamReview } from './dream-review';
 import type { DreamInsight } from './dream-pass';
 import type { DreamFragment } from './fragment-sampler';
@@ -38,6 +39,7 @@ function fakeLlm(payload: { json?: unknown; text?: string; error?: Error }): {
 }
 
 const FRAGMENTS = [fragment('recent', 'observation'), fragment('remote', 'memory')] as const;
+const REVIEW_MODEL = DEFAULT_DREAM_REVIEW_CONFIG.model;
 const INSIGHT: DreamInsight = {
   text: 'Gate repeated retries using the remote memory watermark.',
   requiresA: 'A shows the repeated retry symptom.',
@@ -155,11 +157,11 @@ describe('runDreamReview', () => {
       verdict: 'accept',
       stage: 'grader',
       scores: { dependence: 2, actionability: 2, novelty: 1 },
-      usage: { model: 'claude-opus-5', costUsd: 0.02 },
+      usage: { model: REVIEW_MODEL, costUsd: 0.02 },
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
-      model: 'claude-opus-5',
+      model: REVIEW_MODEL,
       responseFormat: 'json',
       maxTokens: 1_024,
     });
@@ -174,7 +176,7 @@ describe('runDreamReview', () => {
         insight: INSIGHT,
         fragments: FRAGMENTS,
         corpus: CORPUS,
-        dreamerModel: 'claude-opus-5',
+        dreamerModel: REVIEW_MODEL,
         llmCall,
       }),
     ).resolves.toMatchObject({ verdict: 'reject', reason: 'reviewer-not-independent' });
@@ -249,7 +251,7 @@ describe('runDreamReview', () => {
       verdict: 'reject',
       reason: 'grader-error',
       note: 'review transport failed',
-      usage: { model: 'claude-opus-5', costUsd: 0 },
+      usage: { model: REVIEW_MODEL, costUsd: 0 },
     });
   });
 });
