@@ -14,6 +14,10 @@ const h = vi.hoisted(() => {
   setRunPhase: vi.fn(),
   settleRunPhase: vi.fn(),
   failRunIfExecuting: vi.fn(),
+  restartRun: vi.fn(),
+  classifyRunLiveness: vi.fn(),
+  runDeterministicPlanCleanup: vi.fn(),
+  buildPlanCleanupSystemCall: vi.fn(),
   markCleanupFindingAccepted: vi.fn(),
   getRunFindings: vi.fn(),
   notifyPlanCleanupRunChanged: vi.fn(),
@@ -36,10 +40,16 @@ vi.mock('../attention/bulk-run-store', () => ({
   setRunPhase: h.setRunPhase,
   settleRunPhase: h.settleRunPhase,
   failRunIfExecuting: h.failRunIfExecuting,
+  restartRun: h.restartRun,
+  classifyRunLiveness: h.classifyRunLiveness,
 }));
 vi.mock('./run-store', () => ({
   markCleanupFindingAccepted: h.markCleanupFindingAccepted,
   getRunFindings: h.getRunFindings,
+}));
+vi.mock('./deterministic-runner', () => ({
+  runDeterministicPlanCleanup: h.runDeterministicPlanCleanup,
+  buildPlanCleanupSystemCall: h.buildPlanCleanupSystemCall,
 }));
 vi.mock('../attention/bulk-run-sync', () => ({
   notifyPlanCleanupRunChanged: h.notifyPlanCleanupRunChanged,
@@ -98,6 +108,22 @@ beforeEach(() => {
   h.setRunPhase.mockResolvedValue({ ...run, phase: 'running' });
   h.settleRunPhase.mockResolvedValue({ ...run, phase: 'complete' });
   h.failRunIfExecuting.mockResolvedValue(null);
+  h.classifyRunLiveness.mockReturnValue({ state: 'not-executing', phase: 'review' });
+  h.runDeterministicPlanCleanup.mockResolvedValue({
+    needsResolver: true,
+    phase: 'pending',
+    passes: 1,
+    applied: 0,
+    skipped: 0,
+    failed: 0,
+    appliedFindingIds: [],
+    recommendationFindingIds: ['f-1'],
+    reconciliationRequired: [],
+    fatalError: null,
+    authorityRevoked: false,
+    authorityRefusal: null,
+  });
+  h.buildPlanCleanupSystemCall.mockReturnValue(vi.fn());
   h.markCleanupFindingAccepted.mockResolvedValue({
     finding: { findingId: 'stale-now:papercusp/plan-a', outcome: 'accepted' },
     run: { ...run, phase: 'review' },
@@ -205,7 +231,14 @@ describe('plans.cleanupRun sync resolver', () => {
     h.getRun.mockResolvedValue({ ...run, phase: 'review' });
     expect(
       await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: run.runId } as never),
-    ).toEqual([{ run: { ...run, phase: 'review' }, findings: [{ findingId: 'f-1' }] }]);
+    ).toEqual([{
+      run: {
+        ...run,
+        phase: 'review',
+        liveness: { state: 'not-executing', phase: 'review' },
+      },
+      findings: [{ findingId: 'f-1' }],
+    }]);
 
     h.getRun.mockResolvedValue({ ...run, runKind: 'inbox-resolve' });
     expect(
