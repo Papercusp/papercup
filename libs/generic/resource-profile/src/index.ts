@@ -647,17 +647,33 @@ export function deriveResourceProfile(signals: ResourceSignals): ResourceProfile
   const cores = Number.isFinite(rawCores) ? Math.max(1, rawCores) : 1;
   const { embeddedPg, hostRole } = signals;
   const onBattery = signals.onBattery === true;
-  const freeGib = Math.max(0, signals.freeMemBytes) / GIB;
+  // WI-41206: `freeMemBytes` is still collected as telemetry but no longer derives any cap,
+  // so there is deliberately no `freeGib` here. Re-deriving one to gate work would reinstate
+  // both the policy and the os.freemem() measurement error described below.
 
   const hostClass: HostClass = cores <= 4 ? 'laptop' : cores <= 16 ? 'workstation' : 'server';
 
-  // maxSimultaneousAgents: core-derived, halved when an embedded PG shares the box,
-  // then a second clamp by free RAM (~0.5 GiB headroom per agent) so a big-core /
-  // low-memory host doesn't oversubscribe RAM.
+  // maxSimultaneousAgents: CORE-derived, halved when an embedded PG shares the box.
+  //
+  // WI-41206 / remove-memory-derived-work-refusals-2026-08-24: the second clamp by FREE RAM
+  // (`Math.floor(freeGib / 0.5)`) is gone. Two reasons, and the second is the stronger:
+  //
+  //  1. Policy — running the box into paging is the operator's call to make. A host with
+  //     terabytes of swap should get SLOWER under load, not silently advertise fewer agent
+  //     slots than its cores can drive.
+  //  2. It measured the wrong quantity. This clamp read `os.freemem()`, which EXCLUDES
+  //     reclaimable page cache and therefore reads catastrophically low on any box that has
+  //     been up for a while — the exact trap that `scripts/lib/budgeted-task-scheduler.mjs`
+  //     and `scripts/affected-tests.mjs` both document in their own comments ("MemAvailable,
+  //     never MemFree/os.freemem()"). Measured on this host at removal time: os.freemem()
+  //     reported ~33 GiB while MemAvailable was ~70 GiB, i.e. it would have halved the agent
+  //     budget on a host with ample headroom.
+  //
+  // `signals.freeMemBytes` is still COLLECTED and reported — it is useful telemetry. It just
+  // no longer decides how much work this host is permitted to do.
   const agentsByCore = Math.round(cores * (embeddedPg ? 0.25 : 0.5));
-  const agentsByRam = Math.floor(freeGib / 0.5);
   // P5-3: on battery, halve concurrency too (extends battery life, cuts heat/fan).
-  const agentsBudget = Math.min(agentsByCore, agentsByRam);
+  const agentsBudget = agentsByCore;
   const maxSimultaneousAgents = clamp(onBattery ? Math.round(agentsBudget / 2) : agentsBudget, 1, 16);
 
   // DBOS queue: a request-only / utility host isn't the queue drainer, so it gets

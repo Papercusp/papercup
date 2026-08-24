@@ -18,12 +18,10 @@ import type { PeerChildConfig, PeerChildResult } from './peer-child';
 import type { PerfArtifact } from './artifact';
 import { recomputeConvergenceVerdict, type ScenarioMeter } from './metrics';
 import { MeshFormationError } from './mesh-outcome';
-import {
-  capacityOverridesFromEnv,
-  decideMeshCapacity,
-  HostCapacityError,
-  readMemAvailableBytes,
-} from './host-capacity';
+// WI-41206: HostCapacityError is intentionally no longer imported — the mesh preflight is
+// advisory and throws nothing. The class itself stays exported from host-capacity.ts for any
+// out-of-tree caller, but nothing in this driver may refuse a run on a memory projection.
+import { capacityOverridesFromEnv, decideMeshCapacity, readMemAvailableBytes } from './host-capacity';
 
 const CHILD_PATH = fileURLToPath(new URL('./peer-child.ts', import.meta.url));
 /** `--import` shim that installs the no-PG resolution hooks (see spawnPeerChild). */
