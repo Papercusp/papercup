@@ -138,6 +138,10 @@ const h = vi.hoisted(() => {
     getSessionBrief: vi.fn(
       async (_query: { ownerId?: string | null }): Promise<{ harnessSlug?: string | null } | null> => null,
     ),
+    /** Exact-slug owner proof seam for the narrow resumed-monitor plans:get rebind. */
+    verifyExplicitPlanHarness: vi.fn(
+      async (_ctx: unknown, _explicitHarness: string, _args: unknown): Promise<boolean> => false,
+    ),
   };
 });
 
@@ -304,6 +308,13 @@ vi.mock('../../hive-federation', async (importOriginal) => {
 vi.mock('../../harness-core', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, resolveWorkspaceForHarnessSlugIn: h.resolveWorkspaceForHarnessSlugIn };
+});
+// The handler-path matrix supplies the exact-slug owner proof directly. The
+// helper's workspace/index semantics are covered in slug-scope.test.ts; this
+// seam keeps these tests about the transport clamp and effective dispatch ctx.
+vi.mock('../../agent-tools/plans/slug-scope', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, verifyExplicitPlanHarness: h.verifyExplicitPlanHarness };
 });
 // This matrix verifies transport authorization, not embedding-provider latency.
 // Keep the recall tools on their documented lexical fallback so the scoped-safe
@@ -638,6 +649,7 @@ beforeEach(() => {
   h.invocations.length = 0;
   resetResultDoorAggregatesForTests();
   h.scopedClampFlag.value = false;
+  h.verifyExplicitPlanHarness.mockResolvedValue(false);
   invokeProbeSeen.length = 0;
   txlessRoleProbeSeen.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
@@ -1631,6 +1643,51 @@ describe('scoped-superuser hive clamp', () => {
     const res = await callTool('gatingtest:scoped', { harness: 'hiveB-home' }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: rebinds a resumed exact-slug plans:get only after the owner proof passes', async () => {
+    h.scopedClampFlag.value = true;
+    h.verifyExplicitPlanHarness.mockResolvedValue(true);
+    const args = { harness: 'hiveB-home', slug: 'recovered-plan' };
+
+    const res = await callTool('plans:get', args, hiveScoped());
+
+    expect(h.verifyExplicitPlanHarness).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-test', harnessSlug: 'hiveA-home' }),
+      'hiveB-home',
+      args,
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+    // The proof changes the dispatch context, not the signed ambient context.
+    expect(h.invocations[0]?.ctx.harnessSlug).toBe('hiveB-home');
+  });
+
+  it('flag ON: keeps sibling-hive plans:get denied when the exact-slug owner proof fails', async () => {
+    h.scopedClampFlag.value = true;
+    h.verifyExplicitPlanHarness.mockResolvedValue(false);
+    const res = await callTool(
+      'plans:get',
+      { harness: 'hiveB-home', slug: 'unverified-plan' },
+      hiveScoped(),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(h.verifyExplicitPlanHarness).toHaveBeenCalledTimes(1);
+  });
+
+  it('flag ON: does not extend the exact-slug rebind to plans:items', async () => {
+    h.scopedClampFlag.value = true;
+    h.verifyExplicitPlanHarness.mockResolvedValue(true);
+    const res = await callTool(
+      'plans:items',
+      { harness: 'hiveB-home', slug: 'recovered-plan' },
+      hiveScoped(),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(h.verifyExplicitPlanHarness).not.toHaveBeenCalled();
   });
 
   it('flag ON: explains the supported federated route for a cross-hive work_items:claim', async () => {

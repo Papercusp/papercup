@@ -12,8 +12,10 @@ vi.mock('./source', () => ({ planHarnessesForSlugs: mocks.planHarnessesForSlugs 
 
 import {
   decideSlugScope,
+  exactPlanSlugsFromArgs,
   recoverHarnessFromSlugs,
   slugScopeErrorResult,
+  verifyExplicitPlanHarness,
 } from './slug-scope.js';
 
 describe('decideSlugScope', () => {
@@ -59,6 +61,70 @@ describe('recoverHarnessFromSlugs', () => {
     // The missing decision carries the workspace actually searched — the error
     // must say WHERE it looked (EI-21194994217912029's "undiscoverable" half).
     expect(d.status === 'missing' && d.workspaceId).toBe('papercusp-workspace');
+  });
+});
+
+describe('exactPlanSlugsFromArgs', () => {
+  it('merges slug and slugs with stable de-duplication and ignores non-identity values', () => {
+    expect(
+      exactPlanSlugsFromArgs({
+        slug: ' primary-plan ',
+        slugs: ['secondary-plan', 'primary-plan', '  ', 42, null],
+        plan: 'must-not-be-inferred',
+      }),
+    ).toEqual(['primary-plan', 'secondary-plan']);
+  });
+
+  it('returns no scope when the argument is not a plans:get identity object', () => {
+    expect(exactPlanSlugsFromArgs(null)).toEqual([]);
+    expect(exactPlanSlugsFromArgs({ plan: { slug: 'nested-plan' } })).toEqual([]);
+    expect(exactPlanSlugsFromArgs('primary-plan')).toEqual([]);
+  });
+});
+
+describe('verifyExplicitPlanHarness', () => {
+  beforeEach(() => mocks.planHarnessesForSlugs.mockReset());
+
+  it('requires every exact slug to be owned by the explicit harness', async () => {
+    mocks.planHarnessesForSlugs.mockResolvedValue(
+      new Map([
+        ['primary-plan', ['papercusp']],
+        ['secondary-plan', ['papercusp', 'legacy-harness']],
+      ]),
+    );
+
+    await expect(
+      verifyExplicitPlanHarness(
+        { workspaceId: 'ws-123' },
+        'papercusp',
+        { slug: 'primary-plan', slugs: ['secondary-plan'] },
+      ),
+    ).resolves.toBe(true);
+    expect(mocks.planHarnessesForSlugs).toHaveBeenCalledWith('ws-123', ['primary-plan', 'secondary-plan']);
+
+    mocks.planHarnessesForSlugs.mockResolvedValue(
+      new Map([
+        ['primary-plan', ['papercusp']],
+        ['secondary-plan', ['other-harness']],
+      ]),
+    );
+    await expect(
+      verifyExplicitPlanHarness(
+        { workspaceId: 'ws-123' },
+        'papercusp',
+        { slug: 'primary-plan', slugs: ['secondary-plan'] },
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('fails closed for missing identity, a blank harness, or an index failure', async () => {
+    await expect(verifyExplicitPlanHarness({ workspaceId: 'ws-123' }, 'papercusp', {})).resolves.toBe(false);
+    await expect(verifyExplicitPlanHarness({ workspaceId: 'ws-123' }, '  ', { slug: 'primary-plan' })).resolves.toBe(false);
+
+    mocks.planHarnessesForSlugs.mockRejectedValue(new Error('workspace index unavailable'));
+    await expect(
+      verifyExplicitPlanHarness({ workspaceId: 'ws-123' }, 'papercusp', { slug: 'primary-plan' }),
+    ).resolves.toBe(false);
   });
 });
 
