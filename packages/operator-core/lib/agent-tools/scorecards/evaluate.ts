@@ -117,7 +117,11 @@ export async function evaluateScorecard(args: z.infer<typeof scorecardEvaluateAr
     }
     const latestFingerprint = latest
       ? latest.evidenceFingerprint ??
-        scorecardEvidenceFingerprint({ rubricRef: latest.rubricRef, ratings: latest.ratings })
+        scorecardEvidenceFingerprint({
+          rubricRef: latest.rubricRef,
+          ratings: latest.ratings,
+          ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
+        })
       : null;
     const changedCriteria = rubric.criteria
       .map((criterion) => criterion.key)
