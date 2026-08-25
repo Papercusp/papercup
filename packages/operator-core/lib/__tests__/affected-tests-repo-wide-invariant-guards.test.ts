@@ -45,7 +45,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -1090,6 +1090,25 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
         `(guard args: --files=${RFS_OUTSIDE_TS_PATH})`,
     );
   });
+
+  it('moves an E2BIG-class triggering set into a cleaned JSON response file', () => {
+    // Large enough to cross affected-tests' conservative 32 KiB inline ceiling while
+    // remaining below Linux's own single-argument ceiling for THIS probe's
+    // --changed-paths input. The 2026-08-25 gate incident carried 5,976 distinct paths
+    // and exceeded the kernel ceiling before the guard process could start.
+    const changedPaths = Array.from({ length: 1_000 }, () => RFS_OUTSIDE_TS_PATH).join(',');
+    expect(Buffer.byteLength(changedPaths, 'utf8')).toBeGreaterThan(32 * 1024);
+
+    const line = dryTaskLine(dryTasks(changedPaths, 'HEAD^'), RFS_TASK);
+    const responseMatch = line.match(/\(guard args: --files-from=([^\s)]+)\)/);
+    expect(
+      responseMatch,
+      'large scopes must keep the file population out of argv; one --files=<thousands> ' +
+        'entry reproduces spawn E2BIG and aborts the whole checkpoint without a verdict',
+    ).not.toBeNull();
+    expect(line).not.toContain('(guard args: --files=');
+    expect(existsSync(responseMatch?.[1] ?? '')).toBe(false);
+  }, 120_000);
 
   it('attaches for a SUBMODULE ROOT path — the shape the 2026-08-12 main freeze arrived as', () => {
     const submodule = someSubmodulePath();
