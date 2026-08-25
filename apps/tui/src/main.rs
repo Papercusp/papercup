@@ -3118,21 +3118,25 @@ async fn agent_chat_load(
             return;
         }
     };
-    let selected = selected_chat_id
-        .as_deref()
-        .and_then(|id| summaries.iter().find(|chat| chat.id == id))
-        .cloned()
-        .or_else(|| {
-            summaries
-                .iter()
-                .filter(|chat| {
-                    chat.role == "operator"
-                        && chat.feature_id.is_none()
-                        && chat.archived_at.is_none()
-                })
-                .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
-                .cloned()
-        });
+    let selected = if let Some(id) = selected_chat_id.as_deref() {
+        match summaries.iter().find(|chat| chat.id == id).cloned() {
+            Some(chat) => Some(chat),
+            None => {
+                let _ = tx.send(Event::Error(format!(
+                    "native agent chat: selected session {id} is unavailable in pot {harness}"
+                )));
+                return;
+            }
+        }
+    } else {
+        summaries
+            .iter()
+            .filter(|chat| {
+                chat.role == "operator" && chat.feature_id.is_none() && chat.archived_at.is_none()
+            })
+            .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+            .cloned()
+    };
     let Some(summary) = selected else {
         let _ = tx.send(Event::AgentChatLoaded {
             harness,

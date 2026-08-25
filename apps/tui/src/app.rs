@@ -7489,6 +7489,70 @@ mod tests {
     }
 
     #[test]
+    fn effort_and_account_pickers_drive_the_visible_next_turn_selection() {
+        let mut a = App::new();
+        a.open_effort_picker();
+        a.session_picker.as_mut().unwrap().sel = 4; // xhigh
+        assert_eq!(a.commit_session_picker(), Action::Render);
+        assert_eq!(a.chat_effort.as_deref(), Some("xhigh"));
+
+        a.set_account_rows(vec![crate::session_config::AccountRow {
+            id: "acct-7".into(),
+            label: Some("Primary".into()),
+            provider: Some("anthropic".into()),
+            available: Some(true),
+            reading_status: Some("fresh".into()),
+            ..Default::default()
+        }]);
+        a.open_account_picker();
+        a.session_picker.as_mut().unwrap().sel = 2; // auto, disabled default, acct-7
+        assert_eq!(a.commit_session_picker(), Action::Render);
+        assert_eq!(a.chat_account.as_deref(), Some("acct-7"));
+        let identity = a.agent_chat_selection_label();
+        assert!(identity.contains("effort xhigh"), "{identity}");
+        assert!(identity.contains("account acct-7"), "{identity}");
+    }
+
+    #[test]
+    fn session_picker_loads_concrete_role_session_and_preserves_unsent_draft() {
+        let mut a = App::new();
+        a.chat_input = "half typed".into();
+        a.agent_chat_summaries = vec![crate::agent_chats::AgentChatSummary {
+            id: "chat-review".into(),
+            role: "reviewer".into(),
+            feature_id: None,
+            title: Some("Review the patch".into()),
+            turn_count: 4,
+            total_input_tokens: 10,
+            total_output_tokens: 20,
+            total_cost_usd_cents: 1.0,
+            created_at: "2026-08-25".into(),
+            updated_at: "2026-08-25T01:00:00Z".into(),
+            archived_at: None,
+        }];
+        a.open_agent_session_picker();
+        let idx = a
+            .session_picker
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .position(|option| option.id == "session:chat-review")
+            .unwrap();
+        a.session_picker.as_mut().unwrap().sel = idx;
+        assert_eq!(
+            a.commit_session_picker(),
+            Action::LoadAgentChat {
+                harness: "papercup".into(),
+                chat_id: "chat-review".into(),
+            }
+        );
+        assert_eq!(a.agent_chat_role, "reviewer");
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat-review"));
+        assert_eq!(a.chat_input, "half typed");
+    }
+
+    #[test]
     fn bee_panes_append_grouped_by_kind_and_dedup_by_owner() {
         let mut a = App::new();
         a.hive_agent_tabs = true;
