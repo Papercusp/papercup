@@ -44,6 +44,7 @@ import * as ts from 'typescript';
 // NOT-CHECKED prose but not its exit status. Re-exported below so this module's public
 // surface is unchanged.
 import { EXIT_NOT_CHECKED, exitForNoFindings, provedNothing } from './lib/not-checked.mjs';
+import { parseExplicitFiles } from './lib/tsc-baseline-gate.mjs';
 
 export { EXIT_NOT_CHECKED, exitForNoFindings, provedNothing };
 
@@ -445,17 +446,13 @@ function main() {
     process.exit(EXIT_NOT_CHECKED);
   }
 
-  // `--files=a,b,c` DECLARES the set instead of inferring it. Mirrors lint:tsc, which
-  // learned the same lesson: on a tree the whole fleet edits, an inferred "changed set"
-  // is everyone's, so only a declared one carries trustworthy attribution.
-  const filesArg = argv.find((a) => a.startsWith('--files='));
-  const declaredFiles = filesArg
-    ? filesArg
-        .slice('--files='.length)
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : null;
+  // `--files=a,b,c` DECLARES the set instead of inferring it. Large callers use the
+  // existing lint:tsc response-file contract (`--files-from=/path/to/files.json`, whose
+  // body is a JSON string array) so a tree-wide gate cannot put thousands of paths into
+  // one Linux argv entry and die with E2BIG before this detector starts. Reuse the shared
+  // parser so the inline/response-file semantics cannot drift between the two guards.
+  const explicitFiles = parseExplicitFiles(argv);
+  const declaredFiles = explicitFiles == null ? null : [...explicitFiles];
 
   let candidates;
   if (declaredFiles) {
