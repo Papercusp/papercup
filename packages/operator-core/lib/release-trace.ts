@@ -156,6 +156,46 @@ function exactCandidateInconclusive(input: Pick<ReleaseTraceInput, 'position' | 
 }
 
 /**
+ * EI-21432980132792683 / EI-21433072117655298: a verdict the writer recorded FOR THE EXACT
+ * requested candidate is immutable history about that SHA. Two later, unrelated events used to
+ * erase it:
+ *   - a repair reservation naming the same candidate (`gate.inconclusive`), and
+ *   - the aggregate verdict going stale relative to newer staging (`gate.verdictStale`).
+ *
+ * Neither is a new judgement of this SHA. `inconclusive` is by its own contract "the latest
+ * checkpoint attempt that rendered NO verdict", so it cannot supersede one that did; and
+ * staleness means the historical verdict must not be applied to the CURRENT TIP -- which the
+ * separate `gate-verdict-stale` constraint already says -- not that the candidate's own
+ * terminal verdict may be rewritten. Rewriting it deletes the fail-closed branch a ratified
+ * terminal red depends on (stable-candidate-related-gate-2026-08-23#D-059/#D-060), which is
+ * how an already-terminal candidate was reported back as `inconclusive/repair-in-progress`
+ * with `nextVerb: checkpoint:await` -- stranding readers on a verdict that will never arrive.
+ *
+ * Deliberately gated on BOTH an exact-SHA match and the explicit `recordedVerdict` marker,
+ * never the `authoritative && consecutiveReds > 0` fallback below: `authoritative` goes false
+ * precisely when the verdict goes stale, so that fallback cannot speak for a historical
+ * candidate. A red recorded against a DIFFERENT `observedCandidate` is not this candidate's
+ * verdict and still yields to an exact repair reservation.
+ */
+function exactCandidateRecordedTerminalVerdict(input: ReleaseTraceInput): ReleaseTraceCandidateVerdict | null {
+  const targetSha = input.position.targetSha;
+  const observedCandidate = input.gate.observedCandidate ?? input.position.gate.observedCandidate;
+  if (!targetSha || !sameSha(targetSha, observedCandidate)) return null;
+  const recorded = input.gate.recordedVerdict;
+  if (recorded !== 'green' && recorded !== 'not-green') return null;
+  const green = recorded === 'green';
+  return {
+    state: green ? 'green' : 'red',
+    status: green ? 'green' : 'red',
+    green,
+    candidate: observedCandidate ?? targetSha,
+    reason: null,
+    detail: null,
+    observedAtMs: null,
+  };
+}
+
+/**
  * Project the verdict for the requested SHA without inheriting the global gate's older
  * counters. In particular, `gate_health.inconclusive` intentionally leaves a previous
  * red streak in place while the frozen repair queue progresses; that streak is not a
@@ -163,6 +203,9 @@ function exactCandidateInconclusive(input: Pick<ReleaseTraceInput, 'position' | 
  */
 function classifyCandidateVerdict(input: ReleaseTraceInput): ReleaseTraceCandidateVerdict {
   const targetSha = input.position.targetSha;
+  // Immutable exact-candidate history outranks every later reservation and staleness signal.
+  const recordedTerminal = exactCandidateRecordedTerminalVerdict(input);
+  if (recordedTerminal) return recordedTerminal;
   const inconclusive = exactCandidateInconclusive(input);
   if (inconclusive) {
     return {

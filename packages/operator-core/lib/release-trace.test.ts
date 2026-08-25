@@ -429,6 +429,104 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.reason).not.toContain('testing:flakiness');
   });
 
+  describe('an exact-candidate recorded terminal verdict is immutable history', () => {
+    // EI-21432980132792683 / EI-21433072117655298. Candidate 74027d.. was judged authoritative
+    // exact RED and ratified terminal by stable-candidate-related-gate-2026-08-23#D-059/#D-060.
+    // release:trace then reported it back as inconclusive/repair-in-progress with
+    // nextVerb: checkpoint:await -- erasing the ratified fail-closed branch and stranding
+    // readers on a verdict that can never arrive, because the candidate is already terminal.
+    const terminalGate = (over: Partial<ReleaseTraceGate> = {}): Partial<ReleaseTraceGate> => ({
+      ...input().gate,
+      state: 'gate-red',
+      consecutiveReds: 41,
+      failingTests: [],
+      observedCandidate: sha,
+      recordedVerdict: 'not-green',
+      ...over,
+    });
+
+    it('survives a later repair reservation naming the same candidate', () => {
+      const out = buildReleaseTrace(
+        input({
+          gate: terminalGate({
+            // `inconclusive` is by contract the latest attempt that rendered NO verdict, so it
+            // cannot supersede one that did -- least of all for this very SHA.
+            inconclusive: {
+              status: 'repair-in-progress',
+              candidate: sha,
+              detail: 'root-fix fixer dispatched; no suite run',
+              observedAtMs: 123,
+            },
+          }) as ReleaseTraceGate,
+        }),
+      );
+
+      expect(out.gate.candidateVerdict).toMatchObject({ state: 'red', status: 'red', green: false, candidate: sha });
+      expect(out.gate.candidateVerdict.reason).not.toBe('repair-in-progress');
+      expect(out.constraints.map((c) => c.code)).not.toContain('gate-inconclusive');
+      expect(out.nextVerb?.name).not.toBe('checkpoint:await');
+    });
+
+    it('survives the aggregate verdict going stale against newer staging', () => {
+      const out = buildReleaseTrace(
+        input({
+          gate: terminalGate({
+            state: 'gate-verdict-stale',
+            // `authoritative` goes false precisely BECAUSE the verdict went stale, which is why
+            // the fix reads the explicit writer marker instead of the authoritative+reds fallback.
+            authoritative: false,
+            verdictStale: true,
+            verdictStaleReason: 'candidate-fossil; newer staging',
+          }) as ReleaseTraceGate,
+        }),
+      );
+
+      expect(out.gate.candidateVerdict).toMatchObject({ state: 'red', status: 'red', green: false, candidate: sha });
+      // Staleness still governs the CURRENT TIP -- it just may not rewrite this SHA's own verdict.
+      expect(out.constraints.map((c) => c.code)).toContain('gate-verdict-stale');
+    });
+
+    it('preserves a recorded green the same way, so the rule is about immutability not redness', () => {
+      const out = buildReleaseTrace(
+        input({
+          gate: terminalGate({
+            state: 'gate-verdict-stale',
+            authoritative: false,
+            consecutiveReds: 0,
+            recordedVerdict: 'green',
+            verdictStale: true,
+            verdictStaleReason: 'superseded pin',
+          }) as ReleaseTraceGate,
+        }),
+      );
+
+      expect(out.gate.candidateVerdict).toMatchObject({ state: 'green', status: 'green', green: true });
+    });
+
+    it('CONTROL: a red recorded against a DIFFERENT candidate still yields to an exact repair reservation', () => {
+      // Falsifiability control for the fix above: it must key on an exact-SHA match, never on
+      // the mere presence of `recordedVerdict`. Without this, the fix would silently project an
+      // unrelated candidate's red onto this one -- the opposite defect, and the behaviour the
+      // 'projects an exact repair-in-progress candidate as inconclusive' test exists to protect.
+      const out = buildReleaseTrace(
+        input({
+          gate: terminalGate({
+            authoritative: false,
+            observedCandidate: 'older-candidate',
+            inconclusive: {
+              status: 'repair-in-progress',
+              candidate: sha,
+              detail: 'frozen repair fixer dispatched; no suite run',
+              observedAtMs: 123,
+            },
+          }) as ReleaseTraceGate,
+        }),
+      );
+
+      expect(out.gate.candidateVerdict).toMatchObject({ state: 'inconclusive', reason: 'repair-in-progress' });
+    });
+  });
+
   it('uses exact local gate provenance before directing recovery to origin/staging', () => {
     const out = buildReleaseTrace(
       input({
