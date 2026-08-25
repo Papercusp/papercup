@@ -86,6 +86,17 @@ export interface HarnessPlanRow {
   template_data?: unknown;
   promote_policy?: unknown;
   input_schema?: unknown;
+  /** EI-21467654382027859 — the SAME argument as input_schema above, applied to the
+   *  three columns that were left behind when it landed. A plan's declared OUTPUT
+   *  shape, its property schema, and its property VALUES are all part of the plan's
+   *  definition: a peer that reads, promotes or ships the plan needs them, and today
+   *  they land NULL on every peer. `properties` carries a jsonb_typeof(...) = 'object'
+   *  CHECK locally, so a peer must never receive a non-object here.
+   *  OPTIONAL on the wire like their siblings — a peer predating them omits the keys,
+   *  and a required field would drop that peer's plan rows entirely. */
+  output_schema?: unknown;
+  property_schema?: unknown;
+  properties?: unknown;
   /** Optional redundant wire value from post-861 peers. It is deliberately
    *  opaque and ignored: receivers recompute the index from canonical content. */
   forced_past?: unknown;

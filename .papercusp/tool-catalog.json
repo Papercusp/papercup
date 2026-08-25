@@ -5836,7 +5836,7 @@
           "POST"
         ]
       },
-      "description": "One call assigns plan items to `to`, inlines their bodies, delivers `note`, queues a wake, and reports ({ assigned, queued, pickupConfirmed:false, delivered, sessionState, itemsHydrated }). Queueing is not proof a turn executed: verify a fresh checkpoint/activity timestamp. All-refused assignment is `ok:false`; ended/dead targets are loud misses requiring relaunch.",
+      "description": "One call assigns either plan items (`items`) or concrete promoted work-items (`workItemIds`) to `to`, delivers `note`, and issues a required wake. The work-item path re-checks canonical blockers and assigns/wakes only the current actionable frontier; blocked descendants stay unassigned. Dead/absent/unwakeable targets return `ok:false` plus structured `failure` while durable assignment remains recoverable. Queueing is not proof a turn executed.",
       "capabilities": [
         "coord:write"
       ],
