@@ -137,6 +137,11 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
+    // EI-21388931083718076: the respawn orchestration's client deadline must outlive
+    // its 660s server budget (+5s transport buffer) — a 30s client abort turned five
+    // server-side-successful respawns into -32001 outcome-unknown.
+    expect(timeoutForTool('fleet:respawn-member')).toBe(675_000);
+    expect(timeoutForTool('tools:invoke', { name: 'fleet:respawn-member' })).toBe(675_000);
     expect(timeoutForTool('git-sync:run')).toBe(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS);
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);

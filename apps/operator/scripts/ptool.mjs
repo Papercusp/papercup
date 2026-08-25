@@ -781,6 +781,21 @@ export const PTOOL_CALL_TOOL_TIMEOUT_MS = 30_000;
 // call at its ordinary 30s ceiling while the server is still doing real work.
 export const PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS = 300_000;
 
+// EI-21388931083718076: `fleet:respawn-member` is a bounded drain + relaunch +
+// verify orchestration that declares `timeoutSec: 660` server-side
+// (RESPAWN_TIMEOUT_SEC, packages/operator-core/lib/agent-tools/fleet_registry/
+// respawn-member.ts — EI-21266158571232094 deliberately aligned the dispatch
+// stack AND the MCP transport deadline to that same 660s budget, +5s transport
+// buffer = 665s effective). The CLIENT was never aligned: the flat 30s deadline
+// aborted five concurrent respawns as MCP -32001 outcome-unknown while every one
+// of them completed ok server-side at ~29–33s (tool_invocations, 2026-08-25).
+// A client deadline tighter than the server's just aborts calls the server would
+// have completed (see PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS above and
+// /internal/docs/agent-insights/ptool-client-timeout-must-outlive-tool-server-clamp);
+// keep it above the 665s effective MCP deadline so the tool's own typed
+// success / verified-failure / timeout is always the first outcome observed.
+export const PTOOL_RESPAWN_MEMBER_TIMEOUT_MS = 675_000;
+
 // `git-sync:run` is an acknowledged long-running call: its server handler
 // bounds the sync fire at 45s and may spend up to 5s each reading HEAD before
 // and after that fire. Keep the normal ptool liveness ceiling for ordinary
@@ -864,6 +879,7 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
+  ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
