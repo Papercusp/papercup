@@ -106,16 +106,26 @@ describe('pc-heavy trap-scope guard — live source', () => {
     expect(undefendedExpansions(body as string)).toEqual([]);
   });
 
-  it('those handlers are still the ones the traps actually register', () => {
-    // If a new handler is trapped, TRAP_REACHABLE above must grow with it.
+  it('every trapped preemption handler remains covered', () => {
+    // If a new preemption handler is trapped, TRAP_REACHABLE above must grow with it.
+    // Inline cleanup commands are allowed too: they are not functions whose dynamic
+    // `_preempt_` locals need a separately-extracted body. This distinction became
+    // load-bearing when pc-heavy added an EXIT trap that removes its retry-result file;
+    // treating the command name `rm` as a handler made the guard reject safe source.
     // The quoted body must be LINE-BOUNDED: `[^']+` spanning newlines lets the
     // `trap '' PIPE` on line 221 pair its quote with a later trap's, yielding a
     // phantom empty handler. (Caught by this guard's own first run.)
-    const trapped = [...source.matchAll(/^\s*trap\s+'([^'\n]*)'\s+(EXIT|TERM|INT|HUP)/gm)]
-      .map((m) => m[1].trim().split(/\s+/)[0])
+    const trappedBodies = [...source.matchAll(/^\s*trap\s+'([^'\n]*)'\s+(EXIT|TERM|INT|HUP)/gm)]
+      .map((m) => m[1].trim())
       // `trap '' SIG` is "ignore this signal" — no handler body to judge.
-      .filter((h) => h !== '');
-    expect(trapped.length).toBeGreaterThan(0);
-    for (const handler of new Set(trapped)) expect(TRAP_REACHABLE).toContain(handler);
+      .filter((body) => body !== '');
+    expect(trappedBodies.length).toBeGreaterThan(0);
+    for (const body of trappedBodies) {
+      const handler = body.split(/\s+/)[0];
+      if (/^_(?:preempt_|pc_heavy_queue_)/.test(handler)) {
+        expect(TRAP_REACHABLE).toContain(handler);
+      }
+      expect(undefendedExpansions(body)).toEqual([]);
+    }
   });
 });
