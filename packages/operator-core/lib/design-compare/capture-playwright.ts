@@ -112,10 +112,35 @@ class PlaywrightCapturePage implements CapturePage {
           ? document.documentElement.getAttribute(attributeName)
           : undefined,
         fontsReady: document.fonts.status === 'loaded',
-        // `document.fonts.check` answers "could the page render this family",
-        // which is exactly the substitution question. Asking for the list of
-        // loaded fonts instead would let a check pass because SOMETHING loaded.
-        missingFontFamilies: families.filter((family) => !document.fonts.check(`16px "${family}"`)),
+        // Font availability is measured by METRICS, not asked of
+        // `document.fonts.check`.
+        //
+        // `check()` was the obvious call and it is the wrong instrument: it
+        // answers "is there a pending FontFace blocking this family", so for any
+        // family that is not a still-loading webfont — including a family that
+        // does not exist anywhere — it returns TRUE. Measured against real
+        // Chromium: `document.fonts.check('16px "Totally Not Installed Face"')`
+        // is `true`. A substitution detector built on it can never fire.
+        //
+        // What actually answers "will this family change the rendering" is
+        // whether it measures differently from the generic it would fall back
+        // to. If the family is unavailable, `"Family", monospace` resolves to
+        // plain monospace and the widths are identical — and identical against
+        // all three generics, which is what makes a false negative require a
+        // family metrically identical to monospace AND sans-serif AND serif.
+        missingFontFamilies: families.filter((family) => {
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          if (!context) return false;
+          const probe = 'mmmmmmmmmmlliWWWW@1234567890';
+          const available = ['monospace', 'sans-serif', 'serif'].some((generic) => {
+            context.font = `72px ${generic}`;
+            const fallbackWidth = context.measureText(probe).width;
+            context.font = `72px "${family}", ${generic}`;
+            return context.measureText(probe).width !== fallbackWidth;
+          });
+          return !available;
+        }),
       }),
       {
         families: [...options.requiredFontFamilies],

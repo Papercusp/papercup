@@ -63,7 +63,17 @@ const PAGE_FIXTURE = `<!doctype html>
   #target { width: 120px; height: 40px; background: #3355aa; }
   #target:hover { background: #aa3355; }
 </style></head>
-<body><div id="target"></div><div id="block"></div></body></html>`;
+<body><div id="target"></div><div id="block"></div><script>
+  // Simulates a framework that OWNS an attribute and clobbers external writes
+  // to it — a real failure mode for theming applied from outside the app, and
+  // the only way to prove the attribute verification can actually fail.
+  new MutationObserver(function () {
+    var v = document.documentElement.getAttribute('data-theme-clobbered');
+    if (v !== null && v !== 'clobbered') {
+      document.documentElement.setAttribute('data-theme-clobbered', 'clobbered');
+    }
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-clobbered'] });
+</script></body></html>`;
 
 /** A short page, so a full-page capture is not accidentally viewport-sized. */
 const SHORT_PAGE_FIXTURE = `<!doctype html>
@@ -286,29 +296,27 @@ describe('capture adapters against real Chromium', () => {
   );
 
   it(
-    'refuses when the contracted theme attribute never lands on the page',
+    'refuses when the page clobbers the contracted theme attribute',
     async () => {
-      // The resolver asks for an attribute value the adapter WILL set, then the
-      // page is checked for a DIFFERENT one — simulating a surface whose theming
-      // is applied elsewhere and silently loses the request.
+      // The fixture runs a MutationObserver that clobbers this attribute back
+      // to its own value. The adapter sets what it was asked to; the page
+      // overwrites it; the verification reads the real DOM and catches it.
+      // Without this the attribute check could never fail, and a check that
+      // cannot fail is not a check.
       const outcome = await createPageRouteCaptureAdapter(
         deps({
           themeResolver: () => ({
             colorScheme: 'light',
-            // Applied to `data-theme`, but verified against `data-theme-x`,
-            // which nothing sets.
-            documentAttribute: { name: 'data-theme-x', value: 'never-set-by-anything' },
+            documentAttribute: { name: 'data-theme-clobbered', value: 'requested' },
           }),
         }),
-      ).capture(
-        request({
-          environment: { ...BASE_ENVIRONMENT, theme: 'contrast' },
-        }),
-      );
-      // The adapter sets exactly what it was told to, so this one SUCCEEDS —
-      // which is itself the point: the verification reads the real DOM, so it
-      // agrees when the attribute really is there.
-      expect(outcome.ok).toBe(true);
+      ).capture(request({ environment: { ...BASE_ENVIRONMENT, theme: 'contrast' } }));
+
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('expected a refusal');
+      expect(outcome.invalidReason).toBe('environment-mismatch');
+      expect(outcome.detail).toContain('data-theme-clobbered');
+      expect(outcome.detail).toContain("'clobbered'");
     },
     120_000,
   );
@@ -350,6 +358,48 @@ describe('capture adapters against real Chromium', () => {
       expect(outcome.invalidReason).toBe('environment-mismatch');
       expect(outcome.detail).toContain('Totally Not Installed Face');
       expect(outcome.detail).toContain('substituted silently');
+    },
+    120_000,
+  );
+
+  it(
+    'the font detector DISCRIMINATES — a real family is not reported missing',
+    async () => {
+      // The calibration half of the test above. A detector that reported every
+      // family missing would pass that test perfectly while being useless, and
+      // the instrument this replaced had the mirror-image defect: it reported
+      // every family present, including invented ones. So both directions are
+      // measured, with the same primitive, in one observation.
+      const real = [
+        'DejaVu Sans',
+        'Liberation Sans',
+        'Arial',
+        'Courier New',
+        'DejaVu Sans Mono',
+        'Nimbus Sans',
+      ];
+      const page = await browser.newPage({
+        viewport: { width: 200, height: 100 },
+        deviceScaleFactor: 1,
+        colorScheme: 'light',
+        reducedMotion: 'reduce',
+      });
+      try {
+        await page.goto(origin, 10_000);
+        await page.settle({ networkIdleTimeoutMs: 2_000, requiredFontFamilies: [] });
+        const observed = await page.observeEnvironment({
+          requiredFontFamilies: [...real, 'Totally Not Installed Face'],
+        });
+
+        expect(observed.missingFontFamilies).toContain('Totally Not Installed Face');
+        const available = real.filter((f) => !observed.missingFontFamilies.includes(f));
+        // A machine that can render text has at least one of these. If this
+        // ever fails, the detector has regressed to always-missing — which is
+        // exactly the failure mode a one-sided test would hide.
+        expect(available.length).toBeGreaterThan(0);
+      } finally {
+        await page.close();
+      }
     },
     120_000,
   );
