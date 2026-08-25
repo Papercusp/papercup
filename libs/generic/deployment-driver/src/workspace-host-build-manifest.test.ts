@@ -151,6 +151,23 @@ describe("workspace-host build manifest", () => {
     ).toThrow(WorkspaceHostBuildManifestError);
   });
 
+  it("refuses a material path that is secret-shaped", () => {
+    // Secret material must never be enumerated into a manifest that is published alongside the
+    // artifact it describes. The parameter guard already covers values; this covers paths.
+    expect(() =>
+      buildWorkspaceHostBuildManifest({
+        ...input(),
+        materials: [
+          {
+            path: "secrets/signing_private_key.pem",
+            sha256: SHA_A,
+            sizeBytes: 1,
+          },
+        ],
+      }),
+    ).toThrow(WorkspaceHostBuildManifestError);
+  });
+
   it("requires the shared Packer selection and unique provider targets", () => {
     expect(() =>
       buildWorkspaceHostBuildManifest({
