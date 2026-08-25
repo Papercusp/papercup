@@ -126,6 +126,25 @@ describe('host-bootstrap wires every startup guard', () => {
   });
 });
 
+describe('host-bootstrap fails the background plane closed on migration failure', () => {
+  it('checks the boot-migration result before marking migrations applied or starting background machinery', () => {
+    const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()');
+    const failureGuard = bootSrc.indexOf('if (!migrationResult || migrationResult.failed.length > 0)', apply);
+    const withheld = bootSrc.indexOf('BACKGROUND STARTUP WITHHELD', failureGuard);
+    const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', apply);
+    const backgroundStartup = bootSrc.indexOf('provisionSystemPrincipals', requestGate);
+
+    expect(apply).toBeGreaterThan(-1);
+    expect(failureGuard).toBeGreaterThan(apply);
+    expect(withheld).toBeGreaterThan(failureGuard);
+    expect(requestGate).toBeGreaterThan(withheld);
+    expect(backgroundStartup).toBeGreaterThan(requestGate);
+
+    const guardBody = bootSrc.slice(failureGuard, requestGate);
+    expect(guardBody).toMatch(/BACKGROUND STARTUP WITHHELD[\s\S]*?return;/);
+  });
+});
+
 describe('host-bootstrap arms the engine-death sentinel only on a DBOS-owning host', () => {
   it('uses the same dbosLaunchesHere() predicate as the DBOS launch gate', () => {
     const start = bootSrc.indexOf('// Red Queen engine-death sentinel');

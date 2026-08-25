@@ -1361,12 +1361,27 @@ export function runBootstrap(): void {
       // operator DB on boot. Embedded-pg applies them when ITS server boots, but
       // the native :5432 dev box has no such runner — so without this, a
       // migration added since the last restart stays unapplied (the silent
-      // "missing column" gap). Log-and-continue: a broken peer migration is
-      // logged + coord-broadcast and left pending, never wedges boot. Awaited
-      // here so migrations are in place BEFORE the boot-gate flips + the
-      // substrate (which reads those tables) starts.
+      // "missing column" gap). The helper reports failures instead of throwing
+      // so the request plane can still come up, but the background plane MUST
+      // fail closed below: running schema-dependent routines against an older
+      // schema turns one pending migration into a fleet-wide retry storm.
+      // Awaited here so migrations are in place BEFORE the boot-gate flips +
+      // the substrate (which reads those tables) starts.
       const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
-      await applyPendingMigrationsAtBoot();
+      const migrationResult = await applyPendingMigrationsAtBoot();
+      if (!migrationResult || migrationResult.failed.length > 0) {
+        const failureSummary = migrationResult
+          ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed
+              .map((failure) => failure.file)
+              .join(', ')}`
+          : 'migration state could not be determined';
+        console.error(
+          `[boot-migrate] 🚨 BACKGROUND STARTUP WITHHELD: ${failureSummary}. ` +
+            'The request plane may still start after its bounded gate timeout, but schema-dependent background machinery will stay off. ' +
+            'Repair/apply the migration, then restart this host.',
+        );
+        return;
+      }
       // WI-5441/WI-5764 (public-release boot-window federation-capture-hole
       // guard): flip the request-serving gate the INSTANT migrations are
       // applied — i.e. the instant every table's substrate_outbox capture
@@ -1378,9 +1393,10 @@ export function runBootstrap(): void {
       // migration set hasn't created yet (su-72ce40f2's WI-5441 diagnosis,
       // WI-5441 post 53143: startRequestServers() previously ran unconditionally
       // right after this whole substrate-boot IIFE was fired-and-forgotten, with
-      // no ordering guarantee against a slow/large migration run). Never throws
-      // (applyPendingMigrationsAtBoot is documented never-throw; this call is
-      // synchronous besides), so it never risks silently skipping the flip.
+      // no ordering guarantee against a slow/large migration run). This point
+      // is reachable only after a conclusive, failure-free migration result;
+      // an unknown/failed result returned above before any background machinery
+      // could start.
       try {
         const { markMigrationsAppliedForRequestGate } = await import(
           '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
