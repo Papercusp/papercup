@@ -523,13 +523,14 @@ export default defineTool({
     // in the tool args. Preserve it through tools:invoke: otherwise an operator
     // session has ctx.harnessSlug='*', misses args.harness, and silently falls
     // through to the workspace home pot (which may be a different harness).
+    const innerHarness = args.harness?.trim();
     const dispatchHarness = ctx.requestOrigin?.query?.harness?.trim();
-    const requestedHarness = isConcreteHarness(args.harness)
-      ? args.harness.trim()
+    const requestedHarness = isConcreteHarness(innerHarness)
+      ? innerHarness
       : isConcreteHarness(dispatchHarness)
         ? dispatchHarness
         : undefined;
-    if (isConcreteHarness(args.harness) && isConcreteHarness(dispatchHarness) && args.harness.trim() !== dispatchHarness) {
+    if (isConcreteHarness(innerHarness) && isConcreteHarness(dispatchHarness) && innerHarness !== dispatchHarness) {
       return {
         content: [
           {
@@ -538,9 +539,9 @@ export default defineTool({
               ok: false,
               error: 'harness_scope_mismatch',
               dispatchHarness,
-              requestedHarness: args.harness.trim(),
+              requestedHarness: innerHarness,
               message:
-                `Refusing to arm: dispatch scope harness "${dispatchHarness}" conflicts with inner harness "${args.harness.trim()}". ` +
+                `Refusing to arm: dispatch scope harness "${dispatchHarness}" conflicts with inner harness "${innerHarness}". ` +
                 'The verified dispatch scope is authoritative; re-arm with a matching harness.',
             }),
           },
