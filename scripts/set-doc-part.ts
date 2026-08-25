@@ -40,6 +40,18 @@ import {
 } from "../packages/operator-core/lib/harness/docs/doc-record";
 import { connectScriptPg } from "./lib/pg-url.mjs";
 import { writeStderrSync, writeStdoutSync } from "./lib/write-stdout-sync.mjs";
+// The projector's composition is IMPORTED, never re-implemented — the same reasoning
+// that makes `validateDocPart` a shared import above. A second copy of the cut order or
+// the budget arithmetic here would drift from the thing that actually authors the file,
+// and this report's whole value is that it predicts what project-doc-parts will DO.
+// Importing is safe: that module runs its main() only under an `import.meta.url` guard.
+import {
+  CHARS_PER_TOKEN_KNOWN_MODEL,
+  CLIENTS,
+  memoryWarningThreshold,
+  projectClient,
+  readProjectedParts,
+} from "./project-doc-parts.mjs";
 
 const WORKSPACE_ID =
   process.env.PAPERCUSP_WORKSPACE_ID ?? "papercusp-workspace";
@@ -193,6 +205,167 @@ function readBody(args: Map<string, string | true>): string {
       "  A part body is multi-line markdown; passing it through argv mangles quoting,\n" +
       "  which is how a rule silently acquires a stray backslash.",
   );
+}
+
+/** The row shape `projectClient` consumes — exactly what `readProjectedParts` returns. */
+interface ProjectionRow {
+  part_key: string;
+  kind: string;
+  body: string;
+  ordinal: number;
+  client_scope: string[];
+  target_section: string | null;
+  project_rank: number;
+}
+
+interface ClientImpact {
+  file: string;
+  /** Parts THIS edit pushes out of the file. Never truncated — see renderImpact. */
+  evicted: string[];
+  /** Parts THIS edit makes room for (a shrinking edit). */
+  restored: string[];
+  headroomBefore: number;
+  headroomAfter: number;
+  /** Set when the projector refused outright; the numbers are then meaningless. */
+  failed?: string;
+}
+
+/**
+ * The projected part list as it will be AFTER this edit commits.
+ *
+ * `readProjectedParts` filters `cardinality(client_scope) > 0`, so an edit that empties
+ * the scope REMOVES the part from the projection and one that fills it ADDS it. Both
+ * directions change what fits, so neither can be modelled as a body swap.
+ */
+function applyEditInMemory(
+  rows: ProjectionRow[],
+  partKey: string,
+  next: ProjectionRow | null,
+): ProjectionRow[] {
+  const without = rows.filter((r) => r.part_key !== partKey);
+  if (!next) return without;
+  return [...without, next].sort(
+    (a, b) => a.ordinal - b.ordinal || a.part_key.localeCompare(b.part_key),
+  );
+}
+
+/**
+ * Project the corpus twice — before and after — and diff the CUT SETS.
+ *
+ * Why a delta and not the absolute cut list the projector already prints: the absolute
+ * list is dominated by parts that were already cut before this edit, so a newly-evicted
+ * rule hides among them, and the projector truncates that list, so the new one can be in
+ * the elided tail. A delta is short by construction and is attributable to the author
+ * standing in front of it. (EI-21433690724936606: a ~510-char addition silently evicted
+ * four unrelated rules from every agent's context and was very nearly blamed on a peer.)
+ */
+function projectionImpact(
+  before: ProjectionRow[],
+  after: ProjectionRow[],
+  docId: string,
+): ClientImpact[] {
+  // The SAME defaults project-doc-parts' main() uses, via the same imported function —
+  // a hardcoded number here would silently stop predicting the real projection the day
+  // the budget moves.
+  const budget = memoryWarningThreshold({
+    contextTokens: 400_000,
+    charsPerToken: CHARS_PER_TOKEN_KNOWN_MODEL,
+  });
+
+  return CLIENTS.map(
+    ({
+      client,
+      file,
+      reader,
+    }: {
+      client: string;
+      file: string;
+      reader: string;
+    }): ClientImpact => {
+      try {
+        const opts = { client, docId, file, reader, budget };
+        const b = projectClient(before, opts);
+        const a = projectClient(after, opts);
+        const droppedBefore = new Set<string>(
+          b.dropped.map((p: ProjectionRow) => p.part_key),
+        );
+        const droppedAfter = new Set<string>(
+          a.dropped.map((p: ProjectionRow) => p.part_key),
+        );
+        return {
+          file,
+          evicted: a.dropped
+            .map((p: ProjectionRow) => p.part_key)
+            .filter((k: string) => !droppedBefore.has(k)),
+          restored: b.dropped
+            .map((p: ProjectionRow) => p.part_key)
+            .filter((k: string) => !droppedAfter.has(k)),
+          headroomBefore: budget - b.text.length,
+          headroomAfter: budget - a.text.length,
+        };
+      } catch (err) {
+        // The projector throws when the budget cannot be honoured even with every part
+        // dropped. Reporting that plainly beats letting it surface hours later from a
+        // different command — but it must not take the edit down with it.
+        return {
+          file,
+          evicted: [],
+          restored: [],
+          headroomBefore: Number.NaN,
+          headroomAfter: Number.NaN,
+          failed: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+}
+
+const n = (v: number): string =>
+  Number.isFinite(v) ? v.toLocaleString("en-US") : "?";
+
+/**
+ * Render the impact block.
+ *
+ * The EVICTED list is never truncated, deliberately. The projector truncates its
+ * ABSOLUTE cut list for good reason — it is long and mostly pre-existing — but a delta
+ * is bounded by what this one edit displaced, and eliding the tail of it would recreate
+ * exactly the blind spot this report exists to remove.
+ */
+function renderImpact(impacts: ClientImpact[], partKey: string): string {
+  const out: string[] = ["", "  projection impact (what this edit does to the file):"];
+  for (const i of impacts) {
+    if (i.failed) {
+      out.push(`    ${i.file.padEnd(12)} ⚠ projector refused: ${i.failed}`);
+      continue;
+    }
+    const delta = i.headroomAfter - i.headroomBefore;
+    const arrow = `headroom ${n(i.headroomBefore)} -> ${n(i.headroomAfter)} chars (${
+      delta >= 0 ? "+" : ""
+    }${n(delta)})`;
+
+    if (i.evicted.length > 0) {
+      out.push(
+        `    ${i.file.padEnd(12)} ⚠ EVICTS ${i.evicted.length} part(s) — ${arrow}`,
+      );
+      for (const k of i.evicted) {
+        out.push(`                   - ${k}${k === partKey ? "   <- the part you are editing" : ""}`);
+      }
+      if (i.evicted.some((k) => k === partKey)) {
+        out.push(
+          "                   (your own part does not fit: it is written to the file's",
+          "                    spill pointer, not to the file. Shorten it or raise its rank.)",
+        );
+      }
+    } else if (i.restored.length > 0) {
+      out.push(
+        `    ${i.file.padEnd(12)} ✓ restores ${i.restored.length} part(s) — ${arrow}`,
+      );
+      for (const k of i.restored) out.push(`                   + ${k}`);
+    } else {
+      out.push(`    ${i.file.padEnd(12)} no change to the cut set — ${arrow}`);
+    }
+  }
+  return out.join("\n");
 }
 
 async function main(): Promise<void> {
