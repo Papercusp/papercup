@@ -200,4 +200,52 @@ describe('detectUnparsedItemLines — precision unit', () => {
     expect(found).toHaveLength(1);
     expect(found[0]?.text).toContain('P-001');
   });
+
+  it('PRECISION: canonical nested VAL assertion headers and fields are not item warnings', () => {
+    const body = [
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` qualify the gate',
+      '  - **[VAL-plan-2026-08-25-001]**',
+      '    - **Verify:** run the focused qualification test',
+      '    - **Evidence:** record the passing test output',
+      '    - **RequiresTest:** `true`',
+      '    - **Status:** `todo`',
+    ].join('\n');
+
+    const summary = summarizeItemParse(written(body), NEW);
+    expect(summary.itemsParsed).toBe(1);
+    expect(summary.unparsedItemLines).toBeUndefined();
+    expect(summary.hint).toBeUndefined();
+  });
+
+  it('PRECISION: a malformed top-level Phase item after a VAL block still warns', () => {
+    const body = [
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` qualify the gate',
+      '  - **[VAL-plan-2026-08-25-001]**',
+      '    - **Verify:** run the focused qualification test',
+      '    - **Evidence:** record the passing test output',
+      '',
+      '- P-002 missing the canonical status token',
+    ].join('\n');
+
+    const found = detectUnparsedItemLines(written(body), new Set(['- **P-001** `todo` qualify the gate']));
+    expect(found).toHaveLength(1);
+    expect(found[0]?.text).toContain('P-002');
+  });
+
+  it('PRECISION: VAL-shaped fields outside a VAL block remain item warnings', () => {
+    const body = [
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` qualify the gate',
+      '  - **Verify:** this is not nested under a VAL header',
+    ].join('\n');
+
+    const found = detectUnparsedItemLines(written(body), new Set(['- **P-001** `todo` qualify the gate']));
+    expect(found).toHaveLength(1);
+    expect(found[0]?.text).toContain('Verify');
+  });
 });

@@ -53,6 +53,20 @@ const VAL_HEADER_RE = /^\s{1,8}-\s+\*{0,2}\[VAL-([^\]]+)\]\*{0,2}(?:\s+(.*?))?\s
 const VAL_FIELD_RE = /^\s{2,12}-\s+\*\*(Verify|Evidence|Status|RequiresTest):\*\*\s*(.*)/;
 const ITEM_LINE_RE = /^-\s+\*\*(P-\d{3,})\*\*/;
 
+/**
+ * Recognize the canonical nested VAL metadata bullets without exposing the
+ * parsing regexes themselves to callers that only need structural detection.
+ * These helpers intentionally remain line-oriented: callers still decide
+ * whether the line is nested inside an active VAL block.
+ */
+export function isValAssertionHeaderLine(line: string): boolean {
+  return VAL_HEADER_RE.test(line);
+}
+
+export function isValAssertionFieldLine(line: string): boolean {
+  return VAL_FIELD_RE.test(line);
+}
+
 function parseStatus(raw: string): PlanAssertion['status'] {
   const s = raw.replace(/`/g, '').trim().toLowerCase();
   if (s === 'validating' || s === 'passed' || s === 'failed') return s;

@@ -17,6 +17,7 @@
  */
 
 import { ITEM_STATUSES, parsePlan, maskFences } from './parser';
+import { isValAssertionFieldLine, isValAssertionHeaderLine } from './val-assertions';
 
 /** A parsed item, echoed back so the caller never needs a follow-up plans:get
  *  just to confirm the items registered. */
@@ -97,6 +98,7 @@ export function detectUnparsedItemLines(
   const out: UnparsedItemLine[] = [];
   let skipSection = false; // inside ## Now, ## Decisions, or ## Promoted
   let underPhase = false; // inside a ## Phase… section
+  let activeValIndent: number | null = null;
 
   for (let i = 0; i < maskedLines.length; i++) {
     const masked = maskedLines[i] ?? '';
@@ -107,9 +109,29 @@ export function detectUnparsedItemLines(
       const norm = (heading[2] ?? '').replace(/^\d+(?:\.\d+)?\.\s+/, '').trim();
       skipSection = /^(Now|Decisions|Promoted)$/i.test(norm);
       underPhase = /^Phase\b/i.test(norm);
+      activeValIndent = null;
       continue;
     }
     if (skipSection) continue;
+
+    const indent = masked.match(/^[ \t]*/)?.[0].length ?? 0;
+    if (activeValIndent !== null) {
+      // Blank lines do not end a VAL block. A sibling/ancestor bullet does;
+      // after clearing the block it is evaluated by the normal item guard.
+      if (masked.trim() === '') continue;
+      if (indent > activeValIndent && isValAssertionFieldLine(masked)) continue;
+      if (indent <= activeValIndent) activeValIndent = null;
+    }
+
+    // Canonical VAL assertions are nested metadata, not plan items. Track the
+    // header's indentation so only its more-indented Verify/Evidence/Status/
+    // RequiresTest fields are exempted; malformed top-level Phase bullets keep
+    // flowing through the existing attempted-item detector below.
+    if (underPhase && isValAssertionHeaderLine(masked)) {
+      activeValIndent = indent;
+      continue;
+    }
+
     // A line the parser DID accept as an item — never re-flag it.
     if (parsedItemRawLines.has(real)) continue;
 
