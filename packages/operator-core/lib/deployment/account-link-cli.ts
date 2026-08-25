@@ -32,6 +32,7 @@ import { registerAccount, normalizeAccountProvider, type AccountProvider } from 
 import { updateAccountPool, accountStatus, type AccountStatusRow } from './account-pool-store';
 import { papercuspPath } from '../papercusp-root';
 import { trackDetached } from '../detached-imports';
+import { resolveAgentBinarySync } from '../agent-bin-detect';
 
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 // Match the authorize URL / the minted token in the CLI's (ANSI-stripped) output.
@@ -63,7 +64,11 @@ const SUBMIT_ENTER_DELAY_MS = 300;
  * or a bundled desktop sidecar whose PATH starts at its own bin dir), so resolve explicitly:
  * env override verbatim → each PATH entry → well-known install dirs.
  */
-export function resolveCliBin(provider: AccountProvider, env: NodeJS.ProcessEnv = process.env): string {
+export function resolveCliBin(
+  provider: AccountProvider,
+  env: NodeJS.ProcessEnv = process.env,
+  sharedResolver: (bin: string) => string | null = resolveAgentBinarySync,
+): string {
   const name = provider === 'codex' ? 'codex' : 'claude';
   const override = provider === 'codex' ? env.CODEX_BIN : env.CLAUDE_BIN;
   if (override) return override; // explicit operator override — trust it verbatim
@@ -85,6 +90,12 @@ export function resolveCliBin(provider: AccountProvider, env: NodeJS.ProcessEnv 
       /* not here — next candidate */
     }
   }
+  // The shared resolver owns Papercusp's canonical agent-binary locations, including
+  // ~/.papercusp/bin and the bin directory beside the Node executable running the operator.
+  // Account linking used to stop before this seam and fall back to the bare name, so a
+  // systemd operator with a stripped PATH could not launch a working, installed Codex CLI.
+  const shared = sharedResolver(name);
+  if (shared) return shared;
   return name; // nothing found — let the pty try bare PATH lookup; the no-URL error will say so
 }
 

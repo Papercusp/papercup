@@ -248,6 +248,14 @@ describe('resolveCliBin — CLI binary resolution for stripped-PATH operator hos
     }
   });
 
+  it('uses the shared agent resolver when the operator PATH omits the canonical Codex shim', () => {
+    const sharedResolver = vi.fn(() => '/home/test/.papercusp/bin/codex');
+    expect(resolveCliBin('codex', { PATH: '/does-not-exist-xyz' }, sharedResolver)).toBe(
+      '/home/test/.papercusp/bin/codex',
+    );
+    expect(sharedResolver).toHaveBeenCalledWith('codex');
+  });
+
   it('falls back past a claude-less PATH instead of failing (well-known dirs, else the bare name)', () => {
     // The 2026-07-03 staging incident: a stale systemd env whose PATH lacked ~/.local/bin. The
     // resolver must keep going — a well-known install dir when one exists on the host, the bare
