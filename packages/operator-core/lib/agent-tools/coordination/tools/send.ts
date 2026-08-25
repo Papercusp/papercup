@@ -1339,7 +1339,8 @@ async function sendOne(
          *  'staged-manual-mode' = nothing queued, everything staged (the case the finding calls out — do NOT read
          *  this as "target unreachable": release the staged wake or flip the target to auto,
          *  per `note`); 'missed' = staged===0 AND queued===0 — the pre-existing miss path
-         *  (`recipient_absent`/`recipient_dead`/`recipient_remote`/`recipient_dormant_scheduled`
+         *  (`recipient_absent`/`recipient_dead`/`recipient_alive_not_wakeable`/
+         *  `recipient_remote`/`recipient_dormant_scheduled`
          *  already disambiguate further within this case); 'queued' means the durable wake
          *  delivery was queued but turn pickup is not confirmed; 'unknown' means the local wake
          *  deadline elapsed before the fire result arrived, so the underlying wake may still
@@ -1356,6 +1357,10 @@ async function sendOne(
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
          *  dispatch black-holes until they are re-spawned. A LOUD miss the sender must handle. */
         recipient_dead?: string[];
+        /** EI-19937974676482462: missed targets with no inbox-wake watcher that the shared
+         *  liveness oracle nevertheless confirms are alive (`live`/`recorded`). They are
+         *  not dead and must not be treated as relaunchable. */
+        recipient_alive_not_wakeable?: string[];
         /** WI-5994: the subset of missed targets that are NOT dead — each has an
          *  ARMED engine loop with a known next fire (or a turn in flight right
          *  now), so the message is DEFERRED to that fire, never lost, and never
@@ -1477,6 +1482,7 @@ async function sendOne(
         // genuinely dead and the inject black-holes. Classify the dead ones (same non-firing
         // probe the no-wake path uses) and report them LOUDLY + truthfully.
         let dead: string[] = [];
+        let aliveNotWakeable: string[] = [];
         // WI-5994: recipients reportIdleRecipients ALREADY excluded from `idle`
         // because they have an armed loop with a known next fire (or a turn in
         // flight right now) — dormant BETWEEN loop fires, not dead. Never fold
@@ -1492,6 +1498,7 @@ async function sendOne(
             workspaceId: identity.workspaceId ?? undefined,
           });
           dead = report.idle;
+          aliveNotWakeable = report.aliveNotWakeable ?? [];
           dormantScheduled = report.dormantScheduled ?? [];
           const remote = await remoteSessionsByOwnerId(identity.workspaceId);
           remoteHomed = fan.targets.filter((t) => remote.has(t));
@@ -1525,11 +1532,12 @@ async function sendOne(
               : `recipient(s) ${staleRemote.join(', ')} are remote-homed but their presence beat is STALE — the ` +
                 'session is probably gone. The message still federates (seen if it resumes), but do NOT assume ' +
                 'pickup: treat this like recipient_dead and re-dispatch to a live agent unless the receipt arrives.';
-        } else if (dead.length > 0 || dormantScheduled.length > 0) {
+        } else if (dead.length > 0 || dormantScheduled.length > 0 || aliveNotWakeable.length > 0) {
           // WI-5994: `dead` and `dormantScheduled` are disjoint outcomes of the SAME
           // miss — report each truthfully instead of collapsing both into one
           // "not running" verdict. Only `dead` justifies redispatch/reassignment.
           if (dead.length > 0) wake.recipient_dead = dead;
+          if (aliveNotWakeable.length > 0) wake.recipient_alive_not_wakeable = aliveNotWakeable;
           if (dormantScheduled.length > 0) wake.recipient_dormant_scheduled = dormantScheduled;
           const parts: string[] = [];
           if (dead.length > 0) {
@@ -1549,6 +1557,14 @@ async function sendOne(
               `${dormantScheduled.length} recipient(s) are DORMANT BETWEEN LOOP FIRES, not dead: ${etaText}. ` +
                 'Delivery is DEFERRED to their next scheduled fire, not lost — do NOT reassign their work or ' +
                 'treat this as evidence of death; redirect only if you genuinely cannot wait that long.',
+            );
+          }
+          if (aliveNotWakeable.length > 0) {
+            parts.push(
+              `NO live inbox-wake watcher is present for: ${aliveNotWakeable.join(', ')}, but the shared ` +
+                'liveness oracle confirms these recipients are ALIVE (NOT dead). They are mid-turn or have ' +
+                'not registered an inbox-wake await yet — do NOT relaunch or reassign on this alone; retry the ' +
+                'wake shortly or hand off via a durable surface (work_items:checkpoint).',
             );
           }
           wake.note =

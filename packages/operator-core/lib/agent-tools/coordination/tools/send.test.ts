@@ -403,6 +403,18 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.note).toMatch(/next turn|actually running/i);
   });
 
+  it("wake:'required' miss on a LIVE-but-not-wakeable recipient → explicit alive classification, never recipient_dead", async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['mid-turn-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+    idleM.mockResolvedValueOnce({ idle: [], aliveNotWakeable: ['mid-turn-bee'] } as never);
+    const b = await body({ to: ['mid-turn-bee'], summary: 'continue this', wake: 'required' });
+    expect(b.results[0].wake).toMatchObject({
+      recipient_absent: true,
+      recipient_alive_not_wakeable: ['mid-turn-bee'],
+    });
+    expect(b.results[0].wake.recipient_dead).toBeUndefined();
+    expect(b.results[0].wake.note).toMatch(/ALIVE \(NOT dead\)|do NOT relaunch/i);
+  });
+
   it("WI-5994: wake:'required' miss on a DORMANT-SCHEDULED recipient (armed loop, future fire) → NO recipient_dead, deferred-delivery note", async () => {
     wakeM.mockResolvedValueOnce({ targets: ['loopy-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({
