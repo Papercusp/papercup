@@ -141,7 +141,10 @@ import {
   characterRangeForLines,
   REPO_ROOT,
 } from "../../../../scripts/check-format.mjs";
-import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import {
+  FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+  type FrozenCandidateRepairQueue,
+} from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 
 const testRequire = createRequire(import.meta.url);
 
@@ -692,6 +695,85 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       fixerSpawnId: "fixer-1",
     });
     expect(queue?.dispatchReservation).toBeUndefined();
+  });
+
+  it("renews the frozen-repair reservation throughout slow preparation", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue = {
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      affectedTestProofGroup: null,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+    };
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    let renewals = 0;
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.reserveFrozenRepairFixer = async (next) => {
+      queue = {
+        ...next,
+        dispatchReservation: {
+          token: "slow-owner",
+          claimedAtMs: Date.now(),
+          expiresAtMs: Date.now() + 15,
+        },
+      };
+      return queue;
+    };
+    deps.renewFrozenRepairFixerReservation = async (current) => {
+      renewals += 1;
+      queue = {
+        ...current,
+        dispatchReservation: {
+          ...current.dispatchReservation!,
+          expiresAtMs: Date.now() + 15,
+        },
+      };
+      return queue;
+    };
+    deps.frozenRepairReservationHeartbeatMs = 5;
+    deps.prepareFrozenRepairWorktree = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    };
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "fixer-slow",
+      runId: "run-slow",
+    });
+    deps.finalizeFrozenRepairFixer = async (current, fired) => {
+      const { dispatchReservation: _reservation, ...withoutReservation } =
+        current;
+      queue = {
+        ...withoutReservation,
+        attempts: current.attempts + 1,
+        updatedAtMs: Date.now(),
+        fixerSpawnId: fired?.spawnId ?? null,
+      };
+      return queue;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-in-progress",
+      repairQueue: {
+        fixerSpawnId: "fixer-slow",
+        attempts: 1,
+      },
+    });
+    expect(renewals).toBeGreaterThanOrEqual(2);
+    expect(calls).not.toContain("runGreen");
   });
 
   it("requeues a queue-authorized fixer when the frozen patch mismatches staging, then promotes only the aligned head", async () => {

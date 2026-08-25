@@ -66,6 +66,7 @@ import {
   type GitRead,
 } from "@papercusp/operator-core/lib/candidate-contains";
 import {
+  FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
   FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
@@ -663,6 +664,12 @@ export interface CheckpointDeps {
     queue: FrozenCandidateRepairQueue,
     options?: { allowCreateIfAbsent?: boolean },
   ): Promise<FrozenCandidateRepairQueue | null>;
+  /** Refresh the same reservation token while slow worktree preparation/launch is progressing. */
+  renewFrozenRepairFixerReservation?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<FrozenCandidateRepairQueue | null>;
+  /** Narrow test/embedding seam; real runs renew at one third of the lease TTL. */
+  frozenRepairReservationHeartbeatMs?: number;
   /** Release/finalize the reservation only if the same reservation token is still current. */
   finalizeFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
@@ -6763,6 +6770,8 @@ async function runGreenCheckpointInner(
   let repairOutcomeReconciled = false;
   let repairPromotionAdvance: AdvanceResult | null = null;
   const reserveFrozenRepairFixer = deps.reserveFrozenRepairFixer;
+  const renewFrozenRepairFixerReservation =
+    deps.renewFrozenRepairFixerReservation;
   const finalizeFrozenRepairFixer = deps.finalizeFrozenRepairFixer;
   const hasFrozenRepairDispatchReservation = Boolean(
     reserveFrozenRepairFixer && finalizeFrozenRepairFixer,
@@ -6806,13 +6815,64 @@ async function runGreenCheckpointInner(
       dispatchQueue = reserved;
     }
 
+    let reservationLost = false;
+    let reservationLoss: unknown = null;
+    let renewalChain: Promise<void> = Promise.resolve();
+    let renewalTimer: ReturnType<typeof setInterval> | null = null;
+    if (
+      hasFrozenRepairDispatchReservation &&
+      renewFrozenRepairFixerReservation
+    ) {
+      const renew = () => {
+        renewalChain = renewalChain.then(async () => {
+          if (reservationLost) return;
+          try {
+            const renewed = await renewFrozenRepairFixerReservation(dispatchQueue);
+            if (!renewed) {
+              reservationLost = true;
+              return;
+            }
+            dispatchQueue = renewed;
+          } catch (error) {
+            reservationLost = true;
+            reservationLoss = error;
+          }
+        });
+      };
+      const intervalMs =
+        deps.frozenRepairReservationHeartbeatMs ??
+        Math.max(
+          1_000,
+          Math.floor(FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS / 3),
+        );
+      renewalTimer = setInterval(renew, intervalMs);
+      renewalTimer.unref?.();
+    }
+
     let fired: FrozenRepairDispatchResult | null = null;
     let dispatchError: unknown = null;
     try {
       await deps.prepareFrozenRepairWorktree?.(dispatchQueue);
-      fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue)) ?? null;
+      await renewalChain;
+      if (!reservationLost) {
+        fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue)) ?? null;
+      }
     } catch (error) {
       dispatchError = error;
+    } finally {
+      if (renewalTimer) clearInterval(renewalTimer);
+      await renewalChain;
+    }
+
+    if (reservationLost && !fired) {
+      deps.log(
+        `frozen repair dispatch reservation was lost during preparation — holding without launch${
+          reservationLoss
+            ? `: ${reservationLoss instanceof Error ? reservationLoss.message : reservationLoss}`
+            : ''
+        }`,
+      );
+      return { queue: null, fired: null, reservationBlocked: true };
     }
 
     if (hasFrozenRepairDispatchReservation) {
@@ -11578,6 +11638,16 @@ export function realCheckpointDeps(
               repairTarget,
               queue,
               options,
+            );
+          },
+          async renewFrozenRepairFixerReservation(
+            queue: FrozenCandidateRepairQueue,
+          ) {
+            const { renewFrozenCandidateRepairFixerReservation } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            return renewFrozenCandidateRepairFixerReservation(
+              repairTarget,
+              queue,
             );
           },
           async finalizeFrozenRepairFixer(
