@@ -716,12 +716,14 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // papercusp-standing-goal-boot-arm, the owner-armed operator-boot holder
     // respawn for standing goals. case: 'owner-authority', so the parking
     // subset and DARK_FLAGS_HIGH_WATERMARK both stay 14. Count 34 → 35.
-    // 2026-08-25 (ratified-mockup-implementation-validation-2026-08-24 P-007) —
-    // papercusp-design-evidence-gate-enforcing, the refusal half of the design-evidence
-    // completion gate, withheld until P-008 calibrates the threshold and P-011 flips it
-    // (D-006). case: 'cutover', so the parking subset and DARK_FLAGS_HIGH_WATERMARK both
-    // stay 14 and no graduation trade is owed. Count 35 → 36.
-    expect(offCount).toBe(36);
+    // 2026-08-25 (ratified-mockup-implementation-validation-2026-08-24 P-011) —
+    // papercusp-design-evidence-gate-enforcing GRADUATED on the day it was added, which
+    // is what its `cutover` entry existed to schedule. It is default-ON; what withholds
+    // the refusal now is D-023's measured scope (enforce only where the threshold was
+    // measured), which is a property of the evidence rather than a flag anyone can
+    // forget to flip. The parking subset and DARK_FLAGS_HIGH_WATERMARK both stay 14.
+    // Count 36 → 35.
+    expect(offCount).toBe(35);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
