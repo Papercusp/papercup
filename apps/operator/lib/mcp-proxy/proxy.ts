@@ -185,6 +185,13 @@ export interface McpProxyOptions {
    * Injectable so tests can drive shedding without spinning up hundreds of real connections.
    */
   maxInFlight?: number;
+  /**
+   * EI-21391963810159383 — class-specific ceiling for write-free MCP session handshakes
+   * (`initialize` / `ping` / `tools/list`). A reconnect burst must not consume the whole
+   * reserved-control-plane pool and queue the watchdog behind the class it diagnoses.
+   * Defaults to `DEFAULT_MAX_HANDSHAKES_IN_FLIGHT`; non-positive disables the class cap.
+   */
+  maxHandshakeInFlight?: number;
   /** Slots kept available for scheduler control-plane pulls when ordinary tool traffic fills
    * the proxy. Reserved traffic also gets a separate upstream socket pool so an admitted
    * recovery probe cannot sit behind the ordinary pool it is trying to diagnose. The hard
@@ -794,6 +801,16 @@ export function effectiveRetryWindowMs(url: string, windowMs: number): number {
 export const DEFAULT_MAX_IN_FLIGHT = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT ?? 200);
 export const DEFAULT_CONTROL_PLANE_RESERVE = Number(process.env.PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE ?? 8);
 /**
+ * EI-21391963810159383 — leave one socket in the reserved pool outside reconnect traffic so
+ * the watchdog can still compare :9071 with direct :3070 while a fresh-proxy handshake herd is
+ * active. This is a class cap, not a smaller global ceiling: long tools/call traffic retains the
+ * existing admission contract. An explicit non-positive env/option value disables it.
+ */
+export const DEFAULT_MAX_HANDSHAKES_IN_FLIGHT = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT ??
+    Math.max(1, DEFAULT_CONTROL_PLANE_RESERVE - 1),
+);
+/**
  * EI-19305299022434394 — see `McpProxyOptions.maxHoldMs`. 10 minutes is comfortably above any
  * legitimate tool's real runtime (`build:typecheck` ~160s, `capability:bash` ~120s) while still
  * cutting off the 32-89 minute silent parks the report measured.
@@ -842,6 +859,39 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
 // establish/prove a session, not every idempotent resources/prompts request.
 const RESERVED_CONTROL_PLANE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
+
+/**
+ * Whether the complete JSON-RPC batch is a write-free session handshake. `prepareForward`
+ * deliberately classifies a wider idempotent set; this narrower predicate exists only for the
+ * reconnect bulkhead. A mixed batch that carries any other method must not inherit the class cap
+ * (or the watchdog exemption) merely because one member is `tools/list`.
+ */
+export function isMcpSessionHandshakeCall(rawBody: Buffer): boolean {
+  try {
+    const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    return messages.length > 0 && messages.every((message) => {
+      if (!message || typeof message !== 'object') return false;
+      const method = (message as { method?: unknown }).method;
+      return typeof method === 'string' && RESERVED_CONTROL_PLANE_METHODS.has(method);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** The session-plane watchdog identifies its one diagnostic tools/list request by this exact
+ * client query parameter. Keep the exemption path- and value-exact: ordinary reconnect clients
+ * remain bounded, while the detector retains the one socket the default class cap leaves free. */
+export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
+  if (typeof requestPath !== 'string') return false;
+  try {
+    const url = new URL(requestPath, 'http://127.0.0.1');
+    return url.pathname === '/api/mcp' && url.searchParams.get('client') === 'mcp-proxy-watchdog';
+  } catch {
+    return false;
+  }
+}
 
 // psu launch/resume preflight uses plain REST rather than JSON-RPC. These calls
 // are the human/fleet entry point and must retain access to the reserve while
@@ -943,6 +993,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     keepAlive: false,
     maxSockets: Math.max(1, controlPlaneReserve),
   });
+  const maxHandshakeInFlight = opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
+  let handshakeInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const inFlightStarts = new Map<number, number>();
   let nextInFlightId = 0;
@@ -1126,6 +1178,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
         const reservedControlPlane = isReservedControlPlaneCall(rawBody, req.url);
+        const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
+        const watchdogSessionProbe = sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
         const admissionCeiling = reservedControlPlane
           ? maxInFlight
           : maxInFlight > 0
@@ -1144,9 +1198,44 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           record({ kind: 'shed_max_in_flight', method: req.method, path: req.url, inFlight: inFlightNow, maxInFlight, admissionCeiling, reservedControlPlane });
           return;
         }
+        // EI-21391963810159383 — a proxy restart made ~60 clients reconnect at once. Because
+        // initialize/tools/list/ping are reserved traffic, every one bypassed the ordinary
+        // ceiling and queued/replayed inside the 8-socket control-plane pool: 1,164 internal
+        // timeout retries and 96 total in flight in six minutes, including the watchdog behind
+        // the herd it was trying to diagnose. Bound THIS write-free class before it opens an
+        // upstream socket. The watchdog's exact named probe alone uses the socket deliberately
+        // left outside the production cap, while the global hard ceiling above still binds it.
+        if (
+          sessionHandshake &&
+          !watchdogSessionProbe &&
+          shouldShedForInFlight(handshakeInFlight, maxHandshakeInFlight)
+        ) {
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
+          res.end(
+            JSON.stringify({
+              error: 'mcp_proxy_handshake_overloaded',
+              detail: `proxy already has ${handshakeInFlight} session handshake(s) in flight (class max ${maxHandshakeInFlight}) — shed before forwarding`,
+              retryAfterSec: 2,
+            }),
+          );
+          log(`shed session handshake — ${handshakeInFlight} already in flight (class max ${maxHandshakeInFlight})`);
+          record({
+            kind: 'shed_handshake_bulkhead',
+            method: req.method,
+            path: req.url,
+            inFlight: inFlightNow,
+            handshakeInFlight,
+            maxHandshakeInFlight,
+            reservedControlPlane,
+            watchdogSessionProbe,
+          });
+          return;
+        }
+        const countsTowardHandshakeCap = sessionHandshake && !watchdogSessionProbe;
         const inFlightId = nextInFlightId++;
         const inFlightStartedAt = Date.now();
         inFlightStarts.set(inFlightId, inFlightStartedAt);
+        if (countsTowardHandshakeCap) handshakeInFlight++;
         scheduleStallCheck(inFlightId, inFlightStartedAt);
         try {
           // P-005: classify the forward + (for a tools/call) inject a per-request
@@ -1345,6 +1434,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // EI-19305299022434394: always release the in-flight slot, on every exit path
           // (success return, exhausted-window fallthrough, or an unexpected throw).
           inFlightStarts.delete(inFlightId);
+          if (countsTowardHandshakeCap) handshakeInFlight = Math.max(0, handshakeInFlight - 1);
           // EI-19388661789704364: cancel this request's own stall timer so a fast forward
           // never leaves a dangling scheduled check (and never fires one after completion).
           const stallTimer = stallTimers.get(inFlightId);
