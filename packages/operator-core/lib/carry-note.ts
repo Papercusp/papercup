@@ -1747,6 +1747,15 @@ export interface SetCarryNoteResult {
     expectedHash: string | null;
     currentHash: string | null;
   };
+  /**
+   * The caller entered the write before a newer writer committed, then waited
+   * on that row's lock. The write was discarded so an older in-flight
+   * checkpoint cannot overwrite the newer carry-note.
+   */
+  staleWrite?: {
+    writeStartedAtMs: number;
+    currentUpdatedAtMs: number;
+  };
 }
 
 /** Same semantics as {@link setCarryNote}, plus the prior note's length (EI-9325) —
@@ -1804,14 +1813,23 @@ export async function setCarryNoteWithPrior(
   const journalEnabled = opts?.journal ?? true;
   const { ws, scope } = resolveRef(ref);
   const { sql } = getOrgPg();
+  // Capture the admission watermark BEFORE waiting for the row lock. A stale
+  // caller can be queued behind a newer writer; using the post-lock time here
+  // would make that stale transaction look newer and let it overwrite the
+  // committed checkpoint (EI-21398038788348858).
   const now = Date.now();
   const depsSpecified = opts !== undefined && 'deps' in opts;
   // Both postgres-js `sql.begin` and boundedOrgTxn supply callable SQL handles,
   // but they expose different structural types (`TransactionSql` vs `Sql`).
   // Accept the union so this one write body can be used by either transaction path.
   const write = async (tx: Sql | TransactionSql): Promise<SetCarryNoteResult> => {
-    const rows = await tx<{ journal: unknown; note: string | null; deps: unknown }[]>`
-      SELECT journal, note, deps FROM harness_shared.carry_notes
+    const rows = await tx<{
+      journal: unknown;
+      note: string | null;
+      deps: unknown;
+      updated_ts: string | number | null;
+    }[]>`
+      SELECT journal, note, deps, updated_ts FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} FOR UPDATE`;
     const prevJournal = normalizeJournal(rows[0]?.journal);
     const priorNote = rows[0]?.note ?? null;
@@ -1830,6 +1848,17 @@ export async function setCarryNoteWithPrior(
           priorDeps,
         };
       }
+    }
+    const currentUpdatedAtMs =
+      rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
+    if (Number.isFinite(currentUpdatedAtMs) && currentUpdatedAtMs > now) {
+      return {
+        stored: priorNote,
+        priorLength,
+        blockedReason: 'stale_write_older_than_current',
+        priorDeps,
+        staleWrite: { writeStartedAtMs: now, currentUpdatedAtMs },
+      };
     }
     if (opts?.guard) {
       const blockedReason = opts.guard(priorNote, priorLength);

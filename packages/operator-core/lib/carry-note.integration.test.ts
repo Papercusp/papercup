@@ -214,6 +214,53 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     expect(results.filter((result) => !result.conflict && result.stored !== 'baseline checkpoint')).toHaveLength(1);
     expect(['first successor', 'second successor']).toContain(await getLoopCarryNote(LOOP));
   });
+
+  it('discards an older in-flight writer that commits after a newer checkpoint', async () => {
+    await setLoopCarryNote(LOOP, 'baseline checkpoint');
+    const scope = loopScope(LOOP.harness, LOOP.ownerId);
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let lockedResolve!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      lockedResolve = resolve;
+    });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`
+        SELECT note
+          FROM harness_shared.carry_notes
+         WHERE workspace_id = 'default' AND scope = ${scope}
+         FOR UPDATE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    // Queue the newer writer first, then queue the stale writer with an older
+    // admission watermark. Once the blocker releases, the newer commit wins
+    // the lock queue and the stale writer must be rejected by the store guard.
+    const newer = setLoopCarryNoteWithPrior(LOOP, 'newer checkpoint');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const staleClock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 10_000);
+    const stale = setLoopCarryNoteWithPrior(LOOP, 'stale checkpoint');
+    staleClock.mockRestore();
+
+    release();
+    const [newerResult, staleResult] = await Promise.all([newer, stale]);
+    await blocker;
+
+    expect(newerResult.stored).toBe('newer checkpoint');
+    expect(staleResult).toMatchObject({
+      stored: 'newer checkpoint',
+      blockedReason: 'stale_write_older_than_current',
+      staleWrite: {
+        currentUpdatedAtMs: expect.any(Number),
+      },
+    });
+    expect(await getLoopCarryNote(LOOP)).toBe('newer checkpoint');
+  });
 });
 
 describe('D-003 shared semantics + journaling modes', () => {
