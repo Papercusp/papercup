@@ -97,6 +97,10 @@ const CODEX_LOCK_PRE_MATCHER = 'apply_patch|Edit|Write';
  *  release hook also observes its canonical/compatibility aliases and can
  *  recover only the cached lock paths named in that parent's source. */
 const CODEX_LOCK_POST_MATCHER = `^(?:${CODEX_LOCK_PRE_MATCHER}|exec|functions\\.exec|functions__exec)$`;
+/** The shared content guard understands both Codex's raw apply_patch payload and
+ * the Claude-compatible edit/write aliases projected by MCP servers. */
+const CODEX_CONTROL_BYTES_PRE_MATCHER =
+  '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$';
 /** Full Write/capability:write inputs carry the complete requested content, so
  * the shared PostToolUse guard can compare exact UTF-8 bytes on disk. */
 const CODEX_WRITE_BYTE_INTEGRITY_MATCHER = '^(?:Write|mcp__.*__capability_write)$';
@@ -397,9 +401,9 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
 }
 
 /**
- * Write a fresh `hooks.json` into a per-session CODEX_HOME carrying ONLY the
- * SU-locks Pre/PostToolUse hooks (P-030). The home is recreated each launch,
- * so there is nothing to merge — we write our two entries verbatim. No-op
+ * Write a fresh `hooks.json` into a per-session CODEX_HOME carrying the managed
+ * SU hooks (locks, content integrity, activity, lifecycle, and injection). The
+ * home is recreated each launch, so there is nothing to merge. No-op
  * (returns false) when the shared hook scripts aren't installed at
  * `~/.papercusp/hooks/cc/`. The launcher must exec codex with
  * `--dangerously-bypass-hook-trust` (the only hooks here are ours).
@@ -631,6 +635,20 @@ export function writeCodexLockHooks(
       hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root}${lockIdentity} ${pre}` }],
     },
   ];
+
+  // EI-18801362747285637: Claude already installed this guard globally, but
+  // managed Codex homes carried only the lock hook. A Codex apply_patch could
+  // therefore commit raw control bytes and first learn about them at the green
+  // gate. Reuse the SAME policy-bearing script; it parses apply_patch added lines
+  // and deliberately ignores deleted/context lines so repairing a dirty file is
+  // never blocked by the byte being removed.
+  const controlBytes = join(dir, 'pretooluse-control-bytes-content-guard.mjs');
+  if (existsSync(controlBytes)) {
+    preToolUse.push({
+      matcher: CODEX_CONTROL_BYTES_PRE_MATCHER,
+      hooks: [{ type: 'command', command: controlBytes }],
+    });
+  }
 
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010):
   // AGENT homes (role sessions — never the human su home, D-003) get the

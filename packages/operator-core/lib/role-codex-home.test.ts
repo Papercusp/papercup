@@ -79,6 +79,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'lifecycle-report.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
+  writeFileSync(join(dir, 'pretooluse-control-bytes-content-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
   return dir;
 }
@@ -278,6 +279,13 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.PreToolUse[0].matcher).toBe('apply_patch|Edit|Write');
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+    const controlBytes = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-control-bytes-content-guard.mjs'),
+    );
+    expect(controlBytes).toBeTruthy();
+    expect(controlBytes.matcher).toBe(
+      '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$',
+    );
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
     expect(hooks.hooks.PostToolUse[0].matcher).toBe(
       '^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$',
@@ -935,6 +943,11 @@ describe('writeSuCodexHome', () => {
     expect(preLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
     expect(postLock.hooks[0].command).toContain("PAPERCUSP_LOCK_SID='su-abc-123'");
+    const controlBytes = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-control-bytes-content-guard.mjs'),
+    );
+    expect(controlBytes).toBeTruthy();
+    expect(controlBytes.matcher).toContain('apply_patch');
     const byteGuard = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('posttooluse-write-byte-integrity-guard.mjs'),
     );
