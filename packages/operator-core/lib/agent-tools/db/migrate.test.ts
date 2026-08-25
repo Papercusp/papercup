@@ -15,6 +15,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/db/migrate.test.ts
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 // WI-5217: explicit result/param types so `.mock.calls[...]` destructures and
 // `.mockResolvedValue({...extra fields})` overrides typecheck against the real
@@ -109,6 +112,10 @@ const parse = (res: { content: Array<{ text: string }> }) => JSON.parse(res.cont
 const FILE = '/repo/libs/papercusp/libs/db/sql/999-fake.sql';
 
 const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
+// EI-21413636618986324: relative migration paths resolve against this root when
+// set — delete it per-test so every existing test exercises the deterministic
+// legacy fallback, and the canonical-resolution describe sets it explicitly.
+const ORIGINAL_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
 
 beforeEach(() => {
   h.spawnSync.mockReset().mockReturnValue({ status: 0, stdout: '', stderr: '' });
@@ -143,6 +150,7 @@ beforeEach(() => {
     result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
   }));
   delete process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
+  delete process.env.PAPERCUSP_INTEGRATION_ROOT;
 });
 
 /** A postgres-js-shaped transient connection error (see node_modules/postgres/src/errors.js's
@@ -152,6 +160,8 @@ const connErr = (code: string) => Object.assign(new Error(`write ${code} 127.0.0
 afterAll(() => {
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
   else process.env.PAPERCUSP_ALLOW_DB_MIGRATE = ORIGINAL_ENV;
+  if (ORIGINAL_INTEGRATION_ROOT === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+  else process.env.PAPERCUSP_INTEGRATION_ROOT = ORIGINAL_INTEGRATION_ROOT;
 });
 
 describe('db:migrate — dry run', () => {
@@ -161,7 +171,7 @@ describe('db:migrate — dry run', () => {
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
 
-  it('validates the migration file before a dry run, matching confirm resolution', async () => {
+  it('validates the migration file before a dry run, matching confirm resolution (legacy fallback: no PAPERCUSP_INTEGRATION_ROOT)', async () => {
     const relativeFile = 'libs/papercusp/libs/db/sql/922-datatype-display-spec.sql';
     h.readFileSync.mockImplementation(() => {
       throw new Error(`ENOENT: no such file or directory, open '${relativeFile}'`);
@@ -200,6 +210,76 @@ describe('db:migrate — dry run', () => {
     expect(out.note).toContain('no lock was acquired');
     expect(h.guardResource).not.toHaveBeenCalled();
     expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('db:migrate — canonical staging-root resolution (EI-21413636618986324)', () => {
+  const handler = (a: Record<string, unknown>) =>
+    (migrateTool as never as { handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }> }> })
+      .handler(a, CTX);
+  const REL = 'libs/papercusp/libs/db/sql/953-canon.sql';
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'pc-migrate-canon-'));
+    mkdirSync(path.join(root, 'libs/papercusp/libs/db/sql'), { recursive: true });
+    writeFileSync(path.join(root, REL), 'SELECT 1;\n');
+    process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+  });
+  afterEach(() => {
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('dry run resolves a repo-root-relative path against the canonical staging tree, not the serving cwd', async () => {
+    const expected = path.join(root, REL);
+    const out = parse(await handler({ file: REL }));
+    expect(out.dry_run).toBe(true);
+    expect(out.resolved_file).toBe(expected);
+    expect(out.would_run).toContain(expected);
+    expect(h.readFileSync).toHaveBeenCalledWith(expected, 'utf8');
+  });
+
+  it('a bare filename falls back to the canonical sql dir', async () => {
+    const expected = path.join(root, REL);
+    const out = parse(await handler({ file: '953-canon.sql' }));
+    expect(out.dry_run).toBe(true);
+    expect(out.resolved_file).toBe(expected);
+    expect(h.readFileSync).toHaveBeenCalledWith(expected, 'utf8');
+  });
+
+  it('an absolute path passes through untouched', async () => {
+    const out = parse(await handler({ file: FILE }));
+    expect(out.dry_run).toBe(true);
+    expect(out.resolved_file).toBe(FILE);
+    expect(out.would_run).toContain(FILE);
+    expect(h.readFileSync).toHaveBeenCalledWith(FILE, 'utf8');
+  });
+
+  it('an unreadable bare filename reports every attempted location, before any lock', async () => {
+    h.readFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+    });
+    const out = parse(await handler({ file: '954-missing.sql' }));
+    expect(out).toMatchObject({ ok: false, applied: false, reason: 'migration_file_unreadable', file: '954-missing.sql' });
+    expect(out.attempted_locations).toEqual([
+      path.join(root, '954-missing.sql'),
+      path.join(root, 'libs/papercusp/libs/db/sql/954-missing.sql'),
+    ]);
+    expect(h.guardResource).not.toHaveBeenCalled();
+    expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it("the confirmed apply \\i's the SAME resolved path the dry run reported (the dry-ok/confirm-ENOENT split)", async () => {
+    const expected = path.join(root, REL);
+    const dry = parse(await handler({ file: REL }));
+    expect(dry.resolved_file).toBe(expected);
+
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    const confirmed = parse(await handler({ file: REL, confirm: true }));
+    expect(confirmed.ok).toBe(true);
+    const stdinScript = (h.spawnSync.mock.calls[0] as unknown[])[2] as { input?: string };
+    expect(stdinScript.input).toContain(`\\i ${expected}\n`);
   });
 });
 
