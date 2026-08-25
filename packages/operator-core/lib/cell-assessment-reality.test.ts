@@ -360,6 +360,10 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessGateOwnership({ claimState: 'claimable', holderSessionState: null, duplicates: [] }),
     },
     {
+      label: 'an owning item deliberately held out of claim',
+      expect: assessGateOwnership({ claimState: 'hold-blocked', holderSessionState: null, duplicates: [] }),
+    },
+    {
       label: 'the lease lapsed',
       expect: assessGateOwnership({ claimState: 'lease-expired', holderSessionState: null, duplicates: [] }),
     },
@@ -559,6 +563,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'duplicate-owners',
     'unowned',
     'claimable',
+    'hold-blocked',
     'lease-expired',
     'held-live',
     'held-live',
