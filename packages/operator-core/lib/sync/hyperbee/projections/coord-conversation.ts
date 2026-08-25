@@ -187,7 +187,13 @@ async function writeToPg(
       accepted_answer   = EXCLUDED.accepted_answer,
       capture_target    = EXCLUDED.capture_target,
       promoted_issue_id = EXCLUDED.promoted_issue_id,
-      producer          = EXCLUDED.producer,
+      -- COALESCE, not a plain EXCLUDED overwrite: producer is written ONCE at
+      -- open time and no code path ever changes it, so the only way EXCLUDED can
+      -- differ is a peer running pre-attribution code sending NULL. Taking that
+      -- NULL would ERASE a known producer on every federated echo of the row --
+      -- silently re-opening EI-21462599108204160 across a mixed-version fleet.
+      -- For an immutable field, preferring the non-null value is always correct.
+      producer          = COALESCE(EXCLUDED.producer, coord_conversations.producer),
       updated_at        = EXCLUDED.updated_at,
       resolved_at       = EXCLUDED.resolved_at,
       origin            = EXCLUDED.origin,
