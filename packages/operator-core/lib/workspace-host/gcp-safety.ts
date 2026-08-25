@@ -347,6 +347,26 @@ export interface GcpManagedWorkspaceHostResourceObservation {
   firstObservedAt?: string;
 }
 
+export const GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS = [
+  'vm',
+  'disk',
+  'firewall',
+  'subnetwork',
+  'network',
+  'snapshot',
+  'router',
+  'nat',
+] as const;
+
+export type GcpWorkspaceHostCensusResourceKind = (typeof GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS)[number];
+
+export interface GcpWorkspaceHostInventoryEvidence {
+  kind: GcpWorkspaceHostCensusResourceKind;
+  strategy: 'managed-labels' | 'deterministic-name';
+  providerEvidenceRef: string;
+  deterministicNames?: readonly string[];
+}
+
 export interface GcpWorkspaceHostOrphanReaperStep {
   resource: WorkspaceHostResourceRef;
   state: 'quarantine' | 'eligible';
@@ -367,13 +387,17 @@ export interface GcpWorkspaceHostResourceCensusInput {
   workspaceId: string;
   expected: readonly WorkspaceHostResourceRef[];
   observed: readonly GcpManagedWorkspaceHostResourceObservation[];
+  inventoryEvidence: readonly GcpWorkspaceHostInventoryEvidence[];
   evaluatedAt: string;
   orphanGraceMs: number;
 }
 
 export interface GcpWorkspaceHostResourceCensus {
   controllerIndependent: true;
+  inventoryComplete: true;
+  clean: boolean;
   evaluatedAt: string;
+  inventoryEvidence: readonly GcpWorkspaceHostInventoryEvidence[];
   managed: readonly GcpManagedWorkspaceHostResourceObservation[];
   untracked: readonly GcpManagedWorkspaceHostResourceObservation[];
   missing: readonly WorkspaceHostResourceRef[];
@@ -408,6 +432,42 @@ export function censusGcpWorkspaceHostResources(
   const orphanGraceMs = positiveDuration(input.orphanGraceMs, 'census orphanGraceMs');
   input.expected.forEach((resource, index) => assertGcpResource(resource, `census expected[${index}]`));
   input.observed.forEach((entry, index) => assertGcpResource(entry.resource, `census observed[${index}].resource`));
+  const inventoryByKind = new Map<GcpWorkspaceHostCensusResourceKind, GcpWorkspaceHostInventoryEvidence>();
+  for (const [index, evidence] of input.inventoryEvidence.entries()) {
+    requireNonEmpty(evidence.providerEvidenceRef, `census inventoryEvidence[${index}].providerEvidenceRef`);
+    if (!GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.includes(evidence.kind)) {
+      throw new Error(`census inventoryEvidence[${index}].kind is unsupported`);
+    }
+    if (inventoryByKind.has(evidence.kind)) {
+      throw new Error(`census inventoryEvidence contains duplicate kind '${evidence.kind}'`);
+    }
+    inventoryByKind.set(evidence.kind, evidence);
+  }
+  const missingInventoryKinds = GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.filter(
+    (kind) => !inventoryByKind.has(kind),
+  );
+  if (missingInventoryKinds.length > 0) {
+    throw new Error(`GCP workspace-host census inventory incomplete: ${missingInventoryKinds.join(', ')}`);
+  }
+  const deterministicKinds = new Set<GcpWorkspaceHostCensusResourceKind>([
+    'firewall',
+    'subnetwork',
+    'network',
+    'router',
+    'nat',
+  ]);
+  const deterministicNames = new Map<GcpWorkspaceHostCensusResourceKind, Set<string>>();
+  for (const kind of GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS) {
+    const evidence = inventoryByKind.get(kind)!;
+    if (deterministicKinds.has(kind)) {
+      if (evidence.strategy !== 'deterministic-name' || !evidence.deterministicNames?.length) {
+        throw new Error(`GCP workspace-host census '${kind}' inventory requires deterministic names`);
+      }
+      deterministicNames.set(kind, new Set(evidence.deterministicNames.map((name) => requireNonEmpty(name, `${kind} name`))));
+    } else if (evidence.strategy !== 'managed-labels') {
+      throw new Error(`GCP workspace-host census '${kind}' inventory requires managed-label enumeration`);
+    }
+  }
   const requiredLabels = {
     [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
     [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: gcpWorkspaceHostLabelValue(input.hostId),
@@ -415,16 +475,21 @@ export function censusGcpWorkspaceHostResources(
   } as const;
   const expectedKeys = new Set(input.expected.map(resourceKey));
   const observedByKey = new Map(input.observed.map((entry) => [resourceKey(entry.resource), entry]));
-  const matchesLabels = (entry: GcpManagedWorkspaceHostResourceObservation) =>
-    Object.entries(requiredLabels).every(([key, value]) => entry.labels[key] === value);
-  const managed = input.observed.filter(matchesLabels);
+  const matchesManagedIdentity = (entry: GcpManagedWorkspaceHostResourceObservation) => {
+    const kind = entry.resource.kind as GcpWorkspaceHostCensusResourceKind;
+    if (deterministicKinds.has(kind)) {
+      return deterministicNames.get(kind)?.has(entry.resource.providerId) === true;
+    }
+    return Object.entries(requiredLabels).every(([key, value]) => entry.labels[key] === value);
+  };
+  const managed = input.observed.filter(matchesManagedIdentity);
   const labelMismatches = input.observed.filter(
-    (entry) => expectedKeys.has(resourceKey(entry.resource)) && !matchesLabels(entry),
+    (entry) => expectedKeys.has(resourceKey(entry.resource)) && !matchesManagedIdentity(entry),
   );
   const untracked = managed.filter((entry) => !expectedKeys.has(resourceKey(entry.resource)));
   const missing = input.expected.filter((entry) => {
     const observed = observedByKey.get(resourceKey(entry));
-    return !observed || !matchesLabels(observed);
+    return !observed || !matchesManagedIdentity(observed);
   });
   const reaperPlan = untracked.map((entry): GcpWorkspaceHostOrphanReaperStep => {
     const firstObservedAtMs = timestamp(entry.firstObservedAt ?? entry.observedAt, 'orphan firstObservedAt');
@@ -447,7 +512,16 @@ export function censusGcpWorkspaceHostResources(
 
   return {
     controllerIndependent: true,
+    inventoryComplete: true,
+    clean: untracked.length === 0 && missing.length === 0 && labelMismatches.length === 0,
     evaluatedAt: input.evaluatedAt,
+    inventoryEvidence: GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.map((kind) => {
+      const evidence = inventoryByKind.get(kind)!;
+      return {
+        ...evidence,
+        ...(evidence.deterministicNames ? { deterministicNames: [...evidence.deterministicNames] } : {}),
+      };
+    }),
     managed: managed.map(cloneObserved),
     untracked: untracked.map(cloneObserved),
     missing: missing.map((entry) => ({ ...entry })),

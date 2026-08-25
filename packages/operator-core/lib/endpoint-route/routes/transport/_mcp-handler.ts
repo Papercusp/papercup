@@ -70,9 +70,9 @@ import {
   bearerFromExtra,
   urlFromExtra,
   headersFromExtra,
-  mcpTraceIdFromExtra,
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
+import { mcpTraceIdFromExtra } from '../../../mcp-request-trace';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';

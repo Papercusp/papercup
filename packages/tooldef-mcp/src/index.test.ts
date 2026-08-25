@@ -8,8 +8,6 @@ import {
   bearerFromExtra,
   urlFromExtra,
   headersFromExtra,
-  mcpTraceIdFromExtra,
-  MCP_REQUEST_TRACE_HEADER,
   dispatchProjectedToolToMcp,
 } from './index';
 
@@ -46,13 +44,6 @@ describe('RequestHandlerExtra extractors', () => {
     const h = headersFromExtra({ requestInfo: { headers: { 'x-a': '1', 'x-b': ['2', '3'] } } });
     expect(h.get('x-a')).toBe('1');
     expect(h.get('x-b')).toBe('2, 3');
-  });
-  it('mcpTraceIdFromExtra accepts only a bounded UUID trace header', () => {
-    const valid = '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4';
-    expect(mcpTraceIdFromExtra({ requestInfo: { headers: { [MCP_REQUEST_TRACE_HEADER]: valid } } })).toBe(valid);
-    for (const invalid of ['', 'caller-controlled', 'x'.repeat(200), '00000000-0000-0000-0000-000000000000']) {
-      expect(mcpTraceIdFromExtra({ requestInfo: { headers: { [MCP_REQUEST_TRACE_HEADER]: invalid } } })).toBeNull();
-    }
   });
 });
 

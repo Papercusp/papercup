@@ -141,7 +141,6 @@
     "@papercusp/sync": "file:../../libs/generic/sync",
     "@papercusp/testing-shell": "file:../../libs/testing-shell",
     "@papercusp/tooldef": "file:../../libs/generic/tooldef",
-    "@papercusp/tooldef-mcp": "file:../../packages/tooldef-mcp",
     "@papercusp/ui-primitives": "file:../../libs/generic/ui-primitives",
     "@picovoice/porcupine-web": "^4.0.0",
     "@picovoice/web-voice-processor": "^4.0.10",

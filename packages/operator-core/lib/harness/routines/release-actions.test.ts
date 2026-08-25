@@ -449,6 +449,62 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
    * either way about whether a re-fire hits the same wall, and gate-abort-status.ts exists
    * precisely to stop that gap being filled with a confident guess in either direction.
    */
+  /**
+   * FALSIFIABILITY CONTROL for the two tests above (repo convention: for a MODULE you import,
+   * keep a deliberately-wrong implementation permanently in the test file rather than mutating
+   * the shared tree — a mutation probe here would hold a real source file modified for the life
+   * of the run, which git-sync's whole-tree sweep can commit even when nothing goes wrong).
+   *
+   * `preFixClassify` is the classifier AS IT BEHAVED before EI-21462211894072863: 'error' had no
+   * arm of its own and fell through to 'red'. Asserting it FAILS the property the real classifier
+   * satisfies is what proves that property is load-bearing rather than vacuously true.
+   *
+   * ⚠ The calibration loop is the half that makes this control meaningful. A stand-in that
+   * diverged everywhere would fail the property for reasons unrelated to the fix, and would keep
+   * "passing" this test if the real classifier were later broken in some other way. Pinning
+   * agreement on the untouched statuses first is what makes the single divergence attributable.
+   */
+  it('CONTROL: the pre-fix classifier FAILS the property the fixed one satisfies', () => {
+    const preFixClassify = (status: string): string => {
+      if (status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix') return 'reset';
+      if (
+        [
+          'skipped-locked',
+          'migrations-pending',
+          'infra-inconclusive',
+          'disk-headroom',
+          'deadline-exceeded',
+          'cancelled',
+          'repair-in-progress',
+          'repair-staging-mismatch',
+        ].includes(status)
+      )
+        return 'noop';
+      return 'red';
+    };
+
+    // CALIBRATION — the control must agree with the real classifier everywhere the fix did not
+    // touch, or the divergence below is not attributable to this change.
+    for (const status of [
+      'advanced',
+      'up-to-date',
+      'not-green',
+      'create-failed',
+      'not-fast-forward',
+      'skipped-locked',
+      'deadline-exceeded',
+      'cancelled',
+      'migrations-pending',
+      'infra-inconclusive',
+    ]) {
+      expect(preFixClassify(status)).toBe(classifyGateStallStatus(status, false));
+    }
+
+    // …and diverges at EXACTLY the defect: the old code called a verdict-less tick a red.
+    expect(preFixClassify('error')).toBe('red');
+    expect(classifyGateStallStatus('error', false)).toBe('no-verdict');
+  });
+
   it('EI-21462211894072863: a crash is a RECORDED abort, classified honestly as unknown', () => {
     expect(isRecordedInconclusiveStatus('error')).toBe(true);
     expect(classifyGateAbort('error')).toBe('unknown');

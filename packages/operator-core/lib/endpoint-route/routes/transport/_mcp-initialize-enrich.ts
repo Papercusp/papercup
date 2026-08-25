@@ -24,7 +24,7 @@
  * prelude (or worse, the negotiation).
  */
 
-import { MAX_MCP_REQUEST_TRACE_ID_CHARS } from '@papercusp/tooldef-mcp';
+import { MAX_MCP_REQUEST_TRACE_ID_CHARS } from '../../../mcp-request-trace';
 
 export type InitializeHandler = (req: unknown, extra: unknown) => Promise<unknown>;
 

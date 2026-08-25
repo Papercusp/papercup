@@ -57,17 +57,27 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'compute.machineTypes.list',
   'compute.networks.create',
   'compute.networks.get',
+  'compute.networks.list',
   'compute.networks.delete',
   'compute.subnetworks.create',
   'compute.subnetworks.get',
+  'compute.subnetworks.list',
   'compute.subnetworks.delete',
   'compute.subnetworks.use',
   'compute.firewalls.create',
   'compute.firewalls.get',
+  'compute.firewalls.list',
   'compute.firewalls.delete',
+  'compute.routers.create',
+  'compute.routers.get',
+  'compute.routers.list',
+  'compute.routers.update',
+  'compute.routers.delete',
   'compute.disks.create',
   'compute.disks.get',
+  'compute.disks.list',
   'compute.disks.delete',
+  'compute.disks.createSnapshot',
   'compute.disks.use',
   'compute.disks.setLabels',
   'compute.instances.create',
@@ -80,6 +90,9 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'compute.instances.setMetadata',
   'compute.instances.setServiceAccount',
   'compute.instances.osLogin',
+  'compute.snapshots.get',
+  'compute.snapshots.list',
+  'compute.snapshots.delete',
   'compute.zoneOperations.get',
   'compute.regionOperations.get',
   'compute.globalOperations.get',
@@ -493,6 +506,8 @@ function suggestedRoles(missing: readonly string[]): string[] {
     )
   )
     roles.add('roles/compute.networkAdmin');
+  if (missing.some((permission) => permission.startsWith('compute.routers.')))
+    roles.add('roles/compute.networkAdmin');
   if (missing.some((permission) => permission.startsWith('compute.firewalls.')))
     roles.add('roles/compute.securityAdmin');
   if (
@@ -500,6 +515,7 @@ function suggestedRoles(missing: readonly string[]): string[] {
       (permission) =>
         permission.startsWith('compute.instances.') ||
         permission.startsWith('compute.disks.') ||
+        permission.startsWith('compute.snapshots.') ||
         permission.endsWith('Operations.get'),
     )
   )

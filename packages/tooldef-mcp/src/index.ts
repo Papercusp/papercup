@@ -31,22 +31,6 @@ import {
 
 /* ─── RequestHandlerExtra extractors ─────────────────────────────────── */
 
-/** Proxy-owned, bounded correlation header for one MCP HTTP request. */
-export const MCP_REQUEST_TRACE_HEADER = 'x-papercusp-mcp-trace-id';
-export const MAX_MCP_REQUEST_TRACE_ID_CHARS = 36;
-
-/**
- * Read the internal trace id only when it has the fixed UUID shape minted by the proxy.
- * Direct/untrusted requests cannot inject arbitrary or unbounded values into telemetry.
- */
-export function mcpTraceIdFromExtra(extra: unknown): string | null {
-  const value = headersFromExtra(extra).get(MCP_REQUEST_TRACE_HEADER)?.trim() ?? '';
-  if (value.length > MAX_MCP_REQUEST_TRACE_ID_CHARS) return null;
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
-    ? value
-    : null;
-}
-
 /** Bearer token from an MCP request handler's `extra` (strips `Bearer `). */
 export function bearerFromExtra(extra: unknown): string {
   const e = extra as { requestInfo?: { headers?: Record<string, string | string[] | undefined> } };

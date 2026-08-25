@@ -1187,3 +1187,143 @@ describe('EI-20706962612084953: lastMainPin stops the routine’s OWN advance re
     expect(lastGateHealthWrite()!.lastMainPin).toBeNull();
   });
 });
+
+/**
+ * EI-21462211894072863 — a tick that produced NO verdict must not be counted as a RED.
+ *
+ * ## The defect, as measured
+ *
+ * A green-checkpoint run that exits without publishing a parseable result marker judged no code
+ * at all. Until this change it arrived as status 'error' and fell through to the 'red' class, so
+ * every such tick incremented `consecutiveReds` — the counter that freezes `main`, dispatches
+ * release-fixers, and renders as "Gate is RED (N consecutive) — the reds are yours to fix".
+ *
+ * Observed live on papercusp 2026-08-25: scheduled run 8104 exited exitCode=1 with no marker, and
+ * `consecutiveReds` reached 42 while the last REAL verdict predated the last fire by 5.7h. The
+ * gate was WEDGED, not red, and the failing-test list every reader was offered had been named by
+ * a run many fires earlier.
+ *
+ * ## Why the counting must survive
+ *
+ * The obvious fix — make 'error' a plain 'noop' — is explicitly guarded against (see the control
+ * in release-actions.test.ts) and the guard is right: 'error' is the UNKNOWN-cause bucket, and
+ * silencing it is how a crashing gate freezes `main` with nobody told. So the split is not
+ * counted-vs-uncounted but WHICH COUNTER, and these tests pin both halves together — a "fix" that
+ * removed the false red by going quiet fails here just as loudly as the original defect.
+ */
+describe('EI-21462211894072863: a verdict-less tick counts as WEDGED, never as a red', () => {
+  const stallReds = releaseCheckpointConfig().stallReds;
+
+  /** The no-verdict streak UPDATE, as captured (null when the tick never issued one). */
+  const noVerdictBump = (): { query: string; params: unknown[] } | null =>
+    calls.find((c) => /consecutiveNoVerdict/.test(c.query) && /RETURNING/i.test(c.query)) ?? null;
+
+  it('⭐ leaves consecutiveReds ALONE — the counter keeps describing the last run that judged code', async () => {
+    // A real red streak already stands. The wedge must not deepen it: those 4 reds describe a
+    // run that actually judged code, and this tick judged none.
+    seededGh = { consecutiveReds: 4, firstRedAt: 1_000, failingTests: ['pkgA/real.test.ts'], lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error');
+
+    // The whole-blob write is the one that would have carried a 5. It must not happen at all:
+    // this branch returns before it, precisely so it cannot shadow a peer run's real verdict.
+    expect(lastGateHealthWrite()).toBeNull();
+    expect(noVerdictBump()).not.toBeNull();
+  });
+
+  it('⭐ counts the tick in its OWN streak, so a crashing gate never goes silent', async () => {
+    seededGh = { consecutiveReds: 0, consecutiveNoVerdict: 1, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error');
+
+    const bump = noVerdictBump();
+    expect(bump).not.toBeNull();
+    // Written to the leaf PATH, never the whole `{gate_health}` key: this branch runs
+    // concurrently with a peer run's real verdict write, and a whole-key replace here is the
+    // EI-7472 hazard that would shadow it.
+    expect(bump!.query).toMatch(/jsonb_set/);
+    expect(bump!.query).not.toMatch(/'\{gate_health\}'/);
+    expect(bump!.params[0]).toBe('test-slug');
+  });
+
+  it('⭐ escalates at the SAME threshold a red streak would — loudness is preserved exactly', async () => {
+    seededGh = { consecutiveNoVerdict: stallReds - 1, noVerdictAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error');
+
+    expect(broadcastSevereEvent).toHaveBeenCalledTimes(1);
+    const ev = broadcastSevereEvent.mock.calls[0]![0]!;
+    // The alarm must say WEDGED and must not invite test triage — the response this whole
+    // change exists to prevent.
+    expect(String(ev.summary)).toMatch(/WEDGED/);
+    expect(String(ev.summary)).toMatch(/NOT a red build/i);
+    expect(String(ev.body)).toMatch(/DO NOT triage/i);
+    /**
+     * No conditionKey, deliberately. `gate-red-streak:<harness>` mints exactly one claimable
+     * work-item whose entire framing is "the reds are yours to fix"; opening it here would hand
+     * someone a broken-build ticket for a gate that never judged a build. This assertion is what
+     * would catch a well-meaning "make the wedge ownable too" change that reused the red key.
+     */
+    expect(ev.conditionKey).toBeUndefined();
+  });
+
+  it('does NOT escalate below the threshold, and only ONCE per episode', async () => {
+    seededGh = { consecutiveNoVerdict: 0, lastGreenAt: Date.now() };
+    await trackGateStall(ctx, 'error');
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+
+    // Already alarmed for this episode: a deeper wedge must not re-spam the fleet, matching
+    // `stallAlerted`'s transition-only contract on the red path.
+    calls.length = 0;
+    broadcastSevereEvent.mockClear();
+    seededGh = { consecutiveNoVerdict: stallReds + 2, noVerdictAlerted: true, lastGreenAt: Date.now() };
+    await trackGateStall(ctx, 'error');
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+  });
+
+  it('⭐ a real verdict of EITHER colour ends the streak — that is what "consecutive" means', async () => {
+    for (const status of ['not-green', 'advanced']) {
+      calls.length = 0;
+      seededGh = { consecutiveReds: 2, consecutiveNoVerdict: 7, noVerdictAlerted: true, lastGreenAt: Date.now() };
+
+      await trackGateStall(ctx, status, 'deadbeefcafe', []);
+
+      const written = lastGateHealthWrite();
+      expect(written).not.toBeNull();
+      // Stated outright rather than left to the whole-key replace, so a later change to a
+      // MERGING write cannot silently resurrect a dead streak or its one-shot flag.
+      expect(written!.consecutiveNoVerdict).toBe(0);
+      expect(written!.noVerdictAlerted).toBe(false);
+    }
+  });
+
+  it('a moved release pin still wins — the wedge branch never runs', async () => {
+    // `pinMoved` is hard evidence the pipeline is flowing, and it outranks every status.
+    seededGh = { consecutiveReds: 3, consecutiveNoVerdict: 5, lastMainPin: 'aaaaaaaaaaaa' };
+
+    await trackGateStall(ctx, 'error', 'deadbeef5678', [], 'bbbbbbbbbbbb');
+
+    expect(noVerdictBump()).toBeNull();
+    expect(lastGateHealthWrite()!.consecutiveReds).toBe(0);
+  });
+
+  it('fails SAFE: a broken streak write degrades to invisible, never to a wrong verdict', async () => {
+    seededGh = { consecutiveReds: 4, lastGreenAt: Date.now() };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unsafe = vi.spyOn(fakeSql, 'unsafe');
+    unsafe.mockImplementation((q: string, p: unknown[] = []) => {
+      calls.push({ query: q, params: p });
+      if (/SELECT\s+metadata->'gate_health'/i.test(q)) return Promise.resolve([{ gh: seededGh }]);
+      if (/consecutiveNoVerdict/.test(q)) return Promise.reject(new Error('pg down'));
+      return Promise.resolve({ count: 0 });
+    });
+
+    await expect(trackGateStall(ctx, 'error')).resolves.not.toThrow();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no-verdict streak record failed'));
+    // The critical half: even with the counter write dead, no red was fabricated.
+    expect(lastGateHealthWrite()).toBeNull();
+    unsafe.mockRestore();
+    warn.mockRestore();
+  });
+});

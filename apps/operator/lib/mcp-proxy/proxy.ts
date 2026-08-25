@@ -47,7 +47,7 @@ import { normalizeMcpName } from '@papercusp/tooldef';
 import {
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
-} from '@papercusp/tooldef-mcp';
+} from "@papercusp/operator-core/lib/mcp-request-trace";
 import { isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
 export { CHEAP_REPEATING_BEAT_PATHS, isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
 // The one path this proxy answers itself. Shared with watchdog.mjs so the liveness probe and
