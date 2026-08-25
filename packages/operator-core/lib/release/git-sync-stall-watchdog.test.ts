@@ -571,3 +571,132 @@ describe('stranding vs failing-leg diagnosis (2026-08-02 papercusp misdiagnosis)
     expect(verdict.reason).toContain("failed to push some refs");
   });
 });
+
+describe('WI-41567 head-clock re-arm — the stranding clock measures time-since-FAULT-ONSET, not time-since-last-commit', () => {
+  const SWEEP = 15 * M; // watchdog sweep interval
+  const HEAD = 'a'.repeat(40);
+
+  const idleRow = {
+    headSha: HEAD,
+    wdHeadSha: HEAD,
+    wdHeadSinceMs: NOW - 2 * H, // clock last armed 2h ago
+    localSyncStatus: 'nothing',
+    lastStatus: 'nothing',
+  };
+
+  describe('decideHeadClock (pure sweep-side clock decision)', () => {
+    it('pure-idle sweep (clean "nothing" tick, HEAD unchanged) RE-ARMS the clock', () => {
+      const d = decideHeadClock(idleRow, NOW);
+      expect(d.reset).toBe(true);
+      expect(d.resetReason).toBe('commit-not-attemptable');
+      expect(d.headUnchangedMs).toBe(0);
+    });
+
+    it("gated 'skipped' / 'skipped-locked' sweeps also re-arm (frozen HEAD is definitional there too)", () => {
+      for (const status of ['skipped', 'skipped-locked']) {
+        const d = decideHeadClock({ ...idleRow, localSyncStatus: status, lastStatus: status }, NOW);
+        expect(d.reset).toBe(true);
+        expect(d.resetReason).toBe('commit-not-attemptable');
+      }
+    });
+
+    it('HEAD advanced ⇒ reset with head-advanced reason (pre-existing behavior preserved)', () => {
+      const d = decideHeadClock({ ...idleRow, wdHeadSha: 'b'.repeat(40), localSyncStatus: 'synced', lastStatus: 'synced' }, NOW);
+      expect(d.reset).toBe(true);
+      expect(d.resetReason).toBe('head-advanced');
+      expect(d.headUnchangedMs).toBe(0);
+    });
+
+    it('first observation (no wd_head_since_ms) ⇒ reset, never judged stale this pass', () => {
+      const d = decideHeadClock({ ...idleRow, wdHeadSinceMs: null }, NOW);
+      expect(d.reset).toBe(true);
+      expect(d.resetReason).toBe('head-advanced');
+    });
+
+    it('no head recorded yet ⇒ no reset, headUnchangedMs null (cannot judge commit-staleness)', () => {
+      const d = decideHeadClock({ ...idleRow, headSha: null }, NOW);
+      expect(d.reset).toBe(false);
+      expect(d.headUnchangedMs).toBeNull();
+    });
+
+    it('EI-7531 true stall preserved: attemptable statuses NEVER re-arm — the clock accumulates', () => {
+      for (const status of ['synced', 'error']) {
+        const d = decideHeadClock({ ...idleRow, localSyncStatus: status, lastStatus: status }, NOW);
+        expect(d.reset).toBe(false);
+        expect(d.headUnchangedMs).toBe(2 * H); // full accumulation since the clock was armed
+      }
+    });
+
+    it('bridge-leg fallback: with no local stage record, the top-level status decides', () => {
+      const d = decideHeadClock({ ...idleRow, localSyncStatus: null, lastStatus: 'nothing' }, NOW);
+      expect(d.reset).toBe(true);
+      expect(d.resetReason).toBe('commit-not-attemptable');
+    });
+  });
+
+  it('REGRESSION (2026-08-25 papercusp-public-site): idle→local-fetch-error tick must NOT yield the STRANDING verdict', () => {
+    // Hours of clean-idle 'nothing' sweeps: each one re-arms the clock.
+    let clockArmedAt = NOW - 2 * H;
+    for (let t = NOW - 2 * H + SWEEP; t <= NOW - SWEEP; t += SWEEP) {
+      const d = decideHeadClock(idleRow, t);
+      expect(d.reset).toBe(true); // idle sweep ⇒ re-arm
+      clockArmedAt = t;
+    }
+    // Next tick the LOCAL stage errors on fetch ('error' = attemptable — the prior
+    // EI-20625652898058188 fix is blind here). The clock was re-armed one sweep ago.
+    const errorSweep = decideHeadClock(
+      { ...idleRow, wdHeadSinceMs: clockArmedAt, localSyncStatus: 'error', lastStatus: 'error' },
+      NOW,
+    );
+    expect(errorSweep.reset).toBe(false);
+    expect(errorSweep.headUnchangedMs).toBe(NOW - clockArmedAt); // ≈ one sweep interval
+    expect(errorSweep.headUnchangedMs!).toBeLessThanOrEqual(SWEEP);
+
+    // The verdict on that sweep: NOT commit-stale (clock is fresh), and once the fault has
+    // persisted 2 sweeps it alarms as a FAULTING leg — the non-stranding diagnosis.
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: errorSweep.headUnchangedMs,
+        localSyncStatus: 'error',
+        lastStatus: 'error',
+        lastError: 'superproject: fetch failed; HEAD has unpushed commits not on origin/main',
+        errorSweeps: 2,
+      },
+      NOW,
+    );
+    expect(v.commitStale).toBe(false);
+    expect(v.errorStall).toBe(true);
+    expect(v.stalled).toBe(true);
+    expect(isStrandingVerdict(v)).toBe(false);
+    const diagnosis = gitSyncStallDiagnosis(v, 'papercusp-public-site');
+    expect(diagnosis.summary).toContain('FAULTING');
+    expect(diagnosis.summary).not.toContain('code is stranding');
+  });
+
+  it('REGRESSION control (EI-7531 class): a dirty tree failing continuously still pages STRANDING', () => {
+    // Statuses stay attemptable the whole window, so no sweep re-arms and the clock accumulates.
+    const d = decideHeadClock({ ...idleRow, localSyncStatus: 'error', lastStatus: 'error' }, NOW);
+    expect(d.reset).toBe(false);
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: d.headUnchangedMs,
+        localSyncStatus: 'error',
+        lastStatus: 'error',
+        lastError: 'commit failed: index.lock held',
+        errorSweeps: 2,
+      },
+      NOW,
+    );
+    expect(v.commitStale).toBe(true);
+    expect(isStrandingVerdict(v)).toBe(true);
+  });
+
+  it('isCommitNotAttemptableStatus prefers the local stage record over the bridged top-level status', () => {
+    expect(isCommitNotAttemptableStatus('nothing', 'error')).toBe(true); // bridge overwrote top-level
+    expect(isCommitNotAttemptableStatus('synced', 'nothing')).toBe(false); // local commit was attemptable
+    expect(isCommitNotAttemptableStatus(null, 'skipped')).toBe(true); // pre-stage-record fallback
+    expect(isCommitNotAttemptableStatus(null, null)).toBe(false);
+  });
+});
