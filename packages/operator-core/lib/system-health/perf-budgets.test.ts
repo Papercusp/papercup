@@ -304,6 +304,49 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(melt.reasons.join(' ')).toMatch(/starved for CPU/);
   });
 
+  it('attaches bounded cgroup CPU ownership to PSI pressure reasons without claiming causality', () => {
+    const v = evaluatePerfSignals(
+      sig({
+        psi: { cpu: { some: { avg60: 97 } } },
+        cgroupCpu: {
+          accounting: 'cgroup-v2-inclusive-descendants',
+          partial: false,
+          top: [
+            {
+              path: '/user.slice/user@1000.service/papercup-vm-win.service',
+              cpuUsageUsecDelta: 6_550_000,
+              cpuPct: 655,
+              directPids: 3,
+            },
+          ],
+          scannedCgroups: 20,
+          candidateCgroups: 1,
+          maxScanned: 4096,
+          maxRows: 40,
+          sampleSec: 1,
+          budgetSec: 5,
+        },
+      }),
+      NOW,
+    );
+    expect(v.status).toBe('crit');
+    expect(v.cgroupCpuAttribution).toEqual({
+      accounting: 'cgroup-v2-inclusive-descendants',
+      partial: false,
+      top: [
+        {
+          path: '/user.slice/user@1000.service/papercup-vm-win.service',
+          cpuUsageUsecDelta: 6_550_000,
+          cpuPct: 655,
+          directPids: 3,
+        },
+      ],
+    });
+    expect(v.reasons.join(' ')).toMatch(/top cgroup CPU owner/);
+    expect(v.reasons.join(' ')).toMatch(/correlation, not proof of causality/);
+    expect(v.critAttribution.ambientHost).toEqual(v.reasons);
+  });
+
   // ── memory PSI (WI-5471, 2026-07-19): captured all along, never evaluated ──────
   it('warns on sustained memory PSI some avg60 (early reclaim pressure)', () => {
     const v = evaluatePerfSignals(sig({ psi: { memory: { some: { avg60: 15 } } } }), NOW);

@@ -273,4 +273,54 @@ describe('capture-signals cgroup memory attribution', () => {
     expect(JSON.stringify(captured)).not.toContain('startup-token');
     expect(JSON.stringify(captured)).not.toContain('free-form-secret');
   });
+
+  it('captures bounded two-sample cgroup CPU ownership with direct pid counts', async () => {
+    const root = join(dir, 'cgroup-cpu');
+    await mkdir(join(root, 'user.slice', 'user@1000.service', 'papercup-vm-win.service'), { recursive: true });
+    await writeFile(join(root, 'cgroup.procs'), '101\n');
+    await writeFile(
+      join(root, 'user.slice', 'user@1000.service', 'papercup-vm-win.service', 'cgroup.procs'),
+      '202\n203\n',
+    );
+
+    const code = [
+      'import importlib.util,json,sys',
+      's=importlib.util.spec_from_file_location("capture_signals",sys.argv[1])',
+      'm=importlib.util.module_from_spec(s);s.loader.exec_module(m)',
+      'root=sys.argv[2]; child=root+"/user.slice/user@1000.service/papercup-vm-win.service"',
+      'samples={root:[100,4200],child:[100,300]}',
+      'read_usage=lambda path:samples[path].pop(0)',
+      'clock=iter([0.0,0.0,0.0,0.0,1.0,1.0,1.0])',
+      'read=lambda: next(clock)',
+      'captured=m.cgroup_cpu(root=root,budget_sec=10,max_scanned=10,top_n=2,sample_sec=0,usage_reader=read_usage,monotonic_fn=read,sleep_fn=lambda _:None)',
+      'print(json.dumps(captured))',
+    ].join(';');
+    const { stdout } = await execFileAsync('python3', [
+      '-c',
+      code,
+      CAPTURE_SCRIPT,
+      root,
+    ]);
+    const captured = JSON.parse(stdout);
+
+    expect(captured).toMatchObject({
+      accounting: 'cgroup-v2-inclusive-descendants',
+      scannedCgroups: 2,
+      candidateCgroups: 2,
+      maxRows: 2,
+      partial: false,
+    });
+    expect(captured.top[0]).toMatchObject({
+      path: '/',
+      cpuUsageUsecDelta: 4100,
+      cpuPct: 0.4,
+      directPids: 1,
+    });
+    expect(captured.top[1]).toMatchObject({
+      path: '/user.slice/user@1000.service/papercup-vm-win.service',
+      cpuUsageUsecDelta: 200,
+      cpuPct: 0,
+      directPids: 2,
+    });
+  });
 });
