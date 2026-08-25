@@ -3,6 +3,7 @@ import { DISPLAY_TERMINAL_LAUNCH } from '../../../adv-sessions';
 import {
   classifyPrePinnedOwnerRows,
   describePrePinnedConflicts,
+  refinePrePinnedRowLiveness,
   resolvePrePinnedOwnerLiveness,
   type PrePinnedOwnerRow,
 } from './pre-pinned-owner-rows';
@@ -175,5 +176,40 @@ describe('resolvePrePinnedOwnerLiveness', () => {
       resolvePrePinnedOwnerLiveness('su-x05', witnessWith({ beat: { pid: 2, host: 'elsewhere' }, probe: () => null })),
     ).toBe('unknown');
     expect(resolvePrePinnedOwnerLiveness('su-x06', witnessWith({ beat: { pid: 3, host: 'this-box' }, probe: () => null }))).toBe('unknown');
+  });
+});
+
+describe('refinePrePinnedRowLiveness (EI-21417550055038906 — the half-terminal ghost)', () => {
+  it("a row's own terminal evidence upgrades an inconclusive owner verdict to dead", () => {
+    // The measured stranding: psu members carry pid NULL / host '' beats, so the
+    // owner-level probe is permanently 'unknown' — only the row's persisted
+    // ended_by can testify that its teardown observed the death.
+    expect(refinePrePinnedRowLiveness('unknown', true)).toBe('dead');
+  });
+
+  it('positive live evidence for the owner still wins over row residue', () => {
+    // Until every reactivation path reliably clears the complete terminal tuple,
+    // a LIVE resumed session can carry stale ended_by residue; reclaiming its
+    // binding would mint the split identity the guard exists to prevent.
+    expect(refinePrePinnedRowLiveness('live', true)).toBe('live');
+  });
+
+  it('no terminal evidence passes the owner verdict through unchanged', () => {
+    expect(refinePrePinnedRowLiveness('unknown', false)).toBe('unknown');
+    expect(refinePrePinnedRowLiveness('dead', false)).toBe('dead');
+    expect(refinePrePinnedRowLiveness('live', false)).toBe('live');
+  });
+
+  it('feeds the classifier: a half-terminal registered row lands reclaimable, not blocking', () => {
+    // End-to-end through classifyPrePinnedOwnerRows, the exact bootstrap-su
+    // mapping: owner verdict 'unknown' + row terminal evidence ⇒ 'dead' ⇒
+    // reclaimableConflicts ⇒ markAdvSessionEnded stamps it instead of 409-ing
+    // the owner's own cold-carry successor.
+    const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows([
+      { ...registered('18422'), liveness: refinePrePinnedRowLiveness('unknown', true) },
+    ]);
+    expect(precursors).toEqual([]);
+    expect(reclaimableConflicts.map((r) => r.id)).toEqual(['18422']);
+    expect(conflicts).toEqual([]);
   });
 });
