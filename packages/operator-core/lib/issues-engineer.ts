@@ -20,7 +20,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from './work-items';
-import type { BornAdmission } from './work-items-admission';
+import { admittedWhereSql, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import { resolveWorkItemPot } from './pot-membership';
 import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
@@ -1538,6 +1538,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
       )`);
   return sql`(
     ${base}
+    AND ${admittedWhereSql(sql, aliased ? 'ei' : undefined)}
     AND ${watchdogRecoveryWindowExclusionSqlForIssueView(sql, c)}
     AND ${agentReviewNormalExclusionSql(sql, aliased ? 'ei.payload' : 'payload')}
   )`;
@@ -2338,6 +2339,9 @@ export async function claimIssue(
          OR assignee = ${opts.fromHolder ?? assignee}
          ${expectedAssignee ? sql` OR assignee = ${expectedAssignee}` : sql``}
        )
+       -- Born-pending admission is orthogonal to lifecycle status. A named claim
+       -- cannot jump the promoter any more than scheduler:get_next can.
+       AND ${admittedWhereSql(sql)}
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
        -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:
        -- "a completed row is STILL directly claimable by id — the floor only gates

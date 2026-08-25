@@ -151,8 +151,13 @@ export function isAdmitted(admission: string | null | undefined): boolean {
  * three-valued logic, which would silently exclude every legacy row — the exact
  * negated-predicate trap the own-author leg's comment warns about.
  */
-export function admittedWhereSql(sql: OrgSql) {
-  return sql`(admission IS DISTINCT FROM 'pending')`;
+export function admittedWhereSql(sql: OrgSql, qualifier?: 'wi' | 'ei') {
+  // `qualifier` is a closed internal union, never caller input. Keeping all three
+  // relation shapes behind this one builder prevents the feature view, the issue
+  // base table, and the aliased engineer_issues listing from drifting into subtly
+  // different NULL semantics.
+  const column = sql.unsafe(qualifier ? `${qualifier}.admission` : 'admission');
+  return sql`(${column} IS DISTINCT FROM 'pending')`;
 }
 
 /**
@@ -160,7 +165,7 @@ export function admittedWhereSql(sql: OrgSql) {
  * the base table as `wi` (same contract as {@link isIssueLocallyClaimableWhereSql}).
  */
 export function admittedWhereSqlWi(sql: OrgSql) {
-  return sql`(wi.admission IS DISTINCT FROM 'pending')`;
+  return admittedWhereSql(sql, 'wi');
 }
 
 /**
@@ -403,14 +408,15 @@ export async function isWorkItemAutoPickable(
 ): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ origin: string | null; audit_verdict: string | null; verified_author_github_user_id: number | string | null; author_pubkey: string | null }[]>`
-    SELECT origin, audit_verdict, verified_author_github_user_id, author_pubkey
+  const rows = await sql<{ origin: string | null; audit_verdict: string | null; admission: string | null; verified_author_github_user_id: number | string | null; author_pubkey: string | null }[]>`
+    SELECT origin, audit_verdict, admission, verified_author_github_user_id, author_pubkey
       FROM harness_shared.harness_features_consolidated
      WHERE harness_slug = ${opts.harness}
        AND workspace_id = ${ws}
        AND feature_id = ${workItemId}
      LIMIT 1`;
   if (!rows[0]) return false;
+  if (!isAdmitted(rows[0].admission)) return false;
   // Local / auditor-admitted fast path (no trust-list read needed).
   if (isAutoPickable(rows[0].origin, rows[0].audit_verdict)) return true;
   // OWN-NODE fast-path: authored by a key this workspace knows as its own. Checked
@@ -437,4 +443,25 @@ export async function isWorkItemAutoPickable(
     SELECT 1 FROM harness_shared.user_trust_list
      WHERE workspace_id = ${ws} AND trusted_github_user_id = ${verifiedId} LIMIT 1`;
   return trusted.length > 0;
+}
+
+/**
+ * Per-id duplicate-screening read for consumers that hydrate the legacy WorkItem
+ * projection (which intentionally does not grow a new selected column for every
+ * lifecycle axis). IDs are workspace-unique across both physical families, so the
+ * shared base table is the one exact read. Missing rows fail safe.
+ */
+export async function isWorkItemDuplicateAdmitted(
+  workItemId: string,
+  opts: { workspaceId?: string } = {},
+): Promise<boolean> {
+  if (!workItemId) return false;
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ admission: string | null }[]>`
+    SELECT admission
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${ws} AND feature_id = ${workItemId}
+     LIMIT 1`;
+  return rows[0] ? isAdmitted(rows[0].admission) : false;
 }

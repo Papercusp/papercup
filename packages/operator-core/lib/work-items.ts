@@ -53,8 +53,11 @@ import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import {
+  admittedWhereSql,
+  admittedWhereSqlWi,
   autoPickableWhereSql,
   type BornAdmission,
+  isWorkItemDuplicateAdmitted,
   isAutoPickable,
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
@@ -1151,6 +1154,7 @@ async function listWorkItemsWithLimit(
            filter.admissibleOnly
              ? sql`(
                  ${autoPickableWhereSql(sql, ws)}
+                 AND ${admittedWhereSql(sql)}
                  -- WI-5343: mirror claimFloorsWhereSql's FEATURE-family floors here too — a
                  -- claim-held (_claimHold) or plan-lane-reserved feature item is not actually
                  -- claimable, so "admissible" must exclude it the same way the issue-family
@@ -1276,6 +1280,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
            filter.admissibleOnly
              ? sql`(
                  ${autoPickableWhereSql(sql, ws)}
+                 AND ${admittedWhereSql(sql)}
                  -- WI-5512: mirror listWorkItems' admissibleOnly branch (WI-5343) here too —
                  -- this COUNT must apply the same claim-hold/plan-lane floors as the LIST it
                  -- pairs with, or "N of TOTAL" undercounts-as-overcounts (numerator honest,
@@ -1398,6 +1403,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
            filter.admissibleOnly
              ? sql`(
                  ${autoPickableWhereSql(sql, ws)}
+                 AND ${admittedWhereSql(sql)}
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                  AND ${agentReviewNormalExclusionSql(sql, 'payload')}
@@ -2224,7 +2230,11 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // row in the gap). Issue-family claims via createIssue's assignee/assigned_by
   // columns; feature-family stamps taken_by/taken_at in the INSERT below. A
   // freshly-created row is origin='local' ⇒ always admissible, so no auditor guard.
-  const assignTo = typeof input.assignee === 'string' && input.assignee.trim() ? input.assignee.trim() : null;
+  // A pending row cannot be born already claimed: that would bypass the promoter
+  // inside the INSERT even though every later claim door correctly refuses it.
+  const requestedAssignee =
+    typeof input.assignee === 'string' && input.assignee.trim() ? input.assignee.trim() : null;
+  const assignTo = input.admission === 'pending' ? null : requestedAssignee;
 
   if (familyOf(input.kind) === 'issue') {
     const issue = await createIssue({
@@ -2236,8 +2246,8 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       scope: input.harness ? harnessScope(input.harness) : 'operator',
       topics: input.topics,
       createdBy: input.createdBy,
-      assignee: input.assignee,
-      assignedBy: input.assignedBy,
+      assignee: assignTo ?? undefined,
+      assignedBy: assignTo ? input.assignedBy : undefined,
       parent: input.parent,
       payload: input.payload,
       // P-002: the born-admission rides in createIssue's own INSERT (which reaches the
@@ -4401,6 +4411,8 @@ export async function claimWorkItem(
          -- can't bypass the auditor either — remote, un-admitted stays unclaimable
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
          AND ${autoPickableWhereSql(sql, ws)}
+         -- P-002 born-pending: duplicate screening is a second, orthogonal gate.
+         AND ${admittedWhereSql(sql)}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
@@ -4741,6 +4753,8 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- un-admitted item — the same gate the feature frontier enforces (P-010 trust leg,
     -- ws-scoped via the same ws this query filters on).
     AND ${autoPickableWhereSql(sql, opts.workspaceId)}
+    -- P-002 born-pending: pending items stay out of every feature self-select path.
+    AND ${admittedWhereSql(sql)}
     AND (taken_by IS NULL OR taken_by = '')
     AND status = ANY(${states}::text[])
     -- P-006 (fleet-deltas-leader-primitives): the claim-hold floor, extended to the
@@ -6342,6 +6356,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- refused them (a "ready>0 but claim keeps missing" hot-retry mismatch). Now both admit
          -- exactly (origin local/null OR our own-node author key).
          AND ${isIssueLocallyClaimableWhereSql(sql, issueWs)}
+         AND ${admittedWhereSqlWi(sql)}
          AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
          -- The blocking floor, from the ONE shared definition (D-007). This is the READY
@@ -6423,6 +6438,8 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'not-found': 'no such work-item in this harness/workspace',
   'not-claimable-status': 'status is terminal or otherwise not in the claimable set',
   'already-taken': 'already claimed by another agent',
+  'admission-pending':
+    'duplicate screening is pending — the durable promoter owns admission; wait for admitted/unreviewed',
   'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
   'needs-owner-action':
     'payload.needsOwnerAction = true — a typed credential, physical-device, or external-service-action capability requires the owner',
@@ -6495,6 +6512,7 @@ export async function explainIssueClaimFloors(
       ok_status: boolean;
       ok_untaken: boolean;
       ok_origin: boolean;
+      ok_admission: boolean;
       ok_observation: boolean;
       ok_needs_owner_action: boolean;
       ok_agent_review: boolean;
@@ -6515,6 +6533,7 @@ export async function explainIssueClaimFloors(
            (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
            (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
            (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
+           (${admittedWhereSqlWi(sql)})                                           AS ok_admission,
            (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
            (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
            (${agentReviewNormalExclusionSql(sql)})                                 AS ok_agent_review,
@@ -6549,8 +6568,10 @@ export async function explainIssueClaimFloors(
           ? 'already-taken'
           : !r.ok_origin
             ? 'origin'
-            : !r.ok_observation
-              ? 'observation-lane'
+            : !r.ok_admission
+              ? 'admission-pending'
+              : !r.ok_observation
+                ? 'observation-lane'
               : !r.ok_needs_owner_action
                 ? 'needs-owner-action'
                 : !r.ok_agent_review
@@ -6848,6 +6869,8 @@ export async function claimNextIssueWorkItem(
           -- without it, node-identity drift permanently strands this box's own bugs). A true-peer
           -- remote row stays excluded. Shared with the READY diagnose so the two never diverge.
           AND ${isIssueLocallyClaimableWhereSql(tx, issueWs)}
+          -- P-002 born-pending: the promoter owns this lifecycle transition.
+          AND ${admittedWhereSqlWi(tx)}
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
           AND ${filter.swarmId ? tx`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : tx`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
@@ -7062,6 +7085,14 @@ export async function observeWorkItem(
   // through getWorkItem's mapping layer (normalizeTakenBy already applied there), so this
   // is belt-and-suspenders — mirrors classifyClaimFailure's own defense-in-depth call.
   const unclaimed = !normalizeTakenBy(wi.assignee);
+  if (
+    unclaimed &&
+    !(await isWorkItemDuplicateAdmitted(id, {
+      workspaceId: wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
+    }))
+  ) {
+    return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
+  }
   if (unclaimed && wi.family === 'feature') {
     // Cheap path first — local/admitted items (the vast majority) resolve without
     // touching the DB at all; only a remote+un-admitted item needs the trust-list

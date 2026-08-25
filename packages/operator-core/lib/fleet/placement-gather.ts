@@ -16,7 +16,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import { listPresence } from '../agent-tools/coordination/presence';
 import { groupByAgent, listFleetAssignments } from './assignments';
 import { getWorkItem, isClaimHoldParked, listWorkItems, type WorkItem } from '../work-items';
-import { isAdmitted, isAutoPickable, loadTrustedGithubUserIds } from '../work-items-admission';
+import {
+  isAutoPickable,
+  isWorkItemDuplicateAdmitted,
+  loadTrustedGithubUserIds,
+} from '../work-items-admission';
 import { placementConfig } from '../pot/placement-watchdog';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
@@ -474,7 +478,7 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         skipped.push({ id, reason: 'remote work not yet auditor-admitted (quarantined)' });
         continue;
       }
-      if (!isAdmitted(wi.admission)) {
+      if (!(await isWorkItemDuplicateAdmitted(wi.id, { workspaceId: opts.workspaceId }))) {
         skipped.push({ id, reason: 'duplicate screening pending (awaiting durable promoter)' });
         continue;
       }
@@ -495,7 +499,11 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
     }
   } else {
     // Harness backlog: OPEN unassigned items, priority-ordered.
-    const items = await listWorkItems({ harness: opts.harness, limit: Math.min(opts.limit * 3, 500) });
+    const items = await listWorkItems({
+      harness: opts.harness,
+      limit: Math.min(opts.limit * 3, 500),
+      admissibleOnly: true,
+    });
     candidates = items
       // G2 admission (P-005): exclude remote, un-admitted work from placement candidates.
       // EI-865: also exclude any item the breaker has latched `cursed`.
@@ -512,7 +520,6 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
           !isObservationLaneItem(wi.payload) &&
           !isClaimHoldParked(wi.payload) &&
           !cursedIds.has(wi.id) &&
-          isAdmitted(wi.admission) &&
           isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trustedAuthors),
       )
       .sort((a, b) => {
