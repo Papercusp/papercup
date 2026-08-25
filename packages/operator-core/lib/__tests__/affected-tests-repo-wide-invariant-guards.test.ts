@@ -1115,7 +1115,8 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
     const changedPaths = Array.from({ length: 1_000 }, () => RFS_OUTSIDE_TS_PATH).join(',');
     expect(Buffer.byteLength(changedPaths, 'utf8')).toBeGreaterThan(32 * 1024);
 
-    const line = dryTaskLine(dryTasks(changedPaths, 'HEAD^'), RFS_TASK);
+    const out = dryTasks(changedPaths, 'HEAD^');
+    const line = dryTaskLine(out, RFS_TASK);
     const responseMatch = line.match(/\(guard args: --files-from=([^\s)]+)\)/);
     expect(
       responseMatch,
@@ -1124,6 +1125,15 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
     ).not.toBeNull();
     expect(line).not.toContain('(guard args: --files=');
     expect(existsSync(responseMatch?.[1] ?? '')).toBe(false);
+
+    // The sibling vimock guard consumes the same exact path population. It must use the
+    // same response-file transport and parser; otherwise enabling its forwarded scope
+    // merely moves the historical E2BIG gate abort from one guard to the other.
+    const vimockLine = dryTaskLine(out, VIMOCK_GUARD_TASK);
+    const vimockResponse = vimockLine.match(/\(guard args: --files-from=([^\s)]+)\)/);
+    expect(vimockResponse).not.toBeNull();
+    expect(vimockLine).not.toContain('(guard args: --files=');
+    expect(existsSync(vimockResponse?.[1] ?? '')).toBe(false);
   }, 120_000);
 
   it('attaches for a SUBMODULE ROOT path — the shape the 2026-08-12 main freeze arrived as', () => {

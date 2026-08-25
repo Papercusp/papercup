@@ -32,6 +32,7 @@ import {
   formatFindings,
   // @ts-expect-error — untyped .mjs guard script, imported for its pure helpers.
 } from '../../../../scripts/check-vimock-export-strands.mjs';
+import { EXIT_NOT_CHECKED } from '../../../../scripts/lib/not-checked.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const SCRIPT = path.join(REPO_ROOT, 'scripts/check-vimock-export-strands.mjs');
@@ -245,14 +246,14 @@ describe('REAL TREE — the guard executes over this repository', () => {
     expect(run.status).toBe(0);
   });
 
-  it('scans the real tree and stays ADVISORY (exit 0), so it can never false-block the fleet', () => {
+  it('scans the real tree and reports whether JSON mode actually examined anything', () => {
     // Adding an export is normal and usually harmless, so this guard must never gate a
-    // commit. It also must not crash on real sources — this run parses whatever the
-    // working tree currently differs by.
+    // commit. A clean tree still has to return NOT_CHECKED rather than a false JSON green.
+    // This run parses whatever the working tree currently differs by.
     const run = spawnSync('node', [SCRIPT, '--json'], { cwd: REPO_ROOT, encoding: 'utf-8' });
-    expect(run.status).toBe(0);
     const parsed = JSON.parse(String(run.stdout));
     expect(parsed).toHaveProperty('base');
     expect(Array.isArray(parsed.findings)).toBe(true);
+    expect(run.status).toBe(parsed.examined.length > 0 ? 0 : EXIT_NOT_CHECKED);
   });
 });

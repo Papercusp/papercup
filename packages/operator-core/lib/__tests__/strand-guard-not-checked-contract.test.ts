@@ -30,7 +30,7 @@
  *   ERR_MODULE_NOT_FOUND exit is not evidence about the exit-status contract. (That is not
  *   hypothetical — it happened to this very change, twice.)
  */
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -70,6 +70,86 @@ function makeCleanRepo(): string {
   git('add', '-A');
   git('commit', '-qm', 'base');
   return tmp;
+}
+
+type SubmoduleGuardFixture = {
+  root: string;
+  base: string;
+  submoduleRoot: string;
+  changedFile: string;
+  mockFile: string;
+  responseFile: string;
+};
+
+/**
+ * A deterministic superproject/submodule pair carrying BOTH strand shapes:
+ * a required field and a runtime export added to one submodule module, plus an
+ * enumerating vi.mock in that same submodule. The gate sees only the gitlink path.
+ */
+function makeSubmoduleGuardRepo(): SubmoduleGuardFixture {
+  const tmp = mkdtempSync(join(tmpdir(), 'strand-guard-submodule-'));
+  const root = join(tmp, 'root');
+  const origin = join(tmp, 'submodule-origin');
+  const submoduleRoot = 'libs/example';
+  const changedFile = `${submoduleRoot}/src/subject.ts`;
+  const mockFile = `${submoduleRoot}/src/subject.test.ts`;
+  mkdirSync(root, { recursive: true });
+  mkdirSync(join(origin, 'src'), { recursive: true });
+  cpSync(resolve(ROOT, 'scripts'), join(root, 'scripts'), { recursive: true });
+  symlinkSync(resolve(ROOT, 'node_modules'), join(root, 'node_modules'));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    });
+  const configure = (cwd: string) => {
+    git(cwd, 'config', 'user.email', 'strand-guard@test.invalid');
+    git(cwd, 'config', 'user.name', 'strand-guard');
+  };
+
+  git(origin, 'init', '-q', '.');
+  configure(origin);
+  writeFileSync(
+    join(origin, 'src/subject.ts'),
+    'export interface Shape { id: string }\nexport const old = 1;\n',
+  );
+  writeFileSync(
+    join(origin, 'src/subject.test.ts'),
+    "vi.mock('./subject', () => ({ old: 1 }));\n",
+  );
+  git(origin, 'add', '-A');
+  git(origin, 'commit', '-qm', 'submodule base');
+
+  git(root, 'init', '-q', '.');
+  configure(root);
+  git(root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', origin, submoduleRoot);
+  git(root, 'add', '.gitmodules', 'package.json', submoduleRoot);
+  git(root, 'commit', '-qm', 'superproject base');
+  const base = git(root, 'rev-parse', 'HEAD').trim();
+
+  const checkout = join(root, submoduleRoot);
+  configure(checkout);
+  writeFileSync(
+    join(checkout, 'src/subject.ts'),
+    [
+      'export interface Shape { id: string; label: string }',
+      'export const old = 1;',
+      'export const added = 2;',
+      '',
+    ].join('\n'),
+  );
+  git(checkout, 'add', 'src/subject.ts');
+  git(checkout, 'commit', '-qm', 'add both strand triggers');
+  git(root, 'add', submoduleRoot);
+  git(root, 'commit', '-qm', 'advance submodule gitlink');
+
+  const responseFile = join(root, 'changed-files.json');
+  writeFileSync(responseFile, JSON.stringify([submoduleRoot]));
+  return { root, base, submoduleRoot, changedFile, mockFile, responseFile };
 }
 
 function run(tmp: string, guard: string, extraArgs: string[] = []) {
@@ -132,6 +212,23 @@ describe('strand-guard family — "examined nothing" must never exit 0', () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it('check-vimock-export-strands preserves NOT_CHECKED in machine-readable JSON mode', () => {
+    const tmp = makeCleanRepo();
+    try {
+      const result = spawnSync(
+        'node',
+        [join('scripts', 'check-vimock-export-strands.mjs'), '--base', 'HEAD', `--files=${FILE_A}`, '--json'],
+        { cwd: tmp, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      );
+      const report = JSON.parse(String(result.stdout));
+      expect(report.examined).toEqual([FILE_A]);
+      expect(report.identical).toEqual([FILE_A]);
+      expect(result.status).toBe(EXIT_NOT_CHECKED);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 /**
@@ -189,6 +286,69 @@ describe('strand-guard family — a DECLARED file identical to base proves nothi
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  }, 120_000);
+});
+
+describe('strand guards — a forwarded submodule ROOT means its internal TypeScript diff', () => {
+  let fixture: SubmoduleGuardFixture;
+
+  beforeAll(() => {
+    fixture = makeSubmoduleGuardRepo();
+  }, 120_000);
+
+  afterAll(() => {
+    rmSync(resolve(fixture.root, '..'), { recursive: true, force: true });
+  });
+
+  function runJson(guard: string, scopeArgs: string[] = []) {
+    const result = spawnSync(
+      'node',
+      [join('scripts', guard), '--base', fixture.base, ...scopeArgs, '--json'],
+      { cwd: fixture.root, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+    );
+    expect(result.error, `${guard} failed to spawn: ${result.error?.message}`).toBeUndefined();
+    expect(`${result.stderr ?? ''}`).not.toMatch(/EISDIR|fatal: (?:bad object|bad revision|path .* exists on disk)/);
+    return { result, report: JSON.parse(String(result.stdout)) };
+  }
+
+  it('required-field expands the declared root instead of reading the submodule directory', () => {
+    const { result, report } = runJson('check-required-field-strands.mjs', [
+      `--files=${fixture.submoduleRoot}`,
+    ]);
+    expect(result.status).toBe(0);
+    expect(report.examined).toContain(fixture.changedFile);
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ file: fixture.changedFile }),
+      ]),
+    );
+  }, 120_000);
+
+  it('vimock accepts the shared response file, reads the gitlink before-image, and scans submodule tests', () => {
+    const { result, report } = runJson('check-vimock-export-strands.mjs', [
+      `--files-from=${fixture.responseFile}`,
+    ]);
+    expect(result.status).toBe(0);
+    expect(report.examined).toContain(fixture.changedFile);
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          file: fixture.changedFile,
+          mockers: expect.arrayContaining([
+            expect.objectContaining({ path: fixture.mockFile }),
+          ]),
+        }),
+      ]),
+    );
+  }, 120_000);
+
+  it.each([
+    'check-required-field-strands.mjs',
+    'check-vimock-export-strands.mjs',
+  ])('%s also expands submodule changes in inferred mode', (guard) => {
+    const { result, report } = runJson(guard);
+    expect(result.status).toBe(0);
+    expect(report.examined).toContain(fixture.changedFile);
   }, 120_000);
 });
 
