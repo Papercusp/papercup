@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../service-health", () => ({
   probeAll: vi.fn(),
+  probeMcpHandshake: vi.fn(),
   supervisedProcesses: vi.fn(() => []),
   // reconcileBgHostTicker (EI-19934795546523351) reads this literal — mirror the
   // real service-health.ts constant rather than importOriginal (avoids pulling in
@@ -60,7 +61,7 @@ vi.mock("../../fleet/spawner-sidecar-spawn", () => ({
   spawnerSidecarSupervisionStatus: vi.fn(() => ({ running: false, respawnAttemptsInWindow: 5, gaveUp: true, lastRespawnScheduledAt: 2000 })),
 }));
 
-import { probeAll } from "../../service-health";
+import { probeAll, probeMcpHandshake } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
@@ -79,6 +80,7 @@ import {
 /** Fixed clock for the transport-block tests — the summarizer windows on it. */
 const NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
 const probeM = vi.mocked(probeAll);
+const mcpHandshakeM = vi.mocked(probeMcpHandshake);
 const supervisionM = vi.mocked(supervisionSnapshot);
 const substrateM = vi.mocked(substrateSidecarSupervisionStatus);
 const spawnerM = vi.mocked(spawnerSidecarSupervisionStatus);
@@ -94,6 +96,13 @@ beforeEach(() => {
   // environment they intend explicitly below.
   vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR", "0");
   vi.stubEnv("PAPERCUSP_SPAWNER_SIDECAR_MODE", "0");
+  mcpHandshakeM.mockResolvedValue({
+    ok: true,
+    latencyMs: 3,
+    status: 200,
+    protocolVersion: "2025-06-18",
+    url: "http://127.0.0.1:3070/api/mcp?client=mcp-health",
+  });
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -120,6 +129,12 @@ describe("dev:service_health handler", () => {
     const b = body((await tool.handler({} as never, {} as never)) as Out);
     expect(b).toMatchObject({
       ok: true,
+      mcpHandshake: {
+        ok: true,
+        latencyMs: 3,
+        status: 200,
+        protocolVersion: "2025-06-18",
+      },
       services: [
         { name: "operator", up: true, latencyMs: 12 },
         { name: "desktop", present: false },
@@ -159,6 +174,22 @@ describe("dev:service_health handler", () => {
     expect(substrateM).toHaveBeenCalledTimes(1);
     expect(spawnerM).toHaveBeenCalledTimes(1);
     expect(b.supervision).toHaveLength(3);
+  });
+
+  it("surfaces a failed MCP initialize verdict even when the ordinary operator probe is green", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 2 }] as never);
+    mcpHandshakeM.mockResolvedValue({
+      ok: false,
+      latencyMs: 2000,
+      url: "http://127.0.0.1:3070/api/mcp?client=mcp-health",
+      note: "MCP initialize timed out after 2000ms",
+    });
+
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+
+    expect(b.services).toEqual([{ name: "operator", up: true, latencyMs: 2 }]);
+    expect(b.mcpHandshake).toMatchObject({ ok: false, latencyMs: 2000 });
+    expect(b.mcpHandshake.note).toMatch(/timed out/);
   });
 
   it("does not report a stale local spawner give-up on a request-only host without the sidecar opt-in", async () => {

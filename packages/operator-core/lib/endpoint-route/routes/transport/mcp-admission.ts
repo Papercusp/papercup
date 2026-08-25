@@ -31,6 +31,89 @@ export const ADMISSION_RETRY_AFTER_SEC = Math.max(
 );
 
 /**
+ * EI-21392098254217280 — the proxy has an admission ceiling, but the operator
+ * worker used to accept an unbounded number of requests after they crossed the
+ * proxy boundary. A CPU-bound worker could therefore spend all of its event
+ * loop budget on MCP handshakes and tool dispatches before any one request had
+ * a chance to finish. Keep the defaults deliberately below the proxy's global
+ * ceiling: this is a per-worker guard, not a replacement for the proxy's
+ * cross-worker bulkhead.
+ */
+function intEnv(name: string, fallback: number, min = 0): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? Math.max(min, Math.trunc(parsed)) : fallback;
+}
+
+export const OPERATOR_ADMISSION_MAX_IN_FLIGHT = intEnv('PAPERCUSP_MCP_OPERATOR_MAX_IN_FLIGHT', 64);
+export const OPERATOR_ADMISSION_CONTROL_PLANE_RESERVE = intEnv(
+  'PAPERCUSP_MCP_OPERATOR_CONTROL_PLANE_RESERVE',
+  8,
+);
+export const OPERATOR_ADMISSION_DIAGNOSTIC_RESERVE = intEnv(
+  'PAPERCUSP_MCP_OPERATOR_DIAGNOSTIC_RESERVE',
+  2,
+);
+export const OPERATOR_ADMISSION_MAX_HANDSHAKES = intEnv(
+  'PAPERCUSP_MCP_OPERATOR_MAX_HANDSHAKES',
+  OPERATOR_ADMISSION_CONTROL_PLANE_RESERVE,
+);
+
+export type McpAdmissionClass = 'ordinary' | 'handshake' | 'diagnostic' | 'other';
+
+export interface McpAdmissionCapacity {
+  maxInFlight: number;
+  controlPlaneReserve: number;
+  diagnosticReserve: number;
+  maxHandshakes: number;
+}
+
+export interface McpAdmissionSnapshot {
+  inFlight: number;
+  handshakesInFlight: number;
+  diagnosticsInFlight: number;
+  ordinaryInFlight: number;
+}
+
+export interface McpAdmissionLease {
+  classification: McpAdmissionClass;
+  release: () => void;
+}
+
+export interface McpAdmissionDecision {
+  response: Response | null;
+  lease: McpAdmissionLease | null;
+  classification: McpAdmissionClass;
+}
+
+const DEFAULT_CAPACITY: McpAdmissionCapacity = {
+  maxInFlight: OPERATOR_ADMISSION_MAX_IN_FLIGHT,
+  controlPlaneReserve: OPERATOR_ADMISSION_CONTROL_PLANE_RESERVE,
+  diagnosticReserve: OPERATOR_ADMISSION_DIAGNOSTIC_RESERVE,
+  maxHandshakes: OPERATOR_ADMISSION_MAX_HANDSHAKES,
+};
+
+let admissionSnapshot: McpAdmissionSnapshot = {
+  inFlight: 0,
+  handshakesInFlight: 0,
+  diagnosticsInFlight: 0,
+  ordinaryInFlight: 0,
+};
+
+export function getMcpAdmissionSnapshot(): McpAdmissionSnapshot {
+  return { ...admissionSnapshot };
+}
+
+/** Test-only reset. The gate is process-local state by design. */
+export function resetMcpAdmissionForTests(): void {
+  admissionSnapshot = {
+    inFlight: 0,
+    handshakesInFlight: 0,
+    diagnosticsInFlight: 0,
+    ordinaryInFlight: 0,
+  };
+}
+
+/**
  * EI-20241040709445172 — diagnostics needed to prove or recover from critical
  * pressure must not be rejected by the pressure gate itself. Keep this list
  * deliberately narrow: both tools are read-only and internally bounded, so
@@ -48,6 +131,18 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
 function isCriticalPressureDiagnostic(toolName: unknown): boolean {
   return typeof toolName === 'string'
     && CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalizeMcpName(toolName));
+}
+
+const MCP_HANDSHAKE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
+export const MCP_HEALTH_PROBE_CLIENT = 'mcp-health';
+
+function isMcpHealthProbe(requestUrl: string | undefined): boolean {
+  if (!requestUrl) return false;
+  try {
+    return new URL(requestUrl, 'http://127.0.0.1').searchParams.get('client') === MCP_HEALTH_PROBE_CLIENT;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -81,6 +176,48 @@ export function classifyMcpBody(bodyText: string): { sheddable: boolean; id: str
   return { sheddable, id };
 }
 
+/**
+ * Classify the bounded part of the MCP transport. The `other` class remains
+ * fail-open: notifications and resource/prompt traffic are cheap protocol
+ * work, while initialize/tools/list/ping and tools/call are the traffic that
+ * can create the observed CPU queue. A named health probe is diagnostic even
+ * though it is an initialize request, so it retains the diagnostic reserve.
+ */
+export function classifyMcpRequest(bodyText: string, requestUrl?: string): McpAdmissionClass {
+  if (isMcpHealthProbe(requestUrl)) return 'diagnostic';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return 'other';
+  }
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  let ordinaryToolCall = false;
+  let diagnosticToolCall = false;
+  let handshake = messages.length > 0;
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') {
+      handshake = false;
+      continue;
+    }
+    const method = (message as { method?: unknown }).method;
+    if (typeof method !== 'string') {
+      handshake = false;
+      continue;
+    }
+    if (MCP_HANDSHAKE_METHODS.has(method)) continue;
+    handshake = false;
+    if (method !== 'tools/call') continue;
+    const name = (message as { params?: { name?: unknown } }).params?.name;
+    if (isCriticalPressureDiagnostic(name)) diagnosticToolCall = true;
+    else ordinaryToolCall = true;
+  }
+  if (ordinaryToolCall) return 'ordinary';
+  if (diagnosticToolCall) return 'diagnostic';
+  if (handshake) return 'handshake';
+  return 'other';
+}
+
 /** The load-shed decision (PURE): shed iff admission control is enabled AND the loop
  *  is in the CRITICAL band. Method-level sheddability is decided separately (needs the
  *  body); this is the cheap gate checked first so the common case never reads the body. */
@@ -88,11 +225,33 @@ export function shouldShedForPressure(pressure: LoopPressure, enabled: boolean):
   return enabled && pressure === 'critical';
 }
 
+/** Pure capacity decision used by the live gate and its focused regression tests. */
+export function shouldShedForCapacity(
+  classification: McpAdmissionClass,
+  snapshot: McpAdmissionSnapshot,
+  capacity: McpAdmissionCapacity = DEFAULT_CAPACITY,
+): boolean {
+  if (capacity.maxInFlight <= 0 || classification === 'other') return false;
+  if (snapshot.inFlight >= capacity.maxInFlight) return true;
+  if (classification === 'handshake' && capacity.maxHandshakes > 0 && snapshot.handshakesInFlight >= capacity.maxHandshakes) {
+    return true;
+  }
+  if (classification === 'diagnostic') return false;
+  const reserved = Math.max(0, capacity.controlPlaneReserve) + Math.max(0, capacity.diagnosticReserve);
+  const ordinaryCeiling = Math.max(1, capacity.maxInFlight - reserved);
+  if (classification === 'ordinary') return snapshot.inFlight >= ordinaryCeiling;
+  // A regular handshake can consume the control-plane reserve, but it may not
+  // consume the diagnostic reserve.
+  const handshakeCeiling = Math.max(1, capacity.maxInFlight - Math.max(0, capacity.diagnosticReserve));
+  return snapshot.inFlight >= handshakeCeiling;
+}
+
 /** The 429 backpressure response the proxy absorbs. A JSON-RPC error envelope so a
  *  direct (non-proxy) client still gets a structured, retryable signal. */
 export function admissionShedResponse(
   id: string | number | null,
   retryAfterSec: number = ADMISSION_RETRY_AFTER_SEC,
+  reason = 'loop_pressure_critical',
 ): Response {
   return new Response(
     JSON.stringify({
@@ -100,8 +259,8 @@ export function admissionShedResponse(
       id,
       error: {
         code: -32000,
-        message: 'operator event loop critically saturated — request shed, retry shortly',
-        data: { retryable: true, reason: 'loop_pressure_critical' },
+        message: 'operator MCP admission is saturated — request shed, retry shortly',
+        data: { retryable: true, reason },
       },
     }),
     {
@@ -109,6 +268,86 @@ export function admissionShedResponse(
       headers: { 'content-type': 'application/json', 'retry-after': String(retryAfterSec) },
     },
   );
+}
+
+function releaseAdmission(classification: McpAdmissionClass): void {
+  admissionSnapshot = {
+    inFlight: Math.max(0, admissionSnapshot.inFlight - 1),
+    handshakesInFlight: Math.max(
+      0,
+      admissionSnapshot.handshakesInFlight - (classification === 'handshake' ? 1 : 0),
+    ),
+    diagnosticsInFlight: Math.max(
+      0,
+      admissionSnapshot.diagnosticsInFlight - (classification === 'diagnostic' ? 1 : 0),
+    ),
+    ordinaryInFlight: Math.max(
+      0,
+      admissionSnapshot.ordinaryInFlight - (classification === 'ordinary' ? 1 : 0),
+    ),
+  };
+}
+
+function acquireCapacity(classification: McpAdmissionClass): McpAdmissionLease | null {
+  if (shouldShedForCapacity(classification, admissionSnapshot)) return null;
+  if (classification === 'other') return null;
+  admissionSnapshot = {
+    inFlight: admissionSnapshot.inFlight + 1,
+    handshakesInFlight: admissionSnapshot.handshakesInFlight + (classification === 'handshake' ? 1 : 0),
+    diagnosticsInFlight: admissionSnapshot.diagnosticsInFlight + (classification === 'diagnostic' ? 1 : 0),
+    ordinaryInFlight: admissionSnapshot.ordinaryInFlight + (classification === 'ordinary' ? 1 : 0),
+  };
+  let released = false;
+  return {
+    classification,
+    release: () => {
+      if (released) return;
+      released = true;
+      releaseAdmission(classification);
+    },
+  };
+}
+
+/**
+ * Acquire the operator-side lease. The original Request body is never
+ * consumed: classification peeks through `clone()`, leaving mcp-handler's
+ * parser untouched. A malformed/unreadable body is admitted so the protocol
+ * layer can return its own structured parse error rather than a misleading
+ * overload response.
+ */
+export async function acquireAdmission(
+  req: Request,
+  pressure: LoopPressure,
+  enabled: boolean,
+): Promise<McpAdmissionDecision> {
+  if (req.method !== 'POST' || !enabled) {
+    return { response: null, lease: null, classification: 'other' };
+  }
+  let bodyText: string;
+  try {
+    bodyText = await req.clone().text();
+  } catch {
+    return { response: null, lease: null, classification: 'other' };
+  }
+  const classification = classifyMcpRequest(bodyText, req.url);
+  const { sheddable, id } = classifyMcpBody(bodyText);
+  if (sheddable && shouldShedForPressure(pressure, enabled)) {
+    return {
+      response: admissionShedResponse(id, ADMISSION_RETRY_AFTER_SEC, 'loop_pressure_critical'),
+      lease: null,
+      classification,
+    };
+  }
+  const lease = acquireCapacity(classification);
+  if (classification !== 'other' && !lease) {
+    const idForResponse = sheddable ? id : null;
+    return {
+      response: admissionShedResponse(idForResponse, ADMISSION_RETRY_AFTER_SEC, 'operator_admission_capacity'),
+      lease: null,
+      classification,
+    };
+  }
+  return { response: null, lease, classification };
 }
 
 /**
@@ -121,15 +360,7 @@ export async function evaluateAdmission(
   pressure: LoopPressure,
   enabled: boolean,
 ): Promise<Response | null> {
-  if (req.method !== 'POST') return null; // GET/SSE reconnects etc. — never shed
-  if (!shouldShedForPressure(pressure, enabled)) return null; // fast path: no clone, no body read
-  let bodyText: string;
-  try {
-    bodyText = await req.clone().text();
-  } catch {
-    return null; // couldn't peek the body → admit (fail-open; never shed blind)
-  }
-  const { sheddable, id } = classifyMcpBody(bodyText);
-  if (!sheddable) return null; // not a tools/call → cheap → admit
-  return admissionShedResponse(id);
+  const decision = await acquireAdmission(req, pressure, enabled);
+  decision.lease?.release();
+  return decision.response;
 }

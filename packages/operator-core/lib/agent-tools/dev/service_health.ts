@@ -7,7 +7,13 @@
 
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
-import { probeAll, supervisedProcesses, PORTLESS_PROBE_NAMES, type ProbeResult } from "../../service-health";
+import {
+  probeAll,
+  probeMcpHandshake,
+  supervisedProcesses,
+  PORTLESS_PROBE_NAMES,
+  type ProbeResult,
+} from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import {
   supervisionSnapshot,
@@ -533,7 +539,7 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith-sidecar, Tauri desktop, bg-host ticker) and return per-service latency/status/URL plus supervisor flap state. Each probed entry carries the `url` it hit. "bg-host-ticker" is separate from :3070 — if it is down, nextVerb points at the bg-host restart, not the operator. An absent desktop is absent, not failed. `supervision[]` (systemd-user) carries systemd\'s verbatim `activeState` plus `healthy`, the verdict — read `healthy`, not `active`: an `episodic` timer-driven unit is idle, not down, while inactive. `administrativelyPaused:true` with `unitFileState:"disabled"|"masked"` is an intentional pause, not an unhealthy timer; an enabled/static inactive timer remains unhealthy. Omitted = the probe could not tell, never "down". `units:[...]` + `scope:\'user\'|\'system\'|\'all\'` answers `systemctl is-active|is-failed` for ANY unit: unitStates[] (LoadState/ActiveState/SubState) plus unitsUnknown[] — read unitsUnknown FIRST, since a unit systemd never heard of reports `inactive` exactly like a stopped one.',
+    'Probe dev services now (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith-sidecar, Tauri desktop, bg-host ticker) and return per-service latency/status/URL plus supervisor flap state. Each probed entry carries the `url` it hit. `mcpHandshake` is a separate bounded JSON-RPC initialize verdict: `ok:true` means the MCP control plane returned a valid protocolVersion, while `ok:false` names the timeout/HTTP/JSON-RPC failure even when the ordinary operator GET is green. "bg-host-ticker" is separate from :3070 — if it is down, nextVerb points at the bg-host restart, not the operator. An absent desktop is absent, not failed. `supervision[]` (systemd-user) carries systemd\'s verbatim `activeState` plus `healthy`, the verdict — read `healthy`, not `active`: an `episodic` timer-driven unit is idle, not down, while inactive. `administrativelyPaused:true` with `unitFileState:"disabled"|"masked"` is an intentional pause, not an unhealthy timer; an enabled/static inactive timer remains unhealthy. Omitted = the probe could not tell, never "down". `units:[...]` + `scope:\'user\'|\'system\'|\'all\'` answers `systemctl is-active|is-failed` for ANY unit: unitStates[] (LoadState/ActiveState/SubState) plus unitsUnknown[] — read unitsUnknown FIRST, since a unit systemd never heard of reports `inactive` exactly like a stopped one.',
   guidance: {
     when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercup-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
     notWhen:
@@ -601,7 +607,7 @@ export default defineTool({
     // same breath and a second round-trip for the other half is the cost this
     // whole plan exists to remove.
     const unitStates = units?.length ? await probeUnitStates(units, scope ?? "user") : null;
-    const rawServices = await probeAll();
+    const [rawServices, mcpHandshake] = await Promise.all([probeAll(), probeMcpHandshake()]);
     const supervision = await overlaySystemdRestartRecency(
       overlayNodeChildSupervision(
         supervisionSnapshot(),
@@ -634,6 +640,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             services,
+            mcpHandshake,
             telemetry: getTelemetryHealth(),
             ...buildMcpProxyTransportBlock(),
             // P-004/P-006 (critical-process-supervisor-2026-07-04): additive block, existing
