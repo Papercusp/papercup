@@ -682,11 +682,11 @@ export function splitFleetRosterCounts(entries: Array<{ agentRole: string | null
  * the EMPTY set: a degraded oracle read must degrade these to the legacy
  * heartbeat-only behavior, never break them.
  */
-async function oracleSessionStates(subjects: LivenessSubject[]): Promise<Map<string, string>> {
+async function oracleSessionStates(subjects: LivenessSubject[]): Promise<Map<string, SessionState>> {
   if (subjects.length === 0) return new Map();
   try {
     const verdicts = await resolveSessionStates(subjects);
-    const states = new Map<string, string>();
+    const states = new Map<string, SessionState>();
     // EI-18771777750306094: an unmeasured subject (in-band `null`) is LEFT OUT
     // deliberately, not accidentally. Unlike the oracle's own Map — where an
     // absent key was ambiguous between "unknown" and "not asked" — absence here
@@ -834,6 +834,48 @@ export interface FleetMemberOmission {
   heartbeatAt: string | null;
 }
 
+type LiveFleetPresenceRow = {
+  owner_id: string;
+  agent_role: string | null;
+  heartbeat_at: string;
+  stale: boolean;
+  host: string | null;
+  pid: number | null;
+};
+
+/** Read the fresh, non-bee presence candidates shared by audience and launch reads. */
+async function readLiveFleetPresenceCandidates(
+  fleetSlug: string,
+  workspaceId: string,
+): Promise<{ candidates: LiveFleetPresenceRow[]; omitted: FleetMemberOmission[] }> {
+  const { sql } = getOrgPg();
+  const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
+  const rows = await sql<LiveFleetPresenceRow[]>`
+    SELECT owner_id,
+           agent_role,
+           heartbeat_at,
+           (heartbeat_at <= now() - ${`${secs} seconds`}::interval) AS stale,
+           host,
+           pid
+      FROM harness_shared.coord_presence
+     WHERE workspace_id = ${workspaceId}
+       AND fleet_slug = ${fleetSlug}
+  `;
+
+  const omitted: FleetMemberOmission[] = [];
+  const candidates: LiveFleetPresenceRow[] = [];
+  for (const r of rows) {
+    if (r.stale) {
+      omitted.push({ ownerId: r.owner_id, reason: 'stale-heartbeat', heartbeatAt: r.heartbeat_at });
+    } else if (isBeeRole(r.agent_role)) {
+      omitted.push({ ownerId: r.owner_id, reason: 'bee-role', heartbeatAt: r.heartbeat_at });
+    } else {
+      candidates.push(r);
+    }
+  }
+  return { candidates, omitted };
+}
+
 export interface DiagnosedFleetMembers {
   /** The deliverable audience — byte-identical to `liveFleetMemberIds`. */
   ids: string[];
@@ -858,41 +900,7 @@ export async function liveFleetMemberIdsDiagnosed(
   fleetSlug: string,
   workspaceId: string,
 ): Promise<DiagnosedFleetMembers> {
-  const { sql } = getOrgPg();
-  const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
-  // Named so the partition below can be typed as an ARRAY OF ROWS. `typeof rows` is a
-  // postgres.js RowList (it carries count/command/columns), which no `[]` literal satisfies.
-  type PresenceRow = {
-    owner_id: string;
-    agent_role: string | null;
-    heartbeat_at: string;
-    stale: boolean;
-    host: string | null;
-    pid: number | null;
-  };
-  const rows = await sql<PresenceRow[]>`
-    SELECT owner_id,
-           agent_role,
-           heartbeat_at,
-           (heartbeat_at <= now() - ${`${secs} seconds`}::interval) AS stale,
-           host,
-           pid
-      FROM harness_shared.coord_presence
-     WHERE workspace_id = ${workspaceId}
-       AND fleet_slug = ${fleetSlug}
-  `;
-
-  const omitted: FleetMemberOmission[] = [];
-  const candidates: PresenceRow[] = [];
-  for (const r of rows) {
-    if (r.stale) {
-      omitted.push({ ownerId: r.owner_id, reason: 'stale-heartbeat', heartbeatAt: r.heartbeat_at });
-    } else if (isBeeRole(r.agent_role)) {
-      omitted.push({ ownerId: r.owner_id, reason: 'bee-role', heartbeatAt: r.heartbeat_at });
-    } else {
-      candidates.push(r);
-    }
-  }
+  const { candidates, omitted } = await readLiveFleetPresenceCandidates(fleetSlug, workspaceId);
 
   // P-006: drop AUTHORITATIVELY-dead owners (ended|suspect) before expanding the
   // audience — a warm-heartbeat corpse must not receive a fleet send. `draining`
@@ -942,12 +950,50 @@ export async function liveFleetMemberIdsDiagnosed(
 }
 
 /**
- * The deliverable `@fleet:<slug>` audience alone — the long-standing signature, now a
- * thin projection of `liveFleetMemberIdsDiagnosed`. Callers that only route (headcount,
- * launch-on-plan, the audience host) keep taking `string[]`; callers that must EXPLAIN a
- * partial send take the diagnosed form.
+ * Session states that satisfy a launch deficit. `recorded` is authoritative
+ * session-log evidence, but it is not a live runnable member: it has no live
+ * presence/wake path and must not suppress a replacement terminal. `draining`
+ * remains counted so an in-flight wind-down is not raced by a second launch.
  */
-export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string): Promise<string[]> {
+export function isLaunchLiveSessionState(state: SessionState | null | undefined): boolean {
+  return state === 'live' || state === 'parked' || state === 'draining';
+}
+
+async function liveFleetMemberIdsForLaunch(fleetSlug: string, workspaceId: string): Promise<string[]> {
+  const { candidates } = await readLiveFleetPresenceCandidates(fleetSlug, workspaceId);
+  const states = await oracleSessionStates(
+    candidates.map((r) => ({
+      ownerId: r.owner_id,
+      heartbeatAt: r.heartbeat_at,
+      agentRole: r.agent_role,
+      host: r.host,
+      pid: r.pid,
+    })),
+  );
+
+  // A missing verdict means the oracle leg degraded for that owner. Preserve the
+  // existing fail-open heartbeat behavior in that case; only an explicit verdict
+  // can exclude a row from the launch population.
+  return candidates
+    .filter((r) => {
+      const state = states.get(r.owner_id);
+      return state == null || isLaunchLiveSessionState(state);
+    })
+    .map((r) => r.owner_id);
+}
+
+/**
+ * The deliverable `@fleet:<slug>` audience alone — the long-standing signature, now a
+ * thin projection of `liveFleetMemberIdsDiagnosed`. Callers that route durable audience
+ * traffic use the default purpose; launch sizing opts into the narrower runnable-state
+ * population. Callers that must EXPLAIN a partial send take the diagnosed form.
+ */
+export async function liveFleetMemberIds(
+  fleetSlug: string,
+  workspaceId: string,
+  purpose: 'audience' | 'launch' = 'audience',
+): Promise<string[]> {
+  if (purpose === 'launch') return liveFleetMemberIdsForLaunch(fleetSlug, workspaceId);
   return (await liveFleetMemberIdsDiagnosed(fleetSlug, workspaceId)).ids;
 }
 

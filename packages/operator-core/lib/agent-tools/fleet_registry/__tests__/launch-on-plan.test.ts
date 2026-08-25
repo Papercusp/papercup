@@ -2785,6 +2785,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     );
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
+    expect(liveFleetMemberIds).toHaveBeenCalledWith('drain-fleet', 'ws-1', 'launch');
     expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
     const call = setClaimSpecMock.mock.calls[0][0] as { potSlug: string | null };
     expect(call.potSlug).toBe('papercusp');

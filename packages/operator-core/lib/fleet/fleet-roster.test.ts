@@ -12,6 +12,7 @@ import {
   foldFederatedSessionPresence,
   annotateFleetsWithCounts,
   isBeeRole,
+  isLaunchLiveSessionState,
   livePsuFleetMemberIds,
   splitFleetRosterCounts,
   type FederatedSessionFoldRow,
@@ -446,5 +447,15 @@ describe('isBeeRole / splitFleetRosterCounts (WI-1764 #4 member-vs-bee split)', 
 
   it('an empty roster is 0/0', () => {
     expect(splitFleetRosterCounts([])).toEqual({ members: 0, bees: 0 });
+  });
+
+  it('does not count a recorded session as a live launch member', () => {
+    expect(isLaunchLiveSessionState('live')).toBe(true);
+    expect(isLaunchLiveSessionState('parked')).toBe(true);
+    expect(isLaunchLiveSessionState('draining')).toBe(true);
+    expect(isLaunchLiveSessionState('recorded')).toBe(false);
+    expect(isLaunchLiveSessionState('ended')).toBe(false);
+    expect(isLaunchLiveSessionState('suspect')).toBe(false);
+    expect(isLaunchLiveSessionState(null)).toBe(false);
   });
 });
