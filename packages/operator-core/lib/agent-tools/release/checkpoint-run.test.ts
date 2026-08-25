@@ -1491,7 +1491,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(String(b.note)).toMatch(/fresh current-quiet-cut candidate/i);
   });
 
-  it('attempts=3 + owner gone holds the exhausted queue and refuses without checking a fresh tip', async () => {
+  it('attempts=3 + owner gone recovers the dead fixer before reapplying exhaustion and refuses without checking a fresh tip', async () => {
     mockQueue(awaitingFixerQueue(), false);
     const launchSpy = vi.fn(async () => ({
       launched: true,
@@ -1540,7 +1540,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       required_ancestor: REQUIRED,
       candidate: null,
       candidate_source: 'unresolved',
-      queue_decision: 'hold-exhausted',
+      queue_decision: 'recover-dead-fixer',
       fixer_alive: false,
       repair_queue: {
         candidate: 'ed20de6dcb05c0c780437990f7f1070c3a92c853',
@@ -1549,7 +1549,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       },
     });
     expect(String(b.note)).toMatch(/queue-not-runnable/);
-    expect(String(b.note)).toMatch(/hold-exhausted/);
+    expect(String(b.note)).toMatch(/recover-dead-fixer/);
   });
 
   it('attempts=3 + liveness unknown preserves wait-for-fixer and fails closed without ancestry check or spawn', async () => {
