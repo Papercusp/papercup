@@ -77,7 +77,10 @@ async function querySectionsReal(vec: number[], mode: string, sourceKey: string,
 export const realDocSemanticDeps: DocSemanticDeps = {
   // QUERY-side resolver (gemma query prompt) — its vectors are trained to
   // match the document-prompt vectors the backfill sweep stores.
-  resolveEmbedder: async () => (await import('../search/embedder')).buildQueryEmbedderResolved(),
+  resolveEmbedder: async () => {
+    const { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } = await import('../search/embedder');
+    return buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+  },
   querySections: querySectionsReal,
 };
 

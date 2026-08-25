@@ -23,11 +23,20 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const { resolveDocsEmbedder, docSectionsRanker } = vi.hoisted(() => ({
+const { resolveDocsEmbedder, docSectionsRanker, runHybridSearch, interactiveEmbedAcquireBudgetMs } = vi.hoisted(() => ({
   resolveDocsEmbedder: vi.fn(),
   docSectionsRanker: vi.fn(),
+  runHybridSearch: vi.fn(),
+  interactiveEmbedAcquireBudgetMs: vi.fn(() => 4321),
 }));
 vi.mock('../semantic-leg', () => ({ resolveDocsEmbedder, docSectionsRanker }));
+vi.mock('../../search/embedder', () => ({ interactiveEmbedAcquireBudgetMs }));
+
+vi.mock('@papercusp/search', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/search')>();
+  runHybridSearch.mockImplementation(actual.runHybridSearch);
+  return { ...actual, runHybridSearch };
+});
 
 import searchTool from '../search';
 
@@ -93,6 +102,8 @@ afterAll(async () => {
 afterEach(() => {
   resolveDocsEmbedder.mockReset();
   docSectionsRanker.mockReset();
+  runHybridSearch.mockClear();
+  interactiveEmbedAcquireBudgetMs.mockClear();
 });
 
 interface Hit {
@@ -168,6 +179,17 @@ describe('docs:search RRF fusion (WI-5690, on the engine per P-016)', () => {
     expect(legs.lexical.status).toBe('ran');
     expect(legs.semantic.status).toBe('ran');
     expect(legs.degraded).toBe(false);
+  });
+
+  it('passes the bounded query-embed timeout to the hybrid engine', async () => {
+    semanticReturns([
+      { slug: BURIED_SLUG, url: `/${BURIED_SLUG}`, title: 'T', anchor: '', similarity: 0.93, excerpt: 'e' },
+    ]);
+
+    await runSearch('gadget');
+
+    expect(runHybridSearch).toHaveBeenCalledTimes(1);
+    expect(runHybridSearch.mock.calls[0]?.[1]).toMatchObject({ embedTimeoutMs: 4321 });
   });
 });
 

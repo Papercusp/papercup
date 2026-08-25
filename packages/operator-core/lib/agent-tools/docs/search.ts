@@ -21,6 +21,7 @@ import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-re
 import { engineeringAdapter } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
 import { resolveDocsEmbedder, docSectionsRanker, type DocSemanticHit } from './semantic-leg';
+import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
 // surface would call the engine and inherit NO floor, which is the exact
@@ -291,6 +292,11 @@ export default defineTool({
     const hydration = new Map<string, { hit: SearchHit; anchor?: string }>();
 
     const semanticOn = args.semantic ?? !process.env.VITEST;
+    // Bound both sides of the semantic leg: resolver acquisition can wait on a
+    // cold local sidecar/model, while a resolved embedder can still hang on a
+    // warm ONNX/OpenAI query under load. Keep the query budget aligned with the
+    // interactive acquisition default used by the embedder cascade.
+    const embedTimeoutMs = semanticOn ? interactiveEmbedAcquireBudgetMs() : undefined;
     // `embedder: null` is reserved for "no semantic leg was ever wanted" —
     // the ONE case the engine's `not-run` correctly describes. When the leg IS
     // wanted, resolveDocsEmbedder returns a REJECTING embedder on every
@@ -360,6 +366,7 @@ export default defineTool({
       limit,
       mode: 'hybrid',
       embedder,
+      ...(embedTimeoutMs !== undefined ? { embedTimeoutMs } : {}),
       // OPTED OUT because this source cannot honor the cascade's stage 2, not
       // because widening is unwanted. `lexicalWithCascade` re-queries the same
       // source with `lexicalMode: 'coverage-graded'` whenever stage 1

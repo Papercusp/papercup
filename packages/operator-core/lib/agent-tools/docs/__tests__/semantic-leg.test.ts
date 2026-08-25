@@ -16,10 +16,20 @@
  * that REJECTS with the reason, and these tests assert the reason text.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+const { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } = vi.hoisted(() => ({
+  buildQueryEmbedderResolved: vi.fn(),
+  interactiveEmbedAcquireBudgetMs: vi.fn(() => 4321),
+}));
+vi.mock('../../search/embedder', () => ({
+  buildQueryEmbedderResolved,
+  interactiveEmbedAcquireBudgetMs,
+}));
 import {
   resolveDocsEmbedder,
   docSectionsRanker,
+  realDocSemanticDeps,
   type DocSemanticDeps,
   type DocSemanticHit,
 } from '../semantic-leg';
@@ -103,6 +113,19 @@ describe('resolveDocsEmbedder — D-023: degraded means BLOCKED, never not-run',
     const { embedder, embeddingMode } = await resolveDocsEmbedder();
     expect(embeddingMode).toBeNull();
     expect(await rejection(embedder)).toMatch(/vitest: real embedder resolution suppressed/);
+  });
+});
+
+describe('realDocSemanticDeps — bounded query-embedder acquisition', () => {
+  it('passes the interactive acquisition budget to the shared resolver', async () => {
+    const embed = async (): Promise<number[]> => VEC;
+    buildQueryEmbedderResolved.mockResolvedValueOnce({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed });
+
+    const resolved = await realDocSemanticDeps.resolveEmbedder();
+
+    expect(interactiveEmbedAcquireBudgetMs).toHaveBeenCalledTimes(1);
+    expect(buildQueryEmbedderResolved).toHaveBeenCalledWith({ acquireBudgetMs: 4321 });
+    expect(resolved?.embed).toBe(embed);
   });
 });
 

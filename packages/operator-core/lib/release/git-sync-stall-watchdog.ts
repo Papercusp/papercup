@@ -242,6 +242,83 @@ export function gitSyncStallDiagnosis(
 }
 
 /**
+ * Pure: was a commit NOT even attemptable on the tick that recorded this status?
+ * 'nothing' = clean idle (nothing to commit), 'skipped'/'skipped-locked' = the eligibility
+ * gate no-opped the fire. The SAME predicate gates the commitStale verdict (a frozen HEAD
+ * across non-attemptable ticks is definitional, not a stall) AND the sweep-side head-clock
+ * re-arm in checkGitSyncStall (WI-41567) — shared so the two can never drift apart.
+ * The bridge leg can overwrite the top-level status after a clean local result, so the
+ * stage-aware local status wins, with the top-level value as the pre-EI-20315742298217655
+ * fallback.
+ */
+export function isCommitNotAttemptableStatus(
+  localSyncStatus: string | null | undefined,
+  lastStatus: string | null | undefined,
+): boolean {
+  const status = localSyncStatus ?? lastStatus;
+  return status === 'nothing' || status === 'skipped' || status === 'skipped-locked';
+}
+
+/** One sweep's pure head-movement-clock decision (WI-41567): whether to (re)write
+ *  `wd_head_sha`/`wd_head_since_ms` and what `headUnchangedMs` this sweep should judge. */
+export interface HeadClockDecision {
+  /** persist `wd_head_sha = headSha`, `wd_head_since_ms = now` this sweep. */
+  reset: boolean;
+  /** why the clock reset (null when it didn't). */
+  resetReason: 'head-advanced' | 'commit-not-attemptable' | null;
+  /** the headUnchangedMs the stall verdict should see this sweep (null = no head recorded). */
+  headUnchangedMs: number | null;
+}
+
+/**
+ * Pure: maintain the head-movement clock for one sweep (WI-41567 false-STRANDING fix).
+ *
+ * The stranding clock must measure time-since-FAULT-ONSET, not time-since-last-commit: an
+ * idle install legitimately freezes HEAD across clean 'nothing' / gated 'skipped' ticks, so
+ * those sweeps RE-ARM the clock instead of letting idle time accumulate. Without this, a
+ * long-idle install whose NEXT tick hits a LOCAL-stage fetch/push error (local_sync_status
+ * = 'error' ⇒ attemptable) read hours of idle headUnchangedMs as fault-frozen and paged the
+ * STRANDING verdict ("code strands uncommitted") on a CLEAN tree — the 2026-08-25
+ * papercusp-public-site false alarm. The prior fix (EI-20625652898058188) exempted
+ * bridge-leg errors via localSyncStatus but was blind when the local stage itself errors.
+ * With the re-arm, an idle→error transition yields headUnchangedMs ≈ one sweep interval
+ * (< headStaleMs), so commitStale stays false and the persistent-fault streak (errorStall,
+ * ≥2 sweeps) fires the correct FAULTING (non-stranding) diagnosis instead.
+ *
+ * A TRUE stall (EI-7531: dirty tree, statuses continuously attemptable) never matches the
+ * re-arm branch, so its clock still accumulates from fault onset and alarms as before.
+ */
+export function decideHeadClock(
+  s: {
+    /** the tree HEAD git-sync last recorded (`local_sync_head_sha` / `head_sha`). */
+    headSha: string | null;
+    /** the watchdog's own tracked head (`wd_head_sha`). */
+    wdHeadSha: string | null;
+    /** epoch ms the tracked head has been unchanged since (`wd_head_since_ms`). */
+    wdHeadSinceMs: number | null;
+    /** the local-stage status of the last tick (authoritative for attemptability). */
+    localSyncStatus: string | null;
+    /** the top-level status (pre-stage-record fallback). */
+    lastStatus: string | null;
+  },
+  now: number,
+): HeadClockDecision {
+  if (s.headSha == null) {
+    return { reset: false, resetReason: null, headUnchangedMs: null }; // no head yet ⇒ can't judge
+  }
+  if (s.wdHeadSha !== s.headSha || s.wdHeadSinceMs == null) {
+    // HEAD advanced (or first observation) ⇒ record it + (re)start the clock.
+    return { reset: true, resetReason: 'head-advanced', headUnchangedMs: 0 };
+  }
+  if (isCommitNotAttemptableStatus(s.localSyncStatus, s.lastStatus)) {
+    // Idle/gated tick: frozen HEAD is definitional here — keep the clock armed at "now" so
+    // it only starts accumulating once a tick where a commit WAS attemptable freezes HEAD.
+    return { reset: true, resetReason: 'commit-not-attemptable', headUnchangedMs: 0 };
+  }
+  return { reset: false, resetReason: null, headUnchangedMs: now - s.wdHeadSinceMs };
+}
+
+/**
  * Pure: decide whether one ACTIVE git-sync routine is in a silent stall. Exported for unit
  * testing (the DB wiring + head-movement tracking is in checkGitSyncStall / integration-covered).
  *
@@ -282,13 +359,9 @@ export function evaluateGitSyncStall(
   // the same incident. Unknown liveness is fail-open.
   const rootEngineStale = s.routineEngineStale === true;
   // The bridge leg can promote a remote egress failure into top-level `lastStatus: error`
-  // after a clean local `nothing`/`synced` result. Use the local stage record for this
-  // commit-only decision, with the top-level value as a backwards-compatible fallback
-  // for rows written before EI-20315742298217655.
-  const localSyncStatus = s.localSyncStatus ?? s.lastStatus;
-  const commitNotAttemptable = localSyncStatus === 'nothing'
-    || localSyncStatus === 'skipped'
-    || localSyncStatus === 'skipped-locked';
+  // after a clean local `nothing`/`synced` result — the shared predicate prefers the local
+  // stage record for this commit-only decision (fallback pre-EI-20315742298217655).
+  const commitNotAttemptable = isCommitNotAttemptableStatus(s.localSyncStatus, s.lastStatus);
   // EI-21154752873591799 / WI-40600: the HEAD clock can already be stale when a new, healthy
   // local-sync fire begins. The colliding cron tick then records `skipped-locked` while the
   // real fire holds the writer-backed `git_sync_activity` marker, and the watchdog used to page
@@ -460,12 +533,20 @@ export async function checkGitSyncStall(
         ? Number(activity.started_at)
         : null;
 
-      // ── Head-movement clock: reset when HEAD advances (or first observation). ──
-      let headUnchangedMs: number | null;
-      if (row.head_sha == null) {
-        headUnchangedMs = null; // no head recorded yet ⇒ can't judge commit-staleness
-      } else if (row.wd_head_sha !== row.head_sha || wdHeadSinceMs == null) {
-        // HEAD advanced (or first time we've seen it) ⇒ record it + (re)start the clock.
+      // ── Head-movement clock: reset when HEAD advances (or first observation), AND on any
+      // commit-not-attemptable tick (WI-41567: idle frozen HEAD is definitional — the clock
+      // must accumulate from FAULT ONSET, not from the last commit; see decideHeadClock). ──
+      const clock = decideHeadClock(
+        {
+          headSha: row.head_sha,
+          wdHeadSha: row.wd_head_sha,
+          wdHeadSinceMs,
+          localSyncStatus: row.local_sync_status,
+          lastStatus: row.last_status,
+        },
+        now,
+      );
+      if (clock.reset) {
         await sql`
           UPDATE harness_shared.routines
              SET metadata = COALESCE(metadata, '{}'::jsonb)
@@ -473,10 +554,8 @@ export async function checkGitSyncStall(
                  updated_at = now()
            WHERE install_slug = ${row.install_slug}
              AND target_role = 'system:git-sync'`;
-        headUnchangedMs = 0; // just moved ⇒ not commit-stale this pass
-      } else {
-        headUnchangedMs = now - wdHeadSinceMs;
       }
+      const headUnchangedMs = clock.headUnchangedMs;
 
       // ── Fault-persistence streak: consecutive sweeps observing a fault (incl. this one).
       // git-sync NULLS last_error on any healthy tick, so a fault still present a full sweep

@@ -10,6 +10,8 @@ import {
   gitSyncStallEscalationBody,
   gitSyncStallDiagnosis,
   isStrandingVerdict,
+  isCommitNotAttemptableStatus,
+  decideHeadClock,
   shouldAlarmSustained,
   nextStallSweeps,
   type GitSyncStallSnapshot,
