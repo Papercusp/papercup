@@ -70,11 +70,13 @@
 #                                                              postgres are tiny/derived and
 #                                                              deliberately not gated.
 #   BACKUP_OPTIONAL_ARTIFACTS (default "$HOME/.papercusp-workspaces/*/db-dumps/pg-embedded.sql.gz")
-#                                     — artifacts gated on FRESHNESS but not on EXISTENCE, and
+#                                     — artifacts gated after a PROVEN newer degraded hook, not
+#                                       on age alone, and not on EXISTENCE. Workspace policy can
+#                                       be event-only, so elapsed wall time is not itself a miss;
 #                                       allowed to be ABSOLUTE paths (these live beside each
 #                                       workspace, not under BACKUP_DUMP_DIR). Absent ⇒ silent
 #                                       (a box with no workspace backups is not broken);
-#                                       present but stale ⇒ same alarm as any other artifact.
+#                                       stale + latest hook degraded ⇒ alarm.
 #                                       EI-20109034777197353 recurrence guard: the workspace
 #                                       pre-snapshot pg_dump died and went unnoticed for 26h
 #                                       precisely because NO probe watched its artifact — the
@@ -155,6 +157,7 @@ STATE_DIR="${BACKUP_STATE_DIR:-$HOME/.papercusp/backup-health}"; mkdir -p "$STAT
 log() { echo "[backup-health $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }
 now_s() { date +%s 2>/dev/null || echo 0; }
 age_h() { local f="$1"; [ -f "$f" ] || { echo 999999; return; }; echo $(( ( $(now_s) - $(cat "$f" 2>/dev/null || echo 0) ) / 3600 )); }
+mtime_s() { local f="$1"; stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0; }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
 # Mark a RED as filed, so we file once per BACKUP_RED_REFILE_H window instead of every tick.
@@ -458,6 +461,64 @@ This probe is detection-only; it never deletes anything."
   done
 }
 
+# ── (e) WORKSPACE DUMP TRANSACTION OWNERSHIP ───────────────────────────────
+# packages/backup writes PID/sequence-scoped transaction files so concurrent
+# processes never share an inode. A killed writer cannot run its finally-path,
+# and the old preflight cleanup only knew the retired single `.tmp` name. Judge
+# ownership, not age: `kill -0` sends no signal, and only a dead encoded PID is
+# a stranded transaction. Live concurrent writers are never touched or alarmed.
+check_workspace_dump_transactions() {
+  local pattern="" tmp="" base="" owner="" pid="" size="" mtime="" age=""
+  local count=0 bytes=0 oldest_h=0 sample="" red_marker="$STATE_DIR/workspace-dead-dump-tmp"
+  declare -A seen=()
+
+  for pattern in $BACKUP_OPTIONAL_ARTIFACTS; do
+    while IFS= read -r tmp; do
+      [ -f "$tmp" ] || continue
+      [ -n "${seen[$tmp]+x}" ] && continue
+      seen[$tmp]=1
+      base="${tmp##*/}"
+      owner="${base#pg-embedded.sql.gz.}"
+      [[ "$base" == pg-embedded.sql.gz.*.tmp && "$owner" =~ ^([1-9][0-9]*)-([0-9]+)\.tmp$ ]] || continue
+      pid="${BASH_REMATCH[1]}"
+      kill -0 "$pid" 2>/dev/null && continue
+      size="$(stat -c %s "$tmp" 2>/dev/null || stat -f %z "$tmp" 2>/dev/null || echo 0)"
+      mtime="$(mtime_s "$tmp")"
+      age=$(( ( $(now_s) - mtime ) / 3600 ))
+      count=$((count + 1)); bytes=$((bytes + size))
+      [ "$age" -gt "$oldest_h" ] 2>/dev/null && oldest_h="$age"
+      [ "$count" -le 3 ] && sample="${sample}${sample:+, }$base"
+    done < <(compgen -G "${pattern}.*.tmp" 2>/dev/null || true)
+  done
+
+  if [ "$count" -eq 0 ]; then
+    rm -f "$red_marker"
+    return 0
+  fi
+
+  local title="Workspace backup has dead-writer pg_dump transaction files"
+  local body="The per-workspace backup hook found $count attempt-scoped pg-embedded transaction file(s) whose filename-encoded writer PID is no longer alive (${bytes} bytes total; oldest ${oldest_h}h; sample: $sample).
+
+These are partial, non-restorable transactions, not backup artifacts. They consume the same filesystem headroom the next transactional dump needs. packages/backup must reap dead-writer PID/sequence files before its free-space admission check while preserving files owned by live concurrent writers. This probe is detection-only and deleted nothing."
+  if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
+    log "RED already tracked (dead workspace dump transaction) — skipping duplicate filing."
+  else
+    file_ei "$title" "$body"; mark_red "$red_marker"
+  fi
+}
+
+# A workspace dump can legitimately be old when its backup policy is event-only.
+# Alarm only when the writer's own companion log proves a NEWER attempt degraded.
+# This preserves the EI-20109034777197353 detector without imposing the host's
+# hourly RPO on every optional workspace policy.
+optional_artifact_latest_hook_degraded() { # <artifact>
+  local art="$1" hook="${1%/*}/hook.log" latest=""
+  [ -f "$hook" ] || return 1
+  latest="$(grep -aE 'hook done \((ok|degraded)\)' "$hook" 2>/dev/null | tail -n 1)"
+  [[ "$latest" == *'hook done (degraded)'* ]] || return 1
+  [ "$(mtime_s "$hook")" -gt "$(mtime_s "$art")" ] 2>/dev/null
+}
+
 # ── SELF-TEST: prove the alarm DISCRIMINATES (EI-10746) ────────────────────
 # The comment on mark_red() used to cite "the discrimination test below". There was no
 # test. Both bugs it would have caught were live. So: this is that test, and it asserts
@@ -551,7 +612,8 @@ if [ "${1:-}" = "--self-test" ]; then
   # because no probe watched its artifact — it lives outside BACKUP_DUMP_DIR,
   # and the only surface that mentioned it (backup_snapshots.status) said 'ok'
   # the entire time. It is gated on FRESHNESS but not EXISTENCE: a box with no
-  # workspace backup is not broken, but one whose dump stopped advancing is.
+  # workspace backup is not broken. A stale artifact alarms only when the
+  # latest, newer hook result is degraded; event-only idle time stays green.
   check_optional() {
     local name="$1" mode="$2" want_marker="$3"; shift 3
     rm -rf "${t:?}/state" "$t/dump/pg" "$t/ws"
@@ -562,7 +624,17 @@ if [ "${1:-}" = "--self-test" ]; then
     case "$mode" in
       absent) rm -f "$opt" ;;
       fresh)  : > "$opt" ;;
-      stale)  : > "$opt"; touch -d '26 hours ago' "$opt" ;;
+      stale-degraded)
+        : > "$opt"; touch -d '26 hours ago' "$opt"
+        printf '[%s] hook done (degraded)\n' "$(date -Iseconds)" >"$t/ws/hook.log"
+        ;;
+      stale-ok)
+        : > "$opt"; touch -d '26 hours ago' "$opt"
+        printf '[%s] hook done (ok)\n' "$(date -Iseconds)" >"$t/ws/hook.log"
+        ;;
+      stale-no-attempt)
+        : > "$opt"; touch -d '26 hours ago' "$opt"; rm -f "$t/ws/hook.log"
+        ;;
     esac
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
         BACKUP_DB_DATA_DIR="$t/no-db-data" \
@@ -578,9 +650,14 @@ if [ "${1:-}" = "--self-test" ]; then
       printf '  FAIL  %s — wanted marker=%s, got marker=%s\n' "$name" "$want_marker" "$got_marker"; f=$((f+1))
     fi
   }
-  # 7. THE INCIDENT ITSELF: a workspace dump 26h stale must alarm.
-  check_optional "optional artifact 26h STALE (the EI-20109034777197353 incident): marker set" \
-        stale  yes
+  # 7. THE INCIDENT ITSELF: a newer degraded attempt after the last good dump alarms.
+  check_optional "optional artifact stale + latest hook DEGRADED: marker set" \
+        stale-degraded yes
+  # Event-only policies are allowed to sit idle indefinitely; age alone is not failure.
+  check_optional "optional artifact stale + latest hook OK: event-only idle is silent" \
+        stale-ok no
+  check_optional "optional artifact stale + no newer attempt: event-only idle is silent" \
+        stale-no-attempt no
   # 8. NOT gated on existence — a box that never ran a workspace backup is silent.
   check_optional "optional artifact ABSENT: silent (never-backed-up workspace is not a fault)" \
         absent no
@@ -588,6 +665,34 @@ if [ "${1:-}" = "--self-test" ]; then
   check_optional "optional artifact FRESH: green, no marker" \
         fresh  no
   printf '  ---- %d passed, %d failed (post optional-artifact block)\n' "$p" "$f"
+
+  check_workspace_tmp() {
+    local name="$1" owner_mode="$2" want_marker="$3"
+    rm -rf "${t:?}/state" "$t/dump/pg" "$t/ws"
+    mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart" "$t/ws"
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    local opt="$t/ws/pg-embedded.sql.gz" pid="999999999"
+    : > "$opt"
+    [ "$owner_mode" = live ] && pid="$$"
+    [ "$owner_mode" != none ] && : >"$opt.$pid-1.tmp"
+    env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/no-db-data" \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="$opt" BACKUP_ALERT_FORCE=1 \
+        bash "$self" >/dev/null 2>&1
+    local got_marker=no
+    [ -f "$t/state/workspace-dead-dump-tmp" ] && got_marker=yes
+    if [ "$got_marker" = "$want_marker" ]; then
+      printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s, got marker=%s\n' "$name" "$want_marker" "$got_marker"; f=$((f+1))
+    fi
+  }
+  check_workspace_tmp "dead PID workspace transaction: marker set" dead yes
+  check_workspace_tmp "live PID workspace transaction: silent" live no
+  check_workspace_tmp "no workspace transaction: silent" none no
+  printf '  ---- %d passed, %d failed (post workspace-transaction block)\n' "$p" "$f"
 
   # ── EI-20115751074601731 recurrence guard: PostgreSQL data-volume headroom ──
   # Use a real temporary directory so the test exercises the portable `df -Pk`
@@ -803,6 +908,7 @@ fi
 check_db_disk_headroom
 check_backup_volume_headroom
 check_tmpdir_entry_count
+check_workspace_dump_transactions
 
 # ── (a) FRESHNESS — judge the ARTIFACT, not the log ────────────────────────
 # Deliberately artifact-based: a rotated/truncated hook.log must never make a dead
@@ -842,6 +948,17 @@ for art in $BACKUP_ARTIFACTS __OPTIONAL_ARTIFACTS_FOLLOW__ $BACKUP_OPTIONAL_ARTI
   log "artifact $art: age ${age_hours}h, size ${size}B (max age ${BACKUP_MAX_AGE_H}h)"
   RED_MARKER="$STATE_DIR/stale-${art//\//-}"   # flatten '/' in the artifact path for the marker filename
   if [ "$age_hours" -ge "$BACKUP_MAX_AGE_H" ] 2>/dev/null; then
+    if [ "$ART_OPTIONAL" = 1 ] && ! optional_artifact_latest_hook_degraded "$f"; then
+      rm -f "$RED_MARKER"
+      log "artifact $art: ${age_hours}h old but no newer degraded hook result (optional/event cadence — age alone is not failure)"
+      continue
+    fi
+    if [ "$ART_OPTIONAL" = 1 ]; then
+      TITLE="Workspace DB dump is stale after its latest snapshot hook degraded: $art is ${age_hours}h old"
+      BODY="The optional per-workspace dump '$f' is ${age_hours} hours old (${size}B), and its companion hook.log records a newer final outcome of 'hook done (degraded)'. This is a proven failed attempt after the last good artifact, not elapsed idle time under an event-only policy.
+
+Read ${f%/*}/hook.log for the pg FAIL/SKIP cause and the matching backup_snapshots row. The workspace hook writes PID/sequence-scoped transactions; check for dead-writer '${f}.*.tmp' files, which consume the headroom needed for recovery."
+    else
     TITLE="DB backup is STALE: $art is ${age_hours}h old (>= ${BACKUP_MAX_AGE_H}h threshold) — we may have no recoverable database"
     BODY="EI-10733 durable backup-health probe: '$f' has not advanced in ${age_hours} hours (size ${size}B). The DB dump is supposed to run ~hourly.
 
@@ -854,6 +971,7 @@ LIKELY CAUSES (check in this order):
  4. Disk full on the backup volume: df -h $BACKUP_DUMP_DIR
 
 An orphaned/stuck dump is not just a dead backup — it holds AccessShareLock on ~593 tables, which starves every migration's ACCESS EXCLUSIVE and can wedge the whole release pipeline (EI-10730)."
+    fi
     if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
       log "RED already tracked (stale $art, filed $(age_h "$RED_MARKER")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
     else

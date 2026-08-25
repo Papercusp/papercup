@@ -37,6 +37,7 @@ const h = vi.hoisted(() => ({
   // reserve is now sized from. null ⇒ no previous artifact (fresh workspace),
   // so stat() rejects ENOENT exactly as the real fs would.
   previousDumpSize: null as number | null,
+  readdirNames: [] as string[],
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -89,6 +90,7 @@ vi.mock('node:fs', () => ({
 
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(async () => {}),
+  readdir: vi.fn(async () => h.readdirNames.map((name) => ({ name, isFile: () => true }))),
   // Path-aware: the in-flight `.tmp` (dumpPg's post-dump size check) and the
   // PREVIOUS dump (the reserve-sizing probe) are different files with
   // different sizes, and the reserve test only means something if they can
@@ -131,6 +133,7 @@ beforeEach(() => {
   h.gzipStdinError = false;
   h.availableBlocks = 100_000_000;
   h.previousDumpSize = null;
+  h.readdirNames = [];
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -156,6 +159,31 @@ describe('cross-process dump transaction isolation', () => {
     expect(h.writeStreamPaths).toHaveLength(2);
     expect(new Set(h.writeStreamPaths).size).toBe(2);
     expect(h.writeStreamPaths.every((path) => path.endsWith('.tmp'))).toBe(true);
+  });
+
+  it('reaps only transaction files whose encoded writer PID is dead', async () => {
+    const live = `pg-embedded.sql.gz.${process.pid}-4.tmp`;
+    const dead = 'pg-embedded.sql.gz.2147483646-7.tmp';
+    h.readdirNames = [live, dead, 'unrelated.tmp'];
+
+    await runPreSnapshotHook(ctx);
+
+    expect(h.unlinkCalls).toContain(`/work/ws-1/db-dumps/${dead}`);
+    expect(h.unlinkCalls).not.toContain(`/work/ws-1/db-dumps/${live}`);
+    expect(h.unlinkCalls).not.toContain('/work/ws-1/db-dumps/unrelated.tmp');
+    expect(h.logLines.join('')).toMatch(/reaped 1 dead-writer transaction/);
+  });
+
+  it('reaps a dead-writer transaction before a low-space admission refusal', async () => {
+    const dead = 'pg-embedded.sql.gz.2147483646-8.tmp';
+    h.readdirNames = [dead];
+    h.previousDumpSize = 1_780_687_612;
+    h.availableBlocks = Math.floor(2_000_000_000 / 4096);
+
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({ ok: false });
+
+    expect(h.unlinkCalls).toContain(`/work/ws-1/db-dumps/${dead}`);
+    expect(pgDumpCall()).toBeUndefined();
   });
 });
 
