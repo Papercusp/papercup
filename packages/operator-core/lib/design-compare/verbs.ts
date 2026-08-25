@@ -41,7 +41,6 @@ import {
   COMPARE_RESULT_SCHEMA_VERSION,
   type CaptureEnvironment,
   type CompareResult,
-  type IgnoredRegion,
   type ImplementationTarget,
   type ReferenceIdentity,
   type ThresholdPolicy,
@@ -325,7 +324,6 @@ export interface CompareRenderInput {
   readonly actualImagePath: string;
   readonly diffImagePath: string;
   readonly expectedDimensions?: PngDimensions;
-  readonly ignoredRegions?: readonly IgnoredRegion[];
   readonly timeoutMs?: number;
   /**
    * The rendering host the capture at `actualImagePath` was produced on
@@ -354,6 +352,35 @@ export async function compareRenderVerb(
   deps: VerbDeps,
 ): Promise<VerbOutcome<CompareRenderResult>> {
   void caller;
+
+  // EI-21414614584540571: `ignoredRegions` used to be accepted here and
+  // persisted onto stored evidence while nothing ever applied it — a mask that
+  // appeared applied and was not. The field is gone from the contract
+  // (contract.ts explains why); this runtime check exists because the TS type
+  // constrains no one arriving across the plugin's JSON boundary. A caller
+  // still supplying it is refused LOUDLY rather than silently
+  // unmasked-compared, because both silent options misrepresent: recording the
+  // mask asserts an exclusion that never happened, and dropping it leaves the
+  // caller believing pixels were excluded that were fully compared.
+  const strayRegions = (input as { readonly ignoredRegions?: unknown }).ignoredRegions;
+  if (strayRegions !== undefined) {
+    return refuse(
+      'validation-failed',
+      'region masking is not implemented: `ignoredRegions` is not part of the compare contract, ' +
+        'and every declared region would still be fully compared. Recording the mask would put a ' +
+        'false exclusion claim on stored evidence, so the request is refused instead. Remove the ' +
+        'field; if masking is genuinely needed it must be implemented end-to-end — engine ' +
+        'support, non-empty justification/authority validation, and a mask-area cap — as a ' +
+        'deliberate design change, not inherited from a field that was never wired.',
+      [
+        {
+          code: 'unsupported-field',
+          message: '`ignoredRegions` is not supported by compare_render',
+        },
+      ],
+    );
+  }
+
   const scope = scopeFor(deps, input.featureId, input.referenceId);
 
   let rows: readonly StoredReferenceRow[];
@@ -393,7 +420,6 @@ export async function compareRenderVerb(
     diffImagePath: input.diffImagePath,
     ...(input.expectedDimensions ? { expectedDimensions: input.expectedDimensions } : {}),
     capturedAt,
-    ...(input.ignoredRegions ? { ignoredRegions: input.ignoredRegions } : {}),
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.advisoryNotes ? { advisoryNotes: input.advisoryNotes } : {}),
   });
@@ -491,7 +517,6 @@ function invalidResult(args: {
     // refusing on behalf of is not interpretable.
     engine: { engine: 'papercusp/precondition', engineVersion: String(COMPARE_RESULT_SCHEMA_VERSION) },
     policy: input.policy,
-    ...(input.ignoredRegions ? { ignoredRegions: input.ignoredRegions } : {}),
     capturedAt,
     ...(input.advisoryNotes ? { advisoryNotes: input.advisoryNotes } : {}),
   };
@@ -565,7 +590,6 @@ export interface EvidenceView {
     readonly diffRatio?: number;
     readonly diffRegions?: CompareResult['diffRegions'];
     readonly artifacts?: CompareResult['artifacts'];
-    readonly ignoredRegions?: readonly IgnoredRegion[];
     /** The rendering host this capture was produced on (P-011/D-023), when it reported one. */
     readonly renderHost?: string;
     readonly capturedAt: string;
@@ -664,7 +688,6 @@ export async function getDesignEvidenceVerb(
         ...(r.diffRatio !== undefined ? { diffRatio: r.diffRatio } : {}),
         ...(r.diffRegions ? { diffRegions: r.diffRegions } : {}),
         ...(r.artifacts ? { artifacts: r.artifacts } : {}),
-        ...(r.ignoredRegions ? { ignoredRegions: r.ignoredRegions } : {}),
         ...(r.renderHost ? { renderHost: r.renderHost } : {}),
         capturedAt: r.capturedAt,
       },

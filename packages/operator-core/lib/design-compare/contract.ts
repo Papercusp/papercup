@@ -115,17 +115,24 @@ export interface ImplementationTarget {
   readonly implementationRevision: string;
 }
 
-/** An ignored region, and the authority that permitted it. */
-export interface IgnoredRegion {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-  /** Why this region is excluded. Required: an unexplained mask is a bypass. */
-  readonly justification: string;
-  /** Who authorized it. */
-  readonly authorizedBy: string;
-}
+/**
+ * There is deliberately NO `IgnoredRegion` type and no `ignoredRegions` field
+ * in this contract (EI-21414614584540571). An earlier revision accepted region
+ * masks from callers and PERSISTED them onto stored evidence — while no
+ * engine, adapter or verb ever read a region's geometry. Stored evidence
+ * therefore asserted an exclusion that never happened: a false statement in
+ * the one table this subsystem cannot afford one in.
+ *
+ * The field was REMOVED rather than wired through, because real masking is a
+ * design decision, not a fix: it needs engine support (the pixelmatch
+ * comparator takes two image paths, a diff path and a threshold — nothing
+ * else), non-empty justification/authority validation, and an area cap (a
+ * mask covering the whole image is not a mask). D-002 keeps pixel
+ * manipulation out of Papercusp, so masking cannot be faked here by painting
+ * over the images either. `compare_render` REFUSES a request that still
+ * supplies `ignoredRegions`, so a caller learns masking does not exist
+ * instead of believing it was applied. See mask-not-a-bypass.test.ts.
+ */
 
 /**
  * A versioned, per-reference-class threshold policy. D-005 forbids inheriting
@@ -199,7 +206,6 @@ export interface CompareResult {
   readonly diffRegions?: readonly DiffRegion[];
 
   readonly artifacts?: ComparisonArtifacts;
-  readonly ignoredRegions?: readonly IgnoredRegion[];
 
   /**
    * The rendering host the implementation capture was produced on (P-011,
