@@ -257,7 +257,14 @@ describe('endedSessionStreamUrl', () => {
   });
 
   it('omp + codex legs (ended=1), and null when no handle was recorded', () => {
-    expect(endedSessionStreamUrl(endedRow({ ompThreadId: 't1' }))).toBe('/api/adv/session/thinking?ompThreadId=t1&ended=1');
+    // WI-41496: the omp leg carries the adv row id as `ompSessionKey`. The
+    // thread id names the transcript FILE; the adv id names the per-session
+    // HOME (`su-omp-homes/session-<id>/agent/sessions`) it lives in, and a
+    // psu-launched omp agent never writes to the shared ~/.omp home the route
+    // otherwise searches — so without it this URL opened an empty pane.
+    expect(endedSessionStreamUrl(endedRow({ id: 7, ompThreadId: 't1' }))).toBe(
+      '/api/adv/session/thinking?ompThreadId=t1&ompSessionKey=7&ended=1',
+    );
     expect(endedSessionStreamUrl(endedRow({ id: 42, agent: 'codex' }))).toBe(
       '/api/adv/session/thinking?codexSessionKey=42&ended=1',
     );

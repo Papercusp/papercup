@@ -1,0 +1,28 @@
+              <g class="lod1" opacity="0" data-f0="4.6" data-f1="6.2" data-f2="8" data-f3="10">
+                <rect x="54" y="114" width="216" height="154" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"/>
+                <text x="162" y="127" fill="#e7f7ff" font-size="7" font-weight="700" text-anchor="middle">DESKTOP APP — the operator inside</text>
+                <rect x="60.0" y="133.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="149.9" fill="#cde7f5" font-size="4.4" font-weight="600">two audited doors</text>
+                <text x="63.5" y="155.2" fill="#8ea9c0" font-size="4">screen sync · model calls —</text>
+                <text x="63.5" y="160.5" fill="#8ea9c0" font-size="4">nothing else leaves the machine</text>
+                <rect x="163.5" y="133.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="149.9" fill="#cde7f5" font-size="4.4" font-weight="600">sync</text>
+                <text x="167.0" y="155.2" fill="#8ea9c0" font-size="4">URL view state · SSE push — agents</text>
+                <text x="167.0" y="160.5" fill="#8ea9c0" font-size="4">drive the same UI you see</text>
+                <rect x="60.0" y="177.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="193.9" fill="#cde7f5" font-size="4.4" font-weight="600">embedded Postgres</text>
+                <text x="63.5" y="199.2" fill="#8ea9c0" font-size="4">plans · locks · events · memory —</text>
+                <text x="63.5" y="204.5" fill="#8ea9c0" font-size="4">every state a queryable row</text>
+                <rect x="163.5" y="177.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="193.9" fill="#cde7f5" font-size="4.4" font-weight="600">process ledger</text>
+                <text x="167.0" y="199.2" fill="#8ea9c0" font-size="4">every spawn enrolled, cgroup-scoped</text>
+                <text x="167.0" y="204.5" fill="#8ea9c0" font-size="4">killed by task id, never by name</text>
+                <rect x="60.0" y="221.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="237.9" fill="#cde7f5" font-size="4.4" font-weight="600">durable core</text>
+                <text x="63.5" y="243.2" fill="#8ea9c0" font-size="4">DBOS workflows · two-tier</text>
+                <text x="63.5" y="248.5" fill="#8ea9c0" font-size="4">schedulers · watchdogs</text>
+                <rect x="163.5" y="221.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="237.9" fill="#cde7f5" font-size="4.4" font-weight="600">the Cupboard</text>
+                <text x="167.0" y="243.2" fill="#8ea9c0" font-size="4">pots · knowledge packs ·</text>
+                <text x="167.0" y="248.5" fill="#8ea9c0" font-size="4">templates</text>
+              </g>

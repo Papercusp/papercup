@@ -1,0 +1,36 @@
+              <g class="lod1" opacity="0" data-f0="8" data-f1="10">
+                <rect x="54" y="114" width="216" height="154" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(94,234,212,.4)"/>
+                <text x="162" y="127" fill="#5eead4" font-size="5" font-weight="700" text-anchor="middle">DESKTOP — the operator's real surface</text>
+                <rect x="60.0" y="133.0" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="143.9" fill="#7dd3fc" font-size="3.5" font-weight="600">ui:get_state · ui:dispatch</text>
+                <text x="63.5" y="148.0" fill="#8ea9c0" font-size="3.1">read the screen you see, drive its controls</text>
+                <rect x="163.5" y="133.0" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="143.9" fill="#7dd3fc" font-size="3.5" font-weight="600">state:read { cell }</text>
+                <text x="167.0" y="148.0" fill="#8ea9c0" font-size="3.1">live values at act time — never stale copies</text>
+                <rect x="60.0" y="159.4" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="170.3" fill="#7dd3fc" font-size="3.5" font-weight="600">state:subscribe</text>
+                <text x="63.5" y="174.4" fill="#8ea9c0" font-size="3.1">woken on the edge crossing — no poll loops</text>
+                <rect x="163.5" y="159.4" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="170.3" fill="#7dd3fc" font-size="3.5" font-weight="600">processes:list</text>
+                <text x="167.0" y="174.4" fill="#8ea9c0" font-size="3.1">WHO launched it, WHICH item, WHAT cost</text>
+                <rect x="60.0" y="185.8" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="194.7" fill="#7dd3fc" font-size="3.5" font-weight="600">processes:freeze</text>
+                <text x="63.5" y="198.8" fill="#8ea9c0" font-size="3.1">relieve pressure without losing work —</text>
+                <text x="63.5" y="202.8" fill="#8ea9c0" font-size="3.1">kills go by task id through the cgroup</text>
+                <rect x="163.5" y="185.8" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="196.7" fill="#7dd3fc" font-size="3.5" font-weight="600">dev:pipeline_position { path }</text>
+                <text x="167.0" y="200.8" fill="#8ea9c0" font-size="3.1">"is my change live + the ONE blocker"</text>
+                <rect x="60.0" y="212.2" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="221.1" fill="#cde7f5" font-size="3.5" font-weight="600">schedule inventory</text>
+                <text x="63.5" y="225.2" fill="#8ea9c0" font-size="3.1">every recurring timer visible — a bare</text>
+                <text x="63.5" y="229.2" fill="#8ea9c0" font-size="3.1">setInterval fails the lint</text>
+                <rect x="163.5" y="212.2" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="223.1" fill="#7dd3fc" font-size="3.5" font-weight="600">dev:pg_query</text>
+                <text x="167.0" y="227.2" fill="#8ea9c0" font-size="3.1">ad-hoc reads — hot reads get a typed tool</text>
+                <rect x="60.0" y="238.6" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="63.5" y="249.5" fill="#7dd3fc" font-size="3.5" font-weight="600">backup:snapshot</text>
+                <text x="63.5" y="253.6" fill="#8ea9c0" font-size="3.1">before anything destructive — restore by id</text>
+                <rect x="163.5" y="238.6" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="167.0" y="249.5" fill="#7dd3fc" font-size="3.5" font-weight="600">templates:new-app</text>
+                <text x="167.0" y="253.6" fill="#8ea9c0" font-size="3.1">apps start from a maintained scaffold</text>
+              </g>

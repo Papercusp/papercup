@@ -1,0 +1,36 @@
+              <g class="lod1" opacity="0" data-f0="8" data-f1="10">
+                <rect x="318" y="114" width="216" height="154" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(94,234,212,.4)"/>
+                <text x="426" y="127" fill="#5eead4" font-size="5" font-weight="700" text-anchor="middle">FLEETS — the real verbs</text>
+                <rect x="324.0" y="133.0" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="143.9" fill="#7dd3fc" font-size="3.5" font-weight="600">fleet:launch-on-plan</text>
+                <text x="327.5" y="148.0" fill="#8ea9c0" font-size="3.1">a leader + N members, visible or headless</text>
+                <rect x="427.5" y="133.0" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="143.9" fill="#7dd3fc" font-size="3.5" font-weight="600">scheduler:get_next</text>
+                <text x="431.0" y="148.0" fill="#8ea9c0" font-size="3.1">atomic pull — claim + intent in one write</text>
+                <rect x="324.0" y="159.4" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="170.3" fill="#7dd3fc" font-size="3.5" font-weight="600">coord:orient</text>
+                <text x="327.5" y="174.4" fill="#8ea9c0" font-size="3.1">one wake call: assignments · inbox · recall</text>
+                <rect x="427.5" y="159.4" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="168.3" fill="#7dd3fc" font-size="3.5" font-weight="600">coord:dispatch</text>
+                <text x="431.0" y="172.4" fill="#8ea9c0" font-size="3.1">assign + brief + wake in one atom —</text>
+                <text x="431.0" y="176.4" fill="#8ea9c0" font-size="3.1">woken:0 is a LOUD miss</text>
+                <rect x="324.0" y="185.8" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="194.7" fill="#7dd3fc" font-size="3.5" font-weight="600">events:await { event }</text>
+                <text x="327.5" y="198.8" fill="#8ea9c0" font-size="3.1">end the turn — the fire carries the</text>
+                <text x="327.5" y="202.8" fill="#8ea9c0" font-size="3.1">payload; sleeping costs nothing</text>
+                <rect x="427.5" y="185.8" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="196.7" fill="#7dd3fc" font-size="3.5" font-weight="600">work_items:checkpoint</text>
+                <text x="431.0" y="200.8" fill="#8ea9c0" font-size="3.1">re-injects on the item’s next invocation</text>
+                <rect x="324.0" y="212.2" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="223.1" fill="#7dd3fc" font-size="3.5" font-weight="600">fleet:bench</text>
+                <text x="327.5" y="227.2" fill="#8ea9c0" font-size="3.1">a blocked lane parks on its gate</text>
+                <rect x="427.5" y="212.2" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="223.1" fill="#7dd3fc" font-size="3.5" font-weight="600">coord:couple</text>
+                <text x="431.0" y="227.2" fill="#8ea9c0" font-size="3.1">opt into a peer’s working state</text>
+                <rect x="324.0" y="238.6" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="249.5" fill="#7dd3fc" font-size="3.5" font-weight="600">consult:get_feedback</text>
+                <text x="327.5" y="253.6" fill="#8ea9c0" font-size="3.1">"who knows this?" → best peer or archive</text>
+                <rect x="427.5" y="238.6" width="100.5" height="23.4" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="249.5" fill="#7dd3fc" font-size="3.5" font-weight="600">mode:set</text>
+                <text x="431.0" y="253.6" fill="#8ea9c0" font-size="3.1">auto · ideate · drain — peers SEE the grant</text>
+              </g>

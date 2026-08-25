@@ -1,0 +1,28 @@
+              <g class="lod1" opacity="0" data-f0="4.6" data-f1="6.2" data-f2="8" data-f3="10">
+                <rect x="318" y="114" width="216" height="154" rx="11" fill="#0d1b2f" fill-opacity="1" stroke="rgba(96,168,214,.35)"/>
+                <text x="426" y="127" fill="#e7f7ff" font-size="7" font-weight="700" text-anchor="middle">AGENT FLEETS — the coordination contract</text>
+                <rect x="324.0" y="133.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="149.9" fill="#cde7f5" font-size="4.4" font-weight="600">pull, don’t push</text>
+                <text x="327.5" y="155.2" fill="#8ea9c0" font-size="4">a leader claims the fleet — members</text>
+                <text x="327.5" y="160.5" fill="#8ea9c0" font-size="4">PULL work, nothing hand-assigned</text>
+                <rect x="427.5" y="133.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="149.9" fill="#cde7f5" font-size="4.4" font-weight="600">claim-specs feed by QUERY</text>
+                <text x="431.0" y="155.2" fill="#8ea9c0" font-size="4">an idle agent beside a nonempty</text>
+                <text x="431.0" y="160.5" fill="#8ea9c0" font-size="4">queue is a spec bug, not fate</text>
+                <rect x="324.0" y="177.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="193.9" fill="#cde7f5" font-size="4.4" font-weight="600">work</text>
+                <text x="327.5" y="199.2" fill="#8ea9c0" font-size="4">claim → wip → checkpoint → complete</text>
+                <text x="327.5" y="204.5" fill="#8ea9c0" font-size="4">closure demands EVIDENCE, or reopens</text>
+                <rect x="427.5" y="177.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="193.9" fill="#cde7f5" font-size="4.4" font-weight="600">gates declared up front</text>
+                <text x="431.0" y="199.2" fill="#8ea9c0" font-size="4">they LATCH — a late joiner is told</text>
+                <text x="431.0" y="204.5" fill="#8ea9c0" font-size="4">the fire already happened</text>
+                <rect x="324.0" y="221.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="327.5" y="237.9" fill="#cde7f5" font-size="4.4" font-weight="600">blocked lanes park</text>
+                <text x="327.5" y="243.2" fill="#8ea9c0" font-size="4">benched on their gate, not spinning</text>
+                <text x="327.5" y="248.5" fill="#8ea9c0" font-size="4">SQL invariants police drift</text>
+                <rect x="427.5" y="221.0" width="100.5" height="41.0" rx="3" fill="rgba(18,38,63,.6)" stroke="rgba(96,168,214,.3)" stroke-width=".5"/>
+                <text x="431.0" y="237.9" fill="#cde7f5" font-size="4.4" font-weight="600">liveness is a verdict</text>
+                <text x="431.0" y="243.2" fill="#8ea9c0" font-size="4">live · parked · suspect · ended —</text>
+                <text x="431.0" y="248.5" fill="#8ea9c0" font-size="4">heartbeats alone prove nothing</text>
+              </g>
