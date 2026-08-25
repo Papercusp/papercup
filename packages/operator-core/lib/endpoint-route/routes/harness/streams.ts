@@ -23,6 +23,10 @@ import {
   type StreamToken,
 } from '../../../harness-active-streams';
 import { defineTool } from '@papercusp/agent-mcp';
+// TYPE-ONLY: session-transcript-remat lazily imports the session-archive module,
+// which fails LOUD at import when zstd is unavailable — it must stay off this
+// module's load path (see the WI-6581 note at the remat call site).
+import type { TranscriptStreamKey } from '../../../session-transcript-remat';
 import {
   TRANSCRIPT_RENDER_TEXT_CAP,
   TRUNCATION_MARKER_POSIX_RE,
@@ -1238,6 +1242,54 @@ export async function backfillFromSessionTurns(
  */
 export const SESSION_STREAM_HEARTBEAT_MS = 15_000;
 
+/**
+ * Which SESSION the `/adv/session/thinking` query params name, as the same
+ * discriminated key the archive re-resolve already speaks (WI-41496).
+ *
+ * Pure and exported so the per-backend routing is unit-testable — the thing it
+ * decides is invisible from outside otherwise: a wrong branch produces a
+ * perfectly healthy SSE stream carrying an empty transcript, which looks
+ * identical to a quiet agent. Both omp defects this closes had exactly that
+ * shape.
+ *
+ * PRECEDENCE is deliberate and matches the client builders: the most SPECIFIC
+ * handle wins. A codex row legitimately carries a `sessionId` too (its rollout
+ * uuid), so a sessionId-first order would send every codex session to the
+ * claude resolver — the same misread that had 237 of 257 live codex rows
+ * labelled "no live transcript" (WI-41497).
+ */
+export function sessionThinkingKey(params: {
+  sessionId?: string;
+  owner?: string;
+  codexSessionKey?: string;
+  codexRolloutId?: string;
+  ompThreadId?: string;
+  /** The omp session's adv-row id — names the per-session home. */
+  ompSessionKey?: string;
+}): TranscriptStreamKey | null {
+  if (params.codexSessionKey) {
+    return { kind: 'codex-session-key', sessionKey: params.codexSessionKey };
+  }
+  if (params.codexRolloutId) {
+    return { kind: 'codex-rollout', rolloutId: params.codexRolloutId };
+  }
+  if (params.ompThreadId) {
+    return {
+      kind: 'omp',
+      threadId: params.ompThreadId,
+      ...(params.ompSessionKey ? { sessionKey: params.ompSessionKey } : {}),
+    };
+  }
+  if (params.sessionId) {
+    return {
+      kind: 'claude',
+      sessionId: params.sessionId,
+      ...(params.owner ? { owner: params.owner } : {}),
+    };
+  }
+  return null;
+}
+
 const sessionThinkingStream = defineTool({
   method: 'GET',
   path: '/adv/session/thinking',
@@ -1297,25 +1349,29 @@ const sessionThinkingStream = defineTool({
         const { resolveInteractiveTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
         const { findCodexRolloutPath, findCodexRolloutPathByUuid, findOmpSessionPath } = await import('../../../session-transcript-resolvers');
         const { createCodexTimelineParser, createOmpTimelineParser } = await import('../../../session-timeline-parsers');
-        const source = codexSessionKey
-          ? { resolve: () => findCodexRolloutPath(codexSessionKey), newParser: createCodexTimelineParser }
-          : codexRolloutId
-            ? { resolve: () => findCodexRolloutPathByUuid(codexRolloutId), newParser: createCodexTimelineParser }
-          : ompThreadId
-            ? {
-                resolve: () => findOmpSessionPath(ompThreadId, {
-                  ...(ompSessionKey ? { sessionKey: ompSessionKey } : {}),
-                }),
-                newParser: createOmpTimelineParser,
-              }
-            : sessionId
+        // ONE decision about which backend this request is for
+        // (`sessionThinkingKey`, pure + unit-tested), then a resolver and a
+        // parser off that single key. The two used to be independent 4-way
+        // branches over the same params — which is how the omp leg came to pass
+        // its per-session key to the resolver in one place and not the other.
+        const key = sessionThinkingKey({ sessionId, owner, codexSessionKey, codexRolloutId, ompThreadId, ompSessionKey });
+        if (!key) { sink.event('backfill', []); sink.done({}); return; }
+        const source = key.kind === 'codex-session-key'
+          ? { resolve: () => findCodexRolloutPath(key.sessionKey), newParser: createCodexTimelineParser }
+          : key.kind === 'codex-rollout'
+            ? { resolve: () => findCodexRolloutPathByUuid(key.rolloutId), newParser: createCodexTimelineParser }
+            : key.kind === 'omp'
+              ? {
+                  resolve: () => findOmpSessionPath(key.threadId, {
+                    ...(key.sessionKey != null ? { sessionKey: key.sessionKey } : {}),
+                  }),
+                  newParser: createOmpTimelineParser,
+                }
               // P-016 fallback (WI-2680): resolve the exact recorded session_id first,
               // then — on a miss — the newest transcript under the owner root, so a
               // session that RESUMED (fresh uuid ⇒ stale recorded id) still streams its
               // CURRENT transcript instead of an empty "waiting/stalled" pane.
-              ? { resolve: () => resolveInteractiveTranscript(sessionId, { owner }), newParser: createAgentTimelineParser }
-              : null;
-        if (!source) { sink.event('backfill', []); sink.done({}); return; }
+              : { resolve: () => resolveInteractiveTranscript(key.sessionId, { owner: key.owner }), newParser: createAgentTimelineParser };
         let path = await source.resolve();
 
         // WI-3990: an ENDED session whose transcript was archived + deleted after
@@ -1334,26 +1390,15 @@ const sessionThinkingStream = defineTool({
         // off this module's load path). Best-effort: every failure mode comes
         // back as a `reason` and falls through to the ended-terminate branch.
         if (!path && ended) {
-          const rematKey = codexSessionKey
-            ? ({ kind: 'codex-session-key', sessionKey: codexSessionKey } as const)
-            : codexRolloutId
-              ? ({ kind: 'codex-rollout', rolloutId: codexRolloutId } as const)
-              : ompThreadId
-                ? ({
-                    kind: 'omp',
-                    threadId: ompThreadId,
-                    ...(ompSessionKey ? { sessionKey: ompSessionKey } : {}),
-                  } as const)
-                : sessionId
-                  ? ({ kind: 'claude', sessionId, owner } as const)
-                  : null;
-          if (rematKey) {
-            try {
-              const { rematerializeTranscript } = await import('../../../session-transcript-remat');
-              const r = await rematerializeTranscript(rematKey);
-              if (r.path) path = r.path;
-            } catch { /* best-effort — the ended-terminate branch below handles the miss */ }
-          }
+          // The SAME key the resolver above was built from — `sessionThinkingKey`
+          // returns exactly `TranscriptStreamKey`, so the archive re-resolve
+          // cannot address a different session (or a differently-keyed one) than
+          // the live stream just failed to find.
+          try {
+            const { rematerializeTranscript } = await import('../../../session-transcript-remat');
+            const r = await rematerializeTranscript(key);
+            if (r.path) path = r.path;
+          } catch { /* best-effort — the ended-terminate branch below handles the miss */ }
         }
 
         // ── Follow state (shared by the backfill + the live-follow tick) ──
