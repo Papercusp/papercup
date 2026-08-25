@@ -9,6 +9,25 @@ const base = {
 };
 
 describe('rubrics:propose args — releaseGating kind contract', () => {
+  it('rejects rubric refs that the canonical plan lock cannot store', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      rubricRef: 'acceptance:mcp-proxy-reconnect-herd-2026-08-25',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['rubricRef'],
+            message: expect.stringContaining('valid plan slug'),
+          }),
+        ]),
+      );
+    }
+  });
+
   it('rejects releaseGating for acceptance-kind rubrics at dispatch validation', () => {
     const parsed = rubricsProposeArgs.safeParse({
       ...base,

@@ -949,6 +949,9 @@ export async function readFrontierFeatures(
        -- if the auditor dispatch lane is unwired/errors/lags — fail-safe.
        -- (origin NULL = local, for pre-G1 back-compat; mirrors isAutoPickable.)
        AND (origin = 'local' OR origin IS NULL OR audit_verdict = 'admit')
+       -- P-002 born-pending: DBOS is a dispatch door too; it must not outrun the
+       -- same duplicate-screening promoter the scheduler and Mug placement use.
+       AND admission IS DISTINCT FROM 'pending'
   `;
   // EI-1 (D-027/D-028): feature→feature blocking IS the coord_links rel='blocks'
   // edge — the single source of truth. The legacy `blocked_by` column + its GIN

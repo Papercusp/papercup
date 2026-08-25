@@ -78,6 +78,48 @@ export interface ScorecardAcceptance {
   reasoning: string;
 }
 
+/**
+ * One caller-attested fingerprint used by the spec-test-adequacy evaluator's
+ * currentness pass. The nullable dimensions are explicit so a reader can
+ * distinguish an intentionally inapplicable dimension from a missing recipe.
+ */
+export interface SpecTestAdequacyCurrentFingerprint {
+  evidenceKind: string;
+  evidenceRef: string;
+  sourceFingerprint: string;
+  testFingerprint: string | null;
+  fixtureFingerprint: string | null;
+  rubricFingerprint: string | null;
+  environmentFingerprint: string | null;
+}
+
+/**
+ * The canonical replay contract emitted with a spec-test-adequacy scorecard.
+ * It records both the exact clause/evidence selection and the caller's
+ * currentness inputs; without those two pieces a persisted scorecard can only
+ * repeat the author's verdict, not independently reproduce freshness.
+ */
+export interface SpecTestAdequacyRerunRecipe {
+  schemaVersion: 1;
+  evaluator: 'plans:evaluate-spec-test-adequacy';
+  selection: {
+    planSlug: string;
+    specId: string;
+    specRevision: number;
+    specFingerprint: string;
+    evidence: Array<{ evidenceKind: string; evidenceRef: string }>;
+  };
+  current: {
+    supplied: boolean;
+    fingerprints: SpecTestAdequacyCurrentFingerprint[];
+  };
+  derivation: {
+    kind: 'listSpecEvidence.currentness';
+    classifier: 'classifySpecEvidenceCurrentness';
+    unknownWhenMissing: true;
+  };
+}
+
 /** v1 free-text observation fields (turn-end-reflection-observations D-005). */
 export type ObservationKind = 'friction' | 'workaround' | 'gap' | 'surprise' | 'reinforce';
 export type ObservationScope = 'self' | 'role' | 'harness' | 'papercusp';
@@ -113,6 +155,8 @@ export interface StructuredObservation {
   ratings?: ObservationRatings;
   /** Post-grading implementer verdict; valid only for acceptance-kind rubrics. */
   acceptance?: ScorecardAcceptance;
+  /** Structured currentness inputs and selector for independently replaying spec-test-adequacy. */
+  rerunRecipe?: SpecTestAdequacyRerunRecipe;
   /**
    * Stable SHA-256 of the canonical rubricRef + ratings + deterministic instrument
    * snapshots. Written by scorecards:emit so repeated grading of unchanged evidence
@@ -577,6 +621,103 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       a.reasoning.trim()
     ) {
       out.acceptance = { verdict: a.verdict, reasoning: a.reasoning };
+    }
+  }
+  // EI-21394921596281409: an adequacy card must retain the exact clause/evidence
+  // selector and current fingerprints used to classify freshness. This is an
+  // explicit allowlist: malformed recipes are dropped rather than projected as
+  // an apparently replayable but incomplete attestation.
+  if (o.rerunRecipe && typeof o.rerunRecipe === 'object' && !Array.isArray(o.rerunRecipe)) {
+    const recipe = o.rerunRecipe as Record<string, unknown>;
+    const rawSelection = recipe.selection;
+    const rawCurrent = recipe.current;
+    const rawDerivation = recipe.derivation;
+    const selection =
+      rawSelection && typeof rawSelection === 'object' && !Array.isArray(rawSelection)
+        ? (rawSelection as Record<string, unknown>)
+        : null;
+    const current =
+      rawCurrent && typeof rawCurrent === 'object' && !Array.isArray(rawCurrent)
+        ? (rawCurrent as Record<string, unknown>)
+        : null;
+    const derivation =
+      rawDerivation && typeof rawDerivation === 'object' && !Array.isArray(rawDerivation)
+        ? (rawDerivation as Record<string, unknown>)
+        : null;
+    const rawEvidence = selection?.evidence;
+    const evidence = Array.isArray(rawEvidence)
+      ? rawEvidence.map((entry) => {
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+          const e = entry as Record<string, unknown>;
+          return typeof e.evidenceKind === 'string' && e.evidenceKind.trim() &&
+            typeof e.evidenceRef === 'string' && e.evidenceRef.trim()
+            ? { evidenceKind: e.evidenceKind, evidenceRef: e.evidenceRef }
+            : null;
+        })
+      : null;
+    const rawFingerprints = current?.fingerprints;
+    const fingerprints = Array.isArray(rawFingerprints)
+      ? rawFingerprints.map((entry) => {
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+          const e = entry as Record<string, unknown>;
+          const nullable = (key: string): string | null | undefined => {
+            const value = e[key];
+            if (value === null || value === undefined) return null;
+            return typeof value === 'string' && value.trim() ? value : undefined;
+          };
+          const testFingerprint = nullable('testFingerprint');
+          const fixtureFingerprint = nullable('fixtureFingerprint');
+          const rubricFingerprint = nullable('rubricFingerprint');
+          const environmentFingerprint = nullable('environmentFingerprint');
+          return typeof e.evidenceKind === 'string' && e.evidenceKind.trim() &&
+            typeof e.evidenceRef === 'string' && e.evidenceRef.trim() &&
+            typeof e.sourceFingerprint === 'string' && e.sourceFingerprint.trim() &&
+            testFingerprint !== undefined && fixtureFingerprint !== undefined &&
+            rubricFingerprint !== undefined && environmentFingerprint !== undefined
+            ? {
+                evidenceKind: e.evidenceKind,
+                evidenceRef: e.evidenceRef,
+                sourceFingerprint: e.sourceFingerprint,
+                testFingerprint,
+                fixtureFingerprint,
+                rubricFingerprint,
+                environmentFingerprint,
+              }
+            : null;
+        })
+      : null;
+    if (
+      recipe.schemaVersion === 1 &&
+      recipe.evaluator === 'plans:evaluate-spec-test-adequacy' &&
+      selection &&
+      typeof selection.planSlug === 'string' && selection.planSlug.trim() &&
+      typeof selection.specId === 'string' && selection.specId.trim() &&
+      Number.isInteger(selection.specRevision) && Number(selection.specRevision) > 0 &&
+      typeof selection.specFingerprint === 'string' && selection.specFingerprint.trim() &&
+      evidence !== null && evidence.every((entry): entry is { evidenceKind: string; evidenceRef: string } => entry !== null) &&
+      current && typeof current.supplied === 'boolean' &&
+      fingerprints !== null && fingerprints.every((entry): entry is SpecTestAdequacyCurrentFingerprint => entry !== null) &&
+      derivation?.kind === 'listSpecEvidence.currentness' &&
+      derivation.classifier === 'classifySpecEvidenceCurrentness' &&
+      derivation.unknownWhenMissing === true
+    ) {
+      out.rerunRecipe = {
+        schemaVersion: 1,
+        evaluator: 'plans:evaluate-spec-test-adequacy',
+        selection: {
+          planSlug: selection.planSlug,
+          specId: selection.specId,
+          specRevision: Number(selection.specRevision),
+          specFingerprint: selection.specFingerprint,
+          evidence,
+        },
+        current: { supplied: current.supplied, fingerprints },
+        derivation: {
+          kind: 'listSpecEvidence.currentness',
+          classifier: 'classifySpecEvidenceCurrentness',
+          unknownWhenMissing: true,
+        },
+      };
     }
   }
   if (typeof o.evidenceFingerprint === 'string' && o.evidenceFingerprint.trim()) {

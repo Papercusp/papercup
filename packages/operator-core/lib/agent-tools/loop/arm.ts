@@ -50,6 +50,12 @@ import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
+import {
+  admitMonitorArm,
+  monitorArmConfigSchema,
+  prepareMonitorConfig,
+  type PersistedMonitorConfig,
+} from '../../harness/routines/monitor-policy';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
@@ -364,6 +370,18 @@ export function computeLoopOverwriteNote(
   };
 }
 
+function monitorRefusal(error: string, message: string, details?: Record<string, unknown>) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({ ok: false, error, message, ...(details ? { details } : {}) }),
+      },
+    ],
+    isError: true,
+  };
+}
+
 export default defineTool({
   name: 'loop:arm',
   profile: 'engineer',
@@ -466,6 +484,11 @@ export default defineTool({
       .describe(
         "Wake-contract shape. 'work' (DEFAULT) = each wake creates + self-assigns work_items and works them. 'monitor' = a leader/supervisor loop that WATCHES something (a fleet, a pipeline, a soak): the wake says check → act only on deltas → checkpoint → end turn, with NO per-wake work-item boilerplate. Ignored when a custom wakePrompt is passed.",
       ),
+    monitor: monitorArmConfigSchema
+      .optional()
+      .describe(
+        "REQUIRED when mode:'monitor' and refused for work loops. Names the normalized watched predicate, concrete stop condition, finite consecutive no-delta budget (default 1, max 100), and exactly one verified authority: an already-held nonterminal work-item, live durable fleet leadership, or an exact owner-turn ref + quote. Admission is read-only and completes before any work-item claim or routine materialization.",
+      ),
     costCapCents: z
       .number()
       .int()
@@ -520,6 +543,24 @@ export default defineTool({
     const ownerId = args.ownerId ?? identity.ownerId;
     const ownerLabel = args.ownerId ? `su · ${shortOwnerLabel(args.ownerId)}` : identity.ownerLabel;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const requestedMode = args.mode ?? 'work';
+    let preparedMonitorConfig: PersistedMonitorConfig | null = null;
+    if (requestedMode === 'monitor') {
+      if (!args.monitor) {
+        return monitorRefusal(
+          'monitor_config_required',
+          "mode:'monitor' requires monitor:{ predicateKey, stopCondition, noDeltaBudget?, authority }.",
+        );
+      }
+      const prepared = prepareMonitorConfig(args.monitor);
+      if (!prepared.allowed) return monitorRefusal(prepared.code, prepared.message, prepared.details);
+      preparedMonitorConfig = prepared.config;
+    } else if (args.monitor) {
+      return monitorRefusal(
+        'monitor_config_requires_monitor_mode',
+        "The typed monitor config is valid only with mode:'monitor'; work loops remain byte-compatible and carry no monitor state.",
+      );
+    }
     // No `?? ''` collapse — keep the unresolved case nullish so the guard below catches
     // it and fails loud (a routine with an empty harness namespace would collide across
     // hives). workspace-data-isolation-leaks P-003.
@@ -557,6 +598,10 @@ export default defineTool({
       return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
     };
     const explicitWorkItem = args.workItem?.trim();
+    const monitorAuthorityWorkItem =
+      preparedMonitorConfig?.authority.kind === 'work-item'
+        ? preparedMonitorConfig.authority.workItem
+        : undefined;
     // Resolve the effective carry before choosing the harness so a COLD loop's
     // goal-detected work-item can contribute its canonical harness scope. Without
     // this, a workspace-scoped caller falls through to the workspace home first
@@ -565,10 +610,15 @@ export default defineTool({
     // item in another harness (EI-21358731971685285).
     const goal = clampText(args.goal, 4000);
     const carryForScope: 'warm' | 'cold' | undefined =
-      args.carry ?? (prior?.active ? prior.carry : !explicitWorkItem ? await resolveDefaultCarry(ownerId) : undefined);
+      args.carry ??
+      (prior?.active
+        ? prior.carry
+        : !explicitWorkItem && !monitorAuthorityWorkItem
+          ? await resolveDefaultCarry(ownerId)
+          : undefined);
     const autoDetectedWorkItemForScope =
       !explicitWorkItem && carryForScope === 'cold' ? detectDrivenWorkItemId(goal) ?? undefined : undefined;
-    const scopeWorkItem = explicitWorkItem ?? autoDetectedWorkItemForScope;
+    const scopeWorkItem = explicitWorkItem ?? monitorAuthorityWorkItem ?? autoDetectedWorkItemForScope;
     const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
     // EI-20245033088778955: an ACTIVE routine's install scope is authoritative
@@ -730,6 +780,43 @@ export default defineTool({
       };
     }
 
+    // anti-babysitting-monitor-enforcement P-003 — the monitor admission gate.
+    // Every leg above is read-only scope/provenance resolution. Every mutation
+    // below (the optional claim, materializeLoop, control-anchor write, and wake
+    // registration) is downstream of this refusal boundary.
+    let admittedMonitorConfig: PersistedMonitorConfig | null = null;
+    if (requestedMode === 'monitor') {
+      const admission = await admitMonitorArm({
+        ownerId,
+        workspaceId,
+        harness,
+        monitor: args.monitor,
+      });
+      if (!admission.allowed) {
+        return monitorRefusal(admission.code, admission.message, admission.details);
+      }
+      admittedMonitorConfig = admission.config;
+      if (
+        explicitWorkItem &&
+        admission.config.authority.kind !== 'work-item'
+      ) {
+        return monitorRefusal(
+          'monitor_work_item_authority_mismatch',
+          'A monitor may pass workItem only when its authority is that same already-held work-item; fleet/owner-turn monitors must not claim an unrelated item.',
+        );
+      }
+      if (
+        explicitWorkItem &&
+        admission.config.authority.kind === 'work-item' &&
+        explicitWorkItem.toUpperCase() !== admission.config.authority.workItem
+      ) {
+        return monitorRefusal(
+          'monitor_work_item_authority_mismatch',
+          `workItem ${explicitWorkItem.toUpperCase()} differs from monitor authority ${admission.config.authority.workItem}.`,
+        );
+      }
+    }
+
     // EI-19447204017443244 — MEASURE the caller's live push channels before the cap
     // message speaks about them. Gated to the one branch that consumes it (a declared
     // blocker with NO named event): every other arm keeps its exact prior round-trip
@@ -771,7 +858,7 @@ export default defineTool({
     // RESOLVED value, threaded into materializeLoop + the kickoff + response.
     const carryPreservedFromPrior = args.carry == null && Boolean(prior?.active);
     const carry = args.carry ?? (prior?.active ? prior.carry : carryForScope ?? await resolveDefaultCarry(ownerId));
-    const resolvedMode = args.mode ?? 'work';
+    const resolvedMode = requestedMode;
 
     // WI-5557 TIER 1 — an unattended warm-carry WORK loop with neither dead-man guard set
     // (maxFires / maxDurationSec) has NOTHING bounding how long it re-wakes the SAME warm
@@ -799,12 +886,20 @@ export default defineTool({
     // unheld/self-held row), so a conflict/not-found is a non-fatal NOTE, never a failed
     // arm — arming already succeeded; this is best-effort on top.
     const explicit = explicitWorkItem;
-    const drivenCandidate = explicit
-      ? explicit.toUpperCase()
-      : carry === 'cold'
-        ? autoDetectedWorkItemForScope
-        : undefined;
-    let claimedWorkItem: string | null = null;
+    const drivenCandidate =
+      resolvedMode === 'monitor'
+        ? undefined
+        : explicit
+          ? explicit.toUpperCase()
+          : carry === 'cold'
+            ? autoDetectedWorkItemForScope
+            : undefined;
+    // Work-item monitor authority is already held (admission proved it), so
+    // bind it to the wake prompt without re-running the claim mutation.
+    let claimedWorkItem: string | null =
+      admittedMonitorConfig?.authority.kind === 'work-item'
+        ? admittedMonitorConfig.authority.workItem
+        : null;
     let workItemClaim:
       | { id: string; claimed: true }
       | { id: string; claimed: false; reason: string; holder?: string; hint?: string }
@@ -934,6 +1029,7 @@ export default defineTool({
       carry,
       continuation: args.continuation ?? 'settle',
       mode: resolvedMode,
+      monitor: admittedMonitorConfig ?? undefined,
       customWakePrompt: hasCustomWakePrompt,
     });
     const control = await refreshControlAnchorAfterMutation({
@@ -1029,7 +1125,7 @@ export default defineTool({
     // is read during it. The clock loop stays armed either way; this argues
     // for demoting it to a backstop, never refuses it.
     const monitorPushNote =
-      args.mode === 'monitor'
+      resolvedMode === 'monitor'
         ? ' 📡 Monitor loop armed — but prefer PUSH wherever the thing you are watching already emits. A fleet leader can park on fleet:member-dead · fleet:claim-released · fleet:item-completed · fleet:context-critical via events:await { event, timeout_sec, on_timeout:"wake" }, which wakes you ON the transition instead of N times between transitions. Keep THIS loop as the slow backstop (a longer intervalSec) rather than the primary watcher. events:catalog lists the full set.'
         : '';
     const note =
@@ -1062,6 +1158,7 @@ export default defineTool({
               carry,
               continuation: args.continuation ?? 'settle',
               mode: resolvedMode,
+              monitor: admittedMonitorConfig,
               costCapCents: args.costCapCents ?? null,
               // EI-6878: a re-arm of an ALREADY-armed loop called from WITHIN its own
               // in-flight turn returns the loop's row PARKED at the 'infinity' sentinel

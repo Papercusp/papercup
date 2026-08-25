@@ -12,10 +12,9 @@
  *             because a bulk action whose behavior the owner has to guess at is
  *             one they are right not to press.
  *   RUNNING — progress bar + resolved / for-review / left counts + Stop.
- *   REVIEW  — "N need your call · M auto-resolved", Accept all, Dismiss. The
- *             per-item recommendations render INSIDE their own rows (see
- *             InboxBulkRecommendation) rather than in a separate list, so the
- *             owner reviews each one against the item it belongs to.
+ *   REVIEW  — "N need your call · M auto-resolved", Review decisions, Dismiss.
+ *             Review hands the exact persisted run to the grouped report; the
+ *             narrow strip never applies a batch without showing its reasons.
  *
  * WHY THE CLIENT POSTS ITEM IDS. `visible` is a snapshot of a live, SSE-updated
  * feed. Re-deriving the filtered set server-side would resolve against a set that
@@ -29,7 +28,7 @@
  * item stays individually resolvable by hand in both cases.
  */
 import { useCallback, useState } from 'react';
-import { Check, ChevronRight, Loader2, Sparkles, Square, X } from 'lucide-react';
+import { ChevronRight, Loader2, Sparkles, Square, X } from 'lucide-react';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 import {
   deriveRunCounts,
@@ -57,10 +56,8 @@ export interface InboxBulkStripProps {
   isReview: boolean;
   /** Called with the new run id so the pane can deep-link it (`?opcbr=`). */
   onRunStarted: (runId: string) => void;
-  /** Accept every outstanding recommendation, one item at a time. */
-  onAcceptAll: () => Promise<void>;
-  /** How many accepts are in flight (drives the Accept-all spinner). */
-  acceptingCount: number;
+  /** Open the grouped review for this exact persisted run (`?opcbr=<runId>`). */
+  onReview: (runId: string) => void;
 }
 
 /** The seed the run is created from — the pane's own snapshot of each row. */
@@ -84,8 +81,7 @@ export default function InboxBulkStrip({
   isRunning,
   isReview,
   onRunStarted,
-  onAcceptAll,
-  acceptingCount,
+  onReview,
 }: InboxBulkStripProps) {
   const { start, stop, restart, dismiss } = useBulkRunOps();
   const resolverSettings = useBulkResolverSettings('inbox-resolve');
@@ -218,20 +214,12 @@ export default function InboxBulkStrip({
           <button
             type="button"
             className="op-inbox__bulk-accept-all"
-            data-testid="inbox-bulk-accept-all"
-            disabled={pending === 0 || acceptingCount > 0}
-            onClick={() => void onAcceptAll()}
+            data-testid="inbox-bulk-review-decisions"
+            disabled={pending === 0}
+            onClick={() => onReview(run.runId)}
           >
-            {acceptingCount > 0 ? (
-              <span className="op-inbox__bulk-spin" aria-hidden="true">
-                <Loader2 size={14} />
-              </span>
-            ) : (
-              <Check size={14} aria-hidden="true" />
-            )}
-            {acceptingCount > 0
-              ? `Accepting ${acceptingCount}…`
-              : `Accept all ${pending} recommendation${pending === 1 ? '' : 's'}`}
+            Review {pending} decision{pending === 1 ? '' : 's'}
+            <ChevronRight size={14} aria-hidden="true" />
           </button>
           <button
             type="button"

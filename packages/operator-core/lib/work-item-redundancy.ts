@@ -308,8 +308,8 @@ export async function claimReplicaSlotLocal(opts: ClaimReplicaOpts): Promise<Cla
   const redundancy = await getItemRedundancy(opts.workItemId, { harness: opts.harnessSlug });
   if (redundancy == null) return { ok: false, reason: 'item-not-found' };
   if (redundancy < MIN_REDUNDANCY) return { ok: false, reason: 'not-redundant', redundancy };
-  // G2 admission (shared-hive-trust-admission P-004): a remote, un-admitted item must not
-  // be dispatched via the redundancy fan-out any more than via claim_next/claim.
+  // Admission is two-axis: remote-author trust plus born-pending duplicate screening.
+  // isWorkItemAutoPickable owns both, so replica fan-out cannot outrun either promoter.
   if (!(await isWorkItemAutoPickable(opts.workItemId, { harness: opts.harnessSlug, workspaceId }))) {
     return { ok: false, reason: 'not-admitted' };
   }

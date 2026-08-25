@@ -114,7 +114,7 @@ export function mergeMechanicalCheckpoint(existing: string | null | undefined, b
 /** Scratch/temp roots — a deliverable landing here dies with the sandbox
  *  unless registered. Repo-tree writes are NOT artifacts (artifacts:save's own
  *  guidance: source code belongs in the repo, not the artifact store). */
-const SCRATCH_PATH_RE = /^\/tmp\/|\/scratchpad\/|\/\.papercusp\/scratch\/|\/scratch\//;
+const SCRATCH_PATH_RE = /^(?:\/tmp\/|~?\/?\.papercusp\/scratch\/(?:)|(?:\.{1,2}\/)?scratch(?:pad)?\/)|\/(?:scratchpad|\.papercusp\/scratch|scratch)\//;
 
 /** Deliverable-shaped extensions: human-readable reports/exports. Code,
  *  JSONL plumbing, logs, and lockfiles are deliberately excluded — the lint
@@ -131,6 +131,340 @@ export function isDeliverableWrite(filePath: string): boolean {
   if (PLUMBING_RE.test(p)) return false;
   return DELIVERABLE_EXT_RE.test(p);
 }
+
+/** The file/command fields persisted by the activity bridge. Native edit tools
+ * carry `file`; shell tools carry `command` because their summary is only a
+ * display glyph (▶). */
+export interface FileWriteLedgerRow {
+  file?: string | null;
+  command?: string | null;
+}
+
+function addScratchTarget(out: string[], seen: Set<string>, raw: string | null | undefined): void {
+  const path = (raw ?? '').trim();
+  if (!path || path === '-' || /^&\d+$/.test(path) || !isDeliverableWrite(path) || seen.has(path)) return;
+  seen.add(path);
+  out.push(path);
+}
+
+/** Remove heredoc bodies before looking for shell-level redirects. The header
+ * remains intact, while a `>` in prose or generated content cannot become a
+ * fake file target. Interpreter APIs are scanned from the original command
+ * separately, so writes inside a Python/Node heredoc still count. */
+function withoutHeredocBodies(command: string): string {
+  const lines = command.split('\n');
+  const kept: string[] = [];
+  let delimiter: string | null = null;
+  for (const line of lines) {
+    if (delimiter) {
+      if (line.trim() === delimiter) delimiter = null;
+      kept.push('');
+      continue;
+    }
+    kept.push(line);
+    const match = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_-]*)\1/);
+    if (match) delimiter = match[2]!;
+  }
+  return kept.join('\n');
+}
+
+/** Tokenize only the shell punctuation needed by the write-shape scanner.
+ * Quoted values stay single tokens and shell comments are ignored. This is
+ * intentionally not a shell parser: unresolved expansions remain literal and
+ * therefore fail open rather than producing a guessed path. */
+function shellTokens(command: string): string[] {
+  const tokens: string[] = [];
+  let token = '';
+  let quote: string | null = null;
+  let escaped = false;
+  const flush = () => {
+    if (token) tokens.push(token);
+    token = '';
+  };
+
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
+    if (escaped) {
+      token += ch;
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === '\\' && quote !== "'") {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      } else {
+        token += ch;
+      }
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if ((ch === "'" || ch === '"' || ch === '`')) {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#' && !token && (i === 0 || /[\s;|&]/.test(command[i - 1]!))) {
+      while (i + 1 < command.length && command[i + 1] !== '\n') i += 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flush();
+      continue;
+    }
+    if ('|;&<>'.includes(ch)) {
+      flush();
+      let op = ch;
+      const next = command[i + 1];
+      if ((ch === '>' || ch === '<') && next === ch) {
+        op += next;
+        i += 1;
+      } else if ((ch === '>' || ch === '&') && next === '&') {
+        op += next;
+        i += 1;
+      } else if ((ch === '>' || ch === '&') && next === '>') {
+        op += next;
+        i += 1;
+      } else if (ch === '|' && next === '|') {
+        op += next;
+        i += 1;
+      }
+      tokens.push(op);
+      continue;
+    }
+    token += ch;
+  }
+  if (escaped) token += '\\';
+  flush();
+  return tokens;
+}
+
+function isShellControl(token: string): boolean {
+  return token === '|' || token === ';' || token === '&&' || token === '||';
+}
+
+function isRedirectOperator(token: string): boolean {
+  return /^(?:>{1,2}|<{1,3}|&>|>&|>\|)$/.test(token);
+}
+
+function commandBase(token: string): string {
+  return basenameOf(token.replace(/^.*[\\/]/, ''));
+}
+
+/** Read a balanced call's argument text, respecting nested calls and quoted
+ * strings. `end` points at the closing parenthesis for method chaining. */
+function callArguments(source: string, openParen: number): { args: string; end: number } | null {
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let i = openParen; i < source.length; i += 1) {
+    const ch = source[i]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === '\\' && quote !== "'") escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return { args: source.slice(openParen + 1, i), end: i };
+    }
+  }
+  return null;
+}
+
+function splitCallArguments(args: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const ch = args[i]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === '\\' && quote !== "'") escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    else if ('([{'.includes(ch)) depth += 1;
+    else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1);
+    else if (ch === ',' && depth === 0) {
+      out.push(args.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  out.push(args.slice(start).trim());
+  return out;
+}
+
+function quotedLiteral(text: string): string | null {
+  const trimmed = text.trim();
+  const quote = trimmed[0];
+  if (quote !== "'" && quote !== '"' && quote !== '`') return null;
+  let value = '';
+  let escaped = false;
+  for (let i = 1; i < trimmed.length; i += 1) {
+    const ch = trimmed[i]!;
+    if (escaped) {
+      value += ch;
+      escaped = false;
+    } else if (ch === '\\' && quote !== "'") {
+      escaped = true;
+    } else if (ch === quote) {
+      return value;
+    } else {
+      value += ch;
+    }
+  }
+  return null;
+}
+
+function shellWriteTargets(command: string): string[] {
+  const source = command.slice(0, 8_000);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (path: string | null | undefined) => addScratchTarget(out, seen, path);
+  const tokens = shellTokens(withoutHeredocBodies(source));
+
+  // `>`, `>>`, `2>`, `&>`, and `>|`; `<<` only introduces heredoc content.
+  for (let i = 0; i < tokens.length; i += 1) {
+    let operator = tokens[i]!;
+    let operatorIndex = i;
+    if (/^\d+$/.test(operator) && isRedirectOperator(tokens[i + 1] ?? '')) {
+      operator = tokens[i + 1]!;
+      operatorIndex = i + 1;
+    }
+    if (isRedirectOperator(operator)) {
+      if (!operator.startsWith('<')) add(tokens[operatorIndex + 1]);
+      i = operatorIndex;
+    }
+  }
+
+  // In-place shell utilities. Only their literal positional targets are
+  // useful here; a computed/glob target is deliberately left unresolved.
+  for (let i = 0; i < tokens.length; i += 1) {
+    const name = commandBase(tokens[i]!);
+    if (name === 'tee') {
+      for (let j = i + 1; j < tokens.length && !isShellControl(tokens[j]!); j += 1) {
+        const candidate = tokens[j]!;
+        if (isRedirectOperator(candidate) || /^\d+$/.test(candidate) || candidate === '&' || candidate === '-') continue;
+        if (candidate === '--' || candidate.startsWith('-')) continue;
+        add(candidate);
+      }
+      continue;
+    }
+    if (name === 'cp' || name === 'mv' || name === 'install') {
+      const positional: string[] = [];
+      let recursive = false;
+      for (let j = i + 1; j < tokens.length && !isShellControl(tokens[j]!); j += 1) {
+        const candidate = tokens[j]!;
+        if (candidate === '-r' || candidate === '-R' || candidate === '-a' || candidate === '--recursive' || candidate === '--archive') recursive = true;
+        if (isRedirectOperator(candidate) || candidate.startsWith('-')) continue;
+        positional.push(candidate);
+      }
+      if (!recursive && positional.length >= 2) add(positional[positional.length - 1]);
+      continue;
+    }
+    if (name === 'touch') {
+      for (let j = i + 1; j < tokens.length && !isShellControl(tokens[j]!); j += 1) {
+        const candidate = tokens[j]!;
+        if (!candidate.startsWith('-') && candidate !== '--') add(candidate);
+      }
+      continue;
+    }
+    if (name === 'sed' || name === 'perl' || name === 'ruby' || name === 'awk') {
+      const segment: string[] = [];
+      for (let j = i + 1; j < tokens.length && !isShellControl(tokens[j]!); j += 1) segment.push(tokens[j]!);
+      const inPlace = name === 'awk'
+        ? segment.some((t, j) => t === 'inplace' && (segment[j - 1] === '-i' || segment[j - 1] === '--include'))
+        : segment.some((t) => t === '-i' || t.startsWith('-i') || t === '--in-place');
+      if (inPlace) {
+        for (const candidate of segment) {
+          if (!candidate.startsWith('-') && candidate !== 'inplace') add(candidate);
+        }
+      }
+    }
+  }
+
+  // Literal-path interpreter/file APIs. A read-only `open(...).read()` or
+  // `readFileSync(...)` never matches these write-shaped call names/modes.
+  const writeCall = /\b(?:(?:fs|Deno)\.(?:promises\.)?|Bun\.)?(?:writeFile|appendFile)(?:Sync)?\s*\(|\b(?:Deno\.)?write(?:Text|Binary)File\s*\(|\bBun\.write\s*\(|\bcreateWriteStream\s*\(/gi;
+  for (const match of source.matchAll(writeCall)) {
+    const open = source.indexOf('(', match.index ?? 0);
+    const call = callArguments(source, open);
+    if (call) add(quotedLiteral(splitCallArguments(call.args)[0] ?? ''));
+  }
+
+  const openCall = /\bopen\s*\(/gi;
+  for (const match of source.matchAll(openCall)) {
+    const open = source.indexOf('(', match.index ?? 0);
+    const call = callArguments(source, open);
+    if (!call) continue;
+    const args = splitCallArguments(call.args);
+    const mode = args.slice(1).map((arg) => quotedLiteral(arg) ?? arg).join(' ');
+    if (/[wax+]/i.test(mode)) add(quotedLiteral(args[0] ?? ''));
+  }
+
+  const pathCall = /\bPath\s*\(/gi;
+  for (const match of source.matchAll(pathCall)) {
+    const open = source.indexOf('(', match.index ?? 0);
+    const call = callArguments(source, open);
+    if (!call || !/\.\s*write_(?:text|bytes)\s*\(/i.test(source.slice(call.end + 1, call.end + 80))) continue;
+    add(quotedLiteral(splitCallArguments(call.args)[0] ?? ''));
+  }
+
+  const copyCall = /\b(?:shutil\.)?(?:copy|copy2|move|rename|replace)\s*\(/gi;
+  for (const match of source.matchAll(copyCall)) {
+    const open = source.indexOf('(', match.index ?? 0);
+    const args = callArguments(source, open);
+    if (!args) continue;
+    const positional = splitCallArguments(args.args).map((arg) => quotedLiteral(arg)).filter((arg): arg is string => Boolean(arg));
+    if (positional.length >= 2) add(positional[1]);
+  }
+
+  return out;
+}
+
+/** Extract native edit paths and literal scratch targets from shell writes.
+ * Native paths are retained exactly as before; shell candidates are narrowed
+ * to deliverable-shaped scratch paths so read-only/prose commands fail open. */
+export function extractFileWritePaths(rows: readonly FileWriteLedgerRow[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const nativePath = (row.file ?? '').trim();
+    if (nativePath && !seen.has(nativePath)) {
+      seen.add(nativePath);
+      out.push(nativePath);
+    }
+    for (const shellPath of shellWriteTargets(row.command ?? '')) {
+      if (!seen.has(shellPath)) {
+        seen.add(shellPath);
+        out.push(shellPath);
+      }
+    }
+  }
+  return out;
+}
+
+/** Export the shell-only leg for focused pure tests and future callers. */
+export const extractShellWriteTargets = shellWriteTargets;
 
 export function basenameOf(p: string): string {
   const i = p.lastIndexOf('/');

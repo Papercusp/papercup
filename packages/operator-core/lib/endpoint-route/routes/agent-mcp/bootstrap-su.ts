@@ -1828,6 +1828,12 @@ const post = defineTool({
     // durable idempotency surface for every launch path.
     let bootstrapClaimWon = false;
     let bootstrapCompleted = false;
+    // EI-21365235532676472 recurrence: the bootstrap route records/adopts its
+    // adv_sessions row BEFORE several later fallible artifact/presence writes.
+    // If one of those throws, a same-key client replay is safe only after that
+    // partial row is terminal. Keep the exact row id outside the inner try so
+    // finally can close it before releasing the replay claim.
+    let incompleteBootstrapSessionId: number | null = null;
     if (bootstrapLedgerKey) {
       const claim = await claimAgentLaunch({
         workspaceId: workspace,
@@ -2127,6 +2133,9 @@ const post = defineTool({
         sessionId: nativeSessionId,
         launchArgv,
       });
+    }
+    if (!sessionPortContext && sessionId != null) {
+      incompleteBootstrapSessionId = sessionId;
     }
     if (!sessionPortContext) {
       await bindKnownAgentSessionTasks({
@@ -2630,6 +2639,7 @@ const post = defineTool({
       if (sessionId == null) {
         return jsonRes({ status: 'error', error: 'could not persist the pending session-port target row' }, 503);
       }
+      incompleteBootstrapSessionId = sessionId;
       await bindKnownAgentSessionTasks({
         workspaceId: workspace,
         coordOwnerId: sid,
@@ -2846,16 +2856,39 @@ const post = defineTool({
       });
     }
     bootstrapCompleted = true;
+    incompleteBootstrapSessionId = null;
     return jsonRes(result);
     } finally {
       // A validation/storage exception after winning the claim must not strand
-      // an empty replay row. Completed launches retain the row permanently (up
-      // to the shared ledger TTL) so a lost response cannot duplicate them.
+      // an empty replay row. EI-21365235532676472 recurrence: when the exception
+      // happened AFTER recordAdvSession, releasing the claim first let the
+      // same-key retry win and then 409 on that PID-less/session-less ghost.
+      // Terminalize the exact partial row BEFORE releasing the claim. Cleanup
+      // is strict here: if the terminal write fails, retain the claim so replay
+      // stays fail-closed as bootstrap_in_progress instead of racing a ghost.
+      // Completed launches retain the row permanently (up to the shared ledger
+      // TTL) so a lost response cannot duplicate them.
       if (bootstrapClaimWon && !bootstrapCompleted) {
-        await releaseAgentLaunchClaim({
-          workspaceId: workspace,
-          idempotencyKey: bootstrapLedgerKey,
-        });
+        let partialRowTerminal = true;
+        if (incompleteBootstrapSessionId != null) {
+          try {
+            await markAdvSessionEnded(incompleteBootstrapSessionId, null, 'reconciler', {
+              throwOnError: true,
+            });
+          } catch (e) {
+            partialRowTerminal = false;
+            console.warn(
+              `[bootstrap-su] incomplete session ${incompleteBootstrapSessionId} could not be terminalized; ` +
+              `retaining bootstrap idempotency claim: ${(e as Error)?.message ?? e}`,
+            );
+          }
+        }
+        if (partialRowTerminal) {
+          await releaseAgentLaunchClaim({
+            workspaceId: workspace,
+            idempotencyKey: bootstrapLedgerKey,
+          });
+        }
       }
     }
   },

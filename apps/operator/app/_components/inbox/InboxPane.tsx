@@ -495,20 +495,6 @@ export default function InboxPane() {
     [bulk.run, acceptRecommendation, onResolved],
   );
 
-  const acceptAllRecommendations = useCallback(async () => {
-    if (!bulk.run) return;
-    // SEQUENTIALLY, not Promise.all: each accept dispatches a real resolve that
-    // wakes an agent and writes an audit row, and firing N of those at once
-    // against the same feed is how a partial failure becomes unattributable.
-    // Sequential also means a mid-way failure leaves the REST still pending and
-    // visible, rather than an indeterminate half-applied batch.
-    for (const rec of bulk.recommendations) {
-      const item = scoped.find((i) => i.id === rec.itemId);
-      if (!item) continue; // already gone from the feed — nothing left to resolve
-      await acceptOneRecommendation(item, rec);
-    }
-  }, [bulk.run, bulk.recommendations, scoped, acceptOneRecommendation]);
-
   // Virtualize the row list (WI-5339): even scoped, the inbox can hold many rows.
   const rowVirtualizer = useVirtualizer({
     count: visible.length,
@@ -574,8 +560,7 @@ export default function InboxPane() {
           isRunning={bulk.isRunning}
           isReview={bulk.isReview}
           onRunStarted={(runId) => void setBulkRunId(runId)}
-          onAcceptAll={acceptAllRecommendations}
-          acceptingCount={acceptingCount}
+          onReview={(runId) => void setBulkRunId(runId)}
         />
       ) : null}
       {/* Search + collapsible kind-facet filter (mimics the Queue's QueueFilterBar). */}

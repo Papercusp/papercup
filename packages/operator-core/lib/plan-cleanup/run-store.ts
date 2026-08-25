@@ -320,6 +320,10 @@ export async function seedFindings(input: {
 export async function executeCleanupFindingAction<T>(input: {
   runId: string;
   findingId: string;
+  /** Human-readable reason supplied by the resolver for this auto action.
+   *  Persisted on the existing evidence ledger in the same transaction as the
+   *  mutation outcome, so a reloaded report never loses the decision's why. */
+  rationale?: string | null;
   resolverOwner?: string | null;
   workspaceId?: string;
   execute: (finding: CleanupRunFindingRow) => Promise<T>;
@@ -354,9 +358,27 @@ export async function executeCleanupFindingAction<T>(input: {
     }
 
     const actionResult = await input.execute(locked);
+    const rationale = input.rationale?.trim() ?? '';
+    const rationaleNote = rationale
+      ? `resolver auto-action rationale: ${rationale}`
+      : null;
+    const evidence =
+      rationaleNote &&
+      !locked.evidence.some(
+        (entry) =>
+          entry.kind === 'plan' &&
+          entry.ref === locked.planSlug &&
+          entry.note === rationaleNote,
+      )
+        ? [
+            ...locked.evidence,
+            { kind: 'plan' as const, ref: locked.planSlug, note: rationaleNote },
+          ]
+        : locked.evidence;
     const updatedRows = await tx<RawFindingRow[]>`
       UPDATE harness_shared.plan_cleanup_run_findings
          SET outcome = 'auto_applied',
+             evidence = ${JSON.stringify(evidence)}::jsonb,
              error = NULL,
              decided_at = now(),
              updated_at = now()

@@ -778,6 +778,25 @@ export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 10_000;
 // already owns instead of choosing another independent number here.
 export const PTOOL_CONNECT_TIMEOUT_MS = PSU_REQUEST_TIMEOUT_MS;
 
+// The proxy's handshake bulkhead returns a retryable HTTP 429 while all
+// handshake slots are occupied. Keep the attempt ceiling aligned with the
+// complete client budget: a fixed 30-attempt ceiling plus a one-second delay
+// silently shortened the 120s recovery window to ~30s, so a busy fleet could
+// exhaust ptool before a slot became available (EI-21395813315545528).
+export const PTOOL_CONNECT_RETRY_DELAY_MS = 1_000;
+export const PTOOL_CONNECT_MAX_ATTEMPTS = Math.ceil(
+  PTOOL_CONNECT_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
+) + 1;
+
+// `tools/list` is the first request after the MCP session initialize. It is still
+// a write-free handshake and can receive the proxy's class-specific 429 after
+// `connect()` has succeeded, so give discovery the same bounded recovery budget
+// as the initial connection rather than surfacing a false "operator unreachable"
+// error to every named ptool call.
+export const PTOOL_LIST_TOOLS_RETRY_DELAY_MS = PTOOL_CONNECT_RETRY_DELAY_MS;
+export const PTOOL_LIST_TOOLS_MAX_ATTEMPTS = PTOOL_CONNECT_MAX_ATTEMPTS;
+export const PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS = PTOOL_CONNECT_TIMEOUT_MS;
+
 // A named tools/call can otherwise inherit the MCP SDK's 60s timeout, and a
 // saturated default operator route can produce no output at all while that
 // request is outstanding. Keep the CLI liveness bound below the observed
@@ -1274,8 +1293,8 @@ export async function connectWithLocalRetry(
   operatorUrl,
   scope,
   {
-    maxAttempts = 30,
-    retryDelayMs = 1_000,
+    maxAttempts = PTOOL_CONNECT_MAX_ATTEMPTS,
+    retryDelayMs = PTOOL_CONNECT_RETRY_DELAY_MS,
     attemptTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     totalTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -1349,6 +1368,67 @@ export async function connectWithLocalRetry(
   throw lastError;
 }
 
+function isLocalOperatorUrl(operatorUrl) {
+  const hostname = new URL(operatorUrl).hostname;
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
+/**
+ * Retry only the proxy-generated, pre-dispatch refusals that can occur while
+ * the session handshake class is full. The same MCP session remains valid: a
+ * rejected tools/list never reached the upstream and is safe to replay without
+ * reconnecting or creating a second session.
+ */
+export async function listToolsWithLocalRetry(
+  client,
+  params = {},
+  {
+    timeoutMs = PTOOL_LIST_TOOLS_TIMEOUT_MS,
+    maxAttempts = PTOOL_LIST_TOOLS_MAX_ATTEMPTS,
+    retryDelayMs = PTOOL_LIST_TOOLS_RETRY_DELAY_MS,
+    totalTimeoutMs = PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {},
+) {
+  const enforceDeadline = timeoutMs > 0 && totalTimeoutMs > 0;
+  const startedAt = Date.now();
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const remainingTotalMs = enforceDeadline
+      ? totalTimeoutMs - (Date.now() - startedAt)
+      : null;
+    if (remainingTotalMs !== null && remainingTotalMs <= 0) break;
+    const requestTimeoutMs = timeoutMs > 0
+      ? Math.min(timeoutMs, remainingTotalMs ?? timeoutMs)
+      : 0;
+    try {
+      return await client.listTools(
+        params,
+        requestTimeoutMs > 0
+          ? { timeout: requestTimeoutMs, maxTotalTimeout: requestTimeoutMs }
+          : undefined,
+      );
+    } catch (error) {
+      lastError = error;
+      const remainingAfterFailure = enforceDeadline
+        ? totalTimeoutMs - (Date.now() - startedAt)
+        : null;
+      if (
+        !isRetryableLocalHttpConnectFailure(error) ||
+        attempt === maxAttempts ||
+        (remainingAfterFailure !== null && remainingAfterFailure <= 0)
+      ) {
+        throw error;
+      }
+      await sleep(Math.min(retryDelayMs, remainingAfterFailure ?? retryDelayMs));
+    }
+  }
+
+  if (lastError) throw lastError;
+  throw new Error('tools/list retry budget exhausted before the first request');
+}
+
 /** Build ptool's superuser MCP URL. Pure and exported so the identity and
  * payload-tier contracts are regression-tested without opening a transport.
  * @param {string} operatorUrl
@@ -1406,14 +1486,32 @@ async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { ti
 }
 
 /** List every tool, following pagination if the server returns a cursor. */
-export async function listAllTools(client, { timeoutMs = PTOOL_LIST_TOOLS_TIMEOUT_MS } = {}) {
+export async function listAllTools(
+  client,
+  {
+    timeoutMs = PTOOL_LIST_TOOLS_TIMEOUT_MS,
+    retryLocalErrors = false,
+    maxAttempts = PTOOL_LIST_TOOLS_MAX_ATTEMPTS,
+    retryDelayMs = PTOOL_LIST_TOOLS_RETRY_DELAY_MS,
+    totalTimeoutMs = PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
+    sleep,
+  } = {},
+) {
   const all = [];
   let cursor;
   do {
-    const page = await client.listTools(
-      cursor ? { cursor } : {},
-      timeoutMs > 0 ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs } : undefined,
-    );
+    const page = retryLocalErrors
+      ? await listToolsWithLocalRetry(client, cursor ? { cursor } : {}, {
+        timeoutMs,
+        maxAttempts,
+        retryDelayMs,
+        totalTimeoutMs,
+        sleep,
+      })
+      : await client.listTools(
+        cursor ? { cursor } : {},
+        timeoutMs > 0 ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs } : undefined,
+      );
     if (Array.isArray(page.tools)) all.push(...page.tools);
     cursor = page.nextCursor;
   } while (cursor);
@@ -1634,7 +1732,7 @@ async function main() {
   });
   let client = await connectOperator();
   try {
-    const tools = await listAllTools(client);
+    const tools = await listAllTools(client, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) });
     const grouped = groupTools(tools);
     const byName = new Map(tools.map((t) => [t.name, t]));
 

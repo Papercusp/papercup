@@ -245,6 +245,71 @@ export function calibrate(
   };
 }
 
+/**
+ * Invoke `pixelmatch` DIRECTLY, with options stated explicitly.
+ *
+ * lost-pixel's comparator signature accepts only a threshold and three paths, so
+ * the options that actually decide what counts as a difference — pixelmatch's
+ * `includeAA`, odiff's colour tolerance — are unreachable through it. This seam
+ * exists to measure how much those hidden defaults suppress, which is the
+ * evidence for whether a versioned policy can be expressed through lost-pixel at
+ * all.
+ *
+ * This is still the third-party engine doing the comparison. Papercusp supplies
+ * arguments and reads counts; it computes no pixel differences.
+ */
+export interface DirectPixelmatchOptions {
+  /** Colour-distance threshold, 0..1. pixelmatch's own default is 0.1. */
+  readonly threshold?: number;
+  /** When false (pixelmatch's default), antialiasing-detected pixels are SKIPPED. */
+  readonly includeAA?: boolean;
+}
+
+export interface DirectPixelmatchResult {
+  readonly pixelDifference: number;
+  readonly pixelsTotal: number;
+  readonly diffRatio: number;
+}
+
+export function comparePixelmatchDirect(
+  referencePath: string,
+  candidatePath: string,
+  options: DirectPixelmatchOptions = {},
+): DirectPixelmatchResult {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const pixelmatch = requireCjs('pixelmatch') as (
+    a: Buffer,
+    b: Buffer,
+    output: Buffer | null,
+    width: number,
+    height: number,
+    options?: Record<string, unknown>,
+  ) => number;
+  const { PNG } = requireCjs('pngjs') as {
+    PNG: { sync: { read(buffer: Buffer): { width: number; height: number; data: Buffer } } };
+  };
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { readFileSync } = requireCjs('node:fs') as { readFileSync(p: string): Buffer };
+
+  const reference = PNG.sync.read(readFileSync(referencePath));
+  const candidate = PNG.sync.read(readFileSync(candidatePath));
+  if (reference.width !== candidate.width || reference.height !== candidate.height) {
+    throw new Error(
+      `comparePixelmatchDirect: dimension mismatch ${reference.width}x${reference.height} vs ${candidate.width}x${candidate.height}`,
+    );
+  }
+  const pixelsTotal = reference.width * reference.height;
+  const pixelDifference = pixelmatch(
+    reference.data,
+    candidate.data,
+    null,
+    reference.width,
+    reference.height,
+    { threshold: options.threshold ?? 0, includeAA: options.includeAA ?? false },
+  );
+  return { pixelDifference, pixelsTotal, diffRatio: pixelDifference / pixelsTotal };
+}
+
 export function pairDiffPath(dir: string, engine: EngineId, id: string): string {
   return path.join(dir, 'diff', engine, `${id.replace(/\//g, '_')}.png`);
 }

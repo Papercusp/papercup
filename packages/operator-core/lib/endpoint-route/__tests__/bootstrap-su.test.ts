@@ -111,11 +111,20 @@ vi.mock('../../console-launcher', () => ({
 // silently at author time, loudly in the gate hours later (WI-7185).
 // EI-21365235532676472: named handle so the reclaim assertions below can inspect
 // exactly how stranded bindings were stamped.
-const markAdvSessionEndedMock = vi.fn(async (_id: number, _exitCode: number | null, _endedBy: string) => {});
+const markAdvSessionEndedMock = vi.fn(
+  async (
+    _id: number,
+    _exitCode: number | null,
+    _endedBy: string,
+    _opts?: { signal?: string | null; throwOnError?: boolean },
+  ) => {},
+);
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
   markAdvSessionEnded: (...a: unknown[]) =>
-    markAdvSessionEndedMock(...(a as [number, number | null, string])),
+    markAdvSessionEndedMock(
+      ...(a as [number, number | null, string, { signal?: string | null; throwOnError?: boolean }?]),
+    ),
   claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
@@ -548,6 +557,59 @@ describe('bootstrap-su', () => {
       workspaceId: 'default',
       idempotencyKey: 'bootstrap-su:bootstrap-key-failed',
     });
+  });
+
+  it('terminalizes a row written by an incomplete bootstrap before releasing its replay claim', async () => {
+    const request = {
+      agent: 'codex',
+      harness_slug: 'papercup',
+      owner_id: 'su-replay01',
+      bootstrap_idempotency_key: 'bootstrap-key-post-record-failed',
+    };
+    recordAdvSessionMock
+      .mockImplementationOnce(async () => {
+        dbState.advRows = [{ id: '42', display: null, has_session: false }];
+        return 42;
+      })
+      .mockResolvedValueOnce(43);
+    markAdvSessionEndedMock.mockImplementationOnce(async (id) => {
+      dbState.advRows = dbState.advRows.filter((row) => Number(row.id) !== id);
+    });
+    writePresenceMock.mockRejectedValueOnce(new Error('post-record presence failure'));
+
+    await expect(callPost(request)).rejects.toThrow('post-record presence failure');
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', {
+      throwOnError: true,
+    });
+    expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(
+      releaseAgentLaunchClaimMock.mock.invocationCallOrder[0],
+    );
+
+    // The same-key replay now sees no live ghost row and creates exactly one
+    // successor session instead of failing the pre-pinned-owner freshness guard.
+    const replay = await callPost(request);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ status: 'ok', sessionId: 43 });
+    expect(recordAdvSessionMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains the replay claim when strict partial-row cleanup fails', async () => {
+    recordAdvSessionMock.mockResolvedValueOnce(42);
+    writePresenceMock.mockRejectedValueOnce(new Error('post-record presence failure'));
+    markAdvSessionEndedMock.mockRejectedValueOnce(new Error('terminal write unavailable'));
+
+    await expect(
+      callPost({
+        agent: 'codex',
+        harness_slug: 'papercup',
+        owner_id: 'su-replay02',
+        bootstrap_idempotency_key: 'bootstrap-key-cleanup-failed',
+      }),
+    ).rejects.toThrow('post-record presence failure');
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', {
+      throwOnError: true,
+    });
+    expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
   });
 
   it('stamps the resolved harness onto presence before the launched agent takes turn 1', async () => {

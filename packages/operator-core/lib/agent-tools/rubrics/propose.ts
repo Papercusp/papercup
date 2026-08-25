@@ -12,6 +12,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { proposeRubric, rubricCompleteness } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { rubricCriterionWindowSchema, rubricCriterionCheckSchema } from '../plans/rubric-template';
+import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 
@@ -68,7 +69,12 @@ const criterion = z.object({
 });
 
 export const rubricsProposeArgs = z.object({
-  rubricRef: z.string().min(1).max(120).describe('rubric ref/slug, e.g. "pot-coordination-health"'),
+  rubricRef: z
+    .string()
+    .min(1)
+    .max(120)
+    .regex(VALID_PLAN_SLUG, 'must be a valid plan slug (letters, numbers, ., _, -; optional @run-N suffix)')
+    .describe('rubric ref/slug stored as a plan slug, e.g. "pot-coordination-health"'),
   kind: z
     .enum(['standard', 'acceptance'])
     .optional()

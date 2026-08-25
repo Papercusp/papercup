@@ -8,6 +8,8 @@ import {
   composeMechanicalCheckpoint,
   detectUnguardedHalt,
   detectEphemeralDeliverableReferences,
+  extractFileWritePaths,
+  extractShellWriteTargets,
   detectUnregisteredArtifacts,
   isDeliverableWrite,
   awaitGuaranteesRewake,
@@ -104,6 +106,39 @@ describe('deliverable detection', () => {
     expect(t?.kind).toBe('unregistered-artifact');
     expect(t?.files).toEqual(['/tmp/s/scratchpad/report.md']);
     expect(t?.note).toContain('artifacts:save');
+  });
+
+  it('keeps native sibling paths and finds shell heredoc/redirection writes', () => {
+    const siblingA = '/home/x/.papercusp/scratch/p006/judge-A-scores.md';
+    const siblingB = '/home/x/.papercusp/scratch/p006/judge-B-scores.md';
+    const redirected = '/home/x/.papercusp/scratch/p006/combined.md';
+    expect(
+      extractFileWritePaths([
+        { file: siblingA },
+        { file: siblingB },
+        { command: `cat > '${redirected}' <<'EOF'\ntext > /tmp/not-a-target.md\nEOF` },
+      ]),
+    ).toEqual([siblingA, siblingB, redirected]);
+  });
+
+  it('finds tee and supported interpreter write APIs', () => {
+    const teePath = '/tmp/agent/scratchpad/tee-report.md';
+    const nodePath = '/tmp/agent/scratchpad/node-report.md';
+    const pythonPath = '/tmp/agent/scratchpad/python-report.md';
+    expect(
+      extractShellWriteTargets(
+        `printf '%s' data | tee -a '${teePath}'; node -e "fs.writeFileSync('${nodePath}', 'x')"; ` +
+          `python - <<'PY'\nfrom pathlib import Path\nPath('${pythonPath}').write_text('x')\nPY`,
+      ),
+    ).toEqual([teePath, nodePath, pythonPath]);
+  });
+
+  it('does not treat read-only shell commands or printed paths as writes', () => {
+    const path = '/tmp/agent/scratchpad/report.md';
+    expect(extractShellWriteTargets(`cat '${path}'`)).toEqual([]);
+    expect(extractShellWriteTargets(`node -e "console.log('${path}')"`)).toEqual([]);
+    expect(extractShellWriteTargets(`node -e "fs.readFileSync('${path}')"`)).toEqual([]);
+    expect(extractShellWriteTargets(`python -c "open('${path}').read()"`)).toEqual([]);
   });
 });
 

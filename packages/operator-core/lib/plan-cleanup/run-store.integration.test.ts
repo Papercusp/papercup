@@ -201,6 +201,7 @@ describe('plan-cleanup run store (real PG)', () => {
     const result = await executeCleanupFindingAction({
       runId: run.runId,
       findingId: 'flip-to-done:papercusp/plan-a#P-001',
+      rationale: 'The linked work item is terminal with recorded completion evidence.',
       async execute(locked) {
         entered = true;
         expect(locked).toMatchObject({ planSlug: 'plan-a', itemId: 'P-001', outcome: 'pending' });
@@ -211,6 +212,15 @@ describe('plan-cleanup run store (real PG)', () => {
     expect(result.refused).toBeNull();
     expect(result.actionResult).toEqual({ dispatched: 'plans:set-status' });
     expect(result.finding?.outcome).toBe('auto_applied');
+    expect(result.finding?.evidence).toEqual([
+      { kind: 'work-item', ref: 'WI-1', note: 'linked WI is done' },
+      {
+        kind: 'plan',
+        ref: 'plan-a',
+        note:
+          'resolver auto-action rationale: The linked work item is terminal with recorded completion evidence.',
+      },
+    ]);
     expect(result.run).toMatchObject({ autoResolved: 1, recommended: 0, skipped: 0, failed: 0 });
   });
 

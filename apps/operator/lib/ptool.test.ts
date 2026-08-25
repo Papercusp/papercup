@@ -27,6 +27,7 @@ import {
   buildMcpUrl,
   buildCallToolParams,
   listAllTools,
+  listToolsWithLocalRetry,
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
@@ -41,6 +42,7 @@ import {
   isExplicitHttpConnectFailure,
   isRetryableLocalHttpConnectFailure,
   PTOOL_CONNECT_TIMEOUT_MS,
+  PTOOL_CONNECT_MAX_ATTEMPTS,
   resolveWorkspaceScope,
   jsonSourceKind,
   scriptSourceKind,
@@ -517,6 +519,31 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps retrying handshake-bulkhead 429s through the full recovery budget', async () => {
+    const proxyError = Object.assign(
+      new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_handshake_overloaded","retryAfterSec":2}'),
+      { code: 429 },
+    );
+    const wrapped = new Error(formatOperatorConnectFailure('http://127.0.0.1:9071', proxyError), {
+      cause: proxyError,
+    });
+    const client = { close: vi.fn() };
+    let attempts = 0;
+    const connectOnce = vi.fn(() => {
+      attempts += 1;
+      return attempts <= 30 ? Promise.reject(wrapped) : Promise.resolve(client);
+    });
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:9071', {}, { sleep }),
+    ).resolves.toBe(client);
+
+    expect(PTOOL_CONNECT_MAX_ATTEMPTS).toBeGreaterThan(30);
+    expect(connectOnce).toHaveBeenCalledTimes(31);
+    expect(sleep).toHaveBeenCalledTimes(30);
+  });
+
   it('does not classify arbitrary local 502s or the proxy unavailable 503 as retryable', async () => {
     const generic502 = Object.assign(new Error('bad gateway'), { code: 502 });
     const proxy503 = Object.assign(new Error('{"error":"mcp_proxy_upstream_unavailable"}'), { code: 503 });
@@ -604,6 +631,43 @@ describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
 
     await expect(listAllTools(client, { timeoutMs: 0 })).resolves.toEqual([]);
     expect(client.listTools).toHaveBeenCalledWith({}, undefined);
+  });
+
+  it('retries a proxy handshake-bulkhead 429 during local tools/list discovery', async () => {
+    const proxyError = Object.assign(
+      new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_handshake_overloaded","retryAfterSec":2}'),
+      { code: 429 },
+    );
+    const client = {
+      listTools: vi.fn()
+        .mockRejectedValueOnce(proxyError)
+        .mockResolvedValueOnce({ tools: [{ name: 'coord:orient' }] }),
+    };
+    const sleep = vi.fn(async () => {});
+
+    await expect(listAllTools(client, {
+      retryLocalErrors: true,
+      timeoutMs: 0,
+      totalTimeoutMs: 0,
+      maxAttempts: 2,
+      retryDelayMs: 0,
+      sleep,
+    })).resolves.toEqual([{ name: 'coord:orient' }]);
+    expect(client.listTools).toHaveBeenCalledTimes(2);
+    expect(client.listTools).toHaveBeenNthCalledWith(1, {}, undefined);
+    expect(client.listTools).toHaveBeenNthCalledWith(2, {}, undefined);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry typed handshake refusals unless the operator URL is local', async () => {
+    const proxyError = Object.assign(
+      new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_handshake_overloaded"}'),
+      { code: 429 },
+    );
+    const client = { listTools: vi.fn().mockRejectedValue(proxyError) };
+
+    await expect(listAllTools(client)).rejects.toBe(proxyError);
+    expect(client.listTools).toHaveBeenCalledTimes(1);
   });
 });
 

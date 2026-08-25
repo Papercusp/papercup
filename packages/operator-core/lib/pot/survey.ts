@@ -30,7 +30,7 @@ import { IMPORTANCE_LEVELS, type Importance } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from '../workspace-registry';
 import { withPgRetry } from '../pg-transient-retry';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
-import { autoPickableWhereSql } from '../work-items-admission';
+import { admittedWhereSql, autoPickableWhereSql } from '../work-items-admission';
 import {
   claimHoldExclusionSql,
   needsOwnerActionExclusionSql,
@@ -496,6 +496,7 @@ export async function fetchFrontierRows(
        AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       AND ${admittedWhereSql(sql)}
        -- EI-13501: a claim-held item (payload._claimHold — the SAME general-purpose
        -- "do not self-place" marker claimFloorsWhereSql already honors for the scheduler
        -- claim path, e.g. a leader-held feature or an owner GO/NO-GO gate) is structurally
@@ -578,6 +579,7 @@ export async function fetchEscalatedIssueFrontierRows(
        AND (taken_by IS NULL OR taken_by = '')
        AND COALESCE(payload -> '_ei' ->> 'severity', 'minor') IN ('critical', 'major')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       AND ${admittedWhereSql(sql)}
        -- EI-13501: this escalated-issue slice grew up alongside the feature frontier
        -- (see fetchFrontierRows) and never inherited the self-select exclusion floors
        -- claimNextIssueWorkItem already enforces for the SAME kinds — so an item that is
@@ -647,6 +649,7 @@ export async function countPlaceableFrontier(
        AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       AND ${admittedWhereSql(sql)}
        -- EI-13501: MUST mirror fetchFrontierRows' claim-hold exclusion (this count
        -- gates starvation/throughput signals — the same drift class this comment
        -- already warns about for the checkpoint exclusion below).
@@ -823,6 +826,7 @@ export async function fetchReconcileFrontier(
        AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       AND ${admittedWhereSql(sql)}
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.pot_placements p
           WHERE p.workspace_id = f.workspace_id

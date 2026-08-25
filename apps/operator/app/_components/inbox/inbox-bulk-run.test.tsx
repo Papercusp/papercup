@@ -22,7 +22,7 @@
  *     something done on the owner's behalf (D-003).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
 
 const H = vi.hoisted(() => ({
@@ -77,7 +77,7 @@ vi.mock('@/app/admin/plans/attention-card', async (importOriginal) => {
 
 import InboxBulkRecommendation, { recommendationValidity } from './InboxBulkRecommendation';
 import { deriveRunCounts, isActivePhase, useBulkRunOps, type BulkRunItem } from './use-inbox-bulk-run';
-import { formatRunElapsed, toBulkSeed } from './InboxBulkStrip';
+import InboxBulkStrip, { formatRunElapsed, toBulkSeed } from './InboxBulkStrip';
 import { NAVIGATE_ACTION_IDS, attentionItemToCardSpec } from '@/app/admin/plans/attention-card';
 
 function mkItem(id: string, over: Partial<AttentionItem> = {}): AttentionItem {
@@ -208,6 +208,48 @@ describe('toBulkSeed', () => {
     const seed = toBulkSeed([mkItem('a'), mkItem('b')]);
     expect(seed.map((s) => s.itemId)).toEqual(['a', 'b']);
     expect(seed[0]).toMatchObject({ kind: 'coord-escalation', ownerAgentId: 'su-abc' });
+  });
+});
+
+describe('InboxBulkStrip review handoff', () => {
+  it('opens the grouped report with the exact persisted run instead of applying from the strip', () => {
+    const onReview = vi.fn();
+    const recommendations = [
+      mkRec({ itemId: 'a' }),
+      mkRec({ itemId: 'b', position: 1 }),
+    ];
+    render(
+      <InboxBulkStrip
+        visible={[]}
+        filterSnapshot={{}}
+        run={{
+          runId: 'run-latest-without-param',
+          phase: 'review',
+          totalItems: 2,
+          autoResolved: 0,
+          recommended: 2,
+          skipped: 0,
+          failed: 0,
+          error: null,
+          createdAt: '2026-08-25T00:00:00.000Z',
+          startedAt: '2026-08-25T00:00:00.000Z',
+          finishedAt: '2026-08-25T00:00:10.000Z',
+        }}
+        items={recommendations}
+        recommendations={recommendations}
+        unreached={[]}
+        isRunning={false}
+        isReview
+        onRunStarted={vi.fn()}
+        onReview={onReview}
+      />,
+    );
+
+    const review = screen.getByTestId('inbox-bulk-review-decisions');
+    expect(review.textContent).toContain('Review 2 decisions');
+    expect(screen.queryByTestId('inbox-bulk-accept-all')).toBeNull();
+    fireEvent.click(review);
+    expect(onReview).toHaveBeenCalledWith('run-latest-without-param');
   });
 });
 

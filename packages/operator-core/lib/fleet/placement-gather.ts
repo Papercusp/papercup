@@ -16,7 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { listPresence } from '../agent-tools/coordination/presence';
 import { groupByAgent, listFleetAssignments } from './assignments';
 import { getWorkItem, isClaimHoldParked, listWorkItems, type WorkItem } from '../work-items';
-import { isAutoPickable, loadTrustedGithubUserIds } from '../work-items-admission';
+import { isAdmitted, isAutoPickable, loadTrustedGithubUserIds } from '../work-items-admission';
 import { placementConfig } from '../pot/placement-watchdog';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
@@ -474,6 +474,10 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
         skipped.push({ id, reason: 'remote work not yet auditor-admitted (quarantined)' });
         continue;
       }
+      if (!isAdmitted(wi.admission)) {
+        skipped.push({ id, reason: 'duplicate screening pending (awaiting durable promoter)' });
+        continue;
+      }
       // Backfill the harness from the call's `harness=` when the item has none
       // (operator-scope EI items carry a null harness) — else the fresh-spawn is
       // rejected "no harness named" and the caller's harness= is silently dropped
@@ -508,6 +512,7 @@ export async function gatherFrontier(opts: GatherFrontierOpts): Promise<GatherFr
           !isObservationLaneItem(wi.payload) &&
           !isClaimHoldParked(wi.payload) &&
           !cursedIds.has(wi.id) &&
+          isAdmitted(wi.admission) &&
           isAutoPickable(wi.origin, wi.auditVerdict, wi.verifiedAuthorGithubUserId, trustedAuthors),
       )
       .sort((a, b) => {

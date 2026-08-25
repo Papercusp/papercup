@@ -17,7 +17,7 @@
  */
 import type postgres from 'postgres';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
-import { autoPickableWhereSql } from '../work-items-admission';
+import { admittedWhereSql, autoPickableWhereSql } from '../work-items-admission';
 import { SUMMARY_INACTIVE_UNIT_STATES } from './placement-watchdog';
 
 export interface WakeFrontierGuardInput {
@@ -121,6 +121,7 @@ export async function listUnplacedPotFrontier(
        AND status = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
+       AND ${admittedWhereSql(sql)}
        -- EI-13695: a row carrying a surviving work-item checkpoint is RECONCILE
        -- work, not fresh placeable frontier — mirroring survey.ts's
        -- fetchFrontierRows so this guard never demands "PLACE it this turn" for

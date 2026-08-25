@@ -194,6 +194,7 @@ export const cleanupAct = defineTool({
       const result = await executeCleanupFindingAction({
         runId,
         findingId: args.findingId,
+        rationale,
         resolverOwner: identity.ownerId,
         workspaceId: run.workspaceId,
         async execute(locked) {

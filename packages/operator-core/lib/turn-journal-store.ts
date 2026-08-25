@@ -6,6 +6,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { JournalTripwire, LedgerEntry } from './turn-journal';
+import { extractFileWritePaths } from './turn-end-tracking';
 
 export interface TurnJournalRow {
   id: string;
@@ -132,9 +133,9 @@ export async function recentTurnJournal(filter: {
 }
 
 /** P-015 (turn-end-tracking): distinct file paths WRITTEN this turn — the
- *  ✎-glyph ledger rows carry the absolute path in detail->>'file'. Edits are
- *  included (an edited deliverable is still a deliverable); reads (👁) are not
- *  file-write rows and never carry the write glyph. */
+ *  ✎-glyph ledger rows carry the absolute path in detail->>'file'. Shell
+ *  commands use the ▶ glyph and carry detail->>'command'; the pure extractor
+ *  recognizes literal redirects/tee/interpreter writes while reads fail open. */
 export async function fileWritesSince(
   sessionId: string,
   since: Date | string,
@@ -142,16 +143,18 @@ export async function fileWritesSince(
 ): Promise<string[]> {
   const { sql } = getOrgPg();
   const sinceIso = typeof since === 'string' ? since : since.toISOString();
-  const rows = await sql<Array<{ file: string }>>`
-    SELECT DISTINCT detail->>'file' AS file
+  const rows = await sql<Array<{ file: string | null; command: string | null }>>`
+    SELECT DISTINCT detail->>'file' AS file, detail->>'command' AS command
     FROM harness_shared.agent_activity
     WHERE session_id = ${sessionId}
       AND created_at > ${sinceIso}::timestamptz
-      AND detail ? 'file'
-      AND summary LIKE '✎%'
+      AND (
+        (detail ? 'file' AND summary LIKE '✎%')
+        OR (detail ? 'command' AND summary LIKE '▶%')
+      )
     LIMIT ${limit}
   `;
-  return rows.map((r) => r.file).filter(Boolean);
+  return extractFileWritePaths(rows);
 }
 
 /** P-015: rel_paths registered via artifacts:save in the window — the

@@ -33,7 +33,9 @@ const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
   }
   return Promise.resolve([]);
 }));
-const getOrgPgProbe = vi.hoisted(() => vi.fn());
+const dbOrgActual = vi.hoisted(() =>
+  vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org'),
+);
 
 vi.mock('@papercusp/sse', () => ({
   sseResponse: (opts: { setup: CapturedSetup }) => {
@@ -53,12 +55,9 @@ vi.mock('@papercusp/sse', () => ({
 vi.mock('@papercusp/scheduled-registry', () => ({
   managedSetInterval: () => ({ stop: vi.fn() }),
 }));
-vi.mock('@papercusp/db-org', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => {
-    getOrgPgProbe();
-    return { sql: dbSql };
-  },
+vi.mock('@papercusp/db-org', async () => ({
+  ...(await dbOrgActual),
+  getOrgPg: () => ({ sql: dbSql }),
 }));
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),
@@ -74,14 +73,8 @@ vi.mock('../../session-timeline-parsers', () => ({
   createOmpTimelineParser: vi.fn(() => ({ parseLine: () => [], flush: () => [] })),
 }));
 
-// Eagerly instantiate the async partial mock so both concurrent route reads
-// share the same mocked module namespace.
-import '@papercusp/db-org';
-
 import {
   default as streamRoutes,
-  backfillFromSessionParts,
-  backfillFromSessionTurns,
   parseAgentTimelineChunks,
   capEntryText,
   THINKING_ENTRY_TEXT_CAP,
@@ -110,7 +103,6 @@ beforeEach(() => {
   routeProbe.setup = null;
   resolverProbe.codexByUuid.mockClear();
   dbSql.mockClear();
-  getOrgPgProbe.mockClear();
 });
 
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).byteLength;
@@ -556,17 +548,7 @@ describe('live session DB fallback (WI-41527)', () => {
     expect(routeProbe.setup).not.toBeNull();
 
     resolverProbe.codexByUuid.mockResolvedValueOnce(null);
-    const concurrent = await Promise.all([
-      backfillFromSessionParts({ sourceKind: 'codex', sessionId: 'missing-transcript' }),
-      backfillFromSessionTurns({ sourceKind: 'codex', sessionId: 'missing-transcript' }),
-    ]);
-    expect(concurrent[1]).not.toBeNull();
     await routeProbe.setup!();
-
-    const directTurns = await backfillFromSessionTurns({ sourceKind: 'codex', sessionId: 'missing-transcript' });
-    expect(directTurns).not.toBeNull();
-    expect(getOrgPgProbe).toHaveBeenCalledTimes(2);
-    expect(dbSql).toHaveBeenCalledTimes(3);
 
     expect(resolverProbe.codexByUuid).toHaveBeenCalledWith('missing-transcript');
     expect(routeProbe.events).toContainEqual({

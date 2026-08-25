@@ -955,7 +955,16 @@ export async function markAdvSessionEnded(
   id: number,
   exitCode: number | null,
   endedBy: AdvSessionEndedBy,
-  opts: { signal?: string | null } = {},
+  opts: {
+    signal?: string | null;
+    /**
+     * Lifecycle telemetry is normally best-effort, but callers that are about
+     * to release an idempotency/ownership guard must know the terminal write
+     * landed first. In that narrow case, rethrow instead of converting a DB
+     * failure into a warning so the caller can keep its guard fail-closed.
+     */
+    throwOnError?: boolean;
+  } = {},
 ): Promise<void> {
   try {
     const { sql } = getOrgPg();
@@ -990,6 +999,7 @@ export async function markAdvSessionEnded(
         .catch((e) => console.warn(`[adv-sessions] archive hook unavailable: ${(e as Error)?.message ?? e}`));
     }
   } catch (e) {
+    if (opts.throwOnError) throw e;
     warnUnlessMissingTable(e, 'markAdvSessionEnded');
   }
 }

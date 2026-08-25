@@ -116,9 +116,7 @@ describe("rendering", () => {
     expect(screen.getByText("run #7")).toBeTruthy();
     expect(screen.getByText("Flip to done")).toBeTruthy();
     expect(
-      screen.getByText(
-        "WI-100 done; completion recorded · plan item linked by coverage",
-      ),
+      screen.getByText("WI-100 done; completion recorded"),
     ).toBeTruthy();
     expect(screen.getByText("my-plan")).toBeTruthy();
     expect(screen.getByText("P-001")).toBeTruthy();
@@ -154,6 +152,57 @@ describe("rendering", () => {
     expect(
       screen.queryByTestId("review-group-columns-flip-to-done"),
     ).toBeNull();
+  });
+
+  it("exposes every row's complete reason through an explicit disclosure, including auto-applied rows", () => {
+    renderShell();
+    const toggle = screen.getByTestId("review-row-reason-f1");
+    expect(toggle.textContent).toContain("Why");
+    expect(toggle.textContent).toContain("WI-100 done; completion recorded");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBeTruthy();
+    expect(screen.queryByText("plan item linked by coverage")).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const detail = screen.getByTestId("review-row-reason-detail-f1");
+    expect(detail.getAttribute("role")).toBe("region");
+    expect(detail.textContent).toContain("WI-100 done; completion recorded");
+    expect(detail.textContent).toContain("plan item linked by coverage");
+
+    const appliedToggle = screen.getByTestId("review-row-reason-o1");
+    expect(screen.queryByTestId("review-row-check-o1")).toBeNull();
+    fireEvent.click(appliedToggle);
+    expect(
+      screen.getByTestId("review-row-reason-detail-o1").textContent,
+    ).toContain("lease lapsed 42min ago; holder dead");
+  });
+
+  it("does not resurrect an expanded reason after a live row leaves and returns", () => {
+    const props = {
+      title: "Live report",
+      onApply: vi.fn(),
+      onDismiss: vi.fn(),
+    };
+    const original = groupsFixture();
+    const { rerender } = render(
+      <ReviewReportShell {...props} groups={original} />,
+    );
+    fireEvent.click(screen.getByTestId("review-row-reason-f1"));
+    expect(screen.getByTestId("review-row-reason-detail-f1")).toBeTruthy();
+
+    const withoutF1 = original.map((group) => ({
+      ...group,
+      rows: group.rows.filter((row) => row.id !== "f1"),
+    }));
+    rerender(<ReviewReportShell {...props} groups={withoutF1} />);
+    expect(screen.queryByTestId("review-row-reason-f1")).toBeNull();
+
+    rerender(<ReviewReportShell {...props} groups={original} />);
+    expect(
+      screen.getByTestId("review-row-reason-f1").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.queryByTestId("review-row-reason-detail-f1")).toBeNull();
   });
 
   it("gives both programmatic focus fallbacks an explicit visible ring", () => {

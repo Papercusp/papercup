@@ -189,6 +189,15 @@ describe('plans:cleanup-act', () => {
       finding,
       call: h.innerCall,
     });
+    expect(h.executeCleanupFindingAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: run.runId,
+        findingId: finding.findingId,
+        rationale: 'The linked work is complete.',
+        resolverOwner: 'su-resolver',
+        workspaceId: run.workspaceId,
+      }),
+    );
     expect(result).toMatchObject({ ok: true, actionDispatched: true, outcome: 'auto_applied' });
   });
 

@@ -392,6 +392,8 @@ export function printResult(result: unknown, { raw, deliveryProbe }?: unknown): 
 export const PTOOL_TRUNCATED_RESULT_MESSAGE: string;
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
 export const PTOOL_CONNECT_TIMEOUT_MS: number;
+export const PTOOL_CONNECT_RETRY_DELAY_MS: 1000;
+export const PTOOL_CONNECT_MAX_ATTEMPTS: number;
 export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS: 300000;
 export const PTOOL_RESPAWN_MEMBER_TIMEOUT_MS: 675000;

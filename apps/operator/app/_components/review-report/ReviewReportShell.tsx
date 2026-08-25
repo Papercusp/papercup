@@ -143,6 +143,9 @@ export default function ReviewReportShell({
     initialSelection(groups, defaultSelected),
   );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [expandedReasons, setExpandedReasons] = useState<Set<string>>(
+    () => new Set(),
+  );
   const reportRef = useRef<HTMLElement>(null);
   const applyButtonRef = useRef<HTMLButtonElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
@@ -166,6 +169,21 @@ export default function ReviewReportShell({
       for (const r of g.rows) if (rowSelectable(r)) ids.add(r.id);
     return ids;
   }, [groups]);
+
+  const presentRowIds = useMemo(
+    () => new Set(groups.flatMap((group) => group.rows.map((row) => row.id))),
+    [groups],
+  );
+
+  // A live report can remove a row and later reintroduce the same stable id.
+  // Once it left the current report, a stale expanded state must not resurrect
+  // without a fresh owner action.
+  useLayoutEffect(() => {
+    setExpandedReasons((previous) => {
+      if ([...previous].every((id) => presentRowIds.has(id))) return previous;
+      return new Set([...previous].filter((id) => presentRowIds.has(id)));
+    });
+  }, [presentRowIds]);
 
   // Selection intersected with what is STILL pending — a consumer marking rows
   // applied between renders must not leave phantom selections behind.
@@ -302,6 +320,15 @@ export default function ReviewReportShell({
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
+      return next;
+    });
+  };
+
+  const toggleReason = (rowId: string) => {
+    setExpandedReasons((previous) => {
+      const next = new Set(previous);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
       return next;
     });
   };
@@ -488,9 +515,15 @@ export default function ReviewReportShell({
               </header>
               {!isCollapsed && (
                 <ul className="review-report__rows">
-                  {group.rows.map((row) => {
+                  {group.rows.map((row, rowIndex) => {
                     const status = rowStatus(row);
                     const selectable = rowSelectable(row);
+                    const reasonOpen = expandedReasons.has(row.id);
+                    const evidence =
+                      row.evidence.length > 0
+                        ? row.evidence
+                        : ["No reason was recorded."];
+                    const reasonRegionId = `${titleId}-reason-${index}-${rowIndex}`;
                     return (
                       <li
                         ref={(node) => {
@@ -575,14 +608,29 @@ export default function ReviewReportShell({
                           )}
                         </span>
                         <span className="review-report__row-evidence">
-                          {row.evidence.length > 0 ? (
-                            <span
-                              className="review-report__evidence-item"
-                              title={row.evidence.join(" · ")}
-                            >
-                              {row.evidence.join(" · ")}
+                          <button
+                            type="button"
+                            className="review-report__reason-toggle"
+                            data-testid={`review-row-reason-${row.id}`}
+                            aria-label={`Why ${row.title}`}
+                            aria-expanded={reasonOpen}
+                            aria-controls={reasonRegionId}
+                            onClick={() => toggleReason(row.id)}
+                          >
+                            <span className="review-report__reason-toggle-inner">
+                              <span className="review-report__reason-label">
+                                Why
+                              </span>
+                              <span className="review-report__evidence-item">
+                                {evidence[0]}
+                              </span>
+                              <ChevronDown
+                                size={12}
+                                className={`review-report__reason-chevron${reasonOpen ? " review-report__reason-chevron--open" : ""}`}
+                                aria-hidden="true"
+                              />
                             </span>
-                          ) : null}
+                          </button>
                         </span>
                         <span
                           className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
@@ -590,6 +638,24 @@ export default function ReviewReportShell({
                         >
                           {CONFIDENCE_LABEL[row.confidence]}
                         </span>
+                        {reasonOpen ? (
+                          <div
+                            id={reasonRegionId}
+                            className="review-report__reason-detail"
+                            data-testid={`review-row-reason-detail-${row.id}`}
+                            role="region"
+                            aria-label={`Why ${row.title}`}
+                          >
+                            <strong>Why this decision</strong>
+                            <ul>
+                              {evidence.map((line, evidenceIndex) => (
+                                <li key={`${row.id}-evidence-${evidenceIndex}`}>
+                                  {line}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                         {row.detail != null ? (
                           <span className="review-report__row-detail">
                             {row.detail}
