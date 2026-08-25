@@ -1008,13 +1008,28 @@ export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
  *  outlive both of those without ever reaching the suite at all. */
 export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
 
+/** EI-21411600805243319: publishing a cold dependency generation performs three
+ * metadata walks (live-before, live-after, immutable-copy) around the copy. The
+ * root node_modules walk is intentionally metadata-complete and can take ~14m
+ * while continuously consuming CPU on the production tree. D-053 proved that a
+ * single 30m wall-clock timer therefore kills a healthy publisher during its
+ * second walk even though no individual stage is stalled.
+ *
+ * Keep the existing 30m value as a NO-OUTPUT/NO-PROGRESS budget, and cap the
+ * complete publisher independently at 90m. Stage markers from
+ * dependency-generation.sh reset the idle budget; the hard cap remains immune
+ * to output, so a child that merely prints forever still terminates below the
+ * gate-wide 120m parent budget. */
+export const DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS = SETUP_TREE_TIMEOUT_MS;
+export const DEPENDENCY_GENERATION_HARD_TIMEOUT_MS = 90 * 60_000;
+
 /** WI-21357012876642589: refresh the materialization phase marker while the two
  * timeout-bounded setup legs are quiet. The max is two setup bounds because
  * realCheckpointDeps.setupTree first publishes the dependency generation and
  * then runs setup-release-checkout, each with SETUP_TREE_TIMEOUT_MS. */
 export const MATERIALIZATION_HEARTBEAT_INTERVAL_MS = 15_000;
 export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
-  SETUP_TREE_TIMEOUT_MS * 2;
+  DEPENDENCY_GENERATION_HARD_TIMEOUT_MS + SETUP_TREE_TIMEOUT_MS;
 
 /** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
  *  (green-checkpoint.ts) itself, independent of the supervising parent
@@ -9382,6 +9397,12 @@ export type CheckpointExec = (
     env?: NodeJS.ProcessEnv;
     allowNonZero?: boolean;
     timeoutMs?: number;
+    /** When true, timeoutMs is an idle/no-output budget instead of an absolute
+     * wall-clock cap. Every stdout/stderr chunk re-arms it. Pair with
+     * hardTimeoutMs so a noisy but non-terminating child still has a fixed bound. */
+    timeoutResetsOnProgress?: boolean;
+    /** Absolute wall-clock cap independent of child output. */
+    hardTimeoutMs?: number;
     /** EI-78: run under scripts/pc-heavy.sh (nice/ionice + slot semaphore). Optional so
      *  every injected test fake keeps compiling untouched — a fake simply ignores it. */
     heavy?: boolean;
@@ -11548,10 +11569,37 @@ export function realCheckpointDeps(
     for (const workspaceDir of workspaceDirs) {
       generationArgs.push("--workspace-dir", workspaceDir);
     }
-    const publishedGeneration = await exec("bash", generationArgs, {
-      timeoutMs: SETUP_TREE_TIMEOUT_MS,
-      killProcessGroupOnTimeout: true,
-    });
+    const outputRemainders: Record<"stdout" | "stderr", string> = {
+      stdout: "",
+      stderr: "",
+    };
+    const relayOutput = (stream: "stdout" | "stderr", text: string) => {
+      const lines = `${outputRemainders[stream]}${text}`.split(/\r?\n/);
+      outputRemainders[stream] = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim()) log(`dependency-generation ${stream}: ${line}`);
+      }
+    };
+    const flushOutput = () => {
+      for (const stream of ["stdout", "stderr"] as const) {
+        const remainder = outputRemainders[stream];
+        if (remainder.trim())
+          log(`dependency-generation ${stream}: ${remainder}`);
+        outputRemainders[stream] = "";
+      }
+    };
+    let publishedGeneration: CheckpointExecResult;
+    try {
+      publishedGeneration = await exec("bash", generationArgs, {
+        timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
+        timeoutResetsOnProgress: true,
+        hardTimeoutMs: DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
+        killProcessGroupOnTimeout: true,
+        onOutput: relayOutput,
+      });
+    } finally {
+      flushOutput();
+    }
     const publishedGenerationOutput =
       publishedGeneration.stdout + publishedGeneration.stderr;
     const selectedDependencyGeneration = publishedGenerationOutput.match(
@@ -13473,6 +13521,8 @@ export function runCmd(
     env?: NodeJS.ProcessEnv;
     allowNonZero?: boolean;
     timeoutMs?: number;
+    timeoutResetsOnProgress?: boolean;
+    hardTimeoutMs?: number;
     /** EI-78: route this command through scripts/pc-heavy.sh (nice + ionice + a host-wide
      *  flock counting semaphore). Opt-IN per call site, never blanket: runCmd is the exec
      *  seam for ~30 invocations, most of them trivial `git rev-parse`/`git log` calls that
@@ -13552,6 +13602,7 @@ export function runCmd(
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
     // WI-41117: the old timeout error discarded BOTH captured streams. Preserve the most recent
     // interleaved child output in a strict bound so a setupTree timeout names the exact stage
     // that overran instead of reducing 30 minutes of work to a context-free argv string.
@@ -13575,6 +13626,7 @@ export function runCmd(
       } catch {
         /* progress is diagnostic/liveness-only and must never break output capture */
       }
+      if (opts.timeoutResetsOnProgress && !settled) armIdleTimer();
       if (!opts.relayAffectedProgress) return;
       const combined = (progressRemainders.get(stream) ?? "") + text;
       const lines = combined.split(/\r?\n/);
@@ -13585,55 +13637,82 @@ export function runCmd(
         }
       }
     };
-    let settled = false;
-    // A bounded timeout (used by the isolation re-run, and — WI-7069 — setupTree): SIGKILL the
-    // child and REJECT, so a genuine hang can't stall the gate. The isolation re-run's caller
-    // treats a rejected run as still-failing, never a flake; setupTree's caller lets the
-    // rejection propagate as a run error rather than hanging silently for hours.
-    const timer = opts.timeoutMs
-      ? setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          // WI-7069: a group-kill target is the CHILD's own pid (it is the group leader, since
-          // it was spawned `detached` above) — NOT this process's pid. Falls back to the plain
-          // direct-child kill if the group is already gone (e.g. it exited between the timer
-          // firing and this line) or the pid is unexpectedly missing, so a timeout can never
-          // itself throw past the reject() below.
-          if (detach && typeof child.pid === "number") {
-            try {
-              process.kill(-child.pid, "SIGKILL");
-            } catch {
-              try {
-                child.kill("SIGKILL");
-              } catch {
-                /* child already gone */
-              }
-            }
-          } else {
-            child.kill("SIGKILL");
-          }
-          reject(
-            new Error(
-              `${cmd} ${args.join(" ")} timed out after ${opts.timeoutMs}ms` +
-                (timeoutOutputTail.trim()
-                  ? `\n--- last captured child output ---\n${timeoutOutputTail.trimEnd()}`
-                  : ""),
-            ),
-          );
-        }, opts.timeoutMs)
-      : null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearTimers = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      idleTimer = null;
+      hardTimer = null;
+    };
+    const killChildTree = () => {
+      // WI-7069: a group-kill target is the CHILD's own pid (it is the group leader, since
+      // it was spawned `detached` above) — NOT this process's pid. Falls back to the plain
+      // direct-child kill if the group is already gone (e.g. it exited between the timer
+      // firing and this line) or the pid is unexpectedly missing.
+      if (detach && typeof child.pid === "number") {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+          return;
+        } catch {
+          /* fall through to the direct child */
+        }
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* child already gone */
+      }
+    };
+    const rejectTimeout = (message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      killChildTree();
+      reject(
+        new Error(
+          message +
+            (timeoutOutputTail.trim()
+              ? `\n--- last captured child output ---\n${timeoutOutputTail.trimEnd()}`
+              : ""),
+        ),
+      );
+    };
+    function armIdleTimer() {
+      if (!opts.timeoutMs || settled) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        const message = opts.timeoutResetsOnProgress
+          ? `${cmd} ${args.join(" ")} made no output progress for ${opts.timeoutMs}ms`
+          : `${cmd} ${args.join(" ")} timed out after ${opts.timeoutMs}ms`;
+        rejectTimeout(message);
+      }, opts.timeoutMs);
+    }
+    // A bounded timeout kills the whole opted-in process group and rejects. By
+    // default timeoutMs retains its historical absolute semantics. The
+    // dependency publisher opts into idle semantics and also supplies the hard
+    // cap below, so advancing work survives while a hang or noisy infinite loop
+    // still fails closed.
+    armIdleTimer();
+    if (opts.hardTimeoutMs) {
+      hardTimer = setTimeout(() => {
+        rejectTimeout(
+          `${cmd} ${args.join(" ")} exceeded hard timeout after ${opts.hardTimeoutMs}ms`,
+        );
+      }, opts.hardTimeoutMs);
+    }
     child.stdout.on("data", (d) => capture("stdout", d));
     child.stderr.on("data", (d) => capture("stderr", d));
     child.on("error", (e) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimers();
       reject(e);
     });
     child.on("close", (code, signal) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimers();
       const result: CheckpointExecResult = {
         code: code ?? 0,
         signal,
