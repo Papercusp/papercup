@@ -22,6 +22,7 @@ const env = (over: Partial<CaptureEnvironment> = {}): CaptureEnvironment => ({
 const requiredCase = (over: Partial<RequiredCase> = {}): RequiredCase => ({
   caseId: 'desktop-default',
   environment: env(),
+  target: { targetId: 'components-login--default', targetKind: 'storybook-story' },
   rationale: 'primary breakpoint',
   ...over,
 });
@@ -64,6 +65,51 @@ describe('validateRatification', () => {
   });
 
   /**
+   * D-020 class 4, at the ratification end.
+   *
+   * D-019 forces every case onto the reference's single environment, so the
+   * SURFACE is the only thing distinguishing two cases. Two cases naming the
+   * same surface are therefore indistinguishable to the coverage matcher, and
+   * one capture satisfies both — requirement 9's failure with an extra step.
+   * Refusing here keeps the matcher's one-evidence-one-case property true by
+   * construction rather than by the author's care.
+   */
+  it('refuses two cases contracted against the same surface', () => {
+    const errors = validateRatification(
+      ref({
+        requiredCases: [
+          requiredCase({ caseId: 'a' }),
+          requiredCase({ caseId: 'b' }), // same default target as 'a'
+        ],
+      }),
+    );
+    expect(errors.map((e) => e.code)).toContain('duplicate-case-target');
+    // The message must name BOTH cases, or the author cannot tell which pair collided.
+    const message = errors.find((e) => e.code === 'duplicate-case-target')!.message;
+    expect(message).toContain("'a'");
+    expect(message).toContain("'b'");
+  });
+
+  it('CALIBRATION: accepts two cases at the same environment on DIFFERENT surfaces', () => {
+    // Without this, the test above also passes when the rule is over-broad and
+    // rejects every multi-case reference — which would forbid the legitimate
+    // shape it exists to make meaningful.
+    const errors = validateRatification(
+      ref({
+        requiredCases: [
+          requiredCase({ caseId: 'a' }),
+          requiredCase({
+            caseId: 'b',
+            target: { targetId: 'components-login--error', targetKind: 'storybook-story' },
+          }),
+        ],
+      }),
+    );
+    expect(errors.map((e) => e.code)).not.toContain('duplicate-case-target');
+    expect(errors).toEqual([]);
+  });
+
+  /**
    * D-019 (surfaced by P-007). A revision carries ONE reference image, and
    * `compare_render` refuses a capture whose environment differs from
    * `referenceEnvironment`. A required case at any other environment is
@@ -78,6 +124,9 @@ describe('validateRatification', () => {
           requiredCase(),
           requiredCase({
             caseId: 'mobile',
+            // A distinct surface, so this fixture isolates the environment
+            // concern under test rather than also tripping duplicate-case-target.
+            target: { targetId: 'components-login--mobile', targetKind: 'storybook-story' },
             environment: env({ viewport: { width: 390, height: 844 } }),
           }),
         ],

@@ -103,7 +103,16 @@ function ratifyFor(
       height: env.viewport.height,
     },
     referenceEnvironment: env,
-    requiredCases: [{ caseId: `${referenceId}-case`, environment: env, rationale: 'breakpoint' }],
+    requiredCases: [
+      {
+        caseId: `${referenceId}-case`,
+        environment: env,
+        // Must agree with `compareFor`'s target for the same referenceId:
+        // coverage matches on environment AND surface.
+        target: { targetId: `components-checkout--${referenceId}`, targetKind: 'storybook-story' },
+        rationale: 'breakpoint',
+      },
+    ],
     provenance: { source: 'artifact-capture', sourceRef: 'artifact://abc' },
   };
 }

@@ -72,7 +72,12 @@ function candidate(
     },
     referenceEnvironment: ENVIRONMENT,
     requiredCases: [
-      { caseId: 'desktop-default', environment: ENVIRONMENT, rationale: 'primary breakpoint' },
+      {
+        caseId: 'desktop-default',
+        environment: ENVIRONMENT,
+        target: { targetId: 'components-login--default', targetKind: 'storybook-story' },
+        rationale: 'primary breakpoint',
+      },
     ],
     ...overrides,
   };

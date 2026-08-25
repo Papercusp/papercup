@@ -51,6 +51,16 @@ const POLICY: ThresholdPolicy = {
 
 const CALLER: VerbCaller = { actorId: 'spawn-abc', role: 'reviewer' };
 
+/**
+ * The surface the required cases here are contracted against, and the one
+ * `compareInput` captures. Coverage matches on environment AND surface, so
+ * these must agree or every case is uncovered by construction.
+ */
+const CASE_TARGET = {
+  targetId: 'components-login--default',
+  targetKind: 'storybook-story',
+} as const;
+
 /** A provider that reports a fixed difference and records what it was asked. */
 function fakeProvider(pixelDifference: number): ComparisonProvider & { calls: number } {
   const provider = {
@@ -110,7 +120,14 @@ function ratifyInput(overrides: Partial<RatifyReferenceInput> = {}): RatifyRefer
       height: 800,
     },
     referenceEnvironment: ENV,
-    requiredCases: [{ caseId: 'desktop-default', environment: ENV, rationale: 'primary breakpoint' }],
+    requiredCases: [
+      {
+        caseId: 'desktop-default',
+        environment: ENV,
+        target: CASE_TARGET,
+        rationale: 'primary breakpoint',
+      },
+    ],
     provenance: { source: 'artifact-capture', sourceRef: 'artifact://abc' },
     ...overrides,
   };
@@ -187,7 +204,9 @@ describe('round trip: ratify → compare → read', () => {
           width: 390,
           height: 844,
         },
-        requiredCases: [{ caseId: 'mobile', environment: mobile, rationale: 'mobile breakpoint' }],
+        requiredCases: [
+          { caseId: 'mobile', environment: mobile, target: CASE_TARGET, rationale: 'mobile breakpoint' },
+        ],
       }),
       CALLER,
       d,
@@ -373,7 +392,9 @@ describe('storage', () => {
     await ratifyReferenceVerb(
       ratifyInput({
         referenceEnvironment: mobile,
-        requiredCases: [{ caseId: 'mobile', environment: mobile, rationale: 'mobile' }],
+        requiredCases: [
+          { caseId: 'mobile', environment: mobile, target: CASE_TARGET, rationale: 'mobile' },
+        ],
       }),
       CALLER,
       d,

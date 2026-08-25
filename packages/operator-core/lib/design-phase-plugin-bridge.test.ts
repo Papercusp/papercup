@@ -125,7 +125,16 @@ const RATIFY_INPUT = {
     height: 600,
   },
   referenceEnvironment: ENV,
-  requiredCases: [{ caseId: 'default', environment: ENV, rationale: 'primary' }],
+  requiredCases: [
+    {
+      caseId: 'default',
+      environment: ENV,
+      // Agrees with COMPARE_INPUT.target: coverage matches surface as well as
+      // environment, so a mismatch here would leave the case uncovered.
+      target: { targetId: 'story--default', targetKind: 'storybook-story' },
+      rationale: 'primary',
+    },
+  ],
   provenance: { source: 'artifact-capture', sourceRef: 'artifact://bridge' },
 };
 

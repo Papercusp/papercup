@@ -119,19 +119,35 @@ function ratifyInput(overrides: Partial<RatifyReferenceInput> = {}): RatifyRefer
       height: 800,
     },
     referenceEnvironment: ENV,
-    requiredCases: [{ caseId: 'desktop-default', environment: ENV, rationale: 'primary breakpoint' }],
+    requiredCases: [
+      {
+        caseId: 'desktop-default',
+        environment: ENV,
+        target: CASE_TARGET,
+        rationale: 'primary breakpoint',
+      },
+    ],
     provenance: { source: 'artifact-capture', sourceRef: 'artifact://abc' },
     ...overrides,
   };
 }
+
+/**
+ * The surface every required case here is contracted against, and the one
+ * `compareInput` captures. They must agree: coverage matches on environment AND
+ * surface, so a case naming a different surface is uncovered by construction.
+ */
+const CASE_TARGET = {
+  targetId: 'components-checkout--default',
+  targetKind: 'storybook-story',
+} as const;
 
 function compareInput(overrides: Partial<CompareRenderInput> = {}): CompareRenderInput {
   return {
     featureId: FEATURE,
     referenceId: REFERENCE,
     target: {
-      targetId: 'components-checkout--default',
-      targetKind: 'storybook-story',
+      ...CASE_TARGET,
       implementationRevision: 'impl-1',
     },
     environment: ENV,
@@ -196,7 +212,9 @@ describe('missing evidence', () => {
     const d = deps();
     await ratifyReferenceVerb(
       ratifyInput({
-        requiredCases: [{ caseId: 'desktop', environment: ENV, rationale: 'primary' }],
+        requiredCases: [
+          { caseId: 'desktop', environment: ENV, target: CASE_TARGET, rationale: 'primary' },
+        ],
       }),
       CALLER,
       d,
@@ -220,7 +238,9 @@ describe('missing evidence', () => {
     const d = deps();
     await ratifyReferenceVerb(
       ratifyInput({
-        requiredCases: [{ caseId: 'desktop', environment: ENV, rationale: 'primary' }],
+        requiredCases: [
+          { caseId: 'desktop', environment: ENV, target: CASE_TARGET, rationale: 'primary' },
+        ],
       }),
       CALLER,
       d,
@@ -469,7 +489,9 @@ describe('bypass attempts', () => {
     const d = deps();
     await ratifyReferenceVerb(
       ratifyInput({
-        requiredCases: [{ caseId: 'dark-desktop', environment: ENV, rationale: 'primary' }],
+        requiredCases: [
+          { caseId: 'dark-desktop', environment: ENV, target: CASE_TARGET, rationale: 'primary' },
+        ],
       }),
       CALLER,
       d,
@@ -485,14 +507,67 @@ describe('bypass attempts', () => {
     expect(verdict.failures[0]!.caseId).toBe('dark-desktop');
   });
 
+  /**
+   * D-020 class 4, at the refusal end.
+   *
+   * The gate must not describe a wrong-surface capture as `no-evidence`. The
+   * remedies are opposite: `no-evidence` says "run a comparison", and a
+   * comparison WAS run — under D-020 it may even have passed at diff ratio 0,
+   * because captures of different surfaces are sometimes byte-identical. An
+   * implementer told "no evidence" re-runs the exact comparison that produced
+   * the misleading pass, and reads the same green again.
+   */
+  it('names a wrong-surface capture as such, rather than reporting no evidence', async () => {
+    const d = deps();
+    await ratifyReferenceVerb(ratifyInput(), CALLER, d);
+    // A real, current, passing comparison — of the wrong story.
+    await compareRenderVerb(
+      compareInput({
+        target: {
+          targetId: 'components-checkout--summary',
+          targetKind: 'storybook-story',
+          implementationRevision: 'impl-1',
+        },
+      }),
+      CALLER,
+      d,
+    );
+
+    const verdict = evaluateDesignGate(await read(d));
+    if (!verdict.applicable || verdict.satisfied) throw new Error('expected an unsatisfied verdict');
+
+    expect(verdict.failures).toHaveLength(1);
+    expect(verdict.failures[0]!.reason).toBe('wrong-surface');
+    // The remedy has to name the surface to capture, or it is not actionable.
+    expect(verdict.failures[0]!.remedy).toContain('components-checkout--default');
+  });
+
   it('reports EVERY unmet case, so a refusal cannot be walked one case at a time', async () => {
     const d = deps();
     await ratifyReferenceVerb(
       ratifyInput({
         requiredCases: [
-          { caseId: 'a', environment: SECOND_CASE_ENV, rationale: 'primary' },
-          { caseId: 'b', environment: SECOND_CASE_ENV, rationale: 'loaded data' },
-          { caseId: 'c', environment: SECOND_CASE_ENV, rationale: 'long content' },
+          // Distinct surfaces: two cases sharing one surface at one environment
+          // would be indistinguishable to the coverage matcher, which
+          // validateRatification now refuses as duplicate-case-target.
+          {
+            caseId: 'a',
+            environment: SECOND_CASE_ENV,
+            target: { targetId: 'components-checkout--empty', targetKind: 'storybook-story' },
+            rationale: 'primary',
+          },
+          {
+            caseId: 'b',
+            environment: SECOND_CASE_ENV,
+            target: { targetId: 'components-checkout--loaded', targetKind: 'storybook-story' },
+            rationale: 'loaded data',
+          },
+          {
+            caseId: 'c',
+            environment: SECOND_CASE_ENV,
+            target: { targetId: 'components-checkout--long', targetKind: 'storybook-story' },
+            rationale: 'long content',
+          },
         ],
       }),
       CALLER,
