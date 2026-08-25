@@ -122,6 +122,13 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
           },
           checkpoint,
           checkpointContentHash,
+          holder: {
+            goalRef: "WI-1",
+            goalText: "H".repeat(40_000),
+            assumptions: { keys: ["hold"] },
+            agreement: "sole",
+            competing: [],
+          },
           lifecycle: { events: Array.from({ length: 100 }, (_, i) => ({ kind: `event-${i}` })) },
           priorAttempts: { attempts: [{ text: "A".repeat(10_000) }] },
           threadWindow: { posts: [{ body: "T".repeat(10_000) }] },

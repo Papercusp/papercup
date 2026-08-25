@@ -363,11 +363,16 @@ function compactSingleRow(
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
-    // EI-21379898054596220: 12 chars, and it is the ONLY field that stays true when
-    // the line above clips — it digests the STORED note, so it is exactly what a
-    // successor needs when the checkpoint it received is a prefix. Dropping it at a
-    // reduced tier would remove the verification precisely where it is needed.
-    checkpointContentHash: r.checkpointContentHash ?? null,
+    // EI-21379898054596220: 12 chars, and the ONLY field that stays true when the line
+    // above clips — it digests the STORED note, so it is exactly what a successor needs
+    // when the checkpoint it received is a prefix. Kept at every tier for that reason.
+    // CONDITIONAL, like checkpointChecks above: emitting `null` on the rows that have no
+    // checkpoint spends ~35 chars each against a budget whose whole job is to keep the
+    // checkpoint whole, and measurably displaced it (it clipped a 5k checkpoint and
+    // un-dropped a summary — the two guarantees EI-19447969329510166 added this shaper
+    // to hold). Absence is unambiguous here: `checkpoint: null` already says nothing was
+    // stored, and `checkpointReadFailed` already says the read broke.
+    ...(r.checkpointContentHash ? { checkpointContentHash: r.checkpointContentHash } : {}),
     ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
@@ -639,8 +644,9 @@ function projectRow(
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
     // EI-21379898054596220 — see the sibling projection above. Kept at every tier for
-    // the same reason: it is the verification that SURVIVES the clip on the line above.
-    checkpointContentHash: r.checkpointContentHash ?? null,
+    // the same reason (it is the verification that SURVIVES the clip on the line above),
+    // and conditional for the same reason (a null costs budget the checkpoint needs).
+    ...(r.checkpointContentHash ? { checkpointContentHash: r.checkpointContentHash } : {}),
     ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     // Verdicts ABOUT the checkpoint — small, and each one changes how the
