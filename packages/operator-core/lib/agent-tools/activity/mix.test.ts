@@ -26,6 +26,11 @@ describe('activity:mix pure attribution', () => {
     expect(activityMode(code.calls[0])).toBe('implement');
   });
 
+  it('uses the explicit recipient, not a body mention, for owner-comms', () => {
+    expect(activityMode({ ts: 1, tool: 'coord:send', args: { to: ['su-peer'], body: 'human review noted' } })).toBe('supervise');
+    expect(activityMode({ ts: 2, tool: 'coord:send', args: { to: ['human'], body: 'status report' } })).toBe('owner-comms');
+  });
+
   it('splits a burst that mentions multiple portfolio responsibilities', () => {
     const result = summarizeActivityMix([
       row(0, 'dev:pg_query', { sql: 'inspect qemu Windows incident and Linux dpkg packaging' }),
