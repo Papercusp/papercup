@@ -115,9 +115,7 @@ describe("rendering", () => {
     expect(screen.getByTestId("review-report-icon")).toBeTruthy();
     expect(screen.getByText("run #7")).toBeTruthy();
     expect(screen.getByText("Flip to done")).toBeTruthy();
-    expect(
-      screen.getByText("WI-100 done; completion recorded"),
-    ).toBeTruthy();
+    expect(screen.getByText("WI-100 done; completion recorded")).toBeTruthy();
     expect(screen.getByText("my-plan")).toBeTruthy();
     expect(screen.getByText("P-001")).toBeTruthy();
     expect(
@@ -345,9 +343,11 @@ describe("selection + apply", () => {
     ).toBe(true);
     expect(rowCheck("f1").disabled).toBe(true);
     expect(
-      (screen.getByTestId(
-        "review-group-toggle-flip-to-done",
-      ) as HTMLButtonElement).disabled,
+      (
+        screen.getByTestId(
+          "review-group-toggle-flip-to-done",
+        ) as HTMLButtonElement
+      ).disabled,
     ).toBe(true);
     expect(
       (screen.getByTestId("review-row-reason-f1") as HTMLButtonElement)
