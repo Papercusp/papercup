@@ -18,6 +18,7 @@ const getRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
+const resolvePlanHarnessSlug = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -52,6 +53,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../resolve-harness-paths', () => ({
   resolveHarnessPaths: (...a: unknown[]) => resolveHarnessPaths(...a),
+}));
+vi.mock('../plans/source', () => ({
+  resolvePlanHarnessSlug: (...a: unknown[]) => resolvePlanHarnessSlug(...a),
 }));
 
 import scorecardEmitTool, {
@@ -125,6 +129,7 @@ beforeEach(() => {
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
   resolveHarnessPaths.mockReset();
+  resolvePlanHarnessSlug.mockReset();
 });
 
 describe('scorecards:emit deterministic criterion checks (P-011)', () => {
@@ -174,6 +179,35 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     );
 
     expect(res.ok).toBe(true);
+    expect(resolveHarnessPaths).toHaveBeenCalledWith('papercusp', 'ws-test');
+    expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
+    expect(resolvePlanHarnessSlug).not.toHaveBeenCalled();
+  });
+
+  it('derives targetHive from the rubric subject plan when targetHive is omitted', async () => {
+    resolvePlanHarnessSlug.mockResolvedValue('papercusp');
+    resolveHarnessPaths.mockResolvedValue({
+      projectDir: '/tmp/papercusp-target-tree',
+      stateDir: '/tmp/papercusp-target-tree/.papercusp',
+    });
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
+      ok: true,
+      checkRuns: { 'det-outcome': PASS_RUN },
+    });
+
+    const res = await emitScorecard(
+      emitArgs({ sourceHive: 'sb-devboard-hive' }) as never,
+      {
+        createdBy: 'su-grader',
+        ctxHarness: 'sb-devboard-hive',
+        workspaceId: 'ws-test',
+        checkRoot: '/tmp/sb-devboard-grader-tree',
+      },
+      { evaluateChecks },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(resolvePlanHarnessSlug).toHaveBeenCalledWith('ws-test', CHECKED_RUBRIC.subjectPlan);
     expect(resolveHarnessPaths).toHaveBeenCalledWith('papercusp', 'ws-test');
     expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
   });

@@ -38,6 +38,7 @@ import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
 import { evaluateCriterionTestChecks, evaluateCriterionCoverageChecks } from '../../rubrics-criterion-checks';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
+import { resolvePlanHarnessSlug } from '../plans/source';
 
 /**
  * The `planTouched` reverse map: every implementing file the subject plan's work-items
@@ -210,15 +211,26 @@ async function resolveDeterministicCheckRoot(
     workspaceId?: string;
     checkRoot?: string;
     rubricWorkspaceId?: string | null;
+    rubricSubjectPlan?: string | null;
   },
 ): Promise<string | undefined> {
   const callerRoot = input.checkRoot ?? resolveAgentWorkspaceRoot({});
   // EI-21384279769470409: a workspace-scoped superuser dispatch may omit
   // ctx.workspaceId even though the rubric itself is workspace-bound.
   const workspaceId = input.workspaceId ?? input.rubricWorkspaceId ?? undefined;
-  if (!args.targetHive || args.targetHive === input.ctxHarness || !workspaceId) return callerRoot;
+  // Acceptance graders often omit targetHive because the rubric already names its
+  // subject plan. Recover that plan's owning harness so repo-relative checks run in
+  // the subject tree rather than the grader's checkout. An explicit targetHive is
+  // authoritative and short-circuits this fallback, preserving cross-hive callers'
+  // existing precedence.
+  const targetHive =
+    args.targetHive ??
+    (input.rubricSubjectPlan && workspaceId
+      ? await resolvePlanHarnessSlug(workspaceId, input.rubricSubjectPlan)
+      : undefined);
+  if (!targetHive || targetHive === input.ctxHarness || !workspaceId) return callerRoot;
 
-  const targetPaths = await resolveHarnessPaths(args.targetHive, workspaceId);
+  const targetPaths = await resolveHarnessPaths(targetHive, workspaceId);
   return resolveAgentWorkspaceRoot({ projectDir: targetPaths.projectDir });
 }
 
@@ -652,6 +664,7 @@ export async function emitScorecard(
       const checkRoot = await resolveDeterministicCheckRoot(args, {
         ...input,
         rubricWorkspaceId: rubric.workspaceId,
+        rubricSubjectPlan: rubric.subjectPlan,
       });
       const checkEvaluation = await evaluateChecks({
         criteria: rubric.criteria,
