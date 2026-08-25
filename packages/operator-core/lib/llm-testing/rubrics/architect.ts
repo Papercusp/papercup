@@ -9,12 +9,9 @@
  *   - structural output (proposes concrete patches, not vibes)
  */
 
-import type { JudgeRubric } from '@papercusp/testing-shell/llm';
+import { deriveRubricVersion, type JudgeRubric } from '@papercusp/testing-shell/llm';
 
-export const ARCHITECT_RUBRIC_VERSION = '1.0.0';
-
-export const ARCHITECT_RUBRIC: JudgeRubric = {
-  version: ARCHITECT_RUBRIC_VERSION,
+const ARCHITECT_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'helpfulness',
@@ -66,4 +63,11 @@ export const ARCHITECT_RUBRIC: JudgeRubric = {
     },
   ],
   criticality: 'normal',
+};
+
+export const ARCHITECT_RUBRIC_VERSION = deriveRubricVersion('architect', ARCHITECT_RUBRIC_CONTENT);
+
+export const ARCHITECT_RUBRIC: JudgeRubric = {
+  version: ARCHITECT_RUBRIC_VERSION,
+  ...ARCHITECT_RUBRIC_CONTENT,
 };

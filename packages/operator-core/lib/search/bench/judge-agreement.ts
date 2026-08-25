@@ -45,6 +45,7 @@
  */
 
 import {
+  deriveRubricVersion,
   judgeRun,
   JUDGE_PROMPT_SCAFFOLD_VERSION,
   type JudgeRubric,
@@ -54,7 +55,6 @@ import {
 } from '@papercusp/testing-shell/llm';
 
 import { hash32, type GoldQuery, type PoolDoc } from './ref-expansion-gold';
-import { sha256 } from './judge-cache';
 
 // =============================================================================
 // Frozen judging contract — derive RUBRIC_VERSION from the rubric content
@@ -195,15 +195,19 @@ function fillTemplate(template: string, values: Readonly<Record<string, string>>
  * Taken as a parameter rather than read from the import so the derivation is
  * falsifiable in a test: two different scaffold versions must produce two
  * different keys.
+ *
+ * Composed via testing-shell's shared `deriveRubricVersion` (WI-41678) so this
+ * file and the nine operator-core rubrics share ONE derivation rather than two
+ * hand-rolled shapes that could drift apart. The produced value is byte-identical
+ * to the previous inline formula, which the sibling test pins independently by
+ * recomputing it from first principles.
  */
 export function deriveJudgeAgreementRubricVersion(scaffoldVersion: string): string {
-  return `search-relevance.${sha256(
-    JSON.stringify({
-      rubric: SEARCH_RELEVANCE_RUBRIC_CONTENT,
-      instructions: JUDGE_INSTRUCTION_CONTRACT,
-      scaffold: scaffoldVersion,
-    }),
-  ).slice(0, 12)}`;
+  return deriveRubricVersion('search-relevance', {
+    rubric: SEARCH_RELEVANCE_RUBRIC_CONTENT,
+    instructions: JUDGE_INSTRUCTION_CONTRACT,
+    scaffold: scaffoldVersion,
+  });
 }
 
 export const JUDGE_AGREEMENT_RUBRIC_VERSION = deriveJudgeAgreementRubricVersion(

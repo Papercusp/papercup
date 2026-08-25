@@ -53,3 +53,10 @@ const OVERWATCH_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
     },
   ],
 };
+
+export const OVERWATCH_RUBRIC_VERSION = deriveRubricVersion('overwatch', OVERWATCH_RUBRIC_CONTENT);
+
+export const OVERWATCH_RUBRIC: JudgeRubric = {
+  version: OVERWATCH_RUBRIC_VERSION,
+  ...OVERWATCH_RUBRIC_CONTENT,
+};
