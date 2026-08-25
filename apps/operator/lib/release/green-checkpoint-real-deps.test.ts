@@ -32,8 +32,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkNpmScript,
+  buildTerminalFailureCheckpointResult,
+  createFatalCheckpointFinalizer,
+  createFatalProcessHandler,
+  emitTerminalCheckpointResult,
+  GREEN_CHECKPOINT_RESULT_MARKER,
   hasNpmScript,
   realCheckpointDeps,
+  retireInFlightCandidateAfterResult,
   startMaterializationHeartbeat,
   writeCheckpointRunPhase,
   resolveWorkspaceFileTestInvocation,
@@ -398,6 +404,109 @@ const cfg: ReleaseConfig = releaseConfig({
   checkpointLogDir: tmpLogDir,
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
+
+describe("WI-41720 / D-073: dependency-generation fatal path reaches the real CLI terminal controller", () => {
+  it("fails after the after-copy manifest and awaits exact-candidate marker, event, and cleanup before exit", async () => {
+    const candidate = "8104d3804ac4d134cead82a10c89c54d5efa53b7";
+    const runId = "scheduled-05a2a744";
+    const observed: string[] = [];
+    let capturedFailure: unknown;
+
+    const exec: CheckpointExec = async (cmd, args, opts) => {
+      expect(args).toContainEqual(
+        expect.stringMatching(/apps\/operator\/bin\/release\/dependency-generation\.sh$/),
+      );
+      opts?.onOutput?.(
+        "stdout",
+        "[dependency-generation] capturing live dependency manifest (after copy)\n",
+      );
+      throw new Error(
+        `${cmd} ${args.join(" ")} exited 1: ` +
+          "[dependency-generation] capturing live dependency manifest (after copy)",
+      );
+    };
+
+    try {
+      await realCheckpointDeps(cfg, exec, runId).setupTree(candidate);
+    } catch (error) {
+      capturedFailure = error;
+    }
+    expect(capturedFailure).toBeInstanceOf(Error);
+    expect(String(capturedFailure)).toContain(
+      "capturing live dependency manifest (after copy)",
+    );
+
+    let terminalOwner: "none" | "crash" = "none";
+    const finalizeFatalError = createFatalCheckpointFinalizer({
+      claimTerminal: (owner) => {
+        if (terminalOwner !== "none") return false;
+        terminalOwner = owner;
+        observed.push(`claim:${owner}`);
+        return true;
+      },
+      cancelWatchdog: () => observed.push("watchdog:cancel"),
+      logFailure: (error) => observed.push(`log:${String(error)}`),
+      emitCrashResult: async (error) => {
+        const result = buildTerminalFailureCheckpointResult({
+          candidate,
+          error,
+          runId,
+        });
+        await emitTerminalCheckpointResult(result, {
+          writeHuman: () => observed.push("human"),
+          writeMarker: (line) => observed.push(`marker:${line}`),
+          emitInconclusive: async (terminal) =>
+            observed.push(`event:${terminal.candidate}:${terminal.green}`),
+          // Use the production retirement policy, not a look-alike cleanup callback. This is
+          // what guards skipped-locked from clearing another run's marker while requiring every
+          // true terminal result (including this crash) to retire its exact in-flight candidate.
+          retire: async (terminal) => {
+            await retireInFlightCandidateAfterResult(terminal, async () => {
+              observed.push(`cleanup:${terminal.candidate}`);
+            });
+          },
+        });
+      },
+      releaseLock: () => observed.push("lock:release"),
+    });
+    const exits: number[] = [];
+    const handler = createFatalProcessHandler(
+      finalizeFatalError,
+      (code) => {
+        observed.push(`exit:${code}`);
+        exits.push(code);
+      },
+    );
+
+    handler(capturedFailure);
+    await vi.waitFor(() => expect(exits).toEqual([1]));
+
+    const marker = observed.find((entry) => entry.startsWith("marker:"));
+    expect(marker).toContain(GREEN_CHECKPOINT_RESULT_MARKER);
+    const terminal = JSON.parse(marker!.slice(marker!.indexOf("{")));
+    expect(terminal).toMatchObject({
+      candidate,
+      green: null,
+      reason: "not-green",
+      crashed: true,
+      runId,
+    });
+    expect(observed).toEqual(
+      expect.arrayContaining([
+        `event:${candidate}:null`,
+        `cleanup:${candidate}`,
+        "lock:release",
+        "exit:1",
+      ]),
+    );
+    expect(observed.indexOf(`cleanup:${candidate}`)).toBeLessThan(
+      observed.indexOf("lock:release"),
+    );
+    expect(observed.indexOf("lock:release")).toBeLessThan(
+      observed.indexOf("exit:1"),
+    );
+  });
+});
 
 describe("EI-21175363643337524: real disk-headroom admission", () => {
   it("admits warning-only byte headroom on a large filesystem and preserves every snapshot", async () => {
