@@ -166,10 +166,13 @@ const PINNED: Readonly<Record<string, Classification>> = Object.freeze({
   'packages/operator-core/lib/search/bench/judge-agreement.ts::JUDGE_AGREEMENT_RUBRIC_VERSION':
     'derived',
 
-  // KNOWN REMAINING LITERAL, tracked by EI-21448289024080765. Not silently
-  // tolerated: it is named here, and this pin flips to a failure the moment the file
-  // starts deriving, so the fix cannot leave a stale label behind.
-  'packages/operator-core/lib/memory/bench/judged.ts::JUDGED_TIER_RUBRIC_VERSION': 'literal',
+  // Was the one known remaining literal (EI-21448289024080765). Reclassified within
+  // minutes of this guard landing: a peer converted it to
+  // deriveJudgedTierRubricVersion(JUDGE_PROMPT_SCAFFOLD_VERSION) over the shared
+  // helper, this pin went red on the stale 'literal' label, and the label was
+  // corrected. That is the bidirectional check earning its place — the pin failed
+  // for real, on a real change, rather than only in a control.
+  'packages/operator-core/lib/memory/bench/judged.ts::JUDGED_TIER_RUBRIC_VERSION': 'derived',
 });
 
 describe('rubric versions are derived from rubric content', () => {
