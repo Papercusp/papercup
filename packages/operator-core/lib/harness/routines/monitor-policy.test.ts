@@ -245,6 +245,27 @@ describe('monitor policy — pure authority and duplicate-owner decisions', () =
     ).toMatchObject({ allowed: false, code: 'monitor_owner_quote_mismatch' });
   });
 
+  it.each([
+    ['agent-authored loop replay', 'agent-injected', 'loop-fire'],
+    ['inherited carry replay', 'agent-injected', 'carry-respawn'],
+    ['machine-authored surface', 'machine-surface', null],
+    ['synthetic fixture turn', 'synthetic', null],
+  ] as const)('rejects %s as owner-turn authority', (_label, verdict, origin) => {
+    const ownerConfig = config({
+      kind: 'owner-turn',
+      turnRef: '[turn:codex:abc12345@2026-08-25T03:59:00.000Z]',
+      quote: 'keep watching until the release is green',
+    });
+    expect(
+      decideMonitorAdmission({
+        ownerId: OWNER,
+        config: ownerConfig,
+        evidence: { ownerTurn: turn({ verdict, origin }) },
+        nowMs: NOW,
+      }),
+    ).toMatchObject({ allowed: false, code: 'monitor_owner_turn_not_owner' });
+  });
+
   it('rejects a live peer monitor with the same normalized predicate', () => {
     expect(
       decideMonitorAdmission({
