@@ -484,6 +484,72 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   }, 15_000);
 
+  it('retries only an exact exclusive-materializer preemption and leaves unrelated exit 75 untouched', async () => {
+    const attemptsFile = join(dir, 'retry-attempts');
+    const successFile = join(dir, 'retry-success');
+    const barrierRan = join(dir, 'retry-barrier-ran');
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '1',
+      PC_HEAVY_RETRY_PREEMPTIONS: '1',
+      PC_HEAVY_TIMEOUT_SEC: '8',
+      PC_HEAVY_PREEMPT_GRACE_SEC: '0',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const workload = [
+      `attempt=$(cat ${JSON.stringify(attemptsFile)} 2>/dev/null || printf '0')`,
+      'attempt=$((attempt + 1))',
+      `printf '%s\\n' "$attempt" > ${JSON.stringify(attemptsFile)}`,
+      `if [ "$attempt" -gt 1 ]; then printf success > ${JSON.stringify(successFile)}; exit 0; fi`,
+      'while :; do sleep 1; done',
+    ].join('; ');
+    const retrying = spawn('bash', [PC_HEAVY, 'bash', '-c', workload], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const retryingErr = createTextCollector(retrying.stderr);
+    const retryingExit = new Promise<number>((resolve) => retrying.on('exit', (code) => resolve(code ?? -1)));
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await waitFor('the first retry attempt starting', () => existsSync(attemptsFile));
+      expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('1');
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `printf acquired > ${JSON.stringify(barrierRan)}`],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((resolve) => barrier?.on('exit', (code) => resolve(code ?? -1)));
+
+      expect(
+        await barrierExit,
+        `retry stderr:\n${retryingErr.text()}\nbarrier stderr:\n${barrierErr.text()}`,
+      ).toBe(0);
+      expect(await retryingExit, `retry stderr:\n${retryingErr.text()}`).toBe(0);
+      expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('2');
+      expect(readFileSync(successFile, 'utf8')).toBe('success');
+      expect(readFileSync(barrierRan, 'utf8')).toBe('acquired');
+      expect(retryingErr.text()).toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
+      expect(retryingErr.text()).toContain('retrying after exclusive-materializer preemption (retry 1/1)');
+      expect(retryingErr.text()).not.toContain('coalesced:');
+    } finally {
+      killGroup(retrying);
+      if (barrier) killGroup(barrier);
+    }
+
+    const unrelated75 = runSync(
+      ['bash', '-c', `printf 'ran\\n' >> ${JSON.stringify(join(dir, 'unrelated-75-runs'))}; exit 75`],
+      {
+        PC_HEAVY_RETRY_PREEMPTIONS: '2',
+        PC_HEAVY_PREEMPTIBLE: '0',
+      },
+    );
+    expect(unrelated75.status).toBe(75);
+    expect(readFileSync(join(dir, 'unrelated-75-runs'), 'utf8')).toBe('ran\n');
+    expect(unrelated75.stderr).not.toContain('retrying after exclusive-materializer preemption');
+  }, 15_000);
+
   it('keeps an opt-in run preemptible until it publishes the after-ready marker', async () => {
     const readyDir = join(dir, 'after-ready-before');
     const started = join(dir, 'after-ready-before-started');

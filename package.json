@@ -151,7 +151,7 @@
     "lint:post-compaction-recovery-contract": "tsx scripts/check-post-compaction-recovery-contract.ts",
     "docs:preview": "npm run gen:openapi && npm run build:preview -w @papercupai/operator-docs",
     "docs:preview:serve": "npm run serve:preview -w @papercupai/operator-docs",
-    "docs:rebuild": "bash scripts/pc-heavy.sh -- npm run build -w @papercupai/operator-docs",
+    "docs:rebuild": "PC_HEAVY_RETRY_PREEMPTIONS=3 bash scripts/pc-heavy.sh -- npm run build -w @papercupai/operator-docs",
     "gen:doc-projections": "tsx scripts/gen-doc-projections.ts",
     "gen:doc-blueprint-catalog": "tsx scripts/gen-doc-blueprint-catalog.ts",
     "gen:doc-blueprint-catalog:check": "tsx scripts/gen-doc-blueprint-catalog.ts --check",

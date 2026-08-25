@@ -176,7 +176,9 @@
 #                         `status=preempted reason=exclusive-materializer`
 #                         result is retryable; unrelated exit 75 results are
 #                         returned unchanged. Retry attempts disable coalescing
-#                         so a preempted rc=75 cannot be replayed. Default: 0.
+#                         so a preempted rc=75 cannot be replayed. The value is
+#                         capped at 10 to keep the retry policy bounded.
+#                         Default: 0.
 #
 # Crash-safe: the slot is an flock held on an open fd for the child's whole
 # lifetime; the kernel releases it when this process exits for ANY reason
@@ -2408,4 +2410,79 @@ fi
 exit $?
 }
 
-main "$@"
+_pc_heavy_retry_result_file=''
+
+# Run the requested command through a bounded outer retry policy. This wrapper
+# deliberately lives OUTSIDE `main`: the normal pc-heavy invocation has many
+# terminal `exit` paths (including coalescing replay), so a same-shell retry
+# would either be unreachable or accidentally retry a result that never ran.
+# Each attempt is a fresh child invocation and publishes its private terminal
+# preemption marker through PC_HEAVY_PREEMPT_RESULT_FILE.
+_pc_heavy_run_with_retries() {
+  if [ "${PC_HEAVY_RETRY_ACTIVE:-0}" = 1 ]; then
+    main "$@"
+    return $?
+  fi
+
+  local _retry_raw="${PC_HEAVY_RETRY_PREEMPTIONS:-0}"
+  case "$_retry_raw" in
+    ''|0)
+      main "$@"
+      return $?
+      ;;
+    *[!0-9]*)
+      echo "[pc-heavy] invalid PC_HEAVY_RETRY_PREEMPTIONS=$_retry_raw; expected a non-negative integer" >&2
+      return 75
+      ;;
+  esac
+
+  local _retry_limit="$_retry_raw"
+  if [ "$_retry_limit" -gt 10 ]; then
+    echo "[pc-heavy] PC_HEAVY_RETRY_PREEMPTIONS=$_retry_limit exceeds the bounded maximum; clamping to 10" >&2
+    _retry_limit=10
+  fi
+
+  _pc_heavy_retry_result_file="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-preempt-result.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$_pc_heavy_retry_result_file" ]; then
+    echo "[pc-heavy] retry marker unavailable; running without preemption retries" >&2
+    main "$@"
+    return $?
+  fi
+  trap 'rm -f "${_pc_heavy_retry_result_file:-}" 2>/dev/null || true' EXIT
+
+  local _retry_attempt=0 _retry_rc=0 _retry_marker=''
+  while [ "$_retry_attempt" -le "$_retry_limit" ]; do
+    rm -f "$_pc_heavy_retry_result_file" 2>/dev/null || true
+
+    # Retry-enabled callers must not replay a cached exit 75. Disable
+    # coalescing on the first attempt as well as subsequent attempts: an older
+    # preemption may already be cached before this policy is introduced, and
+    # that cache contains no private marker for this outer loop to inspect.
+    PC_HEAVY_RETRY_ACTIVE=1 \
+      PC_HEAVY_PREEMPT_RESULT_FILE="$_pc_heavy_retry_result_file" \
+      PC_HEAVY_COALESCE=0 \
+      bash "$0" "$@"
+    _retry_rc=$?
+
+    _retry_marker=''
+    if [ -f "$_pc_heavy_retry_result_file" ]; then
+      IFS= read -r _retry_marker < "$_pc_heavy_retry_result_file" 2>/dev/null || true
+    fi
+
+    if [ "$_retry_rc" -eq 75 ] && [ "$_retry_marker" = "PC_HEAVY_RESULT status=preempted reason=exclusive-materializer" ]; then
+      if [ "$_retry_attempt" -lt "$_retry_limit" ]; then
+        _retry_attempt=$(( _retry_attempt + 1 ))
+        echo "[pc-heavy] retrying after exclusive-materializer preemption (retry $_retry_attempt/$_retry_limit)" >&2
+        continue
+      fi
+      echo "[pc-heavy] exhausted $_retry_limit preemption retry(s); returning the exact exclusive-materializer failure" >&2
+    fi
+
+    trap - EXIT
+    rm -f "$_pc_heavy_retry_result_file" 2>/dev/null || true
+    return "$_retry_rc"
+  done
+}
+
+_pc_heavy_run_with_retries "$@"
+exit $?
