@@ -22,7 +22,7 @@ const OTHER_WORKSPACE = 'ws-derived-signal-probe-other-it';
 const HARNESS = 'papercusp';
 const OTHER_HARNESS = 'other-harness';
 
-function censusJson(edges: number): Record<string, unknown> {
+function censusJson(edges: number) {
   return {
     derivedSignals: {
       v: 2,
