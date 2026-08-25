@@ -62,7 +62,7 @@ beforeAll(async () => {
   // FAITHFUL to the baseline shape of harness_shared.backup_snapshots.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.backup_snapshots (
-      id bigserial NOT NULL,
+      id bigserial PRIMARY KEY,
       workspace_id text NOT NULL,
       kopia_snapshot_id text,
       started_at timestamptz NOT NULL DEFAULT now(),
@@ -74,6 +74,15 @@ beforeAll(async () => {
       bytes_total bigint,
       sources_json jsonb NOT NULL DEFAULT '[]'::jsonb,
       error_text text
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.backup_events (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      snapshot_id bigint REFERENCES harness_shared.backup_snapshots(id) ON DELETE CASCADE,
+      kind text NOT NULL,
+      payload_json jsonb,
+      at timestamptz NOT NULL DEFAULT now()
     )`);
   h.sql = rootSql;
 }, 90_000);
@@ -106,6 +115,15 @@ async function getStatus(id: string): Promise<{ status: string; error_text: stri
   return rows[0]!;
 }
 
+async function insertEvent(snapshotId: string, atIso: string): Promise<void> {
+  await rootSql`
+    INSERT INTO harness_shared.backup_events
+      (workspace_id, snapshot_id, kind, payload_json, at)
+    VALUES
+      (${TEST_WORKSPACE}, ${snapshotId}::bigint, 'progress', ${JSON.stringify({ phase: 'heartbeat' })}::jsonb, ${atIso}::timestamptz)
+  `;
+}
+
 describe('sweepOrphanSnapshots', () => {
   it('returns 0 when no running rows', async () => {
     const result = await sweepOrphanSnapshots();
@@ -135,6 +153,28 @@ describe('sweepOrphanSnapshots', () => {
     const result = await sweepOrphanSnapshots();
     expect(result.sweptIds).not.toContain(id);
     expect((await getStatus(id)).status).toBe('running');
+  });
+
+  it('leaves an old running row untouched when it has a recent event', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+    const id = await insertSnapshot('running', twoHoursAgo);
+    await insertEvent(id, fiveMinAgo);
+
+    const result = await sweepOrphanSnapshots();
+    expect(result.sweptIds).not.toContain(id);
+    expect((await getStatus(id)).status).toBe('running');
+  });
+
+  it('marks an old running row failed when its last event is also stale', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const ninetyMinAgo = new Date(Date.now() - 90 * 60_000).toISOString();
+    const id = await insertSnapshot('running', twoHoursAgo);
+    await insertEvent(id, ninetyMinAgo);
+
+    const result = await sweepOrphanSnapshots();
+    expect(result.sweptIds).toContain(id);
+    expect((await getStatus(id)).status).toBe('failed');
   });
 
   it('leaves terminal-state rows (ok/failed/aborted) untouched even when stale', async () => {
