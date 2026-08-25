@@ -1397,6 +1397,23 @@ export function rehealResumeCredentials(configDir: any, { home }?: {
     home?: string | undefined;
 }): void;
 /**
+ * Re-establish a resumed Codex session's default-account auth mirror.
+ *
+ * Fresh isolated CODEX_HOMEs inherit `~/.codex/auth.json` as a symlink, but an
+ * older home can predate the owner's system login (or Codex can replace the
+ * symlink during an OAuth refresh). An exact `--account=default` resume reuses
+ * that old home, so without this repair Codex opens its login screen even though
+ * the system account is already authenticated. This is the Codex counterpart of
+ * {@link rehealResumeCredentials}: explicit `default` means the system login,
+ * therefore the session home must resolve to the system auth file before spawn.
+ *
+ * Best-effort and idempotent. Gateway-routed resumes do not call this helper;
+ * a missing global login is a no-op so API-key-only/fresh boxes are untouched.
+ */
+export function rehealResumeCodexAuth(codexHome: any, { home }?: {
+    home?: string | undefined;
+}): void;
+/**
  * Make the GitHub Copilot MCP plugin AUTHENTICATE instead of failing. That plugin (a Claude
  * plugin OMP also discovers via claude-plugin discovery) sends
  * `Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}`; when the env var is unset the header is
