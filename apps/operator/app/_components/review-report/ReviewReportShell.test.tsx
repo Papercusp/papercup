@@ -253,6 +253,62 @@ describe("selection + apply", () => {
     ).toBe(true);
     expect(rowCheck("f1").disabled).toBe(true);
   });
+
+  it("restores focus to Apply after busy settles with retryable selections", () => {
+    const props = {
+      title: "Retry report",
+      groups: groupsFixture(),
+      onApply: vi.fn(),
+      onDismiss: vi.fn(),
+    };
+    const { rerender } = render(<ReviewReportShell {...props} />);
+    const apply = applyBtn();
+    apply.focus();
+    fireEvent.click(apply);
+
+    rerender(<ReviewReportShell {...props} busy />);
+    apply.blur();
+    expect(document.activeElement).toBe(document.body);
+    rerender(<ReviewReportShell {...props} busy={false} />);
+
+    expect(document.activeElement).toBe(apply);
+    expect(apply.disabled).toBe(false);
+  });
+
+  it("moves focus to Dismiss after busy settles with no selectable rows", () => {
+    const pending = groupsFixture();
+    const applied = pending.map((group) => ({
+      ...group,
+      rows: group.rows.map((row) => ({ ...row, status: "applied" as const })),
+    }));
+    const onApply = vi.fn();
+    const onDismiss = vi.fn();
+    const report = (groups: ReviewReportGroup[], busy = false) => (
+      <ReviewReportShell
+        title="Completed report"
+        groups={groups}
+        busy={busy}
+        onApply={onApply}
+        onDismiss={onDismiss}
+      />
+    );
+    const { rerender } = render(report(pending));
+    const apply = applyBtn();
+    apply.focus();
+    fireEvent.click(apply);
+
+    rerender(report(pending, true));
+    apply.blur();
+    expect(document.activeElement).toBe(document.body);
+    rerender(report(applied));
+
+    const dismiss = screen.getByTestId("review-report-dismiss");
+    expect(document.activeElement).toBe(dismiss);
+    expect(apply.disabled).toBe(true);
+    expect(screen.getByTestId("review-report-status").textContent).toBe(
+      "0 of 0 selectable recommendations selected.",
+    );
+  });
 });
 
 describe("tri-state group checkbox", () => {

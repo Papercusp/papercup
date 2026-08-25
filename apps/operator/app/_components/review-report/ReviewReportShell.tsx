@@ -26,7 +26,13 @@
  * collapse state; within one run, rows flipping pending→applied are handled
  * live (selection self-intersects with what is still pending).
  */
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Check, ChevronDown, ShieldCheck } from "lucide-react";
 import { Button } from "../../harness/Button";
 import { Checkbox } from "../../harness/Checkbox";
@@ -135,6 +141,10 @@ export default function ReviewReportShell({
     initialSelection(groups, defaultSelected),
   );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const applyButtonRef = useRef<HTMLButtonElement>(null);
+  const dismissButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreApplyFocusAfterBusy = useRef(false);
+  const wasBusy = useRef(busy);
 
   const pendingIds = useMemo(() => {
     const ids = new Set<string>();
@@ -150,6 +160,19 @@ export default function ReviewReportShell({
     for (const id of selected) if (pendingIds.has(id)) s.add(id);
     return s;
   }, [selected, pendingIds]);
+
+  useLayoutEffect(() => {
+    const actionSettled = wasBusy.current && !busy;
+    wasBusy.current = busy;
+    if (!actionSettled || !restoreApplyFocusAfterBusy.current) return;
+
+    restoreApplyFocusAfterBusy.current = false;
+    const target =
+      liveSelected.size > 0
+        ? applyButtonRef.current
+        : dismissButtonRef.current;
+    target?.focus({ preventScroll: true });
+  }, [busy, liveSelected.size]);
 
   const toggleRow = (id: string) => {
     setSelected((prev) => {
@@ -212,17 +235,23 @@ export default function ReviewReportShell({
         </div>
         <div className="review-report__actions">
           <Button
+            ref={applyButtonRef}
             variant="primary"
             size="lg"
             className="review-report__apply"
             data-testid="review-report-apply"
             disabled={busy || liveSelected.size === 0}
-            onClick={() => onApply([...liveSelected].sort())}
+            onClick={(event) => {
+              restoreApplyFocusAfterBusy.current =
+                document.activeElement === event.currentTarget;
+              onApply([...liveSelected].sort());
+            }}
           >
             <Check size={14} aria-hidden="true" />
             {applyLabel} ({liveSelected.size})
           </Button>
           <Button
+            ref={dismissButtonRef}
             size="lg"
             className="review-report__dismiss"
             data-testid="review-report-dismiss"
