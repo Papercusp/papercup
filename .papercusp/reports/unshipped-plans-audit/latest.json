@@ -1,11 +1,11 @@
 {
   "schemaVersion": "unshipped-plans-audit-manifest-v2",
-  "generatedAt": "2026-08-25T21:12:34.252Z",
+  "generatedAt": "2026-08-25T21:15:03.830Z",
   "workspace": "papercusp-workspace",
   "scope": {
-    "snapshotStartedAt": "2026-08-25T21:12:31.937Z",
-    "snapshotFinishedAt": "2026-08-25T21:12:34.252Z",
-    "liveOwnershipMeasuredAt": "2026-08-25T21:12:32.002Z",
+    "snapshotStartedAt": "2026-08-25T21:15:01.413Z",
+    "snapshotFinishedAt": "2026-08-25T21:15:03.830Z",
+    "liveOwnershipMeasuredAt": "2026-08-25T21:15:01.430Z",
     "nonterminalListedAtSnapshot": 596,
     "materialized": 594,
     "catalogFailures": 2,
@@ -7328,14 +7328,21 @@
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "Resume WI-41476/P-006 exact 21:15Z post-fix checkpoint and release-lineage audit",
+          "intent": "Resume WI-41476 and plan item P-006: audit the exact 21:15Z ordinary post-fix checkpoint and release lineage",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
+          "ownerLabel": "su · su-de924",
+          "fleet": null,
+          "intent": "Resume WI-41476 and plan item P-006: audit the exact 21:15Z ordinary post-fix checkpoint and release lineage",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "Resume WI-41476/P-006 exact 21:15Z post-fix checkpoint and release-lineage audit",
+          "intent": "Resume WI-41476 and plan item P-006: audit the exact 21:15Z ordinary post-fix checkpoint and release lineage",
           "source": "plan-item-claim"
         }
       ],
@@ -7357,7 +7364,7 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-22",
-      "updated": "2026-08-25 17:05:13.811751-04",
+      "updated": "2026-08-25 17:14:41.431892-04",
       "itemTotal": 88,
       "terminalPlanItems": 63,
       "openPlanItems": 25,
@@ -7383,14 +7390,14 @@
           "ownerId": "su-5453d2ea-ac6e-4b22-a79a-a28a632a30ef",
           "ownerLabel": "su · su-5453d",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 3h2m] Reconcile sixth work-item:claimable timeout and pull only scheduler-admitted BYOC work",
+          "intent": "[idle 3h4m] Reconcile sixth work-item:claimable timeout and pull only scheduler-admitted BYOC work",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-8933b4af-f527-4695-9627-33f0d66d6f55",
           "ownerLabel": "su · su-8933b",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 28m] Reconcile timed-out BYOC claimable await; pull only a currently scheduler-admitted row",
+          "intent": "[idle 31m] Reconcile timed-out BYOC claimable await; pull only a currently scheduler-admitted row",
           "source": "declared-plan"
         },
         {
@@ -7418,7 +7425,7 @@
           "ownerId": "su-fd77bfef-1e0b-4f4b-b730-87ca4d75c732",
           "ownerLabel": "su · su-fd77b",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 3h4m] Reconcile delayed loop delivery; pull only newly claimable BYOC plan work",
+          "intent": "[idle 3h6m] Reconcile delayed loop delivery; pull only newly claimable BYOC plan work",
           "source": "declared-plan"
         }
       ],
@@ -7605,7 +7612,7 @@
           "ownerId": "su-0ed9ff1e-ba24-4e33-a5e4-cc540c8c4901",
           "ownerLabel": "su · su-0ed9f",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 57m] Resume rev47 fleet drain after deterministic carry-respawn; reconcile live state and pull the next admitted item.",
+          "intent": "[idle 59m] Resume rev47 fleet drain after deterministic carry-respawn; reconcile live state and pull the next admitted item.",
           "source": "declared-plan"
         },
         {
@@ -7613,6 +7620,20 @@
           "ownerLabel": "su · su-2e5d5",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
           "intent": "Live delayed-wake reconciliation for nonp2p-bug-drain-fleet-2026-08-16; preserve current monitor-only walls and refresh carry identity.",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-35251aba-31e0-4c72-9b68-6e33f6c12a94",
+          "ownerLabel": "su · su-35251",
+          "fleet": "nonp2p-bug-drain-luna-max-20260820",
+          "intent": "Reconcile the active nonp2p rev47 fleet drain and pull only admitted work; preserve current plan constraints.",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-4e78491b-aa28-4b97-be52-cf1dba7aec82",
+          "ownerLabel": "su · su-4e784",
+          "fleet": "nonp2p-bug-drain-luna-max-20260820",
+          "intent": "Resume the held work item EI-21368451119935744: verify the cold work_items semantic-search retry implementation, run focused tests, and complete it with evidence.",
           "source": "declared-plan"
         },
         {
@@ -7640,7 +7661,7 @@
           "ownerId": "su-6832ab37-a7df-40ea-83f8-86eb5975a06f",
           "ownerLabel": "su · su-6832a",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 8h14m] Implement and verify EI-21379983011497058: propagate validated MCP idempotencyKey through UnifiedToolContext and derive deterministic coord:send msgId per bulk index.",
+          "intent": "[idle 8h16m] Implement and verify EI-21379983011497058: propagate validated MCP idempotencyKey through UnifiedToolContext and derive deterministic coord:send msgId per bulk index.",
           "source": "declared-plan"
         },
         {
@@ -7654,14 +7675,21 @@
           "ownerId": "su-7954d67c-4a42-49ed-9507-ddad2a87e1d6",
           "ownerLabel": "su · su-7954d",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 4m] EI-21371345580765504: docs:search engineering lexical query times out",
+          "intent": "[idle 7m] EI-21371345580765504: docs:search engineering lexical query times out",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-92ae8f77-20b3-4274-835a-a0a452cf85da",
           "ownerLabel": "su · su-92ae8",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 3h3m] Resume EI-21401267453185406 validation: verify the live claim/checkpoint and inspect the ready-plan autostart contract/tests without source edits.",
+          "intent": "[idle 3h6m] Resume EI-21401267453185406 validation: verify the live claim/checkpoint and inspect the ready-plan autostart contract/tests without source edits.",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-a70e4ef4-a9ae-4c32-9614-ac07b28abb0f",
+          "ownerLabel": "su · su-a70e4",
+          "fleet": "nonp2p-bug-drain-luna-max-20260820",
+          "intent": "EI-21458455211655064: coord required-wake reports recipient absent while work-item reclaim oracle classifies same recorded session live",
           "source": "declared-plan"
         },
         {
@@ -7675,21 +7703,21 @@
           "ownerId": "su-c0b227b9-88f2-46e1-97f0-4df25928fb53",
           "ownerLabel": "su · su-c0b22",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 22m] EI-21359747901133021: work_items:checkpoint append refuses when merged checks exceed the 12-row cap",
+          "intent": "[idle 25m] EI-21359747901133021: work_items:checkpoint append refuses when merged checks exceed the 12-row cap",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-da001445-7252-40c1-87b3-b2df8e3a5a02",
           "ownerLabel": "su · su-da001",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Monitor-only reconciliation for nonp2p-bug-drain-fleet-2026-08-16; preserve no-claim, no-wake, no-takeover, no-source-edit, no-work-item-checkpoint, no-deploy, and no-audit walls.",
+          "intent": "Resume monitor-only reconciliation for nonp2p-bug-drain-fleet-2026-08-16; preserve no-claim/no-wake/no-takeover/no-source-edit/no-work-item-checkpoint/no-deploy/no-audit walls",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-eec7f1fb-d875-4fdc-b3b1-51e82fb83ca0",
           "ownerLabel": "su · su-eec7f",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 48m] Resume EI-21372550685346519 under the active rev47 non-p2p fleet lane; trace and verify the first-call MCP wrapper hydration defect.",
+          "intent": "[idle 51m] Resume EI-21372550685346519 under the active rev47 non-p2p fleet lane; trace and verify the first-call MCP wrapper hydration defect.",
           "source": "declared-plan"
         }
       ],
@@ -7744,14 +7772,14 @@
           "ownerId": "su-3ae5e799-c39d-4c77-b059-21d76935fe0c",
           "ownerLabel": "su · su-3ae5e",
           "fleet": null,
-          "intent": "[idle 38m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
+          "intent": "[idle 40m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-3ae5e799-c39d-4c77-b059-21d76935fe0c",
           "ownerLabel": "su · su-3ae5e",
           "fleet": null,
-          "intent": "[idle 38m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
+          "intent": "[idle 40m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
           "source": "work-item-hold"
         }
       ],
@@ -7800,22 +7828,29 @@
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
+          "intent": "[idle 11m] Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
+          "intent": "[idle 11m] Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
+          "intent": "[idle 11m] Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
           "source": "plan-item-claim"
+        },
+        {
+          "ownerId": "su-7f1b5470-52ac-46f3-bbd6-3b7f26799df0",
+          "ownerLabel": "su · su-7f1b5",
+          "fleet": null,
+          "intent": "AUTO: resume and drive stable-candidate-related-gate-2026-08-23 to verified greening completion.",
+          "source": "declared-plan"
         }
       ],
       "blocker": {
