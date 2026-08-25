@@ -1020,17 +1020,20 @@ function decodeRemoteAcquire(
     };
   }
   const fallbackExpiry = new Date(Date.now() + ttlSec * 1000);
-  return {
-    ok: false,
-    busy: (r.busy ?? []).map((b) => ({
-      path: b.path,
-      owner: b.owner,
-      owner_label: null,
-      intent: '',
-      expires_ts: fallbackExpiry,
-    })),
-    ...(r.retryable && r.reason
-      ? { reason: r.reason, retryable: true }
-      : {}),
-  };
+  const busyRows = (r.busy ?? []).map((b) => ({
+    path: b.path,
+    owner: b.owner,
+    owner_label: null,
+    intent: '',
+    expires_ts: fallbackExpiry,
+  }));
+  if (r.retryable && r.reason) {
+    return {
+      ok: false,
+      busy: busyRows,
+      reason: r.reason,
+      retryable: true,
+    };
+  }
+  return { ok: false, busy: busyRows };
 }
