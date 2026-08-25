@@ -229,6 +229,140 @@ export interface ProbeResult {
 }
 
 /**
+ * EI-21392098254217280 — `/api/health` and `/api/desktop/version` only prove
+ * that the listener can answer a cheap GET. They do not prove that the MCP
+ * control plane can accept a session initialize while the operator is under
+ * CPU pressure. Keep this probe separate from `HEALTH_ENDPOINTS`: it is an
+ * on-demand diagnostic used by `dev:service_health`, not another periodic
+ * down-transition source that could amplify the incident it is measuring.
+ */
+export const MCP_HANDSHAKE_PROBE_TIMEOUT_MS = 2_000;
+export const MCP_HEALTH_PROBE_CLIENT = 'mcp-health';
+
+export interface McpHandshakeProbeResult {
+  ok: boolean;
+  latencyMs: number;
+  status?: number;
+  protocolVersion?: string;
+  url: string;
+  note?: string;
+}
+
+type McpFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** Parse either a JSON MCP response or the SSE `data:` envelope. Pure + tested. */
+export function parseMcpHandshakePayload(body: string): Record<string, unknown> | null {
+  const candidates = [body.trim()];
+  const dataLines = body
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim())
+    .filter(Boolean);
+  candidates.push(...dataLines.reverse());
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Try the next SSE/JSON candidate. A malformed response is reported as
+      // an unknown handshake, never as a successful cheap health check.
+    }
+  }
+  return null;
+}
+
+/**
+ * Perform a bounded MCP `initialize` round-trip against the local operator.
+ * This is intentionally fail-closed for the handshake itself: a 200 GET does
+ * not make `ok` true when the initialize response is missing, malformed, or a
+ * JSON-RPC error. The timeout is independent of the ordinary service probe
+ * budget so a wedged control plane produces a quick, named verdict.
+ */
+export async function probeMcpHandshake(
+  baseUrl: string = operatorApiBase(),
+  timeoutMs: number = MCP_HANDSHAKE_PROBE_TIMEOUT_MS,
+  fetchFn: McpFetch = fetch,
+  now: () => number = Date.now,
+): Promise<McpHandshakeProbeResult> {
+  const url = `${baseUrl.replace(/\/+$/, '')}/api/mcp?client=${encodeURIComponent(MCP_HEALTH_PROBE_CLIENT)}`;
+  const startedAt = now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const latency = () => Math.max(0, now() - startedAt);
+  try {
+    const response = await fetchFn(url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'mcp-health',
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'papercusp-health-probe', version: '1.0' },
+        },
+      }),
+    });
+    const body = await response.text();
+    const payload = parseMcpHandshakePayload(body);
+    const result = payload?.result;
+    const error = payload?.error;
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        latencyMs: latency(),
+        url,
+        note: `MCP initialize returned HTTP ${response.status}`,
+      };
+    }
+    if (error && typeof error === 'object') {
+      const message = (error as { message?: unknown }).message;
+      return {
+        ok: false,
+        status: response.status,
+        latencyMs: latency(),
+        url,
+        note: `MCP initialize returned a JSON-RPC error${typeof message === 'string' ? `: ${message}` : ''}`,
+      };
+    }
+    const protocolVersion =
+      result && typeof result === 'object' && typeof (result as { protocolVersion?: unknown }).protocolVersion === 'string'
+        ? (result as { protocolVersion: string }).protocolVersion
+        : undefined;
+    if (!protocolVersion) {
+      return {
+        ok: false,
+        status: response.status,
+        latencyMs: latency(),
+        url,
+        note: 'MCP initialize returned HTTP success without a protocolVersion result',
+      };
+    }
+    return { ok: true, status: response.status, protocolVersion, latencyMs: latency(), url };
+  } catch (error) {
+    const timedOut = controller.signal.aborted;
+    return {
+      ok: false,
+      latencyMs: latency(),
+      url,
+      note: timedOut
+        ? `MCP initialize timed out after ${timeoutMs}ms`
+        : `MCP initialize probe failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * EI-7462: fast TCP-level preflight budget, separate from the (per-endpoint,
  * up to 10s for vite — EI-6902) HTTP response budget. A dead/wedged listener
  * (nothing bound to the port, or its accept queue/backlog is stuck) fails a

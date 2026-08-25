@@ -5,13 +5,20 @@
  * NON-destructively (the handler still gets it), and the shed response is a
  * retryable 429 the proxy absorbs.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import {
   classifyMcpBody,
+  classifyMcpRequest,
   shouldShedForPressure,
+  shouldShedForCapacity,
+  acquireAdmission,
   evaluateAdmission,
   admissionShedResponse,
+  getMcpAdmissionSnapshot,
+  resetMcpAdmissionForTests,
 } from './mcp-admission';
+
+afterEach(() => resetMcpAdmissionForTests());
 
 const toolsCall = (id: unknown = 7, name = 'plans:get') =>
   JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: {} } });
@@ -69,6 +76,90 @@ describe('shouldShedForPressure — critical band only, respects the kill-switch
     expect(shouldShedForPressure('elevated', true)).toBe(false); // elevated still admits
     expect(shouldShedForPressure('ok', true)).toBe(false);
     expect(shouldShedForPressure('critical', false)).toBe(false); // kill-switch
+  });
+});
+
+describe('operator capacity admission — bounded classes with a diagnostic reserve', () => {
+  const capacity = {
+    maxInFlight: 10,
+    controlPlaneReserve: 2,
+    diagnosticReserve: 1,
+    maxHandshakes: 2,
+  };
+
+  it('classifies ordinary calls, handshakes, and the named health probe separately', () => {
+    expect(classifyMcpRequest(toolsCall(1))).toBe('ordinary');
+    expect(classifyMcpRequest(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'initialize' }))).toBe('handshake');
+    expect(classifyMcpRequest(toolsCall(3, 'dev:service_health'))).toBe('diagnostic');
+    expect(
+      classifyMcpRequest(
+        JSON.stringify({ jsonrpc: '2.0', id: 'health', method: 'initialize' }),
+        'http://127.0.0.1:3070/api/mcp?client=mcp-health',
+      ),
+    ).toBe('diagnostic');
+  });
+
+  it('sheds ordinary calls before the reserved control-plane and diagnostic slots', () => {
+    expect(
+      shouldShedForCapacity(
+        'ordinary',
+        { inFlight: 7, ordinaryInFlight: 7, handshakesInFlight: 0, diagnosticsInFlight: 0 },
+        capacity,
+      ),
+    ).toBe(true); // 10 - (2 + 1) ordinary slots
+    expect(
+      shouldShedForCapacity(
+        'handshake',
+        { inFlight: 7, ordinaryInFlight: 7, handshakesInFlight: 0, diagnosticsInFlight: 0 },
+        capacity,
+      ),
+    ).toBe(false);
+    expect(
+      shouldShedForCapacity(
+        'diagnostic',
+        { inFlight: 9, ordinaryInFlight: 7, handshakesInFlight: 2, diagnosticsInFlight: 0 },
+        capacity,
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps the handshake class bounded while retaining the diagnostic reserve', () => {
+    expect(
+      shouldShedForCapacity(
+        'handshake',
+        { inFlight: 8, ordinaryInFlight: 6, handshakesInFlight: 2, diagnosticsInFlight: 0 },
+        capacity,
+      ),
+    ).toBe(true);
+    expect(
+      shouldShedForCapacity(
+        'diagnostic',
+        { inFlight: 9, ordinaryInFlight: 7, handshakesInFlight: 2, diagnosticsInFlight: 0 },
+        capacity,
+      ),
+    ).toBe(false);
+    expect(
+      shouldShedForCapacity(
+        'diagnostic',
+        { inFlight: 10, ordinaryInFlight: 7, handshakesInFlight: 2, diagnosticsInFlight: 1 },
+        capacity,
+      ),
+    ).toBe(true); // only the hard ceiling can shed diagnostics
+  });
+
+  it('leases operator work and releases it exactly once', async () => {
+    const decision = await acquireAdmission(post(toolsCall(4)), 'ok', true);
+    expect(decision.response).toBeNull();
+    expect(decision.lease?.classification).toBe('ordinary');
+    expect(getMcpAdmissionSnapshot()).toMatchObject({ inFlight: 1, ordinaryInFlight: 1 });
+    decision.lease?.release();
+    decision.lease?.release();
+    expect(getMcpAdmissionSnapshot()).toEqual({
+      inFlight: 0,
+      handshakesInFlight: 0,
+      diagnosticsInFlight: 0,
+      ordinaryInFlight: 0,
+    });
   });
 });
 
