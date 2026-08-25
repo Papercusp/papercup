@@ -42,6 +42,11 @@
  * outcome than a missing `expanded[]` entry.
  */
 import { formatElapsedSince } from '../format/relative-time';
+// TYPE-ONLY, deliberately: this module stays pure and PG-free, and a type import
+// creates no runtime edge. Tying the liveness vocabulary to the SHARED oracle's
+// `SessionState` rather than restating a literal union means a rename there breaks
+// HERE at compile time — the same discipline `ObligationRelation` uses via `Extract`.
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import type { DerivedCoupling, DerivedCouplingRelation } from './couplings';
 import { censusDerivedSignals, type DerivedSignalCensus } from './derived-signal-census';
 
@@ -497,6 +502,24 @@ export function deriveCouplingsFromCoordExchange(
 export type ObligationRelation = Extract<DerivedCouplingRelation, 'owes-me' | 'i-owe'>;
 
 /**
+ * The counterpart's liveness as an obligation line reports it (P-011).
+ *
+ * `SessionState` verbatim from the shared oracle — the same verdict `coord:presence` and
+ * `fleet:assignments` derive, never a raw heartbeat boolean (a warm-dead session reads
+ * `heartbeatFresh: true` with `sessionState: 'ended'`, so a heartbeat would report the
+ * OPPOSITE of the truth on exactly the rows that matter) — WIDENED by one explicit
+ * `'unknown'` member for a counterpart the oracle could not measure.
+ *
+ * ⚠ `'unknown'` IS A VERDICT, NOT A MISSING VALUE. The oracle already reports an
+ * unmeasured subject in band (`sessionState: null` alongside `signalMissing`) rather than
+ * dropping it from its result map, precisely so a caller cannot mistake "not measured"
+ * for "fine". Naming it here carries that discipline through to the rendered line: the
+ * reader is told the difference between "they are alive", "they are gone", and "I do not
+ * know", and the third never disguises itself as the first.
+ */
+export type ObligationLiveness = SessionState | 'unknown';
+
+/**
  * ONE outstanding obligation between the caller and a peer, as a source hands it over.
  *
  * Deliberately NOT consult-shaped. The plan feeds three producers into this one relation
@@ -516,6 +539,22 @@ export interface ObligationEdge {
   /** The id the reader can ACT on without having to go find one: a conversation id, a
    *  rubric ref, a work-item id. */
   handle: string;
+  /**
+   * The COUNTERPART's liveness RIGHT NOW (P-011). REQUIRED — see below.
+   *
+   * ⚠ THIS FIELD IS NOT OPTIONAL, AND MAKING IT OPTIONAL WOULD SILENTLY REINTRODUCE THE
+   * BUG IT EXISTS TO FIX. P-011's contract is that a counterpart with no presence row
+   * renders an EXPLICIT unknown, "never an omitted field that reads as live". An optional
+   * field has exactly one failure mode — a producer forgets it — and that failure renders
+   * as silence, which a reader interprets as "nothing to worry about". Requiring it makes
+   * a forgetful producer a COMPILE error instead of a confident wrong answer.
+   *
+   * `'unknown'` is a first-class member, not a fallback: the shared oracle reports an
+   * unmeasured subject IN BAND (`sessionState: null` + `signalMissing`, D-038 axis 2)
+   * rather than by omitting it from the result map, and this mirrors that. A producer
+   * that could not measure must pass `'unknown'` — never guess `'live'`.
+   */
+  counterpartLiveness: ObligationLiveness;
 }
 
 /**
@@ -550,7 +589,56 @@ export function obligationPhrase(
   const age = formatElapsedSince(edge.since, nowMs);
   if (!what || !handle || !age) return null;
   const lead = edge.direction === 'owes-me' ? `they owe you ${what}` : `you owe them ${what}`;
-  return `${lead}, open ${age} (${handle})`;
+  // P-011. ALWAYS rendered, for every verdict including `live`. Rendering it only for
+  // the alarming states would make ABSENCE mean "fine", which is the same silence that
+  // lets an unmeasured counterpart read as healthy — the exact failure this carries.
+  return `${lead}, open ${age}, counterpart ${obligationLiveness(edge.counterpartLiveness)} (${handle})`;
+}
+
+/**
+ * Every member of {@link ObligationLiveness}, as runtime values.
+ *
+ * The `satisfies` catches a value that is NOT in the union; `_ObligationLivenessCovered`
+ * below catches the opposite and more dangerous direction — the union GAINING a member
+ * (a new `SessionState`) that this list forgets. Without it a newly-added state would
+ * silently fall through to `'unknown'`, i.e. a real verdict quietly downgraded to "I do
+ * not know" with nothing failing.
+ */
+const OBLIGATION_LIVENESS_VALUES = [
+  'live',
+  'parked',
+  'draining',
+  'suspect',
+  'ended',
+  'recorded',
+  'unknown',
+] as const satisfies readonly ObligationLiveness[];
+
+/** Compile-time exhaustiveness: errors if `ObligationLiveness` gains an unlisted member. */
+type _ObligationLivenessCovered =
+  Exclude<ObligationLiveness, (typeof OBLIGATION_LIVENESS_VALUES)[number]> extends never
+    ? true
+    : never;
+
+const OBLIGATION_LIVENESS_SET: ReadonlySet<string> = new Set(OBLIGATION_LIVENESS_VALUES);
+
+/**
+ * Normalize a counterpart-liveness value, defaulting to `'unknown'`.
+ *
+ * ⚠ AN UNRECOGNISED VALUE BECOMES `'unknown'`, NEVER `'live'`, AND NEVER DROPS THE EDGE.
+ * Two failure modes are being steered between. Rendering an unmeasurable counterpart as
+ * live is the bug P-011 names outright. But REFUSING the edge would be worse than either:
+ * the debt is real regardless of whether we can see the peer, so suppressing it would
+ * hide an outstanding obligation because of a gap in our own instrumentation — silence
+ * about a thing the reader is owed. So the edge always survives; only the confidence
+ * degrades, and it degrades visibly.
+ *
+ * The type makes this branch unreachable from TypeScript. It exists for JS callers and
+ * for a row that crossed a boundary the compiler does not police.
+ */
+function obligationLiveness(raw: unknown): ObligationLiveness {
+  const v = typeof raw === 'string' ? raw.trim() : '';
+  return OBLIGATION_LIVENESS_SET.has(v) ? (v as ObligationLiveness) : 'unknown';
 }
 
 /**
