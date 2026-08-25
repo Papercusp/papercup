@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS lint guard, imported for its scanner predicates.
@@ -39,15 +39,21 @@ describe('lint:no-hand-rolled-cli-entry — predicate controls', () => {
 });
 
 describe('lint:no-hand-rolled-cli-entry — repository ratchet', () => {
+  let repositoryScan: ReturnType<typeof scanTree>;
+
+  beforeAll(() => {
+    repositoryScan = scanTree();
+  }, 60_000);
+
   it('has no unallowlisted guard and no stale baseline entry', () => {
-    const result = scanTree();
+    const result = repositoryScan;
     expect(result.violations.map((hit: { rel: string; line: number; kind: string }) => `${hit.rel}:${hit.line}:${hit.kind}`)).toEqual([]);
     expect(result.stale).toEqual([]);
     expect(result.staleExemptions).toEqual([]);
   });
 
   it('records standalone bare-node guards as reasoned, count-bounded exemptions rather than baseline debt', () => {
-    const result = scanTree();
+    const result = repositoryScan;
     expect(result.exemptions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
