@@ -38,12 +38,27 @@ const SCAN_ROOTS = ['packages', 'libs', 'apps'] as const;
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', '.next']);
 
 /**
- * A rubric-version DECLARATION. Anchored at line start (allowing indentation) and
- * paired with the comment rejection below, so the helper's own doc-comment example
- * — ` *     export const X_RUBRIC_VERSION = deriveRubricVersion(...)` — is read as
- * documentation rather than as a tenth rubric.
+ * A rubric DECLARATION, found by its TYPE rather than by its name.
+ *
+ * ⚠ This was originally `export const ([A-Z0-9_]*RUBRIC_VERSION) = ...` — a scan for
+ * the NAME. That version shipped, passed, and was WRONG WITHIN THE HOUR: a peer split
+ * OPERATOR_RUBRIC_HIGH_CRITICALITY onto its own derived version named
+ * `OPERATOR_RUBRIC_HIGH_CRITICALITY_VERSION`, which does not end in `RUBRIC_VERSION`,
+ * so the scanner never saw it and the pin stayed green while the population had grown.
+ *
+ * That is the guard reproducing, inside itself, the exact defect it exists to prevent:
+ * searching for offenders only finds the ones you thought to look for. A NAME is a
+ * convention anyone may deviate from; the TYPE is the thing that makes a value a rubric
+ * version. So the subject is now every `X: JudgeRubric` declaration, and what feeds its
+ * `version` field — which cannot be dodged by renaming.
  */
-const DECLARATION = /^\s*export const ([A-Z0-9_]*RUBRIC_VERSION)\s*=\s*(.*)$/;
+const RUBRIC_DECL = /^\s*(?:export\s+)?const\s+([A-Za-z0-9_]+)\s*:\s*JudgeRubric\s*=\s*\{/;
+
+/** `version:` at one level of nesting inside a rubric literal. */
+const VERSION_FIELD = /^\s{2}version:\s*(.+?),?\s*$/;
+
+/** `const NAME = <rhs>` anywhere in the file, for resolving a version identifier. */
+const CONST_DECL = /^\s*(?:export\s+)?const\s+([A-Za-z0-9_]+)\s*(?::[^=]+)?=\s*(.*)$/;
 
 const isCommentLine = (line: string): boolean => {
   const t = line.trimStart();
@@ -55,6 +70,8 @@ type Classification =
   | 'derived'
   /** A hand-maintained string. This is the defect class; each one needs a tracked reason. */
   | 'literal'
+  /** No own `version` key — the rubric spreads another, inheriting its identity. */
+  | 'inherited'
   /** Present but neither — e.g. an alias of another export. Always fails the pin below. */
   | 'unclassifiable';
 
@@ -75,8 +92,42 @@ export function classifyRhs(rhs: string): Classification {
 
 interface Found {
   readonly file: string;
+  /** The rubric const's name — e.g. QUEEN_RUBRIC, not QUEEN_RUBRIC_VERSION. */
   readonly symbol: string;
   readonly classification: Classification;
+}
+
+/**
+ * Given a file's lines and the index of a `X: JudgeRubric = {` line, classify what
+ * feeds that rubric's `version`.
+ *
+ * Resolves a bare identifier back to its own declaration in the same file, because
+ * the near-universal shape here is `version: X_RUBRIC_VERSION` where that constant is
+ * declared a few lines above. Classifying the identifier itself (rather than the
+ * literal text `X_RUBRIC_VERSION`) is what makes this immune to naming.
+ */
+export function classifyRubricAt(lines: readonly string[], declIndex: number): Classification {
+  for (let i = declIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (/^\};?\s*$/.test(line)) break; // end of this rubric literal
+    const m = VERSION_FIELD.exec(line);
+    if (!m) continue;
+
+    const expr = m[1]!.trim();
+    if (/^['"`]/.test(expr)) return 'literal';
+    if (/^derive[A-Za-z0-9_]*\s*\(/.test(expr)) return 'derived';
+
+    if (/^[A-Za-z0-9_]+$/.test(expr)) {
+      for (const candidate of lines) {
+        const c = CONST_DECL.exec(candidate);
+        if (c && c[1] === expr) return classifyRhs(c[2]!);
+      }
+      return 'unclassifiable';
+    }
+    return 'unclassifiable';
+  }
+  // No own `version` key: the rubric spreads another and inherits its identity.
+  return 'inherited';
 }
 
 function scan(): Found[] {
@@ -104,6 +155,11 @@ function scan(): Found[] {
         continue;
       }
       if (!entry.endsWith('.ts') && !entry.endsWith('.tsx')) continue;
+      // Test fixtures declare JudgeRubric literals too, but a fixture's version never
+      // reaches a stored identity_hash, so it cannot make two real runs falsely
+      // comparable. Pinning them would force every new fixture to be classified —
+      // friction with no safety behind it. Excluded by ROLE, not by convenience.
+      if (/\.test\.tsx?$/.test(entry) || full.includes(`${sep}__tests__${sep}`)) continue;
       // A guard whose subject is TEXT and which lives inside the tree it scans is
       // a member of its own population: this file's fixtures below are literal
       // rubric-version declarations. Excluding it is load-bearing, and the test
@@ -116,16 +172,18 @@ function scan(): Found[] {
       } catch {
         continue;
       }
-      if (!src.includes('RUBRIC_VERSION')) continue;
+      if (!src.includes('JudgeRubric')) continue;
 
-      for (const line of src.split('\n')) {
+      const lines = src.split('\n');
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]!;
         if (isCommentLine(line)) continue;
-        const m = DECLARATION.exec(line);
+        const m = RUBRIC_DECL.exec(line);
         if (!m) continue;
         found.push({
           file: relative(REPO_ROOT, full).split(sep).join('/'),
           symbol: m[1]!,
-          classification: classifyRhs(m[2]!),
+          classification: classifyRubricAt(lines, i),
         });
       }
     }
@@ -145,26 +203,28 @@ function scan(): Found[] {
 const PINNED: Readonly<Record<string, Classification>> = Object.freeze({
   // The nine converted by WI-41678. Each hashes its own version-free content, so a
   // reworded anchor moves the version and therefore the identity hash.
-  'packages/operator-core/lib/llm-testing/rubrics/su.ts::SU_RUBRIC_VERSION': 'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/operator.ts::OPERATOR_RUBRIC_VERSION': 'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/oracle.ts::ORACLE_RUBRIC_VERSION': 'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/onboarding-tutor.ts::TUTOR_RUBRIC_VERSION':
-    'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/queen.ts::QUEEN_RUBRIC_VERSION': 'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/queen.ts::QUEEN_DECIDER_RUBRIC_VERSION':
-    'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/queen.ts::SCHEDULER_USE_RUBRIC_VERSION':
-    'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/overwatch.ts::OVERWATCH_RUBRIC_VERSION':
-    'derived',
-  'packages/operator-core/lib/llm-testing/rubrics/architect.ts::ARCHITECT_RUBRIC_VERSION':
+  'packages/operator-core/lib/llm-testing/rubrics/su.ts::SU_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/operator.ts::OPERATOR_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/oracle.ts::ORACLE_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/onboarding-tutor.ts::TUTOR_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/queen.ts::QUEEN_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/queen.ts::QUEEN_DECIDER_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/queen.ts::SCHEDULER_USE_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/overwatch.ts::OVERWATCH_RUBRIC': 'derived',
+  'packages/operator-core/lib/llm-testing/rubrics/architect.ts::ARCHITECT_RUBRIC': 'derived',
+
+  // Split onto its own derived identity by a peer answering EI-21457442861164429:
+  // `criticality: 'high'` changes the judging execution contract (multi-pass), so a
+  // single-pass and a two-pass run no longer share a trend line. THIS is the rubric
+  // the first version of this guard could not see — its version constant is named
+  // OPERATOR_RUBRIC_HIGH_CRITICALITY_VERSION, which does not end in `RUBRIC_VERSION`.
+  'packages/operator-core/lib/llm-testing/rubrics/operator.ts::OPERATOR_RUBRIC_HIGH_CRITICALITY':
     'derived',
 
   // The search bench, derived since EI-21443136282514038 / WI-41675. It folds three
   // inputs (rubric content, its own instruction contract, testing-shell's prompt
   // scaffold identity) through the same shared helper.
-  'packages/operator-core/lib/search/bench/judge-agreement.ts::JUDGE_AGREEMENT_RUBRIC_VERSION':
-    'derived',
+  'packages/operator-core/lib/search/bench/judge-agreement.ts::SEARCH_RELEVANCE_RUBRIC': 'derived',
 
   // Was the one known remaining literal (EI-21448289024080765). Reclassified within
   // minutes of this guard landing: a peer converted it to
@@ -172,7 +232,14 @@ const PINNED: Readonly<Record<string, Classification>> = Object.freeze({
   // helper, this pin went red on the stale 'literal' label, and the label was
   // corrected. That is the bidirectional check earning its place — the pin failed
   // for real, on a real change, rather than only in a control.
-  'packages/operator-core/lib/memory/bench/judged.ts::JUDGED_TIER_RUBRIC_VERSION': 'derived',
+  'packages/operator-core/lib/memory/bench/judged.ts::MEMORY_USEFULNESS_RUBRIC': 'derived',
+
+  // NOT a rubric whose identity gates anything: a sentinel fed to the real prompt
+  // builders so JUDGE_PROMPT_SCAFFOLD_VERSION can be derived from the scaffolding
+  // they emit. Its version is deliberately constant — deriving it from content would
+  // be circular, since this rubric exists to measure the text wrapped AROUND rubrics.
+  // Pinned rather than path-excluded so it stays visible and accounted for.
+  'libs/testing-shell/src/llm/judge.ts::SCAFFOLD_PROBE_RUBRIC': 'literal',
 });
 
 describe('rubric versions are derived from rubric content', () => {
@@ -221,7 +288,7 @@ describe('rubric versions are derived from rubric content', () => {
       );
       const regressed = {
         ...measured,
-        'packages/operator-core/lib/llm-testing/rubrics/queen.ts::QUEEN_RUBRIC_VERSION':
+        'packages/operator-core/lib/llm-testing/rubrics/queen.ts::QUEEN_RUBRIC':
           'literal' as Classification,
       };
       expect(regressed).not.toEqual({ ...PINNED });
@@ -258,14 +325,17 @@ describe('rubric versions are derived from rubric content', () => {
     const selfSource = readFileSync(__filename, 'utf8');
     const selfMatches = selfSource
       .split('\n')
-      .filter((l) => !isCommentLine(l) && DECLARATION.test(l));
+      .filter((l) => !isCommentLine(l) && RUBRIC_DECL.test(l));
     expect(selfMatches.length).toBeGreaterThan(0);
   });
 });
 
-// --- fixtures for the self-exclusion assertion above -------------------------
-// Deliberately shaped like real declarations. They are unreachable as code (never
-// imported, never executed) and exist only so the self-match hazard stays real.
-export const FIXTURE_LITERAL_SOURCE = `
-export const EXAMPLE_RUBRIC_VERSION = '1.0.0';
+// --- fixture for the self-exclusion assertion above --------------------------
+// Deliberately shaped like a real rubric declaration. Unreachable as code (never
+// imported, never executed); it exists only so the self-match hazard stays real
+// and the __filename exclusion cannot quietly become dead code.
+export const FIXTURE_RUBRIC_SOURCE = `
+const EXAMPLE_RUBRIC: JudgeRubric = {
+  version: '1.0.0',
+};
 `;
