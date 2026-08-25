@@ -138,6 +138,50 @@ describe("ReportTakeoverLayer", () => {
     expect(document.activeElement).toBe(opener);
   });
 
+  it("falls back to the app-pane landmark when completion removes the opener", () => {
+    function Harness({
+      open,
+      showOpener,
+    }: {
+      open: boolean;
+      showOpener: boolean;
+    }) {
+      return (
+        <main data-route-transition-page="true" tabIndex={-1}>
+          <section data-testid="completed-route">
+            {showOpener ? (
+              <button type="button" data-testid="completed-opener">
+                Review decisions
+              </button>
+            ) : (
+              <span>Run complete</span>
+            )}
+          </section>
+          {open ? (
+            <ReportTakeoverLayer>
+              <button type="button">Apply selected</button>
+            </ReportTakeoverLayer>
+          ) : null}
+        </main>
+      );
+    }
+
+    const { rerender } = render(<Harness open={false} showOpener />);
+    screen.getByTestId("completed-opener").focus();
+
+    rerender(<Harness open showOpener />);
+    expect(document.activeElement).toBe(screen.getByTestId("report-takeover"));
+
+    // Apply/Dismiss/final inline accept advances the underlying strip out of
+    // review before the URL-owned layer finishes unmounting.
+    rerender(<Harness open showOpener={false} />);
+    rerender(<Harness open={false} showOpener={false} />);
+
+    expect(document.activeElement).toBe(
+      screen.getByTestId("completed-route").parentElement,
+    );
+  });
+
   it("keeps the route isolated until the final stacked report closes", () => {
     function Harness({ layers }: { layers: string[] }) {
       return (

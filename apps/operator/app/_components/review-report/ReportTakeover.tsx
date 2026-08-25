@@ -146,12 +146,21 @@ export function ReportTakeoverLayer({
       current.count -= 1;
       if (current.count === 0) {
         takeoverParents.delete(parent);
-        if (
-          activeWasInside &&
-          current.restoreFocus?.isConnected &&
-          !current.restoreFocus.closest("[inert]")
-        ) {
-          current.restoreFocus.focus({ preventScroll: true });
+        if (activeWasInside) {
+          const restoreTarget =
+            current.restoreFocus?.isConnected &&
+            !current.restoreFocus.closest("[inert]")
+              ? current.restoreFocus
+              : parent.matches(
+                    '[data-route-transition-page="true"][tabindex]',
+                  ) && !parent.closest("[inert]")
+                ? parent
+                : null;
+          // Completing/dismissing a run can replace its strip or virtualized
+          // row in the same commit that removes the takeover. The original
+          // opener is then disconnected; return to the stable app-pane
+          // landmark instead of leaving keyboard focus on <body>.
+          restoreTarget?.focus({ preventScroll: true });
         }
         return;
       }
