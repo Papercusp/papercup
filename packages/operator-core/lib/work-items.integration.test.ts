@@ -159,6 +159,92 @@ beforeEach(async () => {
   planItemNeedsHumanContradictionMock.mockReset().mockResolvedValue(null);
 });
 
+describe('born-pending duplicate admission floor (P-002, real PG)', () => {
+  it('suppresses born claims and placement advertisement until admitted; attributable auto bypasses stay claimable', async () => {
+    const pendingBug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'pending bug',
+      harness: 'papercup',
+      createdBy: 'filer',
+      assignee: 'filer',
+      admission: 'pending',
+    });
+    const pendingFeature = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'pending feature',
+      harness: 'papercup',
+      createdBy: 'filer',
+      assignee: 'filer',
+      admission: 'pending',
+    });
+    const autoBug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'critical bypass bug',
+      harness: 'papercup',
+      createdBy: 'filer',
+      admission: 'auto',
+      admittedBy: 'bypass:severity-critical',
+    });
+    const autoFeature = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'reviewed plan feature',
+      harness: 'papercup',
+      createdBy: 'filer',
+      admission: 'auto',
+      admittedBy: 'bypass:plan-item',
+    });
+
+    expect(pendingBug.assignee).toBeNull();
+    expect(pendingFeature.assignee).toBeNull();
+
+    const persisted = await db.sql<
+      Array<{
+        feature_id: string;
+        admission: string | null;
+        admitted_at: string | null;
+        admitted_by: string | null;
+        taken_by: string | null;
+      }>
+    >`
+      SELECT feature_id, admission, admitted_at::text, admitted_by, taken_by
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(${[pendingBug.id, pendingFeature.id, autoBug.id, autoFeature.id]}::text[])
+       ORDER BY feature_id`;
+    const byId = new Map(persisted.map((row) => [row.feature_id, row]));
+    for (const item of [pendingBug, pendingFeature]) {
+      expect(byId.get(item.id)).toMatchObject({
+        admission: 'pending',
+        admitted_at: null,
+        admitted_by: null,
+        taken_by: null,
+      });
+    }
+    expect(byId.get(autoBug.id)?.admitted_at).not.toBeNull();
+    expect(byId.get(autoBug.id)?.admitted_by).toBe('bypass:severity-critical');
+    expect(byId.get(autoFeature.id)?.admitted_at).not.toBeNull();
+    expect(byId.get(autoFeature.id)?.admitted_by).toBe('bypass:plan-item');
+
+    const all = await wi.listWorkItems({ harness: 'papercup', state: 'open' });
+    const advertised = await wi.listWorkItems({ harness: 'papercup', state: 'open', admissibleOnly: true });
+    expect(all.map((item) => item.id)).toEqual(
+      expect.arrayContaining([pendingBug.id, pendingFeature.id, autoBug.id, autoFeature.id]),
+    );
+    expect(advertised.map((item) => item.id)).toEqual(expect.arrayContaining([autoBug.id, autoFeature.id]));
+    expect(advertised.map((item) => item.id)).not.toEqual(expect.arrayContaining([pendingBug.id]));
+    expect(advertised.map((item) => item.id)).not.toEqual(expect.arrayContaining([pendingFeature.id]));
+
+    expect(await wi.claimWorkItem(pendingBug.id, 'worker', { harness: 'papercup' })).toBeNull();
+    expect(await wi.claimWorkItem(pendingFeature.id, 'worker', { harness: 'papercup' })).toBeNull();
+    expect(await wi.observeWorkItem(pendingBug.id, { harness: 'papercup' })).toMatchObject({
+      available: false,
+      gated: true,
+      claimedBy: null,
+    });
+    expect((await wi.claimWorkItem(autoBug.id, 'worker', { harness: 'papercup' }))?.assignee).toBe('worker');
+    expect((await wi.claimWorkItem(autoFeature.id, 'worker', { harness: 'papercup' }))?.assignee).toBe('worker');
+  });
+});
+
 describe('per-family state normalization (EI-24)', () => {
   it("issue-family stores the unified enum directly: 'done'/'dropped' pass through as-is, 'todo'→'open' (work-item-status-full-unify P-003)", async () => {
     const task = await wi.createWorkItem({ kind: 'task', title: 't', harness: 'papercup' });

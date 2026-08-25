@@ -80,12 +80,18 @@ describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', (
       ctx,
     );
     expect(r.ok).toBe(true);
-    const call = createWorkItemMock.mock.calls[0][0] as { payload?: { plan_item?: unknown } };
+    const call = createWorkItemMock.mock.calls[0][0] as {
+      payload?: { plan_item?: unknown };
+      admission?: string;
+      admittedBy?: string | null;
+    };
     expect(call.payload?.plan_item).toEqual({
       plan_slug: 'some-plan',
       item_id: 'P-413',
       harness_slug: 'papercusp',
     });
+    expect(call.admission).toBe('auto');
+    expect(call.admittedBy).toBe('bypass:plan-item');
     // The coverage edge is STILL written too — this fix is additive, not a replacement.
     expect(linkWorkItemMock).toHaveBeenCalledWith(
       'WI-NEW',
@@ -112,8 +118,14 @@ describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', (
   it('never stamps plan_item when targetPlanItem is not set', async () => {
     const r = await createOneWorkItem({ kind: 'bug', title: 'unrelated fix' }, ctx);
     expect(r.ok).toBe(true);
-    const call = createWorkItemMock.mock.calls[0][0] as { payload?: { plan_item?: unknown } };
+    const call = createWorkItemMock.mock.calls[0][0] as {
+      payload?: { plan_item?: unknown };
+      admission?: string;
+      admittedBy?: string | null;
+    };
     expect(call.payload?.plan_item).toBeUndefined();
+    expect(call.admission).toBe('pending');
+    expect(call.admittedBy).toBeNull();
   });
 
   it('never clobbers an explicit caller-supplied payload.plan_item', async () => {

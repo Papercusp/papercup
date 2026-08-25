@@ -128,6 +128,7 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
     expect(r.workItem.id).toBe('WI-NEW');
+    expect(createM).toHaveBeenCalledWith(expect.objectContaining({ admission: 'pending', admittedBy: null }));
     // P-002 item d: the soft band no longer comes back as an advisory the caller
     // must triage — it goes to the promoter's substrate.
     expect('similarOpen' in r).toBe(false);
@@ -179,6 +180,17 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     expect(r.ok).toBe(true);
     expect(occurrenceMocks.readPressure).not.toHaveBeenCalled();
     expect(createM).toHaveBeenCalledOnce();
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({ admission: 'auto', admittedBy: 'bypass:severity-critical' }),
+    );
+  });
+
+  it('security-topic findings bypass pending with an attributable admission reason', async () => {
+    const r = await createOneWorkItem({ kind: 'bug', title: 'credential disclosure', topics: ['security'] }, ctx);
+    expect(r.ok).toBe(true);
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({ admission: 'auto', admittedBy: 'bypass:topic-security' }),
+    );
   });
 
   it('null verdict (guard fail-open) creates cleanly with no advisory key', async () => {
