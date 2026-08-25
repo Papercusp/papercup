@@ -47,6 +47,7 @@ const canary = {
     providerEvidenceRef: 'gcp://billing/baseline-zero',
   },
   costEvidence: [{ cents: 75, observedAt: '2026-08-25T00:10:00.000Z', providerEvidenceRef: 'gcp://billing/settled' }],
+  lateObservedSpend: [{ cents: 1, observedAt: '2026-08-25T01:10:00.000Z', providerEvidenceRef: 'gcp://billing/late' }],
 };
 
 function harness() {

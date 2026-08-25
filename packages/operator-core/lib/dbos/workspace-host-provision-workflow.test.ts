@@ -202,6 +202,9 @@ describe('workspace-host provisioning DBOS admission', () => {
           providerEvidenceRef: 'gcp://billing/baseline',
         },
         costEvidence: [{ cents: 1, observedAt: '2026-08-25T00:10:00Z', providerEvidenceRef: 'gcp://billing/cost' }],
+        lateObservedSpend: [
+          { cents: 1, observedAt: '2026-08-25T01:10:00Z', providerEvidenceRef: 'gcp://billing/late' },
+        ],
       },
       operationId: 'destroy-1',
     });
