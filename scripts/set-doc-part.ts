@@ -31,17 +31,19 @@
  *
  * Exit codes: 0 ok (or dry run) · 1 refused (a guard fired) · 2 misuse.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync } from "node:fs";
 import {
+  docPartHasChanges,
   validateDocPart,
   type DocPartKind,
   type SetDocPartInput,
-} from '../packages/operator-core/lib/harness/docs/doc-record';
-import { connectScriptPg } from './lib/pg-url.mjs';
-import { writeStderrSync, writeStdoutSync } from './lib/write-stdout-sync.mjs';
+} from "../packages/operator-core/lib/harness/docs/doc-record";
+import { connectScriptPg } from "./lib/pg-url.mjs";
+import { writeStderrSync, writeStdoutSync } from "./lib/write-stdout-sync.mjs";
 
-const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
-const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
+const WORKSPACE_ID =
+  process.env.PAPERCUSP_WORKSPACE_ID ?? "papercusp-workspace";
+const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? "papercusp";
 
 const MISUSE = 2;
 const REFUSED = 1;
@@ -77,14 +79,14 @@ function parseArgv(argv: string[]): Map<string, string | true> {
   const out = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (!a.startsWith('--')) continue;
-    const eq = a.indexOf('=');
+    if (!a.startsWith("--")) continue;
+    const eq = a.indexOf("=");
     if (eq !== -1) {
       out.set(a.slice(2, eq), a.slice(eq + 1));
       continue;
     }
     const next = argv[i + 1];
-    if (next !== undefined && !next.startsWith('--')) {
+    if (next !== undefined && !next.startsWith("--")) {
       out.set(a.slice(2), next);
       i++;
     } else {
@@ -95,7 +97,7 @@ function parseArgv(argv: string[]): Map<string, string | true> {
 }
 
 const str = (v: string | true | undefined): string | undefined =>
-  typeof v === 'string' ? v : undefined;
+  typeof v === "string" ? v : undefined;
 
 /**
  * A compact line-level diff. Not a real LCS — it reports the changed REGION (first and
@@ -103,8 +105,8 @@ const str = (v: string | true | undefined): string | undefined =>
  * and a full diff of a 1,200-char part is noise on a terminal.
  */
 function describeChange(before: string, after: string): string {
-  const a = before.split('\n');
-  const b = after.split('\n');
+  const a = before.split("\n");
+  const b = after.split("\n");
   let head = 0;
   while (head < a.length && head < b.length && a[head] === b[head]) head++;
   let tail = 0;
@@ -124,20 +126,72 @@ function describeChange(before: string, after: string): string {
   );
   for (const l of oldSlice) lines.push(`    \x1b[31m- ${l}\x1b[0m`);
   for (const l of newSlice) lines.push(`    \x1b[32m+ ${l}\x1b[0m`);
-  return lines.join('\n');
+  return lines.join("\n");
+}
+
+function describeColumnChanges(
+  before: Pick<
+    PartRow,
+    | "kind"
+    | "ordinal"
+    | "client_scope"
+    | "project_rank"
+    | "target_section"
+    | "rationale_part_key"
+  >,
+  after: {
+    kind: string;
+    ordinal: number;
+    clientScope: readonly string[];
+    projectRank: number;
+    targetSection: string | null;
+    rationalePartKey: string | null;
+  },
+): string {
+  const changes: string[] = [];
+  if (before.kind !== after.kind)
+    changes.push(`kind ${before.kind} -> ${after.kind}`);
+  if (before.ordinal !== after.ordinal)
+    changes.push(`ordinal ${before.ordinal} -> ${after.ordinal}`);
+  if (before.project_rank !== after.projectRank)
+    changes.push(`project_rank ${before.project_rank} -> ${after.projectRank}`);
+  if (before.target_section !== after.targetSection) {
+    changes.push(
+      `target_section ${JSON.stringify(before.target_section)} -> ${JSON.stringify(after.targetSection)}`,
+    );
+  }
+  if (before.rationale_part_key !== after.rationalePartKey) {
+    changes.push(
+      `rationale_part_key ${JSON.stringify(before.rationale_part_key)} -> ${JSON.stringify(after.rationalePartKey)}`,
+    );
+  }
+  if (
+    before.client_scope.length !== after.clientScope.length ||
+    before.client_scope.some(
+      (scope, index) => scope !== after.clientScope[index],
+    )
+  ) {
+    changes.push(
+      `client_scope ${JSON.stringify(before.client_scope)} -> ${JSON.stringify(after.clientScope)}`,
+    );
+  }
+  return changes.length > 0
+    ? `    changed columns ${changes.join(", ")}`
+    : "    columns unchanged";
 }
 
 function readBody(args: Map<string, string | true>): string {
-  const file = str(args.get('body-file'));
-  const stdin = args.get('body-stdin') === true;
-  if (file && stdin) die(MISUSE, 'misuse: pass exactly one of --body-file or --body-stdin.');
-  if (file) return readFileSync(file, 'utf8');
-  if (stdin) return readFileSync(0, 'utf8');
+  const file = str(args.get("body-file"));
+  const stdin = args.get("body-stdin") === true;
+  if (file && stdin)
+    die(MISUSE, "misuse: pass exactly one of --body-file or --body-stdin.");
+  if (file) return readFileSync(file, "utf8");
+  if (stdin) return readFileSync(0, "utf8");
   die(
     MISUSE,
-    'misuse: a body is required — pass --body-file <path> or --body-stdin.\n' +
-      '  A part body is multi-line markdown; passing it through argv mangles quoting,\n' +
-      '  which is how a rule silently acquires a stray backslash.',
+    "misuse: a body is required — pass --body-file <path> or --body-stdin.\n" +
+      "  A part body is multi-line markdown; passing it through argv mangles quoting,\n" +
+      "  which is how a rule silently acquires a stray backslash.",
   );
 }
 
@@ -145,43 +199,43 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const args = parseArgv(argv);
 
-  if (args.has('help') || argv.length === 0) {
+  if (args.has("help") || argv.length === 0) {
     console.log(
       [
-        'set-doc-part — edit ONE harness_doc_parts row (the write half of CLAUDE.md\'s',
+        "set-doc-part — edit ONE harness_doc_parts row (the write half of CLAUDE.md's",
         '"edit its PART, then re-project" instruction).',
-        '',
-        '  --part-key <key>       (required) the part to edit',
-        '  --doc-id <id>          default: claude-md',
-        '  --body-file <path>     new body, read from a file',
-        '  --body-stdin           new body, read from stdin',
-        '  --write                actually write (default is a DRY RUN)',
-        '  --author <id>          provenance; default $PAPERCUSP_SID',
-        '  --list [prefix]        list part keys (optionally by prefix) and exit',
-        '  --show                 print ONE part: body to stdout, metadata to stderr, then',
-        '                         exit. `--part-key K --show > body.md` round-trips exactly',
-        '                         back through --body-file. Refuses a missing key rather',
-        '                         than printing nothing.',
-        '',
-        '  create/override (a NEW key requires --create plus the projection columns):',
-        '  --create --kind <invariant|pointer|recipe|prose> --ordinal <n>',
+        "",
+        "  --part-key <key>       (required) the part to edit",
+        "  --doc-id <id>          default: claude-md",
+        "  --body-file <path>     new body, read from a file",
+        "  --body-stdin           new body, read from stdin",
+        "  --write                actually write (default is a DRY RUN)",
+        "  --author <id>          provenance; default $PAPERCUSP_SID",
+        "  --list [prefix]        list part keys (optionally by prefix) and exit",
+        "  --show                 print ONE part: body to stdout, metadata to stderr, then",
+        "                         exit. `--part-key K --show > body.md` round-trips exactly",
+        "                         back through --body-file. Refuses a missing key rather",
+        "                         than printing nothing.",
+        "",
+        "  create/override (a NEW key requires --create plus the projection columns):",
+        "  --create --kind <invariant|pointer|recipe|prose> --ordinal <n>",
         '  --target-section <heading> --client-scope <all|claude|codex|""> --project-rank <n>',
-        '  --revive               un-tombstone a retired part',
-        '',
-        'After a successful write, project it:  node scripts/project-doc-parts.mjs --write',
-      ].join('\n'),
+        "  --revive               un-tombstone a retired part",
+        "",
+        "After a successful write, project it:  node scripts/project-doc-parts.mjs --write",
+      ].join("\n"),
     );
     return;
   }
 
-  const docId = str(args.get('doc-id')) ?? 'claude-md';
+  const docId = str(args.get("doc-id")) ?? "claude-md";
   const client = await connectScriptPg();
 
   try {
     // ── --list: the discovery half. Finding a part_key was itself guesswork before.
-    if (args.has('list')) {
-      const prefixArg = args.get('list');
-      const prefix = typeof prefixArg === 'string' ? prefixArg : '';
+    if (args.has("list")) {
+      const prefixArg = args.get("list");
+      const prefix = typeof prefixArg === "string" ? prefixArg : "";
       const { rows } = await client.query<PartRow & { body_len: number }>(
         `SELECT part_key, kind, ordinal, tombstone, client_scope, target_section,
                 length(body) AS body_len
@@ -191,18 +245,24 @@ async function main(): Promise<void> {
           ORDER BY ordinal, part_key`,
         [WORKSPACE_ID, HARNESS_SLUG, docId, prefix],
       );
-      console.log(`${rows.length} part(s) in ${docId}${prefix ? ` matching "${prefix}*"` : ''}:`);
+      console.log(
+        `${rows.length} part(s) in ${docId}${prefix ? ` matching "${prefix}*"` : ""}:`,
+      );
       for (const r of rows) {
         console.log(
-          `  ${r.tombstone ? '⊘' : ' '} ${r.part_key}  [${r.kind}, ord ${r.ordinal}, ` +
+          `  ${r.tombstone ? "⊘" : " "} ${r.part_key}  [${r.kind}, ord ${r.ordinal}, ` +
             `${r.body_len} chars, scope ${JSON.stringify(r.client_scope)}]`,
         );
       }
       return;
     }
 
-    const partKey = str(args.get('part-key'));
-    if (!partKey) die(MISUSE, 'misuse: --part-key is required. Use --list <prefix> to find one.');
+    const partKey = str(args.get("part-key"));
+    if (!partKey)
+      die(
+        MISUSE,
+        "misuse: --part-key is required. Use --list <prefix> to find one.",
+      );
 
     // ── --show: the READ half. Without it the only way to see what you are about to
     // overwrite was a hand-written SELECT against harness_doc_parts — which is the exact
@@ -214,7 +274,7 @@ async function main(): Promise<void> {
     // yields a file that round-trips byte-exactly back through --body-file. Written
     // synchronously because that redirect/pipe is the primary use: an async console.log
     // followed by exit truncates (EI-20055889379250637, see `die`).
-    if (args.has('show')) {
+    if (args.has("show")) {
       const { rows } = await client.query<PartRow>(
         `SELECT part_key, kind, body, ordinal, tombstone, client_scope, project_rank,
                 target_section, rationale_part_key
@@ -235,7 +295,7 @@ async function main(): Promise<void> {
       }
       const r = rows[0];
       writeStderrSync(
-        `${r.tombstone ? '⊘ TOMBSTONED ' : ''}${r.part_key}  [${r.kind}, ord ${r.ordinal}, ` +
+        `${r.tombstone ? "⊘ TOMBSTONED " : ""}${r.part_key}  [${r.kind}, ord ${r.ordinal}, ` +
           `${r.body.length} chars, scope ${JSON.stringify(r.client_scope)}, ` +
           `rank ${r.project_rank}, section ${JSON.stringify(r.target_section)}]\n`,
       );
@@ -244,27 +304,29 @@ async function main(): Promise<void> {
     }
 
     const body = readBody(args);
-    const write = args.get('write') === true;
-    const create = args.get('create') === true;
-    const revive = args.get('revive') === true;
-    const author = str(args.get('author')) ?? process.env.PAPERCUSP_SID ?? null;
+    const write = args.get("write") === true;
+    const create = args.get("create") === true;
+    const revive = args.get("revive") === true;
+    const author = str(args.get("author")) ?? process.env.PAPERCUSP_SID ?? null;
 
-    await client.query('BEGIN');
+    await client.query("BEGIN");
 
     // The parent doc must be COMPOSED or the parts are not canonical — editing a part of
     // a non-composed doc writes a row that nothing reads, while `harness_docs.content`
     // stays the truth. That reads as success and changes nothing, so it is refused.
-    const { rows: docRows } = await client.query<{ content_mode: string | null }>(
+    const { rows: docRows } = await client.query<{
+      content_mode: string | null;
+    }>(
       `SELECT content_mode FROM harness_shared.harness_docs
         WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3 FOR UPDATE`,
       [WORKSPACE_ID, HARNESS_SLUG, docId],
     );
     if (docRows.length === 0) {
-      await client.query('ROLLBACK');
+      await client.query("ROLLBACK");
       die(REFUSED, `✗ refused: no harness_docs row for doc_id='${docId}'.`);
     }
-    if (docRows[0].content_mode !== 'composed') {
-      await client.query('ROLLBACK');
+    if (docRows[0].content_mode !== "composed") {
+      await client.query("ROLLBACK");
       die(
         REFUSED,
         `✗ refused: doc '${docId}' has content_mode='${docRows[0].content_mode}', not 'composed'.\n` +
@@ -286,7 +348,7 @@ async function main(): Promise<void> {
     const existing = partRows[0] ?? null;
 
     if (!existing && !create) {
-      await client.query('ROLLBACK');
+      await client.query("ROLLBACK");
       die(
         REFUSED,
         `✗ refused: part '${partKey}' does not exist in ${docId}.\n` +
@@ -296,7 +358,7 @@ async function main(): Promise<void> {
       );
     }
     if (existing?.tombstone && !revive) {
-      await client.query('ROLLBACK');
+      await client.query("ROLLBACK");
       die(
         REFUSED,
         `✗ refused: part '${partKey}' is TOMBSTONED (retired). Pass --revive to bring it back.`,
@@ -306,21 +368,37 @@ async function main(): Promise<void> {
     // Merge: an omitted column keeps the existing value. A body-only edit must not
     // silently reset a part's ordinal, scope or rank to a default.
     const merged = {
-      kind: (str(args.get('kind')) ?? existing?.kind ?? 'invariant') as DocPartKind,
-      ordinal: Number(str(args.get('ordinal')) ?? existing?.ordinal ?? 0),
-      targetSection: str(args.get('target-section')) ?? existing?.target_section ?? null,
-      projectRank: Number(str(args.get('project-rank')) ?? existing?.project_rank ?? 1000),
+      kind: (str(args.get("kind")) ??
+        existing?.kind ??
+        "invariant") as DocPartKind,
+      ordinal: Number(str(args.get("ordinal")) ?? existing?.ordinal ?? 0),
+      targetSection:
+        str(args.get("target-section")) ?? existing?.target_section ?? null,
+      projectRank: Number(
+        str(args.get("project-rank")) ?? existing?.project_rank ?? 1000,
+      ),
       clientScope: (() => {
-        const raw = str(args.get('client-scope'));
+        const raw = str(args.get("client-scope"));
         if (raw === undefined) return existing?.client_scope ?? [];
-        return raw === '' ? [] : raw.split(',').map((s) => s.trim()).filter(Boolean);
+        return raw === ""
+          ? []
+          : raw
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
       })(),
-      rationalePartKey: str(args.get('rationale-part-key')) ?? existing?.rationale_part_key ?? null,
+      rationalePartKey:
+        str(args.get("rationale-part-key")) ??
+        existing?.rationale_part_key ??
+        null,
     };
 
-    if (!Number.isFinite(merged.ordinal) || !Number.isFinite(merged.projectRank)) {
-      await client.query('ROLLBACK');
-      die(MISUSE, 'misuse: --ordinal and --project-rank must be numbers.');
+    if (
+      !Number.isFinite(merged.ordinal) ||
+      !Number.isFinite(merged.projectRank)
+    ) {
+      await client.query("ROLLBACK");
+      die(MISUSE, "misuse: --ordinal and --project-rank must be numbers.");
     }
 
     // The imported rule, run against the MERGED row (mirrors migration 781's CHECKs).
@@ -332,35 +410,67 @@ async function main(): Promise<void> {
       rationalePartKey: merged.rationalePartKey,
     });
     if (invalid) {
-      await client.query('ROLLBACK');
+      await client.query("ROLLBACK");
       die(REFUSED, `✗ refused by validateDocPart: ${invalid}`);
     }
 
+    const nextComparable = {
+      body,
+      kind: merged.kind,
+      ordinal: merged.ordinal,
+      clientScope: merged.clientScope,
+      projectRank: merged.projectRank,
+      targetSection: merged.targetSection,
+      rationalePartKey: merged.rationalePartKey,
+    };
+
     // A no-op that reports success is a FALSE CONFIRMATION — the caller believes the rule
     // changed and moves on. Same reasoning as mutation-probe.sh refusing a no-op mutation.
-    if (existing && existing.body === body && !revive) {
-      await client.query('ROLLBACK');
+    // Compare the merged columns too: a body-identical rank/ordinal/scope edit is real work.
+    if (
+      existing &&
+      !docPartHasChanges(
+        {
+          body: existing.body,
+          kind: existing.kind,
+          ordinal: existing.ordinal,
+          clientScope: existing.client_scope,
+          projectRank: existing.project_rank,
+          targetSection: existing.target_section,
+          rationalePartKey: existing.rationale_part_key,
+        },
+        nextComparable,
+      ) &&
+      !revive
+    ) {
+      await client.query("ROLLBACK");
       die(
         REFUSED,
-        `✗ refused: the new body is IDENTICAL to the stored body for '${partKey}'.\n` +
+        `✗ refused: the new body and columns are IDENTICAL to the stored row for '${partKey}'.\n` +
           `  Nothing would change. Reporting success here would tell you a rule was updated\n` +
           `  when it was not.`,
       );
     }
 
     console.log(`set-doc-part: ${WORKSPACE_ID}/${HARNESS_SLUG}/${docId}`);
-    console.log(`  part         ${partKey}${existing ? '' : '  (NEW — --create)'}`);
+    console.log(
+      `  part         ${partKey}${existing ? "" : "  (NEW — --create)"}`,
+    );
     console.log(
       `  columns      kind=${merged.kind} ordinal=${merged.ordinal} rank=${merged.projectRank} ` +
         `scope=${JSON.stringify(merged.clientScope)}`,
     );
-    console.log(`  section      ${merged.targetSection ?? '(none)'}`);
-    if (existing) console.log(describeChange(existing.body, body));
-    else console.log(`    new body    ${body.length} chars`);
+    console.log(`  section      ${merged.targetSection ?? "(none)"}`);
+    if (existing) {
+      console.log(describeChange(existing.body, body));
+      console.log(describeColumnChanges(existing, nextComparable));
+    } else console.log(`    new body    ${body.length} chars`);
 
     if (!write) {
-      await client.query('ROLLBACK');
-      console.log('\n  ✓ dry run — nothing written. Re-run with --write to apply.');
+      await client.query("ROLLBACK");
+      console.log(
+        "\n  ✓ dry run — nothing written. Re-run with --write to apply.",
+      );
       return;
     }
 
@@ -412,11 +522,15 @@ async function main(): Promise<void> {
         input.author,
       ],
     );
-    await client.query('COMMIT');
+    await client.query("COMMIT");
 
-    console.log(`\n  ✓ written (author=${author ?? 'null'}).`);
-    console.log('  The FILE is still the old projection — parts are canonical, files are output.');
-    console.log('  Project it now:   node scripts/project-doc-parts.mjs --write');
+    console.log(`\n  ✓ written (author=${author ?? "null"}).`);
+    console.log(
+      "  The FILE is still the old projection — parts are canonical, files are output.",
+    );
+    console.log(
+      "  Project it now:   node scripts/project-doc-parts.mjs --write",
+    );
   } finally {
     await client.end();
   }

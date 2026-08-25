@@ -73,6 +73,38 @@ export interface DocPartValidationInput {
   rationalePartKey: string | null;
 }
 
+/** The body and persisted columns that make up a doc-part's effective value. */
+export interface DocPartComparable {
+  body: string;
+  kind: string;
+  ordinal: number;
+  clientScope: readonly string[];
+  projectRank: number;
+  targetSection: string | null;
+  rationalePartKey: string | null;
+}
+
+/**
+ * Whether an attempted set-doc-part write changes anything on the row.
+ *
+ * A body-only comparison is insufficient: callers are explicitly allowed to
+ * reprioritize an unchanged body (for example, to move a rule back into a
+ * client's budget). Keep this pure so the CLI's no-op guard and its regression
+ * tests share the same comparison semantics.
+ */
+export function docPartHasChanges(before: DocPartComparable, after: DocPartComparable): boolean {
+  return (
+    before.body !== after.body ||
+    before.kind !== after.kind ||
+    before.ordinal !== after.ordinal ||
+    before.projectRank !== after.projectRank ||
+    before.targetSection !== after.targetSection ||
+    before.rationalePartKey !== after.rationalePartKey ||
+    before.clientScope.length !== after.clientScope.length ||
+    before.clientScope.some((scope, index) => scope !== after.clientScope[index])
+  );
+}
+
 /**
  * Mirror every CHECK on migration 781's harness_doc_parts table before the write.
  * Keeping this pure makes the safety rail testable without a live database and
@@ -212,10 +244,7 @@ export async function getAuthoredDocContent(
  * serving, so fetching one row at a time would turn a correctness repair into an
  * N+1 database read on every cold adapter load.
  */
-export async function listAuthoredDocContents(
-  harnessSlug: string,
-  workspaceId?: string,
-): Promise<Map<string, string>> {
+export async function listAuthoredDocContents(harnessSlug: string, workspaceId?: string): Promise<Map<string, string>> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   const rows = await sql<{ doc_id: string; content: string | null }[]>`
@@ -422,11 +451,7 @@ export async function setDocOverlay(
 /** Record that a regeneration was dispatched (D-004): bump the latch timestamp AND
  *  the per-episode attempt counter (mig 386). The sweep keys its backoff/give-up off
  *  both — `regen_enqueued_at` is the retry clock, `regen_attempts` the cap counter. */
-export async function markRegenEnqueued(
-  harnessSlug: string,
-  docId: string,
-  workspaceId?: string,
-): Promise<void> {
+export async function markRegenEnqueued(harnessSlug: string, docId: string, workspaceId?: string): Promise<void> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
@@ -437,11 +462,7 @@ export async function markRegenEnqueued(
 
 /** Record that a re-verify (doc-steward) dispatch fired (D-004): bump latch + attempt
  *  counter (mig 386), same retry-clock/cap model as markRegenEnqueued. */
-export async function markReverifyFlagged(
-  harnessSlug: string,
-  docId: string,
-  workspaceId?: string,
-): Promise<void> {
+export async function markReverifyFlagged(harnessSlug: string, docId: string, workspaceId?: string): Promise<void> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
@@ -460,11 +481,7 @@ export async function markReverifyFlagged(
 // doesn't re-batch the same doc every tick — without inflating the attempt counter.
 
 /** Touch ONLY the regen retry-clock (no attempt spent). See the WI-1661 note above. */
-export async function touchRegenLatch(
-  harnessSlug: string,
-  docId: string,
-  workspaceId?: string,
-): Promise<void> {
+export async function touchRegenLatch(harnessSlug: string, docId: string, workspaceId?: string): Promise<void> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
@@ -474,11 +491,7 @@ export async function touchRegenLatch(
 }
 
 /** Touch ONLY the reverify retry-clock (no attempt spent). See the WI-1661 note above. */
-export async function touchReverifyLatch(
-  harnessSlug: string,
-  docId: string,
-  workspaceId?: string,
-): Promise<void> {
+export async function touchReverifyLatch(harnessSlug: string, docId: string, workspaceId?: string): Promise<void> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
@@ -487,11 +500,7 @@ export async function touchReverifyLatch(
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
 }
 
-export async function deleteDocRecord(
-  harnessSlug: string,
-  docId: string,
-  workspaceId?: string,
-): Promise<void> {
+export async function deleteDocRecord(harnessSlug: string, docId: string, workspaceId?: string): Promise<void> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const { sql } = getOrgPg();
   await sql`
