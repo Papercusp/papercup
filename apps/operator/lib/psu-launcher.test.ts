@@ -8322,6 +8322,7 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         fetchImpl,
         operatorUrl: "http://op:1",
         token: "tok-1",
+        resumeClaimKey: "resume-claim-1",
       }),
     ).resolves.toBe(true);
     expect(calls).toHaveLength(1);
@@ -8329,7 +8330,39 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
       "http://op:1/api/agent-mcp/console/bootstrap-su/session-resumed",
     );
     expect(calls[0].opts.headers.authorization).toBe("Bearer tok-1");
-    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 42 });
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      advSessionId: 42,
+      resumeClaimKey: "resume-claim-1",
+    });
+  });
+
+  it("retries an unknown transport result with the SAME replay key", async () => {
+    const calls: Array<{ advSessionId: number; resumeClaimKey: string }> = [];
+    const fetchImpl: typeof fetch = async (_url, opts) => {
+      calls.push(JSON.parse(String(opts?.body)));
+      if (calls.length === 1) {
+        const error = new Error("response deadline elapsed after commit");
+        error.name = "TimeoutError";
+        throw error;
+      }
+      return Response.json({ ok: true, reactivated: true });
+    };
+
+    await expect(
+      reportSessionResumed(42, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        resumeClaimKey: "resume-claim-replay-1",
+        connectBudgetMs: 0,
+        timeoutRetries: 1,
+        sleep: async () => {},
+        onNotice: () => {},
+      }),
+    ).resolves.toBe(true);
+    expect(calls).toEqual([
+      { advSessionId: 42, resumeClaimKey: "resume-claim-replay-1" },
+      { advSessionId: 42, resumeClaimKey: "resume-claim-replay-1" },
+    ]);
   });
 
   it("no adv row id → no request (untracked resumes have no row to re-activate)", async () => {
@@ -8393,6 +8426,8 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         fetchImpl,
         operatorUrl: "http://op:1",
         token: "t",
+        connectBudgetMs: 0,
+        timeoutRetries: 0,
       }),
     ).resolves.toBe(false);
   });
