@@ -12,6 +12,7 @@ export interface ExternalTriggerSourceRow {
   workspaceId: string;
   kind: string;
   ownerUserId: string | null;
+  providerAccountId: string | null;
   credentialRef: string | null;
   status: string;
   config: Record<string, unknown>;
@@ -33,6 +34,7 @@ export interface CreateOwnedExternalTriggerSourceInput {
   workspaceId: string;
   kind: string;
   ownerUserId: string;
+  providerAccountId?: string;
   credentialRef?: string | null;
   status?: string;
   config?: Record<string, unknown>;
@@ -53,6 +55,10 @@ function required(value: string, field: string): string {
   return normalized;
 }
 
+function ownedProviderAccountId(input: CreateOwnedExternalTriggerSourceInput, credentialRef: string | null): string {
+  return required(input.providerAccountId?.trim() || credentialRef || `legacy-owner:${input.ownerUserId}`, 'provider_account_id');
+}
+
 /** Provision a user-owned source from an authenticated local connection. */
 export async function createOwnedExternalTriggerSource(
   sql: postgres.Sql,
@@ -62,20 +68,22 @@ export async function createOwnedExternalTriggerSource(
   const kind = required(input.kind, 'source_kind');
   const ownerUserId = required(input.ownerUserId, 'owner_user_id');
   const credentialRef = input.credentialRef?.trim() || null;
+  const providerAccountId = ownedProviderAccountId(input, credentialRef);
   const status = input.status?.trim() || 'unconfigured';
   const config = JSON.stringify(input.config ?? {});
   const cursor = JSON.stringify(input.cursor ?? {});
   const rows = await sql<ExternalTriggerSourceRow[]>`
     INSERT INTO harness_shared.trigger_sources
-      (workspace_id, kind, owner_user_id, credential_ref, status, config, cursor, created_by)
+      (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config, cursor, created_by)
     VALUES (
-      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${credentialRef}, ${status},
+      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${providerAccountId}, ${credentialRef}, ${status},
       ${config}::text::jsonb, ${cursor}::text::jsonb, ${input.createdBy?.trim() || null}
     )
     RETURNING id::text,
               workspace_id AS "workspaceId",
               kind,
               owner_user_id::text AS "ownerUserId",
+              provider_account_id AS "providerAccountId",
               credential_ref AS "credentialRef",
               status,
               config,
@@ -97,20 +105,21 @@ export async function upsertOwnedExternalTriggerSource(
   const kind = required(input.kind, 'source_kind');
   const ownerUserId = required(input.ownerUserId, 'owner_user_id');
   const credentialRef = required(input.credentialRef ?? '', 'credential_ref');
+  const providerAccountId = ownedProviderAccountId(input, credentialRef);
   const status = input.status?.trim() || 'connected';
   const config = JSON.stringify(input.config ?? {});
   const cursor = JSON.stringify(input.cursor ?? {});
   const rows = await sql<ExternalTriggerSourceRow[]>`
     INSERT INTO harness_shared.trigger_sources
-      (workspace_id, kind, owner_user_id, credential_ref, status, config, cursor,
+      (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config, cursor,
        last_connected_at, last_error, created_by)
     VALUES (
-      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${credentialRef}, ${status},
+      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${providerAccountId}, ${credentialRef}, ${status},
       ${config}::text::jsonb, ${cursor}::text::jsonb, now(), NULL,
       ${input.createdBy?.trim() || null}
     )
-    ON CONFLICT (workspace_id, kind, owner_user_id)
-      WHERE owner_user_id IS NOT NULL
+    ON CONFLICT (workspace_id, kind, owner_user_id, provider_account_id)
+      WHERE owner_user_id IS NOT NULL AND provider_account_id IS NOT NULL
     DO UPDATE SET
       credential_ref = EXCLUDED.credential_ref,
       status = CASE
@@ -124,6 +133,7 @@ export async function upsertOwnedExternalTriggerSource(
               workspace_id AS "workspaceId",
               kind,
               owner_user_id::text AS "ownerUserId",
+              provider_account_id AS "providerAccountId",
               credential_ref AS "credentialRef",
               status,
               config,
@@ -143,6 +153,7 @@ export async function getExternalTriggerSource(
            workspace_id AS "workspaceId",
            kind,
            owner_user_id::text AS "ownerUserId",
+           provider_account_id AS "providerAccountId",
            credential_ref AS "credentialRef",
            status,
            config,
@@ -170,6 +181,7 @@ export async function listPollableExternalTriggerSources(
            workspace_id AS "workspaceId",
            kind,
            owner_user_id::text AS "ownerUserId",
+           provider_account_id AS "providerAccountId",
            credential_ref AS "credentialRef",
            status,
            config,
@@ -194,6 +206,7 @@ export async function listOwnedExternalTriggerSources(
            workspace_id AS "workspaceId",
            kind,
            owner_user_id::text AS "ownerUserId",
+           provider_account_id AS "providerAccountId",
            credential_ref AS "credentialRef",
            status,
            config,
@@ -219,6 +232,7 @@ export async function setOwnedExternalTriggerSourceCapability(
   input: {
     workspaceId: string;
     ownerUserId: string;
+    providerAccountId?: string;
     kind: string;
     credentialRef: string;
     enabled: boolean;
@@ -229,19 +243,20 @@ export async function setOwnedExternalTriggerSourceCapability(
   const ownerUserId = required(input.ownerUserId, 'owner_user_id');
   const kind = required(input.kind, 'source_kind');
   const credentialRef = required(input.credentialRef, 'credential_ref');
+  const providerAccountId = required(input.providerAccountId?.trim() || credentialRef, 'provider_account_id');
   const status = input.enabled ? 'connected' : 'disabled';
   const config = JSON.stringify({ capabilityEnabled: input.enabled });
   const rows = await sql<ExternalTriggerSourceRow[]>`
     INSERT INTO harness_shared.trigger_sources
-      (workspace_id, kind, owner_user_id, credential_ref, status, config,
+      (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config,
        last_connected_at, last_error, created_by)
     VALUES (
-      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${credentialRef}, ${status},
+      ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${providerAccountId}, ${credentialRef}, ${status},
       ${config}::text::jsonb, CASE WHEN ${input.enabled} THEN now() ELSE NULL END,
       NULL, ${input.createdBy?.trim() || null}
     )
-    ON CONFLICT (workspace_id, kind, owner_user_id)
-      WHERE owner_user_id IS NOT NULL
+    ON CONFLICT (workspace_id, kind, owner_user_id, provider_account_id)
+      WHERE owner_user_id IS NOT NULL AND provider_account_id IS NOT NULL
     DO UPDATE SET
       credential_ref = CASE
                          WHEN trigger_sources.credential_ref IS NULL THEN EXCLUDED.credential_ref
@@ -259,6 +274,7 @@ export async function setOwnedExternalTriggerSourceCapability(
               workspace_id AS "workspaceId",
               kind,
               owner_user_id::text AS "ownerUserId",
+              provider_account_id AS "providerAccountId",
               credential_ref AS "credentialRef",
               status,
               config,
@@ -277,15 +293,18 @@ export async function disconnectOwnedExternalTriggerSources(
   workspaceId: string,
   ownerUserId: string,
   kinds: string[],
+  providerAccountId?: string,
 ): Promise<DisconnectOwnedExternalTriggerSourcesResult> {
   const normalizedKinds = [...new Set(kinds.map((kind) => required(kind, 'source_kind')))];
   if (!normalizedKinds.length) throw new Error('external_trigger_source_kinds_required');
+  const accountId = providerAccountId?.trim() || null;
   const rows = await sql<Array<{ sources: number; credentialRefs: string[] }>>`
     WITH matched AS (
       SELECT id, credential_ref
         FROM harness_shared.trigger_sources
        WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
          AND owner_user_id = ${required(ownerUserId, 'owner_user_id')}::uuid
+         AND (${accountId}::text IS NULL OR provider_account_id = ${accountId})
          AND kind = ANY(${normalizedKinds as string[]}::text[])
        FOR UPDATE
     ),
@@ -336,6 +355,7 @@ export async function updateExternalTriggerSourceSyncState(
               workspace_id AS "workspaceId",
               kind,
               owner_user_id::text AS "ownerUserId",
+              provider_account_id AS "providerAccountId",
               credential_ref AS "credentialRef",
               status,
               config,
