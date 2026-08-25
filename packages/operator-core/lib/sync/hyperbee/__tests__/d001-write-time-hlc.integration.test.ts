@@ -106,6 +106,40 @@ describe('D-001 write-time HLC — a LOCAL write (mig-314 stamp) beats a higher-
     expect(c > future).toBe(true); // a later local stamp causally-follows the recv'd op
   });
 
+  it('persistent node identity and the packed sequence stay monotone across a backend reconnect', async () => {
+    // D-001/P-001 promises restart-safe identity/monotonicity, not merely two
+    // calls on one pooled connection. Closing this max:1 client destroys its
+    // server backend; the second client must get a distinct backend while the
+    // durable hlc_clock.node_id row and non-transactional sequence survive.
+    const firstClient = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
+    let first!: { h: string; pid: number; node_id: string };
+    try {
+      const [stamp] = await firstClient<{ h: string; pid: number }[]>`
+        SELECT harness_shared.hlc_now() AS h, pg_backend_pid() AS pid`;
+      const [identity] = await firstClient<{ node_id: string }[]>`
+        SELECT node_id FROM harness_shared.hlc_clock WHERE id = 1`;
+      first = { ...stamp, node_id: identity.node_id };
+    } finally {
+      await firstClient.end({ timeout: 5 });
+    }
+
+    const restartedClient = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      const [stamp] = await restartedClient<{ h: string; pid: number }[]>`
+        SELECT harness_shared.hlc_now() AS h, pg_backend_pid() AS pid`;
+      const [identity] = await restartedClient<{ node_id: string }[]>`
+        SELECT node_id FROM harness_shared.hlc_clock WHERE id = 1`;
+
+      expect(stamp.pid).not.toBe(first.pid); // proves a different PG backend served the restart
+      expect(stamp.h > first.h).toBe(true); // sequence did not reset or move backwards
+      expect(identity.node_id).toBe(first.node_id); // durable node identity survived
+      expect(first.h.split(':')[2]).toBe(first.node_id);
+      expect(stamp.h.split(':')[2]).toBe(identity.node_id);
+    } finally {
+      await restartedClient.end({ timeout: 5 });
+    }
+  });
+
   it('an open caller transaction does not block another connection from stamping or receiving HLCs (WI-38304)', async () => {
     const peer = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
     try {
