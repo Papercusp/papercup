@@ -344,6 +344,44 @@ export async function registerAwait(input: {
       return { ...mapAwait(rows[0]), supersededPendingCount: superseded.length };
     });
   }
+  // A generation-pinned registration must keep the declaration lock through
+  // its insert even when the caller does not request supersession. Otherwise
+  // an announcement can fire or be replaced after the validation read and
+  // before the waiter row is committed.
+  if (input.expectedGeneration != null) {
+    return boundedOrgTxn(async (tx) => {
+      await assertGenerationPin(tx);
+      const rows = input.boundTo
+        ? await tx`
+            INSERT INTO harness_shared.event_awaits
+              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
+               expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health, bound_to)
+            VALUES
+              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+               ${input.urgency ?? false},
+               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
+               ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
+            RETURNING *
+          `
+        : await tx`
+            INSERT INTO harness_shared.event_awaits
+              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
+               expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
+            VALUES
+              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+               ${input.urgency ?? false},
+               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
+            RETURNING *
+          `;
+      return mapAwait(rows[0]);
+    });
+  }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
   // supplied. Besides preserving manual-watch semantics, this lets older
   // hand-rolled test fixtures keep exercising the unbound path honestly.
