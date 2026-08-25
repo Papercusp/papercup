@@ -33,8 +33,13 @@ describe('provisionGoogleGmailPubSub', () => {
       if (url.endsWith('/topics/papercusp-gmail-push') && method === 'PUT') {
         return json({ name: 'projects/active-alcove-504205-q3/topics/papercusp-gmail-push' });
       }
-      if (url.endsWith(':getIamPolicy')) return json({ etag: 'etag', bindings: [] });
-      if (url.endsWith(':setIamPolicy')) return json(JSON.parse(String(init?.body)).policy);
+      // Method-aware ON PURPOSE (WI-41682): Pub/Sub routes topics.getIamPolicy
+      // as a GET, and a double that answers any verb cannot tell a correct call
+      // from the POST that silently 404s against the real API.
+      if (url.endsWith(':getIamPolicy') && method === 'GET') return json({ etag: 'etag', bindings: [] });
+      if (url.endsWith(':setIamPolicy') && method === 'POST') {
+        return json(JSON.parse(String(init?.body)).policy);
+      }
       if (url.endsWith(`/subscriptions/${SUBSCRIPTION_ID}`) && method === 'GET') return json({}, 404);
       if (url.endsWith(`/subscriptions/${SUBSCRIPTION_ID}`) && method === 'PUT') {
         return json({ name: `projects/active-alcove-504205-q3/subscriptions/${SUBSCRIPTION_ID}` });
@@ -53,6 +58,13 @@ describe('provisionGoogleGmailPubSub', () => {
       subscription: 'created',
       publisherGrant: 'added',
     });
+    // WI-41682: the real API routes topics.getIamPolicy as a GET only. A POST
+    // 404s against an HTML error page, which request() folds into its 404 branch
+    // and reports as a missing policy — so pin the verb, and the absent body.
+    const getPolicyCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith(':getIamPolicy'));
+    expect(getPolicyCall?.[1]?.method).toBe('GET');
+    expect(getPolicyCall?.[1]?.body).toBeUndefined();
+
     const setPolicyCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith(':setIamPolicy'));
     const setPolicy = JSON.parse(String(setPolicyCall?.[1]?.body));
     expect(setPolicy.policy.bindings).toContainEqual({
@@ -77,7 +89,7 @@ describe('provisionGoogleGmailPubSub', () => {
     const topicName = 'projects/active-alcove-504205-q3/topics/papercusp-gmail-push';
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith(':getIamPolicy')) {
+      if (url.endsWith(':getIamPolicy') && init?.method === 'GET') {
         return json({ bindings: [{ role: 'roles/pubsub.publisher', members: [GMAIL_PUSH_PUBLISHER] }] });
       }
       if (url.includes('/subscriptions/')) return json({ topic: topicName });
@@ -94,10 +106,32 @@ describe('provisionGoogleGmailPubSub', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('reports an unroutable getIamPolicy instead of blaming a missing policy', async () => {
+    // Reproduces the live WI-41682 failure: the topic exists, but the policy
+    // read 404s. Because the topic provably exists by that point, and an empty
+    // policy answers 200 with an etag, a 404 can only mean the request never
+    // reached topics.getIamPolicy — the error must say so rather than assert
+    // something false about the policy itself.
+    const topicName = 'projects/active-alcove-504205-q3/topics/papercusp-gmail-push';
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(':getIamPolicy')) return json({}, 404);
+      if (url.includes('/topics/') && init?.method === 'GET') return json({ name: topicName });
+      throw new Error(`unexpected request ${init?.method} ${url}`);
+    });
+
+    await expect(
+      provisionGoogleGmailPubSub(INPUT, {
+        fetch: fetchMock as typeof fetch,
+        getAccessToken: async () => 'access-token',
+      }),
+    ).rejects.toThrow(/get_topic_iam_policy_unroutable/);
+  });
+
   it('fails closed when an existing subscription points at another topic', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith(':getIamPolicy')) {
+      if (url.endsWith(':getIamPolicy') && init?.method === 'GET') {
         return json({ bindings: [{ role: 'roles/pubsub.publisher', members: [GMAIL_PUSH_PUBLISHER] }] });
       }
       if (url.includes('/subscriptions/')) {
