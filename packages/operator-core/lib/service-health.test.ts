@@ -13,6 +13,8 @@ import {
   CONNECT_PREFLIGHT_MS,
   evaluateBgHostTicker,
   evaluateBgHostCodeDrift,
+  evaluateMcpProxyCodeDrift,
+  MCP_PROXY_HOT_PATHS,
   probeBgHostCodeDrift,
   BG_HOST_HOT_PATHS,
   BG_HOST_STALE_MS,
@@ -768,6 +770,64 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
   it('drift is floored at ~1m so a seconds-level drift never rounds to "~0m"', () => {
     const res = evaluateBgHostCodeDrift(NOW - 10_000, NOW - 5_000, 'abc');
     expect(res.note).toMatch(/~1m AFTER/);
+  });
+});
+
+describe('evaluateMcpProxyCodeDrift (EI-21390665295968159 — stale :9071 proxy detection)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('covers the code the proxy unit actually tsx-loads (lib + the bin entrypoint)', () => {
+    // ExecStart is `npx tsx bin/mcp-proxy.ts`, which imports lib/mcp-proxy/*. Miss either
+    // and a landed proxy fix reads as "current" while the live process is pre-fix — the
+    // exact false-negative EI-20365119255138043 caught for the bg-host git-sync path.
+    expect(MCP_PROXY_HOT_PATHS).toContain('apps/operator/lib/mcp-proxy');
+    expect(MCP_PROXY_HOT_PATHS).toContain('apps/operator/bin/mcp-proxy.ts');
+  });
+
+  it('proxy code changed AFTER boot → drift flagged; up stays true (restart severs live agent calls, so it is never an auto-restart nudge)', () => {
+    const res = evaluateMcpProxyCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'apps/operator/lib/mcp-proxy/proxy.ts');
+    expect(res.name).toBe('mcp-proxy-code');
+    expect(res.up).toBe(true);
+    expect(res.present).not.toBe(false);
+    expect(res.note).toMatch(/CODE DRIFT/);
+    expect(res.note).toMatch(/proxy\.ts/);
+    expect(res.note).toMatch(/~50m AFTER/);
+    expect(res.note).toMatch(/systemctl --user restart papercup-mcp-proxy\.service/);
+  });
+
+  it('names the symptom an agent actually greps for — a proxy failure that was already fixed', () => {
+    // The reproduction: the FIFO handshake-admission fix landed 04:27Z, the proxy booted
+    // 04:08Z, and three separate agents filed three bugs against the surviving symptoms.
+    const res = evaluateMcpProxyCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'proxy.ts');
+    expect(res.note).toMatch(/failure you already fixed/);
+    expect(res.note).toMatch(/EI-21390665295968159/);
+  });
+
+  it('proxy code OLDER than the boot → current, no drift language', () => {
+    const res = evaluateMcpProxyCodeDrift(NOW - 10 * 60_000, NOW - 60 * 60_000, 'x.ts');
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/code current/);
+    expect(res.note).not.toMatch(/DRIFT/);
+  });
+
+  it('unknown boot time or change time → present:false (fail-soft, never a fabricated drift)', () => {
+    expect(evaluateMcpProxyCodeDrift(null, NOW).present).toBe(false);
+    expect(evaluateMcpProxyCodeDrift(NOW, null).present).toBe(false);
+    expect(evaluateMcpProxyCodeDrift(null, null).note).toMatch(/unknown/);
+  });
+
+  it('drift is floored at ~1m so a seconds-level drift never rounds to "~0m"', () => {
+    expect(evaluateMcpProxyCodeDrift(NOW - 10_000, NOW - 5_000, 'abc').note).toMatch(/~1m AFTER/);
+  });
+
+  it('the two code-drift verdicts stay distinguishable — same shape, different name and restart command', () => {
+    // They share one implementation; a successor refactoring that helper must not let the
+    // proxy verdict start telling agents to restart the bg-host (or vice versa).
+    const proxy = evaluateMcpProxyCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'a.ts');
+    const bgHost = evaluateBgHostCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'a.ts');
+    expect(proxy.name).not.toBe(bgHost.name);
+    expect(proxy.note).not.toMatch(/papercup-bg-host/);
+    expect(bgHost.note).not.toMatch(/papercup-mcp-proxy/);
   });
 });
 
