@@ -620,6 +620,7 @@ export const PORTLESS_PROBE_NAMES = {
   desktop: 'desktop',
   bgHostTicker: 'bg-host-ticker',
   bgHostCode: 'bg-host-code',
+  mcpProxyCode: 'mcp-proxy-code',
   substrateSidecar: 'substrate-sidecar',
   embedSidecar: 'embed-sidecar',
 } as const;
@@ -697,6 +698,25 @@ export const BG_HOST_HOT_PATHS = [
 ] as const;
 
 /**
+ * The code the :9071 MCP proxy tsx-loads at import (EI-21390665295968159). The unit is
+ * `ExecStart=npx tsx bin/mcp-proxy.ts` against the WORKING TREE with no file-watch, so it
+ * has the identical stale-code property as the bg-host above: a landed proxy fix does
+ * nothing until the unit is restarted, and NOTHING made that visible.
+ *
+ * This is not hypothetical. On 2026-08-25 the proxy booted 04:08Z, a peer landed the
+ * bounded FIFO handshake-admission queue at 04:27Z (swept into da8ae3d8 at 04:49Z), and
+ * the live proxy went on shedding under the PRE-fix path for hours — still emitting the
+ * `shed_handshake_bulkhead` telemetry kind that by then existed in no file in the tree.
+ * Three separate agents filed three separate bugs against the SYMPTOMS
+ * (EI-21390665295968159, EI-21394957999406125, EI-21394957105776098) because the stale
+ * process was invisible. That is the cost this probe exists to remove.
+ */
+export const MCP_PROXY_HOT_PATHS = [
+  'apps/operator/lib/mcp-proxy',
+  'apps/operator/bin/mcp-proxy.ts',
+] as const;
+
+/**
  * Pure verdict for bg-host CODE DRIFT (WI-1867), from the bg-host process start (ms)
  * + the newest hot-path ON-DISK CHANGE (ms; the bg-host tsx-loads the WORKING TREE at
  * import, so file mtime — not commit time — is the honest "what code would a restart
@@ -711,27 +731,61 @@ export function evaluateBgHostCodeDrift(
   hotChangeMs: number | null,
   newestFile?: string | null,
 ): ProbeResult {
-  const name = PORTLESS_PROBE_NAMES.bgHostCode;
-  if (bootMs == null || hotChangeMs == null) {
-    return { name, up: true, status: null, latencyMs: 0, present: false, note: 'bg-host code-drift unknown (boot time or hot-path change time unreadable)' };
-  }
-  const drifted = hotChangeMs > bootMs;
-  if (!drifted) {
-    return { name, up: true, status: null, latencyMs: 0, note: 'bg-host code current (no routine hot-path change on disk since its boot)' };
-  }
-  const behindMin = Math.max(1, Math.round((hotChangeMs - bootMs) / 60_000));
-  const which = newestFile ? ` (newest: ${newestFile})` : '';
-  return {
-    name,
-    up: true,
-    status: null,
-    latencyMs: 0,
-    note:
+  return evaluateCodeDrift(PORTLESS_PROBE_NAMES.bgHostCode, bootMs, hotChangeMs, newestFile, {
+    unknown: 'bg-host code-drift unknown (boot time or hot-path change time unreadable)',
+    current: 'bg-host code current (no routine hot-path change on disk since its boot)',
+    drift: (behindMin, which) =>
       `⚠ bg-host CODE DRIFT: routine hot-path code changed on disk${which} ~${behindMin}m AFTER papercup-bg-host booted — ` +
       `loop fires / scheduled routines / wake emits are running STALE code until ` +
       `\`systemctl --user restart papercup-bg-host.service\`. If you just landed routine-behavior code and it ` +
       `"doesn't take effect", this is why (see agent-insights/bg-host-runs-stale-routine-code).`,
-  };
+  });
+}
+
+/**
+ * Pure verdict for :9071 MCP-PROXY CODE DRIFT (EI-21390665295968159), same inputs and
+ * same fail-soft contract as {@link evaluateBgHostCodeDrift}. Drift is reported `up:true`
+ * on purpose: the proxy is SERVING — it is just serving as-of an older snapshot — so this
+ * never fires a down-transition alarm or nudges an auto-restart. Restarting the proxy
+ * severs every in-flight agent MCP call, so it stays a human/agent decision; this is only
+ * the loud signal that it is due.
+ */
+export function evaluateMcpProxyCodeDrift(
+  bootMs: number | null,
+  hotChangeMs: number | null,
+  newestFile?: string | null,
+): ProbeResult {
+  return evaluateCodeDrift(PORTLESS_PROBE_NAMES.mcpProxyCode, bootMs, hotChangeMs, newestFile, {
+    unknown: 'mcp-proxy code-drift unknown (boot time or hot-path change time unreadable)',
+    current: 'mcp-proxy code current (no proxy hot-path change on disk since its boot)',
+    drift: (behindMin, which) =>
+      `⚠ mcp-proxy CODE DRIFT: :9071 proxy code changed on disk${which} ~${behindMin}m AFTER papercup-mcp-proxy booted — ` +
+      `the proxy tsx-loads the working tree with NO file-watch, so admission control / handshake ` +
+      `bulkhead / retry behaviour is running STALE code until ` +
+      `\`systemctl --user restart papercup-mcp-proxy.service\`. If agents are still hitting a proxy ` +
+      `failure you already fixed, this is why (EI-21390665295968159).`,
+  });
+}
+
+/** Shared pure verdict for a "tsx-loads the working tree, no file-watch" unit: process
+ *  boot (ms) vs the newest ON-DISK change under its hot paths (ms). Unknown inputs ⇒
+ *  present:false (fail-soft, never a fabricated verdict). */
+function evaluateCodeDrift(
+  name: string,
+  bootMs: number | null,
+  hotChangeMs: number | null,
+  newestFile: string | null | undefined,
+  copy: { unknown: string; current: string; drift: (behindMin: number, which: string) => string },
+): ProbeResult {
+  if (bootMs == null || hotChangeMs == null) {
+    return { name, up: true, status: null, latencyMs: 0, present: false, note: copy.unknown };
+  }
+  if (hotChangeMs <= bootMs) {
+    return { name, up: true, status: null, latencyMs: 0, note: copy.current };
+  }
+  const behindMin = Math.max(1, Math.round((hotChangeMs - bootMs) / 60_000));
+  const which = newestFile ? ` (newest: ${newestFile})` : '';
+  return { name, up: true, status: null, latencyMs: 0, note: copy.drift(behindMin, which) };
 }
 
 /** Probe bg-host code drift (WI-1867): unit MainPID elapsed-seconds vs the newest
@@ -740,6 +794,50 @@ export function evaluateBgHostCodeDrift(
  *  Fail-soft at every step (no systemd / no unit / no tree ⇒ present:false, never a
  *  phantom drift). */
 export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<ProbeResult> {
+  return probeCodeDrift(
+    {
+      name: PORTLESS_PROBE_NAMES.bgHostCode,
+      unit: process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host',
+      hotPaths: BG_HOST_HOT_PATHS,
+      evaluate: evaluateBgHostCodeDrift,
+      platformNote: 'bg-host code-drift probe is Linux/systemd-only — not applicable on this platform',
+      failedNote: 'bg-host code-drift unknown (probe failed)',
+    },
+    now,
+  );
+}
+
+/** Probe :9071 MCP-proxy code drift (EI-21390665295968159): the `papercup-mcp-proxy` unit's
+ *  start time vs the newest *.ts mtime under {@link MCP_PROXY_HOT_PATHS} in the tree it
+ *  tsx-loads from. Same fail-soft contract as the bg-host probe — no systemd / no unit /
+ *  no tree ⇒ present:false, never a phantom drift. */
+export async function probeMcpProxyCodeDrift(now: number = Date.now()): Promise<ProbeResult> {
+  return probeCodeDrift(
+    {
+      name: PORTLESS_PROBE_NAMES.mcpProxyCode,
+      unit: process.env.PAPERCUSP_MCP_PROXY_UNIT || 'papercup-mcp-proxy',
+      hotPaths: MCP_PROXY_HOT_PATHS,
+      evaluate: evaluateMcpProxyCodeDrift,
+      platformNote: 'mcp-proxy code-drift probe is Linux/systemd-only — not applicable on this platform',
+      failedNote: 'mcp-proxy code-drift unknown (probe failed)',
+    },
+    now,
+  );
+}
+
+/** Shared probe mechanics for the code-drift family: unit start via the shared systemd
+ *  probe, newest hot-path *.ts mtime via GNU `find -printf` in the integration tree. */
+async function probeCodeDrift(
+  spec: {
+    name: string;
+    unit: string;
+    hotPaths: readonly string[];
+    evaluate: (bootMs: number | null, hotChangeMs: number | null, newestFile?: string | null) => ProbeResult;
+    platformNote: string;
+    failedNote: string;
+  },
+  now: number = Date.now(),
+): Promise<ProbeResult> {
   const start = Date.now();
   // Linux/systemd-only probe: MainPID via `systemctl --user`, elapsed via `ps etimes`,
   // newest mtime via GNU `find -printf` — none of which exist on macOS. Short-circuit to an
@@ -750,12 +848,12 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
   // short-circuited here — the inner try/catch stays the backstop for WSL-without-systemd.
   if (process.platform !== 'linux') {
     return {
-      name: PORTLESS_PROBE_NAMES.bgHostCode,
+      name: spec.name,
       up: true,
       status: null,
       latencyMs: Date.now() - start,
       present: false,
-      note: 'bg-host code-drift probe is Linux/systemd-only — not applicable on this platform',
+      note: spec.platformNote,
     };
   }
   try {
@@ -767,12 +865,11 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
     // suffix correctly (EI-18700974567040702) and distinguishes "MainPID 0 = not
     // running" from "probe failed", which this call site used to conflate.
     const { probeServiceStart } = await import('./agent-tools/dev/systemd-service-probe');
-    const unit = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host';
-    const svc = await probeServiceStart(unit);
+    const svc = await probeServiceStart(spec.unit);
     const bootMs =
       svc.ok && svc.secondsSinceStart !== undefined ? now - svc.secondsSinceStart * 1000 : null;
     if (bootMs === null) {
-      return { ...evaluateBgHostCodeDrift(null, null), latencyMs: Date.now() - start };
+      return { ...spec.evaluate(null, null), latencyMs: Date.now() - start };
     }
     // Newest hot-path *.ts mtime in the integration tree (the tree the bg-host runs from).
     let integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
@@ -782,7 +879,7 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
     }
     const { stdout: findOut } = await run(
       'find',
-      [...BG_HOST_HOT_PATHS, '-name', '*.ts', '-not', '-name', '*.test.ts', '-printf', '%T@ %p\n'],
+      [...spec.hotPaths, '-name', '*.ts', '-not', '-name', '*.test.ts', '-printf', '%T@ %p\n'],
       { timeout: 5000, cwd: integrationRoot, maxBuffer: 4 * 1024 * 1024 },
     );
     let hotChangeMs: number | null = null;
@@ -796,9 +893,9 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
         newestFile = line.slice(sp + 1);
       }
     }
-    return { ...evaluateBgHostCodeDrift(bootMs, hotChangeMs, newestFile), latencyMs: Date.now() - start };
+    return { ...spec.evaluate(bootMs, hotChangeMs, newestFile), latencyMs: Date.now() - start };
   } catch {
-    return { name: PORTLESS_PROBE_NAMES.bgHostCode, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'bg-host code-drift unknown (probe failed)' };
+    return { name: spec.name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: spec.failedNote };
   }
 }
 
@@ -1281,15 +1378,16 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // the embed sidecar HAS a port but is opt-in, so its probe is present:false-aware
   // rather than a raw HEALTH_ENDPOINTS entry (phantom-DOWN guard).
   const probeSpecs = specs ?? resolveHealthEndpoints();
-  const [http, desktop, bgHostTicker, bgHostCode, substrateSidecar, embedSidecar] = await Promise.all([
+  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar] = await Promise.all([
     Promise.all(probeSpecs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
     probeBgHostCodeDrift(),
+    probeMcpProxyCodeDrift(),
     probeSubstrateSidecar(),
     probeEmbedSidecar(),
   ]);
-  return [...http, desktop, bgHostTicker, bgHostCode, substrateSidecar, embedSidecar];
+  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar];
 }
 
 /**
@@ -1312,6 +1410,8 @@ export async function probeNamedService(name: string): Promise<ProbeResult | nul
       return probeBgHostTicker();
     case PORTLESS_PROBE_NAMES.bgHostCode:
       return probeBgHostCodeDrift();
+    case PORTLESS_PROBE_NAMES.mcpProxyCode:
+      return probeMcpProxyCodeDrift();
     case PORTLESS_PROBE_NAMES.substrateSidecar:
       return probeSubstrateSidecar();
     case PORTLESS_PROBE_NAMES.embedSidecar:
