@@ -40,6 +40,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getCell } from '../../cell-registry';
 import { resolveSelfSubject } from '../../cell-suggest';
 import { PREDICATE_OPS } from '../../events/await/predicate-watch';
+import { softText, clampText, LIMITS } from '../limits';
 import watchTool from '../events/watch';
 
 export default defineTool({
@@ -92,7 +93,9 @@ export default defineTool({
       .describe('RENAMED to `target` ("value" is now "measurement"). Refused, never translated — see the refusal.'),
     once: z.boolean().optional().describe('true (DEFAULT) = fire once then clear. false = standing; re-fires on each false→true cross.'),
     interval_sec: z.number().int().min(15).max(3600).optional().describe('Poll cadence (default 60).'),
-    note: z.string().max(2000).optional().describe('Why you are watching — echoed into the wake turn.'),
+    note: softText(LIMITS.ANNOTATION)
+      .optional()
+      .describe('Why you are watching — echoed into the wake turn. Auto-truncated to 2000 chars if longer — never refused for length (P-012).'),
   }),
   async handler(args, ctx) {
     /**
@@ -318,6 +321,18 @@ export default defineTool({
           ? (spec.materiality as { path: string }).path
           : spec.changeSignal.path;
 
+    // P-012 — an over-cap `note` is TRUNCATED and reported, never refused: the
+    // primitive whose job is to replace polling must not bounce a caller over prose
+    // length (9 of 57 measured calls — 16% of all refusals — were for exactly this).
+    // Same softText/clampText contract the delegate (watch:create) applies to its own
+    // `note`; the old `z.string().max(2000)` here refused at parse time, BEFORE the
+    // handler or the delegate's clamp could run.
+    const noteClamped = clampText(args.note, LIMITS.ANNOTATION);
+    const noteTruncated =
+      typeof args.note === 'string' && typeof noteClamped === 'string' && noteClamped.length < args.note.length
+        ? { originalChars: args.note.length, storedChars: noteClamped.length }
+        : null;
+
     // DELEGATE. The cell contributes exactly the triple it already declares; every
     // other knob is watch:create's, unchanged. Parsing through watch:create's own
     // schema (rather than hand-building its args) means a change to that schema
@@ -330,7 +345,7 @@ export default defineTool({
       // `measurement` stays unannotated: it is what an unqualified "cell X changed"
       // has always meant, and re-labelling it would churn every existing note.
       note:
-        args.note ??
+        noteClamped ??
         `cell ${args.cell}${target === 'measurement' ? '' : ` (${target})`} ${on.op}${on.value === undefined ? '' : ` ${JSON.stringify(on.value)}`}`,
       predicate: {
         tool: spec.changeSignal.tool,
@@ -340,6 +355,22 @@ export default defineTool({
         ...(on.value === undefined ? {} : { value: on.value }),
       },
     });
-    return watchTool.handler(watchArgs as never, ctx);
+    const result = await watchTool.handler(watchArgs as never, ctx);
+    if (noteTruncated) {
+      // Stamp the repair on the delegate's own success body so the caller SEES the
+      // truncation (P-012: "truncate with a warning") without a second content item.
+      const first = (result as { content?: Array<{ type?: string; text?: string }> } | null)?.content?.[0];
+      if (first && first.type === 'text' && typeof first.text === 'string') {
+        try {
+          const parsed = JSON.parse(first.text) as Record<string, unknown>;
+          parsed.noteTruncated = noteTruncated;
+          parsed.noteRepair = `note exceeded the ${LIMITS.ANNOTATION}-char soft cap and was stored truncated (${noteTruncated.originalChars} → ${noteTruncated.storedChars} chars) — accepted, not refused (P-012).`;
+          first.text = JSON.stringify(parsed);
+        } catch {
+          // Non-JSON delegate body: the truncation itself still applied; skip the stamp.
+        }
+      }
+    }
+    return result;
   },
 });

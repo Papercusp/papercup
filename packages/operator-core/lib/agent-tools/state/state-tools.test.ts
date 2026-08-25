@@ -23,6 +23,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const watchHandler = vi.fn();
 const readCellMock = vi.fn();
@@ -260,6 +261,55 @@ describe('state:subscribe — R4, it DELEGATES to watch:create and registers not
     const sent = watchHandler.mock.calls[0][0] as Record<string, unknown>;
     expect(sent.once).toBe(false);
     expect(sent.interval_sec).toBe(120);
+  });
+});
+
+describe('state:subscribe — an over-cap note is truncated and reported, never refused (P-012)', () => {
+  it('accepts a 2203-char note, clamps it to 2000 for the delegate, and stamps the repair on the result', async () => {
+    registerCell(spec());
+    const long = 'n'.repeat(2203); // the measured shape: 203 chars over the cap
+
+    const r = await subscribeTool.handler(
+      { cell: 'test.cell', target: 'measurement', on: { op: 'eq', value: true }, note: long } as never,
+      CTX as never,
+    );
+
+    expect((r as Out).isError).not.toBe(true);
+    expect(watchHandler).toHaveBeenCalledTimes(1);
+    const sent = watchHandler.mock.calls[0][0] as { note: string };
+    expect(sent.note).toHaveLength(2000);
+    expect(sent.note).toBe(long.slice(0, 2000));
+    const b = body(r);
+    expect(b.noteTruncated).toEqual({ originalChars: 2203, storedChars: 2000 });
+    expect(String(b.noteRepair)).toContain('accepted, not refused');
+  });
+
+  it('passes an at-cap note through byte-identical with no repair marker', async () => {
+    registerCell(spec());
+    const exact = 'x'.repeat(2000);
+
+    const r = await subscribeTool.handler(
+      { cell: 'test.cell', target: 'measurement', on: { op: 'eq', value: true }, note: exact } as never,
+      CTX as never,
+    );
+
+    const sent = watchHandler.mock.calls[0][0] as { note: string };
+    expect(sent.note).toBe(exact);
+    const b = body(r);
+    expect('noteTruncated' in b).toBe(false);
+    expect('noteRepair' in b).toBe(false);
+  });
+
+  // The deliberately-wrong control at the SCHEMA layer: the pre-fix shape
+  // (z.string().max(2000)) refuses this exact parse before any handler runs —
+  // which was the whole bug. The softText shape must accept it.
+  it('the args schema itself parses an over-cap note (the old .max(2000) hard refusal is gone)', () => {
+    const parsed = subscribeTool.args.safeParse({ cell: 'test.cell', note: 'y'.repeat(2203) });
+    expect(parsed.success).toBe(true);
+    // And the historical control: the old shape really would have refused it,
+    // proving this test can fail (falsifiability, not tautology).
+    const oldShape = z.object({ note: z.string().max(2000).optional() });
+    expect(oldShape.safeParse({ note: 'y'.repeat(2203) }).success).toBe(false);
   });
 });
 
