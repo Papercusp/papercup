@@ -17,6 +17,7 @@ const getRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const readVettingConsultCritique = vi.fn();
+const readVettingWorkItemCritique = vi.fn();
 
 /** The critique verdict shape readVettingConsultCritique returns. */
 const critique = (over: Record<string, unknown> = {}) => ({
@@ -54,6 +55,9 @@ vi.mock('../../consult/get-feedback-core', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../consult/get-feedback-core')>();
   return { ...real, readVettingConsultCritique: (...a: unknown[]) => readVettingConsultCritique(...a) };
 });
+vi.mock('../../work-items', () => ({
+  readVettingWorkItemCritique: (...a: unknown[]) => readVettingWorkItemCritique(...a),
+}));
 vi.mock('../../workspace-registry', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../workspace-registry')>();
   return { ...real, activeWorkspaceId: () => 'ws-test' };
@@ -120,6 +124,9 @@ const vettingArgs = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+const workItemVettingArgs = (over: Record<string, unknown> = {}) =>
+  vettingArgs({ vettingConsult: undefined, vettingWorkItem: 'WI-review-1', ...over });
+
 beforeEach(() => {
   getRubric.mockReset().mockImplementation(async (id: unknown) => {
     if (id === 'meta-acceptance-rubric') return META_RUBRIC;
@@ -130,6 +137,11 @@ beforeEach(() => {
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
   readVettingConsultCritique.mockReset().mockResolvedValue(critique());
+  readVettingWorkItemCritique.mockReset().mockResolvedValue({
+    exists: true,
+    critiquePosts: 2,
+    critics: ['su-reviewer'],
+  });
 });
 
 describe('scorecards:emit vetting stamp (P-004)', () => {
@@ -148,6 +160,54 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
       critics: ['su-reviewer'],
     });
     expect(payload.payloadExtra.observation.subject).toEqual({ kind: 'rubric', ref: 'ar-some-plan' });
+  });
+
+  it('stamps observation.vetting { workItemId, rubricRevision, critiquePosts, critics } when a work-item carries critique', async () => {
+    const res = await emitScorecard(workItemVettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(true);
+    expect(readVettingWorkItemCritique).toHaveBeenCalledWith('WI-review-1', ['su-author', 'su-author', 'su-author']);
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: Record<string, unknown> };
+    };
+    expect(payload.payloadExtra.observation.vetting).toEqual({
+      workItemId: 'WI-review-1',
+      rubricRevision: 7,
+      critiquePosts: 2,
+      critics: ['su-reviewer'],
+    });
+  });
+
+  it('refuses a work-item link that does not resolve', async () => {
+    readVettingWorkItemCritique.mockResolvedValue({ exists: false, critiquePosts: 0, critics: [] });
+    const res = await emitScorecard(workItemVettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('WI-review-1');
+    expect(res.error).toContain('not found');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses a work-item with no third-party critique rather than accepting an empty review', async () => {
+    readVettingWorkItemCritique.mockResolvedValue({ exists: true, critiquePosts: 0, critics: [] });
+    const res = await emitScorecard(workItemVettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('NO third-party critique');
+    expect(res.error).toContain('vettingConsult + vettingUnanswered');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses passing both alternate vetting channels and refuses a work-item waiver', async () => {
+    const both = await emitScorecard(workItemVettingArgs({ vettingConsult: 'conv-vet-1' }) as never, EMIT_INPUT);
+    expect(both.ok).toBe(false);
+    if (both.ok) throw new Error('expected refusal');
+    expect(both.error).toContain('EXACTLY ONE');
+
+    const waiver = await emitScorecard(workItemVettingArgs({ vettingUnanswered: true }) as never, EMIT_INPUT);
+    expect(waiver.ok).toBe(false);
+    if (waiver.ok) throw new Error('expected refusal');
+    expect(waiver.error).toContain('consult-only');
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 
   it('refuses vettingConsult without a subject naming the vetted rubric', async () => {
