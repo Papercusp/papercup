@@ -113,6 +113,8 @@ pub enum Event {
     /// Read-only operator-config overview (P10b) for the Settings tab — AI backend
     /// + per-role models + connected speech providers.
     OperatorConfig(OperatorConfig),
+    /// Fresh inference-gateway pool rows for the Agent Chat account picker.
+    AccountRows(Vec<crate::session_config::AccountRow>),
     /// Fleet-wide work items (work_items:list) for the Fleet tab (P0).
     WorkItems(Vec<WorkItem>),
     /// Activity backfill (activity:recent, newest-first) seeding the Fleet feed (P1).
@@ -266,6 +268,8 @@ pub enum Event {
     AgentChatLoaded {
         harness: String,
         chat_id: Option<String>,
+        role: String,
+        summaries: Vec<crate::agent_chats::AgentChatSummary>,
         messages: Vec<crate::models::ChatMessage>,
         approvals: Vec<crate::models::PendingApproval>,
     },
