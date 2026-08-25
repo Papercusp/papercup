@@ -2089,6 +2089,32 @@ export function createFatalProcessHandler(
   };
 }
 
+/**
+ * Production terminal finalizer shared by the CLI promise-rejection and process-fatal paths.
+ * Keeping the terminal claim, watchdog cancellation, typed-result emission, and lock release in
+ * one exported seam lets the dependency-generation recurrence exercise the exact controller the
+ * CLI installs instead of reconstructing a look-alike finalizer in a test.
+ */
+export function createFatalCheckpointFinalizer(deps: {
+  claimTerminal: (owner: "crash") => boolean;
+  cancelWatchdog: () => void;
+  logFailure: (error: unknown) => void;
+  emitCrashResult: (error: unknown) => Promise<void>;
+  releaseLock: () => void;
+}): (error: unknown) => Promise<boolean> {
+  return async (error: unknown): Promise<boolean> => {
+    if (!deps.claimTerminal("crash")) return false;
+    deps.cancelWatchdog();
+    deps.logFailure(error);
+    try {
+      await deps.emitCrashResult(error);
+    } finally {
+      deps.releaseLock();
+    }
+    return true;
+  };
+}
+
 /** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
  *  release-actions routine parses one delimited line instead of brace-slicing the whole
  *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
@@ -14413,20 +14439,17 @@ if (require.main === module) {
       if (terminalOwner !== "signal") return;
       releaseAndExit(code);
     };
-    const finalizeFatalError = async (e: unknown): Promise<boolean> => {
-      if (!claimTerminal("crash")) return false;
-      watchdog.cancel();
-      console.error(
-        `${orchestratorStdoutTag()} FAILED:`,
-        e instanceof Error ? e.message : e,
-      );
-      try {
-        await emitCrashResult(e);
-      } finally {
-        lock.release();
-      }
-      return true;
-    };
+    const finalizeFatalError = createFatalCheckpointFinalizer({
+      claimTerminal,
+      cancelWatchdog: watchdog.cancel,
+      logFailure: (e) =>
+        console.error(
+          `${orchestratorStdoutTag()} FAILED:`,
+          e instanceof Error ? e.message : e,
+        ),
+      emitCrashResult,
+      releaseLock: lock.release,
+    });
     const handleFatalProcessError = createFatalProcessHandler(
       finalizeFatalError,
       (code) => process.exit(code),
