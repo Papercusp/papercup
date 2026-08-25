@@ -100,10 +100,7 @@ export async function adoptAgentName(
 }
 
 /** The agent-name this session has adopted, or null. */
-export async function resolveAdoptedName(
-  workspaceId: string,
-  sessionOwnerId: string,
-): Promise<string | null> {
+export async function resolveAdoptedName(workspaceId: string, sessionOwnerId: string): Promise<string | null> {
   const { sql } = getOrgPg();
   const rows = await sql<{ agent_name: string }[]>`
     SELECT agent_name FROM harness_shared.agent_name_sessions
@@ -117,10 +114,7 @@ export async function resolveAdoptedName(
  * first. Liveness is deliberately resolved by the caller: this registry is the
  * durable name→session binding, not a second presence oracle.
  */
-export async function listSessionsForAgentName(
-  workspaceId: string,
-  agentName: string,
-): Promise<AdoptionRow[]> {
+export async function listSessionsForAgentName(workspaceId: string, agentName: string): Promise<AdoptionRow[]> {
   const { sql } = getOrgPg();
   const rows = await sql<AdoptionDbRow[]>`
     SELECT workspace_id, session_owner_id, agent_name, owner_user, adopted_at

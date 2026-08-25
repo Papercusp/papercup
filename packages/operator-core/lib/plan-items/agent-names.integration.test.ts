@@ -34,8 +34,7 @@ const {
   agentNameOwner,
   listNamesForOwner,
   listSessionsForAgentName,
-} =
-  await import('./agent-names');
+} = await import('./agent-names');
 
 const WS = 'ws-names';
 let rootSql: postgres.Sql;
@@ -103,7 +102,11 @@ describe('agent-names registry (PG)', () => {
     await registerAgentName(WS, 'builder-3', 'alice');
     await registerAgentName(WS, 'builder-2', 'alice');
     await registerAgentName(WS, 'other-1', 'bob');
-    expect((await listNamesForOwner(WS, 'alice')).map((n) => n.agentName)).toEqual(['builder-1', 'builder-2', 'builder-3']);
+    expect((await listNamesForOwner(WS, 'alice')).map((n) => n.agentName)).toEqual([
+      'builder-1',
+      'builder-2',
+      'builder-3',
+    ]);
     expect((await listNamesForOwner(WS, 'bob')).map((n) => n.agentName)).toEqual(['other-1']);
   });
 

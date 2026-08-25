@@ -337,11 +337,14 @@ export async function assignActionableWorkItems(
 }
 
 /** Resolve the exact stable identity plus the live wakeability state. */
-export async function resolveStableAgentTarget(args: {
-  targetAgent: string;
-  workspaceId?: string;
-  harness?: string;
-}, deps: StableAgentTargetDeps = defaultTargetDeps): Promise<StableAgentTargetState> {
+export async function resolveStableAgentTarget(
+  args: {
+    targetAgent: string;
+    workspaceId?: string;
+    harness?: string;
+  },
+  deps: StableAgentTargetDeps = defaultTargetDeps,
+): Promise<StableAgentTargetState> {
   try {
     const scope = await deps.resolveScope(
       { workspaceId: args.workspaceId, harnessSlug: args.harness },
@@ -351,12 +354,8 @@ export async function resolveStableAgentTarget(args: {
         ...(args.workspaceId ? { workspace: args.workspaceId } : {}),
       },
     );
-    const adoptions: AdoptionRow[] = scope.wsId
-      ? await deps.listSessions(scope.wsId, args.targetAgent)
-      : [];
-    const candidateOwnerIds = adoptions.length > 0
-      ? adoptions.map((row) => row.sessionOwnerId)
-      : [args.targetAgent];
+    const adoptions: AdoptionRow[] = scope.wsId ? await deps.listSessions(scope.wsId, args.targetAgent) : [];
+    const candidateOwnerIds = adoptions.length > 0 ? adoptions.map((row) => row.sessionOwnerId) : [args.targetAgent];
     const snapshot = await deps.snapshot(scope);
     const rows = snapshot.active as Array<Record<string, unknown>>;
     const byOwnerId = new Map(

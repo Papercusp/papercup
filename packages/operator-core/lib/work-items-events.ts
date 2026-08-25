@@ -47,6 +47,8 @@ import { planSlugOfWorkItem, staticTagsOfWorkItem } from './scheduler/claim-spec
 // keeps no static edge to the fan-out projection (cycle-safe).
 import type { InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import type { BatchResolveItem } from './agent-tools/coordination/escalations';
+import { parseAgenticPlanExecutionTarget, type AgenticPlanExecutionTarget } from './agentic-plan-execution-target';
+import type { assignAndWakeActionableWorkItems } from './agent-tools/coordination/actionable-work-item-dispatch';
 
 /**
  * Errors that are EXPECTED for a best-effort, fire-and-forget notification and
@@ -412,6 +414,24 @@ export interface SettledEventsDeps {
    *  this critical item. Tests inject the resolver; production lazy-imports the
    *  escalation adapter so the settle event module stays cycle-safe. */
   reconcileCriticalWorkItemAlert?: (wi: WorkItem) => Promise<void>;
+  /** Stable-agent successor dispatch; production resolves the shared composite lazily. */
+  dispatchActionable?: typeof assignAndWakeActionableWorkItems;
+}
+
+async function defaultDispatchActionable(
+  ...args: Parameters<typeof assignAndWakeActionableWorkItems>
+): ReturnType<typeof assignAndWakeActionableWorkItems> {
+  const { assignAndWakeActionableWorkItems: dispatch } =
+    await import('./agent-tools/coordination/actionable-work-item-dispatch');
+  return dispatch(...args);
+}
+
+/** Read the optional direct-execution target stamped on a promoted run item. */
+export function planRunExecutionTarget(payload: unknown): AgenticPlanExecutionTarget | null {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const planRun = (payload as Record<string, unknown>).plan_run;
+  if (planRun === null || typeof planRun !== 'object' || Array.isArray(planRun)) return null;
+  return parseAgenticPlanExecutionTarget((planRun as Record<string, unknown>).execution);
 }
 
 /** Inject-notify the subscribers of an object (P-010) — the fanoutForObject shape. */
@@ -462,7 +482,8 @@ export async function reconcileCriticalWorkItemAlert(
   if (!isSettledWorkItem(wi) || wi.severity !== 'critical') return;
 
   const adapter = await import('./agent-tools/coordination/escalations');
-  const listOpen = deps.listOpen ?? (async () => (await adapter.listEscalations({ status: 'open' })) as OpenCriticalWorkItemAlert[]);
+  const listOpen =
+    deps.listOpen ?? (async () => (await adapter.listEscalations({ status: 'open' })) as OpenCriticalWorkItemAlert[]);
   const resolveBatch = deps.resolveBatch ?? adapter.resolveEscalationsBatch;
   const matches = selectCriticalWorkItemAlerts(await listOpen(), wi.id);
   if (matches.length === 0) return;
@@ -515,6 +536,7 @@ async function emitUnblockedForClearedEdges(
   emit: typeof emitAwaitedEvent,
   getItem: typeof getWorkItem,
   listInMany: BlockingEdgeReader['listInMany'],
+  dispatchActionable: typeof assignAndWakeActionableWorkItems,
 ): Promise<void> {
   // Dedup dsts — a duplicate src→dst edge must not double-emit for one dependent.
   const dsts = [...new Map(dstRefs.map((r) => [refKey(r), r])).values()];
@@ -576,6 +598,17 @@ async function emitUnblockedForClearedEdges(
         retireInterestEventAwaits({ kind: 'work-item-blocked', ref: dependent.id }),
       )
       .catch(() => {});
+    const execution = dependent.assignee ? null : planRunExecutionTarget(dependent.payload);
+    if (execution) {
+      await dispatchActionable({
+        workItemIds: [dependent.id],
+        targetAgent: execution.agentName,
+        harness: execution.appHarnessSlug,
+        summary: `${dependent.id} became actionable after ${clearedById} settled`,
+        source: 'system:plan-run-successor-dispatch',
+      });
+      continue;
+    }
     // P-007: an unblocked dependent may have just become pool-claimable — the
     // canonical key co-fires here so BOTH unblock paths (settle + unlink) are
     // covered; the emitter's own guard drops assigned / non-claimable items.
@@ -683,12 +716,19 @@ export async function liveAssigneeProbe(
 export async function emitUnblockedOnEdgeRemoved(
   dst: ObjectRef,
   clearedById: string,
-  deps: Pick<SettledEventsDeps, 'emit' | 'getItem' | 'listIn' | 'listInMany'> = {},
+  deps: Pick<SettledEventsDeps, 'emit' | 'getItem' | 'listIn' | 'listInMany' | 'dispatchActionable'> = {},
 ): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
   const getItem = deps.getItem ?? getWorkItem;
   try {
-    await emitUnblockedForClearedEdges([dst], clearedById, emit, getItem, resolveListInMany(deps));
+    await emitUnblockedForClearedEdges(
+      [dst],
+      clearedById,
+      emit,
+      getItem,
+      resolveListInMany(deps),
+      deps.dispatchActionable ?? defaultDispatchActionable,
+    );
   } catch (e) {
     failSoft(`unlink-unblocked-event for ${clearedById}`, e);
   }
@@ -843,7 +883,14 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
   try {
     const ref = workItemObjectRef(wi);
     const blockEdges = await listOut(ref, { rel: 'blocks' });
-    await emitUnblockedForClearedEdges(blockEdges.map((e) => e.dst), wi.id, emit, getItem, listInMany);
+    await emitUnblockedForClearedEdges(
+      blockEdges.map((e) => e.dst),
+      wi.id,
+      emit,
+      getItem,
+      listInMany,
+      deps.dispatchActionable ?? defaultDispatchActionable,
+    );
   } catch (e) {
     failSoft(`settled unblocked-loop for ${wi.id}`, e);
   }

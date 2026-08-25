@@ -3,9 +3,10 @@ import { parseAgenticPlanExecutionTarget } from './agentic-plan-execution-target
 
 describe('parseAgenticPlanExecutionTarget', () => {
   it('normalizes the two-field execution leaf', () => {
-    expect(
-      parseAgenticPlanExecutionTarget({ appHarnessSlug: ' email ', agentName: ' email-agent ' }),
-    ).toEqual({ appHarnessSlug: 'email', agentName: 'email-agent' });
+    expect(parseAgenticPlanExecutionTarget({ appHarnessSlug: ' email ', agentName: ' email-agent ' })).toEqual({
+      appHarnessSlug: 'email',
+      agentName: 'email-agent',
+    });
   });
 
   it('treats absence as an ordinary non-agentic plan run', () => {
