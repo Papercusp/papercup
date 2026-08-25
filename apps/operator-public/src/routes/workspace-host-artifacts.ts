@@ -73,8 +73,11 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isArtifactFile(value: string): value is WorkspaceHostArtifactFile {
-  return (WORKSPACE_HOST_ARTIFACT_FILES as readonly string[]).includes(value);
+function isArtifactFile(value: unknown): value is WorkspaceHostArtifactFile {
+  return (
+    typeof value === 'string' &&
+    (WORKSPACE_HOST_ARTIFACT_FILES as readonly string[]).includes(value)
+  );
 }
 
 function artifactPrefix(bundleSha256: string): string {
