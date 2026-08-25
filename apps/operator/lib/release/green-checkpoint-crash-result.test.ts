@@ -122,3 +122,51 @@ describe('WI-40916 / EI-212278: materialization admission refusal is not a code 
     expect(r.crashed).toBe(true);
   });
 });
+
+describe('WI-41252 / D-066: dependency-generation torn snapshots are not code reds', () => {
+  it.each([
+    [
+      'new generation changed during copy',
+      'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo exited 75: ' +
+        '[dependency-generation] FATAL: live node_modules changed during generation build; refusing a torn snapshot',
+    ],
+    [
+      'existing generation changed while pinning',
+      'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo exited 75: ' +
+        '[dependency-generation] FATAL: live node_modules changed while pinning an existing generation',
+    ],
+  ])('classifies %s as infra-inconclusive with the exact dependency phase', (_label, message) => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: 'dfe7bd9f4e56',
+      error: new Error(message),
+      runId: 'run-dependency-generation',
+    });
+
+    expect(r).toMatchObject({
+      advanced: false,
+      candidate: 'dfe7bd9f4e56',
+      from: null,
+      green: null,
+      reason: 'infra-inconclusive',
+      runId: 'run-dependency-generation',
+    });
+    expect(r.crashed).toBeUndefined();
+    expect(r.summary).toContain('pinning an immutable dependency generation');
+    expect(r.summary).toContain('refused a torn snapshot');
+    expect(r.summary).toContain('No code verdict was rendered');
+  });
+
+  it.each([
+    ['wrong exit', 'dependency-generation.sh exited 1: refusing a torn snapshot'],
+    ['missing script identity', 'publisher exited 75: refusing a torn snapshot'],
+    ['missing torn-source marker', 'dependency-generation.sh exited 75: unknown failure'],
+  ])('keeps an incomplete dependency signature on the generic crash path: %s', (_label, message) => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: 'dfe7bd9f4e56',
+      error: new Error(message),
+      runId: 'run-generic',
+    });
+    expect(r.reason).toBe('not-green');
+    expect(r.crashed).toBe(true);
+  });
+});

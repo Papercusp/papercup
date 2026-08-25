@@ -663,6 +663,20 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     expect(msg).toContain('DO NOT TRIAGE');
   });
 
+  it('WI-41252 / D-066: dependency snapshot drift names the pre-suite phase and suppresses historical blame', () => {
+    const detail =
+      'dependency-generation.sh exited 75: live node_modules changed during generation build; refusing a torn snapshot';
+    const msg = gateStallNoopLogMessage('infra-inconclusive', detail);
+
+    expect(msg).toContain('pinning its immutable dependency snapshot');
+    expect(msg).toContain('refused the torn generation before any suite verdict');
+    expect(msg).toContain(detail);
+    expect(msg).toContain('DO NOT TRIAGE');
+    expect(msg).not.toContain('pc-heavy capacity');
+    expect(msg).not.toContain('module cache disappeared');
+    expect(msg).not.toContain('mechanism is unclassified');
+  });
+
   it('EI-21393982931638628: missing or unfamiliar detail stays unclassified instead of inventing a mechanism', () => {
     const missing = gateStallNoopLogMessage('infra-inconclusive');
     const unfamiliar = gateStallNoopLogMessage('infra-inconclusive', 'child exited before publishing diagnostics');

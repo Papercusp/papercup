@@ -429,6 +429,46 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.reason).not.toContain('testing:flakiness');
   });
 
+  it('WI-41252 / D-066: an exact dependency-generation abort outranks the historical red fallback', () => {
+    const inconclusive = {
+      status: 'infra-inconclusive',
+      candidate: sha,
+      detail:
+        'dependency-generation.sh exited 75: live node_modules changed during generation build; refusing a torn snapshot',
+      observedAtMs: 456,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        }),
+        gate: {
+          ...input().gate,
+          state: 'gate-red',
+          authoritative: true,
+          consecutiveReds: 42,
+          failingTests: [],
+          observedCandidate: sha,
+          recordedVerdict: null,
+          inconclusive,
+        },
+      }),
+    );
+
+    expect(out.gate.candidateVerdict).toMatchObject({
+      state: 'inconclusive',
+      status: 'inconclusive',
+      green: null,
+      candidate: sha,
+      reason: 'infra-inconclusive',
+      detail: inconclusive.detail,
+    });
+    expect(out.constraints.map((c) => c.code)).toContain('gate-inconclusive');
+    expect(out.constraints.map((c) => c.code)).not.toContain('gate-red');
+    expect(out.constraints.map((c) => c.code)).not.toContain('no-force-past-red');
+    expect(out.nextVerb?.name).toBe('checkpoint:await');
+  });
+
   it('does not project a historical red while the exact candidate is actively being judged', () => {
     const checkpointRun = {
       active: true,

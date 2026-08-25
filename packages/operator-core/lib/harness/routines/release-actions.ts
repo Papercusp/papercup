@@ -1778,10 +1778,20 @@ export function gateStallRecordOnlyLogMessage(status: string): string {
   );
 }
 
-type InfraInconclusiveCause = 'pc-heavy-admission' | 'vite-cache-loss' | 'unclassified';
+type InfraInconclusiveCause =
+  | 'dependency-snapshot-drift'
+  | 'pc-heavy-admission'
+  | 'vite-cache-loss'
+  | 'unclassified';
 
 function classifyInfraInconclusiveCause(detail: string | null | undefined): InfraInconclusiveCause {
   const normalized = detail?.toLowerCase() ?? '';
+  if (
+    normalized.includes('dependency-generation') &&
+    (normalized.includes('torn snapshot') || normalized.includes('live node_modules changed'))
+  ) {
+    return 'dependency-snapshot-drift';
+  }
   if (
     normalized.includes('pc-heavy') ||
     normalized.includes('exclusive-all-slots') ||
@@ -1851,6 +1861,13 @@ export function gateStallNoopLogMessage(status: string, detail?: string | null):
       `classifyGateStallStatus)`;
 
     switch (classifyInfraInconclusiveCause(measuredDetail)) {
+      case 'dependency-snapshot-drift':
+        return (
+          `${orchestratorStdoutTag()} 'infra-inconclusive' — live dependency inputs changed while ` +
+          `the gate was pinning its immutable dependency snapshot, so the publisher refused the ` +
+          `torn generation before any suite verdict. ${measuredClause}` +
+          `Wait for the named dependency writer/churn to settle before the next authorized run. ${sharedTail}`
+        );
       case 'pc-heavy-admission':
         return (
           `${orchestratorStdoutTag()} 'infra-inconclusive' — the gate could not acquire exclusive pc-heavy ` +

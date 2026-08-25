@@ -951,16 +951,19 @@ export function buildCrashCheckpointResult(opts: {
 }
 
 /**
- * WI-40916 / EI-212278 — distinguish a deliberate pc-heavy materialization
- * admission refusal from an unknown checkpoint crash.
+ * WI-40916 / EI-212278 / WI-41252 — distinguish measured pre-suite
+ * infrastructure refusals from an unknown checkpoint crash.
  *
  * `scripts/pc-heavy.sh --exclusive-all-slots` exits 75 when pre-existing heavy
  * holders do not drain within its bounded wait. No candidate file has been
  * checked at that point, so treating the exception as `reason: not-green`
  * fabricates a code-red verdict and increments the red streak. Keep generic
- * crashes loud/counting via `buildCrashCheckpointResult`; only the wrapper's
- * exact mode + exit + refusal marker receives the existing infra-inconclusive
- * no-verdict classification.
+ * crashes loud/counting via `buildCrashCheckpointResult`; only exact signatures
+ * receive the existing infra-inconclusive no-verdict classification. Dependency
+ * generation has the same contract: exit 75 plus its torn-snapshot marker means
+ * the live dependency source changed while it was being copied, before any code
+ * suite ran. Treating that as `not-green` leaves no inconclusive record and lets
+ * release:trace inherit a historical red streak for the new candidate (D-066).
  */
 export function buildTerminalFailureCheckpointResult(opts: {
   candidate: string;
@@ -975,8 +978,14 @@ export function buildTerminalFailureCheckpointResult(opts: {
     detail.includes("pc-heavy.sh --exclusive-all-slots") &&
     detail.includes("exited 75") &&
     detail.includes("[pc-heavy] REFUSED materialization");
+  const dependencySnapshotChanged =
+    detail.includes("dependency-generation.sh") &&
+    detail.includes("exited 75") &&
+    (detail.includes("refusing a torn snapshot") ||
+      detail.includes("live node_modules changed while pinning an existing generation"));
 
-  if (!materializationDeferred) return buildCrashCheckpointResult(opts);
+  if (!materializationDeferred && !dependencySnapshotChanged)
+    return buildCrashCheckpointResult(opts);
 
   return {
     advanced: false,
@@ -985,10 +994,14 @@ export function buildTerminalFailureCheckpointResult(opts: {
     green: null,
     reason: "infra-inconclusive",
     runId: opts.runId,
-    summary:
-      "green-checkpoint deferred before the suite: pc-heavy could not drain pre-existing " +
-      "heavy holders for isolated dependency materialization. No code verdict was rendered; " +
-      `the next run retries after the admission window clears. ${detail}`,
+    summary: materializationDeferred
+      ? "green-checkpoint deferred before the suite: pc-heavy could not drain pre-existing " +
+        "heavy holders for isolated dependency materialization. No code verdict was rendered; " +
+        `the next run retries after the admission window clears. ${detail}`
+      : "green-checkpoint aborted before the suite: live dependency inputs changed while " +
+        "pinning an immutable dependency generation, so the publisher refused a torn snapshot. " +
+        "No code verdict was rendered; wait for dependency writers to settle before the next " +
+        `authorized run. ${detail}`,
   };
 }
 
@@ -11690,11 +11703,27 @@ export function realCheckpointDeps(
     ref: string,
     workspaceDirs: string[] = [],
   ): Promise<string> => {
+    // WI-41664: dependency-generation walks the live integration node_modules trees
+    // for minutes. Route that reader through the existing install-safe reader boundary
+    // so an npm install cannot acquire the repo writer mutex and reify those trees in
+    // the middle of the before/copy/after snapshot. The generation script's own
+    // fingerprint guard remains mandatory; the mutex prevents the avoidable race that
+    // otherwise turns a legitimate concurrent install into an rc75 torn snapshot.
+    const installSafeScript = path.join(
+      toolingRoot(),
+      "scripts/npm-install-safe.mjs",
+    );
     const generationScript = path.join(
       toolingRoot(),
       "apps/operator/bin/release/dependency-generation.sh",
     );
     const generationArgs = [
+      installSafeScript,
+      "--repo-root",
+      cfg.integrationRoot,
+      "--exec-under-lock",
+      "--",
+      "bash",
       generationScript,
       "--integration",
       cfg.integrationRoot,
@@ -11723,7 +11752,7 @@ export function realCheckpointDeps(
     };
     let publishedGeneration: CheckpointExecResult;
     try {
-      publishedGeneration = await exec("bash", generationArgs, {
+      publishedGeneration = await exec(process.execPath, generationArgs, {
         timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
         timeoutResetsOnProgress: true,
         hardTimeoutMs: DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
