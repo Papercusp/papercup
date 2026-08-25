@@ -1921,11 +1921,26 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
  * Exported with injectables for tests.
  *
+ * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
+ * Four independent conditions refuse the claim — no row, an HTTP/body failure, a
+ * genuinely lost race, and a thrown transport error — and collapsing them into
+ * `false` made the ONE call site assert contention for all four. A headless
+ * consult revival then reported "its resume claim was not acquired" (i.e. someone
+ * else won) when the truth was an unreachable operator, sending whoever debugged
+ * it hunting a racing process that never existed. `claimed` remains the ONLY gate
+ * on spawning — the fail-closed property is unchanged; `reason` exists so the
+ * refusal can say WHICH of the four happened.
+ *
+ * @typedef {{ claimed: true }
+ *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport', detail?: string }
+ * } ResumeClaimOutcome
+ *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
  * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
  *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
  *           sleep?: (ms:number) => Promise<void>, now?: () => number,
  *           onNotice?: (message:string) => void, resumeClaimKey?: string }} [opts]
+ * @returns {Promise<ResumeClaimOutcome>}
  */
 export function reportSessionResumed(advSessionId: number | string | null, { fetchImpl, operatorUrl, token, timeoutMs, connectBudgetMs, timeoutRetries, sleep, now, onNotice, resumeClaimKey, }?: {
     fetchImpl?: typeof fetch;
@@ -1938,7 +1953,23 @@ export function reportSessionResumed(advSessionId: number | string | null, { fet
     now?: () => number;
     onNotice?: (message: string) => void;
     resumeClaimKey?: string;
-}): Promise<boolean>;
+}): Promise<ResumeClaimOutcome>;
+/**
+ * Render a refused {@link ResumeClaimOutcome} as the clause the operator reads
+ * (EI-21414979137146784). Each reason gets its OWN sentence: the old single
+ * message asserted contention ("its resume claim was not acquired") for all
+ * four refusal paths, so an unreachable operator or a 500 was reported as a
+ * lost race. Every branch still refuses — this names the cause, it does not
+ * soften the guard.
+ *
+ * @param {{ claimed: false, reason: 'no-session'|'http'|'contended'|'transport', detail?: string }} outcome
+ * @returns {string}
+ */
+export function describeResumeClaimRefusal(outcome: {
+    claimed: false;
+    reason: "no-session" | "http" | "contended" | "transport";
+    detail?: string;
+}): string;
 /**
  * Best-effort "my managed host RESPAWNED the child under a fresh native id"
  * report (WI-5075) — the third lifecycle sibling next to ended/resumed. A P-018
@@ -2862,4 +2893,35 @@ export namespace AGENT_LABELS {
     let codex: string;
     let omp: string;
 }
+/**
+ * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
+ * `psu --resume` revives the agent process, but launchResume takes the no-POST
+ * path (it reuses the original coord identity + adv row), so the row keeps the
+ * ended_at/exit_code from the prior exit and the running agent stays recorded as
+ * DEAD → invisible to the roster + presence-as-a-view. This clears that stamp
+ * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
+ * instant it resumes, before it ever touches coord. psu is the live parent of
+ * the resumed child (same property the supervisor beat + the end-report ride).
+ * The endpoint's explicit `reactivated:true` response is the single-winner claim:
+ * a manual resume must not spawn unless it successfully re-activates the ended row.
+ * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
+ * Exported with injectables for tests.
+ *
+ * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
+ * Four independent conditions refuse the claim — no row, an HTTP/body failure, a
+ * genuinely lost race, and a thrown transport error — and collapsing them into
+ * `false` made the ONE call site assert contention for all four. A headless
+ * consult revival then reported "its resume claim was not acquired" (i.e. someone
+ * else won) when the truth was an unreachable operator, sending whoever debugged
+ * it hunting a racing process that never existed. `claimed` remains the ONLY gate
+ * on spawning — the fail-closed property is unchanged; `reason` exists so the
+ * refusal can say WHICH of the four happened.
+ */
+export type ResumeClaimOutcome = {
+    claimed: true;
+} | {
+    claimed: false;
+    reason: "no-session" | "http" | "contended" | "transport";
+    detail?: string;
+};
 import { spawn } from "node:child_process";
