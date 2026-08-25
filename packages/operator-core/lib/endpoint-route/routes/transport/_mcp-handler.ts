@@ -2353,12 +2353,16 @@ const handler = createMcpHandler(
                     toolName === 'work_items:claim'
                       ? ' For cross-Pot work, use discovery:pots → pot:request_work with an outbound work-request grant; direct work_items:claim is per-Hive.'
                       : '';
+                  const crossHiveWorkItemReadHint =
+                    toolName === 'work_items:get'
+                      ? ` For an ID-based work_items:get read, retry with the caller's harness "${spawnRes.ctx.harnessSlug}"; do not copy a returned row's canonical harness into this argument.`
+                      : '';
                   return {
                     isError: true,
                     content: [
                       {
                         type: 'text' as const,
-                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}`,
+                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}`,
                       },
                     ],
                   };

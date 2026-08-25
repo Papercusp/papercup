@@ -1711,6 +1711,20 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('direct work_items:claim is per-Hive');
   });
 
+  it('flag ON: gives work_items:get the caller-harness retry after a canonical cross-hive slug is rejected', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'work_items:get',
+      { id: 'EI-cross-hive-read', harness: 'hiveB-home' },
+      hiveScoped(),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(textOf(res)).toContain('retry with the caller\'s harness "hiveA-home"');
+    expect(textOf(res)).toContain('do not copy a returned row\'s canonical harness');
+  });
+
   it('flag ON: rejects a harness:\'all\' escape', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('gatingtest:scoped', { harness: 'all' }, hiveScoped());
