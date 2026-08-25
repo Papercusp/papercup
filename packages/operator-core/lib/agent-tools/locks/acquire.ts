@@ -198,9 +198,12 @@ export default defineTool({
 
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
     // Caller-DX (watchdog P-006): an over-cap wait is CLAMPED to MAX_WAIT_SEC,
-    // not zod-rejected. The 300s ceiling is a hard constraint (the tool is
-    // killed at MAX_WAIT_SEC+30); a longer wait belongs to wake_on_grant. Agents
-    // repeatedly bounced off the old `.max(300)` rejection — clamp + advise.
+    // not zod-rejected. The ceiling is a hard constraint — it must return before
+    // the ~55s MCP client deadline (EI-21389299859182434: the old 300s cap made
+    // every >55s blocking wait die client-side with -32001/unknown outcome while
+    // the server blocked on), and the tool itself is killed at MAX_WAIT_SEC+30.
+    // A longer wait belongs to wake_on_grant. Agents repeatedly bounced off the
+    // old `.max(300)` rejection — clamp + advise.
     const requestedWaitSec = args.wait?.max_sec ?? 0;
     const waitClamped = requestedWaitSec > MAX_WAIT_SEC;
     const maxWaitSec = waitClamped ? MAX_WAIT_SEC : requestedWaitSec;
@@ -826,7 +829,7 @@ export default defineTool({
                       requested_sec: requestedWaitSec,
                       capped_sec: MAX_WAIT_SEC,
                       advice:
-                        'wait was capped at 300s (the blocking ceiling). For a longer wait, retry with wake_on_grant:true and END YOUR TURN — you are re-invoked when the grant cascade reaches your ticket.',
+                        `wait was capped at ${MAX_WAIT_SEC}s (the blocking ceiling — the call must return before the ~55s MCP client deadline). For a longer wait, retry with wake_on_grant:true and END YOUR TURN — you are re-invoked when the grant cascade reaches your ticket.`,
                     },
                   }
                 : {}),

@@ -20,7 +20,18 @@ describe('lock-config — single source (P-013 / D-006)', () => {
   it('exposes the canonical lock TTL / wait defaults', () => {
     expect(DEFAULT_LOCK_TTL_SEC).toBe(1200);
     expect(MAX_LOCK_TTL_SEC).toBe(3600);
-    expect(MAX_LOCK_WAIT_SEC).toBe(300);
+    expect(MAX_LOCK_WAIT_SEC).toBe(45);
+  });
+
+  it('blocking wait ceiling stays under the ~55s MCP client deadline (EI-21389299859182434)', () => {
+    // The MCP client kills a call at ~55s (-32001, unknown outcome) while the server keeps
+    // blocking to wait.max_sec. The ceiling plus the handler's post-wait tail (expireWaiter +
+    // busy re-read + enrichBusy, budgeted ~10s under fleet load) must return BEFORE that
+    // deadline, or every long blocking wait strands its caller and the post-timeout
+    // lucky-race grant can orphan a lock until TTL. 300s sat here until 2026-08-25.
+    const MCP_CLIENT_DEADLINE_SEC = 55;
+    const POST_WAIT_TAIL_BUDGET_SEC = 10;
+    expect(MAX_LOCK_WAIT_SEC + POST_WAIT_TAIL_BUDGET_SEC).toBeLessThanOrEqual(MCP_CLIENT_DEADLINE_SEC);
   });
 
   it('no lock tool re-declares the TTL / wait literals (the consolidated single source holds)', () => {
