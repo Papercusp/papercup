@@ -10,6 +10,10 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
+import {
+  parseFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueue,
+} from './frozen-candidate-repair-queue';
 
 export const CHECKPOINT_QUALIFICATION_METADATA_KEY = 'qualificationTransaction';
 export const CHECKPOINT_QUALIFICATION_SCHEMA_VERSION = 1 as const;
@@ -348,13 +352,84 @@ export function settleQualificationTransaction(
   };
 }
 
+export type RepairQueueReconciliation = {
+  status: 'none' | 'retired' | 'blocked';
+  reason:
+    | 'no-queue'
+    | 'queue-malformed'
+    | 'queue-origin-mismatch'
+    | 'queue-not-safe-unstarted'
+    | 'exact-safe-unstarted'
+    | 'cas-miss';
+  predecessorAttemptId: string;
+  successorAttemptId: string;
+  candidate?: string;
+};
+
 export type StoredQualificationMutation =
-  | QualificationTransition
+  | (QualificationTransition & { repairQueueReconciliation?: RepairQueueReconciliation })
   | { status: 'missing' | 'unreadable'; error?: string };
+
+/**
+ * A terminal logical attempt may leave its pre-suite frozen candidate behind. Retire it
+ * only for an explicitly distinct successor and only while the queue is still the exact,
+ * unstarted row created by that predecessor. Any legacy, mismatched, dispatched, repaired,
+ * or otherwise advanced queue stays authoritative and blocks the successor fail-closed.
+ */
+export function assessTerminalRepairQueueReconciliation(
+  current: CheckpointQualificationTransaction,
+  successor: BeginQualificationInput,
+  rawRepairQueue: unknown,
+): RepairQueueReconciliation {
+  const base = {
+    predecessorAttemptId: current.attemptId,
+    successorAttemptId: successor.attemptId,
+  };
+  if (rawRepairQueue == null) return { status: 'none', reason: 'no-queue', ...base };
+  const queue = parseFrozenCandidateRepairQueue(rawRepairQueue);
+  if (!queue) return { status: 'blocked', reason: 'queue-malformed', ...base };
+  if (queue.qualificationAttemptId !== current.attemptId) {
+    return {
+      status: 'blocked',
+      reason: 'queue-origin-mismatch',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
+  if (
+    queue.phase !== 'ready-to-test' ||
+    queue.repairHead !== queue.candidate ||
+    queue.attempts !== 0 ||
+    queue.fixerSpawnId !== null ||
+    queue.dispatchReservation != null
+  ) {
+    return {
+      status: 'blocked',
+      reason: 'queue-not-safe-unstarted',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
+  return {
+    status: 'retired',
+    reason: 'exact-safe-unstarted',
+    candidate: queue.candidate,
+    ...base,
+  };
+}
+
+type StoredQualificationMutationOptions = {
+  /**
+   * Reconcile the predecessor's exact safe queue in the SAME locked row update that
+   * installs a distinct successor qualification.
+   */
+  successorInput?: BeginQualificationInput;
+};
 
 async function mutateStoredQualification(
   target: GateVerdictTarget,
   change: (current: CheckpointQualificationTransaction | null) => StoredQualificationMutation,
+  options: StoredQualificationMutationOptions = {},
 ): Promise<StoredQualificationMutation> {
   try {
     return await boundedOrgTxn(async (tx) => {
@@ -374,6 +449,59 @@ async function mutateStoredQualification(
       }
       const transition = change(current);
       if (transition.status !== 'updated') return transition;
+      const reconciliation =
+        options.successorInput &&
+        current &&
+        isTerminalQualificationOutcome(current.outcome) &&
+        current.attemptId !== transition.transaction.attemptId
+          ? assessTerminalRepairQueueReconciliation(
+              current,
+              options.successorInput,
+              metadata.repair_queue,
+            )
+          : null;
+      if (reconciliation?.status === 'blocked') {
+        return {
+          status: 'conflict' as const,
+          transaction: current,
+          repairQueueReconciliation: reconciliation,
+        };
+      }
+      if (reconciliation?.status === 'retired') {
+        const updatedRows = await tx<{ metadata: Record<string, unknown> }[]>`
+          UPDATE harness_shared.routines
+             SET metadata = jsonb_set(
+                   CASE
+                     WHEN metadata #>> '{gate_health,inconclusive,status}'
+                            IN ('repair-in-progress', 'repair-staging-mismatch')
+                       THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
+                            #- '{gate_health,inconclusive}'
+                     ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
+                   END,
+                   '{${tx.unsafe(CHECKPOINT_QUALIFICATION_METADATA_KEY)}}',
+                   ${JSON.stringify(transition.transaction)}::text::jsonb,
+                   true
+                 ),
+                 updated_at = now()
+           WHERE workspace_id = ${target.workspaceId}
+             AND install_slug = ${target.installSlug}
+             AND target_role = 'system:green-checkpoint'
+             AND metadata->'repair_queue' = ${JSON.stringify(metadata.repair_queue)}::text::jsonb
+             AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY} = ${JSON.stringify(raw)}::text::jsonb
+           RETURNING metadata`;
+        if (updatedRows.length === 0) {
+          return {
+            status: 'conflict' as const,
+            transaction: current,
+            repairQueueReconciliation: {
+              ...reconciliation,
+              status: 'blocked',
+              reason: 'cas-miss',
+            },
+          };
+        }
+        return { ...transition, repairQueueReconciliation: reconciliation };
+      }
       await tx`
         UPDATE harness_shared.routines
            SET metadata = jsonb_set(
@@ -386,7 +514,7 @@ async function mutateStoredQualification(
          WHERE workspace_id = ${target.workspaceId}
            AND install_slug = ${target.installSlug}
            AND target_role = 'system:green-checkpoint'`;
-      return transition;
+      return reconciliation ? { ...transition, repairQueueReconciliation: reconciliation } : transition;
     });
   } catch (error) {
     return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
@@ -396,8 +524,13 @@ async function mutateStoredQualification(
 export function beginStoredQualification(
   target: GateVerdictTarget,
   input: BeginQualificationInput,
+  options: { reconcileTerminalRepairQueueForSuccessor?: boolean } = {},
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, (current) => beginQualificationTransaction(current, input));
+  return mutateStoredQualification(
+    target,
+    (current) => beginQualificationTransaction(current, input),
+    options.reconcileTerminalRepairQueueForSuccessor ? { successorInput: input } : {},
+  );
 }
 
 export function waitStoredQualification(

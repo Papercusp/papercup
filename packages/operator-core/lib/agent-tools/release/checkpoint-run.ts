@@ -869,23 +869,7 @@ export default defineTool({
     // declared paths, a run already in flight, an unresolved candidate, an undecidable or
     // uncommitted miss, or a wait we cannot compute all LAUNCH. `force` skips it entirely.
     const preflight = await assessPreLaunchExclusion({ paths: args.paths, force: args.force });
-    // D-001 / EI-21137440735672596: the detached writer applies the persisted frozen-repair
-    // queue BEFORE selecting the moving staging tip. A queue decision such as dispatch-fixer or
-    // wait-for-fixer returns `repair-in-progress` without running a suite, so launching here
-    // would spend the singleton and hand the caller a misleading `launched:true` receipt.
-    // The explicit required-ancestor path already performs this queue-aware read as part of its
-    // lineage check; avoid a second read there so both answers cannot drift across a DB update.
-    const frozenRepairQueuePreflight =
-      !preflight.refuse && !args.requiredAncestorSha
-        ? await assessFrozenRepairQueuePreflight(preflight.candidate)
-        : null;
-    const requiredAncestorPreflight =
-      !preflight.refuse && args.requiredAncestorSha
-        ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate)
-        : null;
     const root = integrationRoot();
-    const launchCandidate =
-      requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
     const qualificationTarget = {
       workspaceId: activeWorkspaceId(),
       installSlug: operatorHomeHarnessSlug(),
@@ -893,14 +877,14 @@ export default defineTool({
     const beginInput = {
       attemptId: checkpointEligibilityPendingId({
         root,
-        candidate: launchCandidate,
-        tip: preflight.tip ?? launchCandidate,
+        candidate: preflight.candidate,
+        tip: preflight.tip ?? preflight.candidate,
         paths: args.paths ?? [],
         requiredAncestorSha: args.requiredAncestorSha,
       }),
       requiredAncestorSha: args.requiredAncestorSha,
       declaredPaths: args.paths ?? [],
-      candidate: launchCandidate,
+      candidate: preflight.candidate,
       evidenceRefs: ['tool:release:checkpoint-run'],
     };
     const storedQualification = await readStoredQualification(qualificationTarget);
@@ -925,10 +909,20 @@ export default defineTool({
       qualificationIntentMatches(storedQualification.transaction, beginInput)
         ? storedQualification.transaction.attemptId
         : beginInput.attemptId;
-    const qualificationBegin = await beginStoredQualification(qualificationTarget, {
-      ...beginInput,
-      attemptId: logicalAttemptId,
-    });
+    // EI-214151: install a distinct successor qualification BEFORE asking the frozen-queue
+    // policy which candidate wins. The store may atomically retire only the exact safe,
+    // unstarted queue created by the terminal predecessor. A legacy, mismatched, dispatched,
+    // or otherwise advanced queue returns conflict and remains authoritative. This ordering is
+    // the recurrence guard: a terminal predecessor can no longer override an explicit current
+    // successor merely because its pre-suite queue survived.
+    const qualificationBegin = await beginStoredQualification(
+      qualificationTarget,
+      {
+        ...beginInput,
+        attemptId: logicalAttemptId,
+      },
+      { reconcileTerminalRepairQueueForSuccessor: !preflight.refuse },
+    );
     if (!qualificationMutationContinues(qualificationBegin)) {
       const transaction = 'transaction' in qualificationBegin ? qualificationBegin.transaction : null;
       return {
@@ -946,15 +940,36 @@ export default defineTool({
             logical_attempt_id: transaction?.attemptId ?? logicalAttemptId,
             phase: transaction?.phase ?? null,
             outcome: transaction?.outcome ?? null,
+            repair_queue_reconciliation:
+              'repairQueueReconciliation' in qualificationBegin
+                ? qualificationBegin.repairQueueReconciliation
+                : undefined,
             error: 'error' in qualificationBegin ? qualificationBegin.error : undefined,
             note:
               qualificationBegin.status === 'terminal'
                 ? 'NOT launched: this exact candidate/request already produced a terminal logical outcome. A real red or code-inconclusive verdict is never auto-retried; a newer candidate starts a new attempt.'
-                : 'NOT launched: another non-terminal logical qualification owns the singleton transaction, or its store is unavailable.',
+                : 'NOT launched: another non-terminal logical qualification owns the singleton transaction, the predecessor repair queue was not safe to retire, or the store is unavailable.',
           }),
         }],
       };
     }
+
+    // D-001 / EI-21137440735672596: after the successor transaction has had its one safe
+    // same-row reconciliation opportunity, read the persisted queue policy that the detached
+    // writer will apply. A remaining queue is authoritative: suite-producing states pick its
+    // exact candidate and every other state refuses before a physical runner is created.
+    // The explicit required-ancestor path already performs this queue-aware read as part of its
+    // lineage check; avoid a second read there so both answers cannot drift across a DB update.
+    const frozenRepairQueuePreflight =
+      !preflight.refuse && !args.requiredAncestorSha
+        ? await assessFrozenRepairQueuePreflight(preflight.candidate)
+        : null;
+    const requiredAncestorPreflight =
+      !preflight.refuse && args.requiredAncestorSha
+        ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate)
+        : null;
+    const launchCandidate =
+      requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
 
     const recordLogicalWait = async (
       reason: PreSuiteNoVerdictReason,
