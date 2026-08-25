@@ -969,7 +969,7 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
           operationId: destroy.operationId,
           step: natDelete,
           knownResources: resources,
-          reason: 'idempotent-absence-check',
+          reason: 'resume',
         },
         context(),
       ),
