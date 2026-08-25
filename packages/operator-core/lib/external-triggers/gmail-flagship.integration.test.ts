@@ -5,12 +5,15 @@ import { dispatchPendingTriggerRuns } from './binding-engine';
 import {
   draftResponseToGmailTriggerPlanRun,
   ensureGmailRespondDraftBinding,
+  GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS,
   GMAIL_RESPOND_DRAFT_EVENT,
+  GMAIL_RESPOND_DRAFT_EXECUTION,
   GMAIL_RESPOND_DRAFT_HARNESS,
   GMAIL_RESPOND_DRAFT_PLAN,
 } from './gmail-flagship';
 import { ingestExternalTriggerEvent } from './ingestion';
 import { upsertOwnedExternalTriggerSource } from './source-store';
+import { runScheduledPlanFire } from '../harness/routines/plan-run-action';
 
 const WS = 'gmail-flagship-e2e';
 let org: OrgTestDb;
@@ -58,12 +61,27 @@ describe('Gmail flagship desktop flow', () => {
       ownerUserId: userId,
       credentialRef: 'google-workspace:owner',
       status: 'connected',
-      config: { installSlug: GMAIL_RESPOND_DRAFT_HARNESS },
+      config: {},
     });
     const first = await ensureGmailRespondDraftBinding(sql, WS, source, `owner:${userId}`);
-    expect(first).toMatchObject({ plan: { created: true }, binding: { armed: false } });
+    expect(first).toMatchObject({
+      plan: { created: true },
+      binding: { armed: false, action: { type: 'launch-plan', execution: GMAIL_RESPOND_DRAFT_EXECUTION } },
+    });
+    // Upgrade guard: reconnecting an installation provisioned before direct
+    // execution existed updates the one semantic binding instead of duplicating it.
+    await sql`
+      UPDATE harness_shared.trigger_bindings SET action = '{"type":"launch-plan"}'::jsonb
+       WHERE workspace_id = ${WS} AND id = ${first.binding.id}::uuid`;
     const second = await ensureGmailRespondDraftBinding(sql, WS, source, `owner:${userId}`);
-    expect(second).toMatchObject({ plan: { created: false }, binding: { id: first.binding.id, armed: false } });
+    expect(second).toMatchObject({
+      plan: { created: false },
+      binding: {
+        id: first.binding.id,
+        armed: false,
+        action: { type: 'launch-plan', execution: GMAIL_RESPOND_DRAFT_EXECUTION },
+      },
+    });
 
     const planRows = await sql<Array<{ inputSchema: unknown; itemCount: number }>>`
       SELECT input_schema AS "inputSchema", jsonb_array_length(items)::int AS "itemCount"
@@ -115,11 +133,49 @@ describe('Gmail flagship desktop flow', () => {
         { emit },
       ),
     ).resolves.toMatchObject({ ok: true });
-    await expect(dispatchPendingTriggerRuns(sql, { announceRunWork: async () => undefined })).resolves.toMatchObject({
-      claimed: 1,
-      succeeded: 1,
-      failed: 0,
-    });
+    const dispatchActionable = vi.fn(async (args: { workItemIds: readonly string[]; targetAgent: string }) => ({
+      ok: true,
+      target: {
+        requested: args.targetAgent,
+        ownerId: 'su-email-live',
+        present: true,
+        sessionState: 'parked',
+        wakeable: true,
+      },
+      assignment: {
+        ok: true,
+        targetAgent: args.targetAgent,
+        requested: [...args.workItemIds],
+        actionable: [...args.workItemIds],
+        assigned: [...args.workItemIds],
+        retained: [],
+        skipped: [],
+        failed: [],
+        executionWorkItemIds: [...args.workItemIds],
+      },
+      wake: {
+        targets: ['su-email-live'],
+        keys: ['coord:inbox-wake:su-email-live'],
+        queued: 1,
+        woken: 1,
+        pickupConfirmed: false,
+        staged: 0,
+        stagedTargets: [],
+        fanoutCapped: [],
+        timedOutTargets: [],
+      },
+    }));
+    const runPlan = (db: Sql, opts: Parameters<typeof runScheduledPlanFire>[1]) =>
+      runScheduledPlanFire(db, opts, { dispatch: dispatchActionable });
+    await expect(
+      dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork: async () => undefined }),
+    ).resolves.toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(dispatchActionable).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetAgent: 'email-agent',
+        harness: GMAIL_RESPOND_DRAFT_HARNESS,
+      }),
+    );
     const runs = await sql<Array<{ planRunId: number }>>`
       SELECT plan_run_ref::bigint::int AS "planRunId"
         FROM harness_shared.trigger_runs
@@ -156,6 +212,10 @@ describe('Gmail flagship desktop flow', () => {
       subject: 'Re: Launch review',
     });
     expect(resolveAccessToken).toHaveBeenCalledTimes(1);
+    expect(resolveAccessToken).toHaveBeenCalledWith(
+      expect.objectContaining({ id: source.id }),
+      GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS,
+    );
     expect(createDraft).toHaveBeenCalledTimes(1);
     await expect(
       draftResponseToGmailTriggerPlanRun(sql, WS, runs[0].planRunId, 'The launch looks good.', {

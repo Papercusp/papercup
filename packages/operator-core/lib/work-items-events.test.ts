@@ -5,7 +5,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, liveAssigneeProbe, liveBlockedState, liveSettledProbe, reconcileCriticalWorkItemAlert, selectCriticalWorkItemAlerts, workItemIdFromRef } from './work-items-events';
+import {
+  emitUnblockedOnEdgeRemoved,
+  emitWorkItemSettledEvents,
+  isSettledWorkItem,
+  liveAssigneeProbe,
+  liveBlockedState,
+  liveSettledProbe,
+  reconcileCriticalWorkItemAlert,
+  selectCriticalWorkItemAlerts,
+  workItemIdFromRef,
+} from './work-items-events';
 import type { WorkItem } from './work-items';
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
@@ -68,7 +78,10 @@ describe('helpers', () => {
 
   it('workItemIdFromRef inverts both ref shapes', () => {
     expect(workItemIdFromRef({ kind: 'issue', ref: 'WI-9' })).toEqual({ id: 'WI-9' });
-    expect(workItemIdFromRef({ kind: 'feature', ref: 'myharness#F-012' })).toEqual({ id: 'F-012', harness: 'myharness' });
+    expect(workItemIdFromRef({ kind: 'feature', ref: 'myharness#F-012' })).toEqual({
+      id: 'F-012',
+      harness: 'myharness',
+    });
     expect(workItemIdFromRef({ kind: 'topic', ref: 'x' })).toBeNull();
   });
 });
@@ -82,10 +95,7 @@ describe('critical work-item alert reconciliation (EI-20271572335296930)', () =>
     ]);
     const resolveBatch = vi.fn(async () => ({ resolved: 1 }));
 
-    await reconcileCriticalWorkItemAlert(
-      wi({ id: 'WI-1', state, severity: 'critical' }),
-      { listOpen, resolveBatch },
-    );
+    await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state, severity: 'critical' }), { listOpen, resolveBatch });
 
     expect(resolveBatch).toHaveBeenCalledWith([
       {
@@ -110,19 +120,17 @@ describe('critical work-item alert reconciliation (EI-20271572335296930)', () =>
   });
 
   it('does not read or resolve for a non-terminal item or without a matching alert', async () => {
-    const listOpen = vi.fn(async () => [
-      { msg_id: 'other', subjectSignature: 'critical-wi-alert:WI-2' },
-    ]);
+    const listOpen = vi.fn(async () => [{ msg_id: 'other', subjectSignature: 'critical-wi-alert:WI-2' }]);
     const resolveBatch = vi.fn(async () => ({ resolved: 0 }));
 
-    await reconcileCriticalWorkItemAlert(
-      wi({ id: 'WI-1', state: 'open', severity: 'critical' }),
-      { listOpen, resolveBatch },
-    );
-    await reconcileCriticalWorkItemAlert(
-      wi({ id: 'WI-1', state: 'done', severity: 'critical' }),
-      { listOpen, resolveBatch },
-    );
+    await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state: 'open', severity: 'critical' }), {
+      listOpen,
+      resolveBatch,
+    });
+    await reconcileCriticalWorkItemAlert(wi({ id: 'WI-1', state: 'done', severity: 'critical' }), {
+      listOpen,
+      resolveBatch,
+    });
 
     expect(listOpen).toHaveBeenCalledOnce();
     expect(resolveBatch).not.toHaveBeenCalled();
@@ -172,7 +180,9 @@ describe('emitWorkItemSettledEvents', () => {
       listOut: vi.fn(async () => []) as never,
       listIn: vi.fn(async () => []) as never,
     });
-    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ id: 'WI-1', severity: 'critical', state: 'resolved' }));
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'WI-1', severity: 'critical', state: 'resolved' }),
+    );
   });
 
   it('fires work-item:unblocked for a dependent whose LAST blocker settled, targeted at its claimant', async () => {
@@ -184,13 +194,21 @@ describe('emitWorkItemSettledEvents', () => {
       getItem: vi.fn(async (id: string) =>
         id === 'WI-DEP' ? dependent : id === 'WI-B2' ? otherBlockerSettled : null,
       ) as never,
-      listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [])) as never,
-      listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')] : [])) as never,
+      listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) =>
+        o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [],
+      ) as never,
+      listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) =>
+        o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')] : [],
+      ) as never,
     });
     const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
     expect(keys).toContain('work-item:done:WI-1');
     expect(keys).toContain('work-item:unblocked:WI-DEP');
-    const unblocked = (emit.mock.calls.find((c) => (c as unknown as [{ key: string }])[0].key.startsWith('work-item:unblocked')) as unknown as [{ to: string[]; payload: { clearedBy: string } }])[0];
+    const unblocked = (
+      emit.mock.calls.find((c) =>
+        (c as unknown as [{ key: string }])[0].key.startsWith('work-item:unblocked'),
+      ) as unknown as [{ to: string[]; payload: { clearedBy: string } }]
+    )[0];
     expect(unblocked.to).toEqual(['su-claimant']);
     expect(unblocked.payload.clearedBy).toBe('WI-1');
   });
@@ -205,8 +223,12 @@ describe('emitWorkItemSettledEvents', () => {
       getItem: vi.fn(async (id: string) =>
         id === 'WI-DEP' ? dependent : id === 'WI-B2' ? liveBlocker : id === 'WI-DONE-DEP' ? settledDep : null,
       ) as never,
-      listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-1', 'WI-DONE-DEP')] : [])) as never,
-      listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')] : [])) as never,
+      listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) =>
+        o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-1', 'WI-DONE-DEP')] : [],
+      ) as never,
+      listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) =>
+        o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')] : [],
+      ) as never,
     });
     const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
     expect(keys).toEqual(['work-item:done:WI-1']); // no unblocked fires
@@ -239,14 +261,22 @@ describe('emitWorkItemSettledEvents', () => {
       emitWorkItemSettledEvents(wi(), {
         emit: emit as never,
         getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? dependent : null)) as never,
-        listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [])) as never,
-        listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [])) as never,
+        listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) =>
+          o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [],
+        ) as never,
+        listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) =>
+          o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [],
+        ) as never,
       }),
     ).resolves.toBeUndefined();
     const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
     expect(keys).toContain('work-item:done:WI-1'); // the done-emit was attempted and threw…
     expect(keys).toContain('work-item:unblocked:WI-DEP'); // …yet the freed dependent was still woken
-    const unblocked = (emit.mock.calls.find((c) => (c as unknown as [{ key: string }])[0].key.startsWith('work-item:unblocked')) as unknown as [{ to: string[] }])[0];
+    const unblocked = (
+      emit.mock.calls.find((c) =>
+        (c as unknown as [{ key: string }])[0].key.startsWith('work-item:unblocked'),
+      ) as unknown as [{ to: string[] }]
+    )[0];
     expect(unblocked.to).toEqual(['su-claimant']);
   });
 });
@@ -285,7 +315,9 @@ describe('emitUnblockedOnEdgeRemoved (WI-4034)', () => {
     const liveBlocker = wi({ id: 'WI-B2', state: 'open' });
     await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
       emit: emit as never,
-      getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? dependent : id === 'WI-B2' ? liveBlocker : null)) as never,
+      getItem: vi.fn(async (id: string) =>
+        id === 'WI-DEP' ? dependent : id === 'WI-B2' ? liveBlocker : null,
+      ) as never,
       listIn: vi.fn(async () => [edge('WI-B2', 'WI-DEP')]) as never,
     });
     expect(emit).not.toHaveBeenCalled();
@@ -315,24 +347,27 @@ describe('emitUnblockedOnEdgeRemoved (WI-4034)', () => {
 
   it('an emit failure is swallowed (never throws)', async () => {
     await expect(
-      emitUnblockedOnEdgeRemoved(
-        { kind: 'issue', ref: 'WI-DEP' },
-        'WI-1',
-        {
-          emit: vi.fn(async () => {
-            throw new Error('engine down');
-          }) as never,
-          getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'open' })) as never,
-          listIn: vi.fn(async () => []) as never,
-        },
-      ),
+      emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
+        emit: vi.fn(async () => {
+          throw new Error('engine down');
+        }) as never,
+        getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'open' })) as never,
+        listIn: vi.fn(async () => []) as never,
+      }),
     ).resolves.toBeUndefined();
   });
 });
 
 type EmitOpts = import('./events/await/engine').EmitAwaitedEventOpts;
 const typedEmit = () =>
-  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
+  vi.fn(async (_opts: EmitOpts) => ({
+    ok: true as const,
+    key: '',
+    woken: 0,
+    notified: [] as string[],
+    msgId: null,
+    waiters: 0,
+  }));
 
 describe('emitWorkItemClaimedEvent', () => {
   it('fires work-item:claimed:<id> with the assignee in payload', async () => {
@@ -351,7 +386,9 @@ describe('emitWorkItemClaimedEvent', () => {
   it('never rejects on an emit failure (warns instead)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemClaimedEvent } = await import('./work-items-events');
-    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    const emit = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     expect(() => emitWorkItemClaimedEvent(wi(), 'su-x', { emit: emit as never })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('claimed-event'));
@@ -364,14 +401,19 @@ describe('emitWorkItemClaimedEvent', () => {
   // rig-based integration test via vitest-fail-on-console). Same for the partial
   // test schema ("… does not exist"). failSoft must swallow both silently.
   it.each([
-    ['CONNECTION_ENDED by code', Object.assign(new Error('write CONNECTION_ENDED localhost:36195'), { code: 'CONNECTION_ENDED' })],
+    [
+      'CONNECTION_ENDED by code',
+      Object.assign(new Error('write CONNECTION_ENDED localhost:36195'), { code: 'CONNECTION_ENDED' }),
+    ],
     ['CONNECTION_ENDED by message only', new Error('write CONNECTION_ENDED 127.0.0.1:5432')],
     ['CONNECTION_DESTROYED by code', Object.assign(new Error('boom'), { code: 'CONNECTION_DESTROYED' })],
     ['partial-schema does not exist', new Error('relation "harness_shared.work_items" does not exist')],
   ])('swallows expected fire-and-forget teardown noise WITHOUT warning: %s', async (_label, thrown) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemClaimedEvent } = await import('./work-items-events');
-    const emit = vi.fn(async () => { throw thrown; });
+    const emit = vi.fn(async () => {
+      throw thrown;
+    });
     expect(() => emitWorkItemClaimedEvent(wi(), 'su-x', { emit: emit as never })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).not.toHaveBeenCalled();
@@ -397,7 +439,9 @@ describe('emitClaimReleasedEvent (P-105)', () => {
   it('never rejects on an emit failure (warns instead)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitClaimReleasedEvent } = await import('./work-items-events');
-    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    const emit = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     expect(() => emitClaimReleasedEvent(wi(), { emit: emit as never })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('claim-released-event'));
@@ -500,13 +544,21 @@ describe('emitWorkItemCreatedEvent (EI-8296)', () => {
   it('fires the GLOBAL work-item:created key with id/kind/severity/harness/title in payload', async () => {
     const emit = typedEmit();
     const { emitWorkItemCreatedEvent } = await import('./work-items-events');
-    emitWorkItemCreatedEvent(wi({ id: 'WI-20', kind: 'bug', severity: null, harness: 'papercusp', title: 'new bug' }), { emit });
+    emitWorkItemCreatedEvent(wi({ id: 'WI-20', kind: 'bug', severity: null, harness: 'papercusp', title: 'new bug' }), {
+      emit,
+    });
     await new Promise((r) => setTimeout(r, 0));
     expect(emit).toHaveBeenCalledOnce();
     expect(emit.mock.calls[0][0]).toMatchObject({
       key: 'work-item:created',
       source: 'work-items',
-      payload: expect.objectContaining({ id: 'WI-20', kind: 'bug', severity: null, harness: 'papercusp', title: 'new bug' }),
+      payload: expect.objectContaining({
+        id: 'WI-20',
+        kind: 'bug',
+        severity: null,
+        harness: 'papercusp',
+        title: 'new bug',
+      }),
     });
   });
 
@@ -523,7 +575,9 @@ describe('emitWorkItemCreatedEvent (EI-8296)', () => {
   it('never rejects on an emit failure (warns instead)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemCreatedEvent } = await import('./work-items-events');
-    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    const emit = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     expect(() => emitWorkItemCreatedEvent(wi(), { emit: emit as never })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('created-event'));
@@ -556,11 +610,18 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     });
   });
 
-  it('EI-14161: carries the item\'s own payload.tags so a spec\'s tag-based exclusion is derivable', async () => {
+  it("EI-14161: carries the item's own payload.tags so a spec's tag-based exclusion is derivable", async () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
     emitWorkItemClaimableEvent(
-      wi({ id: 'EI-128', kind: 'bug', state: 'open', assignee: null, title: 'p2p-perf regression', payload: { tags: ['p2p', 'rig'] } }),
+      wi({
+        id: 'EI-128',
+        kind: 'bug',
+        state: 'open',
+        assignee: null,
+        title: 'p2p-perf regression',
+        payload: { tags: ['p2p', 'rig'] },
+      }),
       'released',
       { emit },
     );
@@ -612,7 +673,11 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     }
     // sanity: an unparked, unassigned, claimable row still fires (the guard isn't over-broad).
     const emit = typedEmit();
-    emitWorkItemClaimableEvent(wi({ id: 'WI-39', state: 'open', assignee: null, payload: { _claimHold: false } }), 'released', { emit });
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-39', state: 'open', assignee: null, payload: { _claimHold: false } }),
+      'released',
+      { emit },
+    );
     await new Promise((r) => setTimeout(r, 0));
     expect(emit).toHaveBeenCalledOnce();
   });
@@ -637,6 +702,45 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     expect(claimable?.payload.reason).toBe('unblocked');
   });
 
+  it('direct-dispatches an unassigned agentic successor instead of advertising it to the generic pool', async () => {
+    const emit = vi.fn(async () => ({
+      ok: true as const,
+      key: '',
+      woken: 0,
+      notified: [],
+      msgId: null,
+      waiters: 0,
+    }));
+    const execution = { appHarnessSlug: 'email', agentName: 'email-agent' };
+    const dependent = wi({
+      id: 'WI-AGENTIC-DEP',
+      state: 'open',
+      assignee: null,
+      harness: 'email',
+      payload: { plan_run: { runId: 42, execution } },
+    });
+    const dispatchActionable = vi.fn(async () => ({ ok: true })) as never;
+
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: dependent.id }, 'WI-ROOT', {
+      emit: emit as never,
+      getItem: vi.fn(async (id: string) => (id === dependent.id ? dependent : null)) as never,
+      listIn: vi.fn(async () => []) as never,
+      dispatchActionable,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(dispatchActionable).toHaveBeenCalledWith({
+      workItemIds: [dependent.id],
+      targetAgent: 'email-agent',
+      harness: 'email',
+      summary: `${dependent.id} became actionable after WI-ROOT settled`,
+      source: 'system:plan-run-successor-dispatch',
+    });
+    const keys = emit.mock.calls.map((call) => call[0].key);
+    expect(keys).toContain(`work-item:unblocked:${dependent.id}`);
+    expect(keys).not.toContain('work-item:claimable');
+  });
+
   it('CO-FIRES from emitWorkItemCreatedEvent for an unclaimed-claimable create (one hook at the call site)', async () => {
     const emit = typedEmit();
     const { emitWorkItemCreatedEvent } = await import('./work-items-events');
@@ -658,7 +762,9 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
   it('never rejects on an emit failure (warns instead)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
-    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    const emit = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     expect(() =>
       emitWorkItemClaimableEvent(wi({ state: 'open', assignee: null }), 'created', { emit: emit as never }),
     ).not.toThrow();
@@ -709,7 +815,11 @@ describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', (
   it('the ENTERING-EDGE guard: claimable→claimable moves and assigned/non-claimable landings do NOT re-announce', async () => {
     const { emitWorkItemStatusEvent } = await import('./work-items-events');
     const cases: Array<[string, Partial<WorkItem>, string]> = [
-      ['open→failing (already advertised — claimable→claimable)', { id: 'WI-12', state: 'failing', assignee: null }, 'open'],
+      [
+        'open→failing (already advertised — claimable→claimable)',
+        { id: 'WI-12', state: 'failing', assignee: null },
+        'open',
+      ],
       ['blocked→open while ASSIGNED', { id: 'WI-13', state: 'open', assignee: 'su-holder' }, 'blocked'],
       ['wip→blocked (non-claimable landing)', { id: 'WI-14', state: 'blocked', assignee: null }, 'wip'],
     ];
@@ -725,7 +835,9 @@ describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', (
   it('never rejects on an emit failure (warns; a state write must never break)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemStatusEvent } = await import('./work-items-events');
-    const emit = vi.fn(async () => { throw new Error('engine down'); });
+    const emit = vi.fn(async () => {
+      throw new Error('engine down');
+    });
     expect(() => emitWorkItemStatusEvent(wi(), 'todo', { emit: emit as never })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('status-event'));
@@ -735,7 +847,9 @@ describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', (
   it('swallows expected teardown noise WITHOUT warning (CONNECTION_ENDED / partial schema)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemStatusEvent } = await import('./work-items-events');
-    const emit = vi.fn(async () => { throw Object.assign(new Error('write CONNECTION_ENDED'), { code: 'CONNECTION_ENDED' }); });
+    const emit = vi.fn(async () => {
+      throw Object.assign(new Error('write CONNECTION_ENDED'), { code: 'CONNECTION_ENDED' });
+    });
     expect(() => emitWorkItemStatusEvent(wi(), 'todo', { emit: emit as never })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).not.toHaveBeenCalled();
@@ -777,7 +891,10 @@ describe('batched unblocked core (P-005)', () => {
     // THE batch pin: one query for both dependents' in-edges, never per-dst.
     expect(listInMany).toHaveBeenCalledTimes(1);
     expect(listInMany.mock.calls[0]).toEqual([
-      [{ kind: 'issue', ref: 'WI-D1' }, { kind: 'issue', ref: 'WI-D2' }],
+      [
+        { kind: 'issue', ref: 'WI-D1' },
+        { kind: 'issue', ref: 'WI-D2' },
+      ],
       { rel: 'blocks' },
     ]);
     const keys = emit.mock.calls.map((c) => c[0].key);
@@ -815,7 +932,9 @@ describe('liveBlockedState (P-006 latch probe)', () => {
     const settledBlocker = wi({ id: 'WI-B1', state: 'closed' });
     await expect(
       liveBlockedState('WI-DEP', {
-        getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? item : id === 'WI-B1' ? settledBlocker : null)) as never,
+        getItem: vi.fn(async (id: string) =>
+          id === 'WI-DEP' ? item : id === 'WI-B1' ? settledBlocker : null,
+        ) as never,
         listIn: vi.fn(async () => [edge('WI-B1', 'WI-DEP')]) as never,
       }),
     ).resolves.toBe('unblocked');
@@ -873,9 +992,9 @@ describe('liveSettledProbe (EI-13095 done-key latch probe)', () => {
   });
 
   it("returns 'unknown' (never throws) for a missing or unreadable item — registration must proceed", async () => {
-    await expect(
-      liveSettledProbe('WI-GONE', { getItem: vi.fn(async () => null) as never }),
-    ).resolves.toEqual({ verdict: 'unknown' });
+    await expect(liveSettledProbe('WI-GONE', { getItem: vi.fn(async () => null) as never })).resolves.toEqual({
+      verdict: 'unknown',
+    });
     await expect(
       liveSettledProbe('WI-ERR', {
         getItem: vi.fn(async () => {
@@ -895,31 +1014,39 @@ describe('liveSettledProbe (EI-13095 done-key latch probe)', () => {
 describe('liveAssigneeProbe (EI-18731480441007330 self-await deadlock guard probe)', () => {
   it("returns 'live' + the current assignee for a non-terminal item", async () => {
     await expect(
-      liveAssigneeProbe('WI-6095', { getItem: vi.fn(async () => wi({ id: 'WI-6095', state: 'wip', assignee: 'su-b106122a' })) as never }),
+      liveAssigneeProbe('WI-6095', {
+        getItem: vi.fn(async () => wi({ id: 'WI-6095', state: 'wip', assignee: 'su-b106122a' })) as never,
+      }),
     ).resolves.toEqual({ verdict: 'live', assignee: 'su-b106122a' });
   });
 
   it("returns 'live' + null assignee for an unclaimed item", async () => {
     await expect(
-      liveAssigneeProbe('WI-7', { getItem: vi.fn(async () => wi({ id: 'WI-7', state: 'open', assignee: null })) as never }),
+      liveAssigneeProbe('WI-7', {
+        getItem: vi.fn(async () => wi({ id: 'WI-7', state: 'open', assignee: null })) as never,
+      }),
     ).resolves.toEqual({ verdict: 'live', assignee: null });
   });
 
   it("returns 'settled' + the assignee for an already-settled item (issue AND feature families)", async () => {
     await expect(
-      liveAssigneeProbe('WI-5075', { getItem: vi.fn(async () => wi({ id: 'WI-5075', state: 'resolved', assignee: 'su-x' })) as never }),
+      liveAssigneeProbe('WI-5075', {
+        getItem: vi.fn(async () => wi({ id: 'WI-5075', state: 'resolved', assignee: 'su-x' })) as never,
+      }),
     ).resolves.toEqual({ verdict: 'settled', assignee: 'su-x' });
     await expect(
       liveAssigneeProbe('F-9', {
-        getItem: vi.fn(async () => wi({ id: 'F-9', family: 'feature', kind: 'feature', state: 'passed', assignee: 'su-x' })) as never,
+        getItem: vi.fn(async () =>
+          wi({ id: 'F-9', family: 'feature', kind: 'feature', state: 'passed', assignee: 'su-x' }),
+        ) as never,
       }),
     ).resolves.toEqual({ verdict: 'settled', assignee: 'su-x' });
   });
 
   it("returns 'unknown' (never throws) for a missing or unreadable item — registration must proceed", async () => {
-    await expect(
-      liveAssigneeProbe('WI-GONE', { getItem: vi.fn(async () => null) as never }),
-    ).resolves.toEqual({ verdict: 'unknown' });
+    await expect(liveAssigneeProbe('WI-GONE', { getItem: vi.fn(async () => null) as never })).resolves.toEqual({
+      verdict: 'unknown',
+    });
     await expect(
       liveAssigneeProbe('WI-ERR', {
         getItem: vi.fn(async () => {
@@ -947,7 +1074,8 @@ describe('fix/duplicate settle-notify (P-010)', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  const okEmit = () => vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+  const okEmit = () =>
+    vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
 
   it('fixes: notifies the fixed target subscribers (isResolution, inject-only) when the fixer settles', async () => {
     const notifySubscribers = vi.fn(async () => 1);
@@ -962,7 +1090,10 @@ describe('fix/duplicate settle-notify (P-010)', () => {
       notifySubscribers: notifySubscribers as never,
     });
     expect(notifySubscribers).toHaveBeenCalledOnce();
-    const [obj, ev] = notifySubscribers.mock.calls[0] as unknown as [{ kind: string; ref: string }, { notify_kind: string; isResolution: boolean; summary: string }];
+    const [obj, ev] = notifySubscribers.mock.calls[0] as unknown as [
+      { kind: string; ref: string },
+      { notify_kind: string; isResolution: boolean; summary: string },
+    ];
     expect(obj).toEqual({ kind: 'issue', ref: 'WI-BUG' }); // the TARGET's ref, not the fixer's
     expect(ev.notify_kind).toBe('work_item_fix_settled');
     expect(ev.isResolution).toBe(true); // mention-mode followers still receive the resolution
@@ -978,11 +1109,15 @@ describe('fix/duplicate settle-notify (P-010)', () => {
       getItem: vi.fn(async (id: string) => (id === 'WI-DUP1' ? dup1 : id === 'WI-DUP2' ? dup2 : null)) as never,
       listOut: vi.fn(async () => []) as never,
       listIn: vi.fn(async (_ref: unknown, opts?: { rel?: string }) =>
-        opts?.rel === 'duplicates' ? [edgeRel('WI-DUP1', 'WI-CANON', 'duplicates'), edgeRel('WI-DUP2', 'WI-CANON', 'duplicates')] : [],
+        opts?.rel === 'duplicates'
+          ? [edgeRel('WI-DUP1', 'WI-CANON', 'duplicates'), edgeRel('WI-DUP2', 'WI-CANON', 'duplicates')]
+          : [],
       ) as never,
       notifySubscribers: vi.fn(async () => 0) as never,
     });
-    const dupCall = emit.mock.calls.find((c) => (c as unknown as [{ key: string }])[0].key.startsWith('work-item:duplicate-settled'));
+    const dupCall = emit.mock.calls.find((c) =>
+      (c as unknown as [{ key: string }])[0].key.startsWith('work-item:duplicate-settled'),
+    );
     expect(dupCall).toBeDefined();
     const arg = (dupCall as unknown as [{ key: string; to: string[] }])[0];
     expect(arg.key).toBe('work-item:duplicate-settled:WI-CANON');

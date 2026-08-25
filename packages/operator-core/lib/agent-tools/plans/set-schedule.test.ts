@@ -99,6 +99,19 @@ describe('plans:set-schedule persistence + result shaping', () => {
     expect((arg.schedule as { rrule: string }).rrule).toBe('FREQ=WEEKLY;BYDAY=MO,WE,FR');
   });
 
+  it('persists the agentic execution target with the authored schedule', async () => {
+    const execution = { appHarnessSlug: 'email', agentName: 'email-agent' };
+    const out = await call({
+      schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', execution },
+    });
+
+    expect(out.isError).toBeUndefined();
+    const arg = setSched.mock.calls[0]![0] as unknown as {
+      schedule: { execution: typeof execution };
+    };
+    expect(arg.schedule.execution).toEqual(execution);
+  });
+
   it('maps a falsy write to not_found', async () => {
     setSched.mockResolvedValue(false);
     const out = await call({ schedule: { kind: 'rrule', rrule: 'FREQ=DAILY' } });
