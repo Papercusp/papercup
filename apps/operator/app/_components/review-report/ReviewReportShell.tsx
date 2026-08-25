@@ -175,6 +175,20 @@ export default function ReviewReportShell({
     [groups],
   );
 
+  const reportCounts = useMemo(() => {
+    let total = 0;
+    let applied = 0;
+    let manual = 0;
+    for (const group of groups) {
+      for (const row of group.rows) {
+        total += 1;
+        if (rowStatus(row) === "applied") applied += 1;
+        else if (rowStatus(row) === "pending" && !rowSelectable(row)) manual += 1;
+      }
+    }
+    return { total, applied, manual };
+  }, [groups]);
+
   // A live report can remove a row and later reintroduce the same stable id.
   // Once it left the current report, a stale expanded state must not resurrect
   // without a fresh owner action.
@@ -395,6 +409,7 @@ export default function ReviewReportShell({
             </span>
           ) : null}
           <div className="review-report__head-text">
+            <span className="review-report__eyebrow">Resolution review</span>
             <h2 id={titleId} className="review-report__title">
               {title}
             </h2>
@@ -438,6 +453,36 @@ export default function ReviewReportShell({
           </Button>
         </div>
       </header>
+
+      <div
+        className="review-report__summary"
+        data-testid="review-report-summary"
+        aria-label="Report summary"
+      >
+        <div className="review-report__summary-lead">
+          <span className="review-report__summary-kicker">Current selection</span>
+          <strong data-testid="review-report-selected-count">
+            {liveSelected.size}
+          </strong>
+          <span>
+            of {pendingIds.size} ready to apply
+          </span>
+        </div>
+        <dl className="review-report__metrics">
+          <div className="review-report__metric">
+            <dt>Results</dt>
+            <dd>{reportCounts.total}</dd>
+          </div>
+          <div className="review-report__metric review-report__metric--good">
+            <dt>Handled</dt>
+            <dd>{reportCounts.applied}</dd>
+          </div>
+          <div className="review-report__metric review-report__metric--manual">
+            <dt>Manual</dt>
+            <dd>{reportCounts.manual}</dd>
+          </div>
+        </dl>
+      </div>
 
       <span
         className="pc-sr-only"
@@ -500,6 +545,14 @@ export default function ReviewReportShell({
                       data-testid={`review-group-count-${group.id}`}
                     >
                       {group.rows.length}
+                    </span>
+                    <span
+                      className={`review-report__group-selection review-report__group-selection--${groupState}`}
+                      data-testid={`review-group-selection-${group.id}`}
+                    >
+                      {groupPending.length > 0
+                        ? `${selCount}/${groupPending.length} selected`
+                        : "Review only"}
                     </span>
                     {group.description != null ? (
                       <span className="review-report__group-desc">
