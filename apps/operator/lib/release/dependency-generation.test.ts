@@ -31,8 +31,15 @@ interface ShellResult {
 }
 
 function makeIntegration(): string {
-  const root = mkdtempSync(join(tmpdir(), 'dependency-generation-'));
-  roots.push(root);
+  // Retention intentionally imports DIRECT sibling checkout markers. Put each
+  // fixture under a private parent so that contract scans only this test's
+  // siblings instead of every concurrently-active directory in the shared
+  // /tmp/pcv root (which made five tiny publishes take ~59s and the full file
+  // exceed the workspace's 300s watchdog).
+  const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-suite-'));
+  const root = join(parent, 'integration');
+  mkdirSync(root, { recursive: true });
+  roots.push(parent);
   mkdirSync(join(root, 'node_modules/pkg'), { recursive: true });
   mkdirSync(join(root, 'packages/a/node_modules/local'), { recursive: true });
   mkdirSync(join(root, 'packages/b/node_modules/other'), { recursive: true });
