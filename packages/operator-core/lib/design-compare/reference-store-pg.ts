@@ -23,6 +23,7 @@
  * `setLifecycle` reads before it writes.
  */
 import type {
+  FeatureScope,
   ReferenceScope,
   ReferenceStorePort,
   StoredEvidence,
@@ -124,6 +125,22 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
   const now = options.now ?? (() => Date.now());
 
   return {
+    async listFeatureReferenceIds(scope: FeatureScope): Promise<readonly string[]> {
+      // DISTINCT on the metadata projection rather than decoding payloads: the
+      // gate only needs the ids, and a reference with eight revisions must not
+      // read as eight references.
+      const rows = await sql<{ reference_id: string }>`
+        SELECT DISTINCT metadata->>'referenceId' AS reference_id
+          FROM harness_shared.harness_design_artifacts
+         WHERE harness_slug = ${scope.harnessSlug}
+           AND feature_id   = ${scope.featureId}
+           AND kind         = ${RATIFIED_REFERENCE_ARTIFACT_KIND}
+           AND metadata->>'referenceId' IS NOT NULL
+         ORDER BY reference_id ASC
+      `;
+      return rows.map((r) => r.reference_id);
+    },
+
     async listRevisions(scope: ReferenceScope): Promise<readonly StoredReferenceRow[]> {
       const rows = await sql<ArtifactRow>`
         SELECT id, harness_slug, feature_id, payload, created_ts

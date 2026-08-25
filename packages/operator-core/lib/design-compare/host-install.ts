@@ -24,6 +24,7 @@
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { installDesignCompareVerbs } from './host-registry';
 import { createPgReferenceStore, type SqlTag } from './reference-store-pg';
@@ -86,6 +87,44 @@ export const filesystemReferenceMaterializer: ReferenceImageMaterializer = async
   };
 };
 
+/**
+ * Per-harness cache of the production dependency bundle.
+ *
+ * Pinned rather than a module-level `Map` for the reason spelled out in
+ * `host-registry.ts`: this package is reachable by several loader paths, and a
+ * split module record would silently give each one its OWN postgres pool. The
+ * cache exists precisely to stop that, so it must not be the thing that
+ * duplicates.
+ */
+const DESIGN_COMPARE_DEPS_SLOT = '@papercusp/operator-core.design-compare.deps';
+
+interface DepsSlot {
+  byHarness: Map<string, Promise<VerbDeps>>;
+}
+
+function depsSlot(): DepsSlot {
+  return pinModuleState<DepsSlot>(DESIGN_COMPARE_DEPS_SLOT, () => ({ byHarness: new Map() }));
+}
+
+/**
+ * The production verb dependencies for one harness, built once and reused.
+ *
+ * Exported for the P-007 completion gate, which must read design evidence
+ * through exactly the same store and the same reader an agent uses. A second,
+ * privately-constructed bundle would be a second source of truth about
+ * staleness and coverage — free to drift, and drifting toward "current" is the
+ * direction that lets work through it should have stopped. It also opens a
+ * second connection pool per completion, which is its own problem.
+ */
+export function designCompareDepsFor(harnessSlug: string): Promise<VerbDeps> {
+  const slot = depsSlot();
+  const existing = slot.byHarness.get(harnessSlug);
+  if (existing) return existing;
+  const built = buildDeps(harnessSlug);
+  slot.byHarness.set(harnessSlug, built);
+  return built;
+}
+
 /** Build the production dependency bundle for one harness. */
 async function buildDeps(harnessSlug: string): Promise<VerbDeps> {
   // Lazy so this module stays import-side-effect-free and the driver is not
@@ -109,8 +148,9 @@ async function buildDeps(harnessSlug: string): Promise<VerbDeps> {
  * plugin reload does not accumulate surfaces holding closed handles.
  */
 export function installDesignCompareForHarness(harnessSlug: string): void {
-  let pending: Promise<VerbDeps> | null = null;
-  const deps = (): Promise<VerbDeps> => (pending ??= buildDeps(harnessSlug));
+  // Shares the per-harness cache with the completion gate, so the verbs an
+  // agent calls and the gate that judges the result read the same store.
+  const deps = (): Promise<VerbDeps> => designCompareDepsFor(harnessSlug);
 
   const verbs: DesignCompareVerbs = {
     async ratifyReference(input, caller) {

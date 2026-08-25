@@ -1,0 +1,141 @@
+/**
+ * P-007: the feature-level design-evidence obligation.
+ *
+ * `gate.ts` decides ONE reference. This composes the decision across every
+ * reference a feature has, which under D-019 is how a feature covers more than
+ * one viewport or interaction state — a revision carries one image, so a second
+ * breakpoint is a second reference rather than a second required case.
+ *
+ * The composition is deliberately storage-DRIVEN. The set of references is
+ * discovered from the store, never taken from the caller, because a gate that
+ * asks which references to check is satisfied by naming none — which is not a
+ * gate, it is a form to fill in.
+ */
+import { evaluateDesignGate, type DesignGateVerdict, renderDesignGateRefusal } from './gate';
+import { DESIGN_GATE_DOES_NOT_ESTABLISH } from './gate';
+import type { FeatureScope, ReferenceStorePort } from './reference-store';
+import { getDesignEvidenceVerb, type VerbCaller, type VerbDeps } from './verbs';
+
+export interface FeatureGateReference {
+  readonly referenceId: string;
+  readonly verdict: DesignGateVerdict;
+}
+
+export type FeatureDesignGateResult =
+  | {
+      /** No reference under this feature is currently ratified (P-007: exploration is unrestricted). */
+      readonly applicable: false;
+      readonly references: readonly FeatureGateReference[];
+    }
+  | {
+      readonly applicable: true;
+      readonly satisfied: boolean;
+      readonly references: readonly FeatureGateReference[];
+      /** Only the references that are ratified AND unsatisfied. */
+      readonly blocking: readonly FeatureGateReference[];
+      readonly doesNotEstablish: readonly string[];
+    };
+
+/**
+ * Thrown when the obligation could not be established at all.
+ *
+ * Separate from an unsatisfied verdict on purpose: "this work owes evidence it
+ * does not have" and "we could not find out what this work owes" are different
+ * facts, and collapsing them is how an unavailable store becomes a silent pass.
+ * The caller decides the policy; this module refuses to guess.
+ */
+export class DesignGateUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DesignGateUnavailableError';
+  }
+}
+
+export interface FeatureGateDeps {
+  readonly store: ReferenceStorePort;
+  /** The verb deps used to READ evidence, so the gate sees exactly what an agent sees. */
+  readonly verbDeps: VerbDeps;
+  readonly caller: VerbCaller;
+}
+
+/**
+ * Evaluate every ratified reference under a feature.
+ *
+ * Reads through `get_design_evidence` rather than the store directly. That is a
+ * reuse decision with a correctness consequence: the verb is where staleness,
+ * schema-version mismatch and coverage are computed, and a gate that recomputed
+ * them from raw rows would be a second implementation of the same rules — free
+ * to drift, and drifting silently toward "current" is the direction that passes
+ * work it should have stopped.
+ */
+export async function evaluateFeatureDesignGate(
+  scope: FeatureScope,
+  deps: FeatureGateDeps,
+): Promise<FeatureDesignGateResult> {
+  let referenceIds: readonly string[];
+  try {
+    referenceIds = await deps.store.listFeatureReferenceIds(scope);
+  } catch (error) {
+    throw new DesignGateUnavailableError(
+      `could not list design references for '${scope.featureId}': ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  const references: FeatureGateReference[] = [];
+  for (const referenceId of referenceIds) {
+    const read = await getDesignEvidenceVerb(
+      { featureId: scope.featureId, referenceId },
+      deps.caller,
+      deps.verbDeps,
+    );
+    if (!read.ok) {
+      // A reference we cannot read is not a reference we may ignore. Ignoring
+      // it drops a real obligation on an infrastructure fault, which is exactly
+      // the failure that looks like everything is fine.
+      throw new DesignGateUnavailableError(
+        `could not read design evidence for '${scope.featureId}'/'${referenceId}': ${read.code}${
+          read.detail ? ` — ${read.detail}` : ''
+        }`,
+      );
+    }
+    references.push({ referenceId, verdict: evaluateDesignGate(read) });
+  }
+
+  const applicable = references.filter((r) => r.verdict.applicable);
+  if (applicable.length === 0) return { applicable: false, references };
+
+  const blocking = applicable.filter((r) => r.verdict.applicable && !r.verdict.satisfied);
+  return {
+    applicable: true,
+    satisfied: blocking.length === 0,
+    references,
+    blocking,
+    doesNotEstablish: DESIGN_GATE_DOES_NOT_ESTABLISH,
+  };
+}
+
+/**
+ * Render the whole feature obligation as one message.
+ *
+ * One message rather than one per reference, for the same reason `gate.ts`
+ * reports every failing case at once: an agent told about one unmet reference
+ * fixes it, retries, and is refused again by the next.
+ */
+export function renderFeatureDesignGate(result: FeatureDesignGateResult): string | undefined {
+  if (!result.applicable) return undefined;
+  if (result.satisfied) {
+    const n = result.references.filter((r) => r.verdict.applicable).length;
+    return (
+      `design evidence: ${n} ratified reference(s) have current passing evidence for every required case. ` +
+      `This does NOT establish: ${DESIGN_GATE_DOES_NOT_ESTABLISH.join('; ')}.`
+    );
+  }
+  const bodies = result.blocking
+    .map((r) =>
+      r.verdict.applicable && !r.verdict.satisfied ? renderDesignGateRefusal(r.verdict) : '',
+    )
+    .filter(Boolean);
+  return bodies.join('\n\n');
+}

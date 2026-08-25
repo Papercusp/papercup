@@ -126,6 +126,13 @@ import {
 import { SPEC_EVIDENCE_KINDS } from '../plans/spec-evidence-store';
 import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
+import {
+  designEvidenceCompletionGate,
+  designFeatureCandidates,
+  renderDesignEvidenceRefusal,
+} from './design-evidence-gate';
+import { evaluateFeatureDesignGate } from '../../design-compare/feature-gate';
+import { designCompareDepsFor } from '../../design-compare/host-install';
 
 // EI-7031: coerce structured LLM mis-shapes (scalar↔array swaps, missing summary)
 // to the CompletionRecord contract BEFORE validation. A bare string is intentionally
@@ -1868,6 +1875,61 @@ async function completeOne(
     }
   }
 
+  // DESIGN-EVIDENCE GATE (ratified-mockup-implementation-validation-2026-08-24 P-007).
+  // When this work-item's feature has a ratified design reference, every required case
+  // must have CURRENT PASSING deterministic evidence (D-004 — advisory prose is never
+  // consulted). Unratified surfaces impose nothing, so exploration stays unrestricted.
+  //
+  // D-006 makes this REPORT-ONLY by default: the obligation is measured and surfaced on
+  // the completion, and only refuses once DESIGN_EVIDENCE_GATE_ENFORCING is flipped by
+  // P-011 after calibration (P-008) and independent verification (P-009). While
+  // report-only, ANY failure of the gate itself is swallowed into the report — a
+  // completion must not be lost to a gate that is not yet entitled to block.
+  let designEvidenceReport: string | undefined;
+  if (closeIntentRequested && existing.harness) {
+    const harnessSlug = existing.harness;
+    const outcome = await designEvidenceCompletionGate(
+      designFeatureCandidates({ id: it.id, sourcePlanSlug: existing.sourcePlanSlug }),
+      {
+        evaluate: async (featureId) => {
+          const verbDeps = await designCompareDepsFor(harnessSlug);
+          return evaluateFeatureDesignGate(
+            { harnessSlug, featureId },
+            {
+              store: verbDeps.store,
+              verbDeps,
+              caller: { actorId: ident.ownerId, role: COORD_ROLES.AGENT ?? 'agent' },
+            },
+          );
+        },
+      },
+    ).catch((error: unknown) => {
+      // Deliberately an OUTCOME, not a throw: an unexpected fault in this gate is
+      // reported and, when enforcing, refuses — it never silently passes and it never
+      // destroys a completion record while the gate is still in report-only rollout.
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        status: 'unavailable' as const,
+        enforced: false,
+        report: `design-evidence gate failed unexpectedly: ${message}`,
+      };
+    });
+
+    if (outcome.status === 'unsatisfied' && outcome.enforced) {
+      return { ok: false, id: it.id, error: renderDesignEvidenceRefusal(it.id, outcome) };
+    }
+    if (outcome.status === 'unavailable' && outcome.enforced) {
+      return {
+        ok: false,
+        id: it.id,
+        error:
+          `refusing terminal completion for '${it.id}': ${outcome.report}. ` +
+          'This is retryable; no completion record or state transition was written.',
+      };
+    }
+    if (outcome.status !== 'not-applicable') designEvidenceReport = outcome.report;
+  }
+
   // Optional explicit terminal transition. A failed state write must NEVER lose the
   // completion record (EI-24): catch, report it as `stateError`, still record + emit.
   //
@@ -2720,6 +2782,10 @@ async function completeOne(
           },
         }
       : {}),
+    // P-007: the design-evidence obligation. Present on a satisfied close too —
+    // a report nobody receives is indistinguishable from no report, and during
+    // the D-006 report-only rollout this string IS the entire mechanism.
+    ...(designEvidenceReport ? { designEvidence: designEvidenceReport } : {}),
     ...(finish ? { finish } : {}),
   };
 }
