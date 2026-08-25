@@ -186,6 +186,19 @@ async function prodDiscoverGrader(
     },
     {
       getSql: () => getOrgPg().sql,
+      getCandidateRoles: async (workspaceId, ownerIds) => {
+        if (ownerIds.length === 0) return new Map<string, string | null>();
+        // coord:send admits only COORD_ROLES. Resolve the durable role in the
+        // same workspace before allowing the router to assign a blocking ask;
+        // absent rows/roles remain absent and are rejected by the selector.
+        const rows = await getOrgPg().sql<Array<{ owner_id: string; agent_role: string | null }>>`
+          SELECT owner_id, agent_role
+            FROM harness_shared.coord_presence
+           WHERE workspace_id = ${workspaceId}
+             AND owner_id = ANY(${ownerIds}::text[])
+        `;
+        return new Map(rows.map((row) => [row.owner_id, row.agent_role] as const));
+      },
       route: (params) =>
         routeConsult(params, {
           getSql: () => getOrgPg().sql,

@@ -31,6 +31,7 @@
  * wires the prod embedder + liveness oracle, mirroring get-feedback/plans:start.
  */
 import type { Sql } from 'postgres';
+import { COORD_ROLES, canonicalCoordRole } from '../agent-tools/coordination/roles';
 import type { ConsultRouteParams, RouteResult, RoutingCandidate } from './relevance-router';
 import { DEAD_RESPONDER_STATES } from './get-feedback-core';
 
@@ -52,6 +53,8 @@ export interface GraderSelectDeps {
   getSql: () => Sql;
   /** The P-002 router, wired with sql + embedder + liveness oracle. */
   route: (params: ConsultRouteParams) => Promise<RouteResult>;
+  /** Resolve the durable role for every routed owner in the plan workspace. */
+  getCandidateRoles: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string | null>>;
 }
 
 export interface GraderSelection {
@@ -90,6 +93,24 @@ export interface GraderEligibility {
 export interface GraderEscalation {
   /** No known non-excluded actor can perform either vetting or grading. */
   code: 'zero_eligible';
+}
+
+/**
+ * coord:send is role-gated by COORD_ROLES. A router candidate without a
+ * durable role (or with a role intentionally outside that allowlist, such as
+ * judge) cannot receive the blocking grading request, so selection must fail
+ * closed rather than parking the gate on an unreadable principal.
+ */
+function isCoordCapableRole(role: string | null | undefined): boolean {
+  if (!role) return false;
+  return COORD_ROLES.includes(canonicalCoordRole(role) as (typeof COORD_ROLES)[number]);
+}
+
+export function filterCoordCapableCandidates(
+  candidates: RoutingCandidate[],
+  roles: ReadonlyMap<string, string | null>,
+): RoutingCandidate[] {
+  return candidates.filter((candidate) => isCoordCapableRole(roles.get(candidate.ownerId)));
 }
 
 /** The system-authored grader-discovery query: rubric first (the definition of
@@ -174,11 +195,22 @@ export async function selectAcceptanceGrader(
     excludeOwners: excluded,
   });
 
+  const candidateOwners = [...new Set(route.snapshot.candidates.map((candidate) => candidate.ownerId))];
+  const candidateRoles = candidateOwners.length
+    ? await deps.getCandidateRoles(params.workspaceId, candidateOwners)
+    : new Map<string, string | null>();
+  // Filter both pools. The router's qualified list is a subset of its
+  // snapshot, but keeping the filtering explicit prevents a future router
+  // change from allowing an incompatible candidate through the assignment
+  // path while eligibility still counts the safe pool.
+  const eligibleCandidates = filterCoordCapableCandidates(route.snapshot.candidates, candidateRoles);
+  const qualifiedCandidates = filterCoordCapableCandidates(route.qualified, candidateRoles);
+
   const eligibility: GraderEligibility = {
-    eligibleCount: route.snapshot.candidates.length,
-    qualifiedCount: route.qualified.length,
+    eligibleCount: eligibleCandidates.length,
+    qualifiedCount: qualifiedCandidates.length,
     measured: route.snapshot.degraded === undefined,
-    ...(route.snapshot.degraded === undefined && route.snapshot.candidates.length === 0
+    ...(route.snapshot.degraded === undefined && eligibleCandidates.length === 0
       ? { reason: 'zero_eligible' as const }
       : {}),
   };
@@ -189,7 +221,7 @@ export async function selectAcceptanceGrader(
   if (route.snapshot.degraded === 'embed-unavailable') {
     return { verdict: 'fresh', excluded, eligibility, freshReason: 'degraded' };
   }
-  if (route.verdict !== 'routed' || route.qualified.length === 0) {
+  if (route.verdict !== 'routed' || qualifiedCandidates.length === 0) {
     return {
       verdict: 'fresh',
       excluded,
@@ -198,7 +230,7 @@ export async function selectAcceptanceGrader(
       freshReason: 'no_qualified_non_excluded',
     };
   }
-  const reachable = route.qualified.find((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
+  const reachable = qualifiedCandidates.find((c) => !DEAD_RESPONDER_STATES.has(c.liveness));
   if (!reachable) {
     return {
       verdict: 'fresh',

@@ -9965,7 +9965,7 @@
           "POST"
         ]
       },
-      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), cancel a whole composed await TREE by its root_id (cascades to every leaf + node), or ACK a pending/parked wake delivery you already saw via the inbox nudge (delivery_id — you will not be resumed for it). Pass at least one.",
+      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Pass at least one.",
       "capabilities": [
         "coord:write"
       ],
@@ -9984,7 +9984,7 @@
       "guidance": {
         "when": "The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you).",
         "notWhen": "A fired await needs no cancel (one-shot — it already cleared). You cannot cancel or ack a peer’s.",
-        "chaining": "events:status to find the await_id / delivery_id → events:cancel."
+        "chaining": "events:status to find the await_id / delivery_id / declaration id → events:cancel."
       }
     },
     {

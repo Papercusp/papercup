@@ -54,6 +54,16 @@ function fakeSql(rows: Array<{ owner: string }>): Sql {
   return (async () => rows) as unknown as Sql;
 }
 
+function roleLookup(roles: Record<string, string | null | undefined>) {
+  return async (_workspaceId: string, ownerIds: string[]) =>
+    new Map(
+      ownerIds.flatMap((ownerId) => {
+        const role = roles[ownerId];
+        return role == null ? [] : ([[ownerId, role]] as const);
+      }),
+    );
+}
+
 const params = {
   workspaceId: 'ws',
   planSlug: 'a-plan',
@@ -66,7 +76,11 @@ describe('selectAcceptanceGrader (D-009)', () => {
     const route = vi.fn(async (_p: ConsultRouteParams) => routed([candidate('su-expert', 'parked')]));
     const out = await selectAcceptanceGrader(
       { ...params, extraExclusions: ['su-author', null, 'su-shipper'] },
-      { getSql: () => fakeSql([{ owner: 'su-implementer' }]), route },
+      {
+        getSql: () => fakeSql([{ owner: 'su-implementer' }]),
+        getCandidateRoles: roleLookup({ 'su-expert': 'reviewer' }),
+        route,
+      },
     );
     expect(out.verdict).toBe('assigned');
     expect(out.grader?.ownerId).toBe('su-expert');
@@ -86,6 +100,7 @@ describe('selectAcceptanceGrader (D-009)', () => {
   it('below floor / all-excluded → fresh (the floor asymmetry: the gate never stalls)', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({}),
       route: async () => routed([]),
     });
     expect(out).toMatchObject({
@@ -99,6 +114,7 @@ describe('selectAcceptanceGrader (D-009)', () => {
   it('keeps a populated but below-floor pool distinct from zero eligible actors', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-below-floor': 'reviewer' }),
       route: async () => unqualified([candidate('su-below-floor', 'live')]),
     });
     expect(out).toMatchObject({
@@ -113,6 +129,7 @@ describe('selectAcceptanceGrader (D-009)', () => {
   it('skips a dead top candidate toward the next reachable one', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-dead': 'reviewer', 'su-live': 'reviewer' }),
       route: async () => routed([candidate('su-dead', 'ended', 0.9), candidate('su-live', 'live', 0.6)]),
     });
     expect(out.verdict).toBe('assigned');
@@ -122,6 +139,7 @@ describe('selectAcceptanceGrader (D-009)', () => {
   it('ALL qualified dead → fresh with all_qualified_dead', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-dead': 'reviewer', 'su-rec': 'reviewer' }),
       route: async () => routed([candidate('su-dead', 'ended'), candidate('su-rec', 'recorded')]),
     });
     expect(out).toMatchObject({ verdict: 'fresh', freshReason: 'all_qualified_dead' });
@@ -130,9 +148,27 @@ describe('selectAcceptanceGrader (D-009)', () => {
   it('degraded embedder → fresh with degraded (cannot measure ≠ measured nothing)', async () => {
     const out = await selectAcceptanceGrader(params, {
       getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({}),
       route: async () => routed([], true),
     });
     expect(out).toMatchObject({ verdict: 'fresh', freshReason: 'degraded' });
+  });
+
+  it('skips a higher-scored judge and missing-role candidate for a coord-capable grader', async () => {
+    const out = await selectAcceptanceGrader(params, {
+      getSql: () => fakeSql([]),
+      getCandidateRoles: roleLookup({ 'su-judge': 'judge', 'su-reviewer': 'reviewer' }),
+      route: async () =>
+        routed([
+          candidate('su-judge', 'live', 0.95),
+          candidate('su-missing-role', 'live', 0.9),
+          candidate('su-reviewer', 'live', 0.8),
+        ]),
+    });
+
+    expect(out.verdict).toBe('assigned');
+    expect(out.grader?.ownerId).toBe('su-reviewer');
+    expect(out.eligibility).toEqual({ eligibleCount: 1, qualifiedCount: 1, measured: true });
   });
 });
 
