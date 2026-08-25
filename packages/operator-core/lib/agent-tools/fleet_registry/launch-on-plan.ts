@@ -96,7 +96,7 @@ import { resolveUsageActor } from '../../harness/usage-actor';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
 import type { ColorScheme } from '../../console-color-schemes';
-import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { liveFleetMemberIds, occupiesLaunchMemberSeat } from '../../fleet/fleet-roster';
 import { listLiveTasks } from '../../task-manager/store';
 import type { TaskRow } from '../../task-manager/types';
 import { agentSpawnScopeMemoryMaxG } from '../../systemd-scope';
@@ -2237,7 +2237,12 @@ export default defineTool({
             fleetSlug,
             staleMs: PRESENCE_STALE_MS,
           });
-          live = [...new Set([...localLive, ...federated.map((m) => m.ownerId)])].filter((id) => id !== ownerId);
+          // EI-21428116455038454: mirror the local launch population's role filter —
+          // a remote LEADER/delegator row must not occupy a member seat either.
+          const federatedSeats = federated
+            .filter((m) => occupiesLaunchMemberSeat(m.fleetRole))
+            .map((m) => m.ownerId);
+          live = [...new Set([...localLive, ...federatedSeats])].filter((id) => id !== ownerId);
         } catch {
           live = localLive;
         }

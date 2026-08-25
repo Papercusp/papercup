@@ -837,6 +837,7 @@ export interface FleetMemberOmission {
 type LiveFleetPresenceRow = {
   owner_id: string;
   agent_role: string | null;
+  fleet_role: string | null;
   heartbeat_at: string;
   stale: boolean;
   host: string | null;
@@ -853,6 +854,7 @@ async function readLiveFleetPresenceCandidates(
   const rows = await sql<LiveFleetPresenceRow[]>`
     SELECT owner_id,
            agent_role,
+           fleet_role,
            heartbeat_at,
            (heartbeat_at <= now() - ${`${secs} seconds`}::interval) AS stale,
            host,
@@ -959,6 +961,22 @@ export function isLaunchLiveSessionState(state: SessionState | null | undefined)
   return state === 'live' || state === 'parked' || state === 'draining';
 }
 
+/**
+ * Fleet roles that occupy a MEMBER seat for launch-deficit sizing. A `leader` or
+ * `delegator` supervises rather than executes, so its presence row must never
+ * suppress a member relaunch: with `leader:'spawn'` (or any caller ≠ leader
+ * top-up), the leader's own row otherwise counts toward `count` and a drained
+ * 1-executor fleet can never be topped back up with count:1
+ * (EI-21428116455038454). The call-site `id !== ownerId` filter only excludes
+ * the CALLER, which misses every non-caller leader. A null/unknown role still
+ * counts (fail toward suppression — the historical doom-loop direction is
+ * opening EXTRA terminals, 2026-07-03 incidents). Audience delivery is
+ * deliberately unaffected: leaders must keep receiving `@fleet:` traffic.
+ */
+export function occupiesLaunchMemberSeat(fleetRole: string | null | undefined): boolean {
+  return fleetRole !== 'leader' && fleetRole !== 'delegator';
+}
+
 async function liveFleetMemberIdsForLaunch(fleetSlug: string, workspaceId: string): Promise<string[]> {
   const { candidates } = await readLiveFleetPresenceCandidates(fleetSlug, workspaceId);
   const states = await oracleSessionStates(
@@ -976,6 +994,7 @@ async function liveFleetMemberIdsForLaunch(fleetSlug: string, workspaceId: strin
   // can exclude a row from the launch population.
   return candidates
     .filter((r) => {
+      if (!occupiesLaunchMemberSeat(r.fleet_role)) return false;
       const state = states.get(r.owner_id);
       return state == null || isLaunchLiveSessionState(state);
     })
