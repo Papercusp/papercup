@@ -1688,6 +1688,30 @@ export function classifyGateStallStatus(
     status === 'repair-staging-mismatch'
   )
     return 'noop';
+  /**
+   * EI-21462211894072863 — 'error' is a NON-VERDICT that must still be COUNTED, which is why it
+   * gets its own class instead of joining either neighbour.
+   *
+   * `status === 'error'` means exactly one thing: the run published no parseable result marker,
+   * and it was neither killed by its own deadline nor SIGTERMed externally (those are
+   * 'deadline-exceeded' / 'cancelled', decided first in `checkpointFallbackStatus`). So it
+   * established NOTHING about the code — yet until now it fell through to 'red' and drove the
+   * streak that freezes `main` and dispatches release-fixers.
+   *
+   * Measured 2026-08-25 on papercusp: scheduled run 8104 exited exitCode=1 with no marker, and
+   * `consecutiveReds` climbed to 42 over a history never actually judged — the last REAL verdict
+   * predated the last fire by 5.7h. Every read surface reported "the gate is RED (42 consecutive)"
+   * with a failing-test list no run had named, so the gate presented as merely-red when it was
+   * WEDGED. That misreading is what cost the fleet hours of deploy time.
+   *
+   * ⚠ DO NOT "simplify" this into the 'noop' class — that regression is explicitly guarded
+   * (WI-39841's control test), and rightly: 'error' is the UNKNOWN-cause bucket, so silencing it
+   * is how a genuinely crashing gate freezes `main` with nobody told. The distinction that
+   * matters is not counted-vs-uncounted, it is WHICH counter: a verdict-less tick advances
+   * `consecutiveNoVerdict` (and escalates on the same threshold, saying WEDGED) while leaving
+   * `consecutiveReds` — a count of actual code verdicts — alone. Loud, and true.
+   */
+  if (status === 'error') return 'no-verdict';
   // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
   // verdict about the code — see isProvenStaleCandidate. Its diagnostics are still written
   // (EI-13288); only the streak is left alone.
@@ -1901,6 +1925,21 @@ export function gateStallNoopLogMessage(status: string, detail?: string | null):
       `failing-test signature stay untouched; gate_health.inconclusive records the cancellation`
     );
   }
+  // EI-21462211894072863: 'error' reaches this message path as the 'no-verdict' class, NOT as a
+  // 'noop' — it still COUNTS, just in `consecutiveNoVerdict` rather than `consecutiveReds`. The
+  // generic tail below would be actively false here (it asserts a peer run holds the lock), which
+  // is the wording that made a wedged gate read as ordinary contention.
+  if (status === 'error') {
+    return (
+      `${orchestratorStdoutTag()} 'error' — this run exited WITHOUT publishing a parseable result ` +
+      `marker, and was neither killed at its own deadline nor externally SIGTERMed. It rendered no ` +
+      `code verdict IN EITHER DIRECTION, so ⚠ DO NOT triage the files any earlier red named — this ` +
+      `tick judged no code at all. The red streak and prior failing-test signature stay untouched; ` +
+      `this tick advances gate_health.consecutiveNoVerdict (a WEDGED gate, not a red one) and ` +
+      `gate_health.inconclusive records the abort. A gate that keeps exiting this way still ` +
+      `escalates on the same threshold a red streak would — see classifyGateStallStatus`
+    );
+  }
   if (status === 'migrations-pending') {
     return (
       `${orchestratorStdoutTag()} 'migrations-pending' — this run ABORTED at the migration preflight ` +
@@ -1962,17 +2001,25 @@ export async function trackGateStall(
   const isGreen =
     !promotionPending && (status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix');
   // P-006: every non-green verdict OTHER than 'skipped-locked' counts toward the stall
-  // streak — INCLUDING 'error' (a green-checkpoint script crash or unparseable JSON).
-  // WI-39841 CARVED THE TIMEOUT BACK OUT of that set: a run killed at its own suite budget
+  // streak. WI-39841 CARVED THE TIMEOUT OUT of that set: a run killed at its own suite budget
   // now arrives as 'deadline-exceeded' (stamped from RunResult.timedOut) and is a 'noop',
-  // because it recorded no verdict and its red named no failing file. A CRASH still counts.
+  // because it recorded no verdict and its red named no failing file.
   // 'skipped-locked' (a run-lock collision — green-checkpoint-stale-
   // lock-2026-06-26) is handled separately below (EI-2615: `classifyGateStallStatus`
-  // treats it as a no-op, not a red — see that function's doc for why). A persistent
-  // crash/hang/wedged-lock still increments the streak (via 'error' + the separate
-  // `fireStale` signal) and fires the held-gate alarm instead of freezing `main`
-  // SILENTLY (the 21h fleet-deploy freeze this detector exists to catch). Only a real
-  // green verdict resets the streak.
+  // treats it as a no-op, not a red — see that function's doc for why).
+  //
+  // EI-21462211894072863 CARVED OUT 'error' — the crash/no-marker bucket — but into its own
+  // 'no-verdict' class rather than into 'noop', because the two claims this comment used to
+  // fuse are separable and only one of them was ever true:
+  //   · "a persistently crashing gate must stay LOUD, not freeze `main` silently" — TRUE, and
+  //     preserved exactly: `consecutiveNoVerdict` counts these ticks and escalates on the SAME
+  //     `stallReds` threshold, so nothing goes quiet.
+  //   · "…therefore it must count as a RED" — FALSE, and expensive. A tick that published no
+  //     result marker judged no code, so calling it a red asserts a broken build on no evidence
+  //     and hands the reader a failing-test list some older run named. Measured 2026-08-25:
+  //     `consecutiveReds` reached 42 while the last REAL verdict predated the last fire by 5.7h.
+  // Only a real verdict — of EITHER colour — resets the no-verdict streak; only a green (or a
+  // moved pin) resets the red one.
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   // EI-18672078222841101: `last_fixer` rides along in the SAME metadata row we already
@@ -2033,7 +2080,11 @@ export async function trackGateStall(
       ? 'red'
       : 'record-only'
     : classifyGateStallStatus(status, pinMoved, retriage);
-  if (gateClass === 'noop') {
+  // EI-21462211894072863: 'no-verdict' shares this branch because it shares its ONE load-bearing
+  // property — the tick rendered no verdict, so it must not touch `consecutiveReds`, `firstRedAt`
+  // or the failing-test signature. It differs in exactly one way, handled after the shared record
+  // below: it still COUNTS, in its own counter, so a crashing gate stays as loud as a red one.
+  if (gateClass === 'noop' || gateClass === 'no-verdict') {
     // EI-2615: a lock collision with an ACTIVE peer run proves nothing about the
     // gate's health — leave gate_health completely untouched (don't even seed
     // lastFrom) so a slower, still-in-flight green tick's eventual reset write
@@ -2097,6 +2148,98 @@ export async function trackGateStall(
         // degrades to the pre-EI-19405864032365760 behaviour (invisible), never to a wrong verdict.
         console.warn(
           `${orchestratorStdoutTag()} inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+    /**
+     * EI-21462211894072863 — the COUNTING half. Everything above deliberately leaves the counters
+     * alone; this is what stops "don't count it as a red" from decaying into "don't count it".
+     *
+     * WI-39841's control test pins the property that matters: a genuinely crashing gate must not
+     * go silent, because 'error' is the unknown-cause bucket and silence there is how `main`
+     * freezes with nobody told. That property is preserved EXACTLY — same threshold, same
+     * transition-only alarm — while the number a reader sees stops lying about what was measured.
+     *
+     * Written as ONE atomic statement rather than the read-modify-write the red path uses: this
+     * branch runs concurrently with a peer run's real verdict write, and the EI-7472 hazard is
+     * precisely that a whole-key replace here can shadow it. `jsonb_set` on the leaf PATH touches
+     * nothing else in the blob, and the increment is computed in SQL from the OLD row, so two
+     * ticks racing cannot lose a count. A non-numeric stored value degrades to 0 (via the
+     * jsonb_typeof guard) instead of throwing the whole write away.
+     *
+     * The streak needs no explicit reset: every real verdict below REPLACES the whole `gate_health`
+     * key, and both arms state `consecutiveNoVerdict: 0` outright — so one verdict of either colour
+     * ends the streak, which is exactly the definition of "consecutive".
+     */
+    if (gateClass === 'no-verdict') {
+      try {
+        const bumped = (await sql.unsafe(
+          `UPDATE harness_shared.routines
+              SET metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{gate_health,consecutiveNoVerdict}',
+                    to_jsonb(
+                      COALESCE(
+                        CASE WHEN jsonb_typeof(metadata #> '{gate_health,consecutiveNoVerdict}') = 'number'
+                             THEN (metadata #>> '{gate_health,consecutiveNoVerdict}')::int
+                        END,
+                        0
+                      ) + 1
+                    ),
+                    true
+                  ),
+                  updated_at = now()
+            WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+        RETURNING (metadata #>> '{gate_health,consecutiveNoVerdict}')::int AS streak,
+                  COALESCE((metadata #>> '{gate_health,noVerdictAlerted}')::boolean, false) AS alerted`,
+          [ctx.installSlug],
+        )) as Array<{ streak: number | null; alerted: boolean | null }>;
+        const streak = bumped[0]?.streak ?? 0;
+        const alreadyAlerted = bumped[0]?.alerted === true;
+        console.log(
+          `${orchestratorStdoutTag()} 'error' — ${streak} consecutive tick(s) have produced NO verdict ` +
+            `(consecutiveReds left at ${gh.consecutiveReds ?? 0}, which still describes the last run that ` +
+            `actually judged code)`,
+        );
+        // Transition-only, exactly like `stallAlerted` on the red path: one alarm per episode,
+        // cleared by the next real verdict's whole-key replace.
+        if (streak >= releaseCheckpointConfig().stallReds && !alreadyAlerted) {
+          await sql
+            .unsafe(
+              `UPDATE harness_shared.routines
+                  SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,noVerdictAlerted}', 'true'::jsonb, true)
+                WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+              [ctx.installSlug],
+            )
+            .catch(() => undefined);
+          const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
+          await broadcastSevereEvent({
+            summary:
+              `[${ctx.installSlug}] green-checkpoint is WEDGED on ${ctx.installSlug} — ${streak} consecutive run(s) ` +
+              `exited without producing ANY verdict. This is NOT a red build: no failing test has been named.`,
+            body:
+              `${streak} consecutive green-checkpoint run(s) on \`${ctx.installSlug}\` exited without publishing a ` +
+              `result marker, so no verdict about the code exists — in either direction. \`main\` is not advancing.\n\n` +
+              `⚠ DO NOT triage failing tests on this signal. Any failing-test list still shown for this harness ` +
+              `belongs to the last run that actually judged code, which is now at least ${streak} fire(s) old; ` +
+              `\`gate_health.consecutiveReds\` describes THAT run, not these.\n\n` +
+              `The question to answer is why the runs are DYING, not which test is red: read the green-checkpoint ` +
+              `log for the most recent run and see gate_health.inconclusive for what was recorded. An exit with no ` +
+              `marker that is neither a deadline-kill nor an external SIGTERM usually means the run failed before ` +
+              `the suite could report (setup, dependency generation, or a crash in the gate script itself).`,
+            category: 'severe-event',
+            // Deliberately NO conditionKey. `gate-red-streak:<harness>` mints exactly one claimable
+            // work-item whose whole framing is "the reds are yours to fix" — the response this
+            // alarm exists to prevent. Opening it here would hand someone a broken-build ticket for
+            // a gate that never judged a build. A plain severe event still reaches every agent's
+            // inbox, which is the loudness this needs.
+          });
+        }
+      } catch (e) {
+        // Fail-safe like every other write here: an unrecorded no-verdict tick degrades to
+        // invisible, never to a wrong verdict.
+        console.warn(
+          `${orchestratorStdoutTag()} no-verdict streak record failed: ${e instanceof Error ? e.message : e}`,
         );
       }
     }
@@ -2197,6 +2340,12 @@ export async function trackGateStall(
           candidateCommittedAt: staleness.candidateCommittedAt,
           commitsBehindTip: staleness.commitsBehindTip,
           inconclusive: null,
+          // EI-21462211894072863: a real verdict ENDS a no-verdict streak — that is what
+          // "consecutive" means. Stated outright rather than left to the whole-key replace,
+          // matching the `inconclusive: null` convention directly above (a later change to a
+          // merging write must not silently resurrect a dead streak, nor its one-shot flag).
+          consecutiveNoVerdict: 0,
+          noVerdictAlerted: false,
         }
       : {
           consecutiveReds: 0,
@@ -2218,6 +2367,9 @@ export async function trackGateStall(
           candidateCommittedAt: staleness.candidateCommittedAt,
           commitsBehindTip: staleness.commitsBehindTip,
           inconclusive: null,
+          // EI-21462211894072863: see the green arm — a verdict of EITHER colour ends the streak.
+          consecutiveNoVerdict: 0,
+          noVerdictAlerted: false,
         };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
@@ -2545,6 +2697,10 @@ export async function trackGateStall(
       // EI-19405864032365760: a real verdict supersedes any recorded preflight abort — see the
       // reset branch above for why this is explicit rather than left to the whole-key replace.
       inconclusive: null,
+      // EI-21462211894072863: a RED is still a verdict — the gate ran and judged code — so it ends
+      // a no-verdict streak just as a green does. Only a tick that produced NO verdict extends one.
+      consecutiveNoVerdict: 0,
+      noVerdictAlerted: false,
     };
   }
   // EI-20854484804457933: fold the value read above before writing, then repeat the
