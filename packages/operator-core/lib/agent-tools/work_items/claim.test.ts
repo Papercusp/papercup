@@ -34,8 +34,14 @@ vi.mock('../../work-items', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   claimWorkItem: vi.fn(),
   classifyClaimFailure: vi.fn(),
+  commentWorkItem: vi.fn(),
   getWorkItem: vi.fn(),
 }));
+const releaseRequest = vi.hoisted(() => ({
+  readWorkItemReleaseRequest: vi.fn(() => null as unknown),
+  resolveWorkItemReleaseRequest: vi.fn(async () => null as unknown),
+}));
+vi.mock('../../work-items-release-request', () => releaseRequest);
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => fleetAdmission.decision),
   notifyFleetScopeRefusal: fleetAdmission.notify,
@@ -56,12 +62,15 @@ vi.mock('./release-force-guard', () => ({
   recordForceTransitionAudit: vi.fn(async () => {}),
 }));
 
-import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
+import { claimWorkItem, classifyClaimFailure, commentWorkItem, getWorkItem } from '../../work-items';
+import { resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 import { assessForceRelease, notifyForceTransition, recordForceTransitionAudit } from './release-force-guard';
 import { mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getM = vi.mocked(getWorkItem);
+const commentM = vi.mocked(commentWorkItem);
+const resolveReleaseRequestM = vi.mocked(resolveWorkItemReleaseRequest);
 const assessForceM = vi.mocked(assessForceRelease);
 const forceNotifyM = vi.mocked(notifyForceTransition);
 const forceAuditM = vi.mocked(recordForceTransitionAudit);
@@ -80,6 +89,9 @@ beforeEach(() => {
   // claim.ts pre-reads the item for the checked cross-holder CAS path; ordinary tests use a
   // zero-row read so the claimWorkItem mock remains the source of the result.
   getM.mockResolvedValue(null as never);
+  commentM.mockResolvedValue({ id: 'post-1' } as never);
+  releaseRequest.readWorkItemReleaseRequest.mockReturnValue(null);
+  releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
   premisePort.get.mockReset().mockResolvedValue(null);
 });
 
@@ -352,6 +364,7 @@ describe('work_items:claim handler (keyed-array)', () => {
         holderOwnerId: 'peer',
         workspaceId: 'ws-1',
         itemLastProgressAt: '2026-08-20T08:00:00.000Z',
+        releaseRequest: null,
       });
       expect(claimM).toHaveBeenCalledWith('WI-DEAD', 'me', {
         harness: undefined,
@@ -377,6 +390,54 @@ describe('work_items:claim handler (keyed-array)', () => {
         expect.objectContaining({ ownerId: 'me' }),
         expect.objectContaining({ itemId: 'WI-DEAD', holder: 'peer', operation: 'claim', replacementAssignee: 'me' }),
       );
+    });
+
+    it('executes an expired announced reclaim via the holder-CAS claim and resolves that exact request', async () => {
+      const request = {
+        by: 'me',
+        holder: 'peer',
+        reason: 'deadline elapsed',
+        onSilence: 'reclaim' as const,
+        deadlineAt: 123,
+        requestedAt: 100,
+        resolved: false,
+        resolution: null,
+        resolvedAt: null,
+      };
+      getM.mockResolvedValue({ id: 'WI-EXPIRED', assignee: 'peer', payload: { request: true } } as never);
+      releaseRequest.readWorkItemReleaseRequest.mockReturnValue(request);
+      forceGuard.verdict = {
+        allowed: true,
+        basis: 'announced-release-request-expired',
+        holderLiveness: { live: true, oracleSessionState: 'recorded' },
+      };
+      claimM.mockResolvedValue({ id: 'WI-EXPIRED', assignee: 'me', harness: 'papercusp' } as never);
+      releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue({
+        ...request,
+        resolved: true,
+        resolution: 'consequence-reclaim',
+        resolvedAt: 456,
+      });
+
+      const b = await body({ id: 'WI-EXPIRED', force: true, reason: 'executing announced deadline' });
+
+      expect(assessForceM).toHaveBeenCalledWith(expect.objectContaining({ releaseRequest: request }));
+      expect(claimM).toHaveBeenCalledWith('WI-EXPIRED', 'me', {
+        harness: undefined,
+        fromHolder: 'me',
+        expectedAssignee: 'peer',
+      });
+      expect(resolveReleaseRequestM).toHaveBeenCalledWith('WI-EXPIRED', {
+        harness: 'papercusp',
+        resolution: 'consequence-reclaim',
+        expectedBy: 'me',
+        expectedHolder: 'peer',
+        expectedDeadlineAt: 123,
+      });
+      expect(commentM).toHaveBeenCalledWith('WI-EXPIRED', expect.stringContaining('EXPIRED unanswered'), 'me', {
+        harness: 'papercusp',
+      });
+      expect(b.results[0].forced).toMatchObject({ basis: 'announced-release-request-expired' });
     });
 
     it('requires a reason before assessing or mutating another holder\'s claim', async () => {

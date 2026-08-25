@@ -110,8 +110,15 @@ describe('release-request-sweep check', () => {
       holderOwnerId: 'holder-1',
       workspaceId: 'default',
       itemLastProgressAt: null,
+      releaseRequest: row.request,
     });
-    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'papercup', resolution: 'consequence-reclaim' });
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', {
+      harness: 'papercup',
+      resolution: 'consequence-reclaim',
+      expectedBy: 'requester-1',
+      expectedHolder: 'holder-1',
+      expectedDeadlineAt: row.request.deadlineAt,
+    });
     expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({
       ownerId: 'holder-1',
       paths: ['packages/target.ts'],
@@ -157,7 +164,13 @@ describe('release-request-sweep check', () => {
 
     await check.tick();
 
-    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'papercup', resolution: 'consequence-reclaim' });
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', {
+      harness: 'papercup',
+      resolution: 'consequence-reclaim',
+      expectedBy: 'requester-1',
+      expectedHolder: 'holder-1',
+      expectedDeadlineAt: row.request.deadlineAt,
+    });
     expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
     expect(releaseWorkItem).not.toHaveBeenCalled();
     expect(commentWorkItem).not.toHaveBeenCalled();

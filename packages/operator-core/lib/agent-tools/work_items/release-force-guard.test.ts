@@ -20,6 +20,17 @@ const min = (n: number) => 60_000 * n;
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 
 const base = { callerOwnerId: 'su-caller', holderOwnerId: 'su-holder', workspaceId: 'ws1' };
+const expiredReclaimRequest = {
+  by: 'su-caller',
+  holder: 'su-holder',
+  reason: 'holder did not respond',
+  onSilence: 'reclaim' as const,
+  deadlineAt: NOW - min(1),
+  requestedAt: NOW - min(2),
+  resolved: false,
+  resolution: null,
+  resolvedAt: null,
+};
 
 describe('P-008 critical-claim progress lease', () => {
   it('expires from item progress alone even when the holder may be active elsewhere', () => {
@@ -163,10 +174,11 @@ describe('assessForceRelease — liveness leg (a)', () => {
 
   it('EI-21377805080867612: a fresh tool invocation vetoes warm-idle during a long Codex polling turn', async () => {
     const v = await assessForceRelease(
-      { ...base, itemLastProgressAt: iso(min(180)) },
+      { ...base, itemLastProgressAt: iso(min(180)), releaseRequest: expiredReclaimRequest },
       deps({
         holder: { heartbeatAt: iso(44_000), lastActiveAt: iso(min(171)), agentRole: 'su' },
         lastToolInvocationAt: iso(min(1)),
+        oracleSessionState: 'live',
       }),
     );
 
@@ -177,6 +189,41 @@ describe('assessForceRelease — liveness leg (a)', () => {
       lastToolInvocationAt: iso(min(1)),
       freshestAgeMs: 44_000,
     });
+  });
+
+  it.each(['parked', 'recorded'] as const)(
+    'EI-21458682859181510: expired announced reclaim overrides background activity once the oracle is %s',
+    async (oracleSessionState) => {
+      const v = await assessForceRelease(
+        { ...base, itemLastProgressAt: iso(min(180)), releaseRequest: expiredReclaimRequest },
+        deps({
+          holder: { heartbeatAt: iso(10_000), lastActiveAt: iso(min(171)), agentRole: 'su' },
+          lastToolInvocationAt: iso(10_000),
+          oracleSessionState,
+        }),
+      );
+
+      expect(v).toMatchObject({ allowed: true, basis: 'announced-release-request-expired' });
+      expect(v.holderLiveness).toMatchObject({ live: true, oracleSessionState });
+    },
+  );
+
+  it('expired authority is bound to the original requester and holder', async () => {
+    const v = await assessForceRelease(
+      {
+        ...base,
+        callerOwnerId: 'different-requester',
+        itemLastProgressAt: iso(min(180)),
+        releaseRequest: expiredReclaimRequest,
+      },
+      deps({
+        holder: { heartbeatAt: iso(10_000), lastActiveAt: iso(min(171)), agentRole: 'su' },
+        lastToolInvocationAt: iso(10_000),
+        oracleSessionState: 'recorded',
+      }),
+    );
+
+    expect(v.allowed).toBe(false);
   });
 
   it('warm-idle threshold is exclusive on the near side: just under WARM_IDLE_ACTIVITY_STALE_MS stays live', async () => {

@@ -5,8 +5,9 @@
  * plan-item reflect rules fire per released item via the D-007 fan-out).
  *
  * EI-7588: release now compare-and-releases under the caller's resolved identity
- * (`expectedAssignee`) unless `force` — a peer's live claim comes back `not_holder`
- * + `holder` instead of being silently cleared.
+ * (`expectedAssignee`); an authorized cross-holder force CASes the exact holder it
+ * assessed. A peer's live claim comes back `not_holder` + `holder` instead of being
+ * silently cleared.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -286,7 +287,11 @@ describe('work_items:release force guard (WI-4198)', () => {
   it('an authorized cross-holder force releases, reports `forced`, and audits + notifies', async () => {
     getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer', lastProgressAt: 'ts' } as never);
     const b = await body({ id: 'WI-HELD', force: true, reason: 'holder session dead 3h; reclaiming for the drain' });
-    expect(releaseM).toHaveBeenCalledWith('WI-HELD', { harness: undefined, expectedAssignee: undefined, onPriorState: expect.any(Function) });
+    expect(releaseM).toHaveBeenCalledWith('WI-HELD', {
+      harness: undefined,
+      expectedAssignee: 'peer',
+      onPriorState: expect.any(Function),
+    });
     expect(b.results[0]).toMatchObject({
       ok: true,
       id: 'WI-HELD',
@@ -309,6 +314,54 @@ describe('work_items:release force guard (WI-4198)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'force_requires_reason', holder: 'peer' });
     expect(releaseM).not.toHaveBeenCalled();
     expect(assessM).not.toHaveBeenCalled();
+  });
+
+  it('executes an expired announced reclaim and resolves the exact request as consequence-reclaim', async () => {
+    const request = {
+      by: 'me',
+      holder: 'peer',
+      reason: 'deadline elapsed',
+      onSilence: 'reclaim' as const,
+      deadlineAt: 123,
+      requestedAt: 100,
+      resolved: false,
+      resolution: null,
+      resolvedAt: null,
+    };
+    getM.mockResolvedValue({ id: 'WI-EXPIRED', assignee: 'peer', payload: { request: true } } as never);
+    releaseRequest.readWorkItemReleaseRequest.mockReturnValue(request);
+    guard.verdict = {
+      allowed: true,
+      basis: 'announced-release-request-expired',
+      holderLiveness: { live: true, oracleSessionState: 'recorded' },
+    };
+    releaseM.mockResolvedValue({ id: 'WI-EXPIRED', assignee: null, harness: 'h', payload: { request: true } } as never);
+    releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue({
+      ...request,
+      resolved: true,
+      resolution: 'consequence-reclaim',
+      resolvedAt: 456,
+    });
+
+    const b = await body({ id: 'WI-EXPIRED', force: true, reason: 'executing announced deadline' });
+
+    expect(assessM).toHaveBeenCalledWith(expect.objectContaining({ releaseRequest: request }));
+    expect(releaseM).toHaveBeenCalledWith('WI-EXPIRED', {
+      harness: undefined,
+      expectedAssignee: 'peer',
+      onPriorState: expect.any(Function),
+    });
+    expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-EXPIRED', {
+      harness: 'h',
+      resolution: 'consequence-reclaim',
+      expectedBy: 'me',
+      expectedHolder: 'peer',
+      expectedDeadlineAt: 123,
+    });
+    expect(commentM).toHaveBeenCalledWith('WI-EXPIRED', expect.stringContaining('EXPIRED unanswered'), 'me', {
+      harness: 'h',
+    });
+    expect(b.results[0].forced).toMatchObject({ basis: 'announced-release-request-expired' });
   });
 
   it('an UNAUTHORIZED force on a live holder refuses (force_unauthorized) — the incident class', async () => {

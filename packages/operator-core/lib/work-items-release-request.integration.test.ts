@@ -288,6 +288,53 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     expect(withdrawn).toMatchObject({ resolved: true, resolution: 'requester-withdrawn', by: 'requester-1', holder: 'holder-1' });
   });
 
+  it('deadline CAS prevents an old consequence from resolving a refreshed request', async () => {
+    const id = 'WI-rr-deadline-cas';
+    const firstDeadline = Date.now() - 1_000;
+    const refreshedDeadline = Date.now() + 60_000;
+    await seedIssue(id, { takenBy: 'holder-1' });
+    await rr.setWorkItemReleaseRequest(id, {
+      harness: H,
+      by: 'requester-1',
+      holder: 'holder-1',
+      expectedHolder: 'holder-1',
+      reason: 'first request',
+      onSilence: 'reclaim',
+      deadlineAt: firstDeadline,
+    });
+    await rr.setWorkItemReleaseRequest(id, {
+      harness: H,
+      by: 'requester-1',
+      holder: 'holder-1',
+      expectedHolder: 'holder-1',
+      reason: 'refreshed request',
+      onSilence: 'reclaim',
+      deadlineAt: refreshedDeadline,
+    });
+
+    const stale = await rr.resolveWorkItemReleaseRequest(id, {
+      harness: H,
+      resolution: 'consequence-reclaim',
+      expectedBy: 'requester-1',
+      expectedHolder: 'holder-1',
+      expectedDeadlineAt: firstDeadline,
+    });
+    expect(stale).toBeNull();
+    expect(rr.readWorkItemReleaseRequest(await readPayload(id))).toMatchObject({
+      resolved: false,
+      deadlineAt: refreshedDeadline,
+    });
+
+    const current = await rr.resolveWorkItemReleaseRequest(id, {
+      harness: H,
+      resolution: 'consequence-reclaim',
+      expectedBy: 'requester-1',
+      expectedHolder: 'holder-1',
+      expectedDeadlineAt: refreshedDeadline,
+    });
+    expect(current).toMatchObject({ resolved: true, resolution: 'consequence-reclaim' });
+  });
+
   it('consequence-reclaim clears a stale claim hold before returning the item to the pool', async () => {
     const id = 'WI-40086-reclaim-hold';
     await seedIssue(id, {
