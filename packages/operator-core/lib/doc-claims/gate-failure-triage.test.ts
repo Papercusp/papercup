@@ -82,9 +82,13 @@ describe('doc corpus gate-failure triage claim', () => {
 
     it('the multi-file fallback re-lists individually and clears healthy files by name', () => {
       // Pin the I/O seam as well as the pure marker: a refactor that stops performing
-      // the per-file `vitest list` calls must not leave the prose claiming it does.
+      // the per-file `vitest list` calls must not leave the prose claiming it does. Match
+      // syntax, not the formatter's quote style: the old exact string pin went red when
+      // Prettier changed this .mjs file from single to double quotes without changing behavior.
       expect(source).toContain('const perFile = group.routes.map((route) => {');
-      expect(source).toContain("['vitest', 'list', '--filesOnly', ...configArgs, route.requested]");
+      expect(source).toMatch(
+        /\[\s*['"]vitest['"]\s*,\s*['"]list['"]\s*,\s*['"]--filesOnly['"]\s*,\s*\.\.\.configArgs\s*,\s*route\.requested\s*\]/,
+      );
       expect(source).toContain('const attributionMarker = collectionAttributionMarker({');
 
       const marker = collectionAttributionMarker({
