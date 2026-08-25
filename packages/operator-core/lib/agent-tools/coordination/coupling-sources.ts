@@ -221,7 +221,7 @@ export async function fetchConsultObligations(selfOwnerId: string): Promise<Obli
                  FROM harness_shared.consult_post_meta pm
                 WHERE pm.workspace_id = cs.workspace_id
                   AND pm.conversation_id = cs.conversation_id
-                  AND pm.kind = ANY(${CONSULT_DISCHARGING_POST_KINDS as unknown as string[]})
+                  AND pm.kind = ANY(${[...CONSULT_DISCHARGING_POST_KINDS]})
              )
        ORDER BY cs.created_at ASC
        LIMIT ${COUPLING_OBLIGATION_ROW_CAP}
