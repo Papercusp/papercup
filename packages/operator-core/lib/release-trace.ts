@@ -231,6 +231,22 @@ function classifyCandidateVerdict(input: ReleaseTraceInput): ReleaseTraceCandida
       observedAtMs: null,
     };
   }
+  // EI-21440269420198423: `observedCandidate` names the last terminal verdict, while an
+  // active exact-candidate run names the SHA currently being judged. Until that run's writer
+  // records its own verdict, the aggregate red streak is historical context, not a verdict for
+  // this candidate. Keep the candidate unknown so exact-SHA readers cannot branch on a fabricated
+  // terminal red before the scheduled writer publishes the result.
+  if (input.gate.recordedVerdict == null && gateIsActivelyJudgingTarget(input)) {
+    return {
+      state: 'unknown',
+      status: 'unknown',
+      green: null,
+      candidate: observedCandidate,
+      reason: 'the exact candidate is actively being judged by a checkpoint run without a recorded verdict',
+      detail: null,
+      observedAtMs: null,
+    };
+  }
   if (input.gate.verdictStale) {
     return {
       state: 'unknown',
