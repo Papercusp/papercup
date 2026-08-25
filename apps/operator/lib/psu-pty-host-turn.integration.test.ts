@@ -1268,7 +1268,11 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
       // (node -e startup to reach setRawMode(true) is measurably 100ms+ on
       // this box), producing raw echoed input instead of exercising the
       // paste-aware child's own gap-based submit detection.
-      expect(await waitForOutput(captured, 'READY')).toBe(true);
+      // EI-21432828786219414: this full-file integration case can share the
+      // machine with several PTY children. The marker is still the authoritative
+      // readiness signal; give the child enough startup budget under that load
+      // instead of turning a slow spawn into a false paste-detector failure.
+      expect(await waitForOutput(captured, 'READY', 10_000)).toBe(true);
 
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'paste-then-enter' });
       expect(ok).toBe(true);
