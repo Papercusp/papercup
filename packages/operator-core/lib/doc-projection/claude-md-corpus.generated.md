@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 290
+  corpus-parts: 292
   corpus-blocks: 255
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -997,6 +997,11 @@ with the sign flipped, and send you to re-fire a gate that already carries your 
 
 ## Ratified designs owe current passing visual evidence
 
+After `design-phase.ratify_reference`, completion owes current passing `design-phase.compare_render` evidence for every case; inspect with `design-phase.get_design_evidence`. Each viewport/theme/state needs its own reference. Only engine verdicts count. Resolve missing, stale, invalid, and failing cases; visual parity never replaces responsive, interaction, functional, or accessibility checks. Explicitly retract obsolete references. While enforcement is report-only, treat returned `designEvidence` refusals as blocking.
+## Full pre-compression rule text (preserved)
+
+## Ratified designs owe current passing visual evidence
+
 Unratified mockups constrain nothing — explore freely. Once a reviewer ratifies a
 reference (`design-phase.ratify_reference`), implementation of that surface owes
 CURRENT PASSING evidence for every required case before it can be completed.
@@ -1881,6 +1886,14 @@ silently re-arms the self-match (measured 2026-08-03: a bracketed `[X]vfb :90`
 probe self-matched because an `echo "== Xvfb :90 =="` label sat earlier in the
 same call).
 
+⚠ **Absence checks need a valid instrument and a positive control.** This box's `pgrep` has no `-q`; use `pgrep -cf`, `pgrep -x`, or `kill -0`. Under `pipefail`, `grep -q/-m1` and `head -1` can SIGPIPE a producer and invert a true result: capture then match or consume to EOF. Missing paths are not zero matches—keep stderr/status and run the same query against something known-present (`gitnexus.context` for symbols, `tools:find` for tools). bfs `find -newermt` rejects relative times; use `git status`, UTC `stat`, or ISO-8601. Line grep misses hard-wrapped phrases; flatten newlines or match an unwrappable token, verifying both old and new text for transitions.
+The natural next action is to conclude a job died and re-run it. Use
+`proc-guard` above, `pgrep -cf` (count), `pgrep -x <name>` (matches the process
+NAME, so argv cannot fool it at all), or `kill -0 <pid>`
+(EI-19446554284039165).
+
+## Full pre-compression rule text (preserved)
+
 ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this
 one fails via the EXIT CODE rather than a spurious match, so bracketing does not
 help. `pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage
@@ -1940,10 +1953,7 @@ example with a newline-flattening `tr` transform, or use a
 short single-token discriminator that cannot wrap. For deploy/render checks,
 measure both the OLD and NEW text after flattening so a zero is corroborated by
 the expected transition rather than treated as a bare absence.
-The natural next action is to conclude a job died and re-run it. Use
-`proc-guard` above, `pgrep -cf` (count), `pgrep -x <name>` (matches the process
-NAME, so argv cannot fool it at all), or `kill -0 <pid>`
-(EI-19446554284039165).
+
 
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. This one is well-behaved —
@@ -2025,6 +2035,9 @@ prefer the push path (`events:await`, a completion event) over polling; see the
 "never wait for a calm window" and force-the-deploy rules above.
 
 ## Feature flags + PostHog
+
+**Feature flags have one source:** `libs/flags/src/types.ts`; flip them via `/admin/features`, never JSON/PostHog directly or an ad-hoc env boolean. New flags default enabled: finished work must set the code default ON and verify it live in the same task—an override-only flip or "owner later" is unfinished. Default-OFF is only for incomplete/unsafe code, owner-authority/security/destructive surfaces, or an attended cutover kill-switch. Put every exception in `KNOWN_DARK_FLAGS` with justification and `DARK_FLAGS_REVIEW_BY`, and surface it in plan `## Now` plus completion. Reversibility is a reason to verify ON, not ship dead code.
+## Full pre-compression rule text (preserved)
 
 Single source of truth for keys/defaults: `libs/flags/src/types.ts`; flip flags
 via `/admin/features`, not JSON or PostHog directly. Gate cuttable features from

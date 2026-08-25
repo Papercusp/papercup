@@ -440,38 +440,17 @@ suite.
 ⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
 expensive mistake, and no amount of care in the steps below can recover from it.**
 
+✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
+
+```
+state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
+```
+
 ## Ratified designs: implementation owes current passing visual evidence
 
 ## Ratified designs owe current passing visual evidence
 
-Unratified mockups constrain nothing — explore freely. Once a reviewer ratifies a
-reference (`design-phase.ratify_reference`), implementation of that surface owes
-CURRENT PASSING evidence for every required case before it can be completed.
-Produce it with `design-phase.compare_render`; read what a surface owes and has
-with `design-phase.get_design_evidence`.
-
-- **One reference = one image = one environment (D-019).** A required case must be
-  contracted at the reference's own viewport/theme/state — `compare_render` refuses
-  a cross-environment capture, since comparing a 1280x800 reference against a
-  390x844 render measures the viewport, not fidelity. Cover a second breakpoint or
-  state by ratifying a **second reference**, never by adding a case to the first.
-- **Only deterministic engine evidence counts (D-004).** `advisoryNotes` explains a
-  failure; no prose turns a `fail` into a `pass`.
-- **Four ways evidence fails, each fixed differently:** *missing* (never compared) ·
-  *stale* (bound to a superseded revision — the stored record still reads
-  `verdict: 'pass'`, which is why this one gets misread as green) · *invalid* (no
-  meaningful verdict, or an unreadable schema version) · *failing* (diff exceeds
-  policy). The refusal names every unmet case and its remedy at once — fix as a batch.
-- **Visual evidence supplements, never replaces.** A green design gate says the pixels
-  match at the ratified environments; you still owe responsive, interaction,
-  functional and accessibility validation.
-- **Retraction is the legitimate exit.** If the design no longer applies, retract the
-  reference — the surface becomes unconstrained again, as a recorded transition.
-
-Today the gate REPORTS rather than blocks on `work_items:complete`
-(`DESIGN_EVIDENCE_GATE` on, `DESIGN_EVIDENCE_GATE_ENFORCING` off, per D-006): the
-`designEvidence` line on your completion result is the refusal you will get once
-enforcement lands. Treat it as one.
+After `design-phase.ratify_reference`, completion owes current passing `design-phase.compare_render` evidence for every case; inspect with `design-phase.get_design_evidence`. Each viewport/theme/state needs its own reference. Only engine verdicts count. Resolve missing, stale, invalid, and failing cases; visual parity never replaces responsive, interaction, functional, or accessibility checks. Explicitly retract obsolete references. While enforcement is report-only, treat returned `designEvidence` refusals as blocking.
 
 
 ## Commit discipline: git-sync owns commit + push — you do neither
@@ -700,10 +679,31 @@ gate descendants whose argv only names the `papercusp-checkpoint` tree; the repo
 labels those rows as identity matches. Other patterns remain operational-argv
 matches, and a peer's prose or JSON payload is still ignored. 
 
+⚠ **Absence checks need a valid instrument and a positive control.** This box's `pgrep` has no `-q`; use `pgrep -cf`, `pgrep -x`, or `kill -0`. Under `pipefail`, `grep -q/-m1` and `head -1` can SIGPIPE a producer and invert a true result: capture then match or consume to EOF. Missing paths are not zero matches—keep stderr/status and run the same query against something known-present (`gitnexus.context` for symbols, `tools:find` for tools). bfs `find -newermt` rejects relative times; use `git status`, UTC `stat`, or ISO-8601. Line grep misses hard-wrapped phrases; flatten newlines or match an unwrappable token, verifying both old and new text for transitions.
+
+
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
 
+⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
+service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
+work runs in a child, so measuring it alone reports "idle" about a process
+burning a full core. 
+
+⚠ A corollary worth knowing before you design one: **a liveness/progress beat
+emitted BY the process being judged cannot report on main-thread saturation** —
+`await` yields to the microtask queue, not the event loop, so a saturated Node
+main thread stops every `setInterval`/`setTimeout` while looking perfectly
+asynchronous. The beat goes missing exactly when it is the thing you need.
+Observe from OUTSIDE (`/proc`), where a saturated process cannot suppress its
+own signal.
+
+Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one to reach for, because it needs no column-index guess (`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and misreading it yields a whole column of `S` that looks like data).
+
 ## Feature flags + PostHog
+
+**Feature flags have one source:** `libs/flags/src/types.ts`; flip them via `/admin/features`, never JSON/PostHog directly or an ad-hoc env boolean. New flags default enabled: finished work must set the code default ON and verify it live in the same task—an override-only flip or "owner later" is unfinished. Default-OFF is only for incomplete/unsafe code, owner-authority/security/destructive surfaces, or an attended cutover kill-switch. Put every exception in `KNOWN_DARK_FLAGS` with justification and `DARK_FLAGS_REVIEW_BY`, and surface it in plan `## Now` plus completion. Reversibility is a reason to verify ON, not ship dead code.
+
 
 ⛔ **The dark allowlist is SHRINK-ONLY — never reconstruct or grow it, and never build a parallel one.** `KNOWN_DARK_FLAGS` exists ONLY to express the small set of genuinely-not-ready exceptions above (incomplete code / would-break-the-running-fleet / owner-authority / staged-cutover) — it is **NOT a parking lot for finished work**. `DarkCase` splits the set into two populations governed differently: the `DARK_FLAGS_HIGH_WATERMARK` size ceiling in `libs/flags/src/types.ts` (imported by `production-defaults.test.ts`) governs ONLY the **`parked`/`incomplete`** subset (`DARK_FLAGS_PARKING_COUNT`) — the actual parking-lot abuse; it **fails the build if THAT subset grows**, not the aggregate `DARK_FLAGS.size`. `owner-authority` / `cutover` entries (permanent or staged safety kill-switches) are **not rationed** by the watermark at all — they are governed only by the `DARK_FLAGS_REVIEW_BY` re-review date, so a legitimate new safety flag never has to fight a parking-lot budget. So: flipping a `parked`/`incomplete` flag ON *removes* its allowlist entry (the parking subset shrinks ✓); shipping a NEW genuinely-incomplete flag dark requires first **graduating an existing parked/incomplete dark flag** to make room (net-zero) or **explicit owner sign-off** to raise the watermark — never a quiet append. **Do NOT route around this guard** by re-introducing a second dark allowlist, a per-flag `process.env.PAPERCUSP_*` gate, a `darkReason` side-table, or any other parking-lot for finished-but-scary work: the temptation to park it dark "to verify later" is *exactly* the abuse this exists to stop — flipping it on and watching it work IS the task.
 
@@ -910,7 +910,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **17 part(s) (13,390 chars) did not fit this client's
+> ⚠ **10 part(s) (6,023 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -925,14 +925,11 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 - `running-testing-this-app-it-the-30553070-layer-i` — *▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp* — The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
-- `commit-discipline-git-sync-o-one-call-answers-st` — *Commit discipline: git-sync owns commit + push — you do neither* — ✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
-- `commit-discipline-git-sync-o` — *Commit discipline: git-sync owns commit + push — you do neither* — ```
 - `commit-discipline-git-sync-o-it-returns-the-judg` — *Commit discipline: git-sync owns commit + push — you do neither* — It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its…
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
-- `long-jobs-background-them-at-pgrep-q-does-not-ex` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this
 - `long-jobs-background-them-at-is-this-process-act` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 - `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
-- `long-jobs-background-them-at-measure-the-whole-p` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
-- …and 5 more. The list is capped so the pointer cannot itself consume the budget; the COMPLETE cut set is every projected part whose `part_key` does not appear above in this file, which the query above returns.
+- `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
+- `use-context7-for-current-lib-before-non-trivial` — *Use Context7 for current library docs* — Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,

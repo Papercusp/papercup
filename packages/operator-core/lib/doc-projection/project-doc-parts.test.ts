@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -387,6 +387,17 @@ describe('the budget — the output can never exceed it', () => {
     const out = projectClient(parts, { ...CLIENT, budget: 3_000 });
     expect(out.dropped.map((d: Part) => d.part_key)).toContain('ptr');
     expect(out.kept.map((k: Part) => k.part_key)).toContain('inv');
+  });
+
+  it('an invariant in the cut set is a named safety violation, never a green degradation', () => {
+    expect(
+      invariantCutKeys([
+        part({ kind: 'pointer', part_key: 'pointer' }),
+        part({ kind: 'invariant', part_key: 'safety-rail' }),
+        part({ kind: 'recipe', part_key: 'recipe' }),
+      ]),
+    ).toEqual(['safety-rail']);
+    expect(invariantCutKeys([part({ kind: 'pointer' }), part({ kind: 'recipe' })])).toEqual([]);
   });
 
   it('within one rank the LARGEST part is cut first — most rules retained per char surrendered', () => {

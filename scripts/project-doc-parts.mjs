@@ -290,6 +290,16 @@ export function cutOrder(a, b) {
   return b.ordinal - a.ordinal;
 }
 
+/**
+ * Rank makes invariants the LAST content cut, but "last" is not "never". P-007's
+ * accepted 80k budget relied on every invariant surviving; corpus growth eventually
+ * crossed that boundary while the projector still exited green (EI-21429056183505097).
+ * Keep the detector pure so the refusal has a positive control without a live database.
+ */
+export function invariantCutKeys(dropped) {
+  return dropped.filter((part) => part.kind === 'invariant').map((part) => part.part_key);
+}
+
 /** The banner every projected file opens with. */
 /**
  * The phrase that identifies a file as OUR OUTPUT rather than anyone's source.
@@ -836,6 +846,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
     for (const spec of CLIENTS) {
       const out = projectClient(parts, { ...spec, docId, budget });
+      const invariantCuts = invariantCutKeys(out.dropped);
       const path = resolve(ROOT, spec.file);
       const missing = verifyBodiesPresent(out.text, out.kept);
       const onDisk = existsSync(path) && !lstatSync(path).isSymbolicLink() ? readFileSync(path, 'utf8') : null;
@@ -854,6 +865,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       }
       if (out.dropped.length) {
         console.log(`    ⚠ cut: ${out.dropped.map((d) => d.part_key).slice(0, 8).join(', ')}${out.dropped.length > 8 ? ` (+${out.dropped.length - 8})` : ''}`);
+      }
+      if (invariantCuts.length) {
+        failed = true;
+        console.error(
+          `    ✗ SAFETY REFUSAL: the budget would cut ${invariantCuts.length} invariant(s): ` +
+            `${invariantCuts.join(', ')}. Split evidence out of those canonical rows or ` +
+            `reduce other invariant prose; never green a projection that silently omits a safety rail.`,
+        );
       }
       for (const warning of out.warnings) console.warn(`    ⚠ projection warning: ${warning}`);
 
@@ -905,6 +924,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // disk that is missing a rule the rows carry — exactly what verifyBodiesPresent
         // exists to catch — and a non-zero exit does not un-write a file.
         console.error(`    ✗ NOT writing ${spec.file}: the composition self-check above failed.`);
+      } else if (invariantCuts.length) {
+        console.error(`    ✗ NOT writing ${spec.file}: the invariant-cut safety check above failed.`);
       } else if (write) {
         // The symlink is retired here, not by hand, so each client genuinely owns its
         // file. Unlinking first matters: writeFileSync THROUGH a symlink would write
