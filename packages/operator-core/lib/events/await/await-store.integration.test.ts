@@ -333,6 +333,25 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     });
   });
 
+  it('does not ack a wake already being delivered by the pump', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-ack-delivering', eventKey: 'ack:delivering' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'ack:delivering' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = await store.claimDueDeliveries({ limit: 5 });
+
+    expect(w.status).toBe('delivering');
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack-delivering' })).toEqual({
+      acked: false,
+      alreadySettled: false,
+      status: 'delivering',
+    });
+    expect((await store.listRecentDeliveries('su-ack-delivering'))[0]).toMatchObject({
+      id: w.id,
+      status: 'delivering',
+    });
+  });
+
   it('settleCaughtUpInboxWakeDeliveries (EI-9389): settles MY pre-cutoff pending/parked standing-inbox-wake deliveries as coalesced; a post-cutoff row and a peer\'s row are left alone', async () => {
     const key = `${store.INBOX_WAKE_KEY_PREFIX}su-settle`;
     // The always-armed standing (once:false) inbox-wake watch — mirrors the real thing.
