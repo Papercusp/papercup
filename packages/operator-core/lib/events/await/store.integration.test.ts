@@ -555,6 +555,63 @@ describe('await-event store (PG)', () => {
     expect(history.filter((row) => row.cancelled_at == null)).toHaveLength(1);
   });
 
+  it('events:await supersession retires only one-shot rows and preserves the standing inbox wake', async () => {
+    const subscriberId = 'sub-once-only-supersede';
+    const eventKey = `coord:inbox-wake:${subscriberId}`;
+    const standing = await upsertInboxWakeAwait({
+      subscriberId,
+      eventKey,
+      wakeHandle: { sessionId: 'standing' } as never,
+    });
+    const registerSuperseding = (note: string) =>
+      registerAwait({
+        subscriberId,
+        eventKey,
+        note,
+        supersedePending: { excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX },
+      });
+
+    const first = await registerSuperseding('first one-shot');
+    const replacement = await registerSuperseding('replacement one-shot');
+
+    const active = await listActiveAwaits(subscriberId);
+    expect(active.map((row) => row.id).sort()).toEqual([standing.id, replacement.id].sort());
+    expect(active).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: standing.id, eventKey, once: false }),
+        expect.objectContaining({ id: replacement.id, eventKey, once: true, note: 'replacement one-shot' }),
+      ]),
+    );
+    expect(first.id).not.toBe(replacement.id);
+    expect(
+      await rootSql<{ cancelled_at: string | null }[]>`
+        SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${first.id}
+      `,
+    ).toEqual([expect.objectContaining({ cancelled_at: expect.anything() })]);
+    expect(
+      await rootSql<{ cancelled_at: string | null }[]>`
+        SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${standing.id}
+      `,
+    ).toEqual([{ cancelled_at: null }]);
+  });
+
+  it('onceOnly cancellation preserves a standing watch while retiring a pending one-shot', async () => {
+    const subscriberId = 'sub-once-only-cancel';
+    const eventKey = 'coord:inbox-wake:sub-once-only-cancel';
+    const standing = await upsertInboxWakeAwait({ subscriberId, eventKey });
+    const oneShot = await registerAwait({ subscriberId, eventKey });
+
+    expect(
+      await cancelAwaitsForSubscribersOnKeys([subscriberId], [eventKey], { onceOnly: true }),
+    ).toBe(1);
+    expect((await listActiveAwaits(subscriberId)).map((row) => row.id)).toEqual([standing.id]);
+    expect(
+      await rootSql<{ cancelled_at: string | null }[]>`
+        SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${oneShot.id}
+      `,
+    ).toEqual([expect.objectContaining({ cancelled_at: expect.anything() })]);
+  });
+
   it('keeps a leader-managed fleet bench out of member self-await supersede, while re-stage can retire it explicitly', async () => {
     const bench = await registerAwait({
       subscriberId: 'sub-bench',

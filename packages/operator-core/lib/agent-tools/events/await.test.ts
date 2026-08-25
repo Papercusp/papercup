@@ -218,7 +218,7 @@ describe('events:await wrapper defaults', () => {
       expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
         ['su-awaiter'],
         ['work-item:claimable'],
-        { excludeNotePrefix: '[fleet:bench] ' },
+        { excludeNotePrefix: '[fleet:bench] ', onceOnly: true },
       );
       // Ordering: the retirement must run BEFORE the new row is registered (both
       // mocks recorded on the same shared timeline via invocationCallOrder).

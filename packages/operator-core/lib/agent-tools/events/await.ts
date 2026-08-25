@@ -859,6 +859,7 @@ export default defineTool({
     try {
       supersededCount = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], [eventKey], {
         excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+        onceOnly: true,
       });
     } catch {
       /* best-effort — never let a retirement failure block the new registration */

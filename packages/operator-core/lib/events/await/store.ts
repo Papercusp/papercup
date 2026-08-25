@@ -228,6 +228,7 @@ export async function registerAwait(input: {
            AND subscriber_id = ${input.subscriberId}
            AND event_key = ${input.eventKey}
            AND policy <> 'announce'
+           AND once = true
            AND fired_at IS NULL AND cancelled_at IS NULL
            ${noteFilter}
       `;
@@ -549,6 +550,8 @@ export async function cancelAwaitsForSubscribersOnKeys(
     excludeNotePrefix?: string;
     /** Restrict cancellation to one coordination surface (used by re-stage). */
     includeNotePrefix?: string;
+    /** Restrict cancellation to one-shot rows; standing watches remain armed. */
+    onceOnly?: boolean;
   } = {},
 ): Promise<number> {
   if (subscriberIds.length === 0 || eventKeys.length === 0) return 0;
@@ -561,6 +564,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
           : options.excludeNotePrefix != null
             ? tx`AND (note IS NULL OR note NOT LIKE ${options.excludeNotePrefix + '%'})`
             : tx``;
+      const onceFilter = options.onceOnly ? tx`AND once = true` : tx``;
       return tx`
         UPDATE harness_shared.event_awaits
            SET cancelled_at = now()
@@ -568,6 +572,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
            AND subscriber_id = ANY(${tx.array([...subscriberIds])}::text[])
            AND event_key = ANY(${tx.array([...eventKeys])}::text[])
            AND policy <> 'announce'
+           ${onceFilter}
            AND fired_at IS NULL AND cancelled_at IS NULL
            ${noteFilter}
         RETURNING id
