@@ -23,6 +23,7 @@ import {
   countAgentToolCallsInWindow,
   LOOP_WAKE_ACTION,
 } from './loop';
+import { listActiveMonitorOwnersForPredicate } from './monitor-policy';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -92,6 +93,44 @@ describe('loop surface round-trip (real PG)', () => {
     expect(r!.payload_template).toMatchObject({ kickoff: 'work the plan', costCapCents: 500 });
     // first fire one interval out (finite — the existing claim path fires it)
     expect(r!.next_fire_at?.getTime()).toBe(now.getTime() + 120_000);
+  });
+
+  it('anti-babysitting P-003: round-trips typed monitor policy through the real routine payload', async () => {
+    const monitor = {
+      predicateKey: 'fleet:alpha',
+      stopCondition: 'fleet alpha is drained or leadership ends',
+      noDeltaBudget: 10,
+      remainingNoDeltaBudget: 10,
+      authority: { kind: 'fleet-leader' as const, fleet: 'alpha' },
+    };
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'watch fleet alpha',
+      mode: 'monitor',
+      monitor,
+      sql,
+    });
+
+    const row = await rawRow(OWNER);
+    expect(row?.payload_template).toEqual({
+      kickoff: 'watch fleet alpha',
+      mode: 'monitor',
+      monitor,
+    });
+
+    expect(
+      await listActiveMonitorOwnersForPredicate(
+        {
+          workspaceId: WS,
+          predicateKey: monitor.predicateKey,
+          excludeOwnerId: 'su-other-owner',
+        },
+        { sql },
+      ),
+    ).toEqual([OWNER]);
   });
 
   it('getLoopStatus reads an armed loop, and null for an unknown owner', async () => {
