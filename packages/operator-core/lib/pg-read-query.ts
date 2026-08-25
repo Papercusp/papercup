@@ -741,6 +741,13 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
   },
   {
     relation: 'tool_invocations',
+    missing: 'created_at',
+    message:
+      'this invocation ledger records dispatch time as `invoked_at`, not generic `created_at`; use `invoked_at` ' +
+      'for recency filters and ordering (the canonical writer is `projected-tool-deps.ts`)',
+  },
+  {
+    relation: 'tool_invocations',
     missing: 'request_origin',
     message:
       'telemetry origin is split across `call_origin` (who chose the call) and ' +

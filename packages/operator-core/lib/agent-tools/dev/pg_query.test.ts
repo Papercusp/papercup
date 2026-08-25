@@ -432,6 +432,29 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(String(payloadOf(res as never).schemaColumn)).toContain('no inline result JSON');
   });
 
+  it('redirects a generic created_at guess to tool_invocations.invoked_at', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "created_at" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      {
+        table: 'harness_shared.tool_invocations',
+        columns: ['invoked_at: timestamp with time zone', 'tool_name: text', 'status: text'],
+      },
+    ]);
+    const res = await pgQueryTool.handler(
+      {
+        sql: 'SELECT created_at FROM harness_shared.tool_invocations ORDER BY created_at DESC LIMIT 1',
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      schemaColumn: expect.stringContaining('invoked_at'),
+    });
+    expect(String(payloadOf(res as never).schemaColumn)).toContain('projected-tool-deps.ts');
+  });
+
   it('a non-42703 error gets no column lookup; a failing lookup still returns the error', async () => {
     pgReadQueryMock.mockRejectedValue(Object.assign(new Error('syntax error'), { code: '42601' }));
     const res = await pgQueryTool.handler({ sql: 'SELEC 1' } as never, {} as never);

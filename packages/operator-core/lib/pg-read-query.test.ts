@@ -1583,6 +1583,17 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.tool_invocations');
   });
 
+  it('redirects the generic created_at guess to the invocation ledger timestamp', () => {
+    const out = buildSchemaColumnRedirect(
+      'SELECT created_at FROM harness_shared.tool_invocations ORDER BY created_at DESC LIMIT 1',
+      'column "created_at" does not exist',
+    );
+    expect(out).toContain('invoked_at');
+    expect(out).toContain('not generic `created_at`');
+    expect(out).toContain('projected-tool-deps.ts');
+    expect(out).toContain('harness_shared.tool_invocations');
+  });
+
   it('redirects the removed request_origin guess to the live call-origin columns', () => {
     const out = buildSchemaColumnRedirect(
       'SELECT request_origin FROM harness_shared.tool_invocations LIMIT 1',
