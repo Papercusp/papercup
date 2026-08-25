@@ -164,6 +164,44 @@ import {
 // break set to THIS run instead of to a fixture that hard-codes a different one.
 const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString("hex")}`;
 const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${RUN_TOKEN}.log`;
+// EI-21429853249887727: a near-tree-wide checkpoint forwarded 5,976 paths to
+// lint:required-field-strands as ONE `--files=...` argument. Linux caps a single argv
+// entry well below ARG_MAX, so node:child_process.spawn threw E2BIG synchronously and the
+// entire gate died as `exit-without-verdict` after every recorded test had passed. Small
+// scopes retain the readable inline form; large (or comma/newline-bearing) scopes reuse
+// lint:tsc's JSON `--files-from=` response-file contract.
+const FORWARDED_FILES_INLINE_MAX_BYTES = 32 * 1024;
+const forwardedFilesResponsePaths = [];
+function explicitFilesArgs(files) {
+  if (!files.length) return [];
+  const inline = `--files=${files.join(",")}`;
+  if (
+    Buffer.byteLength(inline, "utf8") <= FORWARDED_FILES_INLINE_MAX_BYTES &&
+    files.every((file) => !/[\r\n,]/.test(file))
+  ) {
+    return [inline];
+  }
+  const responsePath = join(
+    tmpdir(),
+    `papercusp-affected-tests-${RUN_TOKEN}-files-${forwardedFilesResponsePaths.length}.json`,
+  );
+  writeFileSync(responsePath, JSON.stringify(files), { flag: "wx", mode: 0o600 });
+  forwardedFilesResponsePaths.push(responsePath);
+  return [`--files-from=${responsePath}`];
+}
+function cleanupForwardedFilesResponses() {
+  for (const responsePath of forwardedFilesResponsePaths.splice(0)) {
+    try {
+      unlinkSync(responsePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        logLine(
+          `AFFECTED_FILES_RESPONSE cleanup failed path=${responsePath}: ${String(error?.message ?? error)}\n`,
+        );
+      }
+    }
+  }
+}
 function logLine(text) {
   if (text == null || text === "") return;
   try {
@@ -302,6 +340,7 @@ logLine(
 // escalation upstream. Check the loop before reaching for the trap.
 process.on("exit", (code) => {
   cleanupPreemptReadyMarker();
+  cleanupForwardedFilesResponses();
   // Catches every remaining way out with no verdict: an uncaught exception, an
   // unhandled rejection, or an early process.exit() on a path that emits nothing
   // (e.g. the unrecognized-flag refusal). A clean path has already set the flag.
@@ -2943,11 +2982,9 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
     guard.script === AUTHORED_DOC_GUARD_SCRIPT
       ? authoredDocGuardArgs()
       : guard.forwardChangedPaths
-        ? [
-            `--files=${invariantGuardChangedPaths()
-              .filter((file) => guard.appliesTo(file))
-              .join(",")}`,
-          ]
+        ? explicitFilesArgs(
+            invariantGuardChangedPaths().filter((file) => guard.appliesTo(file)),
+          )
         : [];
   selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
   if (!printAffected)
@@ -3761,16 +3798,64 @@ function runCapturedTask(
     let captureError = null;
     let settled = false;
     let watchdogTimedOut = false;
-    const child = spawn(cmd, argv, {
-      cwd,
-      env: childEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-      // Own a process group so the watchdog can reap npm -> shell -> vitest ->
-      // worker descendants together. A direct-child kill leaves descendants
-      // holding these capture pipes and made a 45m timeout close at 49.8m.
-      detached: true,
-    });
     const progressTask = JSON.stringify(taskKey(spawnTask));
+    let child;
+    try {
+      child = spawn(cmd, argv, {
+        cwd,
+        env: childEnv,
+        stdio: ["ignore", "pipe", "pipe"],
+        // Own a process group so the watchdog can reap npm -> shell -> vitest ->
+        // worker descendants together. A direct-child kill leaves descendants
+        // holding these capture pipes and made a 45m timeout close at 49.8m.
+        detached: true,
+      });
+    } catch (error) {
+      // Node normally reports child startup failures through the `error` event, but
+      // E2BIG is thrown synchronously before a ChildProcess exists. Letting that throw
+      // escape rejects the scheduler shard and aborts the whole runner without naming
+      // the task. Return the same captured-task shape as the async error path so the
+      // reporting loop emits `>>> <workspace> spawn error`, counts one attributed red,
+      // and still reaches an AFFECTED_TESTS_RESULT terminal verdict.
+      spawnError =
+        error instanceof Error ? error : new Error(String(error ?? "spawn failed"));
+      const outcome = formatTaskOutcomeFields({
+        status: 1,
+        signal: null,
+        settled: true,
+      });
+      rawErrSync(
+        `AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask} ` +
+          `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=0 ` +
+          `stalledForSec=0 timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
+          `durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
+          `exitStatus=${outcome.exitStatus} signal=${outcome.signal} ` +
+          `watchdogDeadlineMs=${taskTimeoutMs}`,
+      );
+      resolveRun({
+        status: 1,
+        signal: null,
+        stdout: "",
+        stderr: "",
+        error: spawnError,
+        __elapsedMs: Date.now() - startedAt,
+        __timeoutMs: taskTimeoutMs,
+        __timeoutSource: taskTimeoutSource,
+        __durationEstimateMs: taskDurationMs,
+        __capturedBytes: 0,
+        __watchdogTimedOut: false,
+        __watchdogDeadlineMs: taskTimeoutMs,
+        __watchdogKillReason: null,
+        ...(cacheDecision
+          ? {
+              __cacheStatus: "miss",
+              __cacheReason: cacheDecision.reason,
+              __cacheIdentity: cacheIdentity,
+            }
+          : {}),
+      });
+      return;
+    }
     // EI-21048499991398082: `status`/`signal` are Node's `child.close(code, signal)` pair,
     // which is MUTUALLY EXCLUSIVE by construction — a normal exit has a numeric `code` and a
     // `null` signal; a signal-killed process has a `null` code and a signal name. Both are
