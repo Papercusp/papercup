@@ -52,6 +52,7 @@ export {
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
+import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { recordPlanRevision } from './agent-tools/plans/revisions';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
@@ -1357,6 +1358,44 @@ async function resolveRubricWriteScope(
 }
 
 /**
+ * Reconstruct the rubric visible to a locked amendment from the body and
+ * template_data that withPlanLock read inside the advisory-locked transaction.
+ *
+ * amendRubric used to call getRubric before entering withPlanLock, then pass that
+ * stale snapshot to proposeRubric. Concurrent amendments therefore each wrote a
+ * whole-document snapshot and erased fields committed by earlier writers. Keep
+ * this conversion local to the lock callback: the body and structured data are
+ * the same snapshot, so applyRubricAmendment always patches the version that
+ * this writer is about to replace.
+ */
+function rubricFromLockedPlan(
+  rubricId: string,
+  current: string | null,
+  templateData: unknown,
+  scope: { workspaceId: string; harnessSlug: string },
+): Rubric | null {
+  if (!current) return null;
+  const index = deriveIndexFromContent(current);
+  if (index.template !== RUBRIC_TEMPLATE_NAME) return null;
+  return planRowToRubric({
+    plan_slug: rubricId,
+    workspace_id: scope.workspaceId,
+    harness_slug: scope.harnessSlug,
+    title: index.title,
+    status: index.status,
+    created: index.created,
+    updated: index.updated,
+    // The amendment only needs the projected fields above; planRowToRubric still
+    // expects the DB timestamp, so use the body date when locked metadata does
+    // not expose the timestamptz column.
+    updated_at: index.updated ?? new Date().toISOString(),
+    owner: index.owner,
+    archived: false,
+    template_data: templateData,
+  });
+}
+
+/**
  * EI-10443 audit trail: build the `withPlanLock` afterWrite that appends ONE
  * `plan_revisions` row for a rubric propose/ratify write. The rubric write path went
  * through withPlanLock with NO afterWrite, so the plan revision spine had ZERO rows for
@@ -1653,9 +1692,49 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
  * Returns null for an unknown rubricId; throws (like proposeRubric) on guard violations.
  */
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
-  const stored = await getRubric(input.rubricId);
-  if (!stored) return null;
-  return proposeRubric(applyRubricAmendment(stored, input));
+  const scope = await resolveRubricWriteScope(input.rubricId);
+  const result = await withPlanLock<true | null>(
+    null,
+    {
+      slug: input.rubricId,
+      intent: `rubrics:amend ${input.rubricId}`,
+      ...scope,
+      afterWrite: rubricRevisionAfterWrite(input.rubricId, input.by, 'rubrics:amend'),
+    },
+    async (current, meta) => {
+      const stored = rubricFromLockedPlan(input.rubricId, current, meta?.templateData ?? null, scope);
+      if (!stored) return { newBody: null, value: null };
+
+      // Build and validate the replacement from the locked snapshot. This keeps
+      // the loss guards and template schema on the same side of the advisory lock
+      // as the read-modify-write itself.
+      const amended = applyRubricAmendment(stored, input);
+      const templateData = buildRubricTemplateData(amended);
+      if (amended.kind === 'acceptance') await assertAcceptanceLinksResolve(amended);
+      assertNoSilentRubricLoss(stored, amended);
+      assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot });
+
+      const body = buildRubricPlanBody({
+        slug: amended.rubricId,
+        title: amended.title,
+        planStatus: rubricStatusToPlanStatus(amended.status ?? stored.status),
+        owner: amended.by ?? null,
+        date: new Date().toISOString().slice(0, 10),
+        ...(amended.description !== undefined ? { description: amended.description } : {}),
+      });
+
+      return {
+        newBody: body,
+        templateData: { data: templateData },
+        value: true,
+      };
+    },
+  );
+  if (result.kind === 'busy') {
+    throw new Error(`amendRubric: plan '${input.rubricId}' is being written by another caller`);
+  }
+  if (!result.value) return null;
+  return getRubric(input.rubricId);
 }
 
 /** Raw template_data for one rubric plan (the un-projected jsonb) — the merge base for

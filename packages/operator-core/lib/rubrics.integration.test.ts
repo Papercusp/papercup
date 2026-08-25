@@ -364,6 +364,56 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(amended?.proposedBy).toBe('author-a');
   });
 
+  it('serializes concurrent amendments from the locked current snapshot (EI-21395928602431222)', async () => {
+    const rubricId = 'concurrent-amendments';
+    const criteria = Array.from({ length: 5 }, (_, index) => ({
+      key: `criterion-${index}`,
+      title: `Criterion ${index}`,
+      model: `Model ${index}`,
+      method: `Method ${index}`,
+      driftMarkers: `Drift ${index}`,
+    }));
+    await rubrics.proposeRubric({
+      rubricId,
+      characteristic: 'concurrency',
+      title: 'Concurrent amendments',
+      criteria,
+      by: 'seed-author',
+    });
+
+    await Promise.all(
+      criteria.map((criterion, index) =>
+        rubrics.amendRubric({
+          rubricId,
+          criterion: {
+            key: criterion.key,
+            field: 'replication',
+            mode: 'replace',
+            text: `REPLICATION DRILL ${index}: amend criterion ${index} and verify the persisted field.`,
+          },
+          ...(index === 0 ? { methodRef: 'concurrent-amendments-runbook' } : {}),
+          by: `amender-${index}`,
+        }),
+      ),
+    );
+
+    const [row] = await db.adminSql<{
+      template_data: { methodRef?: string; criteria: { key: string; replication?: string }[] };
+    }[]>`
+      SELECT template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${rubricId}`;
+    expect(row.template_data.methodRef).toBe('concurrent-amendments-runbook');
+    expect(row.template_data.criteria).toEqual(
+      criteria.map((criterion, index) => ({
+        ...criterion,
+        replication: `REPLICATION DRILL ${index}: amend criterion ${index} and verify the persisted field.`,
+      })),
+    );
+  });
+
   it('ratify of an unknown rubric returns null', async () => {
     expect(await rubrics.ratifyRubric('nope', 'q')).toBeNull();
   });
