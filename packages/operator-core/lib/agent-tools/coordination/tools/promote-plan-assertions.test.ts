@@ -251,9 +251,90 @@ const throwsOnError: PersistFn = async ({ sql, assertions }) => {
   return { written, errors: [] };
 };
 
+describe('persistPlanAssertions — duplicate VAL ids (P-003: "tests for ... duplicate ids")', () => {
+  /**
+   * A VAL id is the upsert KEY, so two assertions sharing one do not produce
+   * two rows — the second overwrites the first. Both features keep carrying
+   * VAL-1 as a claim while only ONE claim survives behind it, and every reader
+   * resolves the id successfully and gets the wrong assertion. That reads as
+   * present and correct, which makes it strictly harder to detect than the
+   * missing-row case the ordering fix addressed.
+   *
+   * P-002 enforces uniqueness upstream at extraction; this is the
+   * persistence-layer backstop, and the two are not redundant — a backstop is
+   * what makes an upstream regression loud instead of silently lossy.
+   */
+  it('refuses a duplicate rather than letting it overwrite the first row', async () => {
+    const { sql, attempted } = makeSql();
+    const assertions = [
+      assertion('VAL-1', { verifyText: 'the original claim' }),
+      assertion('VAL-2'),
+      assertion('VAL-1', { itemId: 'P-009', verifyText: 'a DIFFERENT claim reusing the id' }),
+    ];
+
+    const result = await persistPlanAssertions({ ...BASE, sql, assertions });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('VAL-1');
+    expect(result.errors[0]).toContain('duplicate');
+    // The colliding third assertion is never sent to the store, so the first
+    // row survives intact instead of being overwritten by it.
+    expect(attempted).toEqual(['VAL-1', 'VAL-2']);
+    expect(result.written).toBe(2);
+  });
+
+  it('counts only distinct ids as written — `written` never over-reports rows', async () => {
+    const { sql } = makeSql();
+    const assertions = [assertion('VAL-1'), assertion('VAL-1'), assertion('VAL-1')];
+
+    const result = await persistPlanAssertions({ ...BASE, sql, assertions });
+
+    // One row exists, so `written` must be 1 — not 3. Over-reporting here would
+    // make the refusal message describe a state that does not exist.
+    expect(result.written).toBe(1);
+    expect(result.errors).toHaveLength(2);
+  });
+});
+
+/** The duplicate-id contract, stated once, for the same subject-vs-control treatment. */
+async function checkDuplicateRefusalContract(persist: PersistFn): Promise<void> {
+  const { sql, attempted } = makeSql();
+  const assertions = [assertion('VAL-1'), assertion('VAL-2'), assertion('VAL-1', { itemId: 'P-009' })];
+
+  const result = await persist({ ...BASE, sql, assertions });
+
+  expect(result.errors.length).toBeGreaterThan(0); // a duplicate is a REFUSAL
+  expect(result.errors.some((e) => e.includes('VAL-1'))).toBe(true);
+  expect(attempted).toEqual(['VAL-1', 'VAL-2']); // the collider never reaches the store
+  expect(result.written).toBe(2); // ...and `written` counts rows, not attempts
+}
+
+/** THE PRE-FIX BEHAVIOUR: no dedupe, so the second VAL-1 silently overwrites the first. */
+const overwritesDuplicates: PersistFn = async ({ sql, assertions }) => {
+  let written = 0;
+  const errors: string[] = [];
+  for (const a of assertions) {
+    try {
+      await sql`INSERT ${a.valId}`;
+      written++;
+    } catch (e) {
+      errors.push(`${a.valId}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { written, errors };
+};
+
 describe('persistPlanAssertions — the contract is falsifiable', () => {
   it('the real seam SATISFIES the fail-closed contract', async () => {
     await expect(checkFailClosedContract(persistPlanAssertions)).resolves.toBeUndefined();
+  });
+
+  it('the real seam SATISFIES the duplicate-refusal contract', async () => {
+    await expect(checkDuplicateRefusalContract(persistPlanAssertions)).resolves.toBeUndefined();
+  });
+
+  it('a control that overwrites duplicates FAILS the duplicate-refusal contract', async () => {
+    await expect(checkDuplicateRefusalContract(overwritesDuplicates)).rejects.toThrow();
   });
 
   it.each([

@@ -619,7 +619,25 @@ export async function persistPlanAssertions(opts: {
   const { sql, workspaceId, harnessSlug, planSlug, assertions } = opts;
   let written = 0;
   const errors: string[] = [];
+  const seen = new Set<string>();
   for (const a of assertions) {
+    // A VAL id is the upsert KEY (workspace_id, harness_slug, val_id), so two
+    // assertions in one promote sharing an id do NOT produce two rows — the
+    // second silently overwrites the first. The feature still carries VAL-x as
+    // a claim, but the row behind it now describes a DIFFERENT claim. That is
+    // worse than a missing row, because every reader resolves it successfully
+    // and gets the wrong assertion. Refuse rather than write.
+    //
+    // P-002 enforces VAL-id uniqueness upstream at extraction; this is the
+    // persistence-layer backstop for when that is bypassed or regresses.
+    if (seen.has(a.valId)) {
+      errors.push(
+        `${a.valId}: duplicate VAL id within this plan — a second assertion reuses it, which would ` +
+          `overwrite the first row rather than add one`,
+      );
+      continue;
+    }
+    seen.add(a.valId);
     try {
       await sql`
         INSERT INTO harness_shared.harness_plan_assertions
