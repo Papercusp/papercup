@@ -58,6 +58,7 @@ import {
   incrementLoopFireCount as defaultIncrementLoopFireCount,
   readLoopFireCount as defaultReadLoopFireCount,
 } from './loop-dead-man';
+import { recordLoopTransition } from './loop-transition-log';
 import { ensureInboxWakeArmedForActiveSession as defaultEnsureWakeArmed } from '../../events/await/inbox-wake-arm';
 
 /** The wake-turn text delivered when the loop's row carries no explicit kickoff. Mirrors the
@@ -173,8 +174,15 @@ export interface BlockingAwaitLike {
 /** Inputs for the parked-loop re-arm that accompanies await suppression. */
 export interface SuppressedLoopRearmInput {
   routineId: string;
+  workspaceId: string;
+  installSlug: string;
+  routineName: string;
+  targetOwnerId?: string | null;
+  intervalSec?: number | null;
   /** The earliest threshold at which the suppression decision must be revisited. */
   resumeAtMs: number;
+  /** The await that caused this re-arm, for forensic transition detail. */
+  drivingEventKey?: string;
   /** Injectable for tests; production falls back to the operator's org connection. */
   sql?: Sql;
 }
@@ -260,6 +268,28 @@ export async function rescheduleLoopAfterAwaitSuppression(input: SuppressedLoopR
        AND NOT jsonb_exists(trigger_config, 'rrule')
      RETURNING id
   `;
+  if (rows.length > 0) {
+    // EI-21388574737613226: this re-arm closes the `parked` transition written by
+    // claimDueRoutine. Without the matching row, the forensic ledger falsely reports a
+    // parked loop with no successor even though await suppression successfully restored its
+    // schedule. Keep this fire-and-forget just like the other transition call sites: the
+    // instrument must never turn a successful scheduling CAS into a failed wake.
+    void recordLoopTransition(db, {
+      workspaceId: input.workspaceId,
+      installSlug: input.installSlug,
+      routineId: input.routineId,
+      routineName: input.routineName,
+      targetOwnerId: input.targetOwnerId,
+      event: 'rearmed',
+      actor: 'await-suppression',
+      newNextFireAt: resumeAtIso,
+      intervalSec: input.intervalSec,
+      detail: {
+        via: 'await-suppression',
+        ...(input.drivingEventKey ? { drivingEventKey: input.drivingEventKey } : {}),
+      },
+    });
+  }
   return rows.length > 0;
 }
 
@@ -767,7 +797,13 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         try {
           const rearmed = await rescheduleSuppressedWake({
             routineId: input.routineId,
+            workspaceId: input.workspaceId,
+            installSlug: input.installSlug,
+            routineName: input.routineName,
+            targetOwnerId: input.targetOwnerId,
+            intervalSec: input.intervalSec,
             resumeAtMs: decision.resumeAtMs,
+            drivingEventKey: decision.drivingEventKey,
             sql: input.sql,
           });
           if (!rearmed) {

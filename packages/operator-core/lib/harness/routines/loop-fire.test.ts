@@ -85,7 +85,17 @@ describe('rescheduleLoopAfterAwaitSuppression — parked-loop CAS (EI-2135060992
     const resumeAtMs = Date.parse('2026-08-24T16:30:00.000Z');
 
     await expect(
-      rescheduleLoopAfterAwaitSuppression({ sql, routineId: 'rt-parked', resumeAtMs }),
+      rescheduleLoopAfterAwaitSuppression({
+        sql,
+        routineId: 'rt-parked',
+        workspaceId: 'ws-1',
+        installSlug: 'papercusp',
+        routineName: 'loop-su-pinned',
+        targetOwnerId: 'su-pinned',
+        intervalSec: 300,
+        resumeAtMs,
+        drivingEventKey: 'work-item:claimable',
+      }),
     ).resolves.toBe(true);
 
     expect(statements[0]).toContain('SET next_fire_at = GREATEST(now()');
@@ -94,6 +104,28 @@ describe('rescheduleLoopAfterAwaitSuppression — parked-loop CAS (EI-2135060992
     expect(statements[0]).toContain("NOT jsonb_exists(trigger_config, 'rrule')");
     expect(values[0]).toContain('2026-08-24T16:30:00.000Z');
     expect(values[0]).toContain('rt-parked');
+
+    // EI-21388574737613226: a successful await-suppression CAS must close the parked
+    // transition with a forensic re-arm row.
+    await new Promise((resolve) => setImmediate(resolve));
+    const insertIndex = statements.findIndex((statement) =>
+      statement.includes('INSERT INTO harness_shared.routine_loop_transitions'),
+    );
+    expect(insertIndex).toBeGreaterThan(0);
+    expect(values[insertIndex]).toEqual(
+      expect.arrayContaining([
+        'ws-1',
+        'papercusp',
+        'rt-parked',
+        'loop-su-pinned',
+        'su-pinned',
+        'rearmed',
+        'await-suppression',
+        '2026-08-24T16:30:00.000Z',
+        300,
+        JSON.stringify({ via: 'await-suppression', drivingEventKey: 'work-item:claimable' }),
+      ]),
+    );
   });
 });
 
