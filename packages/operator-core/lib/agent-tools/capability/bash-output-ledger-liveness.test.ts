@@ -433,6 +433,25 @@ describe('terminalResourceLimitFields — pre-launch budget refusal (EI-21442389
     expect(terminalResourceLimitFields(refusedRow(), '')).toBeNull();
   });
 
+  // The historical control, kept permanently. This is the EXACT message the scheduler threw
+  // before this fix, and the exact log the unclassified run produced. If the classifier ever
+  // starts keying on the human sentence — or on anything other than the marker — this test
+  // goes green for the wrong reason and the grammar contract silently stops being load-bearing.
+  it('does not classify the pre-fix message that carried no marker', () => {
+    expect(
+      terminalResourceLimitFields(
+        refusedRow(),
+        [
+          '[pc-heavy] slot acquired — starting real work',
+          'AFFECTED_TESTS_RESULT status=aborted tasks=0 failed=0 reason=exit-without-verdict code=1',
+          'Error: task cgroup pids.max=512 leaves 0 after pidsReserve=1024, below one',
+          '       pidsPerConcurrentTask=4096 envelope; refusing before launch',
+          '    at resolveTaskBudget (scripts/lib/budgeted-task-scheduler.mjs:377)',
+        ].join('\n'),
+      ),
+    ).toBeNull();
+  });
+
   it('does not promote prose that merely discusses a budget refusal', () => {
     expect(
       terminalResourceLimitFields(

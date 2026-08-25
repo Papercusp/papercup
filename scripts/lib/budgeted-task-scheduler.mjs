@@ -1,16 +1,24 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+// EI-21442389733525112: `task-exit-class.mjs` is dependency-free by design, so importing it
+// here cannot reintroduce the coupling its own header warns about — and it is the one module
+// that owns the refusal marker's grammar, for both the emitter below and the reader in
+// `bash_output.ts`. A refusal that does not carry this marker is indistinguishable from a
+// red test suite at every caller.
+import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 
 export const DURATION_HISTORY_VERSION = 1;
 // EI-21437241652128498 / EI-21437837415175286: one stateful test task first
 // reached 1,517 cgroup tasks, then exhausted a 2,048-task capability scope while
-// it was still progressing. Size one task for the next stable power-of-two rung
-// and keep a separate shell/scheduler reserve. A 4,096-task capability or
-// checkpoint envelope therefore admits ONE high-fanout task, not two tasks whose
-// individually legitimate peaks can collide at the hard fork boundary. This is
-// the cgroup that actually enforces fork(); a host-wide process count is not the
-// relevant limit.
-export const PIDS_PER_CONCURRENT_TASK = 3_072;
+// it was still progressing. A later operator-core pure lane reached 4,096 tasks
+// and STILL produced a complete 2,840-file verdict, proving that 4,096 is valid
+// child workload rather than shell headroom. Size one admitted task to that
+// writer-owned measurement and keep a separate shell/scheduler reserve. An
+// 8,192-task capability envelope therefore admits ONE high-fanout task, not two
+// whose individually legitimate peaks can collide at the hard fork boundary.
+// This is the cgroup that actually enforces fork(); a host-wide process count is
+// not the relevant limit.
+export const PIDS_PER_CONCURRENT_TASK = 4_096;
 export const PIDS_RESERVE = 1_024;
 
 const positiveInteger = (value, name) => {
@@ -305,7 +313,14 @@ export function resolveMemoryBudgetMb({
   if (cgroupBudget < perWorker) {
     throw new Error(
       `task cgroup memory.max=${cgroupMax}MB leaves ${cgroupBudget}MB after reserve, ` +
-        `below one workerMemoryMb=${perWorker}MB token; refusing before launch`,
+        `below one workerMemoryMb=${perWorker}MB token; refusing before launch ` +
+        formatTaskBudgetRefusal({
+          kind: "memory",
+          unit: "mb",
+          limit: cgroupMax,
+          reserve: cgroupMax - cgroupBudget,
+          requiredPerTask: perWorker,
+        }),
     );
   }
   return Math.min(configured, cgroupBudget);
@@ -375,7 +390,14 @@ export function resolveTaskBudget({
       throw new Error(
         `task cgroup pids.max=${configuredTaskCgroupPidsMax} leaves ${Math.max(0, usablePids)} ` +
           `after pidsReserve=${configuredPidsReserve}, below one ` +
-          `pidsPerConcurrentTask=${configuredPidsPerConcurrentTask} envelope; refusing before launch`,
+          `pidsPerConcurrentTask=${configuredPidsPerConcurrentTask} envelope; refusing before launch ` +
+          formatTaskBudgetRefusal({
+            kind: "pids",
+            unit: "tasks",
+            limit: configuredTaskCgroupPidsMax,
+            reserve: configuredPidsReserve,
+            requiredPerTask: configuredPidsPerConcurrentTask,
+          }),
       );
     }
   }
