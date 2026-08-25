@@ -31,6 +31,20 @@ export interface SignatureEvidence extends ArtifactTrustEvidenceBase {
   kind: 'signature';
   valid: boolean;
   signer?: string;
+  /**
+   * Digest of the exact detached signature file this evidence verified.
+   *
+   * Optional here because not every trusted artifact is published, but REQUIRED to publish a
+   * workspace-host bundle (D-107): without it, evidence produced over some other detached
+   * signature would satisfy an envelope that ships a different `.minisig`.
+   */
+  signatureSha256?: string;
+  /**
+   * Digest of the public verification key this evidence verified under. Publication requires it
+   * to equal the key the release pins, so evidence gathered under an unpinned key cannot vouch
+   * for the published bundle.
+   */
+  signingKeySha256?: string;
 }
 
 export interface SbomEvidence extends ArtifactTrustEvidenceBase {
