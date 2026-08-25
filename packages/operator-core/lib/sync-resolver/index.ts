@@ -151,11 +151,7 @@ import {
   workItemBehaviorContractArgsSchema,
   type WorkItemBehaviorContractArgs,
 } from './work-item-behavior-contract';
-import {
-  resolvePlanSpecCoverage,
-  planSpecCoverageArgsSchema,
-  type PlanSpecCoverageArgs,
-} from './plan-spec-coverage';
+import { resolvePlanSpecCoverage, planSpecCoverageArgsSchema, type PlanSpecCoverageArgs } from './plan-spec-coverage';
 import {
   resolvePlanAcceptanceGateVerdict,
   planAcceptanceGateArgsSchema,
@@ -248,10 +244,7 @@ const designFeaturesListArgsSchema = z.object({
   q: z.string().max(500).optional(),
   statuses: z.array(z.enum(DESIGN_FEATURE_STATUSES)).max(3).optional(),
   cursor: z.string().max(2_000).nullable().optional(),
-  limit: clampedLimit(
-    DESIGN_FEATURES_PAGE_LIMIT,
-    DESIGN_FEATURES_DEFAULT_PAGE,
-  ),
+  limit: clampedLimit(DESIGN_FEATURES_PAGE_LIMIT, DESIGN_FEATURES_DEFAULT_PAGE),
 });
 
 const learningObservationsFiltersSchema = z.object({
@@ -969,20 +962,15 @@ const advSessionsListQueryPair = createCompanionListQueryPair({
   domain: 'advSessions',
   rowsQueryName: 'advSessions.list',
   argsSchema: advSessionsListArgsSchema,
-  backingTables: [
-    'harness_shared.adv_sessions',
-    'harness_shared.harness_plans',
-  ] as const,
-  normalizeArgs: (args: AdvSessionsListWireArgs) =>
-    normalizeAdvSessionsListArgs(args),
+  backingTables: ['harness_shared.adv_sessions', 'harness_shared.harness_plans'] as const,
+  normalizeArgs: (args: AdvSessionsListWireArgs) => normalizeAdvSessionsListArgs(args),
   buildPredicate: buildAdvSessionsPredicate,
   readPage: async ({ predicate }) => {
-    const [{ getOrgPg }, { activeWorkspaceId }, { getOmpSessionRowSummary }] =
-      await Promise.all([
-        import('@papercusp/db-org'),
-        import('../workspace-registry'),
-        import('../omp-sessions'),
-      ]);
+    const [{ getOrgPg }, { activeWorkspaceId }, { getOmpSessionRowSummary }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+      import('../omp-sessions'),
+    ]);
     const scoped = predicate.args.workspaceId
       ? predicate
       : buildAdvSessionsPredicate({
@@ -992,10 +980,7 @@ const advSessionsListQueryPair = createCompanionListQueryPair({
     const page = await readAdvSessionsPageFromStore(getOrgPg().sql, scoped);
     const rows = page.rows.map((row) => ({
       ...row,
-      summary:
-        row.mode === 'omp' && row.ompThreadId
-          ? getOmpSessionRowSummary({ id: row.ompThreadId })
-          : null,
+      summary: row.mode === 'omp' && row.ompThreadId ? getOmpSessionRowSummary({ id: row.ompThreadId }) : null,
     }));
     return { ...page, rows };
   },
@@ -1019,12 +1004,8 @@ const designFeaturesListQueryPair = createCompanionListQueryPair({
   domain: 'designFeatures',
   rowsQueryName: 'designFeatures.byHarness',
   argsSchema: designFeaturesListArgsSchema,
-  backingTables: [
-    'harness_shared.work_items',
-    'harness_shared.harness_features_consolidated',
-  ] as const,
-  normalizeArgs: (args: DesignFeaturesListWireArgs) =>
-    normalizeDesignFeaturesListArgs(args),
+  backingTables: ['harness_shared.work_items', 'harness_shared.harness_features_consolidated'] as const,
+  normalizeArgs: (args: DesignFeaturesListWireArgs) => normalizeDesignFeaturesListArgs(args),
   buildPredicate: buildDesignFeaturesPredicate,
   readPage: async ({ predicate }) => {
     const { getOrgPg } = await import('@papercusp/db-org');
@@ -3872,15 +3853,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // pane refreshes on the write's MEANING, and the per-item outcome batch
     // carries no per-row notify cost. PUSH_EXEMPT in
     // resolver-backing-table-coverage.test.ts documents the pairing + re-arm.
-    backingTables: [
-      'harness_shared.attention_bulk_runs',
-      'harness_shared.attention_bulk_run_items',
-    ],
+    backingTables: ['harness_shared.attention_bulk_runs', 'harness_shared.attention_bulk_run_items'],
     resolve: async (args) => {
       const { classifyRunLiveness, getRun, getLatestRun, getRunItems } = await import('../attention/bulk-run-store');
-      const runId = typeof (args as { runId?: unknown })?.runId === 'string'
-        ? String((args as { runId: string }).runId)
-        : null;
+      const runId =
+        typeof (args as { runId?: unknown })?.runId === 'string' ? String((args as { runId: string }).runId) : null;
       try {
         const run = runId ? await getRun(runId) : await getLatestRun();
         if (!run) return [{ run: null, items: [] }];
@@ -3898,27 +3875,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // migration 937. Writers push one dedupe-disabled invalidation per persisted
   // transition through notifyPlanCleanupRunChanged().
   'plans.cleanupRun': {
-    backingTables: [
-      'harness_shared.attention_bulk_runs',
-      'harness_shared.plan_cleanup_run_findings',
-    ],
+    backingTables: ['harness_shared.attention_bulk_runs', 'harness_shared.plan_cleanup_run_findings'],
     resolve: async (args) => {
       const [{ classifyRunLiveness, getRun, getLatestRun }, { getRunFindings }] = await Promise.all([
         import('../attention/bulk-run-store'),
         import('../plan-cleanup/run-store'),
       ]);
-      const runId = typeof (args as { runId?: unknown })?.runId === 'string'
-        ? String((args as { runId: string }).runId)
-        : null;
+      const runId =
+        typeof (args as { runId?: unknown })?.runId === 'string' ? String((args as { runId: string }).runId) : null;
       try {
-        const run = runId
-          ? await getRun(runId)
-          : await getLatestRun(undefined, 'plan-cleanup');
+        const run = runId ? await getRun(runId) : await getLatestRun(undefined, 'plan-cleanup');
         if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [] }];
-        return [{
-          run: { ...run, liveness: classifyRunLiveness(run) },
-          findings: await getRunFindings(run.runId, run.workspaceId),
-        }];
+        return [
+          {
+            run: { ...run, liveness: classifyRunLiveness(run) },
+            findings: await getRunFindings(run.runId, run.workspaceId),
+          },
+        ];
       } catch {
         // Cleanup is additive: a substrate read failure must not break the
         // Plans pane or mis-render a partially known run.

@@ -87,13 +87,16 @@ const RUBRIC_DEFINITION = {
   updatedAt: '2026-08-01T00:00:00.000Z',
 } as const;
 
-const sqlTag = Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
-  const text = strings.join(' ? ');
-  if (text.includes('FROM harness_shared.engineer_issues')) {
-    return Promise.resolve(rowsForQuery) as unknown as Promise<unknown[]>;
-  }
-  return { __sqlFragment: text } as unknown as Promise<unknown[]>;
-}, { begin: vi.fn() });
+const sqlTag = Object.assign(
+  (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+    const text = strings.join(' ? ');
+    if (text.includes('FROM harness_shared.engineer_issues')) {
+      return Promise.resolve(rowsForQuery) as unknown as Promise<unknown[]>;
+    }
+    return { __sqlFragment: text } as unknown as Promise<unknown[]>;
+  },
+  { begin: vi.fn() },
+);
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
