@@ -23,6 +23,7 @@
  * thunder-herd N sleeping agents into N billable turns).
  */
 
+import { getOrgPg } from '@papercusp/db-org';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { listActiveAwaitsForKey } from '../../events/await/store';
 // hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
@@ -159,6 +160,48 @@ export interface WakeRecipientsResult {
   timedOutTargets: string[];
 }
 
+type RequiredWakeAttempt = {
+  subscriberId: string;
+  eventKey: string;
+  outcome: 'queued' | 'missed';
+};
+
+/**
+ * Record only completed required-wake fires. This is deliberately one batched,
+ * fail-soft write: the inbox message and wake result are already the durable
+ * delivery path, while this ledger is liveness evidence used by presence and
+ * reclaim readers. Staged, timed-out, and fire-error outcomes are unknown and
+ * must not be rewritten as misses.
+ */
+async function recordRequiredWakeAttempts(
+  attempts: readonly RequiredWakeAttempt[],
+  workspaceId: string | undefined,
+): Promise<void> {
+  if (attempts.length === 0 || !workspaceId) return;
+  try {
+    const { sql } = getOrgPg();
+    const subscriberIds = attempts.map((a) => a.subscriberId);
+    const eventKeys = attempts.map((a) => a.eventKey);
+    const outcomes = attempts.map((a) => a.outcome);
+    await sql`
+      INSERT INTO harness_shared.event_wake_attempts
+        (workspace_id, subscriber_id, event_key, outcome)
+      SELECT ${workspaceId}, subscriber_id, event_key, outcome
+        FROM unnest(
+          ${subscriberIds}::text[],
+          ${eventKeys}::text[],
+          ${outcomes}::text[]
+        ) AS attempt(subscriber_id, event_key, outcome)
+    `;
+  } catch (e) {
+    // The ledger is diagnostic/reclaim evidence, not part of the send's
+    // delivery transaction. Never turn a successful inbox send into a failure.
+    console.warn(
+      `[inbox-wake] required-wake attempt ledger write failed: ${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
 /**
  * Fire the inbox-wake key for each addressed recipient — one targeted emit per
  * ownerId, never a broadcast (P-042). `recipients` is the POST-expansion `to[]`
@@ -176,6 +219,8 @@ export async function wakeRecipients(
     payload?: unknown;
     source?: string;
     workspaceId?: string;
+    /** Record completed fire outcomes for a coord:send wake:'required'. */
+    requiredWake?: boolean;
     /** Server-verified relay provenance from the message envelope. A verified
      * OWNER origin bypasses manual staging: the owner has already reviewed and
      * authorized this wake. Missing/unverified/agent-origin stamps never bypass. */
@@ -332,6 +377,7 @@ export async function wakeRecipients(
     }),
   );
   const keys: string[] = [];
+  const requiredAttempts: RequiredWakeAttempt[] = [];
   let woken = 0;
   let staged = 0;
   const stagedTargets: string[] = [];
@@ -345,6 +391,13 @@ export async function wakeRecipients(
       case 'fired':
         keys.push(o.key);
         woken += o.woken;
+        if (opts.requiredWake) {
+          requiredAttempts.push({
+            subscriberId: ownerFromInboxWakeKey(o.key) ?? o.key,
+            eventKey: o.key,
+            outcome: o.woken > 0 ? 'queued' : 'missed',
+          });
+        }
         break;
       case 'fire-failed':
         keys.push(o.key);
@@ -357,6 +410,7 @@ export async function wakeRecipients(
         break;
     }
   }
+  await recordRequiredWakeAttempts(requiredAttempts, opts.workspaceId);
   return {
     targets,
     keys,
