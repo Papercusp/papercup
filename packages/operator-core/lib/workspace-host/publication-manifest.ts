@@ -19,8 +19,16 @@ import {
  * `manifest.json`. Upload, the finalization marker, the R2 adapter and every
  * `/admin/artifacts/workspace-host` or public `/artifacts/workspace-host` route belong to
  * WI-41736/operator-public (D-108), which re-validates at its own network boundary.
+ *
+ * The wire names below are NOT this module's to choose. `manifest.json` is served from the public
+ * `/artifacts/workspace-host/...` routes, whose validator applies a CLOSED top-level allowlist, and
+ * `schemaVersion` is shared with the finalization marker — both owned exclusively by
+ * WI-41736/operator-public (D-108). The producer therefore adopts the published contract verbatim;
+ * `publication-manifest.contract.test.ts` pins these names against that route so the two halves
+ * cannot drift apart again silently.
  */
-export const WORKSPACE_HOST_PUBLICATION_MANIFEST_VERSION = 'workspace-host-publication-v1';
+export const WORKSPACE_HOST_PUBLICATION_SCHEMA_VERSION = 1;
+export const WORKSPACE_HOST_PUBLICATION_KIND = 'papercusp-workspace-host-release';
 
 /** The three objects published together under one content address (D-105). */
 export const WORKSPACE_HOST_PUBLISHED_BUNDLE_NAME = 'server.tgz';
@@ -33,7 +41,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 export interface WorkspaceHostPublishedObject {
   readonly name: string;
   readonly sha256: string;
-  readonly bytes: number;
+  readonly sizeBytes: number;
 }
 
 /**
@@ -45,13 +53,14 @@ export interface WorkspaceHostPublishedObject {
  * drift, never disagree usefully.
  */
 export interface WorkspaceHostPublicationManifest {
-  readonly version: typeof WORKSPACE_HOST_PUBLICATION_MANIFEST_VERSION;
+  readonly schemaVersion: typeof WORKSPACE_HOST_PUBLICATION_SCHEMA_VERSION;
+  readonly kind: typeof WORKSPACE_HOST_PUBLICATION_KIND;
   readonly artifact: WorkspaceHostImageArtifact;
-  readonly objects: {
+  readonly files: {
     readonly bundle: WorkspaceHostPublishedObject;
     readonly signature: WorkspaceHostPublishedObject;
   };
-  readonly trust: ArtifactTrustReport;
+  readonly trustReport: ArtifactTrustReport;
 }
 
 /**
@@ -60,10 +69,11 @@ export interface WorkspaceHostPublicationManifest {
  * the published contract has to be a deliberate edit that also bumps the version.
  */
 export const WORKSPACE_HOST_PUBLICATION_MANIFEST_KEYS = [
-  'version',
+  'schemaVersion',
+  'kind',
   'artifact',
-  'objects',
-  'trust',
+  'files',
+  'trustReport',
 ] as const satisfies readonly (keyof WorkspaceHostPublicationManifest)[];
 
 type EnvelopeIsClosed =
@@ -77,8 +87,13 @@ const _exhaustive: EnvelopeIsClosed = true;
 void _exhaustive;
 
 export type WorkspaceHostPublicationFailureCode =
+  | 'build-artifact-mismatch'
+  | 'duplicate-trust-evidence'
   | 'evidence-subject-mismatch'
+  | 'inactive-lifecycle'
   | 'invalid-image-artifact'
+  | 'invalid-trust-policy'
+  | 'sbom-binding-mismatch'
   | 'invalid-object-descriptor'
   | 'missing-trust-evidence'
   | 'non-canonical-artifact-url'
@@ -240,9 +255,85 @@ export function workspaceHostPublicationManifestFailures(
     push('trust-subject-mismatch', 'trust subject must be signed to publish a detached signature');
   }
 
+  // The build manifest records what was actually built. If it does not describe the bytes being
+  // published, the envelope's provenance half and its content half are about different artifacts.
+  const built = input.artifact.buildManifest?.releaseArtifact;
+  if (built) {
+    if (built.sha256 !== bundleDigest) {
+      push(
+        'build-artifact-mismatch',
+        `buildManifest.releaseArtifact.sha256 ${built.sha256} must equal the published bundle digest ${bundleDigest}`,
+      );
+    }
+    if (built.sizeBytes !== input.bundle.bytes) {
+      push(
+        'build-artifact-mismatch',
+        `buildManifest.releaseArtifact.sizeBytes ${built.sizeBytes} must equal the published bundle size ${input.bundle.bytes}`,
+      );
+    }
+  }
+
+  // Publishing a withdrawn or superseded release under a permanent, immutable content address is
+  // not recoverable by editing the release afterwards.
+  if (input.artifact.lifecycle?.state !== 'active') {
+    push(
+      'inactive-lifecycle',
+      `artifact lifecycle must be 'active' at publication, not '${input.artifact.lifecycle?.state}'`,
+    );
+  }
+
+  if (
+    !Number.isSafeInteger(trust.policy.maxAttestationAgeMs) ||
+    trust.policy.maxAttestationAgeMs <= 0
+  ) {
+    push(
+      'invalid-trust-policy',
+      'policy.maxAttestationAgeMs must be a positive integer for the attestation freshness bound to mean anything',
+    );
+  }
+
   const missing = ARTIFACT_TRUST_EVIDENCE_ORDER.filter((kind) => !evidenceOf(trust, kind));
   if (missing.length > 0) {
     push('missing-trust-evidence', `missing evidence: ${missing.join(', ')}`);
+  }
+
+  // `evidenceOf` returns the FIRST match, so a duplicate class is invisible to every check above:
+  // a second, weaker `signature` entry would ride along unexamined. The publisher rejects both
+  // duplicates and any extra class, so refuse them here rather than build a manifest that cannot
+  // be published.
+  const duplicated = ARTIFACT_TRUST_EVIDENCE_ORDER.filter(
+    (kind) => trust.evidence.filter((entry) => entry.kind === kind).length > 1,
+  );
+  if (duplicated.length > 0) {
+    push('duplicate-trust-evidence', `duplicate evidence: ${duplicated.join(', ')}`);
+  }
+  if (trust.evidence.length !== ARTIFACT_TRUST_EVIDENCE_ORDER.length) {
+    push(
+      'duplicate-trust-evidence',
+      `evidence must contain exactly the ${ARTIFACT_TRUST_EVIDENCE_ORDER.length} required classes, found ${trust.evidence.length}`,
+    );
+  }
+
+  for (const entry of trust.evidence) {
+    if (
+      typeof entry.tool?.name !== 'string' ||
+      entry.tool.name.trim().length === 0 ||
+      typeof entry.tool?.version !== 'string' ||
+      entry.tool.version.trim().length === 0
+    ) {
+      push('missing-trust-evidence', `${entry.kind} evidence must record exact tool name and version`);
+    }
+  }
+
+  // A scan of a DIFFERENT SBOM says nothing about this bundle's components, even though both
+  // entries are individually well-formed and bound to the right subject digest.
+  const sbom = evidenceOf(trust, 'sbom');
+  const vulnerability = evidenceOf(trust, 'vulnerability-scan');
+  if (sbom && vulnerability && sbom.documentSha256 !== vulnerability.sbomSha256) {
+    push(
+      'sbom-binding-mismatch',
+      `vulnerability scan consumed SBOM ${vulnerability.sbomSha256}, but the published SBOM evidence is ${sbom.documentSha256}`,
+    );
   }
 
   // Evidence gathered over a different artifact cannot vouch for this one; without this, five
@@ -326,21 +417,22 @@ export function buildWorkspaceHostPublicationManifest(
   }
 
   const manifest: WorkspaceHostPublicationManifest = {
-    version: WORKSPACE_HOST_PUBLICATION_MANIFEST_VERSION,
+    schemaVersion: WORKSPACE_HOST_PUBLICATION_SCHEMA_VERSION,
+    kind: WORKSPACE_HOST_PUBLICATION_KIND,
     artifact: input.artifact,
-    objects: {
+    files: {
       bundle: {
         name: WORKSPACE_HOST_PUBLISHED_BUNDLE_NAME,
         sha256: input.bundle.sha256,
-        bytes: input.bundle.bytes,
+        sizeBytes: input.bundle.bytes,
       },
       signature: {
         name: WORKSPACE_HOST_PUBLISHED_SIGNATURE_NAME,
         sha256: input.signature.sha256,
-        bytes: input.signature.bytes,
+        sizeBytes: input.signature.bytes,
       },
     },
-    trust: input.trustReport,
+    trustReport: input.trustReport,
   };
 
   // The envelope is world-readable at a public URL. Private key material or a secret-shaped
@@ -353,12 +445,12 @@ export function buildWorkspaceHostPublicationManifest(
   // cannot tell those apart. Passing the values as an array keeps the value-level check (PEM
   // material in a policy field is still rejected) while dropping only the key-name test that
   // produces the false positive.
-  const { policy, ...trustWithoutPolicy } = manifest.trust;
+  const { policy, ...trustWithoutPolicy } = manifest.trustReport;
   assertWorkspaceHostSecretIsolation(
-    { ...manifest, trust: trustWithoutPolicy },
+    { ...manifest, trustReport: trustWithoutPolicy },
     'manifest',
   );
-  assertWorkspaceHostSecretIsolation(Object.values(policy), 'manifest.trust.policy');
+  assertWorkspaceHostSecretIsolation(Object.values(policy), 'manifest.trustReport.policy');
 
   return manifest;
 }
