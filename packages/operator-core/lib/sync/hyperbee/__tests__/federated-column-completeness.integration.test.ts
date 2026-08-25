@@ -182,6 +182,14 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     tzid: 'machine-local schedule timezone',
     template_slug: 'machine-local scheduled-template linkage',
     run_seq: 'machine-local scheduled-run sequence',
+    // EI-21467654382027859. NOT a denormalized parse of `content` like items/decisions
+    // above — it is a real pointer, and that is exactly why it must stay local: it
+    // references harness_shared.goals, and NO goals table is in the federated set, so
+    // shipping it would land a plan on every peer claiming membership in a goal that
+    // peer has never heard of. Revisit if goals themselves ever federate. The three
+    // columns flagged alongside it (output_schema, property_schema, properties) are
+    // tool-written plan definition — not parsed from `content` — and now DO federate.
+    goal_id: 'pointer into harness_shared.goals, which does not federate — would dangle on every peer (EI-21467654382027859)',
     // EI-9418 (mig 553): same embedder-mode-specific reasoning as
     // harness_features_consolidated above — machine-local, re-derived from the
     // federated `content` locally rather than shipped over the wire.

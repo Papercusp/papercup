@@ -341,6 +341,11 @@ async function writeToPg(
          ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
          ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
          ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
+         ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
+         -- property_schema and properties are NOT NULL DEFAULT '{}' locally, so an
+         -- absent wire value must land as '{}' and never as NULL.
+         COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),
+         COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
          ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
          ${row.supersedes}, ${row.superseded_by},
          ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
