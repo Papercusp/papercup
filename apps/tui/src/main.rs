@@ -499,7 +499,7 @@ async fn run<B: Backend>(
     // Operator chat pane (tui-operator-surface-2026-06-04): load the workspace's
     // operator conversation on open so the transcript is seeded from the same
     // thread the desktop surface shares.
-    tokio::spawn(chat_load_history(tx.clone()));
+    tokio::spawn(agent_chat_load(app.harness.clone(), tx.clone()));
     // Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a):
     // subscribe the state-channel snapshot SSE so open `chat:ask_choice` cards
     // render inline in the operator pane (and resolve the active workspace once
@@ -549,6 +549,7 @@ async fn run<B: Backend>(
     // Open-mic (P-010): auto-start the mic once per channel join when
     // input_mode=open-mic, so it isn't restarted after a manual MicOff.
     let mut open_mic_started = false;
+    let mut native_chat_turn: Option<tokio::task::JoinHandle<()>> = None;
 
     terminal.draw(|f| ui::draw(f, &app))?;
 
@@ -559,6 +560,8 @@ async fn run<B: Backend>(
     let mut tutorial_persisted = !app.show_tutorial;
 
     while let Some(ev) = rx.recv().await {
+        let prior_harness = app.harness.clone();
+        let chat_terminal = matches!(&ev, Event::ChatDone | Event::ChatError(_));
         let is_key = matches!(ev, Event::Key(_));
         let is_tick = matches!(ev, Event::Tick);
         // The operator voice socket dropped (P-013 reconnect-on-drop): detect it
@@ -577,6 +580,16 @@ async fn run<B: Backend>(
         // published by THIS event, after refetch_all already read it).
         let plans_arrived = matches!(&ev, Event::Plans(_));
         let action = app.update(ev);
+        if chat_terminal {
+            native_chat_turn = None;
+        }
+        if app.harness != prior_harness {
+            if let Some(turn) = native_chat_turn.take() {
+                turn.abort();
+            }
+            app.reset_agent_chat_binding();
+            tokio::spawn(agent_chat_load(app.harness.clone(), tx.clone()));
+        }
         if plans_arrived && app.pinned == Some(app::Tab::PlansBoard) {
             if let Some((harness, plan)) = app.selected_board_plan() {
                 tokio::spawn(fetch_plan_item_states(harness, plan, tx.clone()));
@@ -1047,7 +1060,7 @@ async fn run<B: Backend>(
                 // bubble; spawn the native turn against the active harness's
                 // agent-chat. No transcript snapshot is sent — the loop owns the
                 // history in PG, keyed by `agent_chat_id`.
-                tokio::spawn(stream_agent_chat_turn(
+                native_chat_turn = Some(tokio::spawn(stream_agent_chat_turn(
                     text,
                     app.harness.clone(),
                     app.agent_chat_id.clone(),
@@ -1058,6 +1071,15 @@ async fn run<B: Backend>(
                     // the default into the client.
                     app.chat_model.clone(),
                     tx.clone(),
+                )));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::CancelChat => {
+                if let Some(turn) = native_chat_turn.take() {
+                    turn.abort();
+                }
+                app.update(Event::ChatError(
+                    "agent chat cancelled — ready to retry".into(),
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
@@ -2451,37 +2473,6 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
     }
 }
 
-/// Load the operator conversation on open (tui-operator-surface P0/P1) and seed
-/// the chat transcript. Workspace-scoped — the same thread the desktop surface
-/// shares. A missing backend ends the task quietly (the pane shows its empty
-/// state). Best-effort: a fetch error surfaces in the status bar.
-async fn chat_load_history(tx: UnboundedSender<Event>) {
-    let client = match OperatorClient::from_discovery().await {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    match client.load_conversation(200).await {
-        Ok(load) => {
-            // Cursor = the lowest seq returned (turns are oldest-first), even if a
-            // turn is filtered from display — so load-earlier never re-fetches it.
-            let oldest_seq = load.turns.iter().map(|t| t.seq).min();
-            let has_more_earlier = load.has_more_earlier;
-            let conversation_id = load.conversation.id;
-            let messages: Vec<models::ChatMessage> =
-                load.turns.into_iter().filter_map(turn_to_message).collect();
-            let _ = tx.send(Event::ChatHistory {
-                conversation_id,
-                messages,
-                has_more_earlier,
-                oldest_seq,
-            });
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("operator chat: {e}")));
-        }
-    }
-}
-
 /// Fetch the active Hive lexicon pack ONCE at startup (pui-hive-lexicon-2026-06-06)
 /// and emit `Event::LexiconPack`. Fail-soft: an unreachable operator / parse
 /// error leaves the classic fallback in place (no rebrand), silently — branding
@@ -3069,9 +3060,95 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
     Some(models::ChatMessage {
         role: t.role,
         content: t.text,
+        reasoning: String::new(),
         tools,
         streaming: false,
     })
+}
+
+fn native_turn_to_message(t: agent_chats::AgentChatTranscriptTurn) -> Option<models::ChatMessage> {
+    if t.role != "user" && t.role != "assistant" {
+        return None;
+    }
+    let content = if t.error {
+        format!("{} {}", crate::glyph::severity::WARN, t.content)
+    } else {
+        t.content
+    };
+    Some(models::ChatMessage {
+        role: t.role,
+        content,
+        reasoning: String::new(),
+        tools: t
+            .tools
+            .into_iter()
+            .map(|tool| models::ChatToolCall::plain(tool.name))
+            .collect(),
+        streaming: false,
+    })
+}
+
+async fn agent_chat_load(harness: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!("native agent chat: {error}")));
+            return;
+        }
+    };
+    let options = agent_chats::AgentChatListOptions {
+        limit: Some(100),
+        ..Default::default()
+    };
+    let summaries = match client.list_agent_chats(&harness, &options).await {
+        Ok(chats) => chats,
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!("native agent chat: {error}")));
+            return;
+        }
+    };
+    let latest = summaries
+        .into_iter()
+        .filter(|chat| {
+            chat.role == "operator" && chat.feature_id.is_none() && chat.archived_at.is_none()
+        })
+        .max_by(|a, b| a.updated_at.cmp(&b.updated_at));
+    let Some(summary) = latest else {
+        let _ = tx.send(Event::AgentChatLoaded {
+            harness,
+            chat_id: None,
+            messages: Vec::new(),
+            approvals: Vec::new(),
+        });
+        return;
+    };
+    match client.get_agent_chat(&harness, &summary.id).await {
+        Ok(chat) => {
+            let approvals = client
+                .list_agent_chat_approvals(&harness, &chat.id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|approval| models::PendingApproval {
+                    call_id: approval.call_id,
+                    tool_name: approval.tool_name,
+                })
+                .collect();
+            let _ = tx.send(Event::AgentChatLoaded {
+                harness,
+                chat_id: Some(chat.id),
+                messages: chat
+                    .transcript
+                    .into_iter()
+                    .filter_map(native_turn_to_message)
+                    .collect(),
+                approvals,
+            });
+        }
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!("native agent chat resume: {error}")));
+        }
+    }
 }
 
 /// Run one operator chat turn (tui-operator-surface P1). Persists the user turn,
@@ -3167,7 +3244,23 @@ async fn stream_agent_chat_turn(
     };
 
     let mut saw_done = false;
-    while let Some(decoded) = stream.recv().await {
+    let mut saw_visible_progress = false;
+    let empty_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let next = if saw_visible_progress {
+            stream.recv().await
+        } else {
+            match tokio::time::timeout_at(empty_deadline, stream.recv()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    let _ = tx.send(Event::ChatError(
+                        "agent chat produced no visible content, reasoning, tool call, or terminal state within 180s — cancelled and ready to retry".into(),
+                    ));
+                    return;
+                }
+            }
+        };
+        let Some(decoded) = next else { break };
         let ev = match decoded {
             Ok(ev) => ev,
             Err(e) => {
@@ -3177,13 +3270,19 @@ async fn stream_agent_chat_turn(
         };
         match ev {
             AgentChatEvent::TextDelta { text, .. } => {
+                saw_visible_progress |= !text.is_empty();
                 let _ = tx.send(Event::ChatDelta(text));
+            }
+            AgentChatEvent::ReasoningDelta { text, .. } => {
+                saw_visible_progress |= !text.is_empty();
+                let _ = tx.send(Event::ChatReasoning(text));
             }
             AgentChatEvent::ToolCall {
                 call,
                 needs_approval,
                 ..
             } => {
+                saw_visible_progress = true;
                 // Carry the call id through (P-005 slice 2): it IS the `callId`
                 // the approvals route is keyed by, so dropping it would leave a
                 // parked call unanswerable from this pane. The "awaiting
@@ -3245,17 +3344,14 @@ async fn stream_agent_chat_turn(
                 let _ = tx.send(Event::ChatError(message));
                 return;
             }
-            // `done` closes the turn. It carries `finalText` but NO transcript
-            // snapshot (D-011) — the bubble finalizes from the deltas already
-            // rendered, so no re-read is needed to complete the turn.
-            AgentChatEvent::Done { .. } => {
+            // finalText is authoritative and may be the provider's only text;
+            // apply it before finalizing instead of trusting deltas existed.
+            AgentChatEvent::Done { final_text, .. } => {
+                let _ = tx.send(Event::ChatFinal(final_text));
                 saw_done = true;
                 break;
             }
-            // Reasoning and per-step frames belong to the richer pane surfaces
-            // (reasoning fold, per-step usage); the streaming bubble ignores them
-            // for now. Tool-result frames are handled ABOVE, as of slice 3 — do
-            // not read this arm as evidence they are still dropped.
+            // Per-step boundaries/usage are the only frames not rendered yet.
             _ => {}
         }
     }
