@@ -718,6 +718,7 @@ export default function InboxPane() {
               {/* A `div` (not `button`) — the row nests a real chat-launch
                   <button>, and nested interactive elements are invalid HTML. */}
               <div
+                id={`inbox-row-${i.id}`}
                 role="button"
                 tabIndex={0}
                 className="op-inbox__rowbtn"
@@ -829,7 +830,16 @@ export default function InboxPane() {
                         harnessSlug={i.harnessSlug}
                         workItemId={workItemId}
                         title={i.title}
-                        onClose={() => void setDiscussionRef(null)}
+                        onClose={() => {
+                          // The discussion's focused Close button is about to
+                          // unmount. Return to this surviving selected row
+                          // before clearing the URL so focus never falls to
+                          // <body> (including report-originated handoffs).
+                          document
+                            .getElementById(`inbox-row-${i.id}`)
+                            ?.focus({ preventScroll: true });
+                          void setDiscussionRef(null);
+                        }}
                         focusWhenInteractive
                       />
                     );
