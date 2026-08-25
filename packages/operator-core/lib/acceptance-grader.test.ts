@@ -106,7 +106,7 @@ describe('launchAcceptanceGrader', () => {
 
   it('retires an over-age deduped judge and launches a deterministic fresh retry', async () => {
     const launch = vi.fn(async (args: Record<string, unknown>) =>
-      String(args.idempotencyKey).includes(':retry:task-stale')
+      String(args.idempotencyKey).includes(':retry:')
         ? {
             content: [{ type: 'text', text: 'launched retry' }],
             data: { deduped: false, launch: { tasks: [{ taskId: 'task-fresh' }] } },
@@ -134,7 +134,7 @@ describe('launchAcceptanceGrader', () => {
     expect(kill).toHaveBeenCalledWith('task-stale', { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(launch).toHaveBeenCalledTimes(2);
     expect(launch.mock.calls[1][0]).toMatchObject({
-      idempotencyKey: expect.stringContaining(':retry:task-stale'),
+      idempotencyKey: expect.stringMatching(/:retry:[a-f0-9]{16}$/),
     });
     expect(result).toMatchObject({
       state: 'launched',

@@ -461,10 +461,26 @@ export async function launchAcceptanceGrader(
         return { state: 'deduped', idempotencyKey: currentIdempotencyKey, label, launch: result.data.launch };
       }
       if (live) {
-        await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        if (!killed.ok) {
+          return {
+            state: 'failed',
+            idempotencyKey: currentIdempotencyKey,
+            label,
+            launch: result.data.launch,
+            error: `stale acceptance grader '${taskId}' could not be retired: ${killed.error}`,
+            ...(retiredTaskIds.length
+              ? { staleRecovery: { retiredTaskIds, attempts: attempt + 1 } }
+              : {}),
+          };
+        }
       }
       retiredTaskIds.push(taskId);
-      currentIdempotencyKey = `${currentIdempotencyKey}:retry:${taskId}`;
+      const retryIdentity = createHash('sha256')
+        .update(`${currentIdempotencyKey}\0${taskId}`)
+        .digest('hex')
+        .slice(0, 16);
+      currentIdempotencyKey = `${idempotencyKey}:retry:${retryIdentity}`;
     }
 
     return {
