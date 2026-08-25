@@ -128,6 +128,7 @@ describe('P-004 — direction is read off which side of the stored pair the call
         what: 'a consult reply',
         since: CREATED,
         handle: HANDLE,
+        counterpartLiveness: 'live',
       },
     ]);
   });
@@ -240,5 +241,80 @@ describe('P-004 — fail-soft: a coupling signal must never degrade the roster',
     nextRows = [LIVE_ROW];
     expect(await fetchConsultObligations('   ')).toEqual([]);
     expect(lastSqlText).toBe('');
+  });
+});
+
+/**
+ * P-011 — the counterpart's liveness, resolved through the SHARED oracle.
+ *
+ * All three cases below are drawn from live rows measured 2026-08-25 in workspace
+ * papercusp-workspace, because all three actually occur among just two open obligations:
+ *   · `su-b9ddacb7` — heartbeat 256 minutes stale; the session that died at the context
+ *     wall, still holding a party to an open consult ⇒ a dead counterpart;
+ *   · `su-886dfc99` / `su-be4c5def` — fresh heartbeats ⇒ live;
+ *   · `su-e40dceb1` — NO coord_presence row whatsoever ⇒ the unmeasurable counterpart,
+ *     confirmed a real absence by a passing positive control on the same query.
+ *
+ * ⚠ THREE DISTINCT PATHS MUST ALL LAND ON `unknown`, AND NONE MAY LAND ON `live`: the
+ * oracle omits the subject from its map, the oracle returns `sessionState: null` (its
+ * in-band "not measured", D-038 axis 2), or the oracle throws.
+ */
+describe('P-011 — counterpart liveness is resolved, and an unmeasured peer never reads live', () => {
+  it('carries a DEAD counterpart’s verdict onto the edge (the su-b9ddacb7 case)', async () => {
+    nextRows = [LIVE_ROW];
+    livenessVerdicts.set(RESPONDER, { ownerId: RESPONDER, sessionState: 'ended' });
+    const [edge] = await fetchConsultObligations(REQUESTER);
+    expect(edge?.counterpartLiveness).toBe('ended');
+  });
+
+  it('reports `unknown` for a counterpart with NO presence row (the su-e40dceb1 case)', async () => {
+    nextRows = [LIVE_ROW];
+    livenessVerdicts.delete(RESPONDER); // absent from the oracle's map entirely
+    const [edge] = await fetchConsultObligations(REQUESTER);
+    expect(edge?.counterpartLiveness).toBe('unknown');
+  });
+
+  it('reports `unknown` for the oracle’s IN-BAND not-measured (sessionState: null)', async () => {
+    nextRows = [LIVE_ROW];
+    livenessVerdicts.set(RESPONDER, { ownerId: RESPONDER, sessionState: null });
+    const [edge] = await fetchConsultObligations(REQUESTER);
+    // `null` is not a state and must never be collapsed into one — least of all 'live'.
+    expect(edge?.counterpartLiveness).toBe('unknown');
+  });
+
+  it('still EMITS the obligation when the oracle throws — degrades, never suppresses', async () => {
+    nextRows = [LIVE_ROW];
+    oracleThrows = true;
+    const edges = await fetchConsultObligations(REQUESTER);
+    // The debt is real whether or not we can see the peer. Losing the edge here would
+    // hide an outstanding obligation behind our own instrumentation failure.
+    expect(edges).toHaveLength(1);
+    expect(edges[0]?.counterpartLiveness).toBe('unknown');
+    expect(edges[0]?.handle).toBe(HANDLE);
+  });
+
+  it('resolves every counterpart in ONE batched oracle call, not one per edge', async () => {
+    nextRows = [
+      LIVE_ROW,
+      { ...LIVE_ROW, conversation_id: 'conv-2', responder_id: 'su-second' },
+      { ...LIVE_ROW, conversation_id: 'conv-3', responder_id: 'su-third' },
+    ];
+    await fetchConsultObligations(REQUESTER);
+    // Per-edge resolution would issue N point-reads on a hot presence path.
+    expect(oracleCalls).toHaveLength(1);
+    expect(oracleCalls[0]?.map((s) => s.ownerId).sort()).toEqual([
+      RESPONDER,
+      'su-second',
+      'su-third',
+    ]);
+  });
+
+  it('de-duplicates counterparts before asking the oracle', async () => {
+    // Two open consults with the SAME peer are two real debts (never deduped as edges),
+    // but they are one liveness question.
+    nextRows = [LIVE_ROW, { ...LIVE_ROW, conversation_id: 'conv-2' }];
+    const edges = await fetchConsultObligations(REQUESTER);
+    expect(edges).toHaveLength(2);
+    expect(oracleCalls[0]).toHaveLength(1);
   });
 });
