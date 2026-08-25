@@ -61,6 +61,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { systemDistinctId } from '../flag-distinct-id';
 import { cacheLayerEnabled } from './instance';
 import { PgL2Store } from './pg-l2-store';
+import { isRetriablePgConnectError, withPgRetry, type PgRetryOpts } from '../pg-transient-retry';
 
 /** What an L2 consultation did — reported to cachedRead for per-tool telemetry. */
 export type L2Outcome = 'hit' | 'miss' | 'error' | 'off';
@@ -294,7 +295,41 @@ export function withL2<V>(
  */
 export function invalidateL2ByTags(workspaceId: string, tags: readonly string[]): void {
   if (!l2TierEnabled() || tags.length === 0) return;
-  void getL2Store()
-    .invalidateByTags(workspaceId, tags)
-    .catch((err: unknown) => noteL2Error('invalidateByTags', err));
+  void invalidateL2ByTagsWithRetry(workspaceId, tags).catch((err: unknown) => noteL2Error('invalidateByTags', err));
+}
+
+/**
+ * A tag invalidation is an idempotent DELETE: replaying it after a client dies
+ * can only remove rows that the original invalidation also intended to remove.
+ * Keep this classifier narrower than the host-level transient-error guard and
+ * retry only pool/connect lifecycle failures. Query/SQL errors must surface to
+ * the existing fail-soft logger without being replayed.
+ */
+export function isRetryableL2InvalidationError(error: unknown): boolean {
+  if (isRetriablePgConnectError(error)) return true;
+  const value = error as { code?: unknown; message?: unknown } | null;
+  const code = typeof value?.code === 'string' ? value.code : '';
+  const message = typeof value?.message === 'string' ? value.message : '';
+  return (
+    code === 'CONNECTION_ENDED' ||
+    code === 'CONNECTION_DESTROYED' ||
+    /CONNECTION_ENDED|CONNECTION_DESTROYED|Connection ended/i.test(message)
+  );
+}
+
+/**
+ * Retry the one L2 mutation whose semantics make a bounded replay safe. The
+ * optional sleep seam keeps the retry contract unit-testable without waiting
+ * through production backoff.
+ */
+export function invalidateL2ByTagsWithRetry(
+  workspaceId: string,
+  tags: readonly string[],
+  opts: Pick<PgRetryOpts, 'sleep'> = {},
+): Promise<number> {
+  return withPgRetry(() => getL2Store().invalidateByTags(workspaceId, tags), {
+    classifier: isRetryableL2InvalidationError,
+    label: 'cache-l2.invalidateByTags',
+    sleep: opts.sleep,
+  });
 }

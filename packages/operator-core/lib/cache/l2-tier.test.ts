@@ -21,6 +21,8 @@ import { _refreshCacheLayerForTests } from "./instance";
 import {
   withL2,
   invalidateL2ByTags,
+  invalidateL2ByTagsWithRetry,
+  isRetryableL2InvalidationError,
   l2TierEnabled,
   installL2StoreForTests,
   _refreshL2FlagForTests,
@@ -28,7 +30,7 @@ import {
   __resetL2StateForTests,
   l2RowTtlMs,
   type L2Outcome,
-} from "./l2-tier";
+} from './l2-tier';
 import type { PgL2Store } from "./pg-l2-store";
 
 const CACHE_LAYER = "papercusp-cache-layer";
@@ -311,6 +313,47 @@ describe("cold-start window", () => {
 });
 
 describe("invalidateL2ByTags", () => {
+  it('classifies pool lifecycle failures as safe to retry, but not SQL failures', () => {
+    expect(
+      isRetryableL2InvalidationError(Object.assign(new Error('write CONNECTION_ENDED'), { code: 'CONNECTION_ENDED' })),
+    ).toBe(true);
+    expect(isRetryableL2InvalidationError(new Error('write CONNECTION_DESTROYED 127.0.0.1:6432'))).toBe(true);
+    expect(isRetryableL2InvalidationError(Object.assign(new Error('duplicate key'), { code: '23505' }))).toBe(false);
+  });
+
+  it('retries an idempotent invalidation after a pool client ends', async () => {
+    let attempts = 0;
+    const store = {
+      invalidateByTags: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Object.assign(new Error('write CONNECTION_ENDED 127.0.0.1:6432'), {
+            code: 'CONNECTION_ENDED',
+          });
+        }
+        return 3;
+      },
+    } as unknown as PgL2Store;
+    installL2StoreForTests(store);
+
+    await expect(invalidateL2ByTagsWithRetry('ws', ['harness_plans'], { sleep: async () => {} })).resolves.toBe(3);
+    expect(attempts).toBe(2);
+  });
+
+  it('does not replay a non-retryable invalidation failure', async () => {
+    let attempts = 0;
+    const failure = Object.assign(new Error('relation cache_l2 does not exist'), { code: '42P01' });
+    installL2StoreForTests({
+      invalidateByTags: async () => {
+        attempts += 1;
+        throw failure;
+      },
+    } as unknown as PgL2Store);
+
+    await expect(invalidateL2ByTagsWithRetry('ws', ['harness_plans'], { sleep: async () => {} })).rejects.toBe(failure);
+    expect(attempts).toBe(1);
+  });
+
   it("deletes matching rows so a tag bust reaches the durable tier", async () => {
     const { store, calls } = fakeStore({ value: "stale" });
     installL2StoreForTests(store);
