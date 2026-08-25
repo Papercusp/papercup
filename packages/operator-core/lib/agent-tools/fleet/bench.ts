@@ -45,7 +45,6 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import {
   registerAwait,
   listParkedAwaitsForSubscribers,
-  cancelAwaitsForSubscribersOnKeys,
   FLEET_BENCH_NOTE_PREFIX,
 } from '../../events/await/store';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
@@ -557,18 +556,6 @@ export default defineTool({
     const staged = clampText(args.stagedAssignment, LIMITS.ANNOTATION) ?? '';
     const { handle, note: handleNote } = await captureWakeHandleForOwner(args.member);
 
-    let supersededBenches = 0;
-    try {
-      // A member may re-stage the same key. Retire only the prior leader-managed
-      // bench; ordinary member awaits on that key are unrelated state and must
-      // remain untouched.
-      supersededBenches = await cancelAwaitsForSubscribersOnKeys([args.member], [eventKey], {
-        includeNotePrefix: BENCH_NOTE_PREFIX,
-      });
-    } catch {
-      /* best-effort — a failed cleanup must not prevent the new bench */
-    }
-
     const row = await registerAwait({
       subscriberId: args.member,
       eventKey,
@@ -581,7 +568,15 @@ export default defineTool({
       // session ending); callers can still opt into a timeout when they need one.
       timeoutSec: args.timeout_sec ?? null,
       payloadFilter: claimableFilterScope.filter,
+      // A leader stages one NEXT assignment per member. Retargeting that member
+      // to a different gate replaces every prior leader-managed bench atomically;
+      // ordinary member-owned awaits are preserved by the note-prefix filter.
+      supersedePending: {
+        allEventKeys: true,
+        includeNotePrefix: BENCH_NOTE_PREFIX,
+      },
     });
+    const supersededBenches = row.supersededPendingCount ?? 0;
 
     return {
       data: {
