@@ -126,6 +126,7 @@ function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLim
         'commitsBehindTip',
         'observedCandidate',
         'inconclusive',
+        'repairQueue',
       ],
       opts,
     ) ?? {};

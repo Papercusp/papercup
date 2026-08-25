@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 822,
+  "count": 823,
   "tools": [
     {
       "name": "ablation:report",
@@ -24886,6 +24886,37 @@
         "when": "A committed, gate-clean change isn't live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).",
         "notWhen": "Never force as a reflex to \"get my change out\" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.",
         "chaining": "dev:pipeline_position{path} → release:deploy{op:status}; read status.gate.lastVerdict.read, status.checkpointRunInFlight.read, or status.deployInFlight.read with capability:read when you need the corresponding file log (these are files, not logs:read journal units) → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds."
+      }
+    },
+    {
+      "name": "release:repair-queue",
+      "http": {
+        "path": "/api/agent-tools/release/repair-queue",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Inspect or explicitly retire the operator-home green-checkpoint frozen repair queue. get returns normalized phase/age/fixer/reservation/decision diagnostics. retire is dry-run unless confirm:true, refuses a live or unknown fixer and an active dispatch reservation, and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A release read reports repair-in-progress, a fossil/blocked repair queue, or a queue whose fixer is definitely dead. Call get first; retire only after independently establishing that this exact queue is terminal.",
+        "notWhen": "Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify/promote work, or merely to make the gate move. This does not launch a checkpoint or deploy.",
+        "chaining": "release:repair-queue{op:get} → verify the returned exact identity + retireAllowed → retire with those exact fields and confirm:true → let the ordinary scheduled green-checkpoint fire."
       }
     },
     {
