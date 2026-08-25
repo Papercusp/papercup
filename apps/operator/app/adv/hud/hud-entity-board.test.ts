@@ -29,6 +29,7 @@ import {
   goalColumn,
   goalsTruncationNotice,
   hudHarnessScopeArgs,
+  isHudSessionInPotScope,
   isInHudPotScope,
   goalSilence,
   partitionGoals,
@@ -129,6 +130,29 @@ describe('inherited pot scope', () => {
     expect(hudHarnessScopeArgs(null)).toEqual({});
     expect(hudHarnessScopeArgs(['root', 'child'])).toEqual({ harnessSlugs: ['root', 'child'] });
     expect(hudHarnessScopeArgs([])).toEqual({ harnessSlugs: [] });
+  });
+
+  it('lets an exact owner/session id address a session outside the selected Pot', () => {
+    const session = {
+      ownerId: 'su-4b48f72e-ddf3-40fa-a6f1-755e2c7e71f4',
+      sessionId: 'a2ca6cd3-1c38-4709-a2ed-deeeb7e6d4e6',
+      ompThreadId: null,
+      harnessSlug: null,
+    };
+
+    expect(isHudSessionInPotScope(session, ['papercusp'], 'su-4b48f')).toBe(true);
+    expect(isHudSessionInPotScope(session, ['papercusp'], 'a2ca6cd3')).toBe(true);
+    expect(isHudSessionInPotScope(session, ['papercusp'], 'su-deadbe')).toBe(false);
+  });
+
+  it('keeps ordinary transcript prose inside the selected Pot', () => {
+    const session = {
+      ownerId: 'su-4b48f72e-ddf3-40fa-a6f1-755e2c7e71f4',
+      harnessSlug: null,
+    };
+
+    expect(isHudSessionInPotScope(session, ['papercusp'], 'active conversation')).toBe(false);
+    expect(isHudSessionInPotScope(session, null, 'active conversation')).toBe(true);
   });
 });
 

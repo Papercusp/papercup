@@ -50,6 +50,7 @@ import GoalPackagesRail, { type GoalPackageRailEntry } from './GoalPackagesRail'
 import {
   goalsTruncationNotice,
   hudHarnessScopeArgs,
+  isHudSessionInPotScope,
   isInHudPotScope,
   workItemIdForCard,
   type HudEntityCard,
@@ -398,8 +399,8 @@ export default function HudView({
     // before this tier existed it appeared in no column for its whole boot
     // window. Already deduped against `active` server-side.
     return [...(payload.active ?? []), ...(payload.pending ?? []), ...(payload.starting ?? [])]
-      .filter((entry) => isInHudPotScope(entry.harnessSlug, scopedHarnessSlugs));
-  }, [roster.data, scopedHarnessSlugs]);
+      .filter((entry) => isHudSessionInPotScope(entry, scopedHarnessSlugs, rawSessionQuery));
+  }, [roster.data, scopedHarnessSlugs, rawSessionQuery]);
 
   // `null` in the URL array marks the solo group — encoded as the literal
   // "solo" because a URL array cannot carry a null.

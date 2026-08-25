@@ -32,6 +32,11 @@
 
 import type { BadgeTone, HudAsk, HudBadge } from './hud-board-model';
 import { HUD_ASK_KIND_LABEL } from './hud-board-model';
+import {
+  matchSessionIdField,
+  parseSessionIdQuery,
+  type SessionIdBearing,
+} from '@papercusp/operator-core/lib/adv-session-search';
 import { WORK_ITEM_ID, trailingWorkItemId } from '@/lib/work-item-ref';
 import { SEVERITY_TONE } from '../../harness/theme';
 
@@ -49,6 +54,27 @@ export function isInHudPotScope(
   harnessSlugs: readonly string[] | null,
 ): boolean {
   return harnessSlugs === null || (!!harnessSlug && harnessSlugs.includes(harnessSlug));
+}
+
+/**
+ * Session-specific Pot scope with one deliberate escape hatch: an exact parsed
+ * owner/session/thread id addresses a session rather than browsing a Pot.
+ *
+ * The HUD already lets an id-addressed session override its SU-only, goal,
+ * fleet, and plan filters. Pot scope used to run earlier in HudView and discard
+ * the row before that exemption could see it, so an active session with a null
+ * or different `harnessSlug` was impossible to find by the id shown on its own
+ * card. Keep prose queries scoped: only the conservative shared id parser can
+ * open this path.
+ */
+export function isHudSessionInPotScope(
+  session: SessionIdBearing & { harnessSlug?: string | null },
+  harnessSlugs: readonly string[] | null,
+  query: string,
+): boolean {
+  if (isInHudPotScope(session.harnessSlug, harnessSlugs)) return true;
+  const token = parseSessionIdQuery(query);
+  return token !== null && matchSessionIdField(session, token) !== null;
 }
 
 /** Sync-query argument shared by Goals, Plans, Work items, and Overview counts. */
