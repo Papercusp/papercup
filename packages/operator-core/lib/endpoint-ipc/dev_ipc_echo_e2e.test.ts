@@ -68,7 +68,15 @@ function readFramesUntil(
     };
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error(`readFramesUntil timeout; got ${collected.length} frames`));
+      const summary = collected.map((frame) => ({
+        type: frame.type,
+        payload: frame.type === FrameType.EVENT_BIN
+          ? `<binary:${frame.payload.length}>`
+          : frame.payload.toString('utf8'),
+      }));
+      reject(new Error(
+        `readFramesUntil timeout; got ${collected.length} frames: ${JSON.stringify(summary)}`,
+      ));
     }, timeoutMs);
     function cleanup(): void {
       clearTimeout(timer);
