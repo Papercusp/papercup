@@ -466,12 +466,14 @@ async function readCorpus(sql: OrgSql, opts: AdmissionCensusRunOptions): Promise
   }));
 }
 
-async function readUnadjudicatedCensus(sql: OrgSql, opts: AdmissionCensusRunOptions): Promise<number> {
+async function readUnadjudicatedCensus(
+  sql: OrgSql,
+  opts: AdmissionCensusRunOptions,
+  corpusIds: readonly string[],
+): Promise<number> {
   const rows = await sql<Array<{ n: number }>>`
     SELECT count(*)::int AS n
       FROM harness_shared.dedup_edges e
-      JOIN harness_shared.work_items wa ON wa.feature_id = e.a
-      JOIN harness_shared.work_items wb ON wb.feature_id = e.b
       LEFT JOIN harness_shared.dedup_adjudications d
         ON d.workspace_id = e.workspace_id
        AND d.harness_slug = e.harness_slug
@@ -480,8 +482,8 @@ async function readUnadjudicatedCensus(sql: OrgSql, opts: AdmissionCensusRunOpti
        AND e.harness_slug = ${opts.harnessSlug}
        AND e.cos >= ${ADMISSION_COMPONENT_FLOOR}
        AND d.a IS NULL
-       AND ${corpusWhere(sql, opts, 'wa')}
-       AND ${corpusWhere(sql, opts, 'wb')}`;
+       AND e.a = ANY(${corpusIds}::text[])
+       AND e.b = ANY(${corpusIds}::text[])`;
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -490,6 +492,7 @@ async function scanEdgeChunk(
   opts: AdmissionCensusRunOptions,
   runId: string,
   mode: string,
+  embeddedIds: readonly string[],
   chunkIndex: number,
   chunkCount: number,
 ): Promise<{ anchors: number; edges: number; hard: number }> {
@@ -500,7 +503,9 @@ async function scanEdgeChunk(
              wi.embedding,
              row_number() OVER (ORDER BY wi.feature_id) AS rn
         FROM harness_shared.work_items wi
-       WHERE ${corpusWhere(sql, opts, 'wi')}
+       WHERE wi.workspace_id = ${opts.workspaceId}
+         AND wi.harness_slug = ${opts.harnessSlug}
+         AND wi.feature_id = ANY(${embeddedIds}::text[])
          AND wi.embedding IS NOT NULL
          AND wi.embedding_mode = ${mode}
     ), anchors AS MATERIALIZED (
@@ -541,43 +546,35 @@ async function removeStaleEdges(
   sql: OrgSql,
   opts: AdmissionCensusRunOptions,
   runId: string,
-  mode: string,
   startedAt: string,
+  embeddedIds: readonly string[],
 ): Promise<void> {
   await sql`
     DELETE FROM harness_shared.dedup_edges e
-     USING harness_shared.work_items wa, harness_shared.work_items wb
      WHERE e.workspace_id = ${opts.workspaceId}
        AND e.harness_slug = ${opts.harnessSlug}
-       AND e.a = wa.feature_id
-       AND e.b = wb.feature_id
        AND e.run_id <> ${runId}
        AND e.computed_at < ${startedAt}::timestamptz
-       AND wa.embedding IS NOT NULL AND wb.embedding IS NOT NULL
-       AND wa.embedding_mode = ${mode} AND wb.embedding_mode = ${mode}
-       AND ${corpusWhere(sql, opts, 'wa')}
-       AND ${corpusWhere(sql, opts, 'wb')}`;
+       AND e.a = ANY(${embeddedIds}::text[])
+       AND e.b = ANY(${embeddedIds}::text[])`;
 }
 
 async function readCosineEdges(
   sql: OrgSql,
   opts: AdmissionCensusRunOptions,
-  runId: string,
-): Promise<{ all: AdmissionCensusEdge[]; unadjudicated: AdmissionCensusEdge[]; hard: number }> {
+  embeddedIds: readonly string[],
+): Promise<{ all: AdmissionCensusEdge[]; unadjudicated: AdmissionCensusEdge[]; hard: number; total: number }> {
   const hardRows = await sql<EdgeDbRow[]>`
     SELECT e.a, e.b, e.cos, e.trgm, (d.a IS NOT NULL) AS adjudicated
       FROM harness_shared.dedup_edges e
-      JOIN harness_shared.work_items wa ON wa.feature_id = e.a
-      JOIN harness_shared.work_items wb ON wb.feature_id = e.b
       LEFT JOIN harness_shared.dedup_adjudications d
         ON d.workspace_id = e.workspace_id AND d.harness_slug = e.harness_slug
        AND d.a = e.a AND d.b = e.b
      WHERE e.workspace_id = ${opts.workspaceId}
        AND e.harness_slug = ${opts.harnessSlug}
-       AND e.run_id = ${runId}
        AND e.cos >= ${ADMISSION_COMPONENT_FLOOR}
-       AND ${corpusWhere(sql, opts, 'wa')}
-       AND ${corpusWhere(sql, opts, 'wb')}
+       AND e.a = ANY(${embeddedIds}::text[])
+       AND e.b = ANY(${embeddedIds}::text[])
      ORDER BY e.a, e.b`;
 
   // Ghost context is capped, so reading every one of a dense million-edge soft
@@ -587,15 +584,12 @@ async function readCosineEdges(
     WITH scoped AS MATERIALIZED (
       SELECT e.a, e.b, e.cos, e.trgm
         FROM harness_shared.dedup_edges e
-        JOIN harness_shared.work_items wa ON wa.feature_id = e.a
-        JOIN harness_shared.work_items wb ON wb.feature_id = e.b
        WHERE e.workspace_id = ${opts.workspaceId}
          AND e.harness_slug = ${opts.harnessSlug}
-         AND e.run_id = ${runId}
          AND e.cos >= ${ADMISSION_EDGE_FLOOR}
          AND e.cos < ${ADMISSION_COMPONENT_FLOOR}
-         AND ${corpusWhere(sql, opts, 'wa')}
-         AND ${corpusWhere(sql, opts, 'wb')}
+         AND e.a = ANY(${embeddedIds}::text[])
+         AND e.b = ANY(${embeddedIds}::text[])
     ), ranked AS (
       SELECT a, b, cos, trgm,
              row_number() OVER (PARTITION BY a ORDER BY cos DESC, b) AS rn
@@ -610,6 +604,14 @@ async function readCosineEdges(
      WHERE rn <= ${TEXT_CONTEXT_NEIGHBOURS}
      GROUP BY a, b
      ORDER BY a, b`;
+  const countRows = await sql<Array<{ total: number }>>`
+    SELECT count(*)::int AS total
+      FROM harness_shared.dedup_edges e
+     WHERE e.workspace_id = ${opts.workspaceId}
+       AND e.harness_slug = ${opts.harnessSlug}
+       AND e.cos >= ${ADMISSION_EDGE_FLOOR}
+       AND e.a = ANY(${embeddedIds}::text[])
+       AND e.b = ANY(${embeddedIds}::text[])`;
 
   const all = stableEdges([
     ...hardRows.map((row) => ({
@@ -636,10 +638,15 @@ async function readCosineEdges(
       trgm: row.trgm == null ? null : Number(row.trgm),
       source: 'cosine' as const,
     }));
-  return { all, unadjudicated, hard: hardRows.length };
+  return { all, unadjudicated, hard: hardRows.length, total: Number(countRows[0]?.total ?? 0) };
 }
 
-async function readTextContextEdges(sql: OrgSql, opts: AdmissionCensusRunOptions): Promise<AdmissionCensusEdge[]> {
+async function readTextContextEdges(
+  sql: OrgSql,
+  opts: AdmissionCensusRunOptions,
+  corpusIds: readonly string[],
+  missingEmbeddingIds: readonly string[],
+): Promise<AdmissionCensusEdge[]> {
   const rows = await sql<TextEdgeDbRow[]>`
     WITH corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
@@ -647,9 +654,11 @@ async function readTextContextEdges(sql: OrgSql, opts: AdmissionCensusRunOptions
              wi.payload #>> '{admissionIdentity,titleKey}' AS title_key,
              wi.embedding
         FROM harness_shared.work_items wi
-       WHERE ${corpusWhere(sql, opts, 'wi')}
+       WHERE wi.workspace_id = ${opts.workspaceId}
+         AND wi.harness_slug = ${opts.harnessSlug}
+         AND wi.feature_id = ANY(${corpusIds}::text[])
     ), missing AS MATERIALIZED (
-      SELECT * FROM corpus WHERE embedding IS NULL
+      SELECT * FROM corpus WHERE id = ANY(${missingEmbeddingIds}::text[])
     )
     SELECT m.id AS missing_id,
            neighbour.id AS other_id,
@@ -761,6 +770,9 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
   try {
     const corpus = await readCorpus(sql, opts);
     const embedded = corpus.filter((item) => item.hasEmbedding);
+    const corpusIds = corpus.map((item) => item.id);
+    const embeddedIds = embedded.map((item) => item.id);
+    const missingEmbeddingIds = corpus.filter((item) => !item.hasEmbedding).map((item) => item.id);
     const modes = [
       ...new Set(embedded.map((item) => item.embeddingMode).filter((mode): mode is string => Boolean(mode))),
     ];
@@ -769,40 +781,60 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
     }
     if (modes.length > 1) throw new Error(`mixed embedding modes in census corpus: ${modes.sort().join(', ')}`);
     const mode = modes[0] ?? null;
-    const censusBefore = await readUnadjudicatedCensus(sql, opts);
+    const snapshotFingerprint = createHash('sha256')
+      .update(
+        corpus.map((item) => `${item.id}\u0000${item.hasEmbedding ? item.embeddingMode : 'text-only'}`).join('\u0001'),
+      )
+      .digest('hex');
+    await sql`
+      UPDATE harness_shared.admission_runs
+         SET batch_size = ${corpus.length},
+             detail = detail || ${JSON.stringify({
+               snapshot: {
+                 fingerprint: snapshotFingerprint,
+                 corpusSize: corpus.length,
+                 embeddedItems: embeddedIds.length,
+                 missingEmbeddingItems: missingEmbeddingIds.length,
+               },
+             })}::text::jsonb
+       WHERE id = ${runId}`;
+    const censusBefore = await readUnadjudicatedCensus(sql, opts, corpusIds);
 
     const chunkCoverage: number[] = [];
-    let cosineEdges = 0;
+    let scannedEdgeWrites = 0;
     let scannedHardEdges = 0;
     if (mode) {
       for (let i = 0; i < chunkCount; i += 1) {
-        const result = await scanEdgeChunk(sql, opts, runId, mode, i, chunkCount);
+        const result = await scanEdgeChunk(sql, opts, runId, mode, embeddedIds, i, chunkCount);
         chunkCoverage.push(result.anchors);
-        cosineEdges += result.edges;
+        scannedEdgeWrites += result.edges;
         scannedHardEdges += result.hard;
       }
       const covered = chunkCoverage.reduce((sum, n) => sum + n, 0);
       if (covered !== embedded.length) {
         throw new Error(`edge-scan coverage mismatch: chunks=${covered}, embedded=${embedded.length}`);
       }
-      await removeStaleEdges(sql, opts, runId, mode, startedAt);
+      await removeStaleEdges(sql, opts, runId, startedAt, embeddedIds);
     }
 
     const [cosine, textContext] = await Promise.all([
-      readCosineEdges(sql, opts, runId),
-      readTextContextEdges(sql, opts),
+      readCosineEdges(sql, opts, embeddedIds),
+      readTextContextEdges(sql, opts, corpusIds, missingEmbeddingIds),
     ]);
-    if (cosine.hard !== scannedHardEdges) {
-      throw new Error(`hard-edge count drift: chunk scan=${scannedHardEdges}, readback=${cosine.hard}`);
-    }
     const plan = buildAdmissionShardPlan(corpus, [...cosine.all, ...textContext], cosine.unadjudicated, opts);
     await persistShardMap(sql, opts, runId, plan);
-    const censusAfter = await readUnadjudicatedCensus(sql, opts);
+    const censusAfter = await readUnadjudicatedCensus(sql, opts, corpusIds);
     const latencyMs = Math.max(0, now() - startedMs);
     const detail = {
       schemaVersion: 'work-item-admission-census-v1',
       status: 'complete',
       config,
+      snapshot: {
+        fingerprint: snapshotFingerprint,
+        corpusSize: corpus.length,
+        embeddedItems: embeddedIds.length,
+        missingEmbeddingItems: missingEmbeddingIds.length,
+      },
       corpus: {
         size: corpus.length,
         embedded: embedded.length,
@@ -816,8 +848,10 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         ),
       },
       edges: {
-        cosine: cosineEdges,
+        cosine: cosine.total,
         hard: cosine.hard,
+        scanWrites: scannedEdgeWrites,
+        scanHardWrites: scannedHardEdges,
         textContext: textContext.length,
         chunkCoverage,
       },
@@ -862,7 +896,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       embeddingMode: mode,
       embeddedItems: embedded.length,
       missingEmbeddingItems: corpus.length - embedded.length,
-      cosineEdges,
+      cosineEdges: cosine.total,
       hardEdges: cosine.hard,
       textContextEdges: textContext.length,
       censusBefore,

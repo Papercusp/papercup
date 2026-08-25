@@ -242,6 +242,92 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
     ]);
   }, 60_000);
 
+  it('pins corpus membership and reads canonical edges even when eligibility and edge provenance change between chunks', async () => {
+    await seed();
+    await db.sql.unsafe(`
+      CREATE OR REPLACE FUNCTION mutate_admission_census_eligibility()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        UPDATE harness_shared.work_items
+           SET status = 'done'
+         WHERE workspace_id = '${WS}'
+           AND harness_slug = '${HARNESS}'
+           AND feature_id = 'c'
+           AND status = 'open';
+        RETURN NULL;
+      END;
+      $$;
+      CREATE OR REPLACE FUNCTION rewrite_admission_census_provenance()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.a = 'a' AND NEW.b = 'b' THEN
+          NEW.run_id := 'create-prescreen';
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER admission_census_eligibility_mutation
+        AFTER INSERT OR UPDATE ON harness_shared.dedup_edges
+        FOR EACH STATEMENT EXECUTE FUNCTION mutate_admission_census_eligibility();
+      CREATE TRIGGER admission_census_provenance_mutation
+        BEFORE INSERT OR UPDATE ON harness_shared.dedup_edges
+        FOR EACH ROW EXECUTE FUNCTION rewrite_admission_census_provenance();
+    `);
+
+    let first: Awaited<ReturnType<typeof runWorkItemAdmissionCensus>>;
+    try {
+      first = await runWorkItemAdmissionCensus({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'mutating-corpus-1',
+        chunkCount: 2,
+        targetTokens: 100,
+        ghostFraction: 0.5,
+        sql: db.sql,
+        now: () => 3_000,
+      });
+    } finally {
+      await db.sql.unsafe(`
+        DROP TRIGGER IF EXISTS admission_census_eligibility_mutation ON harness_shared.dedup_edges;
+        DROP TRIGGER IF EXISTS admission_census_provenance_mutation ON harness_shared.dedup_edges;
+        DROP FUNCTION IF EXISTS mutate_admission_census_eligibility();
+        DROP FUNCTION IF EXISTS rewrite_admission_census_provenance();
+      `);
+    }
+
+    expect(first.corpusSize).toBe(4);
+    expect(first.embeddedItems).toBe(3);
+    expect(first.chunkCoverage.reduce((sum, n) => sum + n, 0)).toBe(3);
+    expect(first.memberRows).toBe(4);
+    expect(
+      await db.sql<Array<{ status: string }>>`
+        SELECT status FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'c'`,
+    ).toEqual([{ status: 'done' }]);
+    expect(
+      await db.sql<Array<{ run_id: string }>>`
+        SELECT run_id FROM harness_shared.dedup_edges
+         WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND a = 'a' AND b = 'b'`,
+    ).toEqual([{ run_id: 'create-prescreen' }]);
+
+    await db.sql`
+      UPDATE harness_shared.work_items SET status = 'open'
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'c'`;
+    const second = await runWorkItemAdmissionCensus({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'mutating-corpus-2',
+      chunkCount: 2,
+      targetTokens: 100,
+      ghostFraction: 0.5,
+      sql: db.sql,
+      now: () => 4_000,
+    });
+    expect(second.fingerprint).toBe(first.fingerprint);
+    expect(second.memberRows).toBe(first.memberRows);
+    expect(second.hardEdges).toBe(first.hardEdges);
+  }, 60_000);
+
   it('records a failed run instead of laundering mixed embedding spaces into a clean census', async () => {
     await seed();
     await db.sql`UPDATE harness_shared.work_items SET embedding_mode = 'foreign' WHERE feature_id = 'c'`;
