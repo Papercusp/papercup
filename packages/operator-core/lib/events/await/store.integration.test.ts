@@ -29,6 +29,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const {
   registerAwait,
   registerAnnouncement,
+  retireAnnouncement,
   stampAnnouncementsFired,
   upsertInboxWakeAwait,
   cancelInboxWakeAwaits,
@@ -39,6 +40,7 @@ const {
   cancelAwaitsForSubscribersOnKeys,
   cancelAwaitsByIds,
   findAnnouncementsForKey,
+  listActiveAnnouncements,
   insertDeliveries,
   retireLifecycleBoundWatches,
   retireLifecycleBoundWatchesForOwners,
@@ -95,6 +97,7 @@ beforeAll(async () => {
       bound_to jsonb,
       scope_kind text, scope_ref text,
       causal_generation bigint, expected_condition jsonb, superseded_at timestamptz,
+      logical_gate_key text,
       fired_by text, fired_payload jsonb,
       -- migration 572 (composable-event-awaits): composed-TREE leaf columns. A plain
       -- await leaves them NULL, but store.ts SELECTs root_id unconditionally
@@ -390,6 +393,74 @@ describe('await-event store (PG)', () => {
     `).map((r) => r.bound_to)).toEqual([{ kind: 'fleet-leadership', ref: 'fleet-a' }]);
   });
 
+  it('retires only the unfired announcement, preserves its waiter, and removes it from discovery', async () => {
+    const eventKey = 'gate:announcement-retire';
+    const announcement = await registerAnnouncement({
+      subscriberId: 'declarer',
+      eventKey,
+      scopeKind: 'global',
+      logicalGateKey: 'logical-retire',
+    });
+    const waiter = await registerAwait({ subscriberId: 'waiter', eventKey });
+
+    const retired = await retireAnnouncement({
+      announcementId: announcement.id,
+      subscriberId: 'declarer',
+      expectedGeneration: announcement.causalGeneration ?? undefined,
+    });
+    expect(retired).toMatchObject({
+      retired: true,
+      announcementId: announcement.id,
+      eventKey,
+      generation: announcement.causalGeneration,
+    });
+    expect(await listActiveAnnouncements()).toEqual([]);
+    expect((await findAnnouncementsForKey(eventKey)).map((row) => row.id)).toEqual([]);
+
+    const fired = await fireAwaitsForKey({ eventKey });
+    expect(fired.map((row) => row.id)).toEqual([waiter.id]);
+    const stored = await rootSql`
+      SELECT fired_at, superseded_at FROM harness_shared.event_awaits WHERE id = ${announcement.id}
+    `;
+    expect(stored[0].fired_at).toBeNull();
+    expect(stored[0].superseded_at).not.toBeNull();
+  });
+
+  it('guards announcement retirement by owner, generation, and fired state', async () => {
+    const foreign = await registerAnnouncement({ subscriberId: 'owner-a', eventKey: 'gate:retire-foreign', scopeKind: 'global' });
+    await expect(retireAnnouncement({ announcementId: foreign.id, subscriberId: 'owner-b' })).resolves.toMatchObject({
+      retired: false,
+      reason: 'not_yours',
+    });
+    await expect(retireAnnouncement({ announcementId: foreign.id, subscriberId: 'owner-a', expectedGeneration: 999 })).resolves.toMatchObject({
+      retired: false,
+      reason: 'generation_mismatch',
+    });
+    await expect(retireAnnouncement({ announcementId: foreign.id, subscriberId: 'owner-a', expectedGeneration: foreign.causalGeneration ?? undefined })).resolves.toMatchObject({ retired: true });
+
+    const fired = await registerAnnouncement({ subscriberId: 'owner-a', eventKey: 'gate:retire-fired', scopeKind: 'global' });
+    await stampAnnouncementsFired('gate:retire-fired', { firedBy: 'emit' });
+    await expect(retireAnnouncement({ announcementId: fired.id, subscriberId: 'owner-a' })).resolves.toMatchObject({
+      retired: false,
+      reason: 'already_settled',
+    });
+  });
+
+  it('serializes different transport keys for one logical gate and rejects the loser', async () => {
+    const results = await Promise.allSettled([
+      registerAnnouncement({ subscriberId: 'route-a', eventKey: 'gate:logical-a', scopeKind: 'global', logicalGateKey: 'logical-concurrent' }),
+      registerAnnouncement({ subscriberId: 'route-b', eventKey: 'gate:logical-b', scopeKind: 'global', logicalGateKey: 'logical-concurrent' }),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const active = await rootSql`
+      SELECT event_key FROM harness_shared.event_awaits
+       WHERE logical_gate_key = 'logical-concurrent'
+         AND policy = 'announce' AND superseded_at IS NULL AND cancelled_at IS NULL AND fired_at IS NULL
+    `;
+    expect(active).toHaveLength(1);
+  });
+
   // ── EI-8998: predicate/payload watches ───────────────────────────────────
   it('a payload_filter gates firing: a non-matching emit leaves the once-row unclaimed, a matching one claims it exactly once', async () => {
     await registerAwait({
@@ -642,6 +713,58 @@ describe('await-event store (PG)', () => {
     ).toBe(1);
     expect((await listActiveAwaits('sub-bench')).map((row) => row.id)).toEqual([]);
     expect(memberAwait.id).not.toBe(bench.id);
+  });
+
+  it('atomically replaces leader-managed benches across event keys without touching member-owned awaits', async () => {
+    const subscriberId = 'sub-cross-key-bench';
+    const oldA = await registerAwait({
+      subscriberId,
+      eventKey: 'gate:old-a',
+      note: `${FLEET_BENCH_NOTE_PREFIX}old A`,
+    });
+    const oldB = await registerAwait({
+      subscriberId,
+      eventKey: 'gate:old-b',
+      note: `${FLEET_BENCH_NOTE_PREFIX}old B`,
+    });
+    const memberAwait = await registerAwait({
+      subscriberId,
+      eventKey: 'gate:member-owned',
+      note: 'member-owned wait',
+    });
+
+    const replacements = await Promise.all(
+      ['gate:new-a', 'gate:new-b'].map((eventKey) =>
+        registerAwait({
+          subscriberId,
+          eventKey,
+          note: `${FLEET_BENCH_NOTE_PREFIX}replacement`,
+          supersedePending: {
+            allEventKeys: true,
+            includeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+          },
+        }),
+      ),
+    );
+
+    const active = await listActiveAwaits(subscriberId);
+    const activeBenches = active.filter((row) => row.note?.startsWith(FLEET_BENCH_NOTE_PREFIX));
+    expect(active.map((row) => row.id)).toContain(memberAwait.id);
+    expect(activeBenches).toHaveLength(1);
+    expect(replacements.map((row) => row.id)).toContain(activeBenches[0].id);
+    expect(replacements.map((row) => row.supersededPendingCount).sort()).toEqual([1, 2]);
+    expect(active.map((row) => row.id)).not.toContain(oldA.id);
+    expect(active.map((row) => row.id)).not.toContain(oldB.id);
+  });
+
+  it('refuses subscriber-wide supersession without a coordination-surface prefix', async () => {
+    await expect(
+      registerAwait({
+        subscriberId: 'sub-unsafe-cross-key',
+        eventKey: 'gate:new',
+        supersedePending: { allEventKeys: true },
+      }),
+    ).rejects.toThrow('allEventKeys supersession requires includeNotePrefix');
   });
 
   it('does not cancel an announced declaration sharing the waiter subscriber and key', async () => {
