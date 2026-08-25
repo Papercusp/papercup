@@ -25,6 +25,31 @@ import { trackDetached } from './detached-imports';
 /** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
 export type FleetControlState = 'active' | 'winding-down';
 
+/**
+ * D-008 / P-010: a pair is a fleet TYPE, not a parallel construct.
+ *
+ * - `single` — today's fleet, unchanged, and the DEFAULT. Every existing caller
+ *   and every legacy row is a single fleet with no migration of behaviour.
+ * - `paired` — N director↔implementer pairs. The launch OPTION SHAPE branches on
+ *   this value (D-009): a single fleet takes today's flat knobs; a paired fleet
+ *   takes the same knobs as two per-role groups. The branch is validated at the
+ *   launch surface, never coerced.
+ */
+export type FleetType = 'single' | 'paired';
+
+/** The one non-default type. Readers narrow to this set defensively. */
+export const FLEET_TYPES: readonly FleetType[] = ['single', 'paired'] as const;
+
+/**
+ * Narrow an untrusted value (legacy NULL, a hand-forged string, a value written
+ * by a newer release) to a FleetType. Mirrors the controlState defence: only the
+ * non-default value is honoured, so anything unrecognised reads back 'single'
+ * and a paired-only code path can never be entered by accident.
+ */
+export function asFleetType(value: unknown): FleetType {
+  return value === 'paired' ? 'paired' : 'single';
+}
+
 export type FleetLaunchTransactionState = 'launching' | 'partial' | 'verified';
 export type FleetLaunchFailurePhase = 'spawn' | 'verification' | 'attestation' | 'persistence';
 
@@ -88,6 +113,11 @@ export interface AgentFleetRecord {
    *  (mig 575; fleet:pause aliases wind-down). PLATFORM state on the durable
    *  row, so late joiners read it at orient instead of missing a broadcast. */
   controlState: FleetControlState;
+  /** D-008 / P-010: 'single' (default — today's fleet) | 'paired' (N director↔
+   *  implementer pairs). PLATFORM state on the durable row, so a member reads
+   *  its own fleet's type at orient rather than inferring it from launch args.
+   *  Legacy rows and unrecognised values narrow to 'single' (asFleetType). */
+  fleetType: FleetType;
   /** Invoker-stated reason for the current control state (advisory). */
   controlReason: string | null;
   /** Coord owner-id that set the current control state (audit). */
@@ -110,6 +140,10 @@ export interface CreateFleetInput {
   leaderOwnerId?: string | null;
   /** Force a specific scheme name; omit to auto-allocate the next unused one. */
   colorScheme?: string | null;
+  /** D-008 / P-010: fleet type. Omit for 'single' — today's behaviour. Applies
+   *  on FIRST INSERT only, like title/description/owner (createFleetIfAbsent is
+   *  idempotent; change an existing fleet's type via updateFleetMeta). */
+  fleetType?: FleetType;
 }
 
 /** Validated launch recipe persisted for the headcount governor. */
@@ -157,6 +191,7 @@ interface FleetRow {
   owner: string | null;
   leader_owner_id: string | null;
   color_scheme: string | null;
+  fleet_type: string | null;
   control_state: string | null;
   control_reason: string | null;
   control_by: string | null;
@@ -182,6 +217,10 @@ function rowToRecord(r: FleetRow): AgentFleetRecord {
     // Defensive: only the one non-default state is honored; anything else
     // (legacy null, a hand-forged value) reads back 'active'.
     controlState: r.control_state === 'winding-down' ? 'winding-down' : 'active',
+    // Same defence for the fleet type (D-008): a legacy row predating mig 964,
+    // or any unrecognised value, reads back 'single' — so the paired-only code
+    // paths can never be entered by a row that did not explicitly ask for them.
+    fleetType: asFleetType(r.fleet_type),
     controlReason: r.control_reason ?? null,
     controlBy: r.control_by ?? null,
     controlAt: r.control_at == null ? null : Number(r.control_at),
@@ -214,7 +253,10 @@ function refreshDirectoryCard(
     .catch(() => {});
 }
 
-const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, control_state, control_reason, control_by, control_at, created_at, updated_at`;
+// fleet_type is APPENDED (not slotted in beside color_scheme) so the positional
+// $N binds in createFleetIfAbsent's VALUES stay stable — the insert reads in
+// this exact order.
+const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, control_state, control_reason, control_by, control_at, created_at, updated_at, fleet_type`;
 
 /**
  * Derive a stable fleet_slug from a user-entered fleet NAME. The original name
@@ -302,7 +344,7 @@ export async function createFleetIfAbsent(
     input.colorScheme ?? (await allocateSchemeForWorkspace(input.workspaceId, sql));
   const inserted = (await s.unsafe(
     `INSERT INTO harness_shared.agent_fleets (${COLS})
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL, NULL, NULL, $8, $8)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL, NULL, NULL, $8, $8, $9)
      ON CONFLICT (workspace_id, fleet_slug) DO NOTHING
      RETURNING ${COLS}`,
     [
@@ -314,6 +356,9 @@ export async function createFleetIfAbsent(
       input.leaderOwnerId ?? null,
       colorScheme,
       now,
+      // Narrow on the way IN as well as out: a caller that hands us a bad value
+      // gets a 'single' fleet, never a row the readers would have to distrust.
+      asFleetType(input.fleetType),
     ],
   )) as unknown as FleetRow[];
   // Create AND ensure both refresh the card: the ensure path self-heals fleets
@@ -399,11 +444,14 @@ export async function setFleetControlState(
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
-/** Edit a fleet's directory metadata (title/description). No leader side effects. */
+/** Edit a fleet's directory metadata (title/description/type). No leader side effects.
+ *  `fleetType` is how an EXISTING fleet is re-typed — createFleetIfAbsent is
+ *  idempotent and therefore cannot change the type of a fleet that already
+ *  exists (D-008/P-010). Omitted fields are left untouched (COALESCE). */
 export async function updateFleetMeta(
   workspaceId: string,
   fleetSlug: string,
-  meta: { title?: string | null; description?: string | null },
+  meta: { title?: string | null; description?: string | null; fleetType?: FleetType },
   sql?: Sql,
 ): Promise<AgentFleetRecord | null> {
   const s = pg(sql);
@@ -411,10 +459,20 @@ export async function updateFleetMeta(
     `UPDATE harness_shared.agent_fleets
         SET title = COALESCE($3, title),
             description = COALESCE($4, description),
+            fleet_type = COALESCE($6, fleet_type),
             updated_at = $5
       WHERE workspace_id = $1 AND fleet_slug = $2
       RETURNING ${COLS}`,
-    [workspaceId, fleetSlug, meta.title ?? null, meta.description ?? null, Date.now()],
+    [
+      workspaceId,
+      fleetSlug,
+      meta.title ?? null,
+      meta.description ?? null,
+      Date.now(),
+      // Narrow only when the caller actually asked for a change; passing NULL
+      // leaves the stored type alone rather than silently resetting to 'single'.
+      meta.fleetType === undefined ? null : asFleetType(meta.fleetType),
+    ],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;

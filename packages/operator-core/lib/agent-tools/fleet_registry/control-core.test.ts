@@ -88,6 +88,7 @@ function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
     leaderOwnerId: null,
     colorScheme: null,
     controlState: 'active',
+    fleetType: 'single',
     controlReason: null,
     controlBy: null,
     controlAt: null,
