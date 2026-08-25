@@ -13,29 +13,32 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { spawn, spawnSync } from 'node:child_process';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { loadavg, availableParallelism } from 'node:os';
-import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadavg, availableParallelism } from "node:os";
+import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
   parseSummaryFailedCounts,
   parseTransformFailure,
   stripVitestAnsi,
-} from './lib/vitest-summary.mjs';
-import { killSpawnedProcessTree, parseBatchProgress } from './lib/batch-watchdog.mjs';
-import { formatTaskOutcomeFields } from './lib/task-progress-line.mjs';
+} from "./lib/vitest-summary.mjs";
+import {
+  killSpawnedProcessTree,
+  parseBatchProgress,
+} from "./lib/batch-watchdog.mjs";
+import { formatTaskOutcomeFields } from "./lib/task-progress-line.mjs";
 
 // Re-exported so this module's own callers and tests (packages/operator-core/lib/__tests__/
 // test-file-router.test.ts) keep importing it from here unchanged. The IMPLEMENTATION moved to
 // lib/vitest-summary.mjs (WI-37607) so `test:affected` can share the one detector instead of
 // having none — see that function's header for why the split existed and what it cost.
 export { parseTransformFailure };
-import { peekFsMutexSync } from './lib/fs-mutex.mjs';
-import { repoLockName } from './npm-install-safe.mjs';
-import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
+import { peekFsMutexSync } from "./lib/fs-mutex.mjs";
+import { repoLockName } from "./npm-install-safe.mjs";
+import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
 
 // EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
 // Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
@@ -50,7 +53,7 @@ import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
 // submodules, which generic-first forbids from depending on it).
 ensurePapercuspTmpdir();
 
-export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // WI-5621 (2026-07-20): this is THE most frequently invoked test runner in the
 // repo (CLAUDE.md tells every agent to reach for `npm run test:file` after any
@@ -79,7 +82,9 @@ function workspaceDirs(root) {
 
   let patterns;
   try {
-    const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
+    const packageJson = JSON.parse(
+      readFileSync(resolve(root, "package.json"), "utf8"),
+    );
     patterns = Array.isArray(packageJson.workspaces)
       ? packageJson.workspaces
       : packageJson.workspaces?.packages;
@@ -90,8 +95,8 @@ function workspaceDirs(root) {
 
   const dirs = [];
   for (const pattern of patterns) {
-    if (typeof pattern !== 'string') continue;
-    if (pattern.endsWith('/*')) {
+    if (typeof pattern !== "string") continue;
+    if (pattern.endsWith("/*")) {
       const parent = resolve(root, pattern.slice(0, -2));
       let entries;
       try {
@@ -100,10 +105,14 @@ function workspaceDirs(root) {
         continue;
       }
       for (const entry of entries) {
-        if (entry.startsWith('.') || !existsSync(resolve(parent, entry, 'package.json'))) continue;
+        if (
+          entry.startsWith(".") ||
+          !existsSync(resolve(parent, entry, "package.json"))
+        )
+          continue;
         dirs.push(resolve(parent, entry));
       }
-    } else if (existsSync(resolve(root, pattern, 'package.json'))) {
+    } else if (existsSync(resolve(root, pattern, "package.json"))) {
       dirs.push(resolve(root, pattern));
     }
   }
@@ -115,27 +124,44 @@ function workspaceDirs(root) {
 
 function isWithinRoot(candidate, root) {
   const rootRelative = relative(root, candidate);
-  return rootRelative !== '..' && !rootRelative.startsWith(`..${sep}`) && !isAbsolute(rootRelative);
+  return (
+    rootRelative !== ".." &&
+    !rootRelative.startsWith(`..${sep}`) &&
+    !isAbsolute(rootRelative)
+  );
 }
 
 function resolveRequestedTestFile(file, root) {
   const direct = resolve(root, file);
-  if (existsSync(direct) || isAbsolute(file) || file.split(/[\\/]/).includes('..')) return direct;
+  if (
+    existsSync(direct) ||
+    isAbsolute(file) ||
+    file.split(/[\\/]/).includes("..")
+  )
+    return direct;
 
   const candidates = workspaceDirs(root)
     .map((dir) => resolve(dir, file))
-    .filter((candidate) => isWithinRoot(candidate, root) && existsSync(candidate))
+    .filter(
+      (candidate) => isWithinRoot(candidate, root) && existsSync(candidate),
+    )
     .sort();
   if (candidates.length > 1) {
-    const listed = candidates.map((candidate) => relative(root, candidate)).join(', ');
-    throw new Error(`requested test file is ambiguous across workspaces: ${file} (${listed})`);
+    const listed = candidates
+      .map((candidate) => relative(root, candidate))
+      .join(", ");
+    throw new Error(
+      `requested test file is ambiguous across workspaces: ${file} (${listed})`,
+    );
   }
   return candidates[0] ?? direct;
 }
 
 function configsIn(dir) {
   try {
-    return readdirSync(dir).filter((name) => UNIT_CONFIG_RE.test(name) || INTEGRATION_CONFIG_RE.test(name));
+    return readdirSync(dir).filter(
+      (name) => UNIT_CONFIG_RE.test(name) || INTEGRATION_CONFIG_RE.test(name),
+    );
   } catch {
     return [];
   }
@@ -149,12 +175,12 @@ function configsIn(dir) {
  * router must be able to route those files there instead of falling off the end of the walk-up.
  */
 function isVitestPackageDir(dir) {
-  const pkgPath = resolve(dir, 'package.json');
+  const pkgPath = resolve(dir, "package.json");
   if (!existsSync(pkgPath)) return false;
   try {
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
     const test = pkg?.scripts?.test;
-    return typeof test === 'string' && /\bvitest\b/.test(test);
+    return typeof test === "string" && /\bvitest\b/.test(test);
   } catch {
     return false;
   }
@@ -166,19 +192,19 @@ function isVitestPackageDir(dir) {
 // never discover a config under libs/generic/template-kit for a path under templates/.
 const NON_WORKSPACE_VITEST_ROUTES = [
   {
-    prefix: 'templates/',
+    prefix: "templates/",
     pathPattern: /\/checks\/[^/]+\.fixture\.test\.[cm]?[jt]sx?$/,
-    cwd: 'libs/generic/template-kit',
-    config: 'vitest.config.ts',
+    cwd: "libs/generic/template-kit",
+    config: "vitest.config.ts",
   },
   // papercusp-app's composition check is the one non-fixture template suite owned by
   // template-kit. Routing it through the repository-root config discovers the same check in
   // the gitignored desktop sidecar mirror and executes both versions in one result.
   {
-    prefix: 'templates/papercusp-app/',
+    prefix: "templates/papercusp-app/",
     pathPattern: /\/checks\/composition-integrity\.test\.[cm]?[jt]sx?$/,
-    cwd: 'libs/generic/template-kit',
-    config: 'vitest.config.ts',
+    cwd: "libs/generic/template-kit",
+    config: "vitest.config.ts",
   },
 ];
 
@@ -188,65 +214,119 @@ const NON_WORKSPACE_VITEST_ROUTES = [
 // an arbitrary package's runner just because it happens to end in `.test.js`.
 const NON_WORKSPACE_NODE_ROUTES = [
   {
-    prefix: 'papercusp-desktop/test/',
+    prefix: "papercusp-desktop/test/",
     pathPattern: /\.test\.[cm]?js$/,
-    cwd: 'papercusp-desktop',
+    cwd: "papercusp-desktop",
   },
 ];
 
 function nonWorkspaceVitestRoute(rootRelative, absolute, root) {
-  const normalized = rootRelative.split(sep).join('/');
+  const normalized = rootRelative.split(sep).join("/");
   const match = NON_WORKSPACE_VITEST_ROUTES.find(
-    (candidate) => normalized.startsWith(candidate.prefix) && candidate.pathPattern.test(normalized),
+    (candidate) =>
+      normalized.startsWith(candidate.prefix) &&
+      candidate.pathPattern.test(normalized),
   );
   if (!match) return null;
   const cwd = resolve(root, match.cwd);
   if (!existsSync(resolve(cwd, match.config))) return null;
-  return { cwd, config: match.config, absolute, requested: relative(cwd, absolute) };
+  return {
+    cwd,
+    config: match.config,
+    absolute,
+    requested: relative(cwd, absolute),
+  };
 }
 
 function nonWorkspaceNodeRoute(rootRelative, absolute, root) {
-  const normalized = rootRelative.split(sep).join('/');
+  const normalized = rootRelative.split(sep).join("/");
   const match = NON_WORKSPACE_NODE_ROUTES.find(
-    (candidate) => normalized.startsWith(candidate.prefix) && candidate.pathPattern.test(normalized),
+    (candidate) =>
+      normalized.startsWith(candidate.prefix) &&
+      candidate.pathPattern.test(normalized),
   );
   if (!match) return null;
   const cwd = resolve(root, match.cwd);
-  if (!existsSync(resolve(cwd, 'package.json'))) return null;
-  return { runner: 'node', cwd, config: null, absolute, requested: relative(cwd, absolute) };
+  if (!existsSync(resolve(cwd, "package.json"))) return null;
+  return {
+    runner: "node",
+    cwd,
+    config: null,
+    absolute,
+    requested: relative(cwd, absolute),
+  };
 }
 
 export function discoverVitestRoute(file, root = REPO_ROOT) {
   root = resolve(root);
   const absolute = resolveRequestedTestFile(file, root);
-  if (!existsSync(absolute)) throw new Error(`requested test file does not exist: ${relative(root, absolute)}`);
+  if (!existsSync(absolute))
+    throw new Error(
+      `requested test file does not exist: ${relative(root, absolute)}`,
+    );
   const rootRelative = relative(root, absolute);
-  if (rootRelative.startsWith(`..${sep}`) || rootRelative === '..' || isAbsolute(rootRelative)) {
-    throw new Error(`requested test file is outside the repository: ${absolute}`);
+  if (
+    rootRelative.startsWith(`..${sep}`) ||
+    rootRelative === ".." ||
+    isAbsolute(rootRelative)
+  ) {
+    throw new Error(
+      `requested test file is outside the repository: ${absolute}`,
+    );
   }
 
-  const nonWorkspaceRoute = nonWorkspaceVitestRoute(rootRelative, absolute, root);
+  const nonWorkspaceRoute = nonWorkspaceVitestRoute(
+    rootRelative,
+    absolute,
+    root,
+  );
   if (nonWorkspaceRoute) return nonWorkspaceRoute;
 
-  const wantsIntegration = /\.integration\.(?:test|spec)\.[cm]?[jt]sx?$/.test(absolute);
+  const wantsIntegration = /\.integration\.(?:test|spec)\.[cm]?[jt]sx?$/.test(
+    absolute,
+  );
   let dir = dirname(absolute);
   let unitFallback = null;
   let packageFallback = null;
   while (dir === root || dir.startsWith(`${root}${sep}`)) {
     const configs = configsIn(dir);
-    const integration = configs.find((name) => INTEGRATION_CONFIG_RE.test(name));
+    const integration = configs.find((name) =>
+      INTEGRATION_CONFIG_RE.test(name),
+    );
     const unit = configs.find((name) => UNIT_CONFIG_RE.test(name));
-    if (wantsIntegration && integration) return { cwd: dir, config: integration, absolute, requested: relative(dir, absolute) };
+    if (wantsIntegration && integration)
+      return {
+        cwd: dir,
+        config: integration,
+        absolute,
+        requested: relative(dir, absolute),
+      };
     // Keep walking after an already-discovered config-less package so an ancestor's
     // fallback unit config cannot preempt that nearer package route.
     if (!wantsIntegration && unit && !packageFallback) {
-      return { cwd: dir, config: unit, absolute, requested: relative(dir, absolute) };
+      return {
+        cwd: dir,
+        config: unit,
+        absolute,
+        requested: relative(dir, absolute),
+      };
     }
-    if (unit && !unitFallback) unitFallback = { cwd: dir, config: unit, absolute, requested: relative(dir, absolute) };
+    if (unit && !unitFallback)
+      unitFallback = {
+        cwd: dir,
+        config: unit,
+        absolute,
+        requested: relative(dir, absolute),
+      };
     // Nearest config-less Vitest package (`libs/generic/*` shape): its own `npm test` is a plain
     // config-less `vitest run`, so route there (config: null) when no config file owns the file.
     if (!packageFallback && configs.length === 0 && isVitestPackageDir(dir)) {
-      packageFallback = { cwd: dir, config: null, absolute, requested: relative(dir, absolute) };
+      packageFallback = {
+        cwd: dir,
+        config: null,
+        absolute,
+        requested: relative(dir, absolute),
+      };
     }
     if (dir === root) break;
     dir = dirname(dir);
@@ -270,12 +350,24 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
 export function discoverTestRoute(file, root = REPO_ROOT) {
   root = resolve(root);
   const absolute = resolveRequestedTestFile(file, root);
-  if (!existsSync(absolute)) throw new Error(`requested test file does not exist: ${relative(root, absolute)}`);
+  if (!existsSync(absolute))
+    throw new Error(
+      `requested test file does not exist: ${relative(root, absolute)}`,
+    );
   const rootRelative = relative(root, absolute);
-  if (rootRelative.startsWith(`..${sep}`) || rootRelative === '..' || isAbsolute(rootRelative)) {
-    throw new Error(`requested test file is outside the repository: ${absolute}`);
+  if (
+    rootRelative.startsWith(`..${sep}`) ||
+    rootRelative === ".." ||
+    isAbsolute(rootRelative)
+  ) {
+    throw new Error(
+      `requested test file is outside the repository: ${absolute}`,
+    );
   }
-  return nonWorkspaceNodeRoute(rootRelative, absolute, root) ?? discoverVitestRoute(file, root);
+  return (
+    nonWorkspaceNodeRoute(rootRelative, absolute, root) ??
+    discoverVitestRoute(file, root)
+  );
 }
 
 // `test:file` accepts exact test files, not the production modules those tests import. Keep this
@@ -284,7 +376,10 @@ export function discoverTestRoute(file, root = REPO_ROOT) {
 const TEST_FILE_SUFFIX_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/i;
 
 export function isTestFilePath(file) {
-  return typeof file === 'string' && TEST_FILE_SUFFIX_RE.test(file.replaceAll('\\', '/'));
+  return (
+    typeof file === "string" &&
+    TEST_FILE_SUFFIX_RE.test(file.replaceAll("\\", "/"))
+  );
 }
 
 export function formatUnsupportedTestInputs(files) {
@@ -292,17 +387,25 @@ export function formatUnsupportedTestInputs(files) {
   if (paths.length === 0) return null;
   return [
     `TEST_FILE_UNSUPPORTED_INPUT requested=${paths.length} — test:file accepts test paths only; ` +
-      'non-test source inputs are skipped and are not collection failures:',
-    ...paths.map((file) => `  ⚠ NON_TEST  ${file} — skipped; pass its importing *.test.* or *.spec.* file instead`),
-  ].join('\n');
+      "non-test source inputs are skipped and are not collection failures:",
+    ...paths.map(
+      (file) =>
+        `  ⚠ NON_TEST  ${file} — skipped; pass its importing *.test.* or *.spec.* file instead`,
+    ),
+  ].join("\n");
 }
 
 export function groupRoutes(routes) {
   const groups = new Map();
   for (const route of routes) {
-    const runner = route.runner ?? 'vitest';
+    const runner = route.runner ?? "vitest";
     const key = `${runner}\0${route.cwd}\0${route.config}`;
-    const group = groups.get(key) ?? { runner, cwd: route.cwd, config: route.config, routes: [] };
+    const group = groups.get(key) ?? {
+      runner,
+      cwd: route.cwd,
+      config: route.config,
+      routes: [],
+    };
     group.routes.push(route);
     groups.set(key, group);
   }
@@ -337,8 +440,8 @@ export function groupRoutes(routes) {
 export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
   if (groupCount <= 1 || groupIndex === 0) return vitestArgs;
   const perGroupPath = (p) => {
-    const dot = p.lastIndexOf('.');
-    const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf(sep));
+    const dot = p.lastIndexOf(".");
+    const slash = Math.max(p.lastIndexOf("/"), p.lastIndexOf(sep));
     // Only treat a dot AFTER the last separator as an extension, so a dotted
     // DIRECTORY (…/my.dir/report) is never split in the middle.
     return dot > slash && dot > 0
@@ -348,9 +451,11 @@ export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
   const out = [];
   for (let i = 0; i < vitestArgs.length; i += 1) {
     const arg = vitestArgs[i];
-    if (arg.startsWith('--outputFile=')) {
-      out.push(`--outputFile=${perGroupPath(arg.slice('--outputFile='.length))}`);
-    } else if (arg === '--outputFile' && i + 1 < vitestArgs.length) {
+    if (arg.startsWith("--outputFile=")) {
+      out.push(
+        `--outputFile=${perGroupPath(arg.slice("--outputFile=".length))}`,
+      );
+    } else if (arg === "--outputFile" && i + 1 < vitestArgs.length) {
       out.push(arg, perGroupPath(vitestArgs[i + 1]));
       i += 1;
     } else {
@@ -371,8 +476,11 @@ export function withoutOutputFileArg(vitestArgs) {
   const out = [];
   for (let i = 0; i < vitestArgs.length; i += 1) {
     const arg = vitestArgs[i];
-    if (arg.startsWith('--outputFile=')) continue;
-    if (arg === '--outputFile') { i += 1; continue; }
+    if (arg.startsWith("--outputFile=")) continue;
+    if (arg === "--outputFile") {
+      i += 1;
+      continue;
+    }
     out.push(arg);
   }
   return out;
@@ -380,26 +488,39 @@ export function withoutOutputFileArg(vitestArgs) {
 
 export function listedFiles(output, cwd, filesOnly = false) {
   if (filesOnly) {
-    return [...new Set(
+    return [
+      ...new Set(
+        output
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          // Keep unit-test stubs that still return Vitest's tree form working while the
+          // production call uses --filesOnly. A format-only launcher change must not turn
+          // those tests into false route reds.
+          .map((line) =>
+            line.includes(" > ")
+              ? (line.split(" > ", 1)[0]?.trim() ?? "")
+              : line,
+          )
+          .filter(
+            (line) =>
+              line !== "" &&
+              !/\s/.test(line) &&
+              /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(line),
+          )
+          .map((file) => resolve(cwd, file)),
+      ),
+    ];
+  }
+  return [
+    ...new Set(
       output
         .split(/\r?\n/)
-        .map((line) => line.trim())
-        // Keep unit-test stubs that still return Vitest's tree form working while the
-        // production call uses --filesOnly. A format-only launcher change must not turn
-        // those tests into false route reds.
-        .map((line) => line.includes(' > ') ? line.split(' > ', 1)[0]?.trim() ?? '' : line)
-        .filter((line) => line !== '' && !/\s/.test(line) && /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(line))
+        .filter((line) => line.includes(" > "))
+        .map((line) => line.split(" > ", 1)[0]?.trim())
+        .filter(Boolean)
         .map((file) => resolve(cwd, file)),
-    )];
-  }
-  return [...new Set(
-    output
-      .split(/\r?\n/)
-      .filter((line) => line.includes(' > '))
-      .map((line) => line.split(' > ', 1)[0]?.trim())
-      .filter(Boolean)
-      .map((file) => resolve(cwd, file)),
-  )];
+    ),
+  ];
 }
 
 /**
@@ -504,7 +625,7 @@ export function looksLikeSilentCollectionFailure(output) {
   // and around the `❯`/parens — so every matcher below silently missed on real (coloured)
   // output and this detector never fired outside tests, which all use clean text. Same root
   // cause, same day, as the green-checkpoint guard that let a red suite advance the pin.
-  const plain = stripVitestAnsi(output ?? '');
+  const plain = stripVitestAnsi(output ?? "");
   if (!/Test Files\s+\d+ failed/.test(plain)) return false;
   // A "Failed Suites"/"Failed Tests" block means Vitest DID print the underlying error for at
   // least one file — the single-collection-failure case, which is unaffected by this bug.
@@ -534,15 +655,16 @@ export function looksLikeSilentCollectionFailure(output) {
  */
 export function looksLikeMidInstallCorruption(output) {
   if (/\bvitest:\s*not found\b/i.test(output)) return true;
-  if (/ERR_MODULE_NOT_FOUND/.test(output) && /node_modules/.test(output)) return true;
+  if (/ERR_MODULE_NOT_FOUND/.test(output) && /node_modules/.test(output))
+    return true;
   return false;
 }
 
 const MID_INSTALL_HINT =
-  'TEST_FILE_MID_INSTALL_SUSPECTED node_modules looks mid-install or corrupt (a peer agent may be running ' +
+  "TEST_FILE_MID_INSTALL_SUSPECTED node_modules looks mid-install or corrupt (a peer agent may be running " +
   '`npm install` on this shared tree right now — see EI-18662389554660036). Check `ps aux | grep "npm install"` ' +
-  'and locks:list, then retry once it finishes. Prefer `npm run install:safe` for any future install on this tree ' +
-  'so it serializes instead of racing concurrent test runs.';
+  "and locks:list, then retry once it finishes. Prefer `npm run install:safe` for any future install on this tree " +
+  "so it serializes instead of racing concurrent test runs.";
 
 /**
  * EI-19304880034803985 — the hint above only ever fires on the FAILURE
@@ -569,8 +691,10 @@ export function warnIfInstallInFlight(label) {
   }
   if (!peek.held) return;
   const owner = peek.owner ?? {};
-  const heldSince = owner.startedAt ? ` since ${owner.startedAt}` : '';
-  const pidInfo = owner.pid ? ` (pid ${owner.pid}${owner.host ? `@${owner.host}` : ''})` : '';
+  const heldSince = owner.startedAt ? ` since ${owner.startedAt}` : "";
+  const pidInfo = owner.pid
+    ? ` (pid ${owner.pid}${owner.host ? `@${owner.host}` : ""})`
+    : "";
   console.error(
     `TEST_FILE_MID_INSTALL_SUSPECTED an \`npm install\` is in flight${pidInfo}${heldSince} — ` +
       `${label} may HANG (not fail) until it completes — see EI-19304880034803985 / EI-18662389554660036. ` +
@@ -639,29 +763,38 @@ export function warnIfInstallInFlight(label) {
  * @returns {string | null} null when nothing was broken in isolation (a different, non-per-file cause —
  *   caller keeps today's undifferentiated output rather than a misleading "all healthy" claim)
  */
-export function collectionAttributionMarker({ perFile, cwd, groupRequested, groupMatched }) {
+export function collectionAttributionMarker({
+  perFile,
+  cwd,
+  groupRequested,
+  groupMatched,
+}) {
   if (!perFile || perFile.length === 0) return null;
   const broken = perFile.filter((f) => !f.ok);
   const healthy = perFile.filter((f) => f.ok);
   // Nothing collects alone either — the whole-group matched=0 has no per-file attribution to add;
   // keep today's plain route-error rather than a marker that (falsely) claims to have narrowed it.
   if (broken.length === 0) return null;
-  const cwdLabel = relative(REPO_ROOT, cwd) || '.';
+  const cwdLabel = relative(REPO_ROOT, cwd) || ".";
   const lines = [
     `TEST_FILE_COLLECTION_ATTRIBUTION (group cwd=${cwdLabel}) requested=${groupRequested} matched=${groupMatched} — ` +
       `a collection crash in ${broken.length} of ${perFile.length} requested file(s) poisoned the whole batch's ` +
       "\`vitest list\` (not an esbuild parse error — parseTransformFailure found none), which is why matched=0 " +
-      'above misreports EVERY requested file as unmatched. Re-listed each file alone to attribute it:',
+      "above misreports EVERY requested file as unmatched. Re-listed each file alone to attribute it:",
   ];
-  for (const f of broken) lines.push(`  ✗ BROKEN  ${f.requested} — fails to collect even alone`);
-  for (const f of healthy) lines.push(`  ✓ ok      ${f.requested} — collects cleanly alone; NOT the cause`);
+  for (const f of broken)
+    lines.push(`  ✗ BROKEN  ${f.requested} — fails to collect even alone`);
+  for (const f of healthy)
+    lines.push(
+      `  ✓ ok      ${f.requested} — collects cleanly alone; NOT the cause`,
+    );
   if (healthy.length > 0) {
     lines.push(
       '  Treat only the BROKEN file(s) as suspect. The ok file(s) are not "still red" — re-verify them ' +
-        'with their own `npm run test:file -- <that one file>` rather than trusting this batch\'s route error.',
+        "with their own `npm run test:file -- <that one file>` rather than trusting this batch's route error.",
     );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 /**
@@ -673,7 +806,13 @@ export function collectionAttributionMarker({ perFile, cwd, groupRequested, grou
  *
  * @returns {string | null} null when no transform failure is present (caller keeps today's output)
  */
-export function transformFailureMarker({ locations, routes, cwd, requested, matched }) {
+export function transformFailureMarker({
+  locations,
+  routes,
+  cwd,
+  requested,
+  matched,
+}) {
   if (!locations || locations.length === 0) return null;
   const requestedAbs = new Set((routes ?? []).map((route) => route.absolute));
   const named = [];
@@ -682,23 +821,24 @@ export function transformFailureMarker({ locations, routes, cwd, requested, matc
     const abs = isAbsolute(loc.file) ? loc.file : resolve(cwd, loc.file);
     (requestedAbs.has(abs) ? named : external).push({ ...loc, abs });
   }
-  const fmt = (loc) => `${relative(REPO_ROOT, loc.abs) || loc.abs}:${loc.line}:${loc.col}`;
+  const fmt = (loc) =>
+    `${relative(REPO_ROOT, loc.abs) || loc.abs}:${loc.line}:${loc.col}`;
   const head =
     `TEST_FILE_TRANSFORM_ERROR requested=${requested} matched=${matched} cause=transform ` +
-    `culprit=${[...named, ...external].map(fmt).join(',')}`;
+    `culprit=${[...named, ...external].map(fmt).join(",")}`;
   if (named.length > 0) {
     return (
-      `${head}\n  A file you NAMED failed to PARSE (${named.map(fmt).join(', ')}) — vitest could ` +
-      'not collect it, which is why matched=0 above. That is a real syntax error in your own ' +
-      'file: NOT a routing problem, and NOT a peer mid-edit. Fix the parse error printed above.'
+      `${head}\n  A file you NAMED failed to PARSE (${named.map(fmt).join(", ")}) — vitest could ` +
+      "not collect it, which is why matched=0 above. That is a real syntax error in your own " +
+      "file: NOT a routing problem, and NOT a peer mid-edit. Fix the parse error printed above."
     );
   }
   return (
     `${head}\n  The file(s) you named are FINE — a module in their import graph failed to PARSE, ` +
-    'so vitest collected zero test files and the zero-match guard fired. This is NOT a routing ' +
-    'problem and NOT a fault in the file you named.\n  On this shared tree that is usually a PEER ' +
-    'mid-edit (EI-19462803905923939): re-run in a minute before investigating, and check ' +
-    '`git status` on the module named above.'
+    "so vitest collected zero test files and the zero-match guard fired. This is NOT a routing " +
+    "problem and NOT a fault in the file you named.\n  On this shared tree that is usually a PEER " +
+    "mid-edit (EI-19462803905923939): re-run in a minute before investigating, and check " +
+    "`git status` on the module named above."
   );
 }
 
@@ -725,14 +865,22 @@ export function nameFilterFrom(vitestArgs) {
     const arg = args[i];
     const joined = /^(-t|--testNamePattern)=([\s\S]*)$/.exec(arg);
     if (joined) {
-      return { flag: joined[1], pattern: joined[2], strays: positionalsAfter(args, i + 1) };
+      return {
+        flag: joined[1],
+        pattern: joined[2],
+        strays: positionalsAfter(args, i + 1),
+      };
     }
-    if (arg === '-t' || arg === '--testNamePattern') {
+    if (arg === "-t" || arg === "--testNamePattern") {
       const next = args[i + 1];
       // A trailing flag with no value: vitest never received a pattern, so there is no
       // name-filter run to police. Never invent one.
       if (next === undefined) return null;
-      return { flag: arg, pattern: next, strays: positionalsAfter(args, i + 2) };
+      return {
+        flag: arg,
+        pattern: next,
+        strays: positionalsAfter(args, i + 2),
+      };
     }
   }
   return null;
@@ -772,7 +920,7 @@ export function joinNameFilterArgs(vitestArgs) {
   const out = [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if ((arg === '-t' || arg === '--testNamePattern') && i + 1 < args.length) {
+    if ((arg === "-t" || arg === "--testNamePattern") && i + 1 < args.length) {
       out.push(`--testNamePattern=${args[i + 1]}`);
       i += 1;
       continue;
@@ -786,7 +934,7 @@ export function joinNameFilterArgs(vitestArgs) {
 function positionalsAfter(args, from) {
   const strays = [];
   for (let i = from; i < args.length; i += 1) {
-    if (args[i].startsWith('-')) break;
+    if (args[i].startsWith("-")) break;
     strays.push(args[i]);
   }
   return strays;
@@ -808,7 +956,7 @@ function positionalsAfter(args, from) {
  * @returns {number | null} tests executed, or null when unreadable
  */
 export function testsExecutedFrom(output) {
-  const plain = stripVitestAnsi(output ?? '');
+  const plain = stripVitestAnsi(output ?? "");
   // `Test Files` cannot match: it is `Test` + space, never `Tests` + whitespace. Take the LAST
   // row so appended output can never leave us reading a superseded summary.
   const rows = [...plain.matchAll(/^[ \t]*Tests[ \t]+(.*)$/gm)];
@@ -858,16 +1006,18 @@ export function testsExecutedFrom(output) {
  */
 export function testsExecutedFromReport(reportPath, cwd) {
   if (!reportPath) return null;
-  const resolved = isAbsolute(reportPath) ? reportPath : resolve(cwd ?? process.cwd(), reportPath);
+  const resolved = isAbsolute(reportPath)
+    ? reportPath
+    : resolve(cwd ?? process.cwd(), reportPath);
   let report;
   try {
-    report = JSON.parse(readFileSync(resolved, 'utf8'));
+    report = JSON.parse(readFileSync(resolved, "utf8"));
   } catch {
     return null; // diagnostic only — an unreadable report must never fail a real run
   }
-  if (!report || typeof report !== 'object') return null;
+  if (!report || typeof report !== "object") return null;
   const { numPassedTests: passed, numFailedTests: failed } = report;
-  if (typeof passed !== 'number' || typeof failed !== 'number') return null;
+  if (typeof passed !== "number" || typeof failed !== "number") return null;
   return passed + failed;
 }
 
@@ -891,15 +1041,15 @@ export function outputFilePathFrom(vitestArgs) {
   let found = null;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (arg.startsWith('--outputFile=')) {
-      found = arg.slice('--outputFile='.length);
-    } else if (arg === '--outputFile' && i + 1 < args.length) {
+    if (arg.startsWith("--outputFile=")) {
+      found = arg.slice("--outputFile=".length);
+    } else if (arg === "--outputFile" && i + 1 < args.length) {
       found = args[i + 1];
       i += 1;
     }
   }
-  const trimmed = typeof found === 'string' ? found.trim() : '';
-  return trimmed === '' ? null : trimmed;
+  const trimmed = typeof found === "string" ? found.trim() : "";
+  return trimmed === "" ? null : trimmed;
 }
 
 export function aggregateGroupResults(groupResults) {
@@ -912,9 +1062,16 @@ export function aggregateGroupResults(groupResults) {
   // Tests-executed is measured ONLY under a name filter, so three states are distinct and must
   // stay so: `undefined` = not applicable (no filter), `null` = filter present but the count was
   // unreadable, a number = measured. Collapsing unreadable into zero would fabricate reds.
-  const measured = groupResults.filter((g) => typeof g.testsExecuted === 'number');
-  const testsExecuted = measured.length > 0 ? measured.reduce((sum, g) => sum + g.testsExecuted, 0) : null;
-  const testsUnmeasuredGroups = groupResults.filter((g) => g.testsExecuted === null).length;
+  const measured = groupResults.filter(
+    (g) => typeof g.testsExecuted === "number",
+  );
+  const testsExecuted =
+    measured.length > 0
+      ? measured.reduce((sum, g) => sum + g.testsExecuted, 0)
+      : null;
+  const testsUnmeasuredGroups = groupResults.filter(
+    (g) => g.testsExecuted === null,
+  ).length;
   // Only a clean, fully-matched, fully-launchable run is `ok` — a launch error or ANY group's
   // partial/zero match still refuses the false-green, exactly as the single-group path always did.
   const ok = !launchError && !anyUnmatched;
@@ -960,7 +1117,7 @@ export function aggregateGroupResults(groupResults) {
  * is reported as `unknown`, NEVER as `clean`. Reporting an unmeasured path as clean would
  * manufacture exactly the false confidence this exists to remove.
  */
-const PROVENANCE_UNKNOWN = 'unknown';
+const PROVENANCE_UNKNOWN = "unknown";
 
 /**
  * Content fingerprint of one file — the drift primitive. `null` for missing/unreadable, which
@@ -968,7 +1125,10 @@ const PROVENANCE_UNKNOWN = 'unknown';
  */
 export function fileFingerprint(absolute) {
   try {
-    return createHash('sha1').update(readFileSync(absolute)).digest('hex').slice(0, 12);
+    return createHash("sha1")
+      .update(readFileSync(absolute))
+      .digest("hex")
+      .slice(0, 12);
   } catch {
     return null;
   }
@@ -977,10 +1137,10 @@ export function fileFingerprint(absolute) {
 /** Short HEAD sha, or null when git cannot answer (never a fabricated value). */
 function gitHeadSha(root) {
   try {
-    const res = run('git', ['rev-parse', '--short=10', 'HEAD'], { cwd: root });
+    const res = run("git", ["rev-parse", "--short=10", "HEAD"], { cwd: root });
     if (!res || res.error || res.status !== 0) return null;
-    const sha = (res.stdout ?? '').trim();
-    return sha === '' ? null : sha;
+    const sha = (res.stdout ?? "").trim();
+    return sha === "" ? null : sha;
   } catch {
     return null;
   }
@@ -996,9 +1156,13 @@ function gitHeadSha(root) {
  */
 function gitRepoRootForPath(absolute, fallbackRoot) {
   try {
-    const res = run('git', ['-C', dirname(absolute), 'rev-parse', '--show-toplevel'], { cwd: fallbackRoot });
+    const res = run(
+      "git",
+      ["-C", dirname(absolute), "rev-parse", "--show-toplevel"],
+      { cwd: fallbackRoot },
+    );
     if (!res || res.error || res.status !== 0) return fallbackRoot;
-    const candidate = resolve((res.stdout ?? '').trim());
+    const candidate = resolve((res.stdout ?? "").trim());
     return isWithinRoot(candidate, fallbackRoot) ? candidate : fallbackRoot;
   } catch {
     return fallbackRoot;
@@ -1012,34 +1176,46 @@ function gitRepoRootForPath(absolute, fallbackRoot) {
  */
 function gitRepoDetails(absolute, root) {
   const repoRoot = gitRepoRootForPath(absolute, root);
-  const repoPath = relative(root, repoRoot) || '.';
+  const repoPath = relative(root, repoRoot) || ".";
   const details = {
     repoRoot,
     repoPath,
     repoRelativePath: relative(repoRoot, absolute),
     repoHead: gitHeadSha(repoRoot),
     superprojectPin: null,
-    pointerState: repoRoot === root ? 'not-applicable' : 'unknown',
+    pointerState: repoRoot === root ? "not-applicable" : "unknown",
   };
   if (repoRoot === root) return details;
 
   try {
-    const parent = run('git', ['-C', repoRoot, 'rev-parse', '--show-superproject-working-tree'], { cwd: root });
+    const parent = run(
+      "git",
+      ["-C", repoRoot, "rev-parse", "--show-superproject-working-tree"],
+      { cwd: root },
+    );
     if (!parent || parent.error || parent.status !== 0) return details;
-    const parentRoot = resolve((parent.stdout ?? '').trim());
+    const parentRoot = resolve((parent.stdout ?? "").trim());
     if (!parentRoot || parentRoot === repoRoot) return details;
     const parentRelativePath = relative(parentRoot, repoRoot);
-    if (!parentRelativePath || parentRelativePath.startsWith('..')) return details;
-    const staged = run('git', ['ls-files', '--stage', '--', parentRelativePath], { cwd: parentRoot });
+    if (!parentRelativePath || parentRelativePath.startsWith(".."))
+      return details;
+    const staged = run(
+      "git",
+      ["ls-files", "--stage", "--", parentRelativePath],
+      { cwd: parentRoot },
+    );
     if (!staged || staged.error || staged.status !== 0) return details;
-    const match = /^160000 ([0-9a-f]+)\s+\d+\t/.exec((staged.stdout ?? '').trim());
+    const match = /^160000 ([0-9a-f]+)\s+\d+\t/.exec(
+      (staged.stdout ?? "").trim(),
+    );
     if (!match) return details;
     details.superprojectPin = match[1];
-    details.pointerState = details.repoHead === null
-      ? 'unknown'
-      : details.superprojectPin.startsWith(details.repoHead)
-        ? 'matched'
-        : 'mismatch';
+    details.pointerState =
+      details.repoHead === null
+        ? "unknown"
+        : details.superprojectPin.startsWith(details.repoHead)
+          ? "matched"
+          : "mismatch";
   } catch {
     // Diagnostics must degrade to UNKNOWN rather than manufacture a clean pointer claim.
   }
@@ -1049,7 +1225,8 @@ function gitRepoDetails(absolute, root) {
 function groupPathsByRepo(absolutePaths, root, repositories = new Map()) {
   const groups = new Map();
   for (const absolute of absolutePaths) {
-    const details = repositories.get(absolute) ?? gitRepoDetails(absolute, root);
+    const details =
+      repositories.get(absolute) ?? gitRepoDetails(absolute, root);
     repositories.set(absolute, details);
     const group = groups.get(details.repoRoot) ?? { ...details, paths: [] };
     group.paths.push(absolute);
@@ -1079,20 +1256,33 @@ function groupPathsByRepo(absolutePaths, root, repositories = new Map()) {
 function gitPathStates(absolutePaths, root, repositories = new Map()) {
   const states = new Map(
     absolutePaths.map((absolute) => {
-      const details = repositories.get(absolute) ?? gitRepoDetails(absolute, root);
+      const details =
+        repositories.get(absolute) ?? gitRepoDetails(absolute, root);
       repositories.set(absolute, details);
       return [absolute, { state: PROVENANCE_UNKNOWN, ...details }];
     }),
   );
   if (absolutePaths.length === 0) return states;
 
-  for (const group of groupPathsByRepo(absolutePaths, root, repositories).values()) {
-    const relativePaths = group.paths.map((absolute) => relative(group.repoRoot, absolute));
+  for (const group of groupPathsByRepo(
+    absolutePaths,
+    root,
+    repositories,
+  ).values()) {
+    const relativePaths = group.paths.map((absolute) =>
+      relative(group.repoRoot, absolute),
+    );
     let tracked;
     let status;
     try {
-      tracked = run('git', ['ls-files', '-z', '--', ...relativePaths], { cwd: group.repoRoot });
-      status = run('git', ['status', '--porcelain', '-z', '--', ...relativePaths], { cwd: group.repoRoot });
+      tracked = run("git", ["ls-files", "-z", "--", ...relativePaths], {
+        cwd: group.repoRoot,
+      });
+      status = run(
+        "git",
+        ["status", "--porcelain", "-z", "--", ...relativePaths],
+        { cwd: group.repoRoot },
+      );
     } catch {
       continue;
     }
@@ -1101,8 +1291,8 @@ function gitPathStates(absolutePaths, root, repositories = new Map()) {
     if (!status || status.error || status.status !== 0) continue;
 
     const trackedSet = new Set(
-      (tracked.stdout ?? '')
-        .split('\0')
+      (tracked.stdout ?? "")
+        .split("\0")
         .filter(Boolean)
         .map((p) => resolve(group.repoRoot, p)),
     );
@@ -1110,10 +1300,13 @@ function gitPathStates(absolutePaths, root, repositories = new Map()) {
     // ignored outright — both read `untracked` on the banner.
     for (const absolute of group.paths) {
       const current = states.get(absolute);
-      states.set(absolute, { ...current, state: trackedSet.has(absolute) ? 'clean' : 'untracked' });
+      states.set(absolute, {
+        ...current,
+        state: trackedSet.has(absolute) ? "clean" : "untracked",
+      });
     }
 
-    for (const record of (status.stdout ?? '').split('\0')) {
+    for (const record of (status.stdout ?? "").split("\0")) {
       if (record.length < 4) continue;
       const code = record.slice(0, 2);
       const reported = record.slice(3);
@@ -1121,16 +1314,19 @@ function gitPathStates(absolutePaths, root, repositories = new Map()) {
       const absolute = resolve(group.repoRoot, reported);
       if (!states.has(absolute)) continue;
       const current = states.get(absolute);
-      states.set(absolute, { ...current, state: code === '??' || code === '!!' ? 'untracked' : 'dirty' });
+      states.set(absolute, {
+        ...current,
+        state: code === "??" || code === "!!" ? "untracked" : "dirty",
+      });
     }
   }
 
   // A nested repository can be clean while checked out at a commit different from the
   // superproject's gitlink. Preserve the existing state vocabulary but make that mismatch loud.
   for (const [absolute, entry] of states) {
-    if (entry.pointerState === 'mismatch' && entry.state === 'clean') {
-      states.set(absolute, { ...entry, state: 'dirty' });
-    } else if (entry.pointerState === 'unknown' && entry.state === 'clean') {
+    if (entry.pointerState === "mismatch" && entry.state === "clean") {
+      states.set(absolute, { ...entry, state: "dirty" });
+    } else if (entry.pointerState === "unknown" && entry.state === "clean") {
       states.set(absolute, { ...entry, state: PROVENANCE_UNKNOWN });
     }
   }
@@ -1142,22 +1338,30 @@ function gitLineDeltas(absolutePaths, root, repositories = new Map()) {
   const deltas = new Map();
   if (absolutePaths.length === 0) return deltas;
 
-  for (const group of groupPathsByRepo(absolutePaths, root, repositories).values()) {
-    const relativePaths = group.paths.map((absolute) => relative(group.repoRoot, absolute));
+  for (const group of groupPathsByRepo(
+    absolutePaths,
+    root,
+    repositories,
+  ).values()) {
+    const relativePaths = group.paths.map((absolute) =>
+      relative(group.repoRoot, absolute),
+    );
     let res;
     try {
-      res = run('git', ['diff', '--numstat', 'HEAD', '--', ...relativePaths], { cwd: group.repoRoot });
+      res = run("git", ["diff", "--numstat", "HEAD", "--", ...relativePaths], {
+        cwd: group.repoRoot,
+      });
     } catch {
       continue;
     }
     if (!res || res.error || res.status !== 0) continue;
-    for (const line of (res.stdout ?? '').split('\n')) {
+    for (const line of (res.stdout ?? "").split("\n")) {
       const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
       if (!match) continue;
       const absolute = resolve(group.repoRoot, match[3]);
       deltas.set(absolute, {
-        added: match[1] === '-' ? null : Number(match[1]),
-        deleted: match[2] === '-' ? null : Number(match[2]),
+        added: match[1] === "-" ? null : Number(match[1]),
+        deleted: match[2] === "-" ? null : Number(match[2]),
       });
     }
   }
@@ -1187,20 +1391,24 @@ export function snapshotProvenance(absolutePaths, root = REPO_ROOT) {
 
 /** `[DIRTY +30/-0]` / `[clean]` / `[UNTRACKED]` / `[state UNKNOWN]` — the per-path suffix. */
 function repoEvidenceLabel(entry) {
-  if (!entry.repoPath || entry.repoPath === '.') return '';
-  return ` repo=${entry.repoPath} repoHead=${entry.repoHead ?? PROVENANCE_UNKNOWN} ` +
-    `superprojectPin=${entry.superprojectPin ?? PROVENANCE_UNKNOWN} pointer=${entry.pointerState ?? 'unknown'}`;
+  if (!entry.repoPath || entry.repoPath === ".") return "";
+  return (
+    ` repo=${entry.repoPath} repoHead=${entry.repoHead ?? PROVENANCE_UNKNOWN} ` +
+    `superprojectPin=${entry.superprojectPin ?? PROVENANCE_UNKNOWN} pointer=${entry.pointerState ?? "unknown"}`
+  );
 }
 
 function stateLabel(entry) {
   const repo = repoEvidenceLabel(entry);
-  if (entry.state === 'clean') return `[clean${repo}]`;
-  if (entry.state === 'untracked') return `[UNTRACKED — exists only on this box${repo}]`;
-  if (entry.state === PROVENANCE_UNKNOWN) return `[state UNKNOWN — git could not be read${repo}]`;
+  if (entry.state === "clean") return `[clean${repo}]`;
+  if (entry.state === "untracked")
+    return `[UNTRACKED — exists only on this box${repo}]`;
+  if (entry.state === PROVENANCE_UNKNOWN)
+    return `[state UNKNOWN — git could not be read${repo}]`;
   const counts =
-    typeof entry.added === 'number' && typeof entry.deleted === 'number'
+    typeof entry.added === "number" && typeof entry.deleted === "number"
       ? ` +${entry.added}/-${entry.deleted}`
-      : '';
+      : "";
   return `[DIRTY${counts}${repo}]`;
 }
 
@@ -1214,7 +1422,9 @@ function stateLabel(entry) {
  */
 export function formatProvenanceBanner(snapshot, phase) {
   const entries = snapshot.entries ?? [];
-  const unreproducible = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked');
+  const unreproducible = entries.filter(
+    (e) => e.state === "dirty" || e.state === "untracked",
+  );
   const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN);
   const head = snapshot.head ?? PROVENANCE_UNKNOWN;
   const lines = [
@@ -1223,16 +1433,18 @@ export function formatProvenanceBanner(snapshot, phase) {
     `  HEAD         : ${head}`,
   ];
   entries.forEach((entry, index) => {
-    lines.push(`  ${index === 0 ? 'tested files :' : '              '} ${entry.path}  ${stateLabel(entry)}`);
+    lines.push(
+      `  ${index === 0 ? "tested files :" : "              "} ${entry.path}  ${stateLabel(entry)}`,
+    );
   });
   lines.push(
-    '  scope        : the NAMED paths above only — an edit to any OTHER module in their import ' +
-      'graph invalidates this result just as thoroughly and is NOT measured here',
+    "  scope        : the NAMED paths above only — an edit to any OTHER module in their import " +
+      "graph invalidates this result just as thoroughly and is NOT measured here",
   );
   if (unreproducible.length > 0) {
     lines.push(
       `  ⚠ ${unreproducible.length} of ${entries.length} tested path(s) carry uncommitted changes — this result ` +
-        'describes LOCAL state and is not reproducible by anyone else. Cite it with this stamp or not at all.',
+        "describes LOCAL state and is not reproducible by anyone else. Cite it with this stamp or not at all.",
     );
   }
   if (unknown.length > 0) {
@@ -1240,7 +1452,7 @@ export function formatProvenanceBanner(snapshot, phase) {
       `  ⚠ ${unknown.length} path(s) could not be measured — treat their state as UNKNOWN, not as clean.`,
     );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 /**
@@ -1250,17 +1462,26 @@ export function formatProvenanceBanner(snapshot, phase) {
  * unreadable mid-run is precisely the case where a silent `unchanged` would be a lie.
  */
 export function diffProvenanceSnapshots(before, after) {
-  const afterByPath = new Map((after?.entries ?? []).map((e) => [e.absolute, e]));
+  const afterByPath = new Map(
+    (after?.entries ?? []).map((e) => [e.absolute, e]),
+  );
   const changed = [];
   const uncomparable = [];
   for (const prior of before?.entries ?? []) {
     const now = afterByPath.get(prior.absolute);
     if (!now) continue;
     if (prior.fingerprint === null || now.fingerprint === null) {
-      uncomparable.push({ path: prior.path, reason: now.fingerprint === null ? 'unreadable after the run' : 'unreadable before the run' });
+      uncomparable.push({
+        path: prior.path,
+        reason:
+          now.fingerprint === null
+            ? "unreadable after the run"
+            : "unreadable before the run",
+      });
       continue;
     }
-    if (prior.fingerprint !== now.fingerprint) changed.push({ path: prior.path });
+    if (prior.fingerprint !== now.fingerprint)
+      changed.push({ path: prior.path });
   }
   const headMoved =
     before?.head != null && after?.head != null && before.head !== after.head
@@ -1283,17 +1504,25 @@ export function diffProvenanceSnapshots(before, after) {
  * provenance is UNKNOWN: this runner measures only the named test files, not their import graph.
  */
 export function formatProvenanceDrift(diff) {
-  if (!diff || (diff.changed.length === 0 && diff.uncomparable.length === 0 && !diff.headMoved)) return null;
+  if (
+    !diff ||
+    (diff.changed.length === 0 &&
+      diff.uncomparable.length === 0 &&
+      !diff.headMoved)
+  )
+    return null;
   const lines = [];
   if (diff.changed.length > 0 || diff.uncomparable.length > 0) {
     lines.push(
       `TEST_FILE_PROVENANCE_DRIFT changed=${diff.changed.length} uncomparable=${diff.uncomparable.length} ` +
-        `headMoved=${diff.headMoved ? `${diff.headMoved.from}->${diff.headMoved.to}` : 'no'}; ` +
-        'a tested path CHANGED WHILE THIS RUN WAS EXECUTING — the result below describes NEITHER the ' +
-        'state it started on nor the state on disk now. Re-run before citing it as evidence.',
+        `headMoved=${diff.headMoved ? `${diff.headMoved.from}->${diff.headMoved.to}` : "no"}; ` +
+        "a tested path CHANGED WHILE THIS RUN WAS EXECUTING — the result below describes NEITHER the " +
+        "state it started on nor the state on disk now. Re-run before citing it as evidence.",
     );
-    for (const c of diff.changed) lines.push(`  ~ ${c.path} — content changed mid-run`);
-    for (const u of diff.uncomparable) lines.push(`  ? ${u.path} — ${u.reason}; drift UNKNOWN`);
+    for (const c of diff.changed)
+      lines.push(`  ~ ${c.path} — content changed mid-run`);
+    for (const u of diff.uncomparable)
+      lines.push(`  ? ${u.path} — ${u.reason}; drift UNKNOWN`);
   } else {
     // HEAD moved but no NAMED test path changed. That is not direct evidence of drift, but neither
     // is it evidence that the measurement still stands: an imported production module may be the
@@ -1301,11 +1530,11 @@ export function formatProvenanceDrift(diff) {
     // only honest verdict is UNKNOWN and a settled-HEAD rerun.
     lines.push(
       `TEST_FILE_PROVENANCE_HEAD_MOVED from=${diff.headMoved.from} to=${diff.headMoved.to}; ` +
-        'the named test paths did not change, but their imported source/change radius was not measured. ' +
-        'Result provenance is UNKNOWN; re-run at settled HEAD before citing it as evidence.',
+        "the named test paths did not change, but their imported source/change radius was not measured. " +
+        "Result provenance is UNKNOWN; re-run at settled HEAD before citing it as evidence.",
     );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 /**
@@ -1324,13 +1553,15 @@ export function formatProvenanceDrift(diff) {
 export function provenanceResultFields(snapshot, diff) {
   const entries = snapshot?.entries ?? [];
   const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN).length;
-  const uncommitted = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked').length;
+  const uncommitted = entries.filter(
+    (e) => e.state === "dirty" || e.state === "untracked",
+  ).length;
   const verdict =
     diff?.drifted || (diff?.uncomparable?.length ?? 0) > 0
-      ? 'drifted'
+      ? "drifted"
       : diff?.headMoved || snapshot?.head == null || unknown > 0
         ? PROVENANCE_UNKNOWN
-        : 'stamped';
+        : "stamped";
   return (
     `head=${snapshot?.head ?? PROVENANCE_UNKNOWN} ` +
     `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}`
@@ -1338,25 +1569,28 @@ export function provenanceResultFields(snapshot, diff) {
 }
 
 function parseCli(argv) {
-  const separator = argv.indexOf('--');
+  const separator = argv.indexOf("--");
   // Keep the explicit separator form, but also accept the way npm users naturally forward
   // options (`test:file -- file -t pattern`). Once the first option appears, the remainder is
   // Vitest's argv; `--dry` is this router's own option and may still appear before it.
-  const firstVitestArg = separator < 0
-    ? argv.findIndex((arg) => arg !== '--dry' && arg.startsWith('-'))
-    : -1;
-  const own = separator >= 0
-    ? argv.slice(0, separator)
-    : firstVitestArg >= 0
-      ? argv.slice(0, firstVitestArg)
-      : argv;
-  const vitestArgs = separator >= 0
-    ? argv.slice(separator + 1)
-    : firstVitestArg >= 0
-      ? argv.slice(firstVitestArg)
-      : [];
-  const dry = own.includes('--dry');
-  const files = own.filter((arg) => arg !== '--dry');
+  const firstVitestArg =
+    separator < 0
+      ? argv.findIndex((arg) => arg !== "--dry" && arg.startsWith("-"))
+      : -1;
+  const own =
+    separator >= 0
+      ? argv.slice(0, separator)
+      : firstVitestArg >= 0
+        ? argv.slice(0, firstVitestArg)
+        : argv;
+  const vitestArgs =
+    separator >= 0
+      ? argv.slice(separator + 1)
+      : firstVitestArg >= 0
+        ? argv.slice(firstVitestArg)
+        : [];
+  const dry = own.includes("--dry");
+  const files = own.filter((arg) => arg !== "--dry");
   // WI-39830: normalize the name filter to the joined form ONCE, here, so every downstream
   // consumer of `vitestArgs` gets it — the main `vitest run` spawn, the per-file fallback
   // re-run, and `nameFilterFrom` (which already accepts both forms) alike.
@@ -1364,7 +1598,7 @@ function parseCli(argv) {
 }
 
 function run(command, args, options) {
-  return spawnSync(command, args, { encoding: 'utf8', ...options });
+  return spawnSync(command, args, { encoding: "utf8", ...options });
 }
 
 // The supported testing:run surface uses the same five-minute whole-run budget. Keep the direct
@@ -1374,17 +1608,20 @@ export const TEST_FILE_RUN_TIMEOUT_MS = 300_000;
 export const TEST_FILE_PROGRESS_INTERVAL_MS = 10_000;
 const TEST_FILE_KILL_GRACE_MS = 2_000;
 const TEST_FILE_MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
-const SETSID_PATH = process.platform === 'linux'
-  ? ['/usr/bin/setsid', '/bin/setsid'].find((candidate) => existsSync(candidate)) ?? null
-  : null;
+const SETSID_PATH =
+  process.platform === "linux"
+    ? (["/usr/bin/setsid", "/bin/setsid"].find((candidate) =>
+        existsSync(candidate),
+      ) ?? null)
+    : null;
 
 function defaultKillOwnedProcess(child, signal, ownsProcessGroup) {
   if (ownsProcessGroup) return killSpawnedProcessTree(child, signal);
   try {
     child.kill(signal);
-    return 'child';
+    return "child";
   } catch {
-    return 'gone';
+    return "gone";
   }
 }
 
@@ -1404,7 +1641,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     cwd,
     env,
     files = [],
-    cwdLabel = cwd ?? '.',
+    cwdLabel = cwd ?? ".",
     timeoutMs = TEST_FILE_RUN_TIMEOUT_MS,
     progressIntervalMs = TEST_FILE_PROGRESS_INTERVAL_MS,
     killGraceMs = TEST_FILE_KILL_GRACE_MS,
@@ -1416,19 +1653,19 @@ export function runCapturedTestProcess(command, args, options = {}) {
   } = options;
   const ownsProcessGroup = Boolean(setsidPath);
   const spawnCommand = setsidPath ?? command;
-  const spawnArgs = setsidPath ? ['--wait', command, ...args] : args;
+  const spawnArgs = setsidPath ? ["--wait", command, ...args] : args;
   const startedAt = Date.now();
 
   return new Promise((resolveRun) => {
     const child = spawnImpl(spawnCommand, spawnArgs, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout = [];
     const stderr = [];
     const completedFiles = new Set();
-    const progressRemainders = { stdout: '', stderr: '' };
+    const progressRemainders = { stdout: "", stderr: "" };
     let capturedBytes = 0;
     let spawnError = null;
     let captureError = null;
@@ -1438,11 +1675,22 @@ export function runCapturedTestProcess(command, args, options = {}) {
     let forceTimer = null;
     const signalForwarders = new Map();
 
-    const normalized = (file) => String(file).replaceAll('\\', '/');
+    const normalized = (file) => String(file).replaceAll("\\", "/");
     const requestedFiles = files.map(normalized);
-    const emitProgress = (state, status = null, signal = null, isSettled = false) => {
-      const pendingFiles = requestedFiles.filter((file) => !completedFiles.has(file));
-      const outcome = formatTaskOutcomeFields({ status, signal, settled: isSettled });
+    const emitProgress = (
+      state,
+      status = null,
+      signal = null,
+      isSettled = false,
+    ) => {
+      const pendingFiles = requestedFiles.filter(
+        (file) => !completedFiles.has(file),
+      );
+      const outcome = formatTaskOutcomeFields({
+        status,
+        signal,
+        settled: isSettled,
+      });
       onProgress(
         `TEST_FILE_PROGRESS state=${state} cwd=${JSON.stringify(cwdLabel)} ` +
           `elapsedMs=${Date.now() - startedAt} capturedBytes=${capturedBytes} ` +
@@ -1455,24 +1703,25 @@ export function runCapturedTestProcess(command, args, options = {}) {
       try {
         return killProcessImpl(child, signal, ownsProcessGroup);
       } catch {
-        return 'gone';
+        return "gone";
       }
     };
     const terminate = (state) => {
       if (terminationStarted || settled) return;
       terminationStarted = true;
-      if (state === 'timeout') timedOut = true;
+      if (state === "timeout") timedOut = true;
       emitProgress(state);
-      killOwned('SIGTERM');
+      killOwned("SIGTERM");
       forceTimer = setTimeout(() => {
         if (settled) return;
-        emitProgress('reaping');
-        killOwned('SIGKILL');
+        emitProgress("reaping");
+        killOwned("SIGKILL");
       }, killGraceMs);
       forceTimer.unref?.();
     };
     const removeSignalForwarders = () => {
-      for (const [signal, handler] of signalForwarders) process.removeListener(signal, handler);
+      for (const [signal, handler] of signalForwarders)
+        process.removeListener(signal, handler);
       signalForwarders.clear();
     };
     // `setsid` deliberately makes the Vitest tree a nested process group so this watchdog can
@@ -1482,11 +1731,11 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // this cleanup-only path because the parent is already terminating and cannot stay alive for a
     // grace timer; the normal watchdog path above still performs TERM -> bounded grace -> KILL.
     if (ownsProcessGroup) {
-      for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+      for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
         const handler = () => {
           if (settled) return;
           emitProgress(`parent-${signal.toLowerCase()}`);
-          killOwned('SIGKILL');
+          killOwned("SIGKILL");
           removeSignalForwarders();
           process.kill(process.pid, signal);
         };
@@ -1495,8 +1744,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
       }
     }
     const noteCompletedFiles = (channel, chunk) => {
-      const combined = progressRemainders[channel] + chunk.toString('utf8');
-      const lastNewline = combined.lastIndexOf('\n');
+      const combined = progressRemainders[channel] + chunk.toString("utf8");
+      const lastNewline = combined.lastIndexOf("\n");
       if (lastNewline < 0) {
         progressRemainders[channel] = combined.slice(-16_384);
         return false;
@@ -1504,8 +1753,11 @@ export function runCapturedTestProcess(command, args, options = {}) {
       const completeLines = combined.slice(0, lastNewline + 1);
       progressRemainders[channel] = combined.slice(lastNewline + 1);
       const before = completedFiles.size;
-      const progress = parseBatchProgress(completeLines, { totalFiles: requestedFiles.length });
-      for (const file of progress.completedFilePaths) completedFiles.add(normalized(file));
+      const progress = parseBatchProgress(completeLines, {
+        totalFiles: requestedFiles.length,
+      });
+      for (const file of progress.completedFilePaths)
+        completedFiles.add(normalized(file));
       return completedFiles.size > before;
     };
     const capture = (channel, chunks) => (value) => {
@@ -1515,44 +1767,48 @@ export function runCapturedTestProcess(command, args, options = {}) {
         chunks.push(chunk);
       } else if (!captureError) {
         captureError = Object.assign(
-          new Error(`test child exceeded the ${maxBuffer}-byte capture ceiling`),
-          { code: 'ENOBUFS' },
+          new Error(
+            `test child exceeded the ${maxBuffer}-byte capture ceiling`,
+          ),
+          { code: "ENOBUFS" },
         );
-        terminate('output-limit');
+        terminate("output-limit");
       }
-      if (noteCompletedFiles(channel, chunk)) emitProgress('file-completed');
+      if (noteCompletedFiles(channel, chunk)) emitProgress("file-completed");
     };
 
-    child.stdout?.on('data', capture('stdout', stdout));
-    child.stderr?.on('data', capture('stderr', stderr));
-    child.once('error', (error) => { spawnError = error; });
+    child.stdout?.on("data", capture("stdout", stdout));
+    child.stderr?.on("data", capture("stderr", stderr));
+    child.once("error", (error) => {
+      spawnError = error;
+    });
 
     let progressTimer = null;
     const scheduleProgress = () => {
       progressTimer = setTimeout(() => {
         if (settled) return;
-        emitProgress('running');
+        emitProgress("running");
         scheduleProgress();
       }, progressIntervalMs);
       progressTimer.unref?.();
     };
     scheduleProgress();
-    const timeoutTimer = setTimeout(() => terminate('timeout'), timeoutMs);
+    const timeoutTimer = setTimeout(() => terminate("timeout"), timeoutMs);
     timeoutTimer.unref?.();
-    emitProgress('started');
+    emitProgress("started");
 
-    child.once('close', (status, signal) => {
+    child.once("close", (status, signal) => {
       settled = true;
       removeSignalForwarders();
       if (progressTimer) clearTimeout(progressTimer);
       clearTimeout(timeoutTimer);
       if (forceTimer) clearTimeout(forceTimer);
-      emitProgress('finished', status, signal, true);
+      emitProgress("finished", status, signal, true);
       resolveRun({
         status,
         signal,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
         error: spawnError ?? captureError,
         timedOut,
       });
@@ -1564,16 +1820,26 @@ export function runCapturedTestProcess(command, args, options = {}) {
 // CLI refusal actionable: a bare TEST_FILE_ROUTE_ERROR leaves agents guessing
 // whether to retry the same command, hand-pick a Vitest config, or use the tool
 // that already owns this routing contract.
-export const TESTING_RUN_GUIDANCE = 'For the supported routed test surface, use testing:run { files: [...] }.';
+export const TESTING_RUN_GUIDANCE =
+  "For the supported routed test surface, use testing:run { files: [...] }.";
 
 export function formatRouteError(detail) {
   return `TEST_FILE_ROUTE_ERROR ${detail}; ${TESTING_RUN_GUIDANCE}`;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+/**
+ * @param {string[]} [argv]
+ * @param {{runCapturedTestProcessImpl?: typeof runCapturedTestProcess}} [options]
+ */
+export async function main(
+  argv = process.argv.slice(2),
+  { runCapturedTestProcessImpl = runCapturedTestProcess } = {},
+) {
   const { dry, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
-    console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
+    console.error(
+      "usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]",
+    );
     return 2;
   }
 
@@ -1584,8 +1850,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (testFiles.length === 0) {
     console.error(
       formatRouteError(
-        'no test paths were requested after filtering unsupported non-test inputs; ' +
-          'pass a *.test.* or *.spec.* file',
+        "no test paths were requested after filtering unsupported non-test inputs; " +
+          "pass a *.test.* or *.spec.* file",
       ),
     );
     return 2;
@@ -1593,20 +1859,28 @@ export async function main(argv = process.argv.slice(2)) {
 
   let routes;
   try {
-    routes = testFiles.map((file) => discoverTestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
+    routes = testFiles.map((file) =>
+      discoverTestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file),
+    );
   } catch (error) {
-    console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
+    console.error(
+      formatRouteError(error instanceof Error ? error.message : String(error)),
+    );
     return 2;
   }
 
   const groups = groupRoutes(routes);
   const nameFilter = nameFilterFrom(vitestArgs);
-  console.log(`TEST_FILE_ROUTE requested=${routes.length} groups=${groups.length}`);
+  console.log(
+    `TEST_FILE_ROUTE requested=${routes.length} groups=${groups.length}`,
+  );
   // EI-18681435059177620: stamp WHAT IS ABOUT TO BE MEASURED before measuring it. Printed up front
   // as well as at the end because a run that is killed, hung, or timed out by its caller still has
   // to say which state it was describing — that partial log is exactly the one that gets pasted.
-  const provenanceBefore = snapshotProvenance(routes.map((route) => route.absolute));
-  console.log(formatProvenanceBanner(provenanceBefore, 'pre-run'));
+  const provenanceBefore = snapshotProvenance(
+    routes.map((route) => route.absolute),
+  );
+  console.log(formatProvenanceBanner(provenanceBefore, "pre-run"));
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
@@ -1623,25 +1897,35 @@ export async function main(argv = process.argv.slice(2)) {
   // individually by hand — exactly the documented fallback, just not auto-attributed.
   const MULTI_FILE_ATTRIBUTION_CAP = 25;
   for (const [groupIndex, group] of groups.entries()) {
-    const cwdLabel = relative(REPO_ROOT, group.cwd) || '.';
-    if (group.runner === 'node') {
+    const cwdLabel = relative(REPO_ROOT, group.cwd) || ".";
+    if (group.runner === "node") {
       const exact = group.routes.map((route) => route.requested);
       console.log(`ROUTE cwd=${cwdLabel} runner=node:test`);
       for (const file of exact) console.log(`  requested ${file}`);
-      const result = spawnSync(process.execPath, ['--test', ...exact, ...vitestArgs], {
-        cwd: group.cwd,
-        env: process.env,
-        encoding: 'utf8',
-        maxBuffer: 256 * 1024 * 1024,
-      });
+      const result = spawnSync(
+        process.execPath,
+        ["--test", ...exact, ...vitestArgs],
+        {
+          cwd: group.cwd,
+          env: process.env,
+          encoding: "utf8",
+          maxBuffer: 256 * 1024 * 1024,
+        },
+      );
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.error) {
-        console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Node:test: ${result.error.message}`));
+        console.error(
+          formatRouteError(
+            `(group cwd=${cwdLabel}) could not launch Node:test: ${result.error.message}`,
+          ),
+        );
       }
       const groupFailed = Boolean(result.error) || result.status !== 0;
       if (groupFailed) {
-        console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} runner=node:test executed=${result.error ? 0 : exact.length} status=failed`);
+        console.error(
+          `TEST_FILE_GROUP_RESULT cwd=${cwdLabel} runner=node:test executed=${result.error ? 0 : exact.length} status=failed`,
+        );
       }
       groupResults.push({
         requested: group.routes.length,
@@ -1655,25 +1939,39 @@ export async function main(argv = process.argv.slice(2)) {
     }
     // EI-18822211427354845: each group writes its OWN report file when the run spans
     // several groups, so one group's report can never overwrite another's.
-    const groupVitestArgs = perGroupVitestArgs(vitestArgs, groupIndex, groups.length);
+    const groupVitestArgs = perGroupVitestArgs(
+      vitestArgs,
+      groupIndex,
+      groups.length,
+    );
     const requested = group.routes.map((route) => route.requested);
     // A null config is a config-less Vitest package (libs/generic/* shape): omit `--config`
     // entirely so Vitest auto-discovers its defaults from the package cwd, exactly as its own
     // documented `npm test` (`vitest run`) does.
-    const configArgs = group.config ? ['--config', group.config] : [];
-    console.log(`ROUTE cwd=${cwdLabel} config=${group.config ?? '(package default)'}`);
+    const configArgs = group.config ? ["--config", group.config] : [];
+    console.log(
+      `ROUTE cwd=${cwdLabel} config=${group.config ?? "(package default)"}`,
+    );
     for (const file of requested) console.log(`  requested ${file}`);
 
     warnIfInstallInFlight(`\`vitest list\` (group cwd=${cwdLabel})`);
     // Vitest 4's default tree output omits files whose collected tests are all skipped.
     // File-level output keeps the route guard about requested FILES, not runnable tests.
-    const listed = run('npx', ['vitest', 'list', '--filesOnly', ...configArgs, ...requested], {
-      cwd: group.cwd,
-      env: process.env,
-    });
-    const listedOutput = `${listed.stdout ?? ''}\n${listed.stderr ?? ''}${listed.error ? listed.error.message : ''}`;
+    const listed = run(
+      "npx",
+      ["vitest", "list", "--filesOnly", ...configArgs, ...requested],
+      {
+        cwd: group.cwd,
+        env: process.env,
+      },
+    );
+    const listedOutput = `${listed.stdout ?? ""}\n${listed.stderr ?? ""}${listed.error ? listed.error.message : ""}`;
     if (listed.error) {
-      console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${listed.error.message}`));
+      console.error(
+        formatRouteError(
+          `(group cwd=${cwdLabel}) could not launch Vitest: ${listed.error.message}`,
+        ),
+      );
       if (looksLikeMidInstallCorruption(listedOutput)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -1687,19 +1985,30 @@ export async function main(argv = process.argv.slice(2)) {
       });
       continue;
     }
-    const listedMatches = listedFiles(`${listed.stdout ?? ''}\n${listed.stderr ?? ''}`, group.cwd, true);
+    const listedMatches = listedFiles(
+      `${listed.stdout ?? ""}\n${listed.stderr ?? ""}`,
+      group.cwd,
+      true,
+    );
     // EI-21108362231170830: do not trust every path Vitest emits after an explicit request. A
     // matching test in `.papercusp/worktrees/` is not part of this run and must never reach the
     // exact `vitest run` argument list below.
     const matched = canonicalMatch(group.routes, listedMatches);
-    const verdict = evaluateMatch({ routes: group.routes, matched, listStatus: listed.status });
+    const verdict = evaluateMatch({
+      routes: group.routes,
+      matched,
+      listStatus: listed.status,
+    });
     if (!verdict.ok) {
       if (listed.stdout) process.stdout.write(listed.stdout);
       if (listed.stderr) process.stderr.write(listed.stderr);
-      for (const route of verdict.unmatched) console.error(`  unmatched ${route.requested}`);
-      console.error(formatRouteError(
-        `(group cwd=${cwdLabel}) requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run for this group`,
-      ));
+      for (const route of verdict.unmatched)
+        console.error(`  unmatched ${route.requested}`);
+      console.error(
+        formatRouteError(
+          `(group cwd=${cwdLabel}) requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run for this group`,
+        ),
+      );
       if (looksLikeMidInstallCorruption(listedOutput)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -1716,20 +2025,32 @@ export async function main(argv = process.argv.slice(2)) {
       if (transformMarker) {
         console.error(transformMarker);
         attributionMarkers.push(transformMarker);
-      } else if (group.routes.length > 1 && group.routes.length <= MULTI_FILE_ATTRIBUTION_CAP) {
+      } else if (
+        group.routes.length > 1 &&
+        group.routes.length <= MULTI_FILE_ATTRIBUTION_CAP
+      ) {
         // EI-19467022057492490: no esbuild culprit found, but a multi-file group's whole `vitest
         // list` still failed — re-list each requested file ALONE so a lone runtime collection
         // crash (e.g. a vi.mock factory throw) doesn't misattribute every OTHER healthy file in
         // the batch as broken. Deliberately only for multi-file groups: a single-file group's
         // error already IS about the one file the caller named — no ambiguity to resolve.
         const perFile = group.routes.map((route) => {
-          const singleListed = run('npx', ['vitest', 'list', '--filesOnly', ...configArgs, route.requested], {
-            cwd: group.cwd,
-            env: process.env,
-          });
-          const singleOutput = `${singleListed.stdout ?? ''}\n${singleListed.stderr ?? ''}`;
+          const singleListed = run(
+            "npx",
+            ["vitest", "list", "--filesOnly", ...configArgs, route.requested],
+            {
+              cwd: group.cwd,
+              env: process.env,
+            },
+          );
+          const singleOutput = `${singleListed.stdout ?? ""}\n${singleListed.stderr ?? ""}`;
           const singleMatched = listedFiles(singleOutput, group.cwd, true);
-          return { requested: route.requested, ok: singleListed.status === 0 && singleMatched.includes(route.absolute) };
+          return {
+            requested: route.requested,
+            ok:
+              singleListed.status === 0 &&
+              singleMatched.includes(route.absolute),
+          };
         });
         const attributionMarker = collectionAttributionMarker({
           perFile,
@@ -1752,7 +2073,8 @@ export async function main(argv = process.argv.slice(2)) {
       });
       continue;
     }
-    for (const file of matched) console.log(`  matched ${relative(group.cwd, file)}`);
+    for (const file of matched)
+      console.log(`  matched ${relative(group.cwd, file)}`);
     if (dry) {
       groupResults.push({
         requested: verdict.requested,
@@ -1770,9 +2092,9 @@ export async function main(argv = process.argv.slice(2)) {
     // below; forwarded verbatim on completion so nothing is lost for a live TTY. The ASYNC seam
     // emits bounded progress separately while retaining the existing 256MB capture ceiling.
     warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
-    const result = await runCapturedTestProcess(
-      'npx',
-      ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
+    const result = await runCapturedTestProcessImpl(
+      "npx",
+      ["vitest", "run", ...configArgs, ...exact, ...groupVitestArgs],
       { cwd: group.cwd, env: process.env, files: exact, cwdLabel },
     );
     if (result.stdout) process.stdout.write(result.stdout);
@@ -1784,7 +2106,11 @@ export async function main(argv = process.argv.slice(2)) {
       );
     }
     if (result.error) {
-      console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
+      console.error(
+        formatRouteError(
+          `(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`,
+        ),
+      );
       if (looksLikeMidInstallCorruption(result.error.message)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -1798,18 +2124,23 @@ export async function main(argv = process.argv.slice(2)) {
       });
       continue;
     }
-    const runOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    const groupFailed = vitestRunFailed({ status: result.status, output: runOutput });
+    const runOutput = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    const groupFailed = vitestRunFailed({
+      status: result.status,
+      output: runOutput,
+    });
     if (result.status === 0 && groupFailed) {
       const summary = parseSummaryFailedCounts(runOutput);
       console.error(
         `⚠ Vitest exited 0 but its summary reports ${summary?.testFiles ?? 0} failed test file(s) / ` +
           `${summary?.tests ?? 0} failed test(s) — treating this group as failed ` +
-          '(EI-21124682504777505: an exit-code/summary mismatch must not read as green)',
+          "(EI-21124682504777505: an exit-code/summary mismatch must not read as green)",
       );
     }
     if (groupFailed) {
-      console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
+      console.error(
+        `TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`,
+      );
       if (looksLikeMidInstallCorruption(runOutput)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -1823,9 +2154,15 @@ export async function main(argv = process.argv.slice(2)) {
         );
         for (const file of exact) {
           console.error(`\n>>> re-running ${file} alone for detail`);
-          const detailResult = await runCapturedTestProcess(
-            'npx',
-            ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
+          const detailResult = await runCapturedTestProcessImpl(
+            "npx",
+            [
+              "vitest",
+              "run",
+              ...configArgs,
+              file,
+              ...withoutOutputFileArg(vitestArgs),
+            ],
             {
               cwd: group.cwd,
               env: process.env,
@@ -1859,8 +2196,11 @@ export async function main(argv = process.argv.slice(2)) {
       // `??` and not `||`: a measured 0 is the whole point of this check and must NOT be
       // retried as if it were unreadable.
       testsExecuted: nameFilter
-        ? testsExecutedFromReport(outputFilePathFrom(groupVitestArgs), group.cwd) ??
-          testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
+        ? (testsExecutedFromReport(
+            outputFilePathFrom(groupVitestArgs),
+            group.cwd,
+          ) ??
+          testsExecutedFrom(`${result.stdout ?? ""}\n${result.stderr ?? ""}`))
         : undefined,
       unmatchedCount: 0,
       failed: groupFailed,
@@ -1871,9 +2211,11 @@ export async function main(argv = process.argv.slice(2)) {
   const summary = aggregateGroupResults(groupResults);
   if (summary.launchError) return 2;
   if (summary.anyUnmatched) {
-    console.error(formatRouteError(
-      `requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
-    ));
+    console.error(
+      formatRouteError(
+        `requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
+      ),
+    );
     // EI-19462803905923939 / EI-19467022057492490: this aggregate line is the LAST thing a
     // `| tail -N` reads — the very idiom CLAUDE.md prescribes throughout — so the attribution has
     // to be restated HERE. Printing it only at the group level (where it also belongs, next to the
@@ -1902,21 +2244,28 @@ export async function main(argv = process.argv.slice(2)) {
   // EI-18681435059177620: re-measure AFTER the run. This is the half that would have caught the
   // reported incident automatically — a tested file edited while the suite was executing leaves a
   // verdict that describes neither state, and until now nothing said so.
-  const provenanceAfter = snapshotProvenance(routes.map((route) => route.absolute));
-  const provenanceDiff = diffProvenanceSnapshots(provenanceBefore, provenanceAfter);
+  const provenanceAfter = snapshotProvenance(
+    routes.map((route) => route.absolute),
+  );
+  const provenanceDiff = diffProvenanceSnapshots(
+    provenanceBefore,
+    provenanceAfter,
+  );
   const driftMarker = formatProvenanceDrift(provenanceDiff);
   if (driftMarker) console.error(driftMarker);
-  console.log(formatProvenanceBanner(provenanceAfter, 'post-run'));
+  console.log(formatProvenanceBanner(provenanceAfter, "post-run"));
 
   // The invariant the line below now carries. Unreachable today — a zero/partial match is refused
   // per-group above, and `executed` is derived from that matched set — which is precisely why it
   // is ASSERTED rather than assumed: if a future edit ever makes executed=0 reachable here, this
   // refuses loudly instead of printing a verdict for a run that tested nothing.
   if (summary.executed < 1) {
-    console.error(formatRouteError(
-      `requested=${summary.requested} matched=${summary.matched} executed=0; ` +
-        `refusing to report a verdict for a run that executed no tests`,
-    ));
+    console.error(
+      formatRouteError(
+        `requested=${summary.requested} matched=${summary.matched} executed=0; ` +
+          `refusing to report a verdict for a run that executed no tests`,
+      ),
+    );
     return 1;
   }
 
@@ -1928,14 +2277,18 @@ export async function main(argv = process.argv.slice(2)) {
   // Zero tests ran, so the honest report is UNMEASURED — the marker must be absent, and the
   // failure carried by the exit code plus its own distinct marker.
   if (nameFilter) {
-    const receivedAs = [nameFilter.flag, nameFilter.pattern, ...nameFilter.strays].join(' ');
+    const receivedAs = [
+      nameFilter.flag,
+      nameFilter.pattern,
+      ...nameFilter.strays,
+    ].join(" ");
     const strayNote =
       nameFilter.strays.length > 0
         ? ` — vitest received \`${receivedAs}\`, i.e. the pattern "${nameFilter.pattern}" PLUS ` +
-          `${nameFilter.strays.length} stray positional(s) [${nameFilter.strays.join(', ')}] it reads as extra FILE ` +
-          'filters. That is the signature of a quoted pattern being eaten by the shell/npm arg chain: quote it ' +
-          'for the inner command (npm eats one level) or use a space-free pattern.'
-        : '';
+          `${nameFilter.strays.length} stray positional(s) [${nameFilter.strays.join(", ")}] it reads as extra FILE ` +
+          "filters. That is the signature of a quoted pattern being eaten by the shell/npm arg chain: quote it " +
+          "for the inner command (npm eats one level) or use a space-free pattern."
+        : "";
     if (summary.testsExecuted === 0 && summary.testsUnmeasuredGroups === 0) {
       console.error(
         `TEST_FILE_NAME_FILTER_NO_MATCH requested=${summary.requested} matched=${summary.matched} ` +
@@ -1956,7 +2309,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
   }
 
-  const status = summary.anyFailed ? 'failed' : 'passed';
+  const status = summary.anyFailed ? "failed" : "passed";
   // The provenance fields describe the state this result MEASURED (the pre-run snapshot), not
   // whatever is on disk now; `provenance=drifted` is what says those two differ. Appended AFTER
   // `status=` so every existing consumer keeps parsing unchanged — the doc-claims anchor registry
@@ -1968,7 +2321,10 @@ export async function main(argv = process.argv.slice(2)) {
   return summary.anyFailed ? 1 : 0;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   // This module is also imported through TypeScript/tsx entrypoints whose dependency graph is
   // transformed to CommonJS (for example apps/operator/scripts/lint-tests.ts). Keep the async
   // exit-code handoff without top-level await, which esbuild correctly rejects in that format.

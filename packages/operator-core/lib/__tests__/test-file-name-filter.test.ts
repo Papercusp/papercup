@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The `vitest run` spawn is mocked so these stay fast UNIT tests while still driving the real
-// `main()` end-to-end. The fixtures below are VERBATIM captures from real vitest 4.1.8 runs in
-// this repo (see each block), not shapes written from memory — the sibling detector
+// The synchronous `vitest list` spawn is mocked and `main()`'s asynchronous captured-run seam is
+// injected so these stay fast UNIT tests while still driving the real router end-to-end. The
+// fixtures below are VERBATIM captures from real vitest 4.1.8 runs in this repo (see each block),
+// not shapes written from memory — the sibling detector
 // `looksLikeSilentCollectionFailure` was broken for weeks by exactly that mistake
 // (EI-18819483316574031: it never stripped ANSI, so it matched only hand-written test text).
 vi.mock('node:child_process', async (importOriginal) => {
@@ -95,20 +96,14 @@ describe('joinNameFilterArgs — the name filter must reach vitest as ONE argv t
   const survivesCacParsing = (args: string[]) =>
     args.every(
       (arg, i) =>
-        !(arg === '-t' || arg === '--testNamePattern') ||
-        args[i + 1] === undefined ||
-        !args[i + 1].startsWith('-'),
+        !(arg === '-t' || arg === '--testNamePattern') || args[i + 1] === undefined || !args[i + 1].startsWith('-'),
     );
 
   it('joins a split `-t <pattern>` into the one token CAC parses correctly', () => {
-    expect(joinNameFilterArgs(['-t', '--files= is ignored'])).toEqual([
-      '--testNamePattern=--files= is ignored',
-    ]);
+    expect(joinNameFilterArgs(['-t', '--files= is ignored'])).toEqual(['--testNamePattern=--files= is ignored']);
     // The control: the old construction leaves the two tokens split, which is the shape CAC
     // mis-parses. If this ever starts matching the line above, the subject stopped doing anything.
-    expect(SPLIT_FORM(['-t', '--files= is ignored'])).not.toEqual([
-      '--testNamePattern=--files= is ignored',
-    ]);
+    expect(SPLIT_FORM(['-t', '--files= is ignored'])).not.toEqual(['--testNamePattern=--files= is ignored']);
   });
 
   it('joins the long flag the same way', () => {
@@ -136,9 +131,12 @@ describe('joinNameFilterArgs — the name filter must reach vitest as ONE argv t
   });
 
   it('preserves surrounding flags when it rewrites', () => {
-    expect(
-      joinNameFilterArgs(['--reporter=json', '-t', 'plain', '--outputFile', '/tmp/r.json']),
-    ).toEqual(['--reporter=json', '--testNamePattern=plain', '--outputFile', '/tmp/r.json']);
+    expect(joinNameFilterArgs(['--reporter=json', '-t', 'plain', '--outputFile', '/tmp/r.json'])).toEqual([
+      '--reporter=json',
+      '--testNamePattern=plain',
+      '--outputFile',
+      '/tmp/r.json',
+    ]);
   });
 
   it('does not invent a value for a trailing flag — vitest’s own error for that one is correct', () => {
@@ -216,10 +214,31 @@ describe('testsExecutedFrom — how many tests actually EXECUTED (skipped is not
 const REAL_REPORTS = {
   // -t 'zzz-definitely-no-such-test' — THE BUG under a machine reporter: 19 collected, 19
   // pending, 0 executed, and vitest still reports success:true.
-  allSkipped: { numTotalTests: 19, numPassedTests: 0, numFailedTests: 0, numPendingTests: 19, numTodoTests: 0, success: true },
+  allSkipped: {
+    numTotalTests: 19,
+    numPassedTests: 0,
+    numFailedTests: 0,
+    numPendingTests: 19,
+    numTodoTests: 0,
+    success: true,
+  },
   // -t 'name filter' — a filter that really matched.
-  partial: { numTotalTests: 19, numPassedTests: 7, numFailedTests: 0, numPendingTests: 12, numTodoTests: 0, success: true },
-  withFailures: { numTotalTests: 14, numPassedTests: 12, numFailedTests: 2, numPendingTests: 0, numTodoTests: 0, success: false },
+  partial: {
+    numTotalTests: 19,
+    numPassedTests: 7,
+    numFailedTests: 0,
+    numPendingTests: 12,
+    numTodoTests: 0,
+    success: true,
+  },
+  withFailures: {
+    numTotalTests: 14,
+    numPassedTests: 12,
+    numFailedTests: 2,
+    numPendingTests: 0,
+    numTodoTests: 0,
+    success: false,
+  },
 };
 
 describe('outputFilePathFrom — locating the JSON report the router already asked for', () => {
@@ -308,9 +327,11 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   const FILE = 'libs/generic/tooldef/src/strict-args.test.ts';
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
+  const runCapturedTestProcessMock = vi.fn();
 
-  const linesFrom = (spy: ReturnType<typeof vi.spyOn>) =>
-    spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+  const runMain = (argv: string[]) => main(argv, { runCapturedTestProcessImpl: runCapturedTestProcessMock });
+
+  const linesFrom = (spy: ReturnType<typeof vi.spyOn>) => spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
 
   /** first spawn = `vitest list` (drives the file match), second = `vitest run`. */
   /**
@@ -326,6 +347,15 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
    */
   const stubVitest = (runStdout: string, runStatus = 0) => {
     spawnSyncMock.mockReset();
+    runCapturedTestProcessMock.mockReset();
+    runCapturedTestProcessMock.mockResolvedValue({
+      status: runStatus,
+      signal: null,
+      stdout: runStdout,
+      stderr: '',
+      error: null,
+      timedOut: false,
+    });
     spawnSyncMock.mockImplementation(((command: string, args: string[]) => {
       if (command === 'git') return { status: 0, stdout: '', stderr: '' } as never;
       if (args?.includes('list')) {
@@ -341,8 +371,8 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
 
   /** The `vitest run` invocation, located by shape rather than by index for the same reason. */
   const vitestRunCall = () =>
-    spawnSyncMock.mock.calls.find(
-      (call) => call[0] !== 'git' && Array.isArray(call[1]) && (call[1] as string[]).includes('run'),
+    runCapturedTestProcessMock.mock.calls.find(
+      (call) => Array.isArray(call[1]) && (call[1] as string[]).includes('run'),
     );
 
   beforeEach(() => {
@@ -353,11 +383,12 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     logSpy.mockRestore();
     errSpy.mockRestore();
     spawnSyncMock.mockReset();
+    runCapturedTestProcessMock.mockReset();
   });
 
   it('exits non-zero when the name filter executed no tests', async () => {
     stubVitest(REAL_ROWS.allSkipped);
-    expect(await main([FILE, '--', '-t', 'zzz-no-such-test-name'])).not.toBe(0);
+    expect(await runMain([FILE, '--', '-t', 'zzz-no-such-test-name'])).not.toBe(0);
   });
 
   // The EI-19376339983058011 invariant: TEST_FILE_RESULT's PRESENCE is what callers grep to ask
@@ -365,13 +396,13 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   // ran, so the marker must be absent — not present with status=failed.
   it('does NOT print the TEST_FILE_RESULT verdict marker for a run that tested nothing', async () => {
     stubVitest(REAL_ROWS.allSkipped);
-    await main([FILE, '--', '-t', 'zzz-no-such-test-name']);
+    await runMain([FILE, '--', '-t', 'zzz-no-such-test-name']);
     expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
   });
 
   it('names the pattern AS VITEST RECEIVED IT, so npm quote-eating is self-diagnosing', async () => {
     stubVitest(REAL_ROWS.allSkipped);
-    await main([FILE, '--', '-t', 'cd', '+', 'EXIT-trap']);
+    await runMain([FILE, '--', '-t', 'cd', '+', 'EXIT-trap']);
     const err = linesFrom(errSpy);
     expect(err).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
     expect(err).toContain('pattern="cd"');
@@ -380,13 +411,13 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
 
   it('stays green when the filter DID match tests (guards against a blanket refusal)', async () => {
     stubVitest(REAL_ROWS.partial);
-    expect(await main([FILE, '--', '-t', 'rejects'])).toBe(0);
+    expect(await runMain([FILE, '--', '-t', 'rejects'])).toBe(0);
     expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
   });
 
   it('forwards Vitest flags placed directly after the file list', async () => {
     stubVitest(REAL_ROWS.partial);
-    expect(await main([FILE, '-t', 'rejects'])).toBe(0);
+    expect(await runMain([FILE, '-t', 'rejects'])).toBe(0);
     // WI-39830: forwarded as the JOINED token. This assertion previously pinned the split
     // `['-t', 'rejects']` pair — i.e. it pinned the defect, which is why the defect survived a
     // green suite. Order matters: `arrayContaining(['-t','rejects'])` would also pass on argv
@@ -400,7 +431,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   // this repo's own test names routinely are — must never reach vitest as two argv entries.
   it('never hands vitest a split `-t <pattern>` for a name that starts with `--`', async () => {
     stubVitest(REAL_ROWS.partial);
-    expect(await main([FILE, '--', '-t', '--files= is ignored'])).toBe(0);
+    expect(await runMain([FILE, '--', '-t', '--files= is ignored'])).toBe(0);
     const argv = vitestRunCall()?.[1] as string[];
     expect(argv).toContain('--testNamePattern=--files= is ignored');
     // The failing shape stated positively: `-t` immediately followed by a `-`-prefixed token is
@@ -412,7 +443,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   // Pin that an ordinary no-filter run is untouched.
   it('leaves a run with no name filter alone', async () => {
     stubVitest(REAL_ROWS.allPassed);
-    expect(await main([FILE])).toBe(0);
+    expect(await runMain([FILE])).toBe(0);
     expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
     expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER');
   });
@@ -422,7 +453,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   // mistake. Say so out loud instead of silently re-opening the false-green hole.
   it('does not fabricate a red when the test count is unreadable, but says it is unverified', async () => {
     stubVitest('{"testResults":[]}\n');
-    expect(await main([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(0);
+    expect(await runMain([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(0);
     expect(linesFrom(errSpy)).toContain('TEST_FILE_NAME_FILTER_UNVERIFIED');
   });
 
@@ -458,7 +489,9 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     it('fails a zero-match run that the stdout-only detector let through as passed', async () => {
       const report = withReport(REAL_REPORTS.allSkipped);
       stubVitest('');
-      expect(await main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
+      expect(
+        await runMain([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`]),
+      ).not.toBe(0);
       const err = linesFrom(errSpy);
       expect(err).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
       expect(err).toContain('testsExecuted=0');
@@ -470,7 +503,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     it('stays green when the report shows the filter really did match tests', async () => {
       const report = withReport(REAL_REPORTS.partial);
       stubVitest('');
-      expect(await main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${report}`])).toBe(0);
+      expect(await runMain([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${report}`])).toBe(0);
       expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
       expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER');
     });
@@ -480,7 +513,9 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     it('prefers the report over a stdout summary row that disagrees with it', async () => {
       const report = withReport(REAL_REPORTS.allSkipped);
       stubVitest(REAL_ROWS.allPassed);
-      expect(await main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
+      expect(
+        await runMain([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`]),
+      ).not.toBe(0);
       expect(linesFrom(errSpy)).toContain('testsExecuted=0');
     });
 
@@ -489,7 +524,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     it('falls back to stdout when the named report does not exist', async () => {
       stubVitest(REAL_ROWS.partial);
       const missing = join(dir, 'never-written.json');
-      expect(await main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${missing}`])).toBe(0);
+      expect(await runMain([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${missing}`])).toBe(0);
       expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
     });
   });
