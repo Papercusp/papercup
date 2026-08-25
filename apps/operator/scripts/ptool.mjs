@@ -911,6 +911,17 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // may-have-executed timeout.
   ['plans:set-plan-status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
+  // EI-21391946334020415: activity:recent and events:status are compound
+  // coordination reads. Under serializer pressure their valid responses can
+  // outlive ptool's ordinary 30s deadline, especially through tools:invoke;
+  // preserve the structured read instead of reconnecting after -32001.
+  ['activity:recent', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['events:status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21391902187370268: work_items:complete evaluates completion evidence,
+  // claim release, and broadcasts before returning. Under operator pressure
+  // the writer can outlive the ordinary 30s client deadline, so preserve its
+  // typed receipt instead of reconnecting with an outcome-unknown result.
+  ['work_items:complete', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21386877660531420: activity:tool-log scans and compacts the activity
   // ledger. In a concurrent projected batch that read can outlive ptool's
   // ordinary 30s deadline even though it is bounded and still progressing.
