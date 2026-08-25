@@ -403,25 +403,27 @@ export default function ReviewReportShell({
                   aria-expanded={!isCollapsed}
                   onClick={() => toggleCollapsed(group.id)}
                 >
-                  <span className="review-report__group-title">
-                    {group.title}
-                  </span>
-                  <span
-                    className="review-report__group-count"
-                    data-testid={`review-group-count-${group.id}`}
-                  >
-                    {group.rows.length}
-                  </span>
-                  {group.description != null ? (
-                    <span className="review-report__group-desc">
-                      {group.description}
+                  <span className="review-report__group-toggle-inner">
+                    <span className="review-report__group-title">
+                      {group.title}
                     </span>
-                  ) : null}
-                  <ChevronDown
-                    size={14}
-                    className={`review-report__chevron${isCollapsed ? " review-report__chevron--closed" : ""}`}
-                    aria-hidden="true"
-                  />
+                    <span
+                      className="review-report__group-count"
+                      data-testid={`review-group-count-${group.id}`}
+                    >
+                      {group.rows.length}
+                    </span>
+                    {group.description != null ? (
+                      <span className="review-report__group-desc">
+                        {group.description}
+                      </span>
+                    ) : null}
+                    <ChevronDown
+                      size={14}
+                      className={`review-report__chevron${isCollapsed ? " review-report__chevron--closed" : ""}`}
+                      aria-hidden="true"
+                    />
+                  </span>
                 </button>
               </header>
               {!isCollapsed && (
