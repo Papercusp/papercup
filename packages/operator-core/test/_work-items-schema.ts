@@ -159,6 +159,17 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     admission text,
     admitted_at timestamptz,
     admitted_by text,
+    -- migration 896 (EI-21200252620921832): the state-age clock. This fixture was left
+    -- one behind by 896 — a latent strand, harmless only while nothing NAMED the column,
+    -- and mig 896 patches the production view by pg_get_viewdef anchor-replace so there
+    -- is no "CREATE VIEW ... state_changed_at" text in that migration to grep for (the
+    -- same invisibility the 946 note above records). EI-21467654382027859 federates the
+    -- column, so the engineer-issues projection INSERT now names it and every suite that
+    -- applies a federated issue op would die on 'column "state_changed_at" does not
+    -- exist'. The live stamp TRIGGER is deliberately NOT recreated here: fixtures insert
+    -- explicit values, and the trigger's COALESCE/freeze semantics are asserted against
+    -- the migration by its own tests.
+    state_changed_at timestamptz,
     -- migration 721 (WI-6934): payload->>'lane' materialised as a STORED generated column
     -- so the observation-lane floor filters without detoasting payload. work-items.ts's
     -- observationLaneExclusionSql now emits "wi.lane IS DISTINCT FROM 'observation'", and
@@ -291,7 +302,12 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- there is no "CREATE VIEW ... admission" text in the migration file to grep for.
       admission,
       admitted_at,
-      admitted_by
+      admitted_by,
+      -- migration 896: appended LAST here for the same CREATE OR REPLACE VIEW reason the
+      -- lane/goal_id comments above record — 896 adds it to the production view by
+      -- anchor-replacing the pg_get_viewdef tail, which appends. EI-21467654382027859
+      -- federates it, so this projection needs the column visible on the view too.
+      state_changed_at
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;
