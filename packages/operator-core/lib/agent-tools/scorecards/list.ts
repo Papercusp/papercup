@@ -35,6 +35,13 @@ export default defineTool({
       'rubrics:get (the rubric criterion definitions)',
     ],
   },
+  // EI-21437537919383948: this is a correctness read, not a browseable list.
+  // Each row carries the complete per-criterion ratings/evidence map; allowing
+  // the ambient trimmed session tier to reshape that nested map can turn a
+  // 4-of-7 scorecard into an apparently complete 4-criterion card. Keep the
+  // result-door spill lossless (the explicit hard ceiling still applies), just
+  // as scorecards:evaluate and rubrics:get do for their correctness payloads.
+  ignoreSessionPayloadTier: true,
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES, 'judge'],
