@@ -84,9 +84,29 @@ const NO_PRUNE = { GATE_KEEP_RUNS: '100000' };
  * So the child env carries INVOCATION_ID only when the CALLER declares it. `undefined` is not
  * enough — spawnSync stringifies it to "undefined", which is a NON-EMPTY value and reads as
  * present — so the key is deleted outright.
+ *
+ * PC_HEAVY_* is the SAME class, and it cost a green-checkpoint candidate the same way
+ * (dfe7bd9f). The gate self-re-execs through `scripts/pc-heavy.sh` unless PC_HEAVY_BYPASS=1,
+ * and pc-heavy exports exactly that into every child it runs — deliberately, so "nested
+ * build/test wrappers do not reacquire a slot". The green-checkpoint suite runs UNDER
+ * pc-heavy, so every spawn below silently inherited PC_HEAVY_BYPASS=1, skipped the wrapper,
+ * and never received the after-ready marker path the wrapper allocates. Green by hand, red in
+ * the pipeline — the identical split described above.
+ *
+ * The cure is NOT to force the wrapper on: re-acquiring a nested pc-heavy slot from inside a
+ * pc-heavy-wrapped suite is the exact thing that BYPASS export exists to prevent, and under
+ * the release-gate slot clamp the child would queue behind the parent that is waiting for it.
+ * So the whole family is scrubbed and the gate is driven DIRECTLY by default, with any
+ * pc-heavy-side input supplied explicitly by the test that wants it (the same shape
+ * `affected-tests-preempt-ready.test.ts` uses for the other side of this barrier).
  */
 function runGate(env: Record<string, string>): { stdout: string; stderr: string; status: number | null } {
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...NO_PRUNE, GATE_NO_FILE: '1', ...env };
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...NO_PRUNE, GATE_NO_FILE: '1' };
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith('PC_HEAVY_')) delete childEnv[key];
+  }
+  childEnv.PC_HEAVY_BYPASS = '1';
+  Object.assign(childEnv, env);
   if (!('INVOCATION_ID' in env)) delete childEnv.INVOCATION_ID;
 
   const r = spawnSync('bash', [GATE_PATH], {
@@ -291,9 +311,40 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     expect(rows[0].verdict).toBe('FRESH');
   }, 60_000);
 
-  it('publishes the real after-ready marker and pc-heavy cleans it on an early verdict', () => {
+  it('publishes the real after-ready marker at the path the wrapper handed it', () => {
     const stateDir = freshStateDir('last-green');
     const readyDir = mkdtempSync(join(tmpdir(), 'lfg-preempt-ready-'));
+    // pc-heavy allocates a unique path and exports it as PC_HEAVY_PREEMPT_READY_FILE; the
+    // CHILD owns publication. Supplying that variable directly tests the half this gate owns,
+    // without re-entering pc-heavy from inside an already-wrapped suite (see runGate above).
+    const marker = join(readyDir, 'ready.probe');
+    const { stdout, stderr, status } = runGate({
+      GATE_STATE_DIR: stateDir,
+      PC_HEAVY_PREEMPT_READY_FILE: marker,
+    });
+
+    expect(status, `${stdout}\n${stderr}`).toBe(0);
+    expect(stdout).toMatch(/^GATE: FRESH /m);
+    // Asserting the PATH too, not just the sentence: a gate that logged the line while
+    // publishing somewhere else would satisfy a bare substring match.
+    expect(stderr).toContain(
+      `pc-heavy protection ACTIVE until content-matrix has a concrete state (marker=${marker})`,
+    );
+    expect(existsSync(marker)).toBe(true);
+    // This FRESH path exits BEFORE the in-script release boundary, so the marker is still
+    // published at exit — by design. pc-heavy's monitor is the last-resort cleanup owner
+    // (`scripts/pc-heavy.sh`, the `_preempt_ready_file` rm at its terminal boundary), and that
+    // half is pinned by its own suites, not from here.
+    expect(stderr).not.toContain('protection RELEASED');
+  }, 60_000);
+
+  it('CONTROL: publishes nothing when the wrapper handed it no marker path', () => {
+    // Makes the assertion above falsifiable. This is also the real PC_HEAVY_PREEMPT_AFTER_READY=0
+    // escape hatch: pc-heavy unsets PC_HEAVY_PREEMPT_READY_FILE, and the gate must then run
+    // unprotected rather than inventing a path of its own — a path it invented would be one
+    // pc-heavy's monitor never cleans up.
+    const stateDir = freshStateDir('last-green');
+    const readyDir = mkdtempSync(join(tmpdir(), 'lfg-preempt-noready-'));
     const { stdout, stderr, status } = runGate({
       GATE_STATE_DIR: stateDir,
       PC_HEAVY_PREEMPT_READY_DIR: readyDir,
@@ -301,9 +352,7 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
 
     expect(status, `${stdout}\n${stderr}`).toBe(0);
     expect(stdout).toMatch(/^GATE: FRESH /m);
-    expect(stderr).toContain('pc-heavy protection ACTIVE until content-matrix has a concrete state');
-    // This FRESH path exits before the in-script release boundary. The outer monitor is the
-    // last-resort cleanup owner, so even an early verdict must leave no stale protection file.
+    expect(stderr).not.toContain('pc-heavy protection ACTIVE');
     expect(readdirSync(readyDir)).toEqual([]);
   }, 60_000);
 
