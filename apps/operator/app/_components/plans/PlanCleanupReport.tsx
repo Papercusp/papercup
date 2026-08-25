@@ -122,7 +122,7 @@ function reportRow(
   localErrors: ReadonlyMap<string, string>,
 ): ReviewReportRow {
   const status = reviewStatus(finding, locallyApplied);
-  const reason = localErrors.get(finding.findingId) ?? manualReason(finding);
+  const localError = localErrors.get(finding.findingId);
   return {
     id: finding.findingId,
     title: finding.target,
@@ -130,7 +130,8 @@ function reportRow(
     referenceLabel:
       finding.itemId ?? (finding.kind === "stale-now" ? "## Now" : "plan"),
     transition: { from: finding.from, to: finding.to },
-    detail: reason ?? undefined,
+    detail: manualReason(finding) ?? undefined,
+    error: localError,
     evidence: evidenceLines(finding),
     confidence: finding.confidence,
     status,
@@ -277,6 +278,12 @@ export default function PlanCleanupReport({
 
           // Resolve first, record second. Mark local success immediately so a
           // bookkeeping failure cannot invite a second mutation in this view.
+          setLocalErrors((previous) => {
+            if (!previous.has(findingId)) return previous;
+            const next = new Map(previous);
+            next.delete(findingId);
+            return next;
+          });
           setLocallyApplied((previous) => new Set(previous).add(findingId));
           const recorded = await accept(
             run.runId,
@@ -338,7 +345,7 @@ export default function PlanCleanupReport({
       groups={groups}
       busy={busy}
       applyLabel="Apply selected"
-      dismissLabel="Dismiss report"
+      dismissLabel="Dismiss"
       onApply={(ids) => void onApply(ids)}
       onDismiss={() => void onDismiss()}
       footer={

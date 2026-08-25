@@ -223,6 +223,54 @@ describe("PlanCleanupReport", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("announces a failed hand edit and keeps the row selected for retry", async () => {
+    H.setItemStatus.mockResolvedValue({
+      ok: false,
+      error: "The plan write was rejected.",
+    });
+    render(
+      <PlanCleanupReport
+        run={run()}
+        findings={[finding()]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const apply = screen.getByTestId(
+      "review-report-apply",
+    ) as HTMLButtonElement;
+    apply.focus();
+    fireEvent.click(apply);
+
+    const alert = await screen.findByTestId(
+      "review-row-error-flip:p-one#P-001",
+    );
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain("plan write was rejected");
+    expect(H.accept).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(apply);
+    expect(apply.disabled).toBe(false);
+    expect(apply.textContent).toContain("(1)");
+    expect(screen.getByTestId("review-report-status").textContent).toBe(
+      "1 of 1 selectable recommendation selected.",
+    );
+
+    H.setItemStatus.mockResolvedValueOnce({ ok: true });
+    fireEvent.click(apply);
+    await waitFor(() => expect(H.accept).toHaveBeenCalledTimes(1));
+    expect(
+      screen.queryByTestId("review-row-error-flip:p-one#P-001"),
+    ).toBeNull();
+    expect(
+      screen.getByTestId("review-row-mark-flip:p-one#P-001").textContent,
+    ).toBe("✓");
+    expect(apply.disabled).toBe(true);
+    expect(apply.textContent).toContain("(0)");
+    expect(screen.getByTestId("review-report-status").textContent).toBe(
+      "0 of 0 selectable recommendations selected.",
+    );
+  });
+
   it("renders stale Now as a visible manual row with no checkbox", () => {
     const stale = finding({
       findingId: "now",

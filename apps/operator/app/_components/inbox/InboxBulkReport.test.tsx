@@ -196,6 +196,47 @@ describe("<InboxBulkReport>", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("announces a partial apply failure, keeps its decision desk, and leaves the failed row focused for retry", async () => {
+    H.accept
+      .mockResolvedValueOnce({ ok: true, phase: "review" })
+      .mockResolvedValueOnce({
+        ok: false,
+        phase: "review",
+        error: "The Inbox action was rejected.",
+      });
+    const onClose = vi.fn();
+    render(
+      <InboxBulkReport
+        run={{ ...run, totalItems: 2, recommended: 2, autoResolved: 0 }}
+        runItems={[
+          runItem({ itemId: "a", position: 0 }),
+          runItem({ itemId: "b", position: 1 }),
+        ]}
+        attentionItems={[attention("a"), attention("b")]}
+        onClose={onClose}
+      />,
+    );
+
+    const apply = screen.getByTestId(
+      "review-report-apply",
+    ) as HTMLButtonElement;
+    apply.focus();
+    fireEvent.click(apply);
+
+    const alert = await screen.findByTestId("review-row-error-b");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain("Inbox action was rejected");
+    expect(screen.getByTestId("inbox-bulk-drill-b")).toBeTruthy();
+    expect(screen.getByTestId("review-row-mark-a").textContent).toBe("✓");
+    expect(document.activeElement).toBe(apply);
+    expect(apply.disabled).toBe(false);
+    expect(apply.textContent).toContain("(1)");
+    expect(screen.getByTestId("review-report-status").textContent).toBe(
+      "1 of 1 selectable recommendation selected.",
+    );
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("hydrates only the active focused decision desk and closes the previous desk", () => {
     render(
       <InboxBulkReport

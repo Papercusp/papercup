@@ -97,12 +97,7 @@ function evidenceLines(runItem: BulkRunItem): string[] {
   return lines.length > 0 ? lines : [`run position · ${runItem.position + 1}`];
 }
 
-function fallbackDetail(
-  runItem: BulkRunItem,
-  localError: string | undefined,
-): ReactNode {
-  if (localError)
-    return <span className="inbox-bulk-report__row-error">{localError}</span>;
+function fallbackDetail(runItem: BulkRunItem): ReactNode {
   if (runItem.outcome === "pending")
     return "The resolver did not reach this item before the run settled.";
   if (runItem.outcome === "skipped")
@@ -166,10 +161,11 @@ export function buildInboxBulkReviewGroups(
         runItem.outcome === "recommended" &&
         hasAction &&
         Boolean(item),
+      error: localError,
       detail:
         runItem.outcome === "recommended" && item && detailFor
           ? detailFor(item, runItem)
-          : fallbackDetail(runItem, localError),
+          : fallbackDetail(runItem),
     };
     group.rows.push(row);
   }
@@ -502,7 +498,7 @@ export default function InboxBulkReport({
       groups={groups}
       busy={busy}
       applyLabel="Apply selected"
-      dismissLabel="Dismiss report"
+      dismissLabel="Dismiss"
       onApply={(ids) => void onApply(ids)}
       onDismiss={() => void onDismiss()}
       footer={
