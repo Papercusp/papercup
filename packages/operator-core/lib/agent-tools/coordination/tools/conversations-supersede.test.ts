@@ -21,6 +21,7 @@ const conversationFixture = (over: Partial<ConversationRow> = {}): ConversationR
   kind: 'question',
   scope: 'operator',
   harness_slug: null,
+  producer: 'test',
   asker_id: 'me',
   title: null,
   body: 'question',

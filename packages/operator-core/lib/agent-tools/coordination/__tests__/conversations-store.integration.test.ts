@@ -55,7 +55,7 @@ let sql: postgres.Sql;
 let store: PgConversationStore;
 
 function input(id: string, over: Partial<CreateConversationInput> = {}): CreateConversationInput {
-  return { id, kind: 'question', scope: 'operator', asker_id: 'agA', body: `body of ${id}`, created_ts: T0, ...over };
+  return { id, kind: 'question', scope: 'operator', asker_id: 'agA', body: `body of ${id}`, producer: 'test', created_ts: T0, ...over };
 }
 
 beforeAll(async () => {

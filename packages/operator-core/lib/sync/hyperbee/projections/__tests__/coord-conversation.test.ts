@@ -22,6 +22,9 @@ const valid: CoordConversationRow = {
   accepted_answer: null,
   capture_target: null,
   promoted_issue_id: null,
+  // null is the legitimate wire value from a peer running pre-attribution code —
+  // the validator must accept it rather than reject the whole row.
+  producer: null,
   created_at: 1_700_000_000_000,
   updated_at: 1_700_000_000_000,
   resolved_at: null,

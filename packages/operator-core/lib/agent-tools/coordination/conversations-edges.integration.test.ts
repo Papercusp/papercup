@@ -195,6 +195,7 @@ describe('promote — a conversation with no thread (no posts)', () => {
       id: 'conv-noth',
       kind: 'discussion',
       scope: 'operator',
+      producer: 'test',
       asker_id: 'agA',
       title: 'orphan discussion',
       body: 'this conversation never grew a thread',

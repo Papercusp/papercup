@@ -231,6 +231,9 @@ describe('coord_conversations federation (real PG)', () => {
       kind: 'question',
       scope: 'harness',
       asker_id: 'peer-user',
+      // A non-null producer here makes the federated INSERT round-trip the new
+      // attribution column end to end, not just satisfy the type.
+      producer: 'coord:ask-owner',
       title: 'remote Q',
       body: 'asked on another machine',
       state: 'open',
