@@ -11,6 +11,7 @@ import { inspectEventKey } from '../../events/await/store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveManualRunAuthority } from '../../release/manual-run-authority';
 import { statePlaneForDoor } from '../state-plane-door';
 
 /**
@@ -317,6 +318,19 @@ export default defineTool({
       })),
     );
 
+    // EI-21456558908416090: read the live manual-run authority alongside the other release
+    // authorities. Bounded and fail-open by construction — `withBoundedTimeout`'s fallback is
+    // the "no recorded prohibition" answer, which preserves this tool's pre-existing behaviour
+    // exactly when the authority store is slow or down.
+    const manualRunAuthority = await withBoundedTimeout(
+      () => resolveManualRunAuthority({ readerOwnerId: identity.ownerId }),
+      {
+        fallback: null,
+        timeoutMs: RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+        label: 'release:trace:manual-run-authority',
+      },
+    );
+
     const trace = buildReleaseTrace({
       position,
       deploy,
@@ -360,9 +374,23 @@ export default defineTool({
         // staleness itself ('verdict-stale'), which is exactly the case that misled a
         // reader of this tool into diagnosing an already-fixed leg.
         redOwner: snapshot.gate.redOwner,
+        // EI-21456558908416090: whether a recorded decision currently withholds manual
+        // checkpoint-run authority, so this tool stops recommending the one action the active
+        // plan forbids. Fails OPEN on a slow/failed authority read: this tool only RECOMMENDS,
+        // release:checkpoint-run enforces the same tokens and fails closed itself, and blanking
+        // the nextVerb of a diagnostic on a transient blip would degrade it exactly when the
+        // pipeline is already unhealthy and agents most need it.
+        manualRunAuthority: manualRunAuthority.value ?? null,
       },
     });
     const plane = statePlaneForDoor(trace, 'release:trace', { path: args.path, sha: args.sha }, ctx);
-    return { data: { ...trace, ...subjectStamp, ...(plane ? { plane } : {}) } };
+    return {
+      data: {
+        ...trace,
+        repairQueue: snapshot.gate.repairQueue ?? null,
+        ...subjectStamp,
+        ...(plane ? { plane } : {}),
+      },
+    };
   },
 });
