@@ -1,0 +1,248 @@
+/**
+ * pair-launch-options — the TYPE-CONDITIONAL launch option contract
+ * (directed-pair-work-items-2026-08-25 D-008 / D-009 / D-012, P-011).
+ *
+ * The option schema BRANCHES on the fleet type; it does not merge into one
+ * superset with optional per-role fields:
+ *
+ *   type:'single'  → today's FLAT knob set, completely unchanged. No per-role
+ *                    nesting, no new required fields. Every existing caller and
+ *                    every existing habit keeps working untouched.
+ *   type:'paired'  → the same knobs as two per-role GROUPS, `directors` and
+ *                    `implementers`, each independent (D-009), plus a top-level
+ *                    `count` that means PAIRS (D-012).
+ *
+ * A launch whose option shape does not match its declared type is REJECTED with
+ * `invalid_args` naming the expected shape — never coerced. That refusal is the
+ * point of the module: coercion is exactly how a flat `model` meant for the
+ * implementers gets broadcast to both roles and you end up paying top-tier rates
+ * for a fleet of directors, with nothing in the result saying so.
+ *
+ * Pure and side-effect free on purpose — the branch is the part worth pinning
+ * with tests, and it should be provable without opening a terminal.
+ */
+import type { FleetType } from '../../agent-fleets-store';
+
+/** Knobs that are meaningful PER ROLE in a paired fleet (D-009). */
+export const PER_ROLE_KNOBS = [
+  'agent',
+  'model',
+  'effort',
+  'headless',
+  'account',
+  'carry',
+] as const;
+
+export type PerRoleKnob = (typeof PER_ROLE_KNOBS)[number];
+
+/** One role's slice of the launch configuration. */
+export interface RoleLaunchOptions {
+  agent?: 'claude' | 'omp' | 'codex';
+  model?: string;
+  effort?: string;
+  headless?: boolean;
+  account?: string;
+  carry?: 'warm' | 'cold';
+}
+
+/**
+ * The caller-facing shape, before branching. Every field is optional here
+ * because which ones are LEGAL depends on `type` — that is the whole contract,
+ * and it is enforced by resolveLaunchOptions rather than by the zod schema
+ * (zod cannot express "these fields are mutually exclusive with those, keyed on
+ * the value of a third" without collapsing the two arms into a union whose error
+ * messages name neither shape).
+ */
+export interface LaunchOptionInput extends RoleLaunchOptions {
+  type?: FleetType;
+  count?: number;
+  directors?: RoleLaunchOptions & { count?: number };
+  implementers?: RoleLaunchOptions & { count?: number };
+}
+
+export interface ResolvedSingleLaunch {
+  ok: true;
+  type: 'single';
+  /** Pair count is meaningless for a single fleet. */
+  pairs: null;
+  /** The flat knobs, passed through untouched. */
+  flat: RoleLaunchOptions;
+}
+
+export interface ResolvedPairedLaunch {
+  ok: true;
+  type: 'paired';
+  /** Number of PAIRS (D-012). Total members = pairs * 2. */
+  pairs: number | null;
+  directors: RoleLaunchOptions;
+  implementers: RoleLaunchOptions;
+}
+
+export interface RejectedLaunch {
+  ok: false;
+  error: 'invalid_args';
+  /** Machine-readable reason, so a caller can branch without regex-ing prose. */
+  reason:
+    | 'per_role_groups_on_single_fleet'
+    | 'flat_knobs_on_paired_fleet'
+    | 'count_inside_role_group'
+    | 'no_roles_configured';
+  message: string;
+  /** The offending field paths, so the caller does not have to guess which one. */
+  offending: string[];
+  /** A one-line sketch of the shape this type actually accepts. */
+  expectedShape: string;
+}
+
+export type ResolvedLaunchOptions =
+  | ResolvedSingleLaunch
+  | ResolvedPairedLaunch
+  | RejectedLaunch;
+
+const SINGLE_SHAPE =
+  "type:'single' → flat knobs: { count, agent, model, effort, headless, account, carry }";
+const PAIRED_SHAPE =
+  "type:'paired' → { count /* = number of PAIRS */, directors:{ agent, model, effort, headless, account, carry }, implementers:{ …same } }";
+
+function presentKnobs(source: RoleLaunchOptions, prefix = ''): string[] {
+  return PER_ROLE_KNOBS.filter((k) => source[k] !== undefined).map((k) => `${prefix}${k}`);
+}
+
+function pickRole(source: RoleLaunchOptions | undefined): RoleLaunchOptions {
+  if (!source) return {};
+  const out: RoleLaunchOptions = {};
+  for (const k of PER_ROLE_KNOBS) {
+    if (source[k] !== undefined) (out as Record<string, unknown>)[k] = source[k];
+  }
+  return out;
+}
+
+/**
+ * Branch the launch options on the declared fleet type, or refuse.
+ *
+ * `type` omitted is treated as 'single' — the default must stay invisible, so
+ * that no existing caller has to learn the field exists.
+ */
+export function resolveLaunchOptions(input: LaunchOptionInput): ResolvedLaunchOptions {
+  const type: FleetType = input.type === 'paired' ? 'paired' : 'single';
+
+  if (type === 'single') {
+    // The single arm rejects exactly one thing: per-role groups, which are
+    // meaningless without pairs. Accepting them silently would let a caller
+    // believe they had configured two roles on a fleet that has only one.
+    const offending = (['directors', 'implementers'] as const).filter(
+      (g) => input[g] !== undefined,
+    );
+    if (offending.length > 0) {
+      return {
+        ok: false,
+        error: 'invalid_args',
+        reason: 'per_role_groups_on_single_fleet',
+        message:
+          `Per-role launch groups (${offending.join(', ')}) are only valid on a paired fleet. ` +
+          `This launch is type:'single'${input.type === undefined ? " (the default — you did not pass `type`)" : ''}, ` +
+          `whose members are configured by the FLAT knobs. ` +
+          `Pass type:'paired' to launch director↔implementer pairs, or move these settings to the flat knobs. ` +
+          SINGLE_SHAPE,
+        offending,
+        expectedShape: SINGLE_SHAPE,
+      };
+    }
+    return { ok: true, type: 'single', pairs: null, flat: pickRole(input) };
+  }
+
+  // --- paired ---------------------------------------------------------------
+
+  // A per-role `count` cannot be honoured (D-012: pairs are 1:1, so N lives at
+  // the top level) and must not be ignored either — a caller who wrote
+  // implementers:{count:3} believes something specific about the fleet they are
+  // about to open.
+  const countOffenders = (['directors', 'implementers'] as const)
+    .filter((g) => input[g]?.count !== undefined)
+    .map((g) => `${g}.count`);
+  if (countOffenders.length > 0) {
+    return {
+      ok: false,
+      error: 'invalid_args',
+      reason: 'count_inside_role_group',
+      message:
+        `${countOffenders.join(' and ')} is not accepted: a paired fleet is 1:1, so the pair count lives at the TOP level (D-012). ` +
+        `Pass count:<pairs> instead — count:3 opens 3 directors, 3 implementers, 6 members and 3 couplings. ` +
+        PAIRED_SHAPE,
+      offending: countOffenders,
+      expectedShape: PAIRED_SHAPE,
+    };
+  }
+
+  // Flat per-role knobs alongside type:'paired' are the dangerous case: coerced,
+  // they would broadcast one value to BOTH roles, silently defeating the whole
+  // point of per-role configuration (D-006: the director wants the top tier, the
+  // implementer can be cheaper).
+  const flatOffenders = presentKnobs(input);
+  if (flatOffenders.length > 0) {
+    return {
+      ok: false,
+      error: 'invalid_args',
+      reason: 'flat_knobs_on_paired_fleet',
+      message:
+        `Flat per-member knobs (${flatOffenders.join(', ')}) are not accepted on a paired fleet: ` +
+        `they would have to be broadcast to BOTH roles, which is exactly the coercion the type-conditional ` +
+        `schema exists to prevent (a flat model meant for the implementers turns into a fleet of directors ` +
+        `running it). Put each value in directors:{…} and/or implementers:{…} — repeat it in both if you ` +
+        `genuinely want the roles configured identically. ` +
+        PAIRED_SHAPE,
+      offending: flatOffenders,
+      expectedShape: PAIRED_SHAPE,
+    };
+  }
+
+  const directors = pickRole(input.directors);
+  const implementers = pickRole(input.implementers);
+  if (Object.keys(directors).length === 0 && Object.keys(implementers).length === 0) {
+    return {
+      ok: false,
+      error: 'invalid_args',
+      reason: 'no_roles_configured',
+      message:
+        `type:'paired' was declared but neither directors:{…} nor implementers:{…} was configured. ` +
+        `A paired launch that configures no role is almost always a half-finished call — if you really want ` +
+        `both roles on the defaults, say so explicitly with directors:{} and implementers:{}. ` +
+        PAIRED_SHAPE,
+      offending: ['directors', 'implementers'],
+      expectedShape: PAIRED_SHAPE,
+    };
+  }
+
+  return {
+    ok: true,
+    type: 'paired',
+    pairs: input.count ?? null,
+    directors,
+    implementers,
+  };
+}
+
+/**
+ * The spawn-announcement line(s) the persona rule requires. A paired launch owes
+ * the owner ONE LINE PER ROLE (account + model + carry), not a merged summary —
+ * a merged one is unreadable exactly when the roles differ, which is the case
+ * the announcement exists for.
+ */
+export function describeLaunchRoles(
+  resolved: ResolvedSingleLaunch | ResolvedPairedLaunch,
+): string[] {
+  const line = (label: string, o: RoleLaunchOptions): string =>
+    `${label}: model ${o.model ?? '(default)'}` +
+    (o.effort ? `:${o.effort}` : '') +
+    ` · account ${o.account ?? 'default (system)'}` +
+    ` · carry ${o.carry ?? 'warm'}` +
+    ` · ${o.headless ? 'headless' : 'visible'}`;
+
+  if (resolved.type === 'single') return [line('members', resolved.flat)];
+  const n = resolved.pairs;
+  return [
+    `${n ?? '?'} pair(s) — ${n == null ? '' : `${n * 2} members total, `}each pair coupled at launch`,
+    line('directors', resolved.directors),
+    line('implementers', resolved.implementers),
+  ];
+}
