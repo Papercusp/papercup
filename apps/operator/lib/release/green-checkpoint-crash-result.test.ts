@@ -191,9 +191,14 @@ describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash 
    * mutation probe would hold a real source file modified for the life of the run, which
    * git-sync's whole-tree sweep can commit even when nothing goes wrong).
    *
-   * `preFixCrashResult` is `buildCrashCheckpointResult` AS IT BEHAVED before this change. Its
-   * divergence from the real builder is ONE field, and the calibration below pins that, so the
-   * failure it produces is attributable to this fix rather than to an unrelated difference.
+   * `preFix` below is the real builder's output with ONLY `reason` put back to what it was before
+   * this change — deliberately constructed by spread rather than as a re-implemented function, so
+   * the divergence is provably a single field. The calibration block pins that the rest agrees, so
+   * the failure it produces is attributable to THIS fix and not to an unrelated difference.
+   *
+   * Note it is falsifiable in the right direction: if the real builder ever went back to
+   * 'not-green', `real.reason` and `preFix.reason` would be the same value and the two divergence
+   * assertions would demand two different classes of it, failing here rather than silently passing.
    */
   it('CONTROL: the pre-fix crash result FAILS the property the fixed one satisfies', () => {
     const opts = { candidate: 'abc123', error: new Error('boom'), runId: 'run-control' };
