@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 
 import {
   WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
   assertWorkspaceHostSecretIsolation,
   type WorkspaceHostInitializationHostOperationResult,
   type WorkspaceHostInitializationHostOperations,
@@ -10,7 +11,13 @@ import {
 } from '@papercusp/deployment-driver';
 import { quotePosixShellArg } from './local-connection-manager';
 
-export const GCP_IAP_INITIALIZATION_PROTOCOL_VERSION = 'papercusp-gcp-iap-initialization-v1';
+/**
+ * DERIVED, not restated. The remote initializer that answers this protocol owns the constant
+ * (`workspace-host-remote-initializer.ts`); re-declaring the literal here would let the two ends
+ * of the same pipe drift apart with nothing failing until a real host rejected a real request.
+ */
+export const GCP_IAP_INITIALIZATION_PROTOCOL_VERSION =
+  WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION;
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
