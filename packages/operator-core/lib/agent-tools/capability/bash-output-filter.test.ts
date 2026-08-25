@@ -61,6 +61,16 @@ describe('stranded job log recovery (EI-20230176152308336)', () => {
     expect(parseJobLogEndMarker(log)).toEqual({ status: 'completed', exitCode: 0 });
   });
 
+  it('uses the last marker when the durable runner raw verdict is superseded by the operator-normalized verdict', () => {
+    const dualMarkerLog =
+      'payload output\n' +
+      formatJobLogEndMarker('completed', 0, Date.UTC(2026, 7, 12, 7, 6, 45)) +
+      'operator diagnostics\n' +
+      formatJobLogEndMarker('failed', 127, Date.UTC(2026, 7, 12, 7, 6, 46));
+
+    expect(parseJobLogEndMarker(dualMarkerLog)).toEqual({ status: 'failed', exitCode: 127 });
+  });
+
   it('returns the terminal verdict and applies filter to the recovered tail', () => {
     const recovered = inspectStrandedJobLog(log, '^(Tests|EXIT=)');
     expect(recovered.terminal).toEqual({ status: 'completed', exitCode: 0 });
