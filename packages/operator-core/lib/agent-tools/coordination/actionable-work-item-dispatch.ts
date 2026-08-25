@@ -21,22 +21,11 @@ import {
   type PlanItemLaneBlock,
   type PlanItemLiveClaimBlock,
 } from '../../scheduler/plan-item-lane-guard';
-import {
-  wakeRecipients,
-  type WakeRecipientsResult,
-} from './inbox-wake';
-import {
-  assemblePresenceSnapshot,
-  resolvePresenceScope,
-} from './presence-snapshot';
+import { wakeRecipients, type WakeRecipientsResult } from './inbox-wake';
+import { assemblePresenceSnapshot, resolvePresenceScope } from './presence-snapshot';
 
 const UNASSIGNED_FRONTIER_STATES = new Set(['open', 'failing', 'todo']);
-const RETAINED_EXECUTION_STATES = new Set([
-  ...UNASSIGNED_FRONTIER_STATES,
-  'wip',
-  'in_progress',
-  'validating',
-]);
+const RETAINED_EXECUTION_STATES = new Set([...UNASSIGNED_FRONTIER_STATES, 'wip', 'in_progress', 'validating']);
 
 export type WorkItemDispatchSkipCode =
   | 'not_found'
@@ -85,11 +74,7 @@ export interface StableAgentTargetState {
   wakeable: boolean | null;
 }
 
-export type RequiredWakeFailureCode =
-  | 'target_dead'
-  | 'target_absent'
-  | 'target_unwakeable'
-  | 'wake_delivery_unknown';
+export type RequiredWakeFailureCode = 'target_dead' | 'target_absent' | 'target_unwakeable' | 'wake_delivery_unknown';
 
 export interface RequiredWakeFailure {
   code: RequiredWakeFailureCode;
@@ -218,10 +203,7 @@ async function classifyOne(
   let planClaimed = observed.planItemLiveClaimed ?? null;
   if (retainedByTarget) {
     try {
-      [planBlocked, planClaimed] = await Promise.all([
-        deps.planBlock(workItem),
-        deps.planClaim(workItem),
-      ]);
+      [planBlocked, planClaimed] = await Promise.all([deps.planBlock(workItem), deps.planClaim(workItem)]);
     } catch (error) {
       return {
         kind: 'skip',
@@ -289,9 +271,7 @@ export async function assignActionableWorkItems(
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemAssignment> {
   const requested = [...new Set(args.workItemIds.map((id) => id.trim()).filter(Boolean))];
-  const classified = await Promise.all(
-    requested.map((id) => classifyOne(id, args.targetAgent, args.harness, deps)),
-  );
+  const classified = await Promise.all(requested.map((id) => classifyOne(id, args.targetAgent, args.harness, deps)));
   const toClaim = classified.filter((r): r is { kind: 'claim'; workItemId: string } => r.kind === 'claim');
   const retained = classified
     .filter((r): r is { kind: 'retained'; workItemId: string } => r.kind === 'retained')
@@ -307,13 +287,13 @@ export async function assignActionableWorkItems(
           ...(args.harness ? { harness: args.harness } : {}),
         });
         return claimed
-          ? ({ ok: true as const, workItemId })
-          : ({
+          ? { ok: true as const, workItemId }
+          : {
               ok: false as const,
               workItemId,
               code: 'claim_refused' as const,
               reason: 'atomic assignment was refused (claim conflict or admission changed)',
-            });
+            };
       } catch (error) {
         return {
           ok: false as const,
@@ -476,9 +456,7 @@ export async function assignAndWakeActionableWorkItems(
     };
   }
   const wake = await deps.wake([target.ownerId], {
-    summary:
-      args.summary ??
-      `Assigned ${assignment.executionWorkItemIds.length} actionable plan-run work-item(s)`,
+    summary: args.summary ?? `Assigned ${assignment.executionWorkItemIds.length} actionable plan-run work-item(s)`,
     payload: {
       kind: 'actionable-work-item-dispatch',
       workItemIds: assignment.executionWorkItemIds,
