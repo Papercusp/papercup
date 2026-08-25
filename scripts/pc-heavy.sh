@@ -105,6 +105,12 @@
 #   PC_HEAVY_PREEMPT_GRACE_SEC / PC_HEAVY_PREEMPT_TERM_GRACE_SEC /
 #   PC_HEAVY_PREEMPT_POLL_SEC  finish-before-TERM grace, TERM-before-KILL
 #                         grace, and writer-poll cadence (defaults 30/30/0.1).
+#   PC_HEAVY_DURABLE_CALLER "1" — the caller is a confined background task
+#                         whose workload is meant to outlive the process that
+#                         launched it (for example, capability:bash across an
+#                         operator-host recycle). Keeps exclusive-materializer
+#                         preemption, but does not treat the launcher's PPID
+#                         disappearing as proof that the workload is orphaned.
 #   PC_HEAVY_PREEMPT_AFTER_READY "1" — opt in to an after-ready barrier for a
 #                         command that publishes PC_HEAVY_PREEMPT_READY_FILE
 #                         after its irreversible setup/derivation. While that
@@ -482,7 +488,7 @@ _pc_heavy_internal_preempt_run() {
       *) eval "exec ${_notify_fd}>&-" 2>/dev/null || true ;;
     esac
     unset PC_HEAVY_PREEMPT_NOTIFY_FD
-    unset PC_HEAVY_CALLER_PID PC_HEAVY_CALLER_START_TICKS
+    unset PC_HEAVY_CALLER_PID PC_HEAVY_CALLER_START_TICKS PC_HEAVY_DURABLE_CALLER
     _pid_file="$1"
     shift
     printf "%s\n" "$$" > "$_pid_file"
@@ -2212,6 +2218,21 @@ case "$_preempt_after_ready" in
     exit 75
     ;;
 esac
+
+# A capability background job is enrolled in its own systemd service and is
+# contractually durable across an operator-host recycle. Its shell still keeps
+# the old host as PPID after cgroup migration, so PPID death is NOT orphan proof
+# for that one class. Disable only caller-liveness coupling; the outer-wrapper
+# and exclusive-materializer checks remain active.
+_durable_caller="${PC_HEAVY_DURABLE_CALLER:-0}"
+case "$_durable_caller" in
+  0|off|OFF|false|FALSE|no|NO) _durable_caller=0 ;;
+  1|on|ON|true|TRUE|yes|YES) _durable_caller=1 ;;
+  *)
+    echo "[pc-heavy] invalid PC_HEAVY_DURABLE_CALLER=$_durable_caller; expected 1 or 0" >&2
+    exit 75
+    ;;
+esac
 if [ "$_preemptible" = 1 ]; then
   # The monitor must follow the ORIGINAL caller, not only this wrapper. A dead
   # caller leaves the wrapper blocked in its wait and reparented to init, so the
@@ -2219,15 +2240,17 @@ if [ "$_preemptible" = 1 ]; then
   # stable across PID reuse; if /proc cannot provide them, keep the established
   # outer-wrapper-only behaviour rather than guessing.
   unset PC_HEAVY_CALLER_PID PC_HEAVY_CALLER_START_TICKS
-  _pc_heavy_caller_pid="${PPID:-}"
-  _pc_heavy_caller_start_ticks="$(_pc_heavy_proc_start_ticks "$_pc_heavy_caller_pid" 2>/dev/null || true)"
-  case "$_pc_heavy_caller_pid:$_pc_heavy_caller_start_ticks" in
-    *[!0-9:]*|:*|*:) ;;
-    *)
-      export PC_HEAVY_CALLER_PID="$_pc_heavy_caller_pid"
-      export PC_HEAVY_CALLER_START_TICKS="$_pc_heavy_caller_start_ticks"
-      ;;
-  esac
+  if [ "$_durable_caller" != 1 ]; then
+    _pc_heavy_caller_pid="${PPID:-}"
+    _pc_heavy_caller_start_ticks="$(_pc_heavy_proc_start_ticks "$_pc_heavy_caller_pid" 2>/dev/null || true)"
+    case "$_pc_heavy_caller_pid:$_pc_heavy_caller_start_ticks" in
+      *[!0-9:]*|:*|*:) ;;
+      *)
+        export PC_HEAVY_CALLER_PID="$_pc_heavy_caller_pid"
+        export PC_HEAVY_CALLER_START_TICKS="$_pc_heavy_caller_start_ticks"
+        ;;
+    esac
+  fi
   # Keep the monitor outside the outer wrapper's process group. Do NOT use
   # `setsid --fork --wait` here: its waitable parent stays in the outer group,
   # and killing that group also tears down the forked monitor before it can reap

@@ -678,6 +678,85 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   }, 15_000);
 
+  it('EI-21434250273517260: keeps a durable background workload alive when its launch host exits', async () => {
+    const readyDir = join(dir, 'durable-caller-ready');
+    const readyPublished = join(dir, 'durable-caller-published');
+    const wrapperPidFile = join(dir, 'durable-caller-wrapper.pid');
+    const workloadPidFile = join(dir, 'durable-caller-workload.pid');
+    const terminatedFile = join(dir, 'durable-caller-terminated');
+    const finishedFile = join(dir, 'durable-caller-finished');
+    const holderOut = join(dir, 'durable-caller-holder.out');
+    const holderErr = join(dir, 'durable-caller-holder.err');
+    const workload = [
+      `echo "$$" > "$WORKLOAD_PID_FILE"`,
+      `trap 'echo terminated > "$TERMINATED_FILE"; exit 143' TERM`,
+      `printf '%s\n' "$$" > "$PC_HEAVY_PREEMPT_READY_FILE"`,
+      `echo published > "$READY_PUBLISHED"`,
+      'sleep 1',
+      `echo finished > "$FINISHED_FILE"`,
+    ].join('; ');
+    const env = baseEnv({
+      PC_HEAVY_SCRIPT: PC_HEAVY,
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_PREEMPT_AFTER_READY: '1',
+      PC_HEAVY_DURABLE_CALLER: '1',
+      PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      WORKLOAD_SCRIPT: workload,
+      WORKLOAD_PID_FILE: workloadPidFile,
+      TERMINATED_FILE: terminatedFile,
+      FINISHED_FILE: finishedFile,
+      READY_PUBLISHED: readyPublished,
+      WRAPPER_PID_FILE: wrapperPidFile,
+      HOLDER_OUT: holderOut,
+      HOLDER_ERR: holderErr,
+    });
+    const caller = spawn(
+      'bash',
+      ['-c', [
+        'nohup bash "$PC_HEAVY_SCRIPT" bash -c "$WORKLOAD_SCRIPT" >"$HOLDER_OUT" 2>"$HOLDER_ERR" &',
+        'echo "$!" > "$WRAPPER_PID_FILE"',
+        'while [ ! -e "$READY_PUBLISHED" ]; do sleep 0.02; done',
+      ].join('\n')],
+      { env, cwd: dir },
+    );
+    const callerExit = new Promise<number>((resolve) => caller.on('exit', (code) => resolve(code ?? -1)));
+    let wrapperPid = 0;
+    let workloadPid = 0;
+    try {
+      expect(await callerExit).toBe(0);
+      await waitFor('the durable fixture publishing wrapper and workload pids', () =>
+        existsSync(wrapperPidFile) && existsSync(workloadPidFile),
+      );
+      wrapperPid = Number(readFileSync(wrapperPidFile, 'utf8').trim());
+      workloadPid = Number(readFileSync(workloadPidFile, 'utf8').trim());
+      expect(Number.isSafeInteger(wrapperPid) && wrapperPid > 1).toBe(true);
+      expect(Number.isSafeInteger(workloadPid) && workloadPid > 1).toBe(true);
+
+      await waitFor('the durable workload finishing after its launch host exited', () => existsSync(finishedFile), 5_000);
+      await waitFor('the durable pc-heavy wrapper exiting normally', () => {
+        try { process.kill(wrapperPid, 0); return false; } catch { return true; }
+      }, 5_000);
+
+      const err = readFileSync(holderErr, 'utf8');
+      expect(existsSync(terminatedFile)).toBe(false);
+      expect(err).not.toContain('original caller exited — reaping its orphaned heavy workload');
+      expect(err).not.toContain('PC_HEAVY_RESULT status=undetermined reason=caller-exited');
+      expect(readdirSync(readyDir)).toEqual([]);
+      expect(heldSlotCount(dir, 1)).toBe(0);
+    } finally {
+      try { caller.kill('SIGKILL'); } catch { /* already exited */ }
+      if (wrapperPid > 1) {
+        try { process.kill(wrapperPid, 'SIGTERM'); } catch { /* already exited */ }
+      }
+      if (workloadPid > 1) {
+        try { process.kill(-workloadPid, 'SIGKILL'); } catch { /* already reaped */ }
+      }
+    }
+  }, 15_000);
+
   it('WI-41318: reaps the workload group when a caller hard-kills the outer wrapper', async () => {
     const workloadPidFile = join(dir, 'hard-killed-workload.pid');
     const terminatedFile = join(dir, 'hard-killed-workload.terminated');
