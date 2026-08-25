@@ -481,6 +481,21 @@ describe('scheduler:get_next declared-plan boundary (EI-21238986333755666)', () 
       declaredPlanSlug: 'active-control-plan',
       claimSpecSource: 'default',
     });
+    expect(body.recovery).toMatchObject({
+      tool: 'scheduler:set_claim_spec',
+      args: {
+        cupId: 'su-member',
+        harness: 'papercusp',
+        spec: {
+          specVersion: '1.0',
+          specId: 'declared-plan:active-control-plan',
+          revision: 1,
+          view: { filter: { field: 'plan', op: '=', value: 'active-control-plan' } },
+          rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+        },
+      },
+    });
+    expect((body.recovery as { args: Record<string, unknown> }).args).not.toHaveProperty('plan');
     expect(getNextM).not.toHaveBeenCalled();
   });
 

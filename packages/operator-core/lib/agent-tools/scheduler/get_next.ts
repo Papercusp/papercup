@@ -24,6 +24,7 @@ import {
   getClaimSpecRecord,
   readClaimConcurrency,
 } from '../../scheduler/claim-spec-store';
+import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
 import { CLAIM_STATES_ALLOWLIST, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
@@ -338,7 +339,18 @@ function concurrencyBlockedRefusal(concurrency: {
  * claim an unrelated plan's work. Keep this refusal distinct from a drained/wind-down miss:
  * no claim was attempted and the caller needs a spec, not an idle-loop stand-down.
  */
-export function planScopeMissingRefusal(planSlug: string) {
+export function planScopeMissingRefusal(planSlug: string, cupId: string, harness?: string) {
+  const recoveryArgs = {
+    cupId,
+    ...(harness ? { harness } : {}),
+    spec: {
+      specVersion: CURRENT_SPEC_VERSION,
+      specId: `declared-plan:${planSlug}`,
+      revision: 1,
+      view: { filter: { field: 'plan', op: '=', value: planSlug } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    },
+  };
   return {
     ok: false as const,
     error: 'plan_scope_missing' as const,
@@ -354,7 +366,7 @@ export function planScopeMissingRefusal(planSlug: string) {
       'scheduler:get_next is blocked before claim so DEFAULT_CLAIM_SPEC cannot widen the pull to unrelated work.',
     recovery: {
       tool: 'scheduler:set_claim_spec',
-      args: { cupId: 'you', plan: planSlug },
+      args: recoveryArgs,
     },
   };
 }
@@ -1029,7 +1041,7 @@ export default defineTool({
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(planScopeMissingRefusal(preflightState.planSlug)),
+            text: JSON.stringify(planScopeMissingRefusal(preflightState.planSlug, ident.ownerId, args.harness)),
           },
         ],
       };
