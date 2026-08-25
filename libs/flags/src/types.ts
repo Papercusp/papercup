@@ -2563,6 +2563,17 @@ export const FLAGS = {
   //
   // NOT a `process.env.PAPERCUSP_*` gate (`lint:env-feature-gates`).
   TASK_MANAGER: "papercusp-task-manager",
+  // WI-41607 (plan agent-session-scope-reaper-2026-08-25): kill-switch for the
+  // agent-session residue REAPER — the enforcement pass in task-reconcile-action
+  // that stops leftover `pc-*.scope` subtrees (terminal rows with surviving
+  // processes; log-quiet zombie sessions with no fresh presence). DEFAULT ON —
+  // the owner directed enforcement explicitly (2026-08-23 + 2026-08-25) after
+  // the third residue accumulation; this key exists so a misbehaving reaper can
+  // be stopped from /admin/features without a revert or restart. Nested under
+  // TASK_MANAGER (flag OFF ⇒ no reconcile tick ⇒ no reaper). Fail-open like its
+  // parent: an unreachable flag backend must not silently disable enforcement;
+  // an explicit OFF is always honored.
+  TASK_REAPER: "papercusp-task-reaper",
   // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror): gates the cross-machine federation
   // of SHAREABLE memories (memory:remember with shareable=true). When ON, shareable memories
   // capture to the peer-log and federate to other hives; receive-side projections apply remote
