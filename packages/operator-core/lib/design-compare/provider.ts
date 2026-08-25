@@ -266,23 +266,47 @@ async function withDeadline<T>(work: Promise<T>, timeoutMs: number | undefined):
  * `undefined` or misses. This never does either.
  */
 export function describeThrown(error: unknown): string {
-  if (error instanceof Error) {
-    const name = error.name || 'Error';
-    return error.message ? `${name}: ${error.message}` : name;
-  }
-  if (typeof error === 'string') return `thrown string: ${error}`;
-  if (error === undefined) return 'thrown undefined';
-  if (error === null) return 'thrown null';
-  if (typeof error === 'object') {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message) return `thrown object: ${message}`;
-    try {
-      return `thrown object: ${JSON.stringify(error)}`;
-    } catch {
-      return 'thrown object: <unserialisable>';
+  try {
+    if (typeof error === 'string') return `thrown string: ${error}`;
+    if (error === undefined) return 'thrown undefined';
+    if (error === null) return 'thrown null';
+
+    if (error instanceof Error) {
+      // `name` and `message` are ordinary properties and can be accessors that
+      // throw. Reading them defensively is not paranoia: a describer that can
+      // throw turns "catch everything" into "catch almost everything", which is
+      // the same unhandled rejection consequence 5 exists to prevent — and the
+      // failure would land in the catch block, where there is nothing left to
+      // catch it. Found by this file's own hostile-object case.
+      const name = readStringProperty(error, 'name') ?? 'Error';
+      const message = readStringProperty(error, 'message');
+      return message ? `${name}: ${message}` : name;
     }
+
+    if (typeof error === 'object') {
+      const message = readStringProperty(error, 'message');
+      if (message) return `thrown object: ${message}`;
+      try {
+        return `thrown object: ${JSON.stringify(error)}`;
+      } catch {
+        return 'thrown object: <unserialisable>';
+      }
+    }
+
+    return `thrown ${typeof error}: ${String(error)}`;
+  } catch {
+    return 'thrown value: <undescribable>';
   }
-  return `thrown ${typeof error}: ${String(error)}`;
+}
+
+/** Read a string property without trusting the object not to fight back. */
+function readStringProperty(source: object, key: string): string | undefined {
+  try {
+    const value = (source as Record<string, unknown>)[key];
+    return typeof value === 'string' && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

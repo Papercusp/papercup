@@ -468,6 +468,30 @@ describe('consequence 5: any provider throw becomes invalid, never a pass', () =
     expect(describeThrown(42)).toBe('thrown number: 42');
   });
 
+  it('describeThrown cannot itself throw, whatever it is handed', () => {
+    // A describer that throws lands its own error inside the catch block that
+    // was supposed to contain the failure — an unhandled rejection where an
+    // `invalid` result was promised.
+    const hostileObject = {
+      get message(): string {
+        throw new Error('nope');
+      },
+    };
+    expect(describeThrown(hostileObject)).toBe('thrown object: <unserialisable>');
+
+    const hostileError = new Error('start');
+    Object.defineProperty(hostileError, 'message', {
+      get() {
+        throw new Error('nope');
+      },
+    });
+    expect(describeThrown(hostileError)).toBe('Error');
+
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(describeThrown(circular)).toBe('thrown object: <unserialisable>');
+  });
+
   it('maps a hung engine to engine-timeout, distinctly from engine-error', async () => {
     const hung: ComparisonProvider = {
       engine: { engine: PIXELMATCH_ENGINE_ID, engineVersion: '0.0.0-test' },
