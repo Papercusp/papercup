@@ -173,7 +173,9 @@ vi.mock('../../events/await/store', async (importOriginal) => ({
   listActiveAwaits: (...a: unknown[]) => listActiveAwaits(...a),
 }));
 
-const tool = (await import('./checkpoint')).default;
+const checkpointModule = await import('./checkpoint');
+const tool = checkpointModule.default;
+const { loopGuaranteesNextWake } = checkpointModule;
 // REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
 // through the same renderer the store persists, rather than a drift-prone literal.
 const {
@@ -212,6 +214,48 @@ beforeEach(() => {
   readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
   withBoundedTimeout.mockResolvedValue({ value: undefined, degraded: false, elapsedMs: 0 });
   listVerifiedWaitTakeoversForSubscribers.mockResolvedValue([]);
+});
+
+describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () => {
+  const loop = (overrides: Record<string, unknown> = {}) =>
+    ({
+      active: true,
+      armedAt: '2026-08-25T04:00:00.000Z',
+      firesSinceArm: 0,
+      intervalSec: 300,
+      maxDurationSec: null,
+      maxFires: null,
+      nextFireAt: null,
+      ...overrides,
+    }) as never;
+
+  it('accepts an active unbounded loop and rejects an inactive one', () => {
+    expect(loopGuaranteesNextWake(loop(), Date.parse('2026-08-25T04:30:00.000Z'))).toBe(true);
+    expect(loopGuaranteesNextWake(loop({ active: false }), Date.parse('2026-08-25T04:30:00.000Z'))).toBe(false);
+  });
+
+  it('mirrors the arm-relative max-fires boundary that withholds the next delivery', () => {
+    expect(loopGuaranteesNextWake(loop({ firesSinceArm: 11, maxFires: 12 }))).toBe(true);
+    expect(loopGuaranteesNextWake(loop({ firesSinceArm: 12, maxFires: 12 }))).toBe(false);
+  });
+
+  it('rejects a parked loop when its earliest post-settle fire falls beyond max-duration', () => {
+    const now = Date.parse('2026-08-25T09:58:00.000Z');
+    expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600 }), now)).toBe(false);
+    expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_900 }), now)).toBe(true);
+  });
+
+  it('uses a concrete scheduled fire when present and fails closed without arm-time evidence', () => {
+    const now = Date.parse('2026-08-25T09:00:00.000Z');
+    expect(
+      loopGuaranteesNextWake(
+        loop({ maxDurationSec: 21_600, nextFireAt: '2026-08-25T10:01:00.000Z' }),
+        now,
+      ),
+    ).toBe(false);
+    expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600, armedAt: null }), now)).toBe(false);
+    expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600, intervalSec: null }), now)).toBe(false);
+  });
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
@@ -716,6 +760,40 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       ownerId: 'su-caller',
       workspaceId: 'ws-1',
     });
+  });
+
+  it('runtime wiring: an active loop at its dead-man boundary does not promise another wake', async () => {
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value:
+        typeof work === 'function'
+          ? await (work as () => Promise<unknown>)()
+          : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getLoopStatus.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      active: true,
+      carry: 'warm',
+      armedAt: '2026-08-25T04:00:00.000Z',
+      firesSinceArm: 12,
+      intervalSec: 60,
+      maxDurationSec: null,
+      maxFires: 12,
+      nextFireAt: null,
+    });
+    getModes.mockResolvedValue([{ mode: 'auto' }]);
+    getPresence.mockResolvedValue({ contextTokens: 95, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(95);
+    readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-25T04:00:00.000Z' });
+
+    const b = body(await call({ next: 'settle only when another wake is real' }));
+
+    expect(b.continuation).toMatchObject({
+      rewakeGuaranteed: false,
+      nextWakeFresh: null,
+    });
+    expect(b.continuation.guidance).toContain('NO guaranteed re-wake');
   });
 });
 
