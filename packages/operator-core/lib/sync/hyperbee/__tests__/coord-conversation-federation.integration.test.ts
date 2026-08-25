@@ -283,6 +283,7 @@ describe('coord_conversations federation (real PG)', () => {
           asker_id text NOT NULL, title text, body text DEFAULT '' NOT NULL,
           state text DEFAULT 'open' NOT NULL, accepted_answer text, accepted_post_id bigint,
           capture_target text, promoted_issue_id text,
+          producer text, -- EI-21462599108204160 (mig 961): which tool opened it
           created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
           resolved_at timestamptz, origin text NOT NULL DEFAULT 'local', author_pubkey text,
           fed_ts bigint, -- EI-79 step 2 (mig 181): PG-level LWW guard column
