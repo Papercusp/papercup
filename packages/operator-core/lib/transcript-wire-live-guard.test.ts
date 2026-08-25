@@ -230,21 +230,50 @@ describe('transcript wire fixtures still match the live wire', () => {
           }
         }
 
-        // Record types the parser deliberately ignores (telemetry, turn
-        // bookkeeping, per-item completion echoes). Listed rather than inferred
-        // so ADDING one is a visible decision, not a silent widening.
+        // Record types the parser deliberately ignores even though they DO
+        // carry a conversational field: telemetry, turn bookkeeping, per-item
+        // completion echoes, injected scaffolding. Listed rather than inferred,
+        // so adding one is a visible decision.
         const IGNORED = new Set([
           'event_msg/token_count', 'event_msg/task_started', 'event_msg/task_complete',
           'event_msg/item_completed', 'event_msg/thread_settings_applied', 'event_msg/error',
-          'turn_context', 'turn_context/?', 'session_meta', 'world_state', 'compacted',
-          'custom', 'custom_message', 'branch_summary', 'ttsr_injection', 'title',
-          'thinking_level_change', 'model_change', 'attachment', 'permission-mode',
-          'mode', 'atis-latch', 'last-prompt', 'summary', 'system', 'file-history-snapshot',
+          'turn_context', 'session_meta', 'world_state', 'compacted',
+          'custom', 'custom_message', 'branch_summary', 'ttsr_injection',
+          'summary', 'system', 'file-history-snapshot',
         ]);
+
+        /**
+         * A record type only matters here if it could carry CONVERSATION — i.e.
+         * it has one of the top-level fields the parsers actually read.
+         *
+         * Derived from the record rather than hand-listed, because the
+         * alternative rots in the worst direction: every client release adds
+         * UI-metadata record types (`ai-title`, `atis-latch`, `last-prompt`,
+         * `permission-mode`, `attachment` — none of which carry conversation),
+         * and a hand-maintained ignore list would red the SHARED release gate
+         * on every one of them until someone appended a name. That trains
+         * people to widen the list reflexively, which is exactly how a real new
+         * record type gets waved through.
+         */
+        const CONVERSATIONAL_FIELDS = ['message', 'payload', 'content', 'text', 'thinking', 'input', 'output'];
+        const conversational = new Set<string>();
+        for (const rec of records) {
+          if (!rec || typeof rec !== 'object') continue;
+          if (!CONVERSATIONAL_FIELDS.some((f) => f in (rec as Record<string, unknown>))) continue;
+          const r = rec as { type?: unknown; payload?: { type?: unknown }; message?: { role?: unknown } };
+          const top = typeof r.type === 'string' ? r.type : '?';
+          const sub = typeof r.payload?.type === 'string'
+            ? r.payload.type
+            : typeof r.message?.role === 'string'
+              ? r.message.role
+              : '';
+          conversational.add(sub ? `${top}/${sub}` : top);
+        }
 
         const total = records.length;
         const uncovered = [...census.entries()]
-          .filter(([key, n]) => !covered.has(key) && !IGNORED.has(key) && n / total >= 0.02)
+          .filter(([key, n]) =>
+            conversational.has(key) && !covered.has(key) && !IGNORED.has(key) && n / total >= 0.02)
           .sort((a, b) => b[1] - a[1]);
 
         expect(
