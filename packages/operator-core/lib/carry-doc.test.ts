@@ -4,8 +4,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { CarryBrief } from './carry-brief';
+import type { AutomaticCompactionRecovery } from './agent-tools/coordination/compaction-recovery';
 import {
   buildCarryDoc,
   renderCarryDoc,
@@ -30,6 +31,72 @@ import {
 } from './carry-doc';
 
 const NOW = 1_800_000_000_000;
+
+function automaticRecovery(complete = true): AutomaticCompactionRecovery {
+  return {
+    marker: {
+      schemaVersion: 'post-compaction-recovery-v1',
+      complete,
+      memoryEpoch: 23,
+      controlGeneration: complete ? 17 : null,
+      fallback: {
+        verb: 'coord:orient',
+        args: { afterCompaction: true },
+        when: ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'],
+      },
+    },
+    recovery: {
+      selfRecall: "sessions:search { session:'self', mode:'verbatim' }",
+      loop: complete ? { active: true, intervalSec: 60 } : null,
+      control: complete
+        ? {
+            schemaVersion: 'ctrl-v1',
+            generation: 17,
+            state: {
+              modes: ['auto'],
+              loop: { active: true, intervalSec: 60 },
+              wakeSource: 'loop',
+              carry: 'warm',
+              route: { kind: 'self' },
+              scope: {
+                workspace: 'ws-1',
+                harness: 'papercusp',
+                plan: 'fleet-deltas-leader-primitives-2026-07-10',
+                items: ['P-017'],
+              },
+            },
+            provenance: {
+              source: 'harness_shared.session_briefs.control_state',
+              ownerId: 'su-1',
+              updatedAt: '2026-08-25T00:00:00.000Z',
+            },
+            resync: {
+              on: ['missing-base', 'schema-mismatch', 'generation-mismatch'],
+              verb: 'coord:orient',
+              args: { afterCompaction: true },
+              rule: 'replace-full-never-merge-behind',
+            },
+            budget: { estimatedTokens: 100, maxTokens: 384 },
+          }
+        : null,
+      checkpoints: [
+        {
+          id: 'WI-41558',
+          harness: 'papercusp',
+          title: 'automatic recovery',
+          body: 'reuse the deterministic carry boundary',
+          checkpoint: 'P-017 in progress',
+        },
+      ],
+      coverage: {
+        selfSession: true,
+        control: complete,
+        heldItems: true,
+        staleness: null,
+      },
+    },
+  };
+}
 
 function brief(over: Partial<CarryBrief> = {}): CarryBrief {
   return {
@@ -88,6 +155,7 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     harness: 'papercusp',
     ownerLabel: 'su · su-1',
     buildCarryBriefFn: async () => brief(),
+    buildAutomaticRecoveryFn: async () => automaticRecovery(),
     getModesFn: async () => [{ mode: 'auto', ownerDirected: true, reason: 'owner set it' }],
   };
 
@@ -97,6 +165,32 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(doc.sessionMode.loopActive).toBe(true);
     expect(doc.sessionMode.loopIntervalSec).toBe(60);
     expect(doc.sessionMode.modes).toEqual([{ mode: 'auto', ownerDirected: true, reason: 'owner set it' }]);
+  });
+
+  it('builds one automatic recovery from the already-read carry held-items snapshot', async () => {
+    const heldItems = [
+      {
+        id: 'WI-41558',
+        title: 'automatic recovery',
+        body: 'reuse the deterministic carry boundary',
+        harness: 'papercusp',
+        checkpoint: 'P-017 in progress',
+        checkpointUpdatedAtMs: NOW,
+      },
+    ];
+    const buildAutomaticRecoveryFn = vi.fn(async () => automaticRecovery());
+    const built = await buildCarryDoc('su-1', {
+      ...base,
+      buildCarryBriefFn: async () => brief({ heldItems }),
+      buildAutomaticRecoveryFn,
+    });
+
+    expect(buildAutomaticRecoveryFn).toHaveBeenCalledOnce();
+    expect(buildAutomaticRecoveryFn).toHaveBeenCalledWith('su-1', 'ws-1', {
+      sessionHarness: 'papercusp',
+      heldItems,
+    });
+    expect(built.automaticRecovery).toEqual(automaticRecovery());
   });
 
   /**
@@ -301,6 +395,25 @@ describe('renderCarryDoc (pure)', () => {
       ...over,
     };
   }
+
+  it('renders a complete generation-stamped recovery as already delivered, with declare-intent as the next call', () => {
+    const text = renderCarryDoc(doc({ automaticRecovery: automaticRecovery() }), NOW);
+    expect(text).toContain('⟦post-compaction-recovery⟧');
+    expect(text).toContain('"schemaVersion":"post-compaction-recovery-v1"');
+    expect(text).toContain('"memoryEpoch":23');
+    expect(text).toContain('"controlGeneration":17');
+    expect(text).toContain('Do NOT call coord:orient');
+    expect(text).toContain('coord:declare-intent');
+    expect(text).toContain('control generation 17');
+  });
+
+  it('renders exactly one orient fallback instruction when the marker is absent or incomplete', () => {
+    for (const automatic of [undefined, automaticRecovery(false)]) {
+      const text = renderCarryDoc(doc({ automaticRecovery: automatic }), NOW);
+      expect(text.match(/Call `coord:orient \{ afterCompaction: true \}` exactly once/g)).toHaveLength(1);
+      expect(text).not.toContain('Do NOT call coord:orient');
+    }
+  });
 
   it('renders every section in priority order with the banner + self-recall', () => {
     const text = renderCarryDoc(doc(), NOW);

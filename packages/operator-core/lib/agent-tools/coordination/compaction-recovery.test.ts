@@ -16,6 +16,7 @@
  * best-effort in the implementation, so a failing mock never throws.
  */
 import { describe, expect, it, vi } from 'vitest';
+import type { ControlAnchor } from './control-anchor';
 
 vi.mock('../../search/self-session', () => ({
   resolveSelfSession: vi.fn(async () => null),
@@ -28,6 +29,45 @@ vi.mock('./control-anchor', () => ({
     throw new Error('not exercised by this test');
   }),
 }));
+vi.mock('../../memory/session-epoch-ledger', () => ({
+  currentSessionEpoch: vi.fn(async () => 23),
+}));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: vi.fn(() => ({ sql: {} })),
+}));
+vi.mock('../mode/set', () => ({
+  wakeSourceLostWarning: vi.fn(() => undefined),
+}));
+
+const CONTROL: ControlAnchor = {
+  schemaVersion: 'ctrl-v1',
+  generation: 17,
+  state: {
+    modes: ['auto'],
+    loop: { active: true, intervalSec: 60 },
+    wakeSource: 'loop',
+    carry: 'warm',
+    route: { kind: 'self' },
+    scope: {
+      workspace: 'ws-1',
+      harness: 'h',
+      plan: 'fleet-deltas-leader-primitives-2026-07-10',
+      items: ['P-017'],
+    },
+  },
+  provenance: {
+    source: 'harness_shared.session_briefs.control_state',
+    ownerId: 'owner-x',
+    updatedAt: '2026-08-25T00:00:00.000Z',
+  },
+  resync: {
+    on: ['missing-base', 'schema-mismatch', 'generation-mismatch'],
+    verb: 'coord:orient',
+    args: { afterCompaction: true },
+    rule: 'replace-full-never-merge-behind',
+  },
+  budget: { estimatedTokens: 100, maxTokens: 384 },
+};
 
 const OLDER_PLAN =
   'the owner report is artifact https://claude.ai/example-artifact-url; republish that path to keep the URL. ' +
@@ -98,5 +138,73 @@ describe('buildCompactionRecovery — held-item checkpoint fold', () => {
     const { buildCompactionRecovery } = await import('./compaction-recovery');
     const recovery = await buildCompactionRecovery('owner-x', 'ws-1', { sessionHarness: 'h' });
     expect(recovery.checkpoints?.[0]?.crossHarnessNote).toBeUndefined();
+  });
+});
+
+describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-017/P-017)', () => {
+  it('stamps a complete recovery with the current memory epoch + control generation and reuses supplied held items', async () => {
+    const [{ buildAndPersistControlAnchor }, { readHeldWorkItems }, { buildAutomaticCompactionRecovery }] =
+      await Promise.all([
+        import('./control-anchor'),
+        import('../../carry-brief'),
+        import('./compaction-recovery'),
+      ]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce(CONTROL);
+    vi.mocked(readHeldWorkItems).mockClear();
+
+    const supplied = [
+      {
+        id: 'WI-41558',
+        title: 'automatic recovery',
+        body: 'reuse the carry surface',
+        harness: 'h',
+        checkpoint: 'P-017 in progress',
+        checkpointUpdatedAtMs: Date.parse('2026-08-25T00:00:00.000Z'),
+      },
+    ];
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: supplied,
+    });
+
+    expect(readHeldWorkItems).not.toHaveBeenCalled();
+    expect(delivery.marker).toEqual({
+      schemaVersion: 'post-compaction-recovery-v1',
+      complete: true,
+      memoryEpoch: 23,
+      controlGeneration: 17,
+      fallback: {
+        verb: 'coord:orient',
+        args: { afterCompaction: true },
+        when: ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'],
+      },
+    });
+    expect(delivery.recovery.control).toEqual(CONTROL);
+    expect(delivery.recovery.loop).toEqual({ active: true, intervalSec: 60 });
+    expect(delivery.recovery.checkpoints?.[0]).toMatchObject({
+      id: 'WI-41558',
+      harness: 'h',
+      checkpoint: 'P-017 in progress',
+    });
+  });
+
+  it('keeps the marker incomplete when the authoritative control read fails', async () => {
+    const [{ buildAndPersistControlAnchor }, { buildAutomaticCompactionRecovery }] =
+      await Promise.all([import('./control-anchor'), import('./compaction-recovery')]);
+    vi.mocked(buildAndPersistControlAnchor).mockRejectedValueOnce(new Error('control unavailable'));
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [],
+    });
+
+    expect(delivery.marker.complete).toBe(false);
+    expect(delivery.marker.memoryEpoch).toBe(23);
+    expect(delivery.marker.controlGeneration).toBeNull();
+    expect(delivery.recovery.coverage).toMatchObject({ control: false, heldItems: true });
+    expect(delivery.marker.fallback.when).toEqual([
+      'marker-absent',
+      'marker-incomplete',
+      'control-generation-mismatch',
+    ]);
   });
 });
