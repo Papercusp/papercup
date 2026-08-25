@@ -157,8 +157,14 @@ export function unwrapActivityRow(row: ActivityMixRow): { calls: ActivityCall[];
 export function activityMode(call: ActivityCall): ActivityMixMode {
   const tool = canonicalToolName(call.tool);
   const args = asText(call.args).toLowerCase();
+  const record = asRecord(call.args);
+  const recipients = record.to;
+  const explicitlyTargetsHuman =
+    (typeof recipients === 'string' && recipients.toLowerCase() === 'human') ||
+    (Array.isArray(recipients) && recipients.some((recipient) => String(recipient).toLowerCase() === 'human')) ||
+    (typeof call.args === 'string' && /(?:to|recipients?)\s*[:=].{0,80}["']human["']/.test(args));
 
-  if (OWNER_REPORTING.has(tool) || (tool === 'coord:send' && args.includes('human'))) return 'owner-comms';
+  if (OWNER_REPORTING.has(tool) || (tool === 'coord:send' && explicitlyTargetsHuman)) return 'owner-comms';
   if (
     tool.startsWith('coord:') ||
     tool.startsWith('fleet:') ||
@@ -170,17 +176,13 @@ export function activityMode(call: ActivityCall): ActivityMixMode {
     tool.startsWith('workitems:') ||
     tool.startsWith('plans:') ||
     tool.startsWith('issues:') ||
-    tool.startsWith('improvements:') ||
-    tool.startsWith('facts:') ||
-    tool === 'memory:remember'
+    tool.startsWith('improvements:')
   ) return 'record-durably';
   if (
-    tool === 'capability:edit' ||
-    tool === 'capability:write' ||
-    tool === 'capability:apply_patch' ||
-    tool === 'capability:apply-patch' ||
-    tool === 'capability:delete' ||
-    tool === 'capability:move'
+    tool === 'locks:check_command' ||
+    tool.startsWith('capability:') ||
+    tool.startsWith('testing:') ||
+    tool.startsWith('build:')
   ) return 'implement';
   if (
     tool.startsWith('dev:') ||
@@ -188,14 +190,14 @@ export function activityMode(call: ActivityCall): ActivityMixMode {
     tool.startsWith('sessions:') ||
     tool.startsWith('docs:') ||
     tool.startsWith('memory:') ||
-    tool.startsWith('activity:') ||
+    tool.startsWith('facts:') ||
+    tool.startsWith('session:') ||
     tool.startsWith('rubrics:') ||
-    tool.startsWith('scorecards:')
+    tool.startsWith('scorecards:') ||
+    tool.startsWith('activity:')
   ) return 'investigate';
   if (tool.startsWith('loop:') || tool.startsWith('mode:') || tool.startsWith('journal:')) return 'self-admin';
-  if (tool.startsWith('testing:') || tool.startsWith('build:') || tool.startsWith('locks:') || tool.startsWith('capability:')) {
-    return 'investigate';
-  }
+  if (tool.startsWith('git-sync:') || tool.startsWith('goals:')) return 'supervise';
   return `other: ${tool}`;
 }
 
