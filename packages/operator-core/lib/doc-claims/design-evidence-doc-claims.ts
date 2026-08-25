@@ -155,6 +155,7 @@ export function judgeDesignEvidenceDoc(
     ...code.refusalCodes,
     ...code.invalidReasons,
     ...code.referenceClasses,
+    ...code.gateFailureReasons,
   ]);
 
   for (const token of tokens) {
@@ -167,8 +168,9 @@ export function judgeDesignEvidenceDoc(
     if (code.knownElsewhere.has(token)) continue;
     staleInDoc.push(token);
     violations.push(
-      `the doc names '${token}', which is not a current refusal code, invalid reason or ` +
-        'reference class. Either the constant was renamed and the prose was left behind, or ' +
+      `the doc names '${token}', which is not a current refusal code, invalid reason, ` +
+        'reference class or gate failure reason. Either the constant was renamed and the prose ' +
+        'was left behind, or ' +
         `it belongs on a different axis and should be added to NON_VOCABULARY_TOKENS with a reason.`,
     );
   }
