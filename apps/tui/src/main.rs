@@ -69,6 +69,39 @@ use companion::Companion;
 use event::{spawn_input_listener, Event};
 use mux::{Multiplexer, MuxAction, Zellij};
 
+const CLI_HELP: &str = "pui — Papercusp terminal workbench
+
+Usage:
+  pui [SUBCOMMAND]
+
+Subcommands:
+  workbench                  Open the full zellij workbench
+  hud                        Open the HUD pane
+  chat                       Open the operator chat dock
+  brain-view [SCOPE]         View the live Queen/Overwatch transcript
+  reap                       Remove leaked app-managed zellij sessions
+  dock-driver                Run the dock driver and Fleet pane
+  wake-pane [SCOPE]          Open the staged-wake board
+  prompt-pane [OWNER]        Open the agent prompt board
+  mail-pane [OWNER]          Open the agent coordination board
+  work-pane [OWNER]          Open the agent work board
+  network-pane               Open the cross-Hive network board
+  hive-pane <KEY>            Open a Hive dossier
+  plans-pane                 Open the plans status board
+
+Options:
+  -h, --help                 Print this help text
+";
+
+fn print_cli_help(subcommand: Option<&str>) -> bool {
+    if matches!(subcommand, Some("-h") | Some("--help")) {
+        print!("{CLI_HELP}");
+        true
+    } else {
+        false
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Subcommand dispatch — bare `pui` opens the full workbench (the UX a human
@@ -79,6 +112,9 @@ async fn main() -> Result<()> {
     //                   already inside zellij (so the HUD pane can't recursively
     //                   nest another workbench — `$ZELLIJ` is set by zellij).
     let subcommand = std::env::args().nth(1);
+    if print_cli_help(subcommand.as_deref()) {
+        return Ok(());
+    }
     match subcommand.as_deref() {
         Some("workbench") => return run_workbench(),
         // The chat-only DOCK (operator chat | brain) — the desktop-docked native
