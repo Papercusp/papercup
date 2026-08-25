@@ -32,7 +32,8 @@ vi.mock('./control-anchor', () => ({
 vi.mock('../../memory/session-epoch-ledger', () => ({
   currentSessionEpoch: vi.fn(async () => 23),
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(() => ({ sql: {} })),
 }));
 vi.mock('../mode/set', () => ({

@@ -33,9 +33,6 @@ const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
   }
   return Promise.resolve([]);
 }));
-vi.mock('@papercusp/agent-mcp', async () => ({
-  defineTool: (await import('@papercusp/tooldef')).defineTool,
-}));
 vi.mock('@papercusp/sse', () => ({
   sseResponse: (opts: { setup: CapturedSetup }) => {
     routeProbe.events = [];
@@ -60,7 +57,10 @@ const dbOrgMock = {
   getLegacyClient: vi.fn(() => dbOrgHandle),
   generated: {},
 };
-vi.doMock('@papercusp/db-org', () => dbOrgMock);
+vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  ...dbOrgMock,
+}));
 await import('@papercusp/db-org');
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),

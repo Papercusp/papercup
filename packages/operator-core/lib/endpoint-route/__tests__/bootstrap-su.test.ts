@@ -382,8 +382,12 @@ const answerOrgQuery = (q: string): Promise<unknown[]> => {
 };
 const dbSqlMock = vi.fn((strings: TemplateStringsArray): Promise<unknown[]> =>
   answerOrgQuery(strings.join('?')),
-) as unknown as FakeOrgSql & { unsafe: (query: string) => Promise<unknown[]> };
+) as unknown as FakeOrgSql & {
+  unsafe: (query: string) => Promise<unknown[]>;
+  begin: <T>(fn: (sql: FakeOrgSql) => Promise<T>) => Promise<T>;
+};
 dbSqlMock.unsafe = (query: string) => answerOrgQuery(query);
+dbSqlMock.begin = async <T>(fn: (sql: FakeOrgSql) => Promise<T>): Promise<T> => fn(dbSqlMock);
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   getOrgPg: () => ({ sql: dbSqlMock }),

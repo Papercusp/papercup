@@ -51,7 +51,10 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../coordination/presence-fleet', () => ({ resolvePresenceFleet: mockResolvePresenceFleet }));
 vi.mock('../../fleet/fleet-roster', () => ({ listFleetRosterDiagnosed: mockListFleetRosterDiagnosed }));
-vi.mock('../../adv-sessions', () => ({ advSessionsByCoordOwner: mockAdvSessionsByCoordOwner }));
+vi.mock('../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../adv-sessions')>()),
+  advSessionsByCoordOwner: mockAdvSessionsByCoordOwner,
+}));
 vi.mock('../../deployment/account-session-override', async (importOriginal) => {
   // Keep the REAL applyAccountOverride (a pure filter — worth exercising for real, not a
   // stand-in) and mock only getAccountOverride (the DB-backed read), default no-op so the

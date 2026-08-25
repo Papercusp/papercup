@@ -471,20 +471,23 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
 
   it('production loader includes the corpus namespace alongside the active workspace', async () => {
     const sqlCalls: Array<{ text: string; values: unknown[] }> = [];
-    vi.doMock('@papercusp/db-org', () => ({
-      getOrgPg: () => ({
-        sql: async (strings: TemplateStringsArray, ...values: unknown[]) => {
-          sqlCalls.push({ text: Array.from(strings).join('?'), values });
-          return [{
-            sessionId: PREDECESSOR,
-            ts: TS,
-            speaker: 'user',
-            text: 'the indexed owner directive',
-            turnOrigin: null,
-            turnOriginVerdict: 'unenrolled-origin',
-          }];
-        },
-      }),
+    const sql = Object.assign(
+      async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        sqlCalls.push({ text: Array.from(strings).join('?'), values });
+        return [{
+          sessionId: PREDECESSOR,
+          ts: TS,
+          speaker: 'user',
+          text: 'the indexed owner directive',
+          turnOrigin: null,
+          turnOriginVerdict: 'unenrolled-origin',
+        }];
+      },
+      { begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(sql) },
+    );
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql }),
     }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
 

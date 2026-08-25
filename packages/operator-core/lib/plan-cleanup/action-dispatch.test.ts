@@ -6,7 +6,10 @@ const h = vi.hoisted(() => ({
   call: vi.fn(),
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
 vi.mock('../plan-items/stale-claims', () => ({
   reclaimExpiredPlanItemClaims: h.reclaimExpiredPlanItemClaims,
 }));

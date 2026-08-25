@@ -22,7 +22,7 @@ import {
   HARNESS_STREAM_TOTAL_CAP,
   type StreamToken,
 } from '../../../harness-active-streams';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool } from '@papercusp/tooldef';
 // TYPE-ONLY: session-transcript-remat lazily imports the session-archive module,
 // which fails LOUD at import when zstd is unavailable — it must stay off this
 // module's load path (see the WI-6581 note at the remat call site).
