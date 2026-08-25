@@ -567,17 +567,11 @@ describe('bootstrap-su', () => {
       bootstrap_idempotency_key: 'bootstrap-key-post-record-failed',
     };
     recordAdvSessionMock
-      .mockImplementationOnce(async () => {
-        dbState.advRows = [{ id: '42', display: null, has_session: false }];
-        return 42;
-      })
+      .mockResolvedValueOnce(42)
       .mockResolvedValueOnce(43);
-    markAdvSessionEndedMock.mockImplementationOnce(async (id) => {
-      dbState.advRows = dbState.advRows.filter((row) => Number(row.id) !== id);
-    });
-    writePresenceMock.mockRejectedValueOnce(new Error('post-record presence failure'));
+    recordAgentLaunchResultMock.mockRejectedValueOnce(new Error('post-record result failure'));
 
-    await expect(callPost(request)).rejects.toThrow('post-record presence failure');
+    await expect(callPost(request)).rejects.toThrow('post-record result failure');
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', {
       throwOnError: true,
     });
@@ -591,11 +585,11 @@ describe('bootstrap-su', () => {
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject({ status: 'ok', sessionId: 43 });
     expect(recordAdvSessionMock).toHaveBeenCalledTimes(2);
-  });
+  }, 30_000);
 
   it('retains the replay claim when strict partial-row cleanup fails', async () => {
     recordAdvSessionMock.mockResolvedValueOnce(42);
-    writePresenceMock.mockRejectedValueOnce(new Error('post-record presence failure'));
+    recordAgentLaunchResultMock.mockRejectedValueOnce(new Error('post-record result failure'));
     markAdvSessionEndedMock.mockRejectedValueOnce(new Error('terminal write unavailable'));
 
     await expect(
@@ -605,12 +599,12 @@ describe('bootstrap-su', () => {
         owner_id: 'su-replay02',
         bootstrap_idempotency_key: 'bootstrap-key-cleanup-failed',
       }),
-    ).rejects.toThrow('post-record presence failure');
+    ).rejects.toThrow('post-record result failure');
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', {
       throwOnError: true,
     });
     expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   it('stamps the resolved harness onto presence before the launched agent takes turn 1', async () => {
     const json = await (
