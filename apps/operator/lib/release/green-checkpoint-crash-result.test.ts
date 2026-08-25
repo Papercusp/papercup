@@ -1,9 +1,92 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildCrashCheckpointResult,
   buildTerminalFailureCheckpointResult,
+  createFatalProcessHandler,
+  emitTerminalCheckpointResult,
+  GREEN_CHECKPOINT_RESULT_MARKER,
 } from './green-checkpoint';
+
+describe('EI-21462448110688084: process-level fatal errors await terminal finalization', () => {
+  it('does not exit until the typed-result finalizer completes', async () => {
+    let finish!: (owned: boolean) => void;
+    const finalize = vi.fn(
+      () => new Promise<boolean>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const exit = vi.fn();
+    const handler = createFatalProcessHandler(finalize, exit);
+
+    const fatal = new Error('dependency-generation output escaped the run promise');
+    handler(fatal);
+    expect(finalize).toHaveBeenCalledWith(fatal);
+    expect(exit).not.toHaveBeenCalled();
+
+    finish(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('claims only the first fatal event while finalization is in flight', () => {
+    const finalize = vi.fn(() => new Promise<boolean>(() => {}));
+    const handler = createFatalProcessHandler(finalize, vi.fn());
+    handler(new Error('first'));
+    handler(new Error('second'));
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits and cleans an exact candidate when dependency generation dies after the after-copy manifest begins', async () => {
+    const candidate = '8104d3804ac4d134cead82a10c89c54d5efa53b7';
+    const markerLines: string[] = [];
+    const emitted: string[] = [];
+    const cleaned: string[] = [];
+    const exited: number[] = [];
+    const handler = createFatalProcessHandler(
+      async (error) => {
+        const result = buildTerminalFailureCheckpointResult({
+          candidate,
+          error,
+          runId: 'scheduled-05a2a744',
+        });
+        await emitTerminalCheckpointResult(result, {
+          writeHuman: vi.fn(),
+          writeMarker: (line) => markerLines.push(line),
+          emitInconclusive: async (terminal) => {
+            emitted.push(`${terminal.candidate}:${terminal.green}`);
+          },
+          retire: async (terminal) => {
+            cleaned.push(terminal.candidate);
+          },
+        });
+        return true;
+      },
+      (code) => exited.push(code),
+    );
+
+    handler(
+      new Error(
+        'dependency-generation stdout: capturing live dependency manifest (after copy)\n' +
+          'dependency-generation process exited 1',
+      ),
+    );
+    await vi.waitFor(() => expect(exited).toEqual([1]));
+
+    expect(markerLines).toHaveLength(1);
+    expect(markerLines[0]).toContain(GREEN_CHECKPOINT_RESULT_MARKER);
+    const terminal = JSON.parse(markerLines[0].slice(markerLines[0].indexOf('{')));
+    expect(terminal).toMatchObject({
+      candidate,
+      green: null,
+      reason: 'not-green',
+      crashed: true,
+      runId: 'scheduled-05a2a744',
+    });
+    expect(emitted).toEqual([`${candidate}:null`]);
+    expect(cleaned).toEqual([candidate]);
+  });
+});
 
 /**
  * EI-18850448565330905 — a green-checkpoint run that dies inside a non-test leg (a

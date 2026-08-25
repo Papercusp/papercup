@@ -2057,10 +2057,64 @@ export function createTerminationSignalHandler(
   };
 }
 
+/**
+ * EI-21462448110688084 — turn process-level fatal events into an awaited terminal result.
+ *
+ * A promise-chain catch cannot see an `uncaughtException` or a rejection from an orphaned
+ * promise. Node exits 1 for those failures, which used to let the scheduled wrapper observe a
+ * perfectly ordinary non-zero command exit while the checkpoint emitted neither its typed result
+ * marker nor its inconclusive event. Keep the process alive just long enough for the caller's
+ * terminal finalizer to emit/retire, then exit. The one-shot guard also prevents an exception
+ * raised while finalization is in flight from racing a second marker.
+ */
+export function createFatalProcessHandler(
+  finalize: (error: unknown) => Promise<boolean>,
+  exit: (code: number) => void,
+  log: (message: string) => void = (message) => console.error(message),
+): (error: unknown) => void {
+  let handling = false;
+  return (error: unknown): void => {
+    if (handling) return;
+    handling = true;
+    void finalize(error)
+      .then((owned) => {
+        if (owned) exit(1);
+      })
+      .catch((finalizeError) => {
+        log(
+          `green-checkpoint fatal finalizer failed: ${finalizeError instanceof Error ? finalizeError.message : String(finalizeError)}`,
+        );
+        exit(1);
+      });
+  };
+}
+
 /** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
  *  release-actions routine parses one delimited line instead of brace-slicing the whole
  *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
 export const GREEN_CHECKPOINT_RESULT_MARKER = "__GREEN_CHECKPOINT_RESULT__";
+
+/** Testable terminal-emission seam used by the CLI for every result, including process fatals. */
+export async function emitTerminalCheckpointResult(
+  result: CheckpointResult,
+  deps: {
+    writeHuman(result: CheckpointResult): void;
+    writeMarker(line: string): void;
+    emitInconclusive(result: CheckpointResult): Promise<void>;
+    retire(result: CheckpointResult): Promise<void>;
+  },
+): Promise<void> {
+  deps.writeHuman(result);
+  deps.writeMarker(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(result)}`);
+  if (
+    result.green === null &&
+    result.candidateSource !== "pinned" &&
+    result.diagnostic !== "candidate-pinned"
+  ) {
+    await deps.emitInconclusive(result);
+  }
+  await deps.retire(result);
+}
 
 /** What a captured fixture marker is rewritten to before the suite log is persisted. */
 export const CAPTURED_RESULT_MARKER_PLACEHOLDER =
@@ -14036,39 +14090,30 @@ if (require.main === module) {
     // slice span both + the marker text → invalid JSON → recorded 'error' (and wedged
     // the pipeline). One object on stdout keeps the old brace-slice AND the new marker
     // parse both working.
-    console.error(JSON.stringify(r, null, 2));
-    console.log(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(r)}`);
-    // AWAITED (not fire-and-forget): every caller of emitResult exits the process
-    // immediately after calling it (releaseAndExit / process.exit) — the exact EI-10800
-    // class of bug where an un-awaited emit races process teardown and never fires.
-    if (
-      r.green === null &&
-      r.candidateSource !== "pinned" &&
-      r.diagnostic !== "candidate-pinned"
-    )
-      await emitInconclusiveVerdict(r);
-    // Retire the in-flight-candidate marker here because EVERY terminal path funnels through
-    // this function — verdict, crash, and inconclusive alike. Clearing at the happy-path return
-    // instead would leave a CRASHED run advertising itself as live until the 3h freshness bound
-    // expired, which is the same "a stale artifact reads exactly like a fresh one" failure the
-    // marker exists to eliminate. Resolved directly from env rather than through
-    // `realCheckpointDeps` (same shape as recordOwnVerdict below) so a terminal path never
-    // constructs a whole deps object just to drop one row. AWAITED for the EI-10800 reason
-    // above: the process exits immediately after this returns.
-    try {
-      await retireInFlightCandidateAfterResult(r, async () => {
-        const { gateVerdictTargetFromEnv } =
-          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
-        const target = gateVerdictTargetFromEnv();
-        if (target) {
-          const { clearInFlightCandidate } =
-            await import("@papercusp/operator-core/lib/release/in-flight-candidate");
-          await clearInFlightCandidate(target);
+    await emitTerminalCheckpointResult(r, {
+      writeHuman: (result) => console.error(JSON.stringify(result, null, 2)),
+      writeMarker: (line) => console.log(line),
+      // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
+      emitInconclusive: emitInconclusiveVerdict,
+      // Retire here because every terminal path funnels through this seam. Best-effort cleanup
+      // preserves the prior contract: a marker that cannot be cleared ages out by freshness.
+      retire: async (result) => {
+        try {
+          await retireInFlightCandidateAfterResult(result, async () => {
+            const { gateVerdictTargetFromEnv } =
+              await import("@papercusp/operator-core/lib/release/gate-verdict-target");
+            const target = gateVerdictTargetFromEnv();
+            if (target) {
+              const { clearInFlightCandidate } =
+                await import("@papercusp/operator-core/lib/release/in-flight-candidate");
+              await clearInFlightCandidate(target);
+            }
+          });
+        } catch {
+          /* best-effort — a marker we failed to clear ages out on its own freshness bound */
         }
-      });
-    } catch {
-      /* best-effort — a marker we failed to clear ages out on its own freshness bound */
-    }
+      },
+    });
   };
 
   /**
@@ -14368,6 +14413,24 @@ if (require.main === module) {
       if (terminalOwner !== "signal") return;
       releaseAndExit(code);
     };
+    const finalizeFatalError = async (e: unknown): Promise<boolean> => {
+      if (!claimTerminal("crash")) return false;
+      watchdog.cancel();
+      console.error(
+        `${orchestratorStdoutTag()} FAILED:`,
+        e instanceof Error ? e.message : e,
+      );
+      try {
+        await emitCrashResult(e);
+      } finally {
+        lock.release();
+      }
+      return true;
+    };
+    const handleFatalProcessError = createFatalProcessHandler(
+      finalizeFatalError,
+      (code) => process.exit(code),
+    );
     // EI-10680: this process previously had NO signal handler for SIGTERM/SIGINT, so an
     // external "stop this run" (systemctl --user stop, e.g. from release-checkpoint-launch's
     // replaceStale path) relied entirely on the OS's default terminate-on-signal behaviour to
@@ -14389,6 +14452,8 @@ if (require.main === module) {
     );
     process.once("SIGTERM", handleTermSignal);
     process.once("SIGINT", handleTermSignal);
+    process.once("uncaughtException", handleFatalProcessError);
+    process.once("unhandledRejection", handleFatalProcessError);
     runGreenCheckpoint(
       cfg,
       realCheckpointDeps(cfg, undefined, runId, undefined, watchdog.progress),
@@ -14411,18 +14476,9 @@ if (require.main === module) {
         releaseAndExit(0);
       })
       .catch(async (e) => {
-        if (!claimTerminal("crash")) return;
-        watchdog.cancel();
-        console.error(
-          `${orchestratorStdoutTag()} FAILED:`,
-          e instanceof Error ? e.message : e,
-        );
-        // EI-18850448565330905: emit a crash verdict BEFORE releasing the lock / exiting —
-        // this is exactly the path that used to leave NO __GREEN_CHECKPOINT_RESULT__ marker
-        // at all when a non-test leg threw instead of reporting through allowNonZero/haltedBy.
-        await emitCrashResult(e);
-        lock.release();
-        process.exit(1);
+        // The same awaited finalizer serves ordinary promise rejection and process-level fatal
+        // events, so neither path can drift back to a bare exit without the typed marker.
+        if (await finalizeFatalError(e)) process.exit(1);
       });
   }
 }
