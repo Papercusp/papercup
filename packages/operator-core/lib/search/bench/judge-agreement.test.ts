@@ -20,6 +20,7 @@ import {
   aggregateByArm,
   buildPairsForQuery,
   JUDGE_AGREEMENT_RUBRIC_VERSION,
+  JUDGE_INSTRUCTION_CONTRACT,
   runJudgeAgreement,
   RELEVANCE_PASS_BAR,
   SEARCH_RELEVANCE_RUBRIC,
@@ -121,11 +122,64 @@ describe('aggregateByArm', () => {
 });
 
 describe('content-derived rubric version', () => {
-  it('changes the cache namespace when the serialized judging axes change', () => {
+  /** Re-derives the version the way judge-agreement.ts does, over supplied content. */
+  const versionOf = (axes: unknown, instructions: unknown) =>
+    `search-relevance.${sha256(JSON.stringify({ rubric: { axes }, instructions })).slice(0, 12)}`;
+
+  it('derives from the judging axes AND the instruction contract', () => {
     expect(JUDGE_AGREEMENT_RUBRIC_VERSION).toBe(
-      `search-relevance.${sha256(JSON.stringify({ axes: SEARCH_RELEVANCE_RUBRIC.axes })).slice(0, 12)}`,
+      versionOf(SEARCH_RELEVANCE_RUBRIC.axes, JUDGE_INSTRUCTION_CONTRACT),
     );
     expect(SEARCH_RELEVANCE_RUBRIC.version).toBe(JUDGE_AGREEMENT_RUBRIC_VERSION);
+  });
+
+  /**
+   * EI-21444532129225543. The axes were already hashed; the instruction text actually
+   * handed to the judge was NOT, so rewording it kept serving grades a different
+   * contract had produced. These are permanently-resident defective controls — each
+   * mutates a COPY of the contract, never the tree — so the guard is provably
+   * falsifiable rather than merely never-failing.
+   */
+  it.each([
+    ['scenarioTemplate', { scenarioTemplate: 'Score anything that looks related.' }],
+    ['personaSummary', { personaSummary: 'a chatty simulated user' }],
+    ['goalSummary', { goalSummary: 'lexical overlap between query and document' }],
+    ['criticality', { criticality: 'high' as const }],
+  ])('moves the cache namespace when %s changes', (_field, override) => {
+    const mutated = { ...JUDGE_INSTRUCTION_CONTRACT, ...override };
+    expect(versionOf(SEARCH_RELEVANCE_RUBRIC.axes, mutated)).not.toBe(
+      JUDGE_AGREEMENT_RUBRIC_VERSION,
+    );
+  });
+
+  it('is NOT the pre-fix axes-only derivation (the regression pin)', () => {
+    // This is what the version was before EI-21444532129225543: sha over the rubric
+    // content alone. Asserting the live version differs from it is what makes every
+    // instruction-contract test above meaningful — under the old derivation they
+    // would all still pass while the defect was fully present.
+    const preFix = `search-relevance.${sha256(
+      JSON.stringify({ axes: SEARCH_RELEVANCE_RUBRIC.axes }),
+    ).slice(0, 12)}`;
+    expect(JUDGE_AGREEMENT_RUBRIC_VERSION).not.toBe(preFix);
+  });
+
+  it('moves the cache namespace when a judging axis changes', () => {
+    const mutatedAxes = [
+      { ...SEARCH_RELEVANCE_RUBRIC.axes[0]!, description: 'Reward shared vocabulary.' },
+    ];
+    expect(versionOf(mutatedAxes, JUDGE_INSTRUCTION_CONTRACT)).not.toBe(
+      JUDGE_AGREEMENT_RUBRIC_VERSION,
+    );
+  });
+
+  it('keeps the per-pair query OUT of the hashed contract (query_hash covers it)', () => {
+    // The template must stay a constant carrying a placeholder. Interpolating the
+    // query into it would make the version vary per pair, which would defeat the
+    // cache entirely rather than merely under-invalidate it.
+    expect(JUDGE_INSTRUCTION_CONTRACT.scenarioTemplate).toContain('{query}');
+    expect(JUDGE_AGREEMENT_RUBRIC_VERSION).toBe(
+      versionOf(SEARCH_RELEVANCE_RUBRIC.axes, JUDGE_INSTRUCTION_CONTRACT),
+    );
   });
 });
 
