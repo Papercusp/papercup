@@ -4458,33 +4458,65 @@ export async function gitPipelinePosition(
           if (marker) {
             const verdict = await markerAtCommit(gitReadForMarker, ref, relPath, marker);
             markerLegs[leg] = verdict;
-            let markerBaseline = targetMarkerBaseline;
+            /* ------------------------------------------------------------------ *
+             * EI-21443291930356119 — the two available baselines answer DIFFERENT
+             * questions, and only ONE of them is sound in both directions.
+             *
+             *  · `${targetSha}~1` — the HEAD side's pre-change state. A ref holding
+             *    MORE occurrences than this cannot be explained by the ref merely
+             *    lagging, so it is real evidence for an ADDED marker. It is NOT
+             *    evidence for a removed one: FEWER occurrences than the HEAD side's
+             *    parent is *exactly* what a ref that PREDATES the marker looks like.
+             *    Accepting that reading reported `inMain`/`deployed` true — summary
+             *    `live`, `blockedOn` null — for a change sitting behind a red gate,
+             *    in refs whose version of the file contained the marker ZERO times.
+             *    Same false-live outcome WI-41208 fixed for the path-absent zero;
+             *    this is the same trap one step in, with the path genuinely present.
+             *
+             *  · `${earlier.sha}~1` — REF-INTERNAL: did the ref's OWN newest commit
+             *    to this path move the marker count? That measures a change inside
+             *    the ref's history, so a DECREASE there really is the ref carrying a
+             *    marker-removing change rather than the ref being old. Sound in both
+             *    directions, which is why the removed direction may rest only on it.
+             *
+             * So: measure the ref-internal baseline whenever one exists and prefer
+             * it; let the target-parent baseline settle the ADDED direction alone.
+             * ------------------------------------------------------------------ */
+            const refInternalBaselineSha =
+              earlier?.sha && earlier.sha !== targetSha ? `${earlier.sha}~1` : null;
+            const refInternalBaseline: MarkerContainment | null = refInternalBaselineSha
+              ? await markerAtCommit(gitReadForMarker, refInternalBaselineSha, relPath, marker)
+              : null;
+            // `markerNetChange` owns the two rules a strict count comparison needs —
+            // never bare presence, and never a count from a tree that does not have
+            // the file at all. It is unit-tested against a deliberately-wrong control;
+            // see WI-41208 for the failure it exists to stop.
+            const refInternalChange = markerNetChange(verdict, refInternalBaseline);
+            const targetParentChange = markerNetChange(verdict, targetMarkerBaseline);
+            let markerBaseline: MarkerContainment | null = targetMarkerBaseline;
             let markerBaselineSha = `${targetSha}~1`;
-            // If the target-parent baseline already contains exactly the occurrences
-            // seen in the candidate, it cannot distinguish a carried-forward marker
-            // from one introduced by the caller. When the ref has an earlier same-path
-            // commit, compare that candidate commit with its own parent as well. This
-            // fixes the later-same-path decay while retaining the strict count guard:
-            // a pre-existing/non-unique marker still has no net change there.
-            if (
-              earlier?.sha &&
-              earlier.sha !== targetSha &&
-              (targetMarkerBaselineCount === null || verdict.count === targetMarkerBaselineCount)
-            ) {
-              const candidateBaseline = await markerAtCommit(gitReadForMarker, `${earlier.sha}~1`, relPath, marker);
-              if (typeof candidateBaseline.count === 'number') {
-                markerBaseline = candidateBaseline;
-                markerBaselineSha = `${earlier.sha}~1`;
-              }
+            let netChange: 'added' | 'removed' | null =
+              targetParentChange === 'added' ? 'added' : null;
+            if (refInternalChange && refInternalBaselineSha) {
+              netChange = refInternalChange;
+              markerBaseline = refInternalBaseline;
+              markerBaselineSha = refInternalBaselineSha;
             }
             const markerBaselineCount = typeof markerBaseline?.count === 'number' ? markerBaseline.count : null;
-            // Require a STRICT count change against the pre-change baseline — never
-            // bare presence, and never a count from a tree that does not have the file
-            // at all. `markerNetChange` owns both rules and is unit-tested against a
-            // deliberately-wrong control; see WI-41208 for the failure it exists to stop.
-            const netChange = markerNetChange(verdict, markerBaseline);
             const strictlyAdded = netChange === 'added';
             const strictlyRemoved = netChange === 'removed';
+            if (targetParentChange === 'removed' && netChange === null) {
+              notes.push(
+                `${leg}: your marker occurs ${verdict.count}× in ${ref} against ${targetMarkerBaselineCount}× at ` +
+                  `${targetSha.slice(0, 9)}~1 — FEWER, not more. That is what a ref carrying a marker-DELETING ` +
+                  `change looks like AND what a ref that simply PREDATES the marker looks like, and a count on ` +
+                  `the HEAD side cannot tell them apart. ${
+                    refInternalBaselineSha
+                      ? `${ref}'s own newest commit to this path (${(earlier?.sha ?? '').slice(0, 9)}) shows no change in occurrences either`
+                      : `${ref} has no earlier same-path commit to measure the drop against`
+                  }, so the leg is left as measured: an unprovable "your change is live" is the expensive error here.`,
+              );
+            }
             if (strictlyAdded || strictlyRemoved) {
               positions[leg] = true;
               notes.push(
