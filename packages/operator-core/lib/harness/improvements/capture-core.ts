@@ -846,6 +846,13 @@ async function promoteToolFailureProbation(
   const promotedAt = new Date().toISOString();
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, {
     lane: null,
+    // The probation row may have been keyed by its first report while the
+    // direct-evidence promotion carries a newer message fingerprint. Keep the
+    // canonical top-level identity in sync with the promoted payload so the
+    // next exact-key lookup finds this row instead of minting a sibling.
+    ...(typeof incomingProbation.watchdogKey === 'string' && incomingProbation.watchdogKey
+      ? { watchdogKey: incomingProbation.watchdogKey }
+      : {}),
     ...(input.paths?.length ? { paths: input.paths } : {}),
     toolFailureProbation: {
       ...priorProbation,
