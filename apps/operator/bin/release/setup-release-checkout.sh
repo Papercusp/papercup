@@ -86,6 +86,14 @@ NODE_MODULES_GENERATION_MODE="${NODE_MODULES_GENERATION_MODE:-required}"
 NODE_MODULES_GENERATION_ID="${NODE_MODULES_GENERATION_ID:-}"
 DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
 
+# Any error after exact-ID selection must release this process-owned reader
+# lease. A successful path promotes the checkout marker into a persistent pin
+# before releasing it explicitly.
+release_dependency_generation_lease_on_exit() {
+  dependency_generation_release_selector_lease || true
+}
+trap release_dependency_generation_lease_on_exit EXIT
+
 BUILD_SPA="0"
 PREPARE_EXISTING="0"
 SOURCE_ONLY="0"
@@ -780,12 +788,17 @@ if need_node_modules; then
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
     DEPENDENCY_GENERATION_ROOT="${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}"
     if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
+      # Lease BEFORE the full validation walk. Otherwise a retention pass can
+      # remove this exact identity between selection and materialization.
+      dependency_generation_acquire_selector_lease "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
       dependency_generation_select "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
     else
       dependency_generation_ensure "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT"
+      dependency_generation_acquire_selector_lease "$DEPENDENCY_GENERATION_ROOT" "$DEPENDENCY_GENERATION_ID"
     fi
     PINNED_DEPENDENCY_GENERATION_ID="$DEPENDENCY_GENERATION_ID"
     NODE_MODULES_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
+    dependency_generation_apply_retention "$DEPENDENCY_GENERATION_ROOT" "$INTEGRATION_ROOT"
     log "pinned immutable dependency generation $PINNED_DEPENDENCY_GENERATION_ID (reused=$DEPENDENCY_GENERATION_REUSED)"
   fi
   assert_hardlink_compatible_roots
@@ -801,6 +814,13 @@ if need_node_modules; then
   # The marker is inside gitignored node_modules and is consumed by
   # need_node_modules() above on the next auto pass.
   record_node_modules_copy_metadata
+  if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+    # Publish the durable checkout pin before releasing the live selector lease;
+    # retention therefore sees at least one protector at every instant.
+    dependency_generation_register_pin \
+      "$DEPENDENCY_GENERATION_ROOT" "$RELEASE_ROOT" "$PINNED_DEPENDENCY_GENERATION_ID"
+    dependency_generation_release_selector_lease
+  fi
   log "node_modules sync complete"
 else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"

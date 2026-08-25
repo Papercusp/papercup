@@ -440,6 +440,222 @@ dependency_generation_release_publish_lock() {
   DEPENDENCY_GENERATION_PUBLISH_LOCK=''
 }
 
+# Exact-ID consumers need protection before the expensive validation walk and
+# until their checkout marker has been published. A lease is deliberately
+# process-owned: same-host dead readers are reclaimable; a foreign-host reader
+# is preserved fail-closed because kill(2) cannot prove its liveness.
+dependency_generation_acquire_selector_lease() {
+  local generation_root="$1" identity="$2" lease
+  if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
+    dependency_generation_log "FATAL: invalid dependency-generation lease identity: $identity"
+    return 2
+  fi
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  if ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
+    dependency_generation_release_publish_lock
+    dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased"
+    return 74
+  fi
+  mkdir -p "$generation_root/.leases"
+  lease="$generation_root/.leases/selector-$$-$(date +%s)-${RANDOM:-0}"
+  dependency_generation_write_owner "$lease"
+  printf 'identity=%s\n' "$identity" >> "$lease"
+  DEPENDENCY_GENERATION_SELECTOR_LEASE="$lease"
+  dependency_generation_release_publish_lock
+}
+
+dependency_generation_release_selector_lease() {
+  local lease="${DEPENDENCY_GENERATION_SELECTOR_LEASE:-}"
+  [ -n "$lease" ] || return 0
+  rm -f -- "$lease"
+  rmdir "$(dirname "$lease")" 2>/dev/null || true
+  DEPENDENCY_GENERATION_SELECTOR_LEASE=''
+}
+
+dependency_generation_write_pin_locked() {
+  local generation_root="$1" checkout="$2" identity="$3"
+  local marker pin_key pin tmp
+  if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
+    return 2
+  fi
+  checkout="$(cd "$checkout" 2>/dev/null && pwd -P)" || return 1
+  case "$checkout" in *$'\n'*) return 2 ;; esac
+  marker="$checkout/node_modules/.papercusp-dependency-generation"
+  [ -f "$marker" ] || return 1
+  [ "$(dependency_generation_read_field "$marker" identity)" = "$identity" ] || return 1
+  dependency_generation_marker_matches "$generation_root/$identity" "$identity" || return 1
+  mkdir -p "$generation_root/.pins"
+  pin_key="$(printf '%s' "$checkout" | dependency_generation_sha256)" || return 1
+  pin="$generation_root/.pins/checkout-$pin_key"
+  tmp="$pin.tmp.$$"
+  printf 'schema=1\nhost=%s\nidentity=%s\ncheckout=%s\nupdated=%s\n' \
+    "$(dependency_generation_host)" "$identity" "$checkout" "$(date +%s)" > "$tmp"
+  mv "$tmp" "$pin"
+}
+
+dependency_generation_register_pin() {
+  local generation_root="$1" checkout="$2" identity="$3" rc=0
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  dependency_generation_write_pin_locked "$generation_root" "$checkout" "$identity" || rc=$?
+  dependency_generation_release_publish_lock
+  if [ "$rc" -ne 0 ]; then
+    dependency_generation_log "FATAL: could not register checkout pin for $identity at $checkout"
+  fi
+  return "$rc"
+}
+
+# Refresh same-host pin/lease truth and import direct sibling checkout markers.
+# This runs only while .publish-lock is held, so pruning cannot race a pin that
+# is being registered or a selector that is being leased.
+dependency_generation_refresh_retention_state_locked() {
+  local generation_root="$1" integration_root="$2"
+  local host pin pin_host identity checkout marker lease lease_host lease_pid parent sibling
+  host="$(dependency_generation_host)"
+  mkdir -p "$generation_root/.pins" "$generation_root/.leases"
+
+  for pin in "$generation_root"/.pins/*; do
+    [ -f "$pin" ] || continue
+    pin_host="$(dependency_generation_read_field "$pin" host)"
+    identity="$(dependency_generation_read_field "$pin" identity)"
+    checkout="$(dependency_generation_read_field "$pin" checkout)"
+    # A foreign-host pin is intentionally retained: this host cannot prove the
+    # other checkout disappeared. Same-host state must still match the checkout
+    # marker and an extant published generation.
+    if [ -n "$pin_host" ] && [ "$pin_host" != "$host" ]; then
+      if [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] \
+        && dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
+        continue
+      fi
+      dependency_generation_log "removing malformed foreign checkout pin $(basename "$pin")"
+      rm -f -- "$pin"
+      continue
+    fi
+    marker="$checkout/node_modules/.papercusp-dependency-generation"
+    if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]] \
+      || [ ! -f "$marker" ] \
+      || [ "$(dependency_generation_read_field "$marker" identity)" != "$identity" ] \
+      || ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
+      dependency_generation_log "removing stale checkout pin $(basename "$pin")"
+      rm -f -- "$pin"
+    fi
+  done
+
+  for lease in "$generation_root"/.leases/*; do
+    [ -f "$lease" ] || continue
+    lease_host="$(dependency_generation_read_field "$lease" host)"
+    lease_pid="$(dependency_generation_read_field "$lease" pid)"
+    identity="$(dependency_generation_read_field "$lease" identity)"
+    if [ -n "$lease_host" ] && [ "$lease_host" != "$host" ] \
+      && [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
+      continue
+    fi
+    if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]] \
+      || [[ ! "$lease_pid" =~ ^[0-9]+$ ]] \
+      || ! kill -0 "$lease_pid" 2>/dev/null; then
+      dependency_generation_log "removing stale selector lease $(basename "$lease")"
+      rm -f -- "$lease"
+    fi
+  done
+
+  integration_root="$(cd "$integration_root" && pwd -P)" || return 1
+  parent="$(dirname "$integration_root")"
+  for sibling in "$parent"/*; do
+    [ -d "$sibling" ] || continue
+    sibling="$(cd "$sibling" 2>/dev/null && pwd -P)" || continue
+    [ "$sibling" != "$integration_root" ] || continue
+    marker="$sibling/node_modules/.papercusp-dependency-generation"
+    [ -f "$marker" ] || continue
+    identity="$(dependency_generation_read_field "$marker" identity)"
+    [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+    dependency_generation_marker_matches "$generation_root/$identity" "$identity" || continue
+    dependency_generation_write_pin_locked "$generation_root" "$sibling" "$identity" || true
+  done
+}
+
+DEPENDENCY_GENERATION_PRUNE_QUARANTINES=()
+
+dependency_generation_quarantine_unretained_locked() {
+  local generation_root="$1" retain_count="${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}"
+  local protected=' ' generation identity created pin lease kept=0 quarantine
+  local ranked=()
+  if [[ ! "$retain_count" =~ ^[0-9]+$ ]] || [ "$retain_count" -lt 1 ]; then
+    dependency_generation_log "FATAL: DEPENDENCY_GENERATION_RETAIN_COUNT must be an integer >= 1"
+    return 2
+  fi
+
+  mapfile -t ranked < <(
+    for generation in "$generation_root"/v1-*; do
+      [ -d "$generation" ] || continue
+      identity="$(basename "$generation")"
+      [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+      created="$(dependency_generation_read_field "$generation/.papercusp-dependency-generation" created)"
+      case "$created" in ''|*[!0-9]*) created=0 ;; esac
+      printf '%020d %s\n' "$created" "$identity"
+    done | sort -k1,1nr -k2,2r
+  )
+  for generation in "${ranked[@]}"; do
+    identity="${generation#* }"
+    if [ "$kept" -lt "$retain_count" ]; then
+      protected="$protected$identity "
+      kept=$((kept + 1))
+    fi
+  done
+  for pin in "$generation_root"/.pins/*; do
+    [ -f "$pin" ] || continue
+    identity="$(dependency_generation_read_field "$pin" identity)"
+    [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] && protected="$protected$identity "
+  done
+  for lease in "$generation_root"/.leases/*; do
+    [ -f "$lease" ] || continue
+    identity="$(dependency_generation_read_field "$lease" identity)"
+    [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] && protected="$protected$identity "
+  done
+
+  DEPENDENCY_GENERATION_PRUNE_QUARANTINES=()
+  # A prior process can die after the atomic rename but before deletion. These
+  # paths are already outside the exact-ID namespace, so finish that deferred
+  # deletion after this lock is released instead of letting crash residue grow.
+  for quarantine in "$generation_root"/.prune-*; do
+    [ -d "$quarantine" ] || continue
+    DEPENDENCY_GENERATION_PRUNE_QUARANTINES+=("$quarantine")
+  done
+  for generation in "$generation_root"/v1-*; do
+    [ -d "$generation" ] || continue
+    identity="$(basename "$generation")"
+    case "$protected" in *" $identity "*) continue ;; esac
+    quarantine="$generation_root/.prune-$identity-$(date +%s)-$$"
+    if mv "$generation" "$quarantine"; then
+      dependency_generation_log "quarantined unretained generation $identity"
+      DEPENDENCY_GENERATION_PRUNE_QUARANTINES+=("$quarantine")
+    fi
+  done
+}
+
+dependency_generation_delete_prune_quarantines() {
+  local quarantine
+  for quarantine in "${DEPENDENCY_GENERATION_PRUNE_QUARANTINES[@]:-}"; do
+    [ -d "$quarantine" ] || continue
+    # Checkouts may hardlink generation FILES. Changing their modes here would
+    # mutate the retained checkout inode too; directory write permission alone
+    # is sufficient for unlinking.
+    find "$quarantine" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+    rm -rf -- "$quarantine"
+  done
+  DEPENDENCY_GENERATION_PRUNE_QUARANTINES=()
+}
+
+dependency_generation_apply_retention() {
+  local generation_root="$1" integration_root="$2" rc=0
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  dependency_generation_refresh_retention_state_locked "$generation_root" "$integration_root" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    dependency_generation_quarantine_unretained_locked "$generation_root" || rc=$?
+  fi
+  dependency_generation_release_publish_lock
+  dependency_generation_delete_prune_quarantines
+  return "$rc"
+}
+
 dependency_generation_copy_independent() {
   local src="$1" dest="$2"
   mkdir -p "$(dirname "$dest")"
@@ -657,7 +873,7 @@ dependency_generation_ensure() {
 }
 
 dependency_generation_main() {
-  local integration_root='' generation_root=''
+  local integration_root='' generation_root='' retention_rc=0
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -676,6 +892,15 @@ dependency_generation_main() {
   dependency_generation_configure_workspace_dirs \
     "$integration_root" "${workspace_dirs[@]}" || return $?
   dependency_generation_ensure "$integration_root" "$generation_root" || return $?
+  # Protect the just-published/reused identity even when several generations
+  # share the same second-level `created` timestamp and retention ordering ties.
+  dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" || return $?
+  dependency_generation_apply_retention "$generation_root" "$integration_root" || {
+    retention_rc=$?
+    dependency_generation_release_selector_lease
+    return "$retention_rc"
+  }
+  dependency_generation_release_selector_lease
   printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s closure=%s scope=%s reused=%s path=%s\n' \
     "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
     "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" "$DEPENDENCY_GENERATION_SCOPE_MODE" \
