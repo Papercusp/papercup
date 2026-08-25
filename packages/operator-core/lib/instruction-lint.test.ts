@@ -2,11 +2,41 @@ import { describe, expect, it } from 'vitest';
 import {
   blockingInstructionConflicts,
   buildInstructionPrecedenceTrace,
+  findUnconditionalPostCompactionRecoveryDirectives,
   lintInstructionText,
   renderInstructionPrecedenceContext,
 } from './instruction-lint';
 
 describe('lintInstructionText', () => {
+  it('blocks wrapped unconditional post-compaction orient mandates (D-017/P-019)', () => {
+    const retired = [
+      'This is a stale snapshot of a live system. Before acting on any fleet claim below,',
+      're-run coord:orient { afterCompaction: true } and reconcile.',
+      'FIRST ACTION: run coord:orient { afterCompaction: true } before continuing.',
+      'Pass `afterCompaction: true` on your first post-compaction call.',
+    ].join('\n');
+    const out = lintInstructionText(retired);
+    expect(out.unconditionalPostCompactionRecovery.map((finding) => finding.pattern)).toEqual(
+      expect.arrayContaining(['before-acting-orient', 're-run-orient', 'first-action-orient']),
+    );
+    expect(out.clean).toBe(false);
+    expect(blockingInstructionConflicts(out)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'post-compaction-recovery' }),
+      ]),
+    );
+  });
+
+  it('accepts the marker-aware success path plus its conditional exactly-once fallback', () => {
+    const current =
+      'Inspect the ⟦post-compaction-recovery⟧ marker. If it is complete and current, do not call ' +
+      'coord:orient; call coord:declare-intent { intent, current_plan_slug, items }. Call ' +
+      'coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, ' +
+      'or generation-mismatched.';
+    expect(findUnconditionalPostCompactionRecoveryDirectives(current)).toEqual([]);
+    expect(lintInstructionText(current).unconditionalPostCompactionRecovery).toEqual([]);
+  });
+
   it('reports duplicate, conflicting, and retired generated rules', () => {
     const out = lintInstructionText(
       [

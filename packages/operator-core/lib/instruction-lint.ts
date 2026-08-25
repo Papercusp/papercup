@@ -22,6 +22,13 @@ export interface InstructionLintReport {
   conflicts: Array<{ key: string; values: string[]; lines: number[] }>;
   staleRules: Array<{ key: string; value: string; line: number; replacement: string }>;
   duplicateDirectives: Array<{ directive: string; lines: number[] }>;
+  /** D-017/P-019: post-compaction startup text that still mandates a recovery
+   * orient instead of branching on the automatically delivered marker. */
+  unconditionalPostCompactionRecovery: Array<{
+    line: number;
+    directive: string;
+    pattern: string;
+  }>;
   /** Runtime-effective rule resolution. Present only when the caller supplies
    * canonical mode/route/scope state; this never guesses runtime state from prose. */
   precedenceTrace?: InstructionPrecedenceTrace;
@@ -91,6 +98,61 @@ export interface InstructionPrecedenceTrace {
 }
 
 const RULE_RE = /<!--\s*papercusp-rule:([a-z0-9-]+)=([a-z0-9-]+)\s*-->/gi;
+
+const UNCONDITIONAL_POST_COMPACTION_PATTERNS = [
+  {
+    name: 'first-orient',
+    re: /\b(?:first|always|must|immediately)\s+(?:re-?run|run|call)\s+`?coord:orient\s*\{\s*afterCompaction\s*:\s*true\s*\}/i,
+  },
+  {
+    name: 'before-acting-orient',
+    re: /\bbefore acting\b[\s\S]{0,320}\b(?:re-?run|run|call)\s+`?coord:orient[\s\S]{0,180}afterCompaction\s*:\s*true/i,
+  },
+  {
+    name: 'first-afterCompaction-arg',
+    re: /\bpass\s+`?afterCompaction\s*:\s*true`?\s+on\s+(?:your|the)\s+first\b/i,
+  },
+  {
+    name: 'first-action-orient',
+    re: /\bFIRST ACTION\b[\s\S]{0,320}\brun\s+coord:orient\s*\{\s*afterCompaction\s*:\s*true\s*\}/i,
+  },
+  {
+    name: 're-run-orient',
+    re: /\bre-?run\s+coord:orient\s*\{\s*afterCompaction\s*:\s*true\s*\}/i,
+  },
+  {
+    name: 'reconstruct-via-orient',
+    re: /\breconstruct working state via coord:orient\s*\{\s*afterCompaction\s*:\s*true\s*\}/i,
+  },
+  {
+    name: 'compacted-context-first-orient',
+    re: /\bcompacted context\b[\s\S]{0,240}\bfirst\s+re-?run\s+coord:orient\b/i,
+  },
+] as const;
+
+/** Find the retired unconditional startup contract in wrapped Markdown or
+ * concatenated source strings. Windows are deliberately small so a valid
+ * marker condition elsewhere in a long prompt cannot launder a nearby mandate. */
+export function findUnconditionalPostCompactionRecoveryDirectives(
+  text: string,
+  maxFindings = 20,
+): InstructionLintReport['unconditionalPostCompactionRecovery'] {
+  const lines = text.split(/\r?\n/);
+  const findings: InstructionLintReport['unconditionalPostCompactionRecovery'] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < lines.length; index += 1) {
+    const window = lines.slice(index, index + 6).join(' ').replace(/\s+/g, ' ').trim();
+    for (const pattern of UNCONDITIONAL_POST_COMPACTION_PATTERNS) {
+      if (!pattern.re.test(window)) continue;
+      const key = `${index + 1}:${pattern.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push({ line: index + 1, directive: window.slice(0, 500), pattern: pattern.name });
+      if (findings.length >= maxFindings) return findings;
+    }
+  }
+  return findings;
+}
 
 function semanticFileLockMode(line: string): string | null {
   const plain = line
@@ -454,6 +516,8 @@ export function lintInstructionText(
     .filter(([, positions]) => positions.length > 1)
     .map(([directive, positions]) => ({ directive, lines: positions }))
     .slice(0, maxFindings);
+  const unconditionalPostCompactionRecovery =
+    findUnconditionalPostCompactionRecoveryDirectives(text, maxFindings);
 
   return {
     markerCount,
@@ -461,16 +525,25 @@ export function lintInstructionText(
     conflicts: conflicts.slice(0, maxFindings),
     staleRules: staleRules.slice(0, maxFindings),
     duplicateDirectives,
+    unconditionalPostCompactionRecovery,
     ...(runtime ? { precedenceTrace: buildInstructionPrecedenceTrace(runtime, occurrences) } : {}),
     clean:
       duplicateRules.length === 0 &&
       conflicts.length === 0 &&
       staleRules.length === 0 &&
-      duplicateDirectives.length === 0,
+      duplicateDirectives.length === 0 &&
+      unconditionalPostCompactionRecovery.length === 0,
   };
 }
 
 /** Conflicts that make a compiled prompt unsafe to launch, rather than merely noisy. */
 export function blockingInstructionConflicts(report: InstructionLintReport) {
-  return report.conflicts.filter((conflict) => conflict.key === 'file-locking');
+  return [
+    ...report.conflicts.filter((conflict) => conflict.key === 'file-locking'),
+    ...report.unconditionalPostCompactionRecovery.map((finding) => ({
+      key: 'post-compaction-recovery',
+      values: ['unconditional-afterCompaction-orient'],
+      lines: [finding.line],
+    })),
+  ];
 }
