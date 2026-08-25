@@ -24,6 +24,7 @@ import {
   isLedgerConfirmedUnobservedDeath,
   parseJobLogDiedMarker,
   taskScopeIsActive,
+  terminalResourceLimitFields,
   terminalStatusFromLedger,
 } from './bash_output';
 import { formatJobLogDiedMarker, formatJobLogEndMarker } from './bash-jobs';
@@ -228,11 +229,10 @@ describe('taskScopeIsActive (EI-21238945235772551)', () => {
       }));
 
       await expect(taskScopeIsActive(base, exec)).resolves.toBe(true);
-      expect(exec).toHaveBeenCalledWith(
-        'systemctl',
-        ['--user', 'show', '-p', 'ActiveState', '--value', serviceUnit],
-        { timeout: 2_000, maxBuffer: 64 * 1024 },
-      );
+      expect(exec).toHaveBeenCalledWith('systemctl', ['--user', 'show', '-p', 'ActiveState', '--value', serviceUnit], {
+        timeout: 2_000,
+        maxBuffer: 64 * 1024,
+      });
     },
   );
 
@@ -290,6 +290,60 @@ describe('terminalStatusFromLedger (EI-20232536598731015)', () => {
   });
 });
 
+describe('terminalResourceLimitFields (EI-21437837415175286)', () => {
+  it('labels a failed test job sampled exactly at TasksMax as infrastructure-undetermined', () => {
+    expect(
+      terminalResourceLimitFields(
+        fakeRow({
+          state: 'exited',
+          exitCode: 254,
+          pidsCurrent: 2_048,
+          tasksMax: 2_048,
+          detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'test-run' },
+        }),
+      ),
+    ).toEqual({
+      failure_class: 'infrastructure-resource-limit',
+      resource_limit: {
+        kind: 'pids',
+        observed_tasks: 2_048,
+        configured_tasks_max: 2_048,
+        source: 'task-ledger-cgroup-sample',
+      },
+      test_verdict: 'undetermined',
+      resource_advice:
+        'This task reached its own cgroup TasksMax (2048/2048); its non-zero shell exit is an UNDETERMINED test run, not a red suite verdict.',
+    });
+  });
+
+  it('does not manufacture a limit verdict below the cap, while live, or after a clean exit', () => {
+    expect(
+      terminalResourceLimitFields(fakeRow({ state: 'exited', exitCode: 1, pidsCurrent: 2_047, tasksMax: 2_048 })),
+    ).toBeNull();
+    expect(terminalResourceLimitFields(fakeRow({ state: 'running', pidsCurrent: 2_048, tasksMax: 2_048 }))).toBeNull();
+    expect(
+      terminalResourceLimitFields(fakeRow({ state: 'exited', exitCode: 0, pidsCurrent: 2_048, tasksMax: 2_048 })),
+    ).toBeNull();
+  });
+
+  it('keeps non-test resource exhaustion explicit without inventing a test verdict', () => {
+    const result = terminalResourceLimitFields(
+      fakeRow({
+        state: 'killed',
+        exitCode: 137,
+        pidsCurrent: 4_096,
+        tasksMax: 4_096,
+        detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'other' },
+      }),
+    );
+    expect(result).toMatchObject({
+      failure_class: 'infrastructure-resource-limit',
+      resource_limit: { kind: 'pids', observed_tasks: 4_096, configured_tasks_max: 4_096 },
+    });
+    expect(result).not.toHaveProperty('test_verdict');
+  });
+});
+
 describe('JOB DIED recovery marker (EI-20011476155595470)', () => {
   it('formats an unobserved terminal state without presenting it as a clean JOB END', () => {
     const marker = formatJobLogDiedMarker(
@@ -315,9 +369,9 @@ describe('JOB DIED recovery marker (EI-20011476155595470)', () => {
     try {
       const logPath = join(dir, 'job.log');
       writeFileSync(logPath, 'partial output\n');
-      expect(
-        appendJobDiedMarker(logPath, 'stranded', null, 'process identity vanished', Date.UTC(2026, 7, 21)),
-      ).toBe(true);
+      expect(appendJobDiedMarker(logPath, 'stranded', null, 'process identity vanished', Date.UTC(2026, 7, 21))).toBe(
+        true,
+      );
       expect(appendJobDiedMarker(logPath, 'stranded', null, 'process identity vanished', Date.UTC(2026, 7, 22))).toBe(
         false,
       );

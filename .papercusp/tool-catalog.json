@@ -2493,7 +2493,7 @@
           "POST"
         ]
       },
-      "description": "Read new output from a background shell job (started by capability:bash run_in_background:true). Accepts its process-local bash_id or durable task_id, so a successor can reattach after carry. Returns output since the last read plus status (running/completed/failed/…) and exit code.",
+      "description": "Read new output from a background shell job (started by capability:bash run_in_background:true). Accepts its process-local bash_id or durable task_id, so a successor can reattach after carry. Returns output since the last read plus status (running/completed/failed/…) and exit code. A terminal task that reached its own cgroup TasksMax also returns failure_class=infrastructure-resource-limit, the measured/max task counts, and test_verdict=undetermined for a test run — never read that shell exit as a red suite.",
       "capabilities": [
         "capability:bash"
       ],
