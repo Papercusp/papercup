@@ -310,7 +310,6 @@ export default defineTool({
     'Measure one owner\'s goal-mode activity shape from tool_invocations: exclude automatic telemetry, unwrap dispatch wrappers, collapse calls into bursts, and return bounded BY_MODE/BY_RESPONSIBILITY percentages.',
   capability: 'activity:read',
   requirePrincipal: false,
-  crossWorkspace: true,
   needsWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 20 } },
@@ -331,6 +330,7 @@ export default defineTool({
       ? new Date(args.since).toISOString()
       : new Date(Date.parse(until) - 24 * 60 * 60 * 1000).toISOString();
     const maxRows = args.maxRows ?? 2000;
+    const workspace = ctx.workspaceId;
     const automatic = automaticToolInvocationPredicate(ctx.tx, 'ti');
     const wrapper = dispatchWrapperExclusionPredicate(ctx.tx, 'ti');
     const rows = await ctx.tx<ActivityMixRow[]>`
@@ -341,6 +341,7 @@ export default defineTool({
              count(*) OVER ()::int AS total
         FROM harness_shared.tool_invocations ti
        WHERE ti.coord_owner_id = ${owner}
+         AND ti.workspace_id = ${workspace}
          AND ti.invoked_at >= ${since}::timestamptz
          AND ti.invoked_at < ${until}::timestamptz
          AND NOT ${automatic}
