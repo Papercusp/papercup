@@ -12,13 +12,75 @@
  * zod schema the dispatcher validates every call against, so a
  * `safeParse` here exercises exactly what a live call would hit.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const handlerMocks = vi.hoisted(() => ({
+  harnessScopedCtx: vi.fn((harness: unknown, ctx: Record<string, unknown>) => ({
+    ...ctx,
+    harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
+  })),
+  recoverHarnessFromSlugs: vi.fn(),
+  withPlanLock: vi.fn(),
+  planRevisionCapture: vi.fn(),
+  emitPlanEventForCaller: vi.fn(async () => {}),
+  emitDecisionAdded: vi.fn(),
+}));
+
+// Handler tests below isolate the scope and lock seams; the pure helper tests
+// in this file continue to use the real parser and allocation functions.
+vi.mock('../_harness-scope', async (orig) => ({
+  ...(await orig<typeof import('../_harness-scope')>()),
+  harnessScopedCtx: handlerMocks.harnessScopedCtx,
+}));
+vi.mock('./slug-scope', async (orig) => ({
+  ...(await orig<typeof import('./slug-scope')>()),
+  recoverHarnessFromSlugs: handlerMocks.recoverHarnessFromSlugs,
+}));
+vi.mock('./with-plan-lock', () => ({
+  withPlanLock: handlerMocks.withPlanLock,
+  bumpUpdatedDate: (body: string) => body,
+}));
+vi.mock('./revisions', () => ({
+  planRevisionCapture: handlerMocks.planRevisionCapture,
+}));
+vi.mock('../coordination/plan-events', () => ({
+  emitPlanEventForCaller: handlerMocks.emitPlanEventForCaller,
+}));
+vi.mock('../../harness/usage-emitters', () => ({
+  emitDecisionAdded: handlerMocks.emitDecisionAdded,
+}));
 import tool, {
   findRetryDuplicateOfLastDecision,
   appendDecisionToBody,
   allocateNextDecisionId,
 } from './add-decision';
 import { parsePlan } from './parser';
+
+const HANDLER_PLAN = [
+  '---',
+  'slug: handler-plan',
+  'status: active',
+  '---',
+  '',
+  '## Now',
+  'State: testing',
+  '',
+  '## Decisions',
+  '',
+].join('\n');
+
+const handlerContext = (harnessSlug = '*') => ({
+  workspaceId: 'ws-add-decision',
+  harnessSlug,
+  metadata: vi.fn(),
+});
+
+const handlerBody = async (args: Record<string, unknown>, ctx: Record<string, unknown>) =>
+  (((await tool.handler(args as never, ctx as never)) as { data: unknown }).data) as {
+    ok: boolean;
+    results: Array<Record<string, unknown>>;
+    counts: { ok: number; failed: number };
+  };
 
 describe('plans:add-decision — itemRefs alias for refs', () => {
   it('accepts `itemRefs` on a single-decision call (the exact read-then-write repro)', () => {
@@ -208,5 +270,103 @@ describe('plans:add-decision — retry-safety (EI-19383795443003151)', () => {
       '  We chose A because it is simpler.  ',
     );
     expect(dup?.id).toBe(parsed.decisions[0]?.id);
+  });
+});
+
+describe('plans:add-decision — exact-slug harness recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handlerMocks.planRevisionCapture.mockReturnValue({
+      afterWrite: undefined,
+      recorded: { current: null },
+    });
+    handlerMocks.withPlanLock.mockImplementation(
+      async (
+        _ctx: unknown,
+        _opts: unknown,
+        mutate: (body: string) => Promise<{ newBody: string | null; value: unknown }>,
+      ) => {
+        const result = await mutate(HANDLER_PLAN);
+        return { kind: 'ok', ...result, filePath: 'handler-plan.md' };
+      },
+    );
+    handlerMocks.harnessScopedCtx.mockImplementation((harness: unknown, ctx: Record<string, unknown>) => ({
+      ...ctx,
+      harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
+    }));
+  });
+
+  it('recovers the owning harness from an exact slug in operator scope', async () => {
+    const ctx = handlerContext();
+    handlerMocks.recoverHarnessFromSlugs.mockResolvedValue({
+      status: 'resolved',
+      harnessSlug: 'recovered-harness',
+      bySlug: { 'handler-plan': 'recovered-harness' },
+      ambiguous: {},
+    });
+
+    const result = await handlerBody(
+      { slug: 'handler-plan', title: 'Recovered scope', body: 'Use the owning harness.' },
+      ctx,
+    );
+
+    expect(handlerMocks.recoverHarnessFromSlugs).toHaveBeenCalledWith(ctx, ['handler-plan']);
+    expect(handlerMocks.harnessScopedCtx).not.toHaveBeenCalled();
+    expect(handlerMocks.withPlanLock).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ slug: 'handler-plan', harnessSlug: 'recovered-harness' }),
+      expect.any(Function),
+    );
+    expect(ctx.metadata).toHaveBeenCalledWith({
+      harnessAutoResolved: { 'handler-plan': 'recovered-harness' },
+    });
+    expect(result).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(result.results[0]).toMatchObject({ ok: true, slug: 'handler-plan', decisionId: 'D-001' });
+  });
+
+  it('preserves explicit harness behavior without consulting slug recovery', async () => {
+    const ctx = handlerContext();
+
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Explicit scope',
+        body: 'Honor the caller-selected harness.',
+      },
+      ctx,
+    );
+
+    expect(handlerMocks.recoverHarnessFromSlugs).not.toHaveBeenCalled();
+    expect(handlerMocks.harnessScopedCtx).toHaveBeenCalledWith('explicit-harness', ctx);
+    expect(handlerMocks.withPlanLock).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ harnessSlug: 'explicit-harness' }),
+      expect.any(Function),
+    );
+    expect(result.results[0]).toMatchObject({ ok: true, slug: 'handler-plan', decisionId: 'D-001' });
+  });
+
+  it('refuses an ambiguous recovered slug before taking the plan lock', async () => {
+    const ctx = handlerContext();
+    handlerMocks.recoverHarnessFromSlugs.mockResolvedValue({
+      status: 'resolved',
+      harnessSlug: 'new-harness',
+      bySlug: { 'handler-plan': 'new-harness' },
+      ambiguous: { 'handler-plan': ['new-harness', 'old-harness'] },
+    });
+
+    const result = await handlerBody(
+      { slug: 'handler-plan', title: 'Ambiguous scope', body: 'Do not guess.' },
+      ctx,
+    );
+
+    expect(handlerMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({
+      ok: false,
+      slug: 'handler-plan',
+      error: 'plan_slug_ambiguous_across_harnesses',
+      candidates: { 'handler-plan': ['new-harness', 'old-harness'] },
+    });
   });
 });

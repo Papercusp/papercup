@@ -19,7 +19,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import {
   parsePlan,
@@ -34,6 +34,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitDecisionAdded } from '../../harness/usage-emitters';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
+import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -314,12 +315,70 @@ type AddDecisionValue =
   | { ok: true; decisionId: string; slug: string; deduped?: boolean }
   | { ok: false; code: 'not_found' | 'legacy_plan'; reason?: LegacyReason };
 
+type WritableSlugScope = ReturnType<typeof requireUnambiguousSlugScope>;
+
+/** Keep exact-slug recovery failures self-describing inside the bulk result. */
+function decisionScopeFailure(slug: string, decision: WritableSlugScope): BulkItemResult {
+  if (decision.status === 'missing') {
+    return {
+      ok: false,
+      slug,
+      error: 'plan_not_found_in_workspace',
+      missing: decision.missing,
+      ...(Object.keys(decision.found).length > 0 ? { foundIn: decision.found } : {}),
+      workspaceId: decision.workspaceId,
+    };
+  }
+  if (decision.status === 'split') {
+    return {
+      ok: false,
+      slug,
+      error: 'harness_split_across_plans',
+      mapping: decision.mapping,
+    };
+  }
+  return {
+    ok: false,
+    slug,
+    error: 'plan_slug_ambiguous_across_harnesses',
+    candidates: decision.candidates,
+  };
+}
+
+/** Resolve the concrete harness for one plan decision, recovering it from the
+ * exact slug only when the caller has no explicit/session harness scope. */
+async function decisionContext(
+  it: NewDecision,
+  ctx: UnifiedToolContext,
+): Promise<{ ok: true; ctx: UnifiedToolContext & { harnessSlug: string } } | { ok: false; result: BulkItemResult }> {
+  const scope = resolveHarnessScope(it.harness, ctx);
+  if (scope.kind !== 'none') {
+    return { ok: true, ctx: harnessScopedCtx(it.harness, ctx) };
+  }
+
+  const recovered = await recoverHarnessFromSlugs(ctx, [it.slug]);
+  const decision = requireUnambiguousSlugScope(
+    recovered,
+    ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
+  );
+  if (decision.status !== 'resolved') {
+    return { ok: false, result: decisionScopeFailure(it.slug, decision) };
+  }
+
+  (ctx as { metadata?: (data: Record<string, unknown>) => void }).metadata?.({
+    harnessAutoResolved: decision.bySlug,
+  });
+  return { ok: true, ctx: { ...ctx, harnessSlug: decision.harnessSlug } };
+}
+
 /** Append ONE decision, returning the self-describing bulk result. PRESERVES the
  *  in-lock allocate → append → bump, the revision capture, the P-070 usage ledger,
  *  the plan-event emit, AND the cross-plan `affects` propagation. The new decisionId
  *  rides the result; not_found / legacy_plan / busy map to this item's failure. */
 async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise<BulkItemResult> {
-  const sctx = harnessScopedCtx(it.harness, ctx);
+  const resolved = await decisionContext(it, ctx);
+  if (!resolved.ok) return resolved.result;
+  const sctx = resolved.ctx;
   const harnessSlug = resolveCtxHarnessSlug(sctx);
   const rev = planRevisionCapture(
     ctx as PlanRevisionCtx,
