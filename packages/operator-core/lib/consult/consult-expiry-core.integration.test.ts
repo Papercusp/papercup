@@ -38,6 +38,9 @@ const MIGRATION_844 = existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `$
 const MIGRATION_856 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/856-backfill-answered-expired-consult-outcomes.sql', import.meta.url),
 );
+const MIGRATION_962 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/962-backfill-blank-owner-answered-consult-outcomes.sql', import.meta.url),
+);
 
 let rootSql: Sql;
 
@@ -238,9 +241,10 @@ describe('sweepExpiredConsults', () => {
   });
 });
 
-describe('migration 856 historical answered-expired outcome repair', () => {
-  it('repairs only null-outcome expired rows with answers and is idempotent', async () => {
+describe('migrations 856 + 962 historical answered-expired outcome repair', () => {
+  it('repairs null-outcome expired rows with answers, including blank responder ids, and is idempotent', async () => {
     const legacyAnswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
+    const blankOwnerAnswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
     const trulyUnanswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
     const explicitOutcome = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
     const stillOpen = await seedConsult({ state: 'awaiting_responder', expiresAt: FUTURE });
@@ -251,6 +255,10 @@ describe('migration 856 historical answered-expired outcome repair', () => {
       { ownerId: 'reviewer-a', kind: 'answer', at: PAST, excerpt: 'second' },
       { ownerId: 'reviewer-b', kind: 'answer', at: PAST, excerpt: 'follow-up' },
       { ownerId: 'reviewer-c', kind: 'expired', at: PAST, excerpt: 'old unanswered label' },
+    ]);
+    await setDigest(blankOwnerAnswered, [
+      { ownerId: '', kind: 'answer', at: PAST, excerpt: 'anonymous first' },
+      { ownerId: '', kind: 'answer', at: PAST, excerpt: 'anonymous follow-up' },
     ]);
     await setDigest(trulyUnanswered, [
       { ownerId: 'reviewer-z', kind: 'expired', at: PAST, excerpt: 'no answer' },
@@ -292,12 +300,20 @@ describe('migration 856 historical answered-expired outcome repair', () => {
     const updated = await rootSql.unsafe(migrationSql);
     expect(updated.count).toBe(1);
 
+    // Migration 856 intentionally filtered blank responder ids, but that also
+    // dropped the whole conversation when every substantive answer was
+    // anonymous. Migration 962 retains the answer count and records that no
+    // responder identity was available.
+    const blankOwnerMigrationSql = readFileSync(MIGRATION_962, 'utf8');
+    const blankOwnerUpdated = await rootSql.unsafe(blankOwnerMigrationSql);
+    expect(blankOwnerUpdated.count).toBe(1);
+
     const outcomes = (await rootSql`
       SELECT conversation_id, outcome
         FROM harness_shared.consult_state
        WHERE workspace_id = ${WS}
          AND conversation_id IN (
-           ${legacyAnswered}, ${trulyUnanswered}, ${explicitOutcome}, ${stillOpen}, ${scalarDigest}
+           ${legacyAnswered}, ${blankOwnerAnswered}, ${trulyUnanswered}, ${explicitOutcome}, ${stillOpen}, ${scalarDigest}
          )
     `) as unknown as Array<{ conversation_id: string; outcome: unknown }>;
     const byId = new Map(outcomes.map((row) => [row.conversation_id, row.outcome]));
@@ -306,18 +322,33 @@ describe('migration 856 historical answered-expired outcome repair', () => {
       answers: 3,
       answered_by: ['reviewer-b', 'reviewer-a'],
     });
+    expect(byId.get(blankOwnerAnswered)).toEqual({
+      disposition: 'cascade_exhausted_with_answers',
+      answers: 2,
+      answered_by: [],
+    });
     expect(byId.get(trulyUnanswered)).toBeNull();
     expect(byId.get(explicitOutcome)).toMatchObject({ disposition: 'requester_recorded', answer: 'keep me' });
     expect(byId.get(stillOpen)).toBeNull();
     expect(byId.get(scalarDigest)).toBeNull();
 
-    await rootSql.unsafe(migrationSql);
-    const [afterSecondRun] = (await rootSql`
-      SELECT outcome
+    const second856 = await rootSql.unsafe(migrationSql);
+    const second962 = await rootSql.unsafe(blankOwnerMigrationSql);
+    expect(second856.count).toBe(0);
+    expect(second962.count).toBe(0);
+    const afterSecondRun = (await rootSql`
+      SELECT conversation_id, outcome
         FROM harness_shared.consult_state
-       WHERE workspace_id = ${WS} AND conversation_id = ${legacyAnswered}
-    `) as unknown as Array<{ outcome: unknown }>;
-    expect(afterSecondRun.outcome).toEqual(byId.get(legacyAnswered));
+       WHERE workspace_id = ${WS}
+         AND conversation_id IN (${legacyAnswered}, ${blankOwnerAnswered})
+       ORDER BY conversation_id
+    `) as unknown as Array<{ conversation_id: string; outcome: unknown }>;
+    expect(new Map(afterSecondRun.map((row) => [row.conversation_id, row.outcome]))).toEqual(
+      new Map([
+        [legacyAnswered, byId.get(legacyAnswered)],
+        [blankOwnerAnswered, byId.get(blankOwnerAnswered)],
+      ]),
+    );
   });
 });
 
