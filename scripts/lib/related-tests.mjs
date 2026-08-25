@@ -36,6 +36,72 @@ export function isTestFile(file) {
   return TEST_RE.test(file);
 }
 
+/** Config basenames Playwright is allowed to declare its ownership in. */
+const PLAYWRIGHT_CONFIG_NAMES = [
+  'playwright.config.ts',
+  'playwright.config.mts',
+  'playwright.config.js',
+  'playwright.config.mjs',
+];
+
+/**
+ * Which files in this workspace belong to PLAYWRIGHT rather than Vitest.
+ *
+ * `TEST_RE` above deliberately spans `.test.*` AND `.spec.*`, because both name real tests
+ * somewhere in this repo. But they are not interchangeable RUNNERS: the Vitest unit layer
+ * includes only `**\/*.test.ts(x)` (libs/test-config/src/vitest-config.ts), while
+ * apps/operator/playwright.config.ts claims `testDir: './e2e'` + `testMatch: /.*\.spec\.ts$/`.
+ * A Playwright spec handed to a Vitest lane therefore matches NOTHING, and the test router
+ * refuses the whole partial-match run rather than false-greening it
+ * (`TEST_FILE_ROUTE_ERROR requested=342 matched=340`, scripts/test-files.mjs). The task then
+ * exits 1 with ZERO attributable test files — invisible to the `test_runs` ledger (no fail
+ * rows) and to the gate's isolation re-run (no failing file to isolate), which is what made
+ * EI-21440128879545486 red-pin green-checkpoint and freeze `main` for the whole fleet.
+ *
+ * The boundary is DERIVED from Playwright's own config, not a hardcoded `e2e/` glob, so
+ * moving `testDir` moves this with it. The extension alone is NOT a safe discriminator:
+ * search-core and the three papergrid packages legitimately use `src/**\/*.spec.ts` as their
+ * VITEST include, and excluding those would silently shrink their runs — the exact false-green
+ * this refusal exists to prevent.
+ *
+ * A config that is absent or unparseable owns NOTHING. That direction is deliberate: the
+ * failure then stays LOUD (a red gate naming the unmatched file) instead of silently
+ * withholding a test that should have run.
+ *
+ * @param {string} rootDir workspace root to look for a Playwright config in
+ * @param {{ readFile?: (p: string) => string }} [seam] injected in tests
+ * @returns {(absFile: string) => boolean} true when Playwright — not Vitest — owns the file
+ */
+export function playwrightOwnedTest(rootDir, { readFile } = {}) {
+  const read = readFile ?? ((p) => readFileSync(p, 'utf8'));
+  let source = null;
+  for (const name of PLAYWRIGHT_CONFIG_NAMES) {
+    try {
+      source = read(path.join(rootDir, name));
+      break;
+    } catch {
+      // Not this basename; try the next.
+    }
+  }
+  if (source == null) return () => false;
+
+  const dirMatch = /\btestDir\s*:\s*['"]([^'"]+)['"]/.exec(source);
+  const matchMatch = /\btestMatch\s*:\s*\/((?:[^/\\\n]|\\.)+)\/([a-z]*)/.exec(source);
+  if (!dirMatch || !matchMatch) return () => false;
+
+  const testDir = path.resolve(rootDir, dirMatch[1]);
+  let testMatch;
+  try {
+    // Strip `g`/`y`: a stateful `lastIndex` would make `.test()` alternate per call.
+    testMatch = new RegExp(matchMatch[1], matchMatch[2].replace(/[gy]/g, ''));
+  } catch {
+    return () => false;
+  }
+
+  return (absFile) =>
+    (absFile === testDir || absFile.startsWith(testDir + path.sep)) && testMatch.test(absFile);
+}
+
 /**
  * A specifier is INTRA-REPO if it points at a path we ought to be able to resolve
  * ourselves — relative, or one of the repo's path aliases. A BARE specifier
