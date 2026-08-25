@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 821,
+  "count": 822,
   "tools": [
     {
       "name": "ablation:report",
@@ -694,6 +694,76 @@
         "when": "Checking whether bash usage is moving to its tool counterparts (the P-029 before/after), or grading how much registered shell intent a tool already serves. Returns the fleet numbers + a rating.",
         "notWhen": "Whether ONE command has a tool form (locks:check_command); raw per-tool MCP call counts (dev:telemetry)."
       }
+    },
+    {
+      "name": "activity:mix",
+      "http": {
+        "path": "/api/agent-tools/activity/mix",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Measure one owner's goal-mode activity shape from tool_invocations: exclude automatic telemetry, unwrap dispatch wrappers, collapse calls into bursts, and return bounded BY_MODE/BY_RESPONSIBILITY percentages.",
+      "capabilities": [
+        "activity:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "profile": "engineer"
     },
     {
       "name": "activity:recent",
