@@ -481,22 +481,48 @@ export default defineTool({
 
         let admission: Awaited<ReturnType<typeof import('./plan-admission-preflight').preflightExactPlanAdmission>> | null = null;
         let admissionError: string | null = null;
+        let claimSpecBinding: Awaited<ReturnType<typeof import('../../scheduler/claim-spec-store').setClaimSpec>> | null = null;
+        let claimSpecBindingError: string | null = null;
         try {
-          const [{ preflightExactPlanAdmission }, { resolveAgentIdentity }] = await Promise.all([
+          const [{ preflightExactPlanAdmission, buildExactPlanClaimSpec }, { resolveAgentIdentity }] = await Promise.all([
             import('./plan-admission-preflight'),
             import('../coordination/identity'),
           ]);
+          const ownerId = resolveAgentIdentity(ctx).ownerId;
           admission = await preflightExactPlanAdmission({
             workspaceId: startWorkspaceId,
             harnessSlug,
             planSlug: slug,
-            assignee: resolveAgentIdentity(ctx).ownerId,
+            assignee: ownerId,
             specId: `plans-start-${slug}`,
             // The starter may already hold the plan's sole ready row. That is a
             // successful start, not a floor-gated admission failure; fleet launch
             // keeps the stricter unclaimed-row requirement.
             allowCallerHeld: true,
           });
+
+          // The preflight's exact-plan spec is an in-memory admission oracle. Persist
+          // the same property-filtered spec under the starter's identity before this
+          // tool returns, otherwise its immediately-following scheduler:get_next falls
+          // back to DEFAULT_CLAIM_SPEC and can claim a different plan's work.
+          if (admission.ready) {
+            try {
+              const { setClaimSpec } = await import('../../scheduler/claim-spec-store');
+              claimSpecBinding = await setClaimSpec({
+                cupId: ownerId,
+                workspaceId: startWorkspaceId,
+                spec: buildExactPlanClaimSpec(`plans-start-${slug}`, slug),
+                updatedBy: ownerId,
+                potSlug: harnessSlug,
+              });
+              if (!claimSpecBinding.ok) {
+                claimSpecBindingError = claimSpecBinding.errors.filter(Boolean).join('; ') ||
+                  'the claim-spec store rejected the exact-plan binding';
+              }
+            } catch (error) {
+              claimSpecBindingError = (error as Error).message;
+            }
+          }
         } catch (error) {
           admissionError = (error as Error).message;
         }
@@ -542,6 +568,36 @@ export default defineTool({
           };
         }
 
+        if (claimSpecBindingError) {
+          ctxAny.metadata?.({
+            slug,
+            harnessSlug,
+            refused: 'claim_spec_binding_failed',
+            claimSpecBindingError,
+          });
+          return {
+            ok: false as const,
+            error: 'claim_spec_binding_failed' as const,
+            slug,
+            harnessSlug,
+            status: axisLive ? 'started' : null,
+            updatedAt: row?.op_updated_at,
+            autoApproved,
+            transitioned,
+            previousOpStatus: row?.prev_op_status ?? null,
+            ...(activationAudit ? { activationAudit } : {}),
+            promotion,
+            ...(promotionError ? { promotionError } : {}),
+            admission,
+            claimSpecBinding,
+            claimSpecBindingError,
+            ...(specQuality ? { specQuality } : {}),
+            ...(checkpointConsult ? { checkpointConsult } : {}),
+            message: `${promotionMessage} Exact-plan claim-spec binding failed: ${claimSpecBindingError}`,
+            ...(axisLive ? {} : { opStatusRetired: true as const }),
+          };
+        }
+
         return {
           ok: true as const,
           slug,
@@ -557,6 +613,7 @@ export default defineTool({
           ...(activationAudit ? { activationAudit } : {}),
           promotion,
           admission,
+          claimSpecBinding,
           ...(promotionError ? { promotionError } : {}),
           ...(specQuality ? { specQuality } : {}),
           ...(checkpointConsult ? { checkpointConsult } : {}),
