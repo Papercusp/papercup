@@ -512,7 +512,8 @@ describe('ADC-backed GCP workspace-host API client', () => {
       if (url.includes('/aggregated/disks?')) {
         return json({ items: { [`zones/${ZONE}`]: { disks: [{ name: 'pc-host-data', labels: managedLabels }] } } });
       }
-      if (url.includes('/global/snapshots?')) return json({ items: [{ name: 'pc-host-snapshot', labels: managedLabels }] });
+      if (url.includes('/global/snapshots?'))
+        return json({ items: [{ name: 'pc-host-snapshot', labels: managedLabels }] });
       if (url.endsWith('/global/networks/pc-host-net')) return json({ name: 'pc-host-net' });
       if (url.endsWith(`/regions/${REGION}/subnetworks/pc-host-subnet`)) return json({ name: 'pc-host-subnet' });
       if (url.endsWith('/global/firewalls/pc-host-iap')) {
@@ -534,6 +535,8 @@ describe('ADC-backed GCP workspace-host API client', () => {
               name: 'pc-host-nat',
               natIpAllocateOption: 'AUTO_ONLY',
               sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+              minPortsPerVm: 64,
+              enableEndpointIndependentMapping: false,
               subnetworks: [
                 { name: `regions/${REGION}/subnetworks/pc-host-subnet`, sourceIpRangesToNat: ['ALL_IP_RANGES'] },
               ],
