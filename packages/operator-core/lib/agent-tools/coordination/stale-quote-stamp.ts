@@ -84,10 +84,20 @@ interface SectionTextLike {
   text?: unknown;
 }
 
-/** The slice of a CellSpec this module consumes — structural, test-injectable. */
+/**
+ * The slice of a CellSpec this module consumes — structural, test-injectable.
+ * `changeSignal` is an all-optional bag on purpose: the registry's real type is
+ * the union `{ kind:'poll'; tool; path } | { kind:'event'; key }`, and only the
+ * poll arm carries tool/path — so every read below guards for absence, and an
+ * event-signalled cell contributes just its `cell` token (no door, no path).
+ * `kind`/`key` are listed so both union arms share properties with this weak
+ * type (TS2559) — they are never read here.
+ */
 export interface CellSpecLike {
   cell: string;
-  changeSignal?: { tool: string; path: string } | undefined;
+  changeSignal?:
+    | { kind?: string; tool?: string; path?: string; key?: string }
+    | undefined;
   doorProjections?: readonly { tool: string; path: string }[] | undefined;
 }
 
@@ -139,7 +149,9 @@ export function buildCellTokenIndex(specs: readonly CellSpecLike[]): CellTokenIn
     claim(cell, cell);
     const doors: string[] = [];
     if (spec.changeSignal) {
-      claim(spec.changeSignal.path, cell);
+      // Poll arm only — an event-signalled cell has neither path nor tool.
+      const csPath = str(spec.changeSignal.path);
+      if (csPath) claim(csPath, cell);
       const tool = str(spec.changeSignal.tool);
       if (tool) doors.push(tool);
     }
