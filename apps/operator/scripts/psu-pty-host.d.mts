@@ -986,6 +986,13 @@ export function renderCoalescedTurn(data: any, folded: any): any;
  *  (defer/error), so folded wakes never black-hole behind a dead waiter. */
 export function makeTurnCoalescer(): {
     admit(key: any, data: any, metadata: any): boolean;
+    /** Replace the text/metadata of an EXISTING waiter without counting another
+     *  logical fire. A retry of the SAME durable delivery id is not a folded wake,
+     *  but its executor-side delivery re-check may have rebuilt the envelope from a
+     *  newer loop:checkpoint while the first attempt was still behind this host's
+     *  busy gate (EI-21428742689578243). Returning false when the waiter already
+     *  claimed its slot keeps this best-effort and never resurrects a delivered turn. */
+    refresh(key: any, data: any, metadata: any): boolean;
     claim(key: any): any;
     size(): number;
 };
