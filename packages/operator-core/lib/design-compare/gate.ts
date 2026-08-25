@@ -61,6 +61,17 @@ export const DESIGN_GATE_FAILURE_REASONS = [
   // actually about". Reporting it as missing would send someone to re-run the
   // exact comparison that produced the misleading pass.
   'wrong-surface',
+  // P-011/D-023: the reference records the rendering host it was captured on,
+  // and this evidence was produced somewhere else — or does not say where.
+  // A separate reason because the remedy is neither "run a comparison" nor "fix
+  // the implementation": the implementation may be perfect and the comparison
+  // may have passed. It is the MEASUREMENT that does not apply, and the fix is
+  // to re-capture on the host the reference and threshold were measured on.
+  //
+  // This is also the reason evidence cannot buy an exemption by staying silent.
+  // If a missing host made a reference un-enforceable instead of a case
+  // unsatisfied, omitting one field would downgrade every refusal to a notice.
+  'wrong-render-host',
 ] as const;
 
 /**
@@ -165,6 +176,13 @@ function remedyFor(
         `and re-run design-phase.compare_render for case '${caseId}' against ${referenceId} revision ${activeRevision}. ` +
         `The current evidence at this environment is a capture of a different surface; it may carry a passing verdict, ` +
         `because captures of different surfaces are sometimes byte-identical, but it does not answer this case`
+      );
+    case 'wrong-render-host':
+      return (
+        `re-capture case '${caseId}' on the rendering host ${referenceId} was ratified on, then re-run ` +
+        `design-phase.compare_render. The stored evidence was produced on a different machine (or does not ` +
+        `record one), and the threshold it was judged against was measured on a single host only — at a ` +
+        `tolerance of roughly 34 pixels, a different font package is enough to fail correct work`
       );
     case 'no-evidence':
       return `run design-phase.compare_render for case '${caseId}' against ${referenceId} revision ${activeRevision}`;
@@ -310,6 +328,43 @@ export function evaluateDesignGate(view: GetDesignEvidenceResult): DesignGateVer
 
     const outcome = failureFromVerdict(required.verdict ?? 'invalid');
     if (!outcome) {
+      // P-011/D-023: a passing verdict is only evidence about THIS reference if
+      // it was produced on the machine the reference was captured on. The
+      // threshold it was judged against (3.3816e-5 — roughly 34 pixels of a
+      // 1280x800 render) was derived from same-host noise only, so a pass from
+      // another host is a number measured on an axis nothing has calibrated.
+      //
+      // Checked only when the reference records a host: one that does not is
+      // report-only anyway (see `enforceability.ts`), and failing its cases here
+      // would refuse work on references this contract never claimed to govern.
+      const referenceHost = active.capturedOnRenderHost;
+      const evidenceHost = view.evidence.find(
+        (e) => e.artifactId === required.evidenceArtifactId,
+      )?.deterministic.renderHost;
+      if (referenceHost && evidenceHost !== referenceHost) {
+        failures.push({
+          caseId: required.caseId,
+          kind: 'invalid',
+          reason: 'wrong-render-host',
+          environment: required.environment,
+          target: required.target,
+          rationale: required.rationale,
+          evidenceArtifactId: required.evidenceArtifactId,
+          detail:
+            `the stored evidence passed, but it was produced on ` +
+            `${evidenceHost ? `rendering host '${evidenceHost}'` : 'a capture that reported no rendering host'} ` +
+            `while ${referenceId} was ratified on '${referenceHost}'. A passing diff ratio measured ` +
+            `across an unmeasured axis is not evidence of fidelity.`,
+          remedy: remedyFor(
+            'wrong-render-host',
+            referenceId,
+            activeRevision,
+            required.caseId,
+            required.target,
+          ),
+        });
+        continue;
+      }
       satisfiedCases.push({
         caseId: required.caseId,
         environment: required.environment,

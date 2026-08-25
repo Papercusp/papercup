@@ -117,4 +117,15 @@ export interface CalibrationArtifact {
   readonly classes: readonly ClassCalibration[];
   /** Scope limits a reader must see next to the numbers, not in a commit message. */
   readonly caveats: readonly string[];
+  /**
+   * The rendering host every sample was measured on (P-011, D-023), as
+   * `render-host.ts`'s canonical string.
+   *
+   * D-021's SAME-HOST caveat is prose; this is the same fact in a form the gate
+   * can act on. Optional on the type because calibrations minted before the
+   * field existed do not carry one — and a calibration that cannot say where it
+   * was measured enforces nowhere, which is the honest reading of missing
+   * provenance rather than a defect to work around.
+   */
+  readonly measuredOnRenderHost?: string;
 }

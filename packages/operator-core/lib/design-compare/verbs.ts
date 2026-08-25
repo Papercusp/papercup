@@ -314,6 +314,18 @@ export interface CompareRenderInput {
   readonly expectedDimensions?: PngDimensions;
   readonly ignoredRegions?: readonly IgnoredRegion[];
   readonly timeoutMs?: number;
+  /**
+   * The rendering host the capture at `actualImagePath` was produced on
+   * (P-011/D-023), as `render-host.ts`'s canonical string.
+   *
+   * Supplied by the caller rather than measured here for the same reason
+   * `expectedDimensions` is: this verb receives an image PATH, not a browser,
+   * so only the capture path has a page to measure. `capture.ts` returns it.
+   *
+   * Omitting it is not a way to avoid a refusal. For a reference that records
+   * its own host, evidence without one fails the gate as `wrong-render-host`.
+   */
+  readonly renderHost?: string;
   /** Advisory prose. Recorded beside the evidence, never able to change it. */
   readonly advisoryNotes?: string;
 }
@@ -473,10 +485,18 @@ function invalidResult(args: {
 }
 
 async function persist(
-  result: CompareResult,
+  incoming: CompareResult,
   input: CompareRenderInput,
   deps: VerbDeps,
 ): Promise<VerbOutcome<CompareRenderResult>> {
+  // The rendering host is stamped HERE rather than at each construction site
+  // because this is the one funnel every result passes through — engine results
+  // and precondition refusals alike. Stamping it per-site is how the refusal
+  // paths end up as the ones missing it, which are exactly the paths where a
+  // reader most needs to know which machine produced the capture.
+  const result: CompareResult = input.renderHost
+    ? { ...incoming, renderHost: input.renderHost }
+    : incoming;
   const artifactId = evidenceArtifactId(result);
   try {
     await deps.store.insertEvidence({
@@ -533,6 +553,8 @@ export interface EvidenceView {
     readonly diffRegions?: CompareResult['diffRegions'];
     readonly artifacts?: CompareResult['artifacts'];
     readonly ignoredRegions?: readonly IgnoredRegion[];
+    /** The rendering host this capture was produced on (P-011/D-023), when it reported one. */
+    readonly renderHost?: string;
     readonly capturedAt: string;
   };
   readonly advisory: {
@@ -563,6 +585,12 @@ export interface GetDesignEvidenceResult {
     readonly referenceEnvironment: CaptureEnvironment;
     readonly ratifiedBy: string;
     readonly ratifiedAt: string;
+    /**
+     * The rendering host the reference IMAGE was captured on (P-011/D-023).
+     * Absent for uploads, Figma exports, and anything ratified before the field
+     * existed — and that absence is what makes such a reference report-only.
+     */
+    readonly capturedOnRenderHost?: string;
   } | null;
   /** Every revision ever recorded, newest last — the audit trail. */
   readonly revisions: readonly {
@@ -624,6 +652,7 @@ export async function getDesignEvidenceVerb(
         ...(r.diffRegions ? { diffRegions: r.diffRegions } : {}),
         ...(r.artifacts ? { artifacts: r.artifacts } : {}),
         ...(r.ignoredRegions ? { ignoredRegions: r.ignoredRegions } : {}),
+        ...(r.renderHost ? { renderHost: r.renderHost } : {}),
         capturedAt: r.capturedAt,
       },
       advisory: { notes: r.advisoryNotes ?? null },
@@ -665,6 +694,9 @@ export async function getDesignEvidenceVerb(
           referenceEnvironment: active.reference.referenceEnvironment,
           ratifiedBy: active.reference.provenance.ratifiedBy,
           ratifiedAt: active.reference.provenance.ratifiedAt,
+          ...(active.reference.provenance.capturedOnRenderHost
+            ? { capturedOnRenderHost: active.reference.provenance.capturedOnRenderHost }
+            : {}),
         }
       : null,
     revisions: rows.map((r) => ({
