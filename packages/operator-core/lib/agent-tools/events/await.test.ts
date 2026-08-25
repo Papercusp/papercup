@@ -69,6 +69,11 @@ vi.mock('./producer-health', async (importOriginal) => ({
     details: { pipeline: 'papercusp' },
   })),
 }));
+vi.mock('./status', () => ({
+  // Keep the await wrapper hermetic; ownership behavior is supplied by the
+  // focused tests below instead of querying the liveness/role stores.
+  resolveAnnouncementOwnership: vi.fn(async () => new Map()),
+}));
 vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
 // EI-10870: the orphan-key guard reads the INSTALLED tier to avoid false-warning on a
 // pack-declared key. Default: no installed packs ⇒ the builtin catalog decides.
@@ -122,6 +127,7 @@ import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { resolveProducerHealthCertificate } from './producer-health';
+import { resolveAnnouncementOwnership } from './status';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -708,6 +714,48 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
     });
     const out = await call({ event: 'green-gate-verdict' });
     expect(out.no_known_emitter).toBeUndefined();
+  });
+
+  it('does NOT warn when the current declaration still has a live owner, even without catalog or fire evidence', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ boundTo: { kind: 'role', ref: 'release-fixer' } }),
+    ] as never);
+    vi.mocked(resolveAnnouncementOwnership).mockResolvedValueOnce(
+      new Map([
+        [1, { declaredByLiveness: 'live', liveSuccessorIds: [], staleOwner: false }],
+      ]),
+    );
+
+    const out = await call({ event: 'green-gate-verdict' });
+
+    expect(out.no_known_emitter).toBeUndefined();
+    expect(out.announced_gate_ownership).toEqual({
+      declared_by_liveness: 'live',
+      live_successor_ids: [],
+    });
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+  });
+
+  it('does NOT warn when a stale declarer has a live bound successor', async () => {
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ boundTo: { kind: 'fleet-leadership', ref: 'release-fleet' } }),
+    ] as never);
+    vi.mocked(resolveAnnouncementOwnership).mockResolvedValueOnce(
+      new Map([
+        [1, { declaredByLiveness: 'ended', liveSuccessorIds: ['su-successor'], staleOwner: false }],
+      ]),
+    );
+
+    const out = await call({ event: 'green-gate-verdict' });
+
+    expect(out.no_known_emitter).toBeUndefined();
+    expect(out.announced_gate_ownership).toEqual({
+      declared_by_liveness: 'ended',
+      live_successor_ids: ['su-successor'],
+    });
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
   });
 
   it('does NOT call a current declaration an unknown emitter when a superseded generation fired', async () => {
