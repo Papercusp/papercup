@@ -1182,7 +1182,7 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     // the restore itself into session-transcript-remat, so the shape to pin is
     // "the route consumes a resolved path and nothing else".
     const streams = readFileSync(join(LIB, 'endpoint-route/routes/harness/streams.ts'), 'utf8');
-    expect(streams).toMatch(/const r = await rematerializeTranscript\(rematKey\);\s*\n\s*if \(r\.path\) path = r\.path;/);
+    expect(streams).toMatch(/const r = await rematerializeTranscript\(key\);\s*\n\s*if \(r\.path\) path = r\.path;/);
     // session-transcript-remat's rests on the same thing one layer down: it
     // restores in order to RESOLVE a path, and hands that path back. If it ever
     // grows a launch/spawn leg, the exemption above stops being true.

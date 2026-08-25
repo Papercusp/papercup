@@ -57,11 +57,10 @@ const dbOrgMock = {
   getLegacyClient: vi.fn(() => dbOrgHandle),
   generated: {},
 };
-vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   ...dbOrgMock,
 }));
-await import('@papercusp/db-org');
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),
   SESSION_THINKING_ACTIVE_MS: 30_000,

@@ -1573,10 +1573,12 @@ const sessionThinkingStream = defineTool({
         const backfillFromDb = async (opts: { fileAvailable: boolean }): Promise<boolean> => {
           if (!corpusKey) return false;
           try {
-            const [fromParts, fromTurns] = await Promise.all([
-              backfillFromSessionParts(corpusKey, { anchorTs }),
-              backfillFromSessionTurns(corpusKey, { anchorTs }),
-            ]);
+            // These are bounded fallback reads, not a latency-critical primary
+            // path. Keep them serial so a single pane cannot reserve two org DB
+            // operations at once and both helpers observe the same initialized
+            // client/module seam.
+            const fromParts = await backfillFromSessionParts(corpusKey, { anchorTs });
+            const fromTurns = await backfillFromSessionTurns(corpusKey, { anchorTs });
             const backfill = preferHigherFidelityBackfill(fromParts, fromTurns);
             if (!shouldServeDbBackfill(backfill, { fileAvailable: opts.fileAvailable, fromParts })) {
               return false;
