@@ -1671,8 +1671,10 @@ export function accountProviderFromChoices(accounts: any, agent?: string): any;
  * pin env CLIENT-SIDE (gatewayPinEnv) — the resume mints no session, so it can't ride the
  * bootstrap-su POST that folds the pin for a fresh launch, and the launcher must not depend on a
  * server endpoint that may not be deployed where it points (the 404 deploy-skew bug). Gating reuses
- * the live `/options` choices. Returns `{ id, env, notice }`: `id` for the FORK path (folded
- * server-side via the bootstrap POST), `env`/`notice` for the in-place resume (launchResume).
+ * the live `/options` choices. Returns `{ id, forward, env, notice }`: `forward`/`id` for the FORK
+ * path (folded server-side via the bootstrap POST), `env`/`notice` for the in-place resume
+ * (launchResume). A default route forwards the explicit `system` marker because omitting the
+ * account at bootstrap means "owner-nominated default", which may be gateway-routed.
  * Scripting (`--no-picker`) with no account uses the default system login. A
  * user-selected `auto` or named pin is fail-closed: if the gateway/provider/pin
  * cannot be honored, this function throws instead of silently returning the
@@ -1681,12 +1683,12 @@ export function accountProviderFromChoices(accounts: any, agent?: string): any;
 export function chooseResumeAccount(session: any, args: any): Promise<{
     mode: string;
     id: null;
+    forward: string;
     env: {
         PAPERCUSP_ACCOUNT_ROUTING_MODE: string;
     };
     notice: string | null;
     auto?: undefined;
-    forward?: undefined;
     provider?: undefined;
 } | {
     mode: string;
@@ -1714,8 +1716,8 @@ export function chooseResumeAccount(session: any, args: any): Promise<{
         PAPERCUSP_ACCOUNT_ROUTING_MODE: string;
     };
     notice: string;
-    auto?: undefined;
     forward?: undefined;
+    auto?: undefined;
 }>;
 export function usePtyHost({ env, stdin, stdout, }?: {
     env?: NodeJS.ProcessEnv | undefined;
