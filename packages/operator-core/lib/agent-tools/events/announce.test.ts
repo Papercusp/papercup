@@ -56,7 +56,7 @@ vi.mock('../../events/await/installed-events', () => ({
 }));
 vi.mock('../../events/await/store', () => ({
   FLEET_BENCH_NOTE_PREFIX: '[fleet:bench] ',
-  registerAnnouncement: vi.fn(async (input: { eventKey: string; expectedCondition?: unknown }) => ({
+  registerAnnouncement: vi.fn(async (input: { eventKey: string; expectedCondition?: unknown; logicalGateKey?: string | null }) => ({
     id: 1,
     eventKey: input.eventKey,
     expiresTs: null,
@@ -66,6 +66,7 @@ vi.mock('../../events/await/store', () => ({
     subscriberId: 'su-leader',
     causalGeneration: 4,
     expectedCondition: input.expectedCondition ?? null,
+    logicalGateKey: input.logicalGateKey ?? null,
   })),
   countActiveAwaitsByPrefixes: vi.fn(async (prefixes: string[]) => new Map(prefixes.map((p) => [p, 3]))),
   registerAwait: vi.fn(async (input: { eventKey: string }) => ({
@@ -175,6 +176,21 @@ describe('events:emit { announce: true }', () => {
       expectedCondition: { kind: 'sha', sha: 'abcdef1' },
     }));
     expect(out).toMatchObject({ generation: 4, expected: { kind: 'sha', sha: 'abcdef1' } });
+  });
+  it('persists and returns a logical gate identity', async () => {
+    const out = parse(await emitHandler({
+      event: 'deployed',
+      announce: true,
+      announceScope: 'global',
+      logical_gate: 'release-route',
+    }, {}));
+    expect(registerAnnouncement).toHaveBeenCalledWith(expect.objectContaining({
+      logicalGateKey: 'release-route',
+    }));
+    expect(out.logical_gate).toBe('release-route');
+  });
+  it('rejects a logical gate identity on a fire rather than a declaration', async () => {
+    await expect(emitHandler({ event: 'deployed', logical_gate: 'release-route' }, {})).rejects.toThrow(/logical_gate.*announce:true/);
   });
   it('rejects two expected-condition forms on one declaration', async () => {
     await expect(emitHandler({

@@ -19,10 +19,11 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../events/await/store', () => ({
   cancelAwait: vi.fn(),
   ackDelivery: vi.fn(),
+  retireAnnouncement: vi.fn(),
 }));
 
 import cancel from './cancel';
-import { cancelAwait, ackDelivery } from '../../events/await/store';
+import { cancelAwait, ackDelivery, retireAnnouncement } from '../../events/await/store';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof cancel.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -107,5 +108,53 @@ describe('events:cancel dual-path result', () => {
     expect(out.results.map((r: any) => r.await_id ?? r.delivery_id)).toEqual([7, 8, 3]);
     expect(cancelAwait).toHaveBeenCalledTimes(2);
     expect(ackDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires an announced declaration with an optional generation guard', async () => {
+    vi.mocked(retireAnnouncement).mockResolvedValue({
+      retired: true,
+      announcementId: 41,
+      eventKey: 'fleet:f1:gate-open',
+      generation: 3,
+      supersededAt: '2026-08-25T08:00:00.000Z',
+    });
+    const out = await call({ announcement_id: 41, expected_generation: 3 });
+    expect(retireAnnouncement).toHaveBeenCalledWith({
+      announcementId: 41,
+      subscriberId: 'su-canceller',
+      expectedGeneration: 3,
+    });
+    expect(out).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [{
+        ok: true,
+        announcement_id: 41,
+        retired: true,
+        event: 'fleet:f1:gate-open',
+        generation: 3,
+      }],
+    });
+  });
+
+  it('reports a generation mismatch without touching ordinary await cancellation', async () => {
+    vi.mocked(retireAnnouncement).mockResolvedValue({
+      retired: false,
+      announcementId: 41,
+      reason: 'generation_mismatch',
+    });
+    const out = await call({ announcement_id: 41, expected_generation: 2 });
+    expect(cancelAwait).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      counts: { ok: 0, failed: 1 },
+      results: [{ ok: false, announcement_id: 41, retired: false, error: 'generation_mismatch' }],
+    });
+  });
+
+  it('accepts announcement_ids in the bulk surface', async () => {
+    vi.mocked(retireAnnouncement).mockResolvedValue({ retired: true, announcementId: 41, generation: 1 });
+    const out = await call({ announcement_ids: [41, 42] });
+    expect(out.counts).toEqual({ ok: 2, failed: 0 });
+    expect(retireAnnouncement).toHaveBeenCalledTimes(2);
   });
 });
