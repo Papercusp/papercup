@@ -334,7 +334,7 @@ export async function readWorkspaceHostDestroyTarget(
         AND provider_id IS NOT NULL
       ORDER BY updated_at DESC, logical_key
     `) as Array<{
-      target: string;
+      target: WorkspaceHostResourceRef['target'];
       kind: string;
       provider_id: string;
       parent_provider_id: string | null;

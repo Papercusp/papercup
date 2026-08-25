@@ -1207,9 +1207,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
    * Keeping this on the configured provider preserves the one credential-resolution seam: the
    * DBOS workflow never serializes a client and the destroy runner never creates a second one.
    */
-  inventoryManagedResources(
-    request: GcpWorkspaceHostInventoryRequest,
-  ): Promise<GcpWorkspaceHostInventorySnapshot> {
+  inventoryManagedResources(request: GcpWorkspaceHostInventoryRequest): Promise<GcpWorkspaceHostInventorySnapshot> {
     return this.client.inventoryManagedResources(request);
   }
 

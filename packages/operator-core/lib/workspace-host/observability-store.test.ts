@@ -18,6 +18,7 @@ import {
   exportWorkspaceHostAudit,
   readWorkspaceHostConnection,
   readWorkspaceHostControl,
+  readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
   redactWorkspaceHostValue,
 } from './observability-store';
@@ -118,6 +119,54 @@ describe('workspace-host observability store', () => {
     ]);
   });
 
+  it('recovers and deduplicates the persisted provider graph for a later destroy', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [
+      {
+        id: 'host-1',
+        name: 'Canary host',
+        connection_id: 'connection-1',
+        target: 'gcp',
+        desired_spec: { hostId: 'host-1', target: 'gcp', region: 'us-central1' },
+      },
+    ]);
+    H.rows.set("state IN ('applied', 'unchanged')", [
+      {
+        target: 'gcp',
+        kind: 'vm',
+        provider_id: 'pc-host-vm',
+        parent_provider_id: 'project-1',
+        region: 'us-central1',
+        zone: 'us-central1-a',
+        updated_at: '2026-08-25T00:01:00Z',
+      },
+      {
+        target: 'gcp',
+        kind: 'vm',
+        provider_id: 'pc-host-vm',
+        parent_provider_id: 'project-1',
+        region: 'us-central1',
+        zone: 'us-central1-a',
+        updated_at: '2026-08-25T00:00:00Z',
+      },
+    ]);
+
+    await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).resolves.toMatchObject({
+      id: 'host-1',
+      connectionId: 'connection-1',
+      resources: [
+        {
+          resource: {
+            target: 'gcp',
+            kind: 'vm',
+            providerId: 'pc-host-vm',
+            parentProviderId: 'project-1',
+          },
+          registeredAt: '2026-08-25T00:01:00.000Z',
+        },
+      ],
+    });
+  });
+
   it('projects the latest operation, resource ids, health, signals, logs, and timeline', async () => {
     H.rows.set('FROM harness_shared.workspace_host_connections', [
       {
@@ -197,6 +246,12 @@ describe('workspace-host observability store', () => {
         region: 'us-central1',
         zone: 'us-central1-a',
         provider_request_id: 'request-1',
+        deletion_confirmation: {
+          hostId: 'host-1',
+          providerResourceId: 'projects/p/zones/z/instances/research',
+          confirmedAbsentAt: '2026-08-25T00:03:00Z',
+          source: 'provider-read',
+        },
         error: null,
         updated_at: '2026-08-22T00:01:00Z',
       },
@@ -243,7 +298,13 @@ describe('workspace-host observability store', () => {
         request: { image: 'ubuntu' },
         events: [{ id: 'event-1', source: 'controller', level: 'info' }],
       },
-      resources: [{ logicalKey: 'vm', providerRequestId: 'request-1' }],
+      resources: [
+        {
+          logicalKey: 'vm',
+          providerRequestId: 'request-1',
+          deletionConfirmation: { source: 'provider-read' },
+        },
+      ],
       logs: [{ id: 'log-1', stream: 'systemd', unit: 'papercusp-agent' }],
     });
   });

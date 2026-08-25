@@ -32,14 +32,8 @@ import {
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
-import type {
-  GcpWorkspaceHostInventoryRequest,
-  GcpWorkspaceHostInventorySnapshot,
-} from './gcp-provider';
-import {
-  censusGcpWorkspaceHostResources,
-  type GcpWorkspaceHostResourceCensus,
-} from './gcp-safety';
+import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
+import { censusGcpWorkspaceHostResources, type GcpWorkspaceHostResourceCensus } from './gcp-safety';
 import {
   appendWorkspaceHostEvent,
   beginWorkspaceHostOperation,
@@ -224,10 +218,7 @@ function externalEvidenceRef(value: string, label: string): string {
   return ref;
 }
 
-function validateDestroyCanaryEvidence(
-  evidence: WorkspaceHostDestroyCanaryEvidence,
-  workspaceId: string,
-): void {
+function validateDestroyCanaryEvidence(evidence: WorkspaceHostDestroyCanaryEvidence, workspaceId: string): void {
   const problems: string[] = [];
   if (!SAFE_CANARY_ID.test(evidence.runId)) {
     problems.push('canary.runId must already be lowercase [a-z0-9_-] and at most 63 characters');
@@ -758,9 +749,7 @@ function durableDestroyWorkflow(
 ): WorkspaceHostDurableWorkflowSpec {
   const resources: WorkspaceHostDurableResourcePlan[] = plan.steps.map((step) => {
     if (!step.destructive || step.action !== 'destroy') {
-      throw new WorkspaceHostProvisioningRequestError([
-        `discard destroy plan contains non-delete step '${step.id}'`,
-      ]);
+      throw new WorkspaceHostProvisioningRequestError([`discard destroy plan contains non-delete step '${step.id}'`]);
     }
     // Resolve this before any plan checkpoint is written. That preserves an exact registered
     // provider identity on every absence receipt and prevents the destroy oracle's provider-id
@@ -816,8 +805,7 @@ function deterministicInventoryRequest(
   const natResources = destroyTargets.filter((resource) => resource.kind === 'nat');
   const nats = natResources
     .map((resource) => ({
-      routerName:
-        destroyTargets.find((candidate) => candidate.kind === 'router')?.providerId ?? '',
+      routerName: destroyTargets.find((candidate) => candidate.kind === 'router')?.providerId ?? '',
       name: resource.providerId,
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -895,7 +883,9 @@ async function finalizeDestroyEvidence(
     ),
   );
   if (destroyTargets.length === 0) {
-    throw new WorkspaceHostProvisioningRequestError(['destroy evidence cannot be produced over an empty resource population']);
+    throw new WorkspaceHostProvisioningRequestError([
+      'destroy evidence cannot be produced over an empty resource population',
+    ]);
   }
   const ledger = restoreCanaryLedger(input, target, destroyTargets);
   const manualDestroyReceipts: WorkspaceHostManualDestroyReceipt[] = [];
@@ -906,10 +896,9 @@ async function finalizeDestroyEvidence(
     }
     ledger.confirmResourceAbsent(confirmation);
     if (input.canary.emergencyManualDestroy) {
-      const resource = destroyTargets.find(
-        (candidate) => candidate.providerId === confirmation.providerResourceId,
-      );
-      if (!resource) throw new Error(`Manual destroy confirmation '${confirmation.providerResourceId}' is unregistered`);
+      const resource = destroyTargets.find((candidate) => candidate.providerId === confirmation.providerResourceId);
+      if (!resource)
+        throw new Error(`Manual destroy confirmation '${confirmation.providerResourceId}' is unregistered`);
       const receipt = createWorkspaceHostManualDestroyReceipt({
         runId: input.canary.runId,
         resource,

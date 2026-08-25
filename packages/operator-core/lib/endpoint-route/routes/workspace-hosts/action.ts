@@ -85,10 +85,8 @@ export function createWorkspaceHostActionRoute(
       if (!isRecord(body.confirmation)) return requestError('destroy confirmation is required');
       const expectedHostId =
         typeof body.confirmation.expectedHostId === 'string' ? body.confirmation.expectedHostId.trim() : '';
-      const confirmedBy =
-        typeof body.confirmation.confirmedBy === 'string' ? body.confirmation.confirmedBy.trim() : '';
-      const confirmedAt =
-        typeof body.confirmation.confirmedAt === 'string' ? body.confirmation.confirmedAt.trim() : '';
+      const confirmedBy = typeof body.confirmation.confirmedBy === 'string' ? body.confirmation.confirmedBy.trim() : '';
+      const confirmedAt = typeof body.confirmation.confirmedAt === 'string' ? body.confirmation.confirmedAt.trim() : '';
       if (expectedHostId !== hostId || !confirmedBy || !Number.isFinite(Date.parse(confirmedAt))) {
         return requestError('destroy confirmation must name this host, an actor, and an ISO timestamp');
       }

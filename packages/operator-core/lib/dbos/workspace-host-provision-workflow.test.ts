@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import type { WorkspaceHostDesiredSpec, WorkspaceHostProviderConnection } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+  type WorkspaceHostDesiredSpec,
+  type WorkspaceHostProviderConnection,
+} from '@papercusp/deployment-driver';
 
 const control = vi.hoisted(() => ({
   dedupConflict: false,
@@ -10,6 +14,7 @@ const control = vi.hoisted(() => ({
   sleep: vi.fn(async (_ms: number) => {}),
   provider: { target: 'gcp' },
   createProvider: vi.fn(),
+  runDestroy: vi.fn(),
   runProvisioning: vi.fn(),
 }));
 
@@ -19,7 +24,11 @@ vi.mock('../workspace-host/gcp-provider', () => ({
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../workspace-host/provisioning-runner')>();
-  return { ...actual, runWorkspaceHostProvisioning: control.runProvisioning };
+  return {
+    ...actual,
+    runWorkspaceHostDestroy: control.runDestroy,
+    runWorkspaceHostProvisioning: control.runProvisioning,
+  };
 });
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -54,6 +63,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 
 import {
   setWorkspaceHostProvisioningExecutor,
+  startWorkspaceHostDestroyWorkflow,
   startWorkspaceHostProvisioningWorkflow,
   WorkspaceHostProvisioningConflictError,
 } from './workspace-host-provision-workflow';
@@ -105,6 +115,7 @@ beforeEach(() => {
   control.createProvider.mockReset();
   control.createProvider.mockReturnValue(control.provider);
   control.runProvisioning.mockReset();
+  control.runDestroy.mockReset();
 });
 
 afterEach(() => {
@@ -151,6 +162,59 @@ describe('workspace-host provisioning DBOS admission', () => {
 
     expect(control.createProvider).toHaveBeenCalledWith(connection);
     expect(control.runProvisioning).toHaveBeenCalledWith(expect.objectContaining({ provider: control.provider }));
+  });
+
+  it('routes discard destroy through the same host-scoped DBOS admission and composes the provider inside', async () => {
+    control.runDestroy.mockResolvedValueOnce({
+      status: 'succeeded',
+      operationId: 'destroy-1',
+      hostId: 'host-1',
+      plan: { ...plan, operationId: 'destroy-1' },
+      checkpoints: [],
+    });
+
+    await startWorkspaceHostDestroyWorkflow({
+      workspaceId: 'ws-1',
+      hostId: 'host-1',
+      connectionId: 'connection-1',
+      connection,
+      disposition: 'discard',
+      confirmation: {
+        expectedHostId: 'host-1',
+        confirmedBy: 'operator:test',
+        confirmedAt: '2026-08-25T00:00:00Z',
+      },
+      canary: {
+        runId: 'canary_1',
+        workspaceId: 'ws-1',
+        contractApproval: {
+          status: 'approved',
+          suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+          reportRef: 'report://gcp/fake-contract',
+          approvedBy: 'operator:test',
+          approvedAt: '2026-08-25T00:00:00Z',
+        },
+        teardownDeadlineAt: '2099-01-01T00:00:00Z',
+        budgetEvidenceRef: 'gcp://billing/budget',
+        preRunZeroBaseline: {
+          cents: 0,
+          observedAt: '2026-08-25T00:00:00Z',
+          providerEvidenceRef: 'gcp://billing/baseline',
+        },
+        costEvidence: [{ cents: 1, observedAt: '2026-08-25T00:10:00Z', providerEvidenceRef: 'gcp://billing/cost' }],
+      },
+      operationId: 'destroy-1',
+    });
+
+    expect(control.startOptions).toMatchObject({
+      workflowID: 'workspace-host:ws-1:host-1:operation:destroy-1',
+      queueName: 'workspace-host-provision',
+      enqueueOptions: { deduplicationID: 'workspace-host:ws-1:host-1' },
+    });
+    expect(control.createProvider).toHaveBeenCalledWith(connection);
+    expect(control.runDestroy).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'destroy', provider: control.provider }),
+    );
   });
 
   it('keeps the workflow active across an in-progress runner receipt', async () => {
