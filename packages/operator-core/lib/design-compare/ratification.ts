@@ -103,6 +103,26 @@ export interface RequiredCase {
   readonly rationale: string;
 }
 
+/**
+ * Who lifted a ratified obligation, and why.
+ *
+ * Retraction is the ONE operation that turns a constrained surface back into an
+ * unconstrained one, so it is the one operation an implementer could use to
+ * make a failing gate go away. Recording it is what separates a withdrawal from
+ * a silent universal bypass: without attribution, "the design no longer applies"
+ * and "the comparison was inconvenient" leave identical traces.
+ *
+ * `at` is carried rather than inferred from a row timestamp because the store's
+ * `created_ts` belongs to the RATIFICATION; a retraction that borrowed it would
+ * report the wrong moment with total confidence.
+ */
+export interface ReferenceRetraction {
+  readonly actor: string;
+  readonly reason: string;
+  /** ISO-8601 instant the retraction was recorded. */
+  readonly at: string;
+}
+
 export interface RatifiedReference {
   readonly identity: ReferenceIdentity;
   readonly state: RatificationState;
@@ -113,6 +133,8 @@ export interface RatifiedReference {
   readonly requiredCases: readonly RequiredCase[];
   /** Set when state is 'superseded' — the revision that replaced this one. */
   readonly supersededByRevision?: number;
+  /** Set when state is 'retracted' — who withdrew the obligation, and why. */
+  readonly retraction?: ReferenceRetraction;
 }
 
 export interface RatificationError {
