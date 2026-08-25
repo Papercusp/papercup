@@ -20,9 +20,11 @@
  * reaper would queue on the very executor that wedges and so couldn't fire when it's
  * most needed. The interval runs in the operator process, independent of the DBOS
  * routine engine, so it clears the wedge even when the routine scheduler is frozen.
- * Crash-safety is covered by the boot reap + PG transactionality (a crash mid-reap
- * rolls back; the next tick retries). The existing daily `dbos-workflow-gc` prunes
- * terminal rows; the reaper is what lets the GC (and every routine) keep firing.
+ * Crash-safety is covered by the boot reap plus an atomic stale-fire
+ * cancel-and-requeue transaction (a failure after selecting a routine fire cannot
+ * leave its workflow cancelled while its routine still points at the next cadence).
+ * The existing daily `dbos-workflow-gc` prunes terminal rows; the reaper is what
+ * lets the GC (and every routine) keep firing.
  */
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
@@ -244,11 +246,16 @@ export async function reapDeadExecutorWorkflows(
     // cancelled+requeued each sweep (oddsmith reaped_count hit 114 — the WI-1415
     // flap, reintroduced). The fast path therefore ALSO requires the QUEUE itself to
     // be dead: no sibling workflow on the same queue_name either actively PENDING
-    // (recent updated_at) or recently drained to SUCCESS/ERROR within the orphan
-    // window. CANCELLED is deliberately NOT liveness — the reaper's own cancels
-    // bump updated_at and would self-mask a genuinely wedged queue. A healthy
-    // backlog behind live workers is left alone (the no-output window, explicit
-    // deadlines, and the dead-executor branch still backstop true wedges).
+    // (recent updated_at OR still inside its explicit workflow deadline) or recently
+    // drained to SUCCESS/ERROR within the orphan window. The deadline leg matters for
+    // long single-step actions such as green-checkpoint: their external log can make
+    // steady progress for up to two hours while workflow_status.updated_at remains at
+    // step start. Treating only a recent status write as liveness cancelled healthy
+    // ENQUEUED siblings after ten minutes, including the operator-home release gate.
+    // CANCELLED is deliberately NOT liveness — the reaper's own cancels bump updated_at
+    // and would self-mask a genuinely wedged queue. A healthy backlog behind live
+    // workers is left alone (the no-output window, explicit deadlines, and the
+    // dead-executor branch still backstop true wedges).
     //
     // Use created_at, not started_at_epoch_ms or updated_at: DBOS recovery can
     // refresh BOTH timestamps on a row it still has not checkpointed, and that
@@ -274,8 +281,22 @@ export async function reapDeadExecutorWorkflows(
                         FROM dbos.workflow_status w2
                        WHERE w2.queue_name = dbos.workflow_status.queue_name
                          AND w2.workflow_uuid <> dbos.workflow_status.workflow_uuid
-                         AND w2.updated_at > ${staleRoutineFireOrphanAt}
-                         AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
+                         AND (
+                           (
+                             w2.status = 'PENDING'
+                             AND (
+                               w2.updated_at > ${staleRoutineFireOrphanAt}
+                               OR (
+                                 w2.workflow_deadline_epoch_ms IS NOT NULL
+                                 AND w2.workflow_deadline_epoch_ms > ${now}
+                               )
+                             )
+                           )
+                           OR (
+                             w2.status IN ('SUCCESS', 'ERROR')
+                             AND w2.updated_at > ${staleRoutineFireOrphanAt}
+                           )
+                         )
                     )
                   )
                   OR (${hasProcessStartedAtMs} AND executor_id = 'local' AND created_at < ${processStartedAtMsParam})
@@ -324,8 +345,22 @@ export async function reapDeadExecutorWorkflows(
                      FROM dbos.workflow_status w2
                     WHERE w2.queue_name = dbos.workflow_status.queue_name
                       AND w2.workflow_uuid <> dbos.workflow_status.workflow_uuid
-                      AND w2.updated_at > ${staleRoutineFireOrphanAt}
-                      AND w2.status IN ('PENDING', 'SUCCESS', 'ERROR')
+                     AND (
+                       (
+                         w2.status = 'PENDING'
+                         AND (
+                           w2.updated_at > ${staleRoutineFireOrphanAt}
+                           OR (
+                             w2.workflow_deadline_epoch_ms IS NOT NULL
+                             AND w2.workflow_deadline_epoch_ms > ${now}
+                           )
+                         )
+                       )
+                       OR (
+                         w2.status IN ('SUCCESS', 'ERROR')
+                         AND w2.updated_at > ${staleRoutineFireOrphanAt}
+                       )
+                     )
                  )
                )
                OR (${hasProcessStartedAtMs} AND executor_id = 'local' AND created_at < ${processStartedAtMsParam})
@@ -342,12 +377,73 @@ export async function reapDeadExecutorWorkflows(
     const staleIds = stale.map((r) => r.workflow_uuid);
     const requeueRoutineIds = [...new Set(stale.map((r) => r.requeue_routine_id).filter((id): id is string => !!id))];
     if (staleIds.length > 0) {
-      const staleCancel = await sql`
-        UPDATE dbos.workflow_status
-           SET deduplication_id = NULL, status = 'CANCELLED'
-         WHERE workflow_uuid = ANY(${staleIds})
-           AND status IN ('PENDING', 'ENQUEUED')`;
-      cancelled += staleCancel.count;
+      // The workflow cancellation and routine due-now write are ONE state transition.
+      // Previously the cancellation committed first; if the metadata UPDATE then failed,
+      // the dedup was freed but the routine stayed scheduled for its next normal cadence.
+      // That exact split stranded the 17:15 Papercusp gate until 18:15. Keep the optional
+      // workflow_queue cleanup outside this transaction: it is secondary evidence cleanup,
+      // and a best-effort DELETE must not be able to abort the authoritative transition.
+      const staleTransition = await sql.begin(async (tx) => {
+        const staleCancel = await tx`
+          UPDATE dbos.workflow_status
+             SET deduplication_id = NULL, status = 'CANCELLED'
+           WHERE workflow_uuid = ANY(${staleIds})
+             AND status IN ('PENDING', 'ENQUEUED')`;
+        if (requeueRoutineIds.length > 0) {
+          // WI-1416: `reaped_count` counts CONSECUTIVE reaps — a completed fire resets
+          // it (git-sync's recordOutcome, and the clear below drops it) — so persistent
+          // reaping is a durable, queryable signal the git-sync-stall-watchdog alarms on
+          // (paired with the fire_started_at breadcrumb the fire stamps at its top).
+          const reapedAt = Date.now();
+          await tx`
+            UPDATE harness_shared.routines
+               SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now()),
+                   metadata = COALESCE(metadata, '{}'::jsonb)
+                     || jsonb_build_object(
+                          'last_error',
+                          'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
+                          'last_error_at',
+                          now()::text,
+                          'last_error_source',
+                          'dbos-executor-reaper',
+                          'reaped_count',
+                          COALESCE((metadata->>'reaped_count')::int, 0) + 1
+                        )
+                     || CASE
+                          WHEN target_role = 'system:git-sync' THEN jsonb_build_object(
+                            'git_sync_history',
+                            COALESCE((
+                              SELECT jsonb_agg(item ORDER BY ord)
+                                FROM (
+                                  SELECT item, ord
+                                    FROM jsonb_array_elements(
+                                      (CASE
+                                         WHEN jsonb_typeof(metadata->'git_sync_history') = 'array'
+                                           THEN metadata->'git_sync_history'
+                                         ELSE '[]'::jsonb
+                                       END) || jsonb_build_array(jsonb_build_object(
+                                         'ts', ${reapedAt}::bigint,
+                                         'status', 'reaped',
+                                         'dirty_path_count', NULL,
+                                         'committed_count', NULL,
+                                         'error', 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
+                                         'reaped', true
+                                       ))
+                                    ) WITH ORDINALITY AS history(item, ord)
+                                   ORDER BY ord DESC
+                                   LIMIT ${GIT_SYNC_HISTORY_LIMIT}
+                                ) AS retained
+                            ), '[]'::jsonb)
+                          )
+                          ELSE '{}'::jsonb
+                        END,
+                   updated_at = now()
+             WHERE id = ANY(${requeueRoutineIds})
+               AND active = true`;
+        }
+        return { cancelled: staleCancel.count };
+      });
+      cancelled += staleTransition.cancelled;
       try {
         const qRes = await sql`
           DELETE FROM dbos.workflow_queue
@@ -356,58 +452,6 @@ export async function reapDeadExecutorWorkflows(
         queuePurged += qRes.count;
       } catch {
         /* queue purge is best-effort */
-      }
-      if (requeueRoutineIds.length > 0) {
-        // WI-1416: `reaped_count` counts CONSECUTIVE reaps — a completed fire resets
-        // it (git-sync's recordOutcome, and the clear below drops it) — so persistent
-        // reaping is a durable, queryable signal the git-sync-stall-watchdog alarms on
-        // (paired with the fire_started_at breadcrumb the fire stamps at its top).
-        const reapedAt = Date.now();
-        await sql`
-          UPDATE harness_shared.routines
-             SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now()),
-                 metadata = COALESCE(metadata, '{}'::jsonb)
-                   || jsonb_build_object(
-                        'last_error',
-                        'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
-                        'last_error_at',
-                        now()::text,
-                        'last_error_source',
-                        'dbos-executor-reaper',
-                        'reaped_count',
-                        COALESCE((metadata->>'reaped_count')::int, 0) + 1
-                      )
-                   || CASE
-                        WHEN target_role = 'system:git-sync' THEN jsonb_build_object(
-                          'git_sync_history',
-                          COALESCE((
-                            SELECT jsonb_agg(item ORDER BY ord)
-                              FROM (
-                                SELECT item, ord
-                                  FROM jsonb_array_elements(
-                                    (CASE
-                                       WHEN jsonb_typeof(metadata->'git_sync_history') = 'array'
-                                         THEN metadata->'git_sync_history'
-                                       ELSE '[]'::jsonb
-                                     END) || jsonb_build_array(jsonb_build_object(
-                                       'ts', ${reapedAt},
-                                       'status', 'reaped',
-                                       'dirty_path_count', NULL,
-                                       'committed_count', NULL,
-                                       'error', 'DBOS routineFire produced no DBOS operation output; executor reaper cancelled the stuck fire and requeued the routine',
-                                       'reaped', true
-                                     ))
-                                  ) WITH ORDINALITY AS history(item, ord)
-                                 ORDER BY ord DESC
-                                 LIMIT ${GIT_SYNC_HISTORY_LIMIT}
-                              ) AS retained
-                          ), '[]'::jsonb)
-                        )
-                        ELSE '{}'::jsonb
-                      END,
-                 updated_at = now()
-           WHERE id = ANY(${requeueRoutineIds})
-             AND active = true`;
       }
     }
 
@@ -420,9 +464,7 @@ export async function reapDeadExecutorWorkflows(
       staleWorkflowIds: staleIds,
     };
   } catch (e) {
-    console.warn(
-      `[dbos-executor-reaper] reap pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-    );
+    console.warn(`[dbos-executor-reaper] reap pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
     return empty;
   }
 }
@@ -503,8 +545,7 @@ export function startExecutorReaper(
 ): void {
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_REAP_INTERVAL_MS;
-  const processStartedAtMs =
-    opts.processStartedAtMs ?? Date.now() - Math.floor(process.uptime() * 1000);
+  const processStartedAtMs = opts.processStartedAtMs ?? Date.now() - Math.floor(process.uptime() * 1000);
 
   // EI-3673: `run` used to be `(): void` — it fired `reapDeadExecutorWorkflows(...)`
   // with `void promise.then(onSuccess)` and RETURNED IMMEDIATELY without waiting for

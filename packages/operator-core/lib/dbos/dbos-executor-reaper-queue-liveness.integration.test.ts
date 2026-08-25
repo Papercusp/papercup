@@ -19,7 +19,7 @@
  * Run: npx vitest run --config vitest.integration.config.ts \
  *        lib/dbos/dbos-executor-reaper-queue-liveness.integration.test.ts
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { reapDeadExecutorWorkflows } from './dbos-executor-reaper';
@@ -85,16 +85,19 @@ type WfSeed = {
   createdAgoMs: number;
   updatedAgoMs: number;
   dedup?: string | null;
+  deadlineInMs?: number | null;
 };
 
 async function seedWf(w: WfSeed): Promise<void> {
   const now = Date.now();
   await sql`
     INSERT INTO dbos.workflow_status
-      (workflow_uuid, name, status, executor_id, created_at, updated_at, deduplication_id, queue_name)
+      (workflow_uuid, name, status, executor_id, created_at, updated_at, deduplication_id, queue_name,
+       workflow_deadline_epoch_ms)
     VALUES (
       ${w.uuid}, ${w.name ?? 'routineFire'}, ${w.status}, 'exec-live',
-      ${now - w.createdAgoMs}, ${now - w.updatedAgoMs}, ${w.dedup ?? null}, ${w.queue}
+      ${now - w.createdAgoMs}, ${now - w.updatedAgoMs}, ${w.dedup ?? null}, ${w.queue},
+      ${w.deadlineInMs == null ? null : now + w.deadlineInMs}
     )`;
 }
 
@@ -156,6 +159,28 @@ describe('fast-orphan reap requires a DEAD queue (WI-3519, real PG)', () => {
     expect((await routineMeta('rt-live-pending'))?.reaped_count).toBeUndefined();
   });
 
+  it('treats a long PENDING worker inside its explicit deadline as live even when workflow_status is old', async () => {
+    const target = await seedBackloggedTarget('q-live-deadline', 'rt-live-deadline');
+    // A green-checkpoint-like single step: its external log can progress for hours,
+    // while DBOS does not refresh workflow_status until the step completes. Its
+    // explicit deadline is the writer-owned liveness bound during that interval.
+    await seedWf({
+      uuid: 'wf-long-worker',
+      status: 'PENDING',
+      queue: 'q-live-deadline',
+      createdAgoMs: 20 * 60 * 1000,
+      updatedAgoMs: 20 * 60 * 1000,
+      deadlineInMs: 90 * 60 * 1000,
+    });
+
+    const res = await reap();
+
+    expect(res.staleWorkflowIds).not.toContain(target);
+    expect(res.requeuedRoutineIds).not.toContain('rt-live-deadline');
+    expect(await wfStatus(target)).toBe('ENQUEUED');
+    expect((await routineMeta('rt-live-deadline'))?.reaped_count).toBeUndefined();
+  });
+
   it('leaves a backlogged ENQUEUED fire alone when the queue recently drained a fire to SUCCESS', async () => {
     const target = await seedBackloggedTarget('q-live-drain', 'rt-live-drain');
     await seedWf({
@@ -200,5 +225,35 @@ describe('fast-orphan reap requires a DEAD queue (WI-3519, real PG)', () => {
 
     expect(res.staleWorkflowIds).toContain(target);
     expect(await wfStatus(target)).toBe('CANCELLED');
+  });
+
+  it('rolls back workflow cancellation when the routine requeue write fails', async () => {
+    const routineId = 'rt-atomic-requeue';
+    const target = await seedBackloggedTarget('q-atomic-requeue', routineId);
+    // Force the metadata UPDATE to fail after the workflow UPDATE has executed.
+    // Without one transaction, the target is left CANCELLED and the routine is
+    // still scheduled for its next normal cadence — the production 17:15 loss.
+    await sql`
+      UPDATE harness_shared.routines
+         SET metadata = jsonb_build_object('reaped_count', 'not-an-integer')
+       WHERE id = ${routineId}`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await reap();
+      const rows = await sql<{ status: string; deduplication_id: string | null }[]>`
+        SELECT status, deduplication_id
+          FROM dbos.workflow_status
+         WHERE workflow_uuid = ${target}`;
+
+      expect(res.cancelled).toBe(0);
+      expect(res.staleWorkflowIds).toEqual([]);
+      expect(rows[0]).toEqual({
+        status: 'ENQUEUED',
+        deduplication_id: `routine:${routineId}`,
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[dbos-executor-reaper] reap pass failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
