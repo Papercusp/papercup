@@ -294,10 +294,18 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // source_plan_slug, source_plan_item_ids, expected_cost_cents) now federate —
     // see mig 965's header for the per-column reasoning. These two do NOT, and the
     // reasons are different from each other:
-    goal_id:
-      'pointer into harness_shared.goals, which does not federate — would dangle on every peer (EI-21467654382027859; same ruling as harness_plans.goal_id above, decided on the same item)',
+    // ⚠ BOTH of these are columns of the SAME work_items base table that the FEATURE
+    // half (harness_features_consolidated, NOT_FEDERATED empty) DOES federate. That is
+    // not an oversight on either side — the two families already diverge deliberately
+    // on dispatch columns, and feature_order above is the precedent in the other
+    // direction: features federate it as Queen steering (toFeatureValue's dispatch-column
+    // comment, su-ae509 2026-06-10) while THIS family keeps it local with a REVIEW.
+    // redundancy follows that same documented issue-family stance. goal_id does NOT have
+    // an issue-family precedent, so it is flagged rather than presented as settled:
     redundancy:
-      'per-item work-distribution fan-out factor (mig 195), inert unless PAPERCUSP_WORKITEM_REDUNDANCY is on — same family as feature_order above, whose cross-machine posture is the open work-distribution-activation question (REVIEW: remaining-lanes P-201)',
+      'per-item work-distribution fan-out factor (mig 195), inert unless PAPERCUSP_WORKITEM_REDUNDANCY is on — same dispatch family as feature_order above, which this family already keeps local (REVIEW: remaining-lanes P-201). The feature family federates both as steering; that divergence is deliberate on both sides.',
+    goal_id:
+      'pointer into harness_shared.goals, which does not federate — would dangle on every peer (EI-21467654382027859; same ruling as harness_plans.goal_id above, decided on the same item). ⚠ OPEN TENSION, deliberately recorded rather than settled: harness_features_consolidated federates goal_id today, so the same column on the same base table federates for features and not for issues. Either the dangling pointer is acceptable (and this should federate too) or it is not (and the feature half is wrong). Revisit with the remaining-lanes work-distribution decision rather than assuming this entry settled it.',
   },
   harness_plan_parts: {
     author: 'rides the op provenance (writerPubkey → author_pubkey), not the row value (mapper doc)',
