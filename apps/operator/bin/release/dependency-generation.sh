@@ -116,7 +116,7 @@ dependency_generation_tree_fingerprint() {
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
       && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -name .vite -o -name .vite-temp \) -prune \) -o \
+        \( -type d \( -name .astro -o -name .vite -o -name .vite-temp \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' \
@@ -126,7 +126,7 @@ dependency_generation_tree_fingerprint() {
       # BSD/macOS find has no -printf. Keep the same identity classes with a
       # portable stat record per path. It is slower, but correctness-preserving.
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -name .vite -o -name .vite-temp \) -prune \) -o \
+        \( -type d \( -name .astro -o -name .vite -o -name .vite-temp \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' -print0 \) \
@@ -673,11 +673,14 @@ dependency_generation_prune_ephemeral() {
   [ -d "$root" ] || return 0
   # npm rewrites node_modules/.package-lock.json during install bookkeeping. It
   # is internal metadata, not a runtime dependency, and older hardlink-based
-  # release trees can share its inode with the integration tree. Vitest likewise
-  # mutates .vite/.vite-temp cache state. None belong in an immutable generation:
-  # retaining or fingerprinting them can false-fail rc75 on unrelated churn.
+  # release trees can share its inode with the integration tree. Astro and Vitest
+  # likewise mutate .astro/.vite/.vite-temp cache state. None belong in an
+  # immutable generation: retaining or fingerprinting them can false-fail rc75
+  # on unrelated churn.
   rm -f -- "$root/.package-lock.json"
-  find "$root" -type d \( -name .vite -o -name .vite-temp \) -exec rm -rf -- {} +
+  find "$root" -type d \
+    \( -name .astro -o -name .vite -o -name .vite-temp \) \
+    -exec rm -rf -- {} +
 }
 
 # Materialize from an immutable generation. Same-filesystem hardlinks are safe
