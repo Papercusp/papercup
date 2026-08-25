@@ -31,11 +31,13 @@
  */
 
 import { createHash } from 'node:crypto';
+import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { detectPapercupRoot } from '../harness/register-papercusp';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
+import { selectUnambiguousEvidenceRoot } from '../evidence-root-selection';
 
 /** Context a resolver needs to scope its lookups. */
 export interface FreshnessResolverCtx {
@@ -92,8 +94,68 @@ function allNull(refs: readonly string[]): Map<string, string | null> {
  * a touch moves mtime without changing meaning, and a false stale here would train
  * agents to ignore the verdict.
  */
-async function resolveHarnessRepoRoot(ctx: FreshnessResolverCtx): Promise<string | null> {
-  if (ctx.repoRoot !== undefined && ctx.repoRoot !== null) return ctx.repoRoot;
+type FreshnessFileRootSource = 'harness-root' | 'canonical-repo';
+
+function containedFilePath(root: string, ref: string): string | null {
+  // Preserve the existing containment contract: absolute and ../-escaping refs
+  // remain unresolvable at every root, including the canonical fallback.
+  if (isAbsolute(ref) || normalize(ref).startsWith('..')) return null;
+  const rootResolved = resolve(root);
+  const full = resolve(join(rootResolved, ref));
+  if (full !== rootResolved && !full.startsWith(rootResolved + sep)) return null;
+  return full;
+}
+
+function fileRefsResolveAtRoot(refs: readonly string[], root: string): boolean {
+  return refs.every((ref) => {
+    const full = containedFilePath(root, ref);
+    if (!full || !existsSync(full)) return false;
+    try {
+      return statSync(full).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Select one checkout for a complete set of `file:` dependency refs.
+ *
+ * A registry-derived harness root stays authoritative while it resolves every
+ * file. A phantom root may fall back to the canonical repo only when that repo
+ * resolves the complete set. When neither does, preserve the harness root so the
+ * existing per-file resolver returns null and the checkpoint writer drops those
+ * stamps loudly instead of manufacturing freshness evidence.
+ */
+export function selectFreshnessFileRoot(
+  refs: readonly string[],
+  harnessRoot: string | null,
+  canonicalRepoRoot: string | null,
+): string | null {
+  if (!harnessRoot) {
+    return canonicalRepoRoot && fileRefsResolveAtRoot(refs, canonicalRepoRoot)
+      ? canonicalRepoRoot
+      : null;
+  }
+  const preferred = { root: harnessRoot, source: 'harness-root' as const };
+  const selected = selectUnambiguousEvidenceRoot<FreshnessFileRootSource>({
+    preferred,
+    ...(canonicalRepoRoot
+      ? { fallback: { root: canonicalRepoRoot, source: 'canonical-repo' as const } }
+      : {}),
+    resolvesEvery: (root) => fileRefsResolveAtRoot(refs, root),
+  });
+  return selected?.root ?? preferred.root;
+}
+
+async function resolveHarnessRepoRoots(
+  ctx: FreshnessResolverCtx,
+): Promise<{ preferred: string | null; canonical: string | null }> {
+  // An explicit override is a caller-owned test/embedding contract, not an ambient
+  // registry guess. Keep it authoritative and do not escape to another checkout.
+  if (ctx.repoRoot !== undefined && ctx.repoRoot !== null) {
+    return { preferred: ctx.repoRoot, canonical: null };
+  }
 
   // A checkpoint's file dependencies belong to the item's harness, not to the
   // operator process's current/release checkout. Keep the detected root as a
@@ -103,30 +165,27 @@ async function resolveHarnessRepoRoot(ctx: FreshnessResolverCtx): Promise<string
     try {
       const registry = await loadHarnessRegistry(ctx.workspaceId);
       const harnessRoot = resolveHarnessContentPath(registry, ctx.harness);
-      if (harnessRoot) return harnessRoot;
+      if (harnessRoot) {
+        return { preferred: harnessRoot, canonical: detectPapercupRoot() };
+      }
     } catch {
       // Registry reads are best-effort here; an unavailable registry must not
       // make the freshness resolver throw or change its existing fallback.
     }
   }
-  return detectPapercupRoot();
+  const canonical = detectPapercupRoot();
+  return { preferred: canonical, canonical: null };
 }
 
 const resolveFiles: DepResolver = async (refs, ctx) => {
   const out = new Map<string, string | null>();
-  const root = await resolveHarnessRepoRoot(ctx);
+  const roots = await resolveHarnessRepoRoots(ctx);
+  const root = selectFreshnessFileRoot(refs, roots.preferred, roots.canonical);
   if (!root) return allNull(refs);
-  const rootResolved = resolve(root);
   await Promise.all(
     refs.map(async (ref) => {
-      // Path containment: a declared dep must never read outside the repo. An
-      // absolute or ../-escaping ref resolves to unresolvable, not to a token.
-      if (isAbsolute(ref) || normalize(ref).startsWith('..')) {
-        out.set(ref, null);
-        return;
-      }
-      const full = resolve(join(rootResolved, ref));
-      if (full !== rootResolved && !full.startsWith(rootResolved + sep)) {
+      const full = containedFilePath(root, ref);
+      if (!full) {
         out.set(ref, null);
         return;
       }

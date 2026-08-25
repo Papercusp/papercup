@@ -20,7 +20,10 @@ import { join } from 'node:path';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  loadHarnessRegistry: vi.fn(),
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -28,6 +31,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
 vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
+});
+vi.mock('../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../harness-registry')>();
+  return { ...actual, loadHarnessRegistry: h.loadHarnessRegistry };
 });
 
 const { setWorkItemCheckpointWithPrior, getWorkItemCheckpointFreshness, getWorkItemCheckpointDeps } = await import(
@@ -125,6 +132,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  h.loadHarnessRegistry.mockReset().mockRejectedValue(new Error('registry unavailable in default fixture'));
   await db.sql`DELETE FROM harness_shared.carry_notes`;
   await db.sql`DELETE FROM harness_shared.work_items`;
   await db.sql`DELETE FROM harness_shared.engineer_issues`;
@@ -214,6 +222,26 @@ describe('resolvers — tokens come from versions that already exist', () => {
 });
 
 describe('write → read round trip', () => {
+  it('stamps and later re-resolves a canonical file when the declaring harness registry root is phantom', async () => {
+    const phantomRoot = await mkdtemp(join(tmpdir(), 'freshness-checkpoint-phantom-'));
+    try {
+      h.loadHarnessRegistry.mockResolvedValue({
+        projects: [{ slug: HARNESS, path: phantomRoot, harness_kind: 'coding' }],
+      });
+      const dep = await seedFile('phantom-root-owner.ts', 'stable canonical bytes');
+
+      const res = await setWorkItemCheckpointWithPrior(ref('WI-PHANTOM'), 'did the thing', {
+        dependsOn: [dep],
+      });
+
+      expect(res.depsStamped).toBe(1);
+      expect(res.depsWarnings).toBeUndefined();
+      expect((await getWorkItemCheckpointFreshness(ref('WI-PHANTOM')))?.verdict).toBe('fresh');
+    } finally {
+      await rm(phantomRoot, { recursive: true, force: true });
+    }
+  });
+
   it('stamps declared dependencies and reads back fresh when nothing moved', async () => {
     const dep = await seedFile('b.ts', 'stable');
     const res = await setWorkItemCheckpointWithPrior(ref('WI-100'), 'did the thing', { dependsOn: [dep] });
