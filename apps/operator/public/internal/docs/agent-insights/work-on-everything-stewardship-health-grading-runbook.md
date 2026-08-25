@@ -36,6 +36,8 @@ Every scorecard must bind all of:
 * the goal's current `worklist`, status, standing flag, rolling budget window, holder policy, drain fleet, and launch settings;
 * the deployed generation or an explicit statement that deployed parity could not be established.
 
+For `scorecards:emit`, encode the holder/window binding in the typed `subject` object: `{ kind:'agent-run', ref:'<holder owner id>', windowStart:'<window start>', windowEnd:'<window end>' }`. Keep the concrete goal id in the scorecard body/evidence and goal-specific metadata; do not use `subjectRef` as the emitter argument.
+
 Default observational window: the last 24 hours, ending at grading time. The end-to-end traversal criterion may look back 48 hours. A deliberate recovery drill may use a shorter post-watermark window, but the scorecard must name the watermark.
 
 Re-read live state at grading time. Event counts taken mid-run silently stale as the run continues.
@@ -74,7 +76,7 @@ When the goal is paused, new placement/throughput and traversal may be `unknown`
 6. Trace at least one end-to-end unit when the window was not idle.
 7. Read deployed-generation position for the bundled package and the code paths exercised by the trace.
 8. Rate every criterion. Evidence is mandatory on every rating; use `unknown` rather than leaving a key out.
-9. Emit one complete scorecard with `subjectRef` set to the goal id, then read `rubrics:trend`.
+9. Emit one complete scorecard with `subject:{ kind:'agent-run', ref:'<holder owner id>', windowStart:'<window start>', windowEnd:'<window end>' }`; keep the concrete goal id in the scorecard body/evidence (and any goal-specific metadata), then read `rubrics:trend`.
 
 ## Anti-gaming and known traps
 
