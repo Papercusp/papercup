@@ -46,7 +46,23 @@ describe('dedicated acceptance judge lifecycle', () => {
     });
     expect(result).toMatchObject({ matched: 2, prefix: 'acceptance-grader:rubric-a:' });
     expect(kill).toHaveBeenCalledTimes(2);
-    expect(kill).toHaveBeenCalledWith('task-a', { includeSubtree: true });
-    expect(kill).toHaveBeenCalledWith('task-b', { includeSubtree: true });
+    expect(kill).toHaveBeenCalledWith('task-a', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(kill).toHaveBeenCalledWith('task-b', { includeSubtree: true, escalateAfterMs: 5_000 });
+  });
+
+  it('escalates grader cleanup to SIGKILL on a bounded grace instead of leaving survivors live (EI-21390074563933948)', async () => {
+    // The filed incident: a bare-SIGTERM cleanup returned incomplete with 28
+    // processes still alive because the grader tree ignored TERM. These are the
+    // rubric's OWN throwaway graders, so cleanup must always arm the escalation
+    // window — a regression that drops escalateAfterMs fails here.
+    const list = vi.fn(async () => [task('task-a', 'acceptance-grader:rubric-a:abc123')]);
+    const kill = vi.fn(async (taskId: string) => ({ ok: true, taskId, action: 'kill' as const }));
+
+    await cleanupAcceptanceGraderTasks('rubric-a', { workspaceId: 'ws-test' }, { list: list as never, kill: kill as never });
+
+    const [, opts] = kill.mock.calls[0] as unknown as [string, { includeSubtree?: boolean; escalateAfterMs?: number }];
+    expect(opts.includeSubtree).toBe(true);
+    expect(opts.escalateAfterMs).toBeGreaterThan(0);
+    expect(opts.escalateAfterMs).toBeLessThanOrEqual(10_000);
   });
 });
