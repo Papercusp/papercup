@@ -8098,7 +8098,7 @@ async function runGreenCheckpointInner(
   ) {
     const ageHours = Math.round((candidateAgeAtVerdictMs / 3_600_000) * 10) / 10;
     const fossilSummary =
-      `green-checkpoint withheld a red verdict for candidate ${candidate.slice(0, 8)}: ` +
+      `candidate-fossil: green-checkpoint withheld a red verdict for candidate ${candidate.slice(0, 8)}: ` +
       `the candidate was already ${ageHours}h old when the suite result was ready to publish ` +
       `(threshold ${Math.round(CANDIDATE_FOSSIL_AGE_MS / 60_000)}m). ` +
       `No failing-test signature was published; the next run must re-judge a fresh tip.`;
