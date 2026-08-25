@@ -16,7 +16,9 @@ import {
   setReleaseCheckpointOverride,
   releaseCheckpointConfig,
   readQualificationAdmission,
+  readManualRunAdmission,
   setQualificationHold,
+  setManualRunHold,
   RELEASE_CHECKPOINT_DEFAULTS,
   type ReleaseCheckpointConfig,
   type QualificationHold,
@@ -35,11 +37,29 @@ function json(obj: unknown) {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * EI-21456558908416090 — which lever a hold governs. Two tokens, because a decision can
+ * withhold one and not the other: `stable-candidate-related-gate-2026-08-23` D-061 re-armed
+ * ordinary SCHEDULED fires while leaving every MANUAL launch forbidden. Defaults to
+ * 'qualification' so every pre-existing caller keeps its exact meaning.
+ */
+const HOLD_SCOPE = z
+  .enum(['qualification', 'manual-run'])
+  .describe(
+    "'qualification' (default) stops the SCHEDULED gate admitting a candidate; 'manual-run' stops a MANUAL release:checkpoint-run while leaving scheduled fires armed.",
+  );
+
+/** The currently-placed manual-run hold, or null (same malformed⇒null rule as `currentHold`). */
+async function currentManualRunHold(): Promise<QualificationHold | null> {
+  const a = await readManualRunAdmission();
+  return a.status === 'held' ? a.hold : null;
+}
+
 export default defineTool({
   name: 'release:checkpoint-config',
   profile: 'engineer',
   description:
-    'Read or set the green-checkpoint / release thresholds: stallReds + stallAgeMs (held-gate STALLED alert), chronicFlakeCount + flakeNotifyCooldownMs (chronic-flake quarantine nudge), deployBackoffMs (re-deploy backoff after a failed/rolled-back deploy of the same target). op:hold / op:unhold place or lift the qualification hold that stops the SCHEDULED gate launching a run while a serializer hold is active. set/hold/unhold are audited + one-call-revertible.',
+    'Read or set the green-checkpoint / release thresholds: stallReds + stallAgeMs (held-gate STALLED alert), chronicFlakeCount + flakeNotifyCooldownMs (chronic-flake quarantine nudge), deployBackoffMs (re-deploy backoff after a failed/rolled-back deploy of the same target). op:hold / op:unhold place or lift a hold: scope:"qualification" (default) stops the SCHEDULED gate admitting a candidate, scope:"manual-run" stops a MANUAL release:checkpoint-run while leaving scheduled fires armed. set/hold/unhold are audited + one-call-revertible.',
   capability: 'operator:write',
   guidance: {
     when: 'Tune the release pipeline live — e.g. shorten deployBackoffMs to re-deploy a fixed target sooner during an incident, or raise stallReds/stallAgeMs to quiet a noisy stall alert.',
@@ -72,9 +92,10 @@ export default defineTool({
       governingRef: z.string().min(1),
       blockingItems: z.array(z.string().min(1)).optional(),
       reason: z.string().optional(),
+      scope: HOLD_SCOPE.optional(),
       dryRun: z.boolean().optional(),
     }),
-    z.object({ op: z.literal('unhold'), dryRun: z.boolean().optional() }),
+    z.object({ op: z.literal('unhold'), scope: HOLD_SCOPE.optional(), dryRun: z.boolean().optional() }),
   ]),
   async handler(args, ctx) {
     if (args.op === 'get') {
@@ -85,6 +106,9 @@ export default defineTool({
         // Surfaced on the READ path too: a held gate that looks merely idle is exactly the
         // confusion this feature exists to remove.
         admission: await readQualificationAdmission(),
+        // EI-21456558908416090: the manual lever is a SEPARATE token, and a reader who sees
+        // only `admission: clear` would conclude a manual run is authorized when it is not.
+        manualRunAdmission: await readManualRunAdmission(),
       });
     }
 
@@ -102,28 +126,32 @@ export default defineTool({
               placedAtMs: Date.now(),
             }
           : null;
+      const scope = args.scope ?? 'qualification';
+      const manual = scope === 'manual-run';
+      const read = manual ? currentManualRunHold : currentHold;
+      const write = manual ? setManualRunHold : setQualificationHold;
       const outcome = await runControlMutation<QualificationHold | null>(
         {
           action: 'release:checkpoint-config',
-          subject: 'green-checkpoint:qualification-hold',
+          subject: manual ? 'green-checkpoint:manual-run-hold' : 'green-checkpoint:qualification-hold',
           actor: `role:${ctx.role}`,
-          capturePrev: () => currentHold(),
+          capturePrev: () => read(),
           apply: async () => {
-            await setQualificationHold(next);
+            await write(next);
             return next;
           },
-          revertTo: (prev) => setQualificationHold(prev),
+          revertTo: (prev) => write(prev),
           verify: async () => {
-            const now = await currentHold();
+            const now = await read();
             const ok = next === null ? now === null : now?.governingRef === next.governingRef;
-            return { ok, detail: ok ? undefined : 'qualification hold did not persist' };
+            return { ok, detail: ok ? undefined : `${scope} hold did not persist` };
           },
           describe: (prev) => ({ current: prev, next }),
         },
         { dryRun: args.dryRun },
       );
       return json({
-        ok: true, op: args.op, dryRun: outcome.dryRun, applied: outcome.applied, reverted: outcome.reverted,
+        ok: true, op: args.op, scope, dryRun: outcome.dryRun, applied: outcome.applied, reverted: outcome.reverted,
         preview: outcome.preview, verify: outcome.verify, auditId: outcome.auditId, next: outcome.next,
       });
     }

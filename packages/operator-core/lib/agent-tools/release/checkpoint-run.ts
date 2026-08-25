@@ -65,6 +65,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { assessCriticalClaimProgressLease } from '../work_items/release-force-guard';
 import { clampText, LIMITS, softText } from '../limits';
+import { readManualRunAdmission } from '../../release-checkpoint-config';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -487,6 +488,47 @@ export default defineTool({
             reason: `serializer_transition_${transition.status}`,
             detail: transition.status === 'refused' ? transition.detail : transition.error,
             transition_reason: transition.status === 'refused' ? transition.reason : undefined,
+          }),
+        }],
+      };
+    }
+
+    // EI-21456558908416090: a recorded decision may withhold MANUAL launch authority while
+    // leaving ordinary scheduled fires armed — the exact state D-061 established, which no
+    // pre-existing token could express (the qualification hold governs the SCHEDULED wrapper,
+    // and pausing the routine would have stopped the scheduled fires D-061 deliberately
+    // re-armed). Placed AFTER the resumePausedRoutine transition above on purpose: that op
+    // hands the gate back to the routine engine and is a scheduled fire, not a manual launch.
+    //
+    // Fails CLOSED on `unknown`, unlike release:trace's read of the same token: this call is
+    // about to spend a ~55min suite and must not do so unable to prove it is authorized.
+    // force/replaceStale/waitForEligibility do not bypass an authority boundary.
+    const manualRunAdmission = await readManualRunAdmission();
+    if (manualRunAdmission.status !== 'clear') {
+      const held = manualRunAdmission.status === 'held' ? manualRunAdmission.hold : null;
+      ctx.metadata?.({
+        standDown: held ? 'manual_run_authority_withheld' : 'manual_run_authority_unreadable',
+        ...(held?.governingRef ? { standDownGoverningRef: held.governingRef } : {}),
+        ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+      });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            reason: held ? 'manual_run_authority_withheld' : 'manual_run_authority_unreadable',
+            governing_ref: held?.governingRef,
+            blocking_items: held?.blockingItems,
+            note: held
+              ? `NOT launched: ${held.governingRef} withholds manual release:checkpoint-run authority. ` +
+                `${held.reason ?? ''} ORDINARY SCHEDULED gate fires are unaffected by this hold — a cron fire is not a ` +
+                'manual launch — so the gate continues to produce verdicts on its own; await the next one. ' +
+                'force, replaceStale and waitForEligibility cannot bypass this authority boundary. To lift it, record a ' +
+                'newer decision granting manual authority and clear the hold with release:checkpoint-config { op:"unhold", scope:"manual-run" }.'
+              : 'NOT launched: the manual-run authority token could not be read, so this tool cannot prove a recorded ' +
+                'decision does not forbid this launch. It fails closed before spending a ~55min suite; retry after the ' +
+                `authority read recovers (${manualRunAdmission.reason}).`,
           }),
         }],
       };
