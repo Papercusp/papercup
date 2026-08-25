@@ -41,6 +41,14 @@ describe('EI-6479 — typecheck script exists and runs the real baseline gate', 
     expect(s.typecheck).toMatch(/lint-tsc\.mjs/);
   });
 
+  it('operator-core exposes the same baseline gate as a package-local `lint:tsc` script', () => {
+    const s = scripts('packages/operator-core/package.json');
+    expect(
+      s['lint:tsc'],
+      'direct npm --prefix packages/operator-core lint:tsc callers must not hit a missing script',
+    ).toBe('node ../../scripts/lint-tsc.mjs');
+  });
+
   it('root exposes the canonical npm workspace name for focused operator-core typechecks', () => {
     const root = scripts('package.json');
     expect(root['typecheck:operator-core']).toBe(
