@@ -1211,10 +1211,12 @@ teardown() {
   log "tearing down (exit=$ec)"
   write_stop_script
   "$WORK/stop.sh" >/dev/null 2>&1 || true
-  # EI-211769: the dev bridge writes a per-PID authentication token in /tmp.
+  # EI-211769: the dev bridge writes a per-PID authentication token in the
+  # runtime temp directory (the same os.tmpdir()/std::env::temp_dir contract
+  # tauri-agent-tools uses for discovery).
   # The bridge is dead after stop.sh, so retaining that credential serves no
   # consumer and turns every verifier run into a stale-secret leak.
-  [ -n "${BRIDGE_PID:-}" ] && rm -f -- "/tmp/tauri-dev-bridge-$BRIDGE_PID.token"
+  [ -n "${BRIDGE_PID:-}" ] && rm -f -- "${TMPDIR:-/tmp}/tauri-dev-bridge-$BRIDGE_PID.token"
   wait_owned_ports_free   # EI-11559: hold the advisory lock until our sidecar releases the port
   fed_release_port_locks
   # EI-10387: the isolated-DB datadir can be sizeable (a full migrated cluster) —
