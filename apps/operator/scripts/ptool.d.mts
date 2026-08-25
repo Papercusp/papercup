@@ -188,6 +188,18 @@ export function mergeConvenienceArgs(args: Record<string, unknown>, { workspace,
  */
 export function mergeDispatchProjection(args: any, projection: any): any;
 /**
+ * A replay is safe only when the server explicitly marks the listed tool as
+ * read-only.  Do not infer this from a familiar name or from the call's
+ * arguments: a tool may read and write state even when its name sounds like a
+ * query.  The MCP ToolAnnotations field is advisory for clients, but it is the
+ * narrow capability signal ptool needs before reconnecting after an ambiguous
+ * post-connect transport failure.
+ *
+ * @param {ToolCatalogEntry | null | undefined} tool
+ * @returns {boolean}
+ */
+export function isReadOnlyTool(tool: ToolCatalogEntry | null | undefined): boolean;
+/**
  * Repair JSON text whose string values contain literal control characters.
  * A tool can return JSON in an MCP text content block, and printing that text
  * unchanged makes `ptool --raw | jq` reject the whole result. Only escape
@@ -327,12 +339,13 @@ export function formatOperatorConnectFailure(operatorUrl: any, error: any): stri
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, readOnly?: boolean}} [options]
  */
-export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, }?: {
+export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, readOnly, }?: {
     reconnect?: () => Promise<any>;
     maxAttempts?: number;
     timeoutMs?: number;
+    readOnly?: boolean;
 }): Promise<{
     client: any;
     result: any;
@@ -434,10 +447,15 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS: 60000;
  * immediate retry can overlap the original handler before its receipt exists.
  */
 export const PTOOL_POST_CONNECT_RETRIES: 0;
+export const PTOOL_READ_ONLY_POST_CONNECT_RETRIES: 1;
 export const PTOOL_USAGE: "ptool \u2014 call any Papercusp defineTool endpoint from the terminal.\n\n  ptool                         interactive: pick service \u2192 endpoint \u2192 args\n  ptool <group:verb>            skip the pickers, prompt for that tool's args\n  ptool <group:verb> --json - <<'EOF'  read JSON args from stdin (safe)\n  {\"copy\": \"it's fine now\"}\n  EOF\n  ptool <group:verb> --json-file payload.json   read JSON args from a file (safe)\n  ptool <group:verb> --json '<args>'   inline, quote-free JSON only\n  ptool <group:verb> --projection '<spec>'  bound the result at dispatch time\n  ptool code:run --script-file batch.js   read the script from a file\n  ptool code:run --script - <<'EOF'      read the script from stdin\n  return await tools.dev.build_status({});\n  EOF\n  ptool --list [filter]         print the catalog (optionally name-filtered)\n\nPrefer --json-file or --json - for any payload that is not a trivial,\nquote-free literal \u2014 especially loop:checkpoint checks/walls with recheck text.\nA shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote\nterminates early). For code:run, prefer --script-file or --script - for source\nthat contains nested shell commands or quoted strings.\n\nFlags:\n  --json <json> / --args <json>   args object for a direct (non-interactive) call;\n                                   '-' reads the JSON from stdin instead\n  --json-file <path>              read the args JSON from a file (quoting-free)\n  --projection <json>             dispatch-level result projection (quote-free JSON)\n  --script <source>               direct code:run JavaScript source; '-' reads stdin\n  --script-file <path>            direct code:run JavaScript source (quoting-free)\n  --workspace <ws>                scope the session (needed for harness:*, features:*, \u2026)\n  --harness <slug>                scope the session to a harness\n  --idempotency-key <key>         reuse one logical tools/call receipt after reconciling an unknown outcome\n  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)\n  PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)\n  --raw                           print the raw result text (no JSON pretty-print)\n  --url=<http://host:port>        operator URL (default $PAPERCUSP_OPERATOR_URL or :3070)\n  -h, --help                      this help\n";
 export type EnvironmentMap = Record<string, string | undefined>;
 export type ToolCatalogEntry = {
     name: string;
     description?: string;
     inputSchema?: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
+    annotations?: {
+        readOnlyHint?: boolean;
+    };
 };
