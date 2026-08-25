@@ -13,6 +13,7 @@ import {
   planDeadAwaitReclaim,
   liveHostOwnerSet,
   confirmedDeadOwnerSet,
+  planDeadPidUnprotect,
   resumableOpenSessionOwners,
   parseForegroundFromStat,
   shouldSpareForegroundSessionProc,
@@ -148,6 +149,63 @@ describe('confirmedDeadOwnerSet (WI-4399 PID/claim reconciliation)', () => {
     ];
     const out = confirmedDeadOwnerSet(rows, ({ pid }) => (pid === 10 ? false : pid === 11 ? true : null));
     expect(out).toEqual(new Set(['su-dead']));
+  });
+});
+
+describe('planDeadPidUnprotect (EI-21434105273882121 — activity veto over the dead-pid removal)', () => {
+  // Probe convention for these tests: pid 10 = affirmatively dead, 11 = alive,
+  // anything else = inconclusive (remote host / missing pid / EPERM).
+  const probe = ({ pid }: { pid?: number | null }) => (pid === 10 ? false : pid === 11 ? true : null);
+
+  it('vetoes the removal for a dead recorded pid whose owner shows fresh genuine activity (the carry-respawn gap incident shape)', () => {
+    // 2026-08-25 incident: holder's recorded pid was the OLD dead incarnation,
+    // while its last_active_at was seconds old (tool calls 14:03:07–09Z, release
+    // fired 14:03:42.395Z, successor session row inserted 244ms after that).
+    const out = planDeadPidUnprotect(
+      [{ ownerId: 'su-respawning', host: 'box', pid: 10, activeFresh: true }],
+      probe,
+    );
+    expect(out.unprotect).toEqual([]);
+    expect(out.vetoedByActivity).toEqual(['su-respawning']);
+  });
+
+  it('still un-protects a dead recorded pid with NO fresh genuine activity (the confirmDeadPids fast-reap purpose survives)', () => {
+    const out = planDeadPidUnprotect(
+      [
+        { ownerId: 'su-dead-stale', host: 'box', pid: 10, activeFresh: false },
+        { ownerId: 'su-dead-unknown-activity', host: 'box', pid: 10 },
+      ],
+      probe,
+    );
+    expect(out.unprotect.sort()).toEqual(['su-dead-stale', 'su-dead-unknown-activity']);
+    expect(out.vetoedByActivity).toEqual([]);
+  });
+
+  it('never lists an owner whose probe is alive or inconclusive, whatever its activity freshness', () => {
+    const out = planDeadPidUnprotect(
+      [
+        { ownerId: 'su-live', host: 'box', pid: 11, activeFresh: false },
+        { ownerId: 'su-remote', host: 'other-box', pid: 12, activeFresh: true },
+        { ownerId: 'su-no-pid', host: null, pid: null, activeFresh: false },
+      ],
+      probe,
+    );
+    expect(out.unprotect).toEqual([]);
+    expect(out.vetoedByActivity).toEqual([]);
+  });
+
+  it('control: the pre-fix (veto-less) behavior WOULD have un-protected the progressing holder — proves the veto is load-bearing', () => {
+    // Deliberately-wrong implementation kept beside the real one as a permanent
+    // falsifiability control: remove the activity veto and the incident row is
+    // un-protected again, which is exactly the force-release this fix exists to
+    // prevent. If the real implementation ever regresses to this shape, the
+    // first test above fails.
+    const vetoLess = (
+      rows: ReadonlyArray<{ ownerId?: string | null; host?: string | null; pid?: number | null }>,
+    ) => [...confirmedDeadOwnerSet(rows, probe)];
+    const incidentRow = [{ ownerId: 'su-respawning', host: 'box', pid: 10, activeFresh: true }];
+    expect(vetoLess(incidentRow)).toEqual(['su-respawning']); // wrong: kills the live holder
+    expect(planDeadPidUnprotect(incidentRow, probe).unprotect).toEqual([]); // fixed
   });
 });
 

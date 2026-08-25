@@ -181,6 +181,46 @@ export function confirmedDeadOwnerSet(
 }
 
 /**
+ * PURE (EI-21434105273882121): which owners the dead-pid probe may UN-protect.
+ * A dead pid probe is evidence about the RECORDED process, not the OWNER: under
+ * carry-respawn the coord owner id survives its incarnation, and in the respawn
+ * gap the presence row still carries the OLD (now dead) pid while the owner is
+ * actively working. The 2026-08-25 incident: the lease-release flight record
+ * fired at 14:03:42.395Z, the successor adv_session row was inserted 244ms
+ * LATER, and the holder's own tool calls were seconds old — every protective
+ * leg (fresh heartbeat, live host) was overridden by one dead probe of the
+ * stale recorded pid, force-releasing a progressing worker's claims and
+ * inviting a double-claim.
+ *
+ * Affirmative recent GENUINE ACTIVITY therefore VETOES the removal: an
+ * `activeFresh` row (coord_presence.last_active_at within grace — mig 277:
+ * bumped ONLY by real activity, never by the per-60s supervisor beat, so a
+ * dead process cannot keep it fresh) keeps its owner protected even when the
+ * recorded pid probes dead. The cost asymmetry is deliberate: a false KEEP
+ * delays lease cleanup by at most the grace window (the TTL/hourly reaper
+ * remains the backstop); a false REMOVE force-releases a live worker's
+ * in-flight claims — the exact false-alarm-class bug this guards against.
+ */
+export function planDeadPidUnprotect(
+  rows: ReadonlyArray<{
+    ownerId?: string | null;
+    host?: string | null;
+    pid?: number | null;
+    activeFresh?: boolean;
+  }>,
+  probe: (row: { host?: string | null; pid?: number | null }) => boolean | null = probeProcessLiveness,
+): { unprotect: string[]; vetoedByActivity: string[] } {
+  const activeFresh = new Set<string>();
+  for (const row of rows) if (row.ownerId && row.activeFresh === true) activeFresh.add(row.ownerId);
+  const unprotect: string[] = [];
+  const vetoedByActivity: string[] = [];
+  for (const owner of confirmedDeadOwnerSet(rows, probe)) {
+    (activeFresh.has(owner) ? vetoedByActivity : unprotect).push(owner);
+  }
+  return { unprotect, vetoedByActivity };
+}
+
+/**
  * PURE (WI-2858): which owners' OPEN adv_session counts as genuinely RESUMABLE —
  * only those with a LIVE psu-host that can relaunch/inject the wake. An open
  * adv_session ALONE is NOT enough: that was the slice-4 half of the deadlock — a
@@ -292,13 +332,23 @@ export async function gatherProtectedSessionOwners(
   // REPLACES the removed bare-await leg without the slice-1↔slice-4 deadlock.
   for (const o of opts.liveHostOwners ?? []) protectedOwners.add(o);
   if (opts.confirmDeadPids) {
-    const pidRows = await sql<Array<{ owner_id: string; host: string | null; pid: number | null }>>`
-      SELECT DISTINCT owner_id, host, pid
+    const pidRows = await sql<
+      Array<{ owner_id: string; host: string | null; pid: number | null; active_fresh: boolean }>
+    >`
+      SELECT DISTINCT owner_id, host, pid,
+             (last_active_at IS NOT NULL
+              AND (now() - last_active_at) < make_interval(secs => ${graceSec})) AS active_fresh
         FROM harness_shared.coord_presence
        WHERE owner_id IS NOT NULL AND pid IS NOT NULL AND pid > 0 AND host IS NOT NULL AND host <> ''`;
-    for (const owner of confirmedDeadOwnerSet(
-      pidRows.map((r) => ({ ownerId: r.owner_id, host: r.host, pid: r.pid })),
-    )) {
+    // EI-21434105273882121: fresh GENUINE activity vetoes the dead-pid removal
+    // (see planDeadPidUnprotect). A dead probe of the RECORDED pid must not
+    // override affirmative seconds-old activity — under carry-respawn the
+    // recorded pid goes stale while the owner id lives on, and deleting here
+    // is what force-released a progressing holder's claims mid-work.
+    const { unprotect } = planDeadPidUnprotect(
+      pidRows.map((r) => ({ ownerId: r.owner_id, host: r.host, pid: r.pid, activeFresh: r.active_fresh })),
+    );
+    for (const owner of unprotect) {
       protectedOwners.delete(owner);
     }
   }
