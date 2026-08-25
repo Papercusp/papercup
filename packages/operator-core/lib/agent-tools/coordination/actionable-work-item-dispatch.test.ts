@@ -131,9 +131,7 @@ describe('assignAndWakeActionableWorkItems', () => {
     const d = deps({
       claim,
       wake,
-      resolveTarget: vi.fn(async () =>
-        target('su-email-live', { requested: 'email-agent' }),
-      ),
+      resolveTarget: vi.fn(async () => target('su-email-live', { requested: 'email-agent' })),
     });
 
     const result = await assignAndWakeActionableWorkItems(
@@ -269,7 +267,9 @@ describe('assignAndWakeActionableWorkItems', () => {
 describe('resolveStableAgentTarget', () => {
   function targetDeps(rows: Array<Record<string, unknown>>): StableAgentTargetDeps {
     return {
-      resolveScope: vi.fn(async () => ({ scope: 'workspace', wsId: 'ws', potId: null })),
+      // `as const` keeps `scope` at its literal type: ResolvedPresenceScope.scope is the union
+      // 'hive'|'workspace'|'all', and an inferred `string` is not assignable to it.
+      resolveScope: vi.fn(async () => ({ scope: 'workspace' as const, wsId: 'ws', potId: null })),
       listSessions: vi.fn(async () => [
         {
           workspaceId: 'ws',
@@ -308,9 +308,7 @@ describe('resolveStableAgentTarget', () => {
   it('resolves a stable name to a live adopting session', async () => {
     const result = await resolveStableAgentTarget(
       { targetAgent: 'email-agent', workspaceId: 'ws', harness: 'email' },
-      targetDeps([
-        { ownerId: 'su-live', sessionState: 'parked', wakeable: true },
-      ]),
+      targetDeps([{ ownerId: 'su-live', sessionState: 'parked', wakeable: true }]),
     );
 
     expect(result).toEqual({
