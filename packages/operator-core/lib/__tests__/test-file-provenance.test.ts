@@ -265,14 +265,14 @@ describe('fingerprint + snapshot against the real filesystem', () => {
 });
 
 describe('end-to-end through the real router', () => {
-  it('prints the banner and stamps the terminal marker line', () => {
+  it('prints the banner and stamps the terminal marker line', async () => {
     const lines: string[] = [];
     const spy = (...args: unknown[]) => void lines.push(args.join(' '));
     const realLog = console.log;
     console.log = spy as typeof console.log;
     let code: number;
     try {
-      code = main(['--dry', 'packages/operator-core/lib/__tests__/test-file-provenance.test.ts']);
+      code = await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-provenance.test.ts']);
     } finally {
       console.log = realLog;
     }
@@ -296,12 +296,12 @@ describe('end-to-end through the real router', () => {
    * anchor registry in machine-line-grep-anchors.ts) and every existing consumer keeps tokenising
    * `status=` unchanged.
    */
-  it('keeps the existing marker-line contract intact', () => {
+  it('keeps the existing marker-line contract intact', async () => {
     const lines: string[] = [];
     const realLog = console.log;
     console.log = ((...args: unknown[]) => void lines.push(args.join(' '))) as typeof console.log;
     try {
-      main(['--dry', 'packages/operator-core/lib/__tests__/test-file-provenance.test.ts']);
+      await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-provenance.test.ts']);
     } finally {
       console.log = realLog;
     }
