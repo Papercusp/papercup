@@ -1,17 +1,19 @@
 /** POST /workspace-hosts/provision — start or resume one durable GCP host provision. */
 import { defineTool } from '@papercusp/agent-mcp';
-import type { WorkspaceHostDesiredSpec, WorkspaceHostProvider } from '@papercusp/deployment-driver';
+import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
+import {
+  startWorkspaceHostProvisioningWorkflow,
+  WorkspaceHostProvisioningConflictError,
+  type StartWorkspaceHostProvisioningInput,
+} from '../../../dbos/workspace-host-provision-workflow';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { createAdcGcpWorkspaceHostProvider } from '../../../workspace-host/gcp-provider';
 import {
   readWorkspaceHostConnection,
   type StoredWorkspaceHostConnection,
 } from '../../../workspace-host/observability-store';
 import {
-  runWorkspaceHostProvisioning,
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
-  type RunWorkspaceHostProvisioningInput,
 } from '../../../workspace-host/provisioning-runner';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
@@ -29,15 +31,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export interface WorkspaceHostProvisionRouteDependencies {
   activeWorkspaceId: () => string;
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
-  createGcpProvider: () => WorkspaceHostProvider;
-  runProvisioning: (input: RunWorkspaceHostProvisioningInput) => ReturnType<typeof runWorkspaceHostProvisioning>;
+  startProvisioning: (
+    input: StartWorkspaceHostProvisioningInput,
+  ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostProvisionRouteDependencies = {
   activeWorkspaceId,
   readConnection: readWorkspaceHostConnection,
-  createGcpProvider: createAdcGcpWorkspaceHostProvider,
-  runProvisioning: runWorkspaceHostProvisioning,
+  startProvisioning: startWorkspaceHostProvisioningWorkflow,
 };
 
 export function createWorkspaceHostProvisionRoute(
@@ -47,7 +49,7 @@ export function createWorkspaceHostProvisionRoute(
     method: 'POST',
     path: '/workspace-hosts/provision',
     auth: 'loopback',
-    async handler(req, ctx) {
+    async handler(req) {
       let body: ProvisionBody;
       try {
         body = (await req.json()) as ProvisionBody;
@@ -108,15 +110,13 @@ export function createWorkspaceHostProvisionRoute(
       }
 
       try {
-        const result = await dependencies.runProvisioning({
+        const result = await dependencies.startProvisioning({
           workspaceId,
           connectionId,
           name,
           desired,
           connection: { ...stored.connection, scope: desired.scope },
-          provider: dependencies.createGcpProvider(),
           ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
-          signal: ctx.signal,
         });
         const response = {
           ok: result.status !== 'failed',
@@ -135,6 +135,12 @@ export function createWorkspaceHostProvisionRoute(
           status: result.status === 'succeeded' ? 201 : result.status === 'in-progress' ? 202 : 500,
         });
       } catch (error) {
+        if (error instanceof WorkspaceHostProvisioningConflictError) {
+          return Response.json(
+            { ok: false, error: 'workspace host already has a provisioning operation in progress' },
+            { status: 409 },
+          );
+        }
         if (error instanceof WorkspaceHostProvisioningConnectionError) {
           return Response.json(
             { ok: false, error: 'workspace-host connection validation failed', problems: error.problems },

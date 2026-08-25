@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorkspaceHostDesiredSpec, WorkspaceHostProvider } from '@papercusp/deployment-driver';
+import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import type { RouteContext } from '../../define-route';
 import { createWorkspaceHostProvisionRoute, type WorkspaceHostProvisionRouteDependencies } from './provision';
+import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
 import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
@@ -27,10 +28,8 @@ const CTX: RouteContext = {
   signal: new AbortController().signal,
 };
 
-const provider = { target: 'gcp' } as unknown as WorkspaceHostProvider;
-
 function harness() {
-  const runProvisioning = vi.fn<WorkspaceHostProvisionRouteDependencies['runProvisioning']>(async () => ({
+  const startProvisioning = vi.fn<WorkspaceHostProvisionRouteDependencies['startProvisioning']>(async () => ({
     status: 'succeeded' as const,
     operationId: 'op-1',
     hostId: 'host-1',
@@ -57,10 +56,9 @@ function harness() {
   const dependencies: WorkspaceHostProvisionRouteDependencies = {
     activeWorkspaceId: () => 'ws-1',
     readConnection,
-    createGcpProvider: () => provider,
-    runProvisioning,
+    startProvisioning,
   };
-  return { dependencies, readConnection, runProvisioning };
+  return { dependencies, readConnection, startProvisioning };
 }
 
 async function post(dependencies: WorkspaceHostProvisionRouteDependencies, body: unknown): Promise<Response> {
@@ -112,7 +110,7 @@ describe('POST /workspace-hosts/provision', () => {
   });
 
   it('composes the selected connection with desired scope and returns 201 on completion', async () => {
-    const { dependencies, runProvisioning } = harness();
+    const { dependencies, startProvisioning } = harness();
     const response = await post(dependencies, {
       connectionId: 'connection-1',
       name: 'Research host',
@@ -127,13 +125,12 @@ describe('POST /workspace-hosts/provision', () => {
       operationId: 'op-1',
       hostId: 'host-1',
     });
-    expect(runProvisioning).toHaveBeenCalledWith(
+    expect(startProvisioning).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: 'ws-1',
         connectionId: 'connection-1',
         operationId: 'op-1',
         desired,
-        provider,
         connection: {
           target: 'gcp',
           cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
@@ -144,8 +141,8 @@ describe('POST /workspace-hosts/provision', () => {
   });
 
   it('returns a resumable 202 receipt without hiding retry timing', async () => {
-    const { dependencies, runProvisioning } = harness();
-    runProvisioning.mockResolvedValueOnce({
+    const { dependencies, startProvisioning } = harness();
+    startProvisioning.mockResolvedValueOnce({
       status: 'in-progress',
       operationId: 'op-1',
       hostId: 'host-1',
@@ -190,7 +187,7 @@ describe('POST /workspace-hosts/provision', () => {
     ).toMatchObject({ status: 501 });
 
     const rejected = harness();
-    rejected.runProvisioning.mockRejectedValueOnce(
+    rejected.startProvisioning.mockRejectedValueOnce(
       new WorkspaceHostProvisioningRequestError(['desired.zone must belong to desired.region']),
     );
     const rejectedResponse = await post(rejected.dependencies, {
@@ -201,7 +198,7 @@ describe('POST /workspace-hosts/provision', () => {
     expect(rejectedResponse.status).toBe(422);
 
     const unavailable = harness();
-    unavailable.runProvisioning.mockRejectedValueOnce(
+    unavailable.startProvisioning.mockRejectedValueOnce(
       new WorkspaceHostProvisioningConnectionError(['provider connection is not usable']),
     );
     expect(await post(unavailable.dependencies, { connectionId: 'connection-1', name: 'Host', desired })).toMatchObject(
@@ -209,7 +206,7 @@ describe('POST /workspace-hosts/provision', () => {
     );
 
     const internal = harness();
-    internal.runProvisioning.mockRejectedValueOnce(new Error('secret-bearing internal detail'));
+    internal.startProvisioning.mockRejectedValueOnce(new Error('secret-bearing internal detail'));
     const internalResponse = await post(internal.dependencies, {
       connectionId: 'connection-1',
       name: 'Host',
@@ -217,5 +214,20 @@ describe('POST /workspace-hosts/provision', () => {
     });
     expect(internalResponse.status).toBe(500);
     await expect(internalResponse.text()).resolves.not.toContain('secret-bearing internal detail');
+  });
+
+  it('maps a concurrent host-scoped DBOS admission refusal to 409', async () => {
+    const conflict = harness();
+    conflict.startProvisioning.mockRejectedValueOnce(new WorkspaceHostProvisioningConflictError('host-1'));
+
+    const response = await post(conflict.dependencies, {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'workspace host already has a provisioning operation in progress',
+    });
   });
 });
