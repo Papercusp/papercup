@@ -53,6 +53,15 @@ export interface PerfSignalsCgroupRow {
   oomKillEventsSubtree?: number | null;
 }
 
+/** A bounded cgroup-v2 CPU delta row. Usage is inclusive of descendants, so
+ * this is accountable owner context, not an additive workload total. */
+export interface PerfSignalsCgroupCpuRow {
+  path: string;
+  cpuUsageUsecDelta: number;
+  cpuPct: number;
+  directPids: number | null;
+}
+
 /** The subset of Lane E's perf-signals-v1 record the budgets read. The MCP-merged
  *  signals (eventLoopLag, tool p95, pgConns) are null until an agent run keyed to
  *  capturedAt fills them, so they are optional — host-side signals alone yield a
@@ -101,6 +110,20 @@ export interface PerfSignalsV1 {
       candidateCgroups: number;
       maxScanned: number;
       maxRows: number;
+      budgetSec: number;
+      partial: boolean;
+    } | null;
+    /** Bounded two-sample cgroup-v2 CPU ownership attribution. `cpuPct` is a
+     * per-core percentage over the capture window; rows are forensic context
+     * for PSI CPU pressure, not a second threshold. */
+    cgroupCpu?: {
+      accounting: 'cgroup-v2-inclusive-descendants' | string;
+      top: PerfSignalsCgroupCpuRow[];
+      scannedCgroups: number;
+      candidateCgroups: number;
+      maxScanned: number;
+      maxRows: number;
+      sampleSec: number;
       budgetSec: number;
       partial: boolean;
     } | null;
@@ -313,6 +336,17 @@ export interface PerfVerdict {
   inotifyMaxPerProc: { pid: number; comm: string; watches: number } | null;
   /** PSI cpu `some avg60` — %time ≥1 task starved for CPU. */
   psiCpuSome60: number | null;
+  /** Bounded owner context from the same capture for PSI CPU pressure. */
+  cgroupCpuAttribution: {
+    accounting: 'cgroup-v2-inclusive-descendants' | string;
+    partial: boolean;
+    top: Array<{
+      path: string;
+      cpuUsageUsecDelta: number;
+      cpuPct: number;
+      directPids: number | null;
+    }>;
+  } | null;
   /** PSI memory `some avg60` — %time ≥1 task stalled on memory reclaim/swap. */
   psiMemorySome60: number | null;
   /** PSI memory `full avg60` — %time ALL non-idle tasks stalled on memory (real
@@ -413,6 +447,51 @@ function summarizeCgroupMemory(
     top,
     throttled,
   };
+}
+
+/** Project only bounded cgroup CPU owner fields into the current verdict. */
+function summarizeCgroupCpu(
+  cgroup: PerfSignalsV1['signals']['cgroupCpu'],
+): PerfVerdict['cgroupCpuAttribution'] {
+  if (!cgroup || !Array.isArray(cgroup.top)) return null;
+  const top = [...cgroup.top]
+    .filter(
+      (row) =>
+        typeof row?.path === 'string' &&
+        typeof row?.cpuUsageUsecDelta === 'number' &&
+        Number.isFinite(row.cpuUsageUsecDelta) &&
+        typeof row?.cpuPct === 'number' &&
+        Number.isFinite(row.cpuPct),
+    )
+    .sort((a, b) => b.cpuPct - a.cpuPct || a.path.localeCompare(b.path))
+    .slice(0, 8)
+    .map((row) => ({
+      path: row.path,
+      cpuUsageUsecDelta: row.cpuUsageUsecDelta,
+      cpuPct: row.cpuPct,
+      directPids: typeof row.directPids === 'number' ? row.directPids : null,
+    }));
+  return {
+    accounting: cgroup.accounting,
+    partial: cgroup.partial === true,
+    top,
+  };
+}
+
+/** Attach measured cgroup CPU ownership to a PSI CPU alarm without claiming
+ * that correlation alone proves causality. */
+function withCgroupCpuAttribution(
+  reason: string,
+  attribution: PerfVerdict['cgroupCpuAttribution'],
+): string {
+  const owner = attribution?.top[0];
+  if (!owner) {
+    return `${reason}; cgroup CPU attribution unavailable — pressure owner unconfirmed`;
+  }
+  const pids = owner.directPids === null ? '' : `, ${owner.directPids} direct pid(s)`;
+  const partial = attribution.partial ? ', partial cgroup scan' : '';
+  return `${reason}; top cgroup CPU owner (correlation, not proof of causality): ${owner.path} ` +
+    `(${owner.cpuPct.toFixed(1)}% CPU${pids}${partial})`;
 }
 
 /**
@@ -701,6 +780,7 @@ export function evaluatePerfSignals(
     worstWorkerCpuPct: null, worstWorkerRssKb: null, closeWait: null,
     eventLoopLagP95Ms: null, operatorReachable: null,
     inotifyTotalWatches: null, inotifyMaxPerProc: null, psiCpuSome60: null,
+    cgroupCpuAttribution: null,
     psiMemorySome60: null, psiMemoryFull60: null, memoryPressure,
     sessionDirs: null,
     ageMs: null, stale: false, suppressedReasons: [],
@@ -722,6 +802,7 @@ export function evaluatePerfSignals(
   const inotifyOwnedMax = worstOwnedInotifyHolder(s.inotify?.topProcs ?? null);
   const inotifyLimit = typeof s.inotify?.limits?.maxUserWatches === 'number' ? s.inotify.limits.maxUserWatches : null;
   const psiCpu = typeof s.psi?.cpu?.some?.avg60 === 'number' ? s.psi.cpu.some.avg60 : null;
+  const cgroupCpuAttribution = summarizeCgroupCpu(s.cgroupCpu);
   const psiMemSome = memoryPressure.psiMemorySome60;
   const psiMemFull = memoryPressure.psiMemoryFull60;
   const sessionDirs = s.sessionDirs
@@ -736,6 +817,7 @@ export function evaluatePerfSignals(
     worstWorkerCpuPct: worstCpu, worstWorkerRssKb: worstRss, closeWait,
     eventLoopLagP95Ms: lag, operatorReachable: reachable,
     inotifyTotalWatches: inotifyTotal, inotifyMaxPerProc: inotifyMax, psiCpuSome60: psiCpu,
+    cgroupCpuAttribution,
     psiMemorySome60: psiMemSome, psiMemoryFull60: psiMemFull,
     sessionDirs,
     ageMs,
@@ -807,7 +889,15 @@ export function evaluatePerfSignals(
     // information exists to attribute it.)
     raise(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitCritFrac * 100)}% of max_user_watches ${inotifyLimit} — ENOSPC imminent, fs.watch boots will fail fleet-wide`, 'ambient-host');
   }
-  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) raise(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`, 'ambient-host');
+  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) {
+    raise(
+      withCgroupCpuAttribution(
+        `PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`,
+        cgroupCpuAttribution,
+      ),
+      'ambient-host',
+    );
+  }
   // Multi-tenant RAM pressure from ~100 peer agents. This is the exact reason D-007 F3
   // exists: measured 2026-08-16 it was the SOLE crit reason on a live capture.
   if (memoryPressure.pressure === 'crit') for (const r of memoryPressure.reasons) raise(r, 'ambient-host');
@@ -846,7 +936,14 @@ export function evaluatePerfSignals(
   if (inotifyTotal !== null && inotifyLimit !== null && inotifyTotal >= inotifyLimit * budgets.inotifyLimitWarnFrac) {
     warn.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitWarnFrac * 100)}% of max_user_watches ${inotifyLimit}`);
   }
-  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeWarn) warn.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeWarn} — sustained CPU starvation pressure`);
+  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeWarn) {
+    warn.push(
+      withCgroupCpuAttribution(
+        `PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeWarn} — sustained CPU starvation pressure`,
+        cgroupCpuAttribution,
+      ),
+    );
+  }
   if (memoryPressure.pressure === 'warn') warn.push(...memoryPressure.reasons);
   for (const [label, n] of [
     ['session-claude owner dirs', sessionDirs?.claudeOwnerDirs],
