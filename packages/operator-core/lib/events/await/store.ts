@@ -615,6 +615,7 @@ export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number>
     UPDATE harness_shared.event_awaits
        SET cancelled_at = now()
      WHERE workspace_id = ${ws} AND id = ANY(${[...ids]})
+       AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;
@@ -647,6 +648,10 @@ export async function cancelAwait(input: {
        SET cancelled_at = now(), cancel_reason = ${cancelReason}
      WHERE workspace_id = ${ws} AND id = ${input.awaitId}
        AND subscriber_id = ${input.subscriberId}
+       -- Announcements share this table but are declarations, not awaits. They
+       -- have their own generation-guarded retireAnnouncement path; accepting
+       -- one here lets an await_id teardown silently retire a gate declaration.
+       AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;
@@ -772,6 +777,7 @@ export async function listOperatorCancelledAwaits(
      WHERE workspace_id = ${ws}
        AND subscriber_id = ${subscriberId}
        AND event_key = ANY(${sql.array(keys)}::text[])
+       AND policy <> 'announce'
        AND cancelled_at IS NOT NULL
        AND cancel_reason = 'operator'
      ORDER BY cancelled_at DESC, id DESC
@@ -801,6 +807,7 @@ export async function clearOperatorCancelledAwaits(
      WHERE workspace_id = ${ws}
        AND subscriber_id = ${subscriberId}
        AND event_key = ANY(${sql.array(keys)}::text[])
+       AND policy <> 'announce'
        AND cancelled_at IS NOT NULL
        AND cancel_reason = 'operator'
     RETURNING id
@@ -815,6 +822,7 @@ export async function listActiveAwaits(subscriberId: string): Promise<AwaitRow[]
   const rows = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
+       AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
      ORDER BY created_at DESC
      LIMIT 100
@@ -834,6 +842,7 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<Await
   const rows = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND event_key LIKE ${prefix + '%'}
+       AND policy <> 'announce'
        AND fired_at IS NULL AND cancelled_at IS NULL
      ORDER BY created_at ASC
      LIMIT 200

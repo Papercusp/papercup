@@ -534,6 +534,28 @@ describe('await-event store (PG)', () => {
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'owner' })).toBe(true); // owner can
   });
 
+  it('never exposes or cancels an announcement through ordinary await ids', async () => {
+    const eventKey = 'gate:await-id-must-not-retire-announcement';
+    const announcement = await registerAnnouncement({
+      subscriberId: 'owner',
+      eventKey,
+      scopeKind: 'global',
+    });
+    const waiter = await registerAwait({ subscriberId: 'owner', eventKey });
+
+    // events:status consumes this read. A declaration must never appear in the
+    // list whose ids the tool teaches callers to pass to events:cancel.
+    expect((await listActiveAwaits('owner')).map((row) => row.id)).toEqual([waiter.id]);
+
+    // Both public self-cancel and internal by-id cancellation fail closed on
+    // policy=announce. Only retireAnnouncement may settle the declaration.
+    expect(await cancelAwait({ awaitId: announcement.id, subscriberId: 'owner', source: 'operator' })).toBe(false);
+    expect(await cancelAwaitsByIds([announcement.id])).toBe(0);
+    expect((await findAnnouncementsForKey(eventKey)).map((row) => row.id)).toEqual([announcement.id]);
+
+    expect(await cancelAwait({ awaitId: waiter.id, subscriberId: 'owner', source: 'operator' })).toBe(true);
+  });
+
   it('records explicit operator cancellation markers and clears them by exact subscriber/key', async () => {
     const key = 'fleet:context-critical:alpha';
     const operatorCancelled = await registerAwait({ subscriberId: 'leader', eventKey: key, once: false });
