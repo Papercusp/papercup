@@ -480,6 +480,28 @@ export async function rebindIdentity(
     r.moved = moved.length;
   });
 
+  // 7c. Actionable consult requester ownership — consult:close authorizes an
+  //     expired row's late disposition by comparing the caller directly with
+  //     consult_state.requester_id. Without this re-key, a successor that has
+  //     otherwise recovered every coordination surface is no longer the
+  //     requester and cannot record the terminal answer gathered before its
+  //     identity changed (EI-21457373491665728).
+  //
+  //     Open rows follow the live identity, as do expired rows because expiry
+  //     deliberately preserves one requester-only action: late close. Fully
+  //     dispositioned history stays attributed to the session that authored
+  //     it, matching held-items / held-work-items above and below. `closed_at`
+  //     is the future-proof open-state discriminator; the explicit expired
+  //     exception is the authorization seam this migration repairs.
+  await run('consult-requesters', async (r) => {
+    const moved = await sql<Array<{ conversation_id: string }>>`
+      UPDATE harness_shared.consult_state SET requester_id = ${t}
+       WHERE requester_id = ${f} AND (closed_at IS NULL OR state = 'expired')
+       RETURNING conversation_id
+    `;
+    r.moved = moved.length;
+  });
+
   // 8-9. Plan-item + work-item claims — owner is not part of either PK, so a
   //      straight re-key; lease expiry is time-based and unaffected.
   await run('plan-claims', async (r) => {

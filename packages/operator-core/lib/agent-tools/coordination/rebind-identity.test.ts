@@ -47,6 +47,8 @@ interface FakeOpts {
   awaits?: Array<{ id: number; workspace_id: string; event_key: string }>;
   /** Rewritten event keys that already have an identical active to-await. */
   awaitDupKeys?: string[];
+  /** Open + expired consult rows whose requester ownership follows the live id. */
+  consultRequesters?: number;
   planClaims?: number;
   workClaims?: number;
   wmDrop?: number;
@@ -124,6 +126,9 @@ function fakeSql(opts: FakeOpts = {}) {
     }
     if (text.includes('SELECT id FROM harness_shared.event_awaits')) {
       return Promise.resolve((opts.awaitDupKeys ?? []).includes(String(vals[2])) ? [{ id: 999 }] : []);
+    }
+    if (text.includes('UPDATE harness_shared.consult_state SET requester_id')) {
+      return Promise.resolve(rows(opts.consultRequesters, { conversation_id: 'consult-1' }));
     }
     if (text.includes('UPDATE harness_shared.plan_item_claims')) {
       return Promise.resolve(rows(opts.planClaims, { owner: TO }));
@@ -222,6 +227,7 @@ const BASE_SURFACES = [
   'claim-spec',
   'awaits',
   'interest-watches',
+  'consult-requesters',
   'plan-claims',
   'work-claims',
   'watermarks',
@@ -421,6 +427,22 @@ describe('standing awaits', () => {
     expect(cancel!.vals).toContain(1);
     const move = sql.calls.find((c) => c.text.includes('SET subscriber_id'));
     expect(move!.vals).toEqual([TO, 'work-item:done:WI-9', 2]);
+  });
+});
+
+describe('actionable consult requester ownership (EI-21457373491665728)', () => {
+  it('re-keys open and expired requesters so a successor can perform the requester-only late close', async () => {
+    const sql = fakeSql({ consultRequesters: 2 });
+    const res = await rebind(FROM, TO, sql);
+    expect(surfaceOf(res, 'consult-requesters')).toMatchObject({ moved: 2 });
+
+    const update = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.consult_state SET requester_id'));
+    expect(update).toBeTruthy();
+    expect(update!.vals).toEqual([TO, FROM]);
+    expect(update!.text).toContain("closed_at IS NULL OR state = 'expired'");
+    // Closed / declined history is intentionally not rewritten: unlike an
+    // expired row, it carries no requester-only action for the successor.
+    expect(update!.text).not.toContain("state = 'closed_answered'");
   });
 });
 
