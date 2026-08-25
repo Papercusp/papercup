@@ -47,6 +47,7 @@ import {
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostObservation,
   recordWorkspaceHostSignals,
+  type StoredWorkspaceHostDestroyTarget,
   updateWorkspaceHostLifecycleState,
   updateWorkspaceHostOperation,
   upsertWorkspaceHost,
@@ -205,6 +206,108 @@ function nonEmpty(value: string, label: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new WorkspaceHostProvisioningRequestError([`${label} must not be empty`]);
   return trimmed;
+}
+
+const SAFE_CANARY_ID = /^[a-z0-9_-]{1,63}$/;
+
+function isoTimestamp(value: string, label: string): string {
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis)) throw new WorkspaceHostProvisioningRequestError([`${label} must be an ISO timestamp`]);
+  return value;
+}
+
+function externalEvidenceRef(value: string, label: string): string {
+  const ref = nonEmpty(value, label);
+  if (ref.length > 2_000) {
+    throw new WorkspaceHostProvisioningRequestError([`${label} must be at most 2000 characters`]);
+  }
+  return ref;
+}
+
+function validateDestroyCanaryEvidence(
+  evidence: WorkspaceHostDestroyCanaryEvidence,
+  workspaceId: string,
+): void {
+  const problems: string[] = [];
+  if (!SAFE_CANARY_ID.test(evidence.runId)) {
+    problems.push('canary.runId must already be lowercase [a-z0-9_-] and at most 63 characters');
+  }
+  if (!SAFE_CANARY_ID.test(evidence.workspaceId)) {
+    problems.push('canary.workspaceId must already be lowercase [a-z0-9_-] and at most 63 characters');
+  }
+  if (evidence.workspaceId !== workspaceId) problems.push('canary.workspaceId must match the active workspace');
+  if (evidence.preRunZeroBaseline.cents !== 0) {
+    problems.push('canary.preRunZeroBaseline must establish an exact zero-cent baseline');
+  }
+  if (evidence.preRunZeroBaseline.reservationId) {
+    problems.push('canary.preRunZeroBaseline must be passive provider evidence, not a reservation settlement');
+  }
+  if (evidence.costEvidence.length === 0 && (evidence.lateObservedSpend?.length ?? 0) === 0) {
+    problems.push('canary requires at least one named cumulative or late-observed cost entry');
+  }
+  for (const [index, entry] of [
+    evidence.preRunZeroBaseline,
+    ...evidence.costEvidence,
+    ...(evidence.lateObservedSpend ?? []),
+  ].entries()) {
+    if (entry.reservationId) problems.push(`canary cost evidence[${index}] must be passive cumulative evidence`);
+  }
+  if (problems.length > 0) throw new WorkspaceHostProvisioningRequestError(problems);
+
+  externalEvidenceRef(evidence.budgetEvidenceRef, 'canary.budgetEvidenceRef');
+  externalEvidenceRef(evidence.preRunZeroBaseline.providerEvidenceRef, 'canary.preRunZeroBaseline.providerEvidenceRef');
+  isoTimestamp(evidence.preRunZeroBaseline.observedAt, 'canary.preRunZeroBaseline.observedAt');
+  isoTimestamp(evidence.teardownDeadlineAt, 'canary.teardownDeadlineAt');
+  assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.destroy.canary');
+}
+
+function assertDestroyCanaryLabels(
+  desired: WorkspaceHostDesiredSpec,
+  evidence: WorkspaceHostDestroyCanaryEvidence,
+): Readonly<Record<string, string>> {
+  const labels = desired.labels ?? {};
+  const required = {
+    [WORKSPACE_HOST_CANARY_TAG_KEYS.canary]: 'true',
+    [WORKSPACE_HOST_CANARY_TAG_KEYS.runId]: evidence.runId,
+    [WORKSPACE_HOST_CANARY_TAG_KEYS.workspaceId]: evidence.workspaceId,
+  } as const;
+  const problems = Object.entries(required)
+    .filter(([key, value]) => labels[key] !== value)
+    .map(([key, value]) => `stored desired.labels must contain '${key}=${value}'`);
+  if (problems.length > 0) throw new WorkspaceHostProvisioningRequestError(problems);
+  return required;
+}
+
+function destroyResourceForStep(
+  step: WorkspaceHostPlanStep,
+  resources: readonly WorkspaceHostResourceRef[],
+): WorkspaceHostResourceRef {
+  const providerId = typeof step.input.resourceName === 'string' ? step.input.resourceName : '';
+  const resource = resources.find(
+    (candidate) => candidate.kind === step.resourceKind && candidate.providerId === providerId,
+  );
+  if (!providerId || !resource) {
+    throw new WorkspaceHostProvisioningRequestError([
+      `destroy step '${step.id}' does not map to one registered provider resource`,
+    ]);
+  }
+  return resource;
+}
+
+interface WorkspaceHostInventoryProvider extends WorkspaceHostProvider {
+  inventoryManagedResources(request: GcpWorkspaceHostInventoryRequest): Promise<GcpWorkspaceHostInventorySnapshot>;
+}
+
+function inventoryProvider(provider: WorkspaceHostProvider): WorkspaceHostInventoryProvider {
+  if (
+    !('inventoryManagedResources' in provider) ||
+    typeof (provider as Partial<WorkspaceHostInventoryProvider>).inventoryManagedResources !== 'function'
+  ) {
+    throw new WorkspaceHostProvisioningConnectionError([
+      'provider does not expose controller-independent managed-resource inventory',
+    ]);
+  }
+  return provider as WorkspaceHostInventoryProvider;
 }
 
 function networkLabel(desired: WorkspaceHostDesiredSpec): string {
