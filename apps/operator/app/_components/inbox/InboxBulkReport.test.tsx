@@ -308,7 +308,10 @@ describe("<InboxBulkReport>", () => {
 
   it("keeps focus in the report when live props remove the active desk and then its row", () => {
     const onClose = vi.fn();
-    const report = (runItems: BulkRunItem[], attentionItems: AttentionItem[]) => (
+    const report = (
+      runItems: BulkRunItem[],
+      attentionItems: AttentionItem[],
+    ) => (
       <InboxBulkReport
         run={run}
         runItems={runItems}
