@@ -267,6 +267,39 @@ export async function ratifyReference(
   const rows = await port.listRevisions(scope);
   const previousActive = activeRevision(rows);
 
+  // ORDER MATTERS. The revision check runs BEFORE shape validation, because the
+  // two refusals ask the caller for different things: a conflict means "the
+  // world moved under you — re-read and retry", while a validation failure means
+  // "your submission is malformed — fix it and resubmit". Retrying a malformed
+  // submission is pointless, and re-reading is pointless for a malformed one, so
+  // handing back the wrong code sends the caller down the wrong path. Running
+  // validation first would report a duplicate revision as a shape error, which
+  // is precisely the case where a retry IS the right response.
+  //
+  // Monotonic against EVERY revision ever recorded, not just the active one.
+  // `validateRatification` compares against the active revision, which is the
+  // right check while one exists — but after a retraction there is no active
+  // revision, and without this a caller could re-ratify a number that has been
+  // used before. That is not merely untidy: evidence records the revision it
+  // was taken against, so reusing a number would make old evidence read as
+  // CURRENT for a different image. Reviving a retired revision number is the
+  // one way to make stale evidence look fresh, so it is refused outright.
+  const highest = highestRevision(rows);
+  if (rows.length > 0 && candidate.identity.revision <= highest) {
+    const collides = rows.some(
+      (r) => r.reference.identity.revision === candidate.identity.revision,
+    );
+    throw new ReferenceStoreError(
+      collides
+        ? `revision ${candidate.identity.revision} of '${scope.referenceId}' already exists ` +
+          `(the highest is ${highest}); re-read and submit the next revision`
+        : `revision ${candidate.identity.revision} of '${scope.referenceId}' is below the ` +
+          `highest ever recorded (${highest}); revision numbers are never reused, because ` +
+          `evidence is bound to a number and reusing one would make stale evidence read as current`,
+      'revision-conflict',
+    );
+  }
+
   const errors = validateRatification(candidate, previousActive?.reference);
   if (errors.length > 0) {
     throw new ReferenceStoreError(
@@ -280,17 +313,6 @@ export async function ratifyReference(
     throw new ReferenceStoreError(
       `a reference is ratified into the 'active' state, not '${candidate.state}'; supersede or retract an existing revision instead`,
       'validation-failed',
-    );
-  }
-
-  const existing = rows.find(
-    (r) => r.reference.identity.revision === candidate.identity.revision,
-  );
-  if (existing) {
-    throw new ReferenceStoreError(
-      `revision ${candidate.identity.revision} of '${scope.referenceId}' already exists ` +
-        `(the highest is ${highestRevision(rows)}); re-read and submit the next revision`,
-      'revision-conflict',
     );
   }
 
