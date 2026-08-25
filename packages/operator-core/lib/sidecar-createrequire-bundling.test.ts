@@ -124,6 +124,12 @@ function copiedPackages(script: string): Set<string> {
   return copied;
 }
 
+/** A copied package root satisfies every createRequire subpath in that package. */
+function packageRoot(spec: string): string {
+  if (!spec.startsWith('@')) return spec.split('/')[0] ?? spec;
+  return spec.split('/').slice(0, 2).join('/');
+}
+
 describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundling (EI-1589)', () => {
   const files = collectSourceFiles(LIB_DIR);
   const found = new Map<string, string[]>(); // spec -> source files
@@ -150,7 +156,7 @@ describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundli
     const copied = copiedPackages(script);
 
     const missing = [...found.entries()]
-      .filter(([spec]) => !copied.has(spec))
+      .filter(([spec]) => !copied.has(packageRoot(spec)))
       .map(([spec, where]) => `${spec} (loaded in ${where.join(', ')})`);
 
     expect(

@@ -27,6 +27,7 @@
  */
 import type {
   CouplingDerivationSources,
+  ObligationEdge,
   PlanBlockingEdge,
 } from '../../coord/coupling-derivation';
 import { fetchPresencePathInterests } from './presence-snapshot';
@@ -39,6 +40,36 @@ export const COUPLING_EXCHANGE_WINDOW_MS = 30 * 60 * 1000;
 
 /** Hard cap on the exchange scan — bounds a hot-path read on a busy workspace. */
 export const COUPLING_EXCHANGE_ROW_CAP = 300;
+
+/** Hard cap on the obligation scan. Far smaller than the exchange cap on purpose:
+ *  an agent's OPEN consults are a handful, not a stream — measured 2026-08-25 over
+ *  workspace papercusp-workspace, the whole table holds 159 consults and exactly 2
+ *  are open-with-responder-and-undischarged. A cap this size is headroom, not a clip. */
+export const COUPLING_OBLIGATION_ROW_CAP = 100;
+
+/**
+ * Post kinds that DISCHARGE a consult obligation.
+ *
+ * ⚠ THE OMISSIONS ARE THE DESIGN, and they are measured rather than guessed. The live
+ * `consult_post_meta.kind` vocabulary (workspace papercusp-workspace, 2026-08-25) is
+ * `answer` 49, `close` 39, `decline` 8, `new_fact` 6, `clarifying_question` 1. Only the
+ * first three end the debt:
+ *   · `new_fact` ADDS to a consult that is still owed an answer;
+ *   · `clarifying_question` is the responder asking the REQUESTER for more — the debt has
+ *     not been discharged, it has arguably reversed, and treating it as a discharge would
+ *     silently retire exactly the consults that are going badly.
+ * Both would read as progress while leaving the requester waiting, which is the failure
+ * this relation exists to make visible.
+ */
+export const CONSULT_DISCHARGING_POST_KINDS = ['answer', 'decline', 'close'] as const;
+
+/** Envelope shape this module reads out of `consult_state`. */
+interface ConsultObligationRow {
+  conversation_id: string | null;
+  requester_id: string | null;
+  responder_id: string | null;
+  created_at: string | Date | null;
+}
 
 /** Envelope shape this module reads out of the coord event log. */
 interface ExchangeRow {
@@ -143,6 +174,93 @@ export async function fetchPlanBlockingEdges(
 }
 
 /**
+ * OPEN consult obligations the caller is a party to (P-004).
+ *
+ * The pairwise edge is ALREADY stored — `consult_state` names a requester and a responder
+ * at ROUTING time — it simply never reached coupling. This is that read, and nothing more:
+ * no inference, no co-occupancy, no set membership.
+ *
+ * ⚠ FOUR INDEPENDENT EXCLUSIONS, EACH MEASURED AGAINST LIVE ROWS rather than reasoned
+ * about (workspace papercusp-workspace, 2026-08-25, n=159 consults):
+ *   · `closed_at IS NULL` — 110 rows are closed (closed_answered 57, expired 37,
+ *     closed_cant_help 12, declined 4). A closed consult owes nobody anything.
+ *   · `responder_id IS NOT NULL` — 45 rows are `no_qualified_responder`, the router
+ *     REFUSING honestly. There is no counterpart, so there is no pairwise edge to draw.
+ *     This is the population that produced the plan's retracted "93 of 113 dead
+ *     responders" figure (D-007); it must never surface as an obligation.
+ *   · no substantive post — the discharge half. This is not belt-and-braces: it currently
+ *     suppresses 2 `active` consults that already carry an `answer`/`close` post and would
+ *     otherwise emit a FALSE debt against an agent who already replied.
+ *   · `responder_id <> requester_id` — a self-consult is not a relation, matching
+ *     `normalizePair` and the derivation's own self-edge refusal.
+ * After all four, the live emitting population is 2 rows, both `awaiting_responder`.
+ *
+ * ⚠ CALLER-SCOPED like every other read here (D-044 / D-078 (c)): the `requester_id = self
+ * OR responder_id = self` predicate means an agent can only ever learn about consults it is
+ * ITSELF a party to. `deriveCouplings` then re-filters through the roster, so this cannot
+ * widen what a reader can see even if this predicate were wrong.
+ *
+ * Ordered oldest-first because the derivation PRESERVES source order for obligations (and
+ * P-008 renders that order) — the oldest unanswered debt is the one worth seeing first.
+ */
+export async function fetchConsultObligations(selfOwnerId: string): Promise<ObligationEdge[]> {
+  const self = selfOwnerId.trim();
+  if (!self || !coordHasPgFastPath()) return [];
+  try {
+    const sql = coordSql();
+    const rows = await sql<ConsultObligationRow[]>`
+      SELECT cs.conversation_id, cs.requester_id, cs.responder_id, cs.created_at
+        FROM harness_shared.consult_state cs
+       WHERE cs.workspace_id = ${coordWorkspaceId()}
+         AND cs.closed_at IS NULL
+         AND cs.responder_id IS NOT NULL
+         AND cs.responder_id <> cs.requester_id
+         AND (cs.requester_id = ${self} OR cs.responder_id = ${self})
+         AND NOT EXISTS (
+               SELECT 1
+                 FROM harness_shared.consult_post_meta pm
+                WHERE pm.workspace_id = cs.workspace_id
+                  AND pm.conversation_id = cs.conversation_id
+                  AND pm.kind = ANY(${CONSULT_DISCHARGING_POST_KINDS as unknown as string[]})
+             )
+       ORDER BY cs.created_at ASC
+       LIMIT ${COUPLING_OBLIGATION_ROW_CAP}
+    `;
+    const out: ObligationEdge[] = [];
+    for (const r of rows) {
+      const requester = (r.requester_id ?? '').trim();
+      const responder = (r.responder_id ?? '').trim();
+      const handle = (r.conversation_id ?? '').trim();
+      // `since` is REQUIRED for a renderable obligation — `obligationPhrase` refuses an
+      // edge whose age it cannot state, so a row with no created_at is dropped HERE
+      // rather than shipped downstream to be silently skipped.
+      const since =
+        r.created_at instanceof Date
+          ? r.created_at.toISOString()
+          : typeof r.created_at === 'string'
+            ? r.created_at
+            : '';
+      if (!requester || !responder || !handle || !since) continue;
+      const iAmRequester = requester === self;
+      const counterpart = iAmRequester ? responder : requester;
+      if (counterpart === self) continue;
+      out.push({
+        ownerId: counterpart,
+        // The requester is OWED the reply; the responder OWES it. Direction is read off
+        // which side of the stored pair the caller sits on — never inferred from state.
+        direction: iAmRequester ? 'owes-me' : 'i-owe',
+        what: 'a consult reply',
+        since,
+        handle,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Which `coord:presence` reads need the lock COORDINATION DOMAIN resolved.
  *
  * ⚠ THIS PREDICATE IS THE FIX FOR A SIGNAL THAT NEVER FIRED ONCE IN PRODUCTION.
@@ -219,5 +337,12 @@ export function couplingSourcesFor(opts: {
         workspaceId: opts.workspaceId,
       }),
     recentPartners: () => fetchRecentCoordPartners(opts.selfOwnerId),
+    // P-004. Wired here rather than at each call site so all three readers
+    // (coord:presence, coupled-topics, the divergence stamp) get it at once — the
+    // per-site wiring is exactly how `holds-a-lock-on` stayed dark for 12 days (D-088).
+    // Always supplied, never conditional: the census reads `armed: !!sources.obligations`,
+    // so an omitted source would report the leg STARVED rather than absent, and a
+    // genuinely empty obligation list would be indistinguishable from an unwired one.
+    obligations: () => fetchConsultObligations(opts.selfOwnerId),
   };
 }
