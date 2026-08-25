@@ -54,7 +54,7 @@ import {
   type CarryArgRepair,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
-import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopStatus, type LoopStatus } from '../../harness/routines/loop';
 import { getSessionBrief } from '../../session-brief';
 import { HARVESTED_FIRST_LINE_RULE } from '../../harness/improvements/observation-title-guidance';
 import { modeImpliesAutonomy } from '../../modes/registry';
@@ -79,6 +79,53 @@ import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
 export const CONTINUATION_READ_BUDGET_MS = 5_000;
+
+/**
+ * Can the CURRENT loop row actually deliver one more wake if this turn settles now?
+ *
+ * `active` alone is insufficient. The dead-man guard runs immediately before delivery
+ * and deliberately withholds the next wake once either arm-relative bound is exhausted.
+ * Reporting `rewakeGuaranteed:true` from a merely-active row in that state gives an AUTO
+ * session the exact false reassurance the continuation gate exists to prevent: it ends
+ * its last turn, the guard disarms the loop, and no next turn arrives.
+ *
+ * Mirror the guard's comparisons:
+ *   - `firesSinceArm >= maxFires` withholds the next fire;
+ *   - `nextAttemptAt - armedAt > maxDurationSec` withholds the next fire.
+ *
+ * A parked loop has no concrete `nextFireAt`; if this turn settled now, reconciliation
+ * would schedule it one interval from now, so that is the earliest candidate attempt.
+ * Missing arm-time evidence under a configured duration bound cannot support a guarantee
+ * (the fire path falls back to `created_at`, which this status shape intentionally does not
+ * expose), so fail closed rather than inventing headroom.
+ */
+export function loopGuaranteesNextWake(
+  loop: Pick<
+    LoopStatus,
+    'active' | 'armedAt' | 'firesSinceArm' | 'intervalSec' | 'maxDurationSec' | 'maxFires' | 'nextFireAt'
+  > | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!loop?.active) return false;
+
+  if (loop.maxFires != null && loop.maxFires > 0 && loop.firesSinceArm >= loop.maxFires) {
+    return false;
+  }
+
+  if (loop.maxDurationSec != null && loop.maxDurationSec > 0) {
+    const armedAtMs = loop.armedAt == null ? Number.NaN : Date.parse(loop.armedAt);
+    if (!Number.isFinite(armedAtMs)) return false;
+
+    const scheduledAtMs = loop.nextFireAt == null ? Number.NaN : Date.parse(loop.nextFireAt);
+    if (!Number.isFinite(scheduledAtMs) && loop.intervalSec == null) return false;
+    const nextAttemptAtMs = Number.isFinite(scheduledAtMs)
+      ? Math.max(nowMs, scheduledAtMs)
+      : nowMs + Math.max(0, loop.intervalSec!) * 1_000;
+    if (nextAttemptAtMs - armedAtMs > loop.maxDurationSec * 1_000) return false;
+  }
+
+  return true;
+}
 
 /** P-013 — the optional stable row identity, shared by the walls and checks schemas
  *  (their contract is deliberately identical) AND by work_items:checkpoint's checks
@@ -988,15 +1035,16 @@ export default defineTool({
             workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([]),
           ]);
           const currentTurn = await resolveCurrentTurnStamp(ownerId).catch(() => null);
+          const loopRewakeGuaranteed = loopGuaranteesNextWake(loop);
           rewakeGuaranteed = isRewakeGuaranteed({
             autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
             machineTurn: currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface',
-            loopActive: Boolean(loop?.active),
+            loopActive: loopRewakeGuaranteed,
             activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
           });
           // A loop can guarantee another turn without guaranteeing a fresh
           // context. Only cold carry sheds the transcript on settle.
-          nextWakeFresh = loop?.active ? loop.carry === 'cold' : null;
+          nextWakeFresh = loopRewakeGuaranteed ? loop?.carry === 'cold' : null;
         } catch {
           rewakeGuaranteed = null;
           nextWakeFresh = null;
