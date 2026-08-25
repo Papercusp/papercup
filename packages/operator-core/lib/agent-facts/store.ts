@@ -1381,7 +1381,12 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // store callers from committing a fact before learning that its cap cost is
   // unacceptable. `previewFactCapImpact` remains the explicit dry-run surface
   // and typed exempt slots bypass this guard because they take no cap seat.
-  if (capPartition === 'ordinary') {
+  // Keep malformed direct callers on the database's attributable NOT NULL
+  // path. `createdBy` is required by the type contract, but older direct
+  // callers can omit it; binding `undefined` in this diagnostic query would
+  // mask the real `created_by` error before the INSERT gets a chance to report
+  // it (EI-19952118814692217).
+  if (capPartition === 'ordinary' && input.createdBy != null) {
     const protectedVictim = await findCrossAuthorVerifiedCapVictim(input, sql, cap);
     if (protectedVictim) {
       throw new InvalidInputError(

@@ -1268,20 +1268,23 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // short-lived facts; it is not immortality, and should not be sold as it.
     expect(urgent.survival!.rank).toBeLessThan(urgent.survival!.liveCount);
 
-    // …and it survives the NEXT writer, which is what actually killed the real
-    // one. WI-7292 only ever exempted a row from its OWN assert.
-    const later = await assertFact(
-      {
-        ...base,
-        createdBy: 'su-other-writer',
-        key: 'a-later-write',
-        body: 'by someone else entirely',
-        confidence: 'verified',
-        ttlSec: 30 * 86400,
-      },
-      db.sql,
-    );
-    expect(later.evicted?.map((e) => e.key)).not.toContain('urgent-48h');
+    // A cross-author next writer is now refused before it can destroy a
+    // verified incumbent. The dedicated EI-21442182972969040 regression
+    // proves the refusal is atomic; this ranking test only needs to pin that
+    // the urgent fact remains live after the attempted follow-up write.
+    await expect(
+      assertFact(
+        {
+          ...base,
+          createdBy: 'su-other-writer',
+          key: 'a-later-write',
+          body: 'by someone else entirely',
+          confidence: 'verified',
+          ttlSec: 30 * 86400,
+        },
+        db.sql,
+      ),
+    ).rejects.toThrow(/REFUSED before write:.*another author's verified fact/i);
 
     const stillLive = await foldFacts(
       [{ scope: 'owner', scopeRef }],
