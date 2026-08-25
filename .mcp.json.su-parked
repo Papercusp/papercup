@@ -2,7 +2,7 @@
   "mcpServers": {
     "papercusp": {
       "type": "http",
-      "url": "http://localhost:3170/api/mcp?harness=papercusp&workspace=papercusp-workspace&role=judge&run=1787599295-judge&spawn=3e979966-cdc8-4fa6-918a-f5d44a12b80e&client=role-a65a0bcd-0fe0-4124-8c31-ceff5eeb56ea&exp=0&sig=djlx-mTIq37GeyUwZsm9VH3_jvdJ8Zl6Neku5tZ912c"
+      "url": "http://127.0.0.1:9071/api/mcp?harness=papercusp&workspace=papercusp-workspace&role=judge&run=1787617731-judge&spawn=8260a9c4-e8a3-4023-aa3f-59883571157a&client=role-07a3f7c8-6e60-446d-a734-8a65281dc9b8&exp=0&sig=2SPTO1jX69BKWtXrUKt4MkLR7bhwDU6TygzJqAoZMd8"
     }
   }
 }
