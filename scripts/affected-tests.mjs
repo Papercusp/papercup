@@ -17,6 +17,7 @@
 //   --print-affected                  print `AFFECTED_WS\t<name>` and matching
 //                                      `AFFECTED_GUARD\t<workspace>\t<script>` lines, then exit
 //   --changed-paths a/b.ts,c/d.mjs    derive the affected set from these paths instead of a git diff
+//   --changed-paths=a/b.ts,c/d.mjs    equivalent `--flag=value` spelling
 //
 //   Together they answer "which suites would a change to THESE files run?" —
 //     node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs --print-affected
@@ -453,14 +454,10 @@ const TASK_DURATION_HISTORY_PATH =
   join(tmpdir(), "papercusp-affected-task-durations-v1.json");
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const args = process.argv.slice(2);
-const arg = (k, d) => {
-  const i = args.indexOf(k);
-  return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--")
-    ? args[i + 1]
-    : d;
-};
-const has = (k) => args.includes(k);
+// Accept the conventional `--flag=value` spelling for value-taking flags before
+// the small parser below examines argv. Keeping one canonical [flag, value]
+// representation means equals-form callers get the same positional-argument
+// safety checks and changed-path cardinality reporting as space-form callers.
 const VALUE_FLAGS = new Set([
   "--base",
   "--range-from",
@@ -468,6 +465,20 @@ const VALUE_FLAGS = new Set([
   "--changed-paths",
   "--exclude",
 ]);
+const args = process.argv.slice(2).flatMap((token) => {
+  const equals = token.indexOf("=");
+  const flag = equals > 0 ? token.slice(0, equals) : token;
+  return equals > 0 && VALUE_FLAGS.has(flag)
+    ? [flag, token.slice(equals + 1)]
+    : [token];
+});
+const arg = (k, d) => {
+  const i = args.indexOf(k);
+  return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--")
+    ? args[i + 1]
+    : d;
+};
+const has = (k) => args.includes(k);
 
 // This CLI has no positional-argument mode. Walk the argv tokens while skipping
 // values belonging to the flags that accept them, so a second path after
@@ -643,7 +654,7 @@ if (positionalArgs.length > 0) {
   if (allLookLikeTests) printExactFileRecovery(positionalArgs);
   else
     errSync(
-      "This command accepts flags only; pass --changed-paths as one comma-delimited value rather than separate positional paths.",
+      "This command accepts flags only; pass --changed-paths as one comma-delimited value (for example, --changed-paths path/to/a.ts,path/to/b.ts or --changed-paths=path/to/a.ts,path/to/b.ts) rather than separate positional paths.",
     );
   process.exit(1);
 }
