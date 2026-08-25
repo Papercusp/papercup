@@ -106,6 +106,49 @@ function extractCapabilityAllows(capJson: string): string[] {
   return cap.permissions.filter((p) => p.startsWith('allow-'));
 }
 
+/**
+ * WI-2143 / EI-160: `ensure_sidecar_placeholder` must validate EVERY sidecar
+ * resource glob INDEPENDENTLY. A partially materialized sidecar (serve.mjs
+ * present, db-sql absent) must not take the early return, or `tauri_build`
+ * panics on the unmatched `sidecar/db-sql/*` glob.
+ *
+ * Deliberately shape-agnostic about WHICH resources exist: the resource set is
+ * derived from the helper's own placeholder writes, so a newly added resource
+ * is held to the same rule automatically. Pinning the literal conjunction text
+ * instead is what made this guard go red on a legitimate refactor that added a
+ * third resource while the db-sql protection was fully intact (WI-41672).
+ *
+ * Returns the violations found; an empty array means the rule holds.
+ */
+function auditSidecarPlaceholder(helper: string): string[] {
+  const violations: string[] = [];
+  if (!helper.includes('has_db_sql_entry')) {
+    return ['db-sql is not checked at all'];
+  }
+  const earlyReturn = helper.match(/if ([^{]*?)\{\s*return;/);
+  if (!earlyReturn) return ['no early-return guard found'];
+
+  const condition = earlyReturn[1];
+  if (condition.includes('||')) {
+    violations.push(
+      'early-return condition is a disjunction — one present resource can excuse an absent one',
+    );
+  }
+  const conjuncts = condition.split('&&').map((c) => c.trim());
+  const placeholderFlags = [...helper.matchAll(/if !(\w+)\s*\{/g)].map((m) => m[1]);
+  if (!placeholderFlags.includes('has_db_sql_entry')) {
+    violations.push('no db-sql placeholder is written');
+  }
+  for (const flag of placeholderFlags) {
+    if (!conjuncts.includes(flag)) {
+      violations.push(
+        `writes a placeholder for ${flag}, but the early return does not check it — a partial sidecar would skip it`,
+      );
+    }
+  }
+  return violations;
+}
+
 const present = existsSync(MAIN_RS) && existsSync(BUILD_RS) && existsSync(CAP_JSON);
 if (!present) {
   // Loud, not silent (repo convention): a checkout without the desktop
@@ -157,40 +200,66 @@ describe('desktop ACL command sync (WI-2143 guard)', () => {
   maybe('clean-checkout guard validates the db-sql resource independently of serve.mjs', () => {
     const buildRs = readFileSync(BUILD_RS, 'utf8');
     const helper = buildRs.match(/fn ensure_sidecar_placeholder[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(helper).toContain('has_db_sql_entry');
-
-    // The invariant is that the early return is gated on an AND-conjunction
-    // INCLUDING the independently-computed db-sql check — not on any one
-    // literal spelling of that conjunction. Asserting the exact two-resource
-    // text pinned this guard to a snapshot of the resource list and went red
-    // when `spa` was legitimately added as a third (WI-41672), even though the
-    // db-sql protection was fully intact.
-    const earlyReturn = helper.match(/if ([^{]*?)\{\s*return;/);
-    expect(earlyReturn, 'no early-return guard found in ensure_sidecar_placeholder').not.toBeNull();
-    const condition = earlyReturn![1];
-    // A disjunction would let a present serve.mjs excuse an absent db-sql —
-    // the exact WI-2143 shape — so the conjunction must stay an AND-chain.
-    expect(condition, 'early-return condition must be an AND-chain, not a disjunction').not.toContain('||');
-    const conjuncts = condition.split('&&').map((c) => c.trim());
-    expect(conjuncts).toContain('has_db_sql_entry');
-
-    // Derive the resource set from the placeholder writes themselves, so a
-    // NEWLY added resource is automatically held to "validate every resource
-    // glob independently" instead of quietly escaping this guard.
-    const placeholderFlags = [...helper.matchAll(/if !(\w+)\s*\{/g)].map((m) => m[1]);
-    expect(placeholderFlags).toContain('has_db_sql_entry');
-    for (const flag of placeholderFlags) {
-      expect(
-        conjuncts,
-        `ensure_sidecar_placeholder writes a placeholder for ${flag}, but the early return does not check it — a partial sidecar would skip it`,
-      ).toContain(flag);
-    }
+    expect(helper, 'ensure_sidecar_placeholder not found in build.rs').not.toBe('');
+    expect(auditSidecarPlaceholder(helper)).toEqual([]);
 
     // Regression shape from the release gate: a partial sidecar retained
     // serve.mjs but omitted db-sql, and this shortcut skipped its placeholder.
     expect(helper).not.toMatch(/if sidecar\.join\("serve\.mjs"\)\.exists\(\)\s*\{\s*return;/);
     expect(buildRs).toContain('std::env::var_os("CARGO_MANIFEST_DIR")');
     expect(buildRs).not.toContain('env!("CARGO_MANIFEST_DIR")');
+  });
+
+  // Permanent falsifiability controls for the audit above. WI-41672 widened
+  // that assertion from a literal conjunction match to a structural rule; these
+  // synthetic sources prove the widening did not neuter it. Not `maybe` — they
+  // need no submodule, so they gate even on a checkout without papercusp-desktop.
+  it('WI-41672 control: the db-sql audit still catches every regression shape it exists to catch', () => {
+    const good = [
+      'fn ensure_sidecar_placeholder(manifest_dir: &Path) {',
+      '    if has_serve && has_db_sql_entry && has_spa_entry {',
+      '        return;',
+      '    }',
+      '    if !has_serve {',
+      '        write_placeholder();',
+      '    }',
+      '    if !has_db_sql_entry {',
+      '        write_placeholder();',
+      '    }',
+      '    if !has_spa_entry {',
+      '        write_placeholder();',
+      '    }',
+      '}',
+    ].join('\n');
+
+    // Calibration: the current, CORRECT three-resource shape must pass, or the
+    // controls below would "catch" everything and prove nothing.
+    expect(auditSidecarPlaceholder(good)).toEqual([]);
+
+    // WI-2143 itself: serve.mjs alone takes the early return, so a sidecar with
+    // no db-sql skips its placeholder and tauri_build panics on the glob.
+    const serveOnly = good.replace(
+      'if has_serve && has_db_sql_entry && has_spa_entry {',
+      'if has_serve {',
+    );
+    expect(auditSidecarPlaceholder(serveOnly).join(' ')).toContain('has_db_sql_entry');
+
+    // A disjunction lets one present resource excuse an absent one.
+    const disjunction = good.replace(
+      'has_serve && has_db_sql_entry',
+      'has_serve || has_db_sql_entry',
+    );
+    expect(auditSidecarPlaceholder(disjunction).join(' ')).toContain('disjunction');
+
+    // A newly added resource that gets a placeholder but escapes the early
+    // return — the drift this guard is derived-from-source specifically to catch.
+    const uncheckedNewResource = good.replace('if !has_spa_entry {', 'if !has_seed_entry {');
+    expect(auditSidecarPlaceholder(uncheckedNewResource).join(' ')).toContain('has_seed_entry');
+
+    // db-sql dropped from the helper entirely.
+    expect(auditSidecarPlaceholder('fn ensure_sidecar_placeholder() { return; }')).toEqual([
+      'db-sql is not checked at all',
+    ]);
   });
 
   maybe(
