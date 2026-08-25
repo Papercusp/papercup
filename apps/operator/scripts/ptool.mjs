@@ -70,7 +70,15 @@ import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
-/** @typedef {{name: string, description?: string, inputSchema?: Record<string, unknown>}} ToolCatalogEntry */
+/**
+ * @typedef {{
+ *   name: string,
+ *   description?: string,
+ *   inputSchema?: Record<string, unknown>,
+ *   outputSchema?: Record<string, unknown>,
+ *   annotations?: {readOnlyHint?: boolean},
+ * }} ToolCatalogEntry
+ */
 
 // env → ~/.papercusp/operator.json (packaged installs run the operator on a
 // per-boot dynamic port; :3070 is dev-box-only) → dev fallback.
@@ -479,6 +487,21 @@ export function mergeDispatchProjection(args, projection) {
   }
   const base = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   return { ...base, projection };
+}
+
+/**
+ * A replay is safe only when the server explicitly marks the listed tool as
+ * read-only.  Do not infer this from a familiar name or from the call's
+ * arguments: a tool may read and write state even when its name sounds like a
+ * query.  The MCP ToolAnnotations field is advisory for clients, but it is the
+ * narrow capability signal ptool needs before reconnecting after an ambiguous
+ * post-connect transport failure.
+ *
+ * @param {ToolCatalogEntry | null | undefined} tool
+ * @returns {boolean}
+ */
+export function isReadOnlyTool(tool) {
+  return tool?.annotations?.readOnlyHint === true;
 }
 
 /* ─── result formatting (pure — exported for tests) ───────────────────── */
@@ -1244,6 +1267,11 @@ export function formatOperatorConnectFailure(operatorUrl, error) {
  * immediate retry can overlap the original handler before its receipt exists.
  */
 export const PTOOL_POST_CONNECT_RETRIES = 0;
+// Read-only calls can be replayed once after reconnecting: unlike a mutation,
+// a second execution cannot duplicate a state change. Keep this separate from
+// PTOOL_POST_CONNECT_RETRIES so callers cannot accidentally opt mutations back
+// into automatic replay by increasing a generic retry budget.
+export const PTOOL_READ_ONLY_POST_CONNECT_RETRIES = 1;
 
 async function closeClientQuietly(client) {
   try {
@@ -1263,20 +1291,27 @@ async function closeClientQuietly(client) {
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, readOnly?: boolean}} [options]
  */
 export async function callToolWithReplayRecovery(
   client,
   params,
   {
     reconnect,
-    maxAttempts = PTOOL_POST_CONNECT_RETRIES,
+    // Use the read-only ceiling as the request budget default; mutations are
+    // still clamped to PTOOL_POST_CONNECT_RETRIES below, so this cannot opt
+    // them back into automatic replay.
+    maxAttempts = PTOOL_READ_ONLY_POST_CONNECT_RETRIES,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
+    readOnly = false,
   } = {},
 ) {
   let activeClient = client;
   let retriesUsed = 0;
-  const retryBudget = Math.min(maxAttempts, PTOOL_POST_CONNECT_RETRIES);
+  const retryBudget = Math.min(
+    maxAttempts,
+    readOnly ? PTOOL_READ_ONLY_POST_CONNECT_RETRIES : PTOOL_POST_CONNECT_RETRIES,
+  );
   while (true) {
     try {
       const result = await callToolWithPressureRetry(activeClient, params, { timeoutMs });
@@ -1855,6 +1890,7 @@ async function main() {
         {
           timeoutMs: timeoutForTool(toolName, callArgs),
           reconnect: () => connectOperator(),
+          readOnly: isReadOnlyTool(tool),
         },
       );
       client = recovered.client;
