@@ -85,14 +85,14 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
     })).not.toThrow();
   });
 
-  it('passes workspace scope through both release-authority reads and admits only when clear', async () => {
+  it('anchors both release-authority reads to the operator-home workspace, not the snapshot workspace', async () => {
     const host = await configuredHost();
 
-    await expect(host.readIntervalSnapshotAdmission('workspace-a')).resolves.toEqual({
+    await expect(host.readIntervalSnapshotAdmission('shared-hive-test-aviynw')).resolves.toEqual({
       status: 'admit',
     });
-    expect(h.readQualificationAdmission).toHaveBeenCalledWith({ workspaceId: 'workspace-a' });
-    expect(h.readCheckpointSerializerAuthority).toHaveBeenCalledWith({ workspaceId: 'workspace-a' });
+    expect(h.readQualificationAdmission).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
+    expect(h.readCheckpointSerializerAuthority).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
   });
 
   it('defers an interval snapshot under a qualification hold', async () => {
@@ -133,10 +133,11 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
     });
     const host = await configuredHost();
 
-    await expect(host.readIntervalSnapshotAdmission('workspace-a')).resolves.toEqual({
+    await expect(host.readIntervalSnapshotAdmission('shared-hive-test-aviynw')).resolves.toEqual({
       status: 'defer',
       reason: 'checkpoint-serializer-held',
       evidence: { itemId: 'WI-40086', ownerId: 'su-owner' },
     });
+    expect(h.readCheckpointSerializerAuthority).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
   });
 });

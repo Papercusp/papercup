@@ -13,7 +13,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { workspacesRoot } from '../workspace-registry';
+import { activeWorkspaceId, workspacesRoot } from '../workspace-registry';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { shouldRun } from '../search/battery-policy';
 import { configureBackup } from '@papercusp/backup';
@@ -43,14 +43,20 @@ configureBackup({
   // every host seam on this object stays lazy so no partial mock of a source
   // module can throw while this side-effect import is being evaluated.
   getHarnessAdminUrl: () => getHarnessAdminUrlWithSource(),
-  // Interval-only release rendezvous. Both reads are fresh and workspace
-  // scoped; unknown/unreadable authority defers this tick rather than opening a
-  // reader in the exact qualification window. Manual and pre-destructive
-  // snapshots bypass this host seam in @papercusp/backup.
-  readIntervalSnapshotAdmission: async (workspaceId) => {
+  // Interval-only release rendezvous. Every workspace pre-snapshot hook dumps
+  // the SAME operator Postgres database, so its AccessShareLocks share one
+  // lock domain even when the snapshot's filesystem workspace differs. Anchor
+  // both release-authority reads to the operator-home workspace that owns the
+  // checkpoint routine/serializer; using the snapshot workspace here lets a
+  // sibling workspace's dump bypass the hold and re-enter the qualification
+  // window. Reads remain fresh, and unknown/unreadable authority fails closed
+  // for this tick. Manual and pre-destructive snapshots still bypass this host
+  // seam in @papercusp/backup.
+  readIntervalSnapshotAdmission: async (_snapshotWorkspaceId) => {
+    const releaseWorkspaceId = activeWorkspaceId();
     const [qualification, serializer] = await Promise.all([
-      readQualificationAdmission({ workspaceId }),
-      readCheckpointSerializerAuthority({ workspaceId }),
+      readQualificationAdmission({ workspaceId: releaseWorkspaceId }),
+      readCheckpointSerializerAuthority({ workspaceId: releaseWorkspaceId }),
     ]);
     if (qualification.status === 'unknown') {
       return {
