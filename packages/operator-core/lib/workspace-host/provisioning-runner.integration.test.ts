@@ -11,7 +11,9 @@ import type {
   WorkspaceHostPlanStep,
   WorkspaceHostProvider,
   WorkspaceHostProviderConnection,
+  WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
+import { WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION } from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ appSql: null as any }));
@@ -26,10 +28,11 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
-const { runWorkspaceHostProvisioning } = await import('./provisioning-runner');
+const { runWorkspaceHostDestroy, runWorkspaceHostProvisioning } = await import('./provisioning-runner');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 let sequence = 0;
+const NOW = '2026-08-25T00:10:00.000Z';
 const freshWorkspace = () => `wh_provision_ws_${++sequence}_${randomBytes(2).toString('hex')}`;
 
 const connection: WorkspaceHostProviderConnection = {
@@ -97,6 +100,98 @@ function providerHarness(steps: readonly WorkspaceHostPlanStep[], operationId: s
     })),
   } as unknown as WorkspaceHostProvider;
   return { provider, apply, reconcile };
+}
+
+function destroyProviderHarness(operationId: string, hostId: string, resources: readonly WorkspaceHostResourceRef[]) {
+  const ordered = ['vm', 'disk', 'firewall', 'nat', 'router', 'subnetwork', 'network'];
+  const destroySteps = ordered.map((kind, index): WorkspaceHostPlanStep => {
+    const resource = resources.find((entry) => entry.kind === kind)!;
+    const priorKind = ordered[index - 1];
+    const prior = priorKind ? resources.find((entry) => entry.kind === priorKind)! : undefined;
+    return {
+      id: `delete-${kind}-${resource.providerId}`,
+      action: 'destroy',
+      resourceKind: resource.kind,
+      dependsOn: prior ? [`delete-${prior.kind}-${prior.providerId}`] : [],
+      idempotencyKey: `destroy:${kind}`,
+      destructive: true,
+      input: { op: `delete-${kind}`, resourceName: resource.providerId },
+    };
+  });
+  const provider = {
+    target: 'gcp',
+    capabilities: {},
+    validateConnection: vi.fn(async () => ({ ok: true, checkedAt: NOW, warnings: [], errors: [] })),
+    plan: vi.fn(async () => ({
+      planId: `plan:${operationId}`,
+      operationId,
+      target: 'gcp' as const,
+      hostId,
+      generatedAt: NOW,
+      steps: destroySteps,
+      warnings: [],
+    })),
+    apply: vi.fn<WorkspaceHostProvider['apply']>(async (request) => ({
+      operationId,
+      stepId: request.step.id,
+      state: 'destroyed' as const,
+      observedAt: NOW,
+      confirmation: {
+        hostId,
+        providerResourceId: String(request.step.input.resourceName),
+        confirmedAbsentAt: NOW,
+        source: 'provider-read' as const,
+      },
+    })),
+    reconcile: vi.fn<WorkspaceHostProvider['reconcile']>(),
+    observe: vi.fn<WorkspaceHostProvider['observe']>(),
+    inventoryManagedResources: vi.fn(async () => ({
+      complete: true as const,
+      observed: [],
+      inventoryEvidence: [
+        { kind: 'vm' as const, strategy: 'managed-labels' as const, providerEvidenceRef: 'gcp://inventory/vm' },
+        { kind: 'disk' as const, strategy: 'managed-labels' as const, providerEvidenceRef: 'gcp://inventory/disk' },
+        {
+          kind: 'firewall' as const,
+          strategy: 'deterministic-name' as const,
+          providerEvidenceRef: 'gcp://inventory/firewall',
+          deterministicNames: ['pc-host-iap'],
+        },
+        {
+          kind: 'subnetwork' as const,
+          strategy: 'deterministic-name' as const,
+          providerEvidenceRef: 'gcp://inventory/subnetwork',
+          deterministicNames: ['pc-host-subnet'],
+        },
+        {
+          kind: 'network' as const,
+          strategy: 'deterministic-name' as const,
+          providerEvidenceRef: 'gcp://inventory/network',
+          deterministicNames: ['pc-host-net'],
+        },
+        {
+          kind: 'snapshot' as const,
+          strategy: 'managed-labels' as const,
+          providerEvidenceRef: 'gcp://inventory/snapshot',
+        },
+        {
+          kind: 'router' as const,
+          strategy: 'deterministic-name' as const,
+          providerEvidenceRef: 'gcp://inventory/router',
+          deterministicNames: ['pc-host-router'],
+        },
+        {
+          kind: 'nat' as const,
+          strategy: 'deterministic-name' as const,
+          providerEvidenceRef: 'gcp://inventory/nat',
+          deterministicNames: ['pc-host-nat'],
+        },
+      ],
+    })),
+  } as unknown as WorkspaceHostProvider & {
+    inventoryManagedResources: () => Promise<unknown>;
+  };
+  return provider;
 }
 
 describe('workspace-host provisioning runner (real PG + real RLS)', () => {
@@ -255,6 +350,150 @@ describe('workspace-host provisioning runner (real PG + real RLS)', () => {
     expect(resumed.reconcile.mock.calls[0]?.[0]).toMatchObject({
       reason: 'resume',
       previousProviderRequestId: 'provider-operation-1',
+    });
+  });
+
+  it('persists a complete discard graph and terminal evidence before marking the host absent', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = `host_${randomBytes(3).toString('hex')}`;
+    const provisionOperationId = `provision_${randomBytes(3).toString('hex')}`;
+    const destroyOperationId = `destroy_${randomBytes(3).toString('hex')}`;
+    const runId = `canary_${randomBytes(3).toString('hex')}`;
+    const canaryDesired = {
+      ...desired(hostId),
+      labels: {
+        papercusp_canary: 'true',
+        papercusp_run_id: runId,
+        papercusp_workspace_id: workspaceId,
+      },
+    };
+    const graph: readonly WorkspaceHostResourceRef[] = [
+      { target: 'gcp', kind: 'vm', providerId: 'pc-host-vm', parentProviderId: 'project-1', zone: canaryDesired.zone },
+      {
+        target: 'gcp',
+        kind: 'disk',
+        providerId: 'pc-host-data',
+        parentProviderId: 'project-1',
+        zone: canaryDesired.zone,
+      },
+      { target: 'gcp', kind: 'firewall', providerId: 'pc-host-iap', parentProviderId: 'project-1' },
+      {
+        target: 'gcp',
+        kind: 'nat',
+        providerId: 'pc-host-nat',
+        parentProviderId: 'project-1',
+        region: canaryDesired.region,
+      },
+      {
+        target: 'gcp',
+        kind: 'router',
+        providerId: 'pc-host-router',
+        parentProviderId: 'project-1',
+        region: canaryDesired.region,
+      },
+      {
+        target: 'gcp',
+        kind: 'subnetwork',
+        providerId: 'pc-host-subnet',
+        parentProviderId: 'project-1',
+        region: canaryDesired.region,
+      },
+      { target: 'gcp', kind: 'network', providerId: 'pc-host-net', parentProviderId: 'project-1' },
+    ];
+
+    await db.adminSql`
+      INSERT INTO harness_shared.workspace_hosts (
+        workspace_id, id, name, connection_id, target, scope_label, region, size,
+        image, disk_gib, network, desired_state, observed_state, desired_spec
+      ) VALUES (
+        ${workspaceId}, ${hostId}, 'Canary host', ${connectionId}, 'gcp', 'project-1',
+        ${canaryDesired.region}, ${canaryDesired.size}, ${canaryDesired.image.id},
+        ${canaryDesired.data.volumeGiB}, 'pc-host-net', 'running', 'running',
+        ${JSON.stringify(canaryDesired)}::jsonb
+      )
+    `;
+    await db.adminSql`
+      INSERT INTO harness_shared.workspace_host_operations (
+        workspace_id, id, host_id, action, status, percent, message
+      ) VALUES (${workspaceId}, ${provisionOperationId}, ${hostId}, 'provision', 'succeeded', 100, 'seeded')
+    `;
+    for (const [index, resource] of graph.entries()) {
+      await db.adminSql`
+        INSERT INTO harness_shared.workspace_host_resources (
+          workspace_id, host_id, logical_key, operation_id, state, attempts,
+          target, kind, provider_id, parent_provider_id, region, zone
+        ) VALUES (
+          ${workspaceId}, ${hostId}, ${`create-${index}-${resource.kind}`}, ${provisionOperationId},
+          'applied', 1, ${resource.target}, ${resource.kind}, ${resource.providerId},
+          ${resource.parentProviderId ?? null}, ${resource.region ?? null}, ${resource.zone ?? null}
+        )
+      `;
+    }
+
+    const result = await runWorkspaceHostDestroy({
+      workspaceId,
+      hostId,
+      connection,
+      provider: destroyProviderHarness(destroyOperationId, hostId, graph),
+      disposition: 'discard',
+      confirmation: { expectedHostId: hostId, confirmedBy: 'operator:test', confirmedAt: NOW },
+      canary: {
+        runId,
+        workspaceId,
+        contractApproval: {
+          status: 'approved',
+          suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+          reportRef: 'report://gcp/fake-contract',
+          approvedBy: 'operator:test',
+          approvedAt: NOW,
+        },
+        teardownDeadlineAt: '2099-01-01T00:00:00.000Z',
+        budgetEvidenceRef: 'gcp://billing/budgets/workspace-host-canary',
+        preRunZeroBaseline: { cents: 0, observedAt: NOW, providerEvidenceRef: 'gcp://billing/baseline-zero' },
+        costEvidence: [{ cents: 71, observedAt: NOW, providerEvidenceRef: 'gcp://billing/settled' }],
+        lateObservedSpend: [{ cents: 4, observedAt: NOW, providerEvidenceRef: 'gcp://billing/late' }],
+      },
+      operationId: destroyOperationId,
+    });
+
+    expect(result).toMatchObject({
+      status: 'succeeded',
+      evidence: {
+        completionReceipt: { resourceCount: 7, spentCents: 75 },
+        providerCensus: { clean: true, inventoryComplete: true },
+      },
+    });
+    const destroyRows = await db.adminSql`
+      SELECT state, provider_id, deletion_confirmation
+      FROM harness_shared.workspace_host_resources
+      WHERE workspace_id = ${workspaceId} AND host_id = ${hostId} AND operation_id = ${destroyOperationId}
+      ORDER BY logical_key
+    `;
+    expect(destroyRows).toHaveLength(7);
+    expect(destroyRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          state: 'absent',
+          deletion_confirmation: expect.objectContaining({ source: 'provider-read' }),
+        }),
+      ]),
+    );
+    const [persisted] = await db.adminSql`
+      SELECT desired_state, observed_state, cost_signals
+      FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    expect(persisted).toMatchObject({
+      desired_state: 'absent',
+      observed_state: 'absent',
+      cost_signals: [
+        expect.objectContaining({
+          kind: 'workspace-host-canary-cost-evidence-v1',
+          budgetEvidenceRef: 'gcp://billing/budgets/workspace-host-canary',
+          completion: expect.objectContaining({ spentCents: 75 }),
+        }),
+      ],
     });
   });
 });

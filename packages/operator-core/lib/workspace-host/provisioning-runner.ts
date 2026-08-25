@@ -1186,7 +1186,7 @@ export async function runWorkspaceHostDestroy(
           ...(providerResult.state === 'destroyed' ? { confirmation: providerResult.confirmation } : {}),
         },
       });
-      if (waiting) {
+      if (providerResult.state === 'in-progress') {
         return {
           status: 'in-progress',
           operationId,
