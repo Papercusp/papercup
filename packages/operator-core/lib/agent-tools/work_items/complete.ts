@@ -1168,8 +1168,22 @@ const PRESCRIBED_GUARD_RE =
 const PRESCRIBED_TEST_RE =
   /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|required|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|point(?:ed)?|cover(?:ed)?)\b[\s\S]{0,70}\b(?:test|coverage|assert(?:ion|ing)?)\b/i;
 const COMPLETION_GUARD_RE = /\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
+// EI-21447362440754444: the SECOND alternative (guard-word THEN negation) must not fire on a
+// contrastive "X, not Y" clause. In that construction the negation attaches to Y — what FOLLOWS
+// `not` — so a guard-word sitting on the LEFT of the comma is the AFFIRMED side, not the denied
+// one. Measured on the close of WI-41672, which added both a guard and a falsifiability control
+// test and was still warned: "the red was in the guard, not the Rust" and "control test uses
+// plain `it`, not `maybe`" both matched, and `negativeSomewhere` then cancelled a structured
+// addedTests + real-test-path citation.
+//
+// The `(?<!,\s{0,10})` lookbehind removes ONLY that shape. A genuine disclaimer is untouched
+// because its negation is not comma-led ("guard was not added", "test not written"), and one
+// phrased contrastively ("I added a fix, not a test") still matches the FIRST alternative, where
+// the guard-word correctly follows the negation. Same bias this function's EI-20551121122206657
+// comment describes below — a longer, better-documented completion trips it more often — one
+// level further in: that fix scoped matching per-part, this one scopes it within a part.
 const COMPLETION_NEGATIVE_GUARD_RE =
-  /(?:\b(?:no|not|without|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?t)\b[\s\S]{0,45}\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b|\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b[\s\S]{0,45}\b(?:not|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?)\b)/i;
+  /(?:\b(?:no|not|without|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?t)\b[\s\S]{0,45}\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b|\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b[\s\S]{0,45}(?<!,\s{0,10})\b(?:not|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?)\b)/i;
 const EXPLICIT_GUARD_WAIVER_RE =
   /\b(?:waiv(?:e|ed|er)|not\s+applicable)\b[\s\S]{0,160}\b(?:because|since|as|reason|already|existing|covered|present|exists|implemented|by|:|—|-)\b/i;
 const HISTORICAL_NON_PRESCRIPTIVE_RE =

@@ -170,6 +170,55 @@ describe('prescribedRecurrenceGuardCoverageGap', () => {
     ).toBeDefined();
   });
 
+  it('does not read a contrastive "guard, not X" clause as a disclaimer', () => {
+    // EI-21447362440754444, measured on the close of WI-41672 — this is the string VERBATIM
+    // from that completion, not a paraphrase. It AFFIRMS the test it mentions: the negation
+    // attaches to `maybe`, what FOLLOWS the comma. It nonetheless matched the guard-word-
+    // then-negation alternative, and `negativeSomewhere` then cancelled a structured
+    // addedTests + real-test-path citation on a close that added both a property-based
+    // guard and a falsifiability control test.
+    //
+    // A first paraphrase of this case passed for the wrong reason and had to be discarded:
+    // shortening the prose pulled an unrelated "not ... guard" pair inside the FIRST
+    // alternative's 45-char window, so the warning fired via a path this fix does not
+    // touch. Keep the observed wording — the window makes paraphrases untrustworthy here.
+    expect(
+      prescribedRecurrenceGuardCoverageGap(item, {
+        whatLanded: [
+          'control test uses plain `it`, not `maybe`, so it gates even on a checkout without the papercusp-desktop submodule',
+        ],
+        addedTests: true,
+        filesChanged: ['packages/operator-core/lib/desktop-acl-command-sync.test.ts'],
+      }),
+    ).toBeUndefined();
+  });
+
+  it('still fires on a contrastive clause whose NEGATED side is the guard', () => {
+    // CALIBRATION for the case above: the lookbehind must exempt only a guard-word on the
+    // AFFIRMED (left) side of the contrast. Here the guard is what is being denied, so the
+    // first alternative — negation THEN guard-word — must still catch it. Without this
+    // case, the fix could have dropped the second alternative wholesale unnoticed.
+    expect(
+      prescribedRecurrenceGuardCoverageGap(item, {
+        summary: 'I landed a fix, not a regression test.',
+        addedTests: true,
+        filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.prescribed-guard.test.ts'],
+      }),
+    ).toBeDefined();
+  });
+
+  it('still fires on a non-contrastive guard-word-then-negation disclaimer', () => {
+    // CALIBRATION: the lookbehind is keyed on the comma, so an ordinary "guard ... not"
+    // sentence must be unaffected. This is the shape the second alternative exists for.
+    expect(
+      prescribedRecurrenceGuardCoverageGap(item, {
+        summary: 'the recurrence guard was not added in this pass',
+        addedTests: true,
+        filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.prescribed-guard.test.ts'],
+      }),
+    ).toBeDefined();
+  });
+
   it('fails open for malformed item data and warns on an explicit missing guard', () => {
     expect(prescribedRecurrenceGuardCoverageGap({ title: null, summary: 42 }, null)).toBeUndefined();
     expect(
