@@ -636,6 +636,7 @@ function WorkItemDiscussionSection({
   slug: string;
   workItem: WorkItemRow;
 }) {
+  const discussButtonRef = useRef<HTMLButtonElement | null>(null);
   const [discussionRef, setDiscussionRef] = useQueryState(
     WORK_ITEM_DISCUSSION_PARAM,
     parseAsString,
@@ -653,6 +654,7 @@ function WorkItemDiscussionSection({
       <div className="pc-adv-detail__section">
         <div className="pc-adv-detail__actions">
           <button
+            ref={discussButtonRef}
             type="button"
             data-testid="wi-detail-discuss"
             aria-expanded={open}
@@ -670,7 +672,12 @@ function WorkItemDiscussionSection({
           harnessSlug={slug}
           workItemId={workItem.id}
           title={workItem.title}
-          onClose={() => void setDiscussionRef(null)}
+          onClose={() => {
+            // Focus the stable toggle before the discussion's focused Close
+            // button unmounts; clearing the URL after that preserves focus.
+            discussButtonRef.current?.focus({ preventScroll: true });
+            void setDiscussionRef(null);
+          }}
         />
       ) : null}
     </>
