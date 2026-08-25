@@ -16,6 +16,12 @@ export type IntervalSnapshotAdmission =
       evidence?: Record<string, unknown>;
     };
 
+/** A held direct-session migration rendezvous for a backup snapshot. */
+export interface BackupMigrationLock {
+  /** Release the session lock and close any host-owned session. */
+  release: () => Promise<void>;
+}
+
 /**
  * Host seam for `@papercusp/backup`.
  *
@@ -41,6 +47,13 @@ export interface BackupHost {
    * DB dump written into each snapshot.
    */
   getHarnessAdminUrl: () => { url: string; source: string };
+  /**
+   * Optional direct-session advisory rendezvous shared with migration appliers.
+   * The returned handle owns its session and must be released after the whole
+   * snapshot (including its metadata row and final status) completes. Absent ⇒
+   * standalone backup behavior is unchanged.
+   */
+  acquireMigrationLock?: () => Promise<BackupMigrationLock | undefined>;
   /**
    * Optional, workspace-scoped rendezvous consulted immediately before a due
    * interval snapshot mutates scheduler state. Throwing, malformed, and

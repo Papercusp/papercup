@@ -292,6 +292,14 @@ export class WorkspaceBackup {
     const env = this.envWithPassword(password);
 
     const sources = [this.workspaceRoot];
+    // Coordinate the snapshot with native boot/db:migrate BEFORE creating the
+    // durable tracking row. A migration can otherwise start in the small gap
+    // before pg_dump has opened its own relation-locking transaction, defeating
+    // the promise that this row is a pre-migration restore point. The host
+    // returns a per-acquisition handle so snapshots for different workspaces
+    // cannot accidentally release one another's session lock.
+    const migrationLock = await backupHost().acquireMigrationLock?.();
+    try {
     // Step 1 — create the tracking row. Must be a step: re-running it on a
     // resume would insert a SECOND snapshot row. The cached return (id +
     // start time) is what every later step keys off, keeping bookkeeping +
@@ -435,6 +443,17 @@ export class WorkspaceBackup {
       }
     } finally {
       clearInterval(heartbeat);
+    }
+    } finally {
+      try {
+        await migrationLock?.release();
+      } catch (err) {
+        // The session close in the host handle still releases a session lock
+        // after an unlock error. Do not turn a completed snapshot into a
+        // failed one because this best-effort cleanup path reported the error.
+        // eslint-disable-next-line no-console
+        console.warn(`[backup] migration rendezvous release for ${this.workspaceId} failed:`, err);
+      }
     }
   }
 

@@ -14,3 +14,12 @@ export const BACKUP_APPLICATION_NAMES = [
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
 ] as const;
+
+/**
+ * Stable key shared by backup snapshots and every migration applier.
+ *
+ * The lock is deliberately a PostgreSQL advisory lock rather than a relation
+ * lock probe: a snapshot must exclude a migration from the instant its
+ * metadata row is created, before pg_dump has visited any relation.
+ */
+export const BACKUP_MIGRATION_ADVISORY_LOCK_KEY = 'papercusp:backup:migration-rendezvous';
