@@ -316,8 +316,12 @@ export default defineTool({
               : {
                   // Plain awaits only — a composed tree's leaves + anchor (rootId set)
                   // render under composed_awaits below, not as loose rows here.
+                  // Announcements are emitter-side declarations and render only
+                  // under exact-key event_inspection.declarations. Keeping them
+                  // out of active_awaits prevents their row id being mistaken for
+                  // an events:await id and passed to events:cancel.
                   active_awaits: awaits
-                    .filter((a) => a.rootId == null)
+                    .filter((a) => a.rootId == null && a.policy !== 'announce')
                     .map((a) => ({
                       await_id: a.id,
                       event: a.eventKey,
