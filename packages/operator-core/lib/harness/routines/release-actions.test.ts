@@ -389,8 +389,11 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('repair-staging-mismatch', true)).toBe('reset');
   });
 
-  it('every other non-green verdict still counts as a red (crash / not-green / etc.)', () => {
-    for (const status of ['not-green', 'error', 'create-failed', 'not-fast-forward']) {
+  it('every other non-green verdict still counts as a red (not-green / create-failed / etc.)', () => {
+    // EI-21462211894072863 removed 'error' from this list — it is a NON-VERDICT and now has its
+    // own class. The statuses left here all describe a run that reached a real conclusion about
+    // the tree, which is what makes them reds.
+    for (const status of ['not-green', 'create-failed', 'not-fast-forward']) {
       expect(classifyGateStallStatus(status, false)).toBe('red');
     }
   });
