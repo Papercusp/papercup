@@ -55,6 +55,7 @@ function harness() {
   }));
   const dependencies: WorkspaceHostProvisionRouteDependencies = {
     activeWorkspaceId: () => 'ws-1',
+    provisioningAvailable: () => true,
     readConnection,
     startProvisioning,
   };
@@ -83,6 +84,24 @@ describe('POST /workspace-hosts/provision', () => {
     const response = await post(dependencies, { connectionId: '../bad', name: '', desired: {} });
     expect(response.status).toBe(400);
     expect(readConnection).not.toHaveBeenCalled();
+  });
+
+  it('fails with a typed 503 before durable reads when the DBOS executor is unavailable', async () => {
+    const { dependencies, readConnection, startProvisioning } = harness();
+    dependencies.provisioningAvailable = () => false;
+
+    const response = await post(dependencies, {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'workspace-host provisioning workflow is unavailable on this operator',
+    });
+    expect(readConnection).not.toHaveBeenCalled();
+    expect(startProvisioning).not.toHaveBeenCalled();
   });
 
   it('distinguishes a missing connection from one that is not ready', async () => {

@@ -6,6 +6,7 @@ import {
   WorkspaceHostProvisioningConflictError,
   type StartWorkspaceHostProvisioningInput,
 } from '../../../dbos/workspace-host-provision-workflow';
+import { dbosStarted } from '../../../dbos/bootstrap';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   readWorkspaceHostConnection,
@@ -30,6 +31,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export interface WorkspaceHostProvisionRouteDependencies {
   activeWorkspaceId: () => string;
+  provisioningAvailable: () => boolean;
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
   startProvisioning: (
     input: StartWorkspaceHostProvisioningInput,
@@ -38,6 +40,7 @@ export interface WorkspaceHostProvisionRouteDependencies {
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostProvisionRouteDependencies = {
   activeWorkspaceId,
+  provisioningAvailable: dbosStarted,
   readConnection: readWorkspaceHostConnection,
   startProvisioning: startWorkspaceHostProvisioningWorkflow,
 };
@@ -81,6 +84,12 @@ export function createWorkspaceHostProvisionRoute(
       }
       if (body.operationId !== undefined && (typeof body.operationId !== 'string' || !SAFE_ID.test(body.operationId))) {
         return Response.json({ ok: false, error: 'invalid operationId' }, { status: 400 });
+      }
+      if (!dependencies.provisioningAvailable()) {
+        return Response.json(
+          { ok: false, error: 'workspace-host provisioning workflow is unavailable on this operator' },
+          { status: 503 },
+        );
       }
 
       const workspaceId = dependencies.activeWorkspaceId();
