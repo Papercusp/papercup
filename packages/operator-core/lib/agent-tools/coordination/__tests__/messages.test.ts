@@ -197,6 +197,18 @@ describe('appendAck + readThread', () => {
     expect(inboxA.map((x) => x.kind)).toEqual(['ack']);
   });
 
+  it('appendAck preserves an explicit target harness scope and local override', async () => {
+    hiveScope.resolve = async () => ({ kind: 'one', homeSlug: 'auto-hive' });
+    const A = fakeIdentity('A');
+    const B = fakeIdentity('B');
+
+    const federated = await appendAck(B, 'fed-target', A.ownerId, 'target-hive');
+    expect(federated.harness_slug).toBe('target-hive');
+
+    const local = await appendAck(B, 'local-target', A.ownerId, null);
+    expect(local.harness_slug).toBeUndefined();
+  });
+
   it('readThread walks chains transitively', async () => {
     const A = fakeIdentity('A');
     const B = fakeIdentity('B');

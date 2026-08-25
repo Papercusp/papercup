@@ -62,7 +62,11 @@ export default defineTool({
         if (!target) {
           return { ok: false as const, msg_id: it.msg_id, error: 'unknown_msg_id', detail: `no coord message with msg_id=${it.msg_id}` };
         }
-        const acked = await appendAck(identity, it.msg_id, target.from);
+        // Preserve the original message's federation scope. `null` is
+        // deliberate for operator-local rows: leaving the option undefined
+        // would let sendMessage's AUTO scope resolver stamp the ack into a
+        // shared hive even though the target was local.
+        const acked = await appendAck(identity, it.msg_id, target.from, target.harness_slug ?? null);
         return { ok: true as const, msg_id: it.msg_id, ack_msg_id: acked.msg_id, acked: target.msg_id, acked_from: target.from };
       },
       { keyOf: (it) => ({ msg_id: it.msg_id }) },

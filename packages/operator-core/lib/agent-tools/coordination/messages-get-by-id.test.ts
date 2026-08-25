@@ -55,12 +55,22 @@ describe('getMessageById (WI-3832)', () => {
   it('PG fast path: queries coord_event_log directly and does not fall back to readLines', async () => {
     fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => [
-      { body: { msg_id: 'orig', from: 'a', to: ['b'], kind: 'note', ts: 't', summary: 'hi' } },
+      { body: { msg_id: 'orig', from: 'a', to: ['b'], kind: 'note', ts: 't', summary: 'hi', harness_slug: 'body-hive' }, harness_slug: 'column-hive' },
     ]);
     const found = await getMessageById('orig');
     expect(found?.msg_id).toBe('orig');
+    expect(found?.harness_slug).toBe('column-hive');
     expect(sqlMock).toHaveBeenCalledTimes(1);
     expect(readLinesMock).not.toHaveBeenCalled();
+  });
+
+  it('PG fast path: a null scope column makes a stale body scope local', async () => {
+    fastPathState.on = true;
+    sqlMock.mockImplementationOnce(async () => [
+      { body: { msg_id: 'orig', from: 'a', to: ['b'], kind: 'note', ts: 't', harness_slug: 'stale-body-hive' }, harness_slug: null },
+    ]);
+    const found = await getMessageById('orig');
+    expect(found).not.toHaveProperty('harness_slug');
   });
 
   it('PG fast path: a JSON-string body is parsed', async () => {

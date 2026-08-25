@@ -38,7 +38,13 @@ describe('coord:ack handler (bulk keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, msg_id: 'M-1', ack_msg_id: 'ack1', acked: 'M-1', acked_from: 'peer' });
     expect(getByIdM).toHaveBeenCalledWith('M-1');
-    expect(appendM).toHaveBeenCalledWith({ ownerId: 'me' }, 'M-1', 'peer');
+    expect(appendM).toHaveBeenCalledWith({ ownerId: 'me' }, 'M-1', 'peer', null);
+  });
+
+  it('forwards the original message federation scope to appendAck', async () => {
+    getByIdM.mockResolvedValueOnce({ msg_id: 'M-fed', from: 'peer', harness_slug: 'shared-hive' } as never);
+    await body({ msg_id: 'M-fed' });
+    expect(appendM).toHaveBeenCalledWith({ ownerId: 'me' }, 'M-fed', 'peer', 'shared-hive');
   });
 
   it('msg_ids:[…] acks many', async () => {
