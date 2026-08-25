@@ -679,7 +679,7 @@ gate descendants whose argv only names the `papercusp-checkpoint` tree; the repo
 labels those rows as identity matches. Other patterns remain operational-argv
 matches, and a peer's prose or JSON payload is still ignored. 
 
-⚠ **Absence checks need a valid instrument and a positive control.** This box's `pgrep` has no `-q`; use `pgrep -cf`, `pgrep -x`, or `kill -0`. Under `pipefail`, `grep -q/-m1` and `head -1` can SIGPIPE a producer and invert a true result: capture then match or consume to EOF. Missing paths are not zero matches—keep stderr/status and run the same query against something known-present (`gitnexus.context` for symbols, `tools:find` for tools). bfs `find -newermt` rejects relative times; use `git status`, UTC `stat`, or ISO-8601. Line grep misses hard-wrapped phrases; flatten newlines or match an unwrappable token, verifying both old and new text for transitions.
+⚠ **Absence checks need a valid instrument and a positive control.** `pgrep -q` DOES NOT EXIST — quiet mode is `grep`'s flag, so pgrep dies on the invalid option and reports absence via EXIT CODE whatever is running. That makes it a DISTINCT failure from the self-match trap above: bracketing the first character cures a pattern matching its own argv, never an unsupported flag. Use `pgrep -cf`, `pgrep -x`, or `kill -0`. Under `pipefail`, `grep -q/-m1` and `head -1` can SIGPIPE a producer and invert a true result: capture then match or consume to EOF. Missing paths are not zero matches—keep stderr/status and run the same query against something known-present (`gitnexus.context` for symbols, `tools:find` for tools). bfs `find -newermt` rejects relative times; use `git status`, UTC `stat`, or ISO-8601. Line grep misses hard-wrapped phrases; flatten newlines or match an unwrappable token, verifying both old and new text for transitions.
 
 
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
@@ -689,14 +689,6 @@ matches, and a peer's prose or JSON payload is still ignored.
 service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
 work runs in a child, so measuring it alone reports "idle" about a process
 burning a full core. 
-
-⚠ A corollary worth knowing before you design one: **a liveness/progress beat
-emitted BY the process being judged cannot report on main-thread saturation** —
-`await` yields to the microtask queue, not the event loop, so a saturated Node
-main thread stops every `setInterval`/`setTimeout` while looking perfectly
-asynchronous. The beat goes missing exactly when it is the thing you need.
-Observe from OUTSIDE (`/proc`), where a saturated process cannot suppress its
-own signal.
 
 Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one to reach for, because it needs no column-index guess (`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and misreading it yields a whole column of `S` that looks like data).
 
@@ -910,7 +902,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **10 part(s) (6,023 chars) did not fit this client's
+> ⚠ **11 part(s) (6,499 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -931,5 +923,6 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
 - `long-jobs-background-them-at-is-this-process-act` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 - `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
+- `long-jobs-background-them-at-a-corollary-worth-k` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠ A corollary worth knowing before you design one: **a liveness/progress beat
 - `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
 - `use-context7-for-current-lib-before-non-trivial` — *Use Context7 for current library docs* — Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
