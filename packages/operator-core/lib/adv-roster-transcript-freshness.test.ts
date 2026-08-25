@@ -199,6 +199,78 @@ describe('resolver keying', () => {
   });
 });
 
+describe('falsifiability — the PRE-FIX branch, kept as a permanent control', () => {
+  // The tests above pass. That is only meaningful if they would FAIL on the old
+  // code — and the old code was green for weeks, so "it passes now" proves
+  // nothing on its own. This is the pre-fix selection kept verbatim, asserted
+  // to pick the WRONG backend for the exact row shapes measured live.
+  //
+  // Kept as an in-file control rather than reconstructed by mutating
+  // adv-roster.ts: a mutation probe holds a shared-tree file wrong for the
+  // length of a suite run, and git-sync sweeps the whole tree on a schedule.
+  type Shape = Pick<Entry, 'sessionId' | 'agent' | 'nativeSession'>;
+
+  /** Pre-WI-41497: `if (e.sessionId)` was tested FIRST. */
+  const preFixBackend = (e: Shape): string | null =>
+    e.sessionId ? 'claude' : (e.agent === 'codex' || e.agent === 'omp' ? e.agent : null);
+
+  /** Current: the backend decides, and a bare sessionId is the FALLBACK. */
+  const currentBackend = (e: Shape): string | null =>
+    e.nativeSession?.backend
+    ?? (e.agent === 'codex' || e.agent === 'omp' ? e.agent : null)
+    ?? (e.sessionId ? 'claude' : null);
+
+  it('mislabels a real codex row as claude — the 237-of-257 misread', () => {
+    // adv 18014's session_id IS its rollout uuid, which is what made
+    // `if (e.sessionId)` swallow every live codex row.
+    const codexRow: Shape = {
+      sessionId: '01a03683-05ce-7001-bfde-ec00081c4aa7',
+      agent: 'codex',
+      nativeSession: { backend: 'codex', rolloutId: '01a03683-05ce-7001-bfde-ec00081c4aa7' } as Entry['nativeSession'],
+    };
+
+    expect(preFixBackend(codexRow)).toBe('claude');   // ← the bug
+    expect(currentBackend(codexRow)).toBe('codex');   // ← calibration
+  });
+
+  it('mislabels a real omp row as claude', () => {
+    const ompRow: Shape = {
+      sessionId: '01a036bd-eab0-7265-8ade-13cac5d74ae9',
+      agent: 'omp',
+      nativeSession: { backend: 'omp', ompThreadId: '01a036bd-eab0-7265-8ade-13cac5d74ae9' } as Entry['nativeSession'],
+    };
+
+    expect(preFixBackend(ompRow)).toBe('claude');
+    expect(currentBackend(ompRow)).toBe('omp');
+  });
+
+  it('AGREES on a genuine claude row — which is why the bug was invisible', () => {
+    // The rows the old branch got right were the ones anybody would have
+    // spot-checked: an interactive claude session has no backend handle and a
+    // real sessionId, so both readings say claude.
+    const claudeRow: Shape = { sessionId: 'c0ed9f5c-2506-4375-8c97-08001014d8c0', agent: null, nativeSession: null };
+
+    expect(preFixBackend(claudeRow)).toBe('claude');
+    expect(currentBackend(claudeRow)).toBe('claude');
+  });
+
+  it('and the live path really does follow the CURRENT reading, not the control', () => {
+    // Ties the control to the subject: without this the two functions above
+    // could drift from adv-roster and keep passing on their own.
+    return resolveTranscriptFreshnessForEntries([
+      row({
+        sessionId: '01a03683-05ce-7001-bfde-ec00081c4aa7',
+        advSessionId: 18014,
+        agent: 'codex',
+        nativeSession: { backend: 'codex', rolloutId: 'r' } as Entry['nativeSession'],
+      }),
+    ]).then(() => {
+      expect(resolveCodexThinkingState).toHaveBeenCalledTimes(1);
+      expect(resolveSessionThinkingState).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe('resilience', () => {
   it('resolves entries in PARALLEL, never a serial fs loop', async () => {
     const entries = Array.from({ length: 12 }, (_, i) =>
