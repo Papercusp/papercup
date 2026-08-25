@@ -38,18 +38,16 @@ set -euo pipefail
 # for exactly the invocation this script's own Usage line documents
 # (`apps/operator/bin/bundle-host.sh` from the repo root):
 #   line 44: apps/operator/bin/bundle-host-common.sh: No such file or directory
-# systemd never hit it because the three ExecStartPre users (:3270 bg-host,
-# :3170 staging, :3070 dev) invoke it by absolute path
-# [MEASURED 2026-08-10, EI-20093985382484201 — that list is no longer accurate,
-#  and it matters because it is what an agent reads to decide the blast radius
-#  of an edit here:
-#    :3170 staging  → THIS tree's copy (absolute path into papercupai-workspace/papercusp)
-#    :3070 dev      → the RELEASE checkout's copy (papercup-release/...), so an
-#                     edit here reaches it only after the deploy pipeline promotes it
-#    :3270 bg-host  → has NO ExecStartPre at all today (`systemctl --user show
-#                     papercup-bg-host.service -p ExecStartPre` prints nothing, and
-#                     the service has no 95-bundled-entry.conf drop-in) — that
-#                     missing drop-in is filed separately as EI-9408]
+# systemd consumers invoke it by absolute path. Keep this map current because
+# it is what an agent reads to decide the blast radius of an edit here:
+#   :3170 staging → THIS tree's copy (absolute path into papercupai-workspace/papercusp)
+#   :3070 dev     → the RELEASE checkout's copy (papercup-release/...), so an
+#                  edit here reaches it only after the deploy pipeline promotes it
+#   :3271 bg-host  → THIS tree's copy (the dedicated background host); its
+#                  versioned papercup-bg-host.service.d/95-bundled-entry.conf
+#                  installs this script as ExecStartPre and launches the bundle.
+#
+# Every consumer rebuilds from the working tree immediately before it starts.
 # — but a human or agent
 # following the docs did, and the failure is quiet in the way that matters:
 # the script exits non-zero having left `dist-host/hono-host.mjs` UNTOUCHED, so

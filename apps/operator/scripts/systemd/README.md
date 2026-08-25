@@ -74,6 +74,45 @@ Verify the live unit resolves to this repo source and that its effective
 
 ---
 
+# Dedicated bg-host bundled entry — installation (EI-21434335931587523)
+
+`papercup-bg-host.service` owns the DBOS routines, git-sync, and substrate
+background machinery. Its versioned `95-bundled-entry.conf` rebuilds the host
+bundle from the shared checkout in `ExecStartPre`, then starts
+`dist-host/hono-host.mjs` with the base unit's complete port/DBOS environment.
+The drop-in must be installed as a symlink so the checked-in contract remains
+the source of truth.
+
+## Install (one-time, on the shared development host)
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+mkdir -p ~/.config/systemd/user/papercup-bg-host.service.d
+ln -sfn "$(pwd)/papercup-bg-host.service.d/95-bundled-entry.conf" \
+  ~/.config/systemd/user/papercup-bg-host.service.d/95-bundled-entry.conf
+systemctl --user daemon-reload
+```
+
+Do not copy the drop-in or edit the generated service. Do not restart bg-host
+as part of this installation; activate it at the next coordinated/managed
+bg-host restart.
+
+## Verify
+
+```bash
+systemd-analyze --user verify papercup-bg-host.service
+systemctl --user show papercup-bg-host.service \
+  -p WorkingDirectory -p ExecStartPre -p ExecStart
+```
+
+The effective unit should show `bundle-host.sh` as `ExecStartPre` and
+`node dist-host/hono-host.mjs` as the final command, while retaining the
+`PAPERCUSP_HONO_PORT=3271`, `PAPERCUSP_BACKGROUND_WORKERS=1`, and DBOS/routine
+assignments from the base unit. A configured drop-in is not proof that the
+running service has loaded it; verify after the next managed restart.
+
+---
+
 # Clustered operator memory envelope — installation (EI-20340243384897336)
 
 `papercup-dev-api.service.d/55-memory-envelope.conf` is the versioned,
@@ -114,10 +153,10 @@ systemd-analyze --user verify papercup-dev-api.service
 Expected effective limits are `MemoryHigh=48G`, `MemoryMax=64G`, and
 `MemorySwapMax=16G`, with no `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB` in the unit's
 effective environment. The later memory-envelope drop-in also overrides the
-legacy `PAPERCUSP_CLUSTER=16` setting with `PAPERCUSP_CLUSTER_WORKERS=10` and
-sets `PAPERCUSP_EXPECTED_OPERATOR_PROCS=11`. Verify the boot log names
-`PAPERCUSP_CLUSTER_WORKERS=10`, `:3070` is healthy, and the running service has
-ten request workers plus one primary after the managed restart; a configured
+legacy `PAPERCUSP_CLUSTER=16` setting with `PAPERCUSP_CLUSTER_WORKERS=6` and
+sets `PAPERCUSP_EXPECTED_OPERATOR_PROCS=7`. Verify the boot log names
+`PAPERCUSP_CLUSTER_WORKERS=6`, `:3070` is healthy, and the running service has
+six request workers plus one primary after the managed restart; a configured
 drop-in is not proof the running cgroup loaded it.
 
 ---
