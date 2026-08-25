@@ -118,10 +118,15 @@ export type QualificationAdmission =
  * process (the supervisor's) is invisible to it for the life of this process. A hold must be read
  * atomically at launch or it does not bind.
  */
-export async function readQualificationAdmission(): Promise<QualificationAdmission> {
+export async function readQualificationAdmission(
+  opts: { workspaceId?: string } = {},
+): Promise<QualificationAdmission> {
   let row: CheckpointConfigRow | null;
   try {
-    row = await readOperatorState<CheckpointConfigRow>('operator_release_checkpoint_config');
+    row = await readOperatorState<CheckpointConfigRow>(
+      'operator_release_checkpoint_config',
+      opts.workspaceId,
+    );
   } catch (e) {
     return { status: 'unknown', reason: e instanceof Error ? e.message : String(e) };
   }

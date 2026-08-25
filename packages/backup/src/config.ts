@@ -2,6 +2,21 @@ import type { Sql } from 'postgres';
 import { passthroughStepRunner, type StepRunner } from './types';
 
 /**
+ * Host-owned admission decision for an interval snapshot.
+ *
+ * The backup package deliberately does not know about release qualification or
+ * serializer authority. Embedders that do can defer only the recurring path;
+ * an absent reader preserves the package's standalone behavior.
+ */
+export type IntervalSnapshotAdmission =
+  | { status: 'admit' }
+  | {
+      status: 'defer';
+      reason: string;
+      evidence?: Record<string, unknown>;
+    };
+
+/**
  * Host seam for `@papercusp/backup`.
  *
  * The package shells out to the kopia CLI and stores snapshot / settings
@@ -26,6 +41,15 @@ export interface BackupHost {
    * DB dump written into each snapshot.
    */
   getHarnessAdminUrl: () => { url: string; source: string };
+  /**
+   * Optional, workspace-scoped rendezvous consulted immediately before a due
+   * interval snapshot mutates scheduler state. Throwing, malformed, and
+   * explicit defer results all fail closed for that tick and retry later.
+   * Manual and event/pre-destructive snapshots never consult this seam.
+   */
+  readIntervalSnapshotAdmission?: (
+    workspaceId: string,
+  ) => Promise<IntervalSnapshotAdmission>;
   /**
    * Optional: return true to skip the current orphan-sweep cycle — e.g. a
    * battery-aware pause that defers disk-waking work. Absent ⇒ always run

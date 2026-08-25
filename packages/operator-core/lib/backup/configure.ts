@@ -17,6 +17,8 @@ import { workspacesRoot } from '../workspace-registry';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { shouldRun } from '../search/battery-policy';
 import { configureBackup } from '@papercusp/backup';
+import { readQualificationAdmission } from '../release-checkpoint-config';
+import { readCheckpointSerializerAuthority } from '../release/checkpoint-serializer-authority';
 
 configureBackup({
   // Called per use (not cached) so getOrgPg's discovery-file change
@@ -41,6 +43,48 @@ configureBackup({
   // every host seam on this object stays lazy so no partial mock of a source
   // module can throw while this side-effect import is being evaluated.
   getHarnessAdminUrl: () => getHarnessAdminUrlWithSource(),
+  // Interval-only release rendezvous. Both reads are fresh and workspace
+  // scoped; unknown/unreadable authority defers this tick rather than opening a
+  // reader in the exact qualification window. Manual and pre-destructive
+  // snapshots bypass this host seam in @papercusp/backup.
+  readIntervalSnapshotAdmission: async (workspaceId) => {
+    const [qualification, serializer] = await Promise.all([
+      readQualificationAdmission({ workspaceId }),
+      readCheckpointSerializerAuthority({ workspaceId }),
+    ]);
+    if (qualification.status === 'unknown') {
+      return {
+        status: 'defer',
+        reason: 'qualification-admission-unreadable',
+        evidence: { error: qualification.reason },
+      };
+    }
+    if (qualification.status === 'held') {
+      return {
+        status: 'defer',
+        reason: 'qualification-held',
+        evidence: {
+          governingRef: qualification.hold.governingRef,
+          blockingItems: qualification.hold.blockingItems ?? [],
+        },
+      };
+    }
+    if (serializer.status === 'unreadable') {
+      return {
+        status: 'defer',
+        reason: 'checkpoint-serializer-unreadable',
+        evidence: { error: serializer.error },
+      };
+    }
+    if (serializer.status === 'held') {
+      return {
+        status: 'defer',
+        reason: 'checkpoint-serializer-held',
+        evidence: { itemId: serializer.itemId, ownerId: serializer.ownerId },
+      };
+    }
+    return { status: 'admit' };
+  },
   // Battery-aware pause for the orphan sweep. Resilient: any failure
   // resolving the decision means "don't pause" (the sweep is cheap).
   shouldPauseSweep: () => {

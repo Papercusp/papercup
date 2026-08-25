@@ -20,7 +20,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { backupHost } from './config';
+import type { Sql } from 'postgres';
+import { backupHost, type IntervalSnapshotAdmission } from './config';
 import { workspaceBackupFor } from './singleton';
 import type { SnapshotTriggerReason } from './types';
 
@@ -51,6 +52,10 @@ interface WorkspaceTickState {
   inFlight: boolean;
 }
 const STATE = new Map<string, WorkspaceTickState>();
+// Avoid writing the same durable deferral event every minute while a single
+// hold remains active. A reason/evidence transition is recorded immediately;
+// admission clears the fingerprint so a later recurrence is visible again.
+const LAST_INTERVAL_DEFERRAL = new Map<string, string>();
 
 let timer: NodeJS.Timeout | null = null;
 
@@ -113,6 +118,17 @@ async function tick(): Promise<void> {
       const dueAt = lastFiredAt + r.cadence_minutes * 60_000;
       if (mem.inFlight) continue;
       if (now < dueAt) continue;
+
+      // The rendezvous MUST precede both scheduler mutations below. A defer
+      // therefore remains due and is retried on the next cadence tick rather
+      // than consuming the interval or masquerading as an in-flight snapshot.
+      const admission = await readIntervalAdmission(r.workspace_id);
+      if (admission.status === 'defer') {
+        await recordIntervalDeferral(sql, r.workspace_id, admission);
+        continue;
+      }
+      LAST_INTERVAL_DEFERRAL.delete(r.workspace_id);
+
       const next: WorkspaceTickState = { lastFiredAt: now, inFlight: true };
       STATE.set(r.workspace_id, next);
       void runSnapshot(r.workspace_id, 'interval', undefined)
@@ -123,6 +139,64 @@ async function tick(): Promise<void> {
     }
   } catch (err) {
     console.warn('[backup-scheduler] tick failed:', err);
+  }
+}
+
+async function readIntervalAdmission(workspaceId: string): Promise<IntervalSnapshotAdmission> {
+  const reader = backupHost().readIntervalSnapshotAdmission;
+  if (!reader) return { status: 'admit' };
+  try {
+    const decision = await reader(workspaceId);
+    if (decision?.status === 'admit') return decision;
+    if (
+      decision?.status === 'defer' &&
+      typeof decision.reason === 'string' &&
+      decision.reason.trim() !== ''
+    ) {
+      return decision;
+    }
+    return {
+      status: 'defer',
+      reason: 'interval-admission-unreadable',
+      evidence: { error: 'host returned a malformed interval admission decision' },
+    };
+  } catch (error) {
+    return {
+      status: 'defer',
+      reason: 'interval-admission-unreadable',
+      evidence: {
+        error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      },
+    };
+  }
+}
+
+async function recordIntervalDeferral(
+  sql: Sql,
+  workspaceId: string,
+  decision: Extract<IntervalSnapshotAdmission, { status: 'defer' }>,
+): Promise<void> {
+  const fingerprint = JSON.stringify({ reason: decision.reason, evidence: decision.evidence });
+  if (LAST_INTERVAL_DEFERRAL.get(workspaceId) === fingerprint) return;
+  try {
+    await sql`
+      INSERT INTO harness_shared.backup_events
+        (workspace_id, snapshot_id, kind, payload_json)
+      VALUES (
+        ${workspaceId},
+        NULL,
+        'interval_deferred',
+        ${JSON.stringify({ reason: decision.reason, evidence: decision.evidence ?? null })}::jsonb
+      )
+    `;
+    LAST_INTERVAL_DEFERRAL.set(workspaceId, fingerprint);
+  } catch (error) {
+    // Admission is still fail-closed even when its best-effort audit row cannot
+    // be written; leaving the fingerprint unset retries the record next tick.
+    console.warn(
+      `[backup-scheduler] failed to record interval deferral for ${workspaceId}:`,
+      error,
+    );
   }
 }
 

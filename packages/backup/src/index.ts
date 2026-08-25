@@ -18,7 +18,12 @@
  * own pack files and balloons toward 1TB. See ./policy.
  */
 
-export { configureBackup, configureBackupStepRunner, type BackupHost } from './config';
+export {
+  configureBackup,
+  configureBackupStepRunner,
+  type BackupHost,
+  type IntervalSnapshotAdmission,
+} from './config';
 export { WorkspaceBackup, type WorkspaceBackupOpts } from './workspace-backup';
 export {
   RETENTION_PRESETS,

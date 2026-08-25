@@ -25,7 +25,21 @@
  * ./configure.ts back to the bare shorthand `workspacesRoot,` and this test
  * fails at the dynamic import below.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const h = vi.hoisted(() => ({
+  configureBackup: vi.fn(),
+  readQualificationAdmission: vi.fn(),
+  readCheckpointSerializerAuthority: vi.fn(),
+}));
+
+vi.mock('@papercusp/backup', () => ({ configureBackup: h.configureBackup }));
+vi.mock('../release-checkpoint-config', () => ({
+  readQualificationAdmission: h.readQualificationAdmission,
+}));
+vi.mock('../release/checkpoint-serializer-authority', () => ({
+  readCheckpointSerializerAuthority: h.readCheckpointSerializerAuthority,
+}));
 
 // The exact partial mock the stranded suites install: `activeWorkspaceId` only.
 // Every OTHER export of ../workspace-registry is undefined-and-throwing here.
@@ -33,9 +47,27 @@ vi.mock('../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'ws-test'),
 }));
 
+beforeEach(() => {
+  h.readQualificationAdmission.mockReset().mockResolvedValue({ status: 'clear' });
+  h.readCheckpointSerializerAuthority.mockReset().mockResolvedValue({
+    status: 'none',
+    reason: 'routine-not-found',
+  });
+});
+
+async function configuredHost(): Promise<{
+  readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
+}> {
+  await import('./configure');
+  return h.configureBackup.mock.calls[0]![0] as {
+    readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
+  };
+}
+
 describe('backup host binding — lazy host seams (WI-40369)', () => {
   it('evaluates ./configure under a PARTIAL ../workspace-registry mock without throwing', async () => {
     await expect(import('./configure')).resolves.toBeDefined();
+    expect(h.configureBackup).toHaveBeenCalledTimes(1);
   });
 
   it('does not read `workspacesRoot` off the module at import time', async () => {
@@ -51,5 +83,60 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
     expect(() => ({
       workspacesRoot: () => (mod as { workspacesRoot: () => string }).workspacesRoot(),
     })).not.toThrow();
+  });
+
+  it('passes workspace scope through both release-authority reads and admits only when clear', async () => {
+    const host = await configuredHost();
+
+    await expect(host.readIntervalSnapshotAdmission('workspace-a')).resolves.toEqual({
+      status: 'admit',
+    });
+    expect(h.readQualificationAdmission).toHaveBeenCalledWith({ workspaceId: 'workspace-a' });
+    expect(h.readCheckpointSerializerAuthority).toHaveBeenCalledWith({ workspaceId: 'workspace-a' });
+  });
+
+  it('defers an interval snapshot under a qualification hold', async () => {
+    h.readQualificationAdmission.mockResolvedValue({
+      status: 'held',
+      hold: { governingRef: 'plan#D-001', blockingItems: ['WI-1'] },
+    });
+    const host = await configuredHost();
+
+    await expect(host.readIntervalSnapshotAdmission('workspace-a')).resolves.toEqual({
+      status: 'defer',
+      reason: 'qualification-held',
+      evidence: { governingRef: 'plan#D-001', blockingItems: ['WI-1'] },
+    });
+  });
+
+  it('fails closed when serializer authority is unreadable', async () => {
+    h.readCheckpointSerializerAuthority.mockResolvedValue({
+      status: 'unreadable',
+      error: 'authority store offline',
+    });
+    const host = await configuredHost();
+
+    await expect(host.readIntervalSnapshotAdmission('workspace-a')).resolves.toEqual({
+      status: 'defer',
+      reason: 'checkpoint-serializer-unreadable',
+      evidence: { error: 'authority store offline' },
+    });
+  });
+
+  it('defers while the checkpoint serializer authority is held', async () => {
+    h.readCheckpointSerializerAuthority.mockResolvedValue({
+      status: 'held',
+      itemId: 'WI-40086',
+      ownerId: 'su-owner',
+      pauseReason: 'pause',
+      holdReason: 'hold',
+    });
+    const host = await configuredHost();
+
+    await expect(host.readIntervalSnapshotAdmission('workspace-a')).resolves.toEqual({
+      status: 'defer',
+      reason: 'checkpoint-serializer-held',
+      evidence: { itemId: 'WI-40086', ownerId: 'su-owner' },
+    });
   });
 });
