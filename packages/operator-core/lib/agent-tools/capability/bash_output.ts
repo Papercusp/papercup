@@ -32,7 +32,10 @@ import { getTask, getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, serviceUnitForTask, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
 import { readProcessCgroupPath, readProcessCmdline } from '../../task-manager/cgroup-read';
-import { hasForkStarvationEvidence } from '../../../../../scripts/lib/task-exit-class.mjs';
+import {
+  hasForkStarvationEvidence,
+  parseTaskBudgetRefusal,
+} from '../../../../../scripts/lib/task-exit-class.mjs';
 
 /**
  * Cap on the spill log we will read whole to classify a dead typecheck. A tsc
@@ -430,12 +433,27 @@ export function terminalStatusFromLedger(
 
 export type TerminalResourceLimitFields = {
   failure_class: 'infrastructure-resource-limit';
-  resource_limit: {
-    kind: 'pids';
-    observed_tasks: number;
-    configured_tasks_max: number;
-    source: 'task-ledger-cgroup-sample';
-  };
+  /**
+   * Discriminated on `source` rather than nulling the sample fields: a pre-launch refusal
+   * never took a cgroup sample, and reporting `observed_tasks: null` would claim a
+   * measurement that does not exist. Each variant carries only the numbers its own evidence
+   * actually produced.
+   */
+  resource_limit:
+    | {
+        kind: 'pids';
+        observed_tasks: number;
+        configured_tasks_max: number;
+        source: 'task-ledger-cgroup-sample';
+      }
+    | {
+        kind: 'pids' | 'memory';
+        unit: 'tasks' | 'mb';
+        configured_limit: number;
+        reserve: number;
+        required_per_task: number;
+        source: 'pre-launch-budget-refusal';
+      };
   test_verdict?: 'undetermined';
   resource_advice: string;
 };
@@ -460,6 +478,21 @@ export function terminalResourceLimitFields(
   log = '',
 ): TerminalResourceLimitFields | null {
   if (!row || !isTerminalState(row.state) || (row.state === 'exited' && row.exitCode === 0)) return null;
+  const testRun = row.detail?.workloadClass === 'test-run';
+  // Order is deliberate: the cgroup sample is the older, narrower evidence and keeps its exact
+  // prior behaviour, so adding the refusal path below cannot change any outcome it already
+  // decides. The two are mutually exclusive in practice anyway — a run refused before launch
+  // spawns no child, so there is nothing for the ledger to have sampled.
+  return (
+    terminalCgroupSampleFields(row, log, testRun) ?? preLaunchBudgetRefusalFields(row, log, testRun)
+  );
+}
+
+function terminalCgroupSampleFields(
+  row: TaskRow,
+  log: string,
+  testRun: boolean,
+): TerminalResourceLimitFields | null {
   const observed = row.pidsCurrent;
   const configured = row.tasksMax;
   if (
@@ -473,7 +506,6 @@ export function terminalResourceLimitFields(
   }
   const causalEvidence = hasForkStarvationEvidence(log) || row.exitCode === 254;
   if (!causalEvidence) return null;
-  const testRun = row.detail?.workloadClass === 'test-run';
   return {
     failure_class: 'infrastructure-resource-limit',
     resource_limit: {
@@ -486,6 +518,52 @@ export function terminalResourceLimitFields(
     resource_advice:
       `This task reached its own cgroup TasksMax (${observed}/${configured}); its non-zero shell exit is ` +
       `${testRun ? 'an UNDETERMINED test run, not a red suite verdict' : 'an infrastructure resource-limit failure'}.`,
+  };
+}
+
+/**
+ * EI-21442389733525112: classify a run the scheduler refused BEFORE launching anything.
+ *
+ * The mid-run form of this failure is already handled above, but it is recognised from a
+ * terminal `pids.current` sample at the cap — and a pre-launch refusal has no such sample
+ * (`pidsCurrent` stays null), so it fell through as a bare `failed` / `exit 1`. Measured on
+ * one real pair: `pids_current=512, tasks_max=512, exit=254` classified, while
+ * `pids_current=NULL, tasks_max=512, exit=1` did not. Same root cause, and the unclassified
+ * one is exactly the one an agent reads as a red suite — even though nothing ran, so zero
+ * files were measured and the only honest verdict is "undetermined".
+ *
+ * The evidence therefore has to come from the log, where the scheduler states the refusal in
+ * its own words. `parseTaskBudgetRefusal` owns that grammar jointly with the emitter.
+ */
+function preLaunchBudgetRefusalFields(
+  row: TaskRow,
+  log: string,
+  testRun: boolean,
+): TerminalResourceLimitFields | null {
+  const refusal = parseTaskBudgetRefusal(log);
+  if (!refusal) return null;
+  const unitLabel = refusal.unit === 'mb' ? 'MB' : 'tasks';
+  const remedy =
+    refusal.kind === 'pids'
+      ? `processes:limit { taskId: '${row.taskId}', tasksMax: <at least ${refusal.reserve + refusal.requiredPerTask}> }`
+      : `processes:limit { taskId: '${row.taskId}', memoryMaxMb: <at least ${refusal.reserve + refusal.requiredPerTask}> }`;
+  return {
+    failure_class: 'infrastructure-resource-limit',
+    resource_limit: {
+      kind: refusal.kind,
+      unit: refusal.unit,
+      configured_limit: refusal.limit,
+      reserve: refusal.reserve,
+      required_per_task: refusal.requiredPerTask,
+      source: 'pre-launch-budget-refusal',
+    },
+    ...(testRun ? { test_verdict: 'undetermined' as const } : {}),
+    resource_advice:
+      `NOTHING RAN. The scheduler refused before launch: a ${refusal.kind} allowance of ` +
+      `${refusal.limit} ${unitLabel} minus a ${refusal.reserve} ${unitLabel} reserve cannot admit one ` +
+      `${refusal.requiredPerTask} ${unitLabel} task. ` +
+      `${testRun ? 'Zero files were measured, so this non-zero exit is an UNDETERMINED test run, not a red suite verdict' : 'This is an infrastructure resource-limit failure, not a workload failure'}. ` +
+      `Raise the live budget with ${remedy}.`,
   };
 }
 
