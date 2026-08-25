@@ -579,12 +579,29 @@ export async function handleLoopResumeTurnExit(
             severity: 'major',
             body:
               `A loop:arm-owned loop's resume turn died on a ${klass} the operator must know about: ` +
-              `${outcome.error.message}\n\nThis loop wakes its owner session on a fixed cadence — while ` +
-              `wedged (rate-limited/capped/auth-locked), every wake risks re-firing into the same wall. The ` +
-              `fire-gate + 429-aware re-arm (loop-turn-outcome.ts) are backing off automatically, but if this ` +
-              `owner is a FLEET LEADER the fleet may be running leaderless until it clears. Check ` +
-              `sessions:read / coord:presence for owner ${ref.targetOwnerId ?? 'unknown'}; if it is a fleet ` +
-              `leader, consider relaunching leadership on another account/session rather than waiting out the cap.` +
+              `${outcome.error.message}\n\n` +
+              // WI-41683: the re-fire warning is only TRUE for the classes that re-arm.
+              // contextOverflow and staleResumeTarget PAUSE the loop instead (the bracket
+              // note below says so), so telling that reader "every wake risks re-firing"
+              // contradicts the same body two sentences later and sends them looking for a
+              // wake-loop that was already stopped. Give each class the residue it actually
+              // has, and — for the paused ones — the criterion that CLOSES the item, since
+              // by the time anyone reads it the answer is usually "already resolved".
+              (contextOverflow || staleResumeTarget
+                ? `The loop was PAUSED by a terminal guard, so it is NOT re-firing on a cadence and there ` +
+                  `is no wake-loop left to clear. The residue to check is STRANDED WORK, because this ` +
+                  `owner's session is gone: does owner ${ref.targetOwnerId ?? 'unknown'} still hold claims ` +
+                  `(work_items:list { assignee }), and was it a FLEET LEADER whose fleet is now running ` +
+                  `leaderless (coord:presence / fleet:assignments)? If the claims are already released and ` +
+                  `no fleet is leaderless, the condition this alert describes is over — close the item as ` +
+                  `already-resolved rather than re-investigating the loop.`
+                : `This loop wakes its owner session on a fixed cadence — while wedged ` +
+                  `(rate-limited/capped/auth-locked), every wake risks re-firing into the same wall. The ` +
+                  `fire-gate + 429-aware re-arm (loop-turn-outcome.ts) are backing off automatically, but ` +
+                  `if this owner is a FLEET LEADER the fleet may be running leaderless until it clears. ` +
+                  `Check sessions:read / coord:presence for owner ${ref.targetOwnerId ?? 'unknown'}; if it ` +
+                  `is a fleet leader, consider relaunching leadership on another account/session rather ` +
+                  `than waiting out the cap.`) +
               (contextOverflow
                 ? ` [context-overflow terminal guard: the loop was paused instead of re-arming the same ` +
                   `oversized warm transcript; ${

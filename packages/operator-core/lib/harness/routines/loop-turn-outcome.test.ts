@@ -665,6 +665,53 @@ describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () 
     expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * WI-41683. The alert body used to open with "every wake risks re-firing into the same
+   * wall" for EVERY class — including the two that PAUSE the loop, whose own bracket note
+   * two sentences later says it was stopped. A reader of a paused-class item therefore went
+   * hunting for a wake-loop that no longer existed. These two tests are a contrastive pair:
+   * the paused class must not carry the re-fire claim, and the re-arming class still must.
+   */
+  it('a PAUSED-class alert states the loop is not re-firing, and gives the close criterion', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    mockResolvedTyped(vi.mocked(captureImprovement).mockClear(), CAPTURE_OK);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+
+    await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({ stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }),
+      { sql: sql as never, recordFire: vi.fn(async () => {}), autoPause: vi.fn(async () => {}) },
+    );
+
+    const body = vi.mocked(captureImprovement).mock.calls.at(-1)?.[0]?.body as string;
+    expect(body).toContain('PAUSED by a terminal guard');
+    expect(body).toContain('close the item as already-resolved');
+    // The false claim that sent readers looking for a live wake-loop.
+    expect(body).not.toContain('every wake risks re-firing');
+    // The bracket note the existing assertions rely on must survive the rewrite.
+    expect(body).toContain('context-overflow terminal guard');
+  });
+
+  it('a RE-ARMING-class alert still carries the re-fire warning', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockResolvedTyped(vi.mocked(captureImprovement).mockClear(), CAPTURE_OK);
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+
+    await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({
+        stdoutTail: 'API Error: 429 Too Many Requests · Rate limited · retry after 900 seconds',
+      }),
+      { sql: sql as never, recordFire: vi.fn(async () => {}) },
+    );
+
+    const body = vi.mocked(captureImprovement).mock.calls.at(-1)?.[0]?.body as string;
+    expect(body).toContain('every wake risks re-firing');
+    expect(body).not.toContain('PAUSED by a terminal guard');
+  });
+
   it('a rate_limited death JUST UNDER the chronic floor still stays silent (no spam on ordinary longer waits)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
