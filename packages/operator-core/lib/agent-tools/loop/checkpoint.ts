@@ -746,6 +746,34 @@ export default defineTool({
           isError: true,
         };
       }
+      // The store can accept an older writer before a newer checkpoint commits,
+      // then reject that writer after it waits on the row lock. `stored` echoes
+      // the newer note in this case, so proceeding to verify-read would make the
+      // discarded write look successful. Surface the rejection before any
+      // post-write reads and make the current hash available for a retry.
+      if (writeResult.staleWrite) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'checkpoint_stale_write',
+                retryable: true,
+                harness,
+                ownerId,
+                blockedReason: writeResult.blockedReason ?? 'stale_write_older_than_current',
+                staleWrite: writeResult.staleWrite,
+                currentHash: stored === null ? null : shortCarryHash(stored),
+                message:
+                  'This checkpoint started before a newer carry-note committed and was discarded; no note was written. ' +
+                  'Re-read the current carry-note and retry if this checkpoint is still current.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     } catch (error) {
       // The loop carry-note is the cold successor's only durable anchor. A
       // transient lock wait or admin-pool acquisition deadline must be visible

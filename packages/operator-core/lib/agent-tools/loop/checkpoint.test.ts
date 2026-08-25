@@ -892,6 +892,34 @@ describe('WI-7124: verify-read — the write must read back via the SAME path a 
     });
     expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
   });
+
+  it('surfaces a stale in-flight write as discarded before verify-read', async () => {
+    setLoopCarryNoteWithPrior.mockResolvedValueOnce({
+      stored: 'newer note',
+      priorLength: 'newer note'.length,
+      blockedReason: 'stale_write_older_than_current',
+      staleWrite: {
+        writeStartedAtMs: 100,
+        currentUpdatedAtMs: 200,
+      },
+    });
+
+    const out = await call({ next: 'stale in-flight checkpoint' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      error: 'checkpoint_stale_write',
+      retryable: true,
+      blockedReason: 'stale_write_older_than_current',
+      staleWrite: {
+        writeStartedAtMs: 100,
+        currentUpdatedAtMs: 200,
+      },
+      currentHash: shortCarryHash('newer note'),
+    });
+    expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
+  });
 });
 
 describe('loop:checkpoint — the P-006 walls merge (commitments cleared explicitly, never incidentally)', () => {
