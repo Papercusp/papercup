@@ -406,7 +406,12 @@ mod tests {
             })
             .collect();
         // Two runs of 30 unchanged lines, each collapsed rather than printed.
-        assert_eq!(gaps.len(), 2, "both context runs must collapse: {:?}", d.lines);
+        assert_eq!(
+            gaps.len(),
+            2,
+            "both context runs must collapse: {:?}",
+            d.lines
+        );
         // The leading run keeps only its TAIL (nothing above the change is worth
         // showing), the trailing run only its HEAD.
         assert_eq!(gaps[0], 28);
@@ -443,7 +448,9 @@ mod tests {
         let d = diff.expect("diff");
         for line in &d.lines {
             let len = match line {
-                DiffLine::Added(s) | DiffLine::Removed(s) | DiffLine::Context(s) => s.chars().count(),
+                DiffLine::Added(s) | DiffLine::Removed(s) | DiffLine::Context(s) => {
+                    s.chars().count()
+                }
                 DiffLine::Gap(_) => 0,
             };
             assert!(len <= MAX_LINE_CHARS, "retained {len} chars");
@@ -459,10 +466,17 @@ mod tests {
         }));
         let v = bounded.expect("arguments are still carried");
         // Shape survives, so the card's one-line summary still reads correctly…
-        assert_eq!(v.get("file_path").and_then(|f| f.as_str()), Some("src/a.rs"));
+        assert_eq!(
+            v.get("file_path").and_then(|f| f.as_str()),
+            Some("src/a.rs")
+        );
         // …but the body does not ride along for the life of the session.
         let kept = v.get("content").and_then(|c| c.as_str()).unwrap();
-        assert!(kept.chars().count() <= MAX_LINE_CHARS, "kept {}", kept.len());
+        assert!(
+            kept.chars().count() <= MAX_LINE_CHARS,
+            "kept {}",
+            kept.len()
+        );
     }
 
     #[test]
@@ -483,7 +497,11 @@ mod tests {
         let d = diff.expect("diff");
         assert_eq!(d.added, 30, "every line reached the aligner");
         let kept = bounded
-            .and_then(|v| v.get("content").and_then(|c| c.as_str()).map(str::to_string))
+            .and_then(|v| {
+                v.get("content")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            })
             .unwrap();
         assert!(
             kept.chars().count() <= MAX_LINE_CHARS,

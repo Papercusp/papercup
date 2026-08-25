@@ -1108,14 +1108,14 @@ mod tests {
         // NOTE the closing quote in the needle: it keeps "psu-sentinel" from
         // substring-matching "psu-sentinel-deep".
         assert_eq!(on.matches("command \"psu-sentinel\"").count(), 1); // the front pane (queen+overwatch are pui brain-view)
-                                                                      // WI-4485: NO deep pane in the dock — not tiled, not floating. P-014 put one here
-                                                                      // (a 2nd pane sharing the "🥤 papercup" label) and the owner saw "2x papercup";
-                                                                      // moving it to a hidden floating pane still RENDERED (zellij parses
-                                                                      // hide_floating_panes but draws the pane anyway). The deep half needs no pane: it
-                                                                      // is found via presence + woken over coord, and papercup-deep-delegate.ts
-                                                                      // explicitly supports the "no-deep-pane case" by spawning an ephemeral agent.
+                                                                       // WI-4485: NO deep pane in the dock — not tiled, not floating. P-014 put one here
+                                                                       // (a 2nd pane sharing the "🥤 papercup" label) and the owner saw "2x papercup";
+                                                                       // moving it to a hidden floating pane still RENDERED (zellij parses
+                                                                       // hide_floating_panes but draws the pane anyway). The deep half needs no pane: it
+                                                                       // is found via presence + woken over coord, and papercup-deep-delegate.ts
+                                                                       // explicitly supports the "no-deep-pane case" by spawning an ephemeral agent.
         assert_eq!(on.matches("command \"psu-sentinel-deep\"").count(), 0);
-                                                                            // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
+        // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
         assert_eq!(on.matches("command \"psu\"\n").count(), 0);
         assert!(
             !on.contains("agent-pane"),
@@ -1212,7 +1212,6 @@ mod tests {
         let ow = kdl.find("name=\"🫖 kettle\"").unwrap();
         assert!(front < ow, "the front pane leads the dock, above overwatch");
     }
-
 
     #[test]
     fn chat_dock_overwatch_pane_sits_above_the_queen() {
