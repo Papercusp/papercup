@@ -279,6 +279,81 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(refs.has(planItemRef(PLAN, 'P-003'))).toBe(false);
   });
 
+  it('canonicalizes a plan run onto the same promotion path and returns only its actionable frontier', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Read the triggering message' },
+        { id: 'P-002', status: 'todo', text: 'Send the approved response', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'done', text: 'Template setup already complete' },
+      ],
+    });
+    const planRun = {
+      runId: 42,
+      runSeq: 3,
+      instancePlanSlug: PLAN,
+      templateSlug: 'respond-to-email',
+      inputs: { messageId: 'gmail-123' },
+    };
+
+    const first = await run.promotePlanItems({ ...base, planRun, itemKind: 'chunk' });
+    expect(first.promoted).toBe(2);
+    expect(first.workItems).toHaveLength(2);
+    expect(first.workItems.map((item) => ({
+      planItemId: item.planItemId,
+      actionable: item.actionable,
+      newlyPromoted: item.newlyPromoted,
+    }))).toEqual([
+      { planItemId: 'P-001', actionable: true, newlyPromoted: true },
+      { planItemId: 'P-002', actionable: false, newlyPromoted: true },
+    ]);
+
+    const rows = await db.sql<Array<{
+      feature_id: string;
+      item_kind: string;
+      source_plan_slug: string;
+      status: string;
+      payload: Record<string, unknown>;
+    }>>`
+      SELECT feature_id, item_kind, source_plan_slug, status, payload
+        FROM harness_shared.harness_features_consolidated
+       ORDER BY feature_id`;
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.item_kind === 'chunk')).toBe(true);
+    expect(rows.every((row) => row.source_plan_slug === 'respond-to-email')).toBe(true);
+    // Feature-family storage normalizes the public todo state to `open`.
+    expect(rows.map((row) => row.status).sort()).toEqual(['blocked', 'open']);
+    for (const row of rows) {
+      expect(row.payload.plan_run).toEqual(planRun);
+      expect((row.payload.plan_item as Record<string, unknown>).plan_slug).toBe(PLAN);
+    }
+    expect(await depEdges()).toHaveLength(1);
+
+    // Replay resolves the SAME execution records and frontier instead of
+    // returning an empty mapping merely because no row was newly minted.
+    const replay = await run.promotePlanItems({ ...base, planRun, itemKind: 'chunk' });
+    expect(replay.promoted).toBe(0);
+    expect(replay.skipped).toBe(2);
+    expect(replay.workItems.map((item) => item.workItemId)).toEqual(
+      first.workItems.map((item) => item.workItemId),
+    );
+    expect(replay.workItems.map((item) => item.newlyPromoted)).toEqual([false, false]);
+    expect(replay.workItems.filter((item) => item.actionable).map((item) => item.planItemId)).toEqual(['P-001']);
+  });
+
+  it('rejects a plan-run context whose instance identity differs from the promoted plan', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Do not misattribute me' }] });
+    await expect(run.promotePlanItems({
+      ...base,
+      planRun: {
+        runId: 9,
+        runSeq: 0,
+        instancePlanSlug: 'different-instance',
+        templateSlug: 'respond-to-email',
+      },
+    })).rejects.toThrow(`plan_run_instance_slug_mismatch:different-instance:${PLAN}`);
+    expect(await features()).toEqual([]);
+  });
+
   it('EI-18802263047567602: inherits explicit plan topics onto every newly promoted work-item', async () => {
     await topicFeed.tagObject('plan', PLAN, 'coord-dx', 'su-test');
     await topicFeed.tagObject('plan', PLAN, 'release-gates', 'su-test');

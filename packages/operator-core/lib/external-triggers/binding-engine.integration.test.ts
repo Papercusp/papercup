@@ -222,6 +222,8 @@ describe('external trigger durable dispatch', () => {
       runId: 4243,
       runSeq: 0,
       minted: 1,
+      workItemIds: ['WI-4243'],
+      actionableWorkItemIds: ['WI-4243'],
       replayed: false,
     }));
     const announceRunWork = vi.fn(async () => undefined);

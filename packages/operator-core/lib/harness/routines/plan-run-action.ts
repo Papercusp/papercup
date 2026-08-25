@@ -11,14 +11,14 @@
  * Per fire it mints a RUN (Option C, D-002): an ephemeral INSTANCE plan
  * (`<template>@run-<token>`, a copy of the template) + a `plan_runs` ledger row
  * (run_type='scheduled') + the instance's items as frontier work_items, run-scoped via
- * `payload.plan_run` + `source_plan_slug`=template (D-016) so the Queen frontier filter
- * + the Runs-tab rollup work unchanged. The harness's existing dispatcher executes
- * those work_items — no second execution engine.
+ * `payload.plan_run` + `source_plan_slug`=template (D-016). Work creation goes through
+ * the SAME canonical `promotePlanItems` path as `plans:start`; callers may then assign
+ * and wake its dependency-safe frontier without a second execution engine.
  *
- * Replay-safety (the durable-step contract): the run token is stable per fire and the
- * complete instance-plan + run-ledger + frontier-work mint is ONE transaction. A crash
- * therefore exposes either every artifact or none; a deterministic replay can never
- * mistake a partial instance-plan insert for a completed run.
+ * Replay-safety (the durable-step contract): the run token is stable per fire. The
+ * instance plan + run ledger commit atomically; canonical promotion is idempotent and
+ * re-entered on every replay, so a crash between the two phases heals instead of
+ * stranding a run or minting duplicate execution records.
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -26,12 +26,17 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
-import { FEATURE_FAMILY_KINDS } from '../../work-items';
+import { FEATURE_FAMILY_KINDS, type FeatureFamilyKind } from '../../work-items';
 import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
 import { hashPlanContent } from '@papercusp/plan-parser';
+import {
+  promotePlanItems,
+  type PlanRunPromotionContext,
+  type PromotePlanResult,
+} from '../../plan-workitem-promotion-run';
 
 /** launched_by label for a scheduled run's plan_runs row. */
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
@@ -48,22 +53,33 @@ function nextManualToken(): number {
   return t;
 }
 
-interface TemplateItem {
-  id: string;
-  text?: string | null;
-  status?: string | null;
-}
-
 export interface ScheduledPlanFireResult {
   instanceSlug: string;
   runId: number;
   runSeq: number;
+  /** Work items newly minted by canonical promotion during this invocation. */
   minted: number;
+  /** Every open plan item's canonical execution record for this run. */
+  workItemIds: string[];
+  /** The dependency-safe frontier eligible for assignment right now. */
+  actionableWorkItemIds: string[];
+  /** Full canonical promotion evidence, absent only for concurrency skips. */
+  promotion?: PromotePlanResult;
   /** true when this fire was a replay no-op (instance already existed). */
   replayed: boolean;
   /** true when this fire was skipped because a prior run of the same template was
    *  still 'running' and the schedule's concurrency policy is 'skip' (EI-1386). */
   skippedForConcurrency?: boolean;
+}
+
+interface PreparedPlanRun {
+  instanceSlug: string;
+  runId: number;
+  runSeq: number;
+  replayed: boolean;
+  skippedForConcurrency?: boolean;
+  itemKind: (typeof FEATURE_FAMILY_KINDS)[number];
+  runInputs: unknown;
 }
 
 export interface ScheduledPlanFireOptions {
@@ -87,7 +103,7 @@ export interface ScheduledPlanFireOptions {
 async function runScheduledPlanFireTx(
   sql: Sql | TransactionSql,
   opts: ScheduledPlanFireOptions,
-): Promise<ScheduledPlanFireResult | null> {
+): Promise<PreparedPlanRun | null> {
   const { installSlug, workspaceId, templateSlug, trigger = 'scheduled' } = opts;
 
   // WI-6978 — `harness_plans` IS re-homed, `plan_runs` is NOT. Two relations, two
@@ -156,7 +172,10 @@ async function runScheduledPlanFireTx(
   // the feature-family kinds (feature|chunk). An invalid or removed kind (e.g. the
   // retired research-task) falls back to the coding-spine 'feature' default.
   const rawKind = template.schedule?.executorKind;
-  const itemKind = rawKind && (FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind) ? rawKind : 'feature';
+  const itemKind: FeatureFamilyKind =
+    rawKind && (FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind)
+      ? (rawKind as FeatureFamilyKind)
+      : 'feature';
 
   // 2. Run token → instance slug. A SCHEDULED/event fire uses the routine's last_fired_at
   //    (stamped at claim, stable across a DBOS step replay) so a re-executed step is a no-op,
@@ -188,15 +207,38 @@ async function runScheduledPlanFireTx(
   const fireLockKey = `${workspaceId}:${installSlug}:${instanceSlug}`;
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${fireLockKey}, 0))`;
 
-  // 3. Idempotency: the instance already existing ⇒ this is a replay ⇒ no-op.
-  const existing = await sql<Array<{ run_seq: number | null }>>`
-    SELECT run_seq FROM harness_shared.harness_plans
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
-       AND plan_slug = ${instanceSlug}
+  // 3. Idempotency: the instance already existing ⇒ recover the SAME ledger
+  // row and re-enter canonical promotion after this transaction. A replay is
+  // not a promotion no-op: it is the healing path for a crash between the
+  // atomic instance+ledger seed and the shared work-item writes.
+  const existing = await sql<Array<{ run_seq: number | null; run_id: number | null; inputs: unknown }>>`
+    SELECT p.run_seq, r.id AS run_id, r.inputs
+      FROM harness_shared.harness_plans p
+      LEFT JOIN LATERAL (
+        SELECT id, inputs
+          FROM harness_shared.plan_runs
+         WHERE workspace_id = ${workspaceId}
+           AND harness_slug = ${installSlug}
+           AND instance_plan_slug = ${instanceSlug}
+         ORDER BY id DESC
+         LIMIT 1
+      ) r ON TRUE
+     WHERE p.workspace_id = ${workspaceId} AND p.harness_slug = ${planStorageSlug}
+       AND p.plan_slug = ${instanceSlug}
   `;
   if (existing[0]) {
-    console.log(`[plan-run] ${instanceSlug} already minted (replay) — skip`);
-    return { instanceSlug, runId: -1, runSeq: existing[0].run_seq ?? -1, minted: 0, replayed: true };
+    if (!existing[0].run_id) {
+      throw new Error(`plan_run_replay_missing_ledger:${instanceSlug}`);
+    }
+    console.log(`[plan-run] ${instanceSlug} already seeded (replay) — repair promotion`);
+    return {
+      instanceSlug,
+      runId: Number(existing[0].run_id),
+      runSeq: existing[0].run_seq ?? -1,
+      replayed: true,
+      itemKind,
+      runInputs: existing[0].inputs ?? runInputs,
+    };
   }
 
   // 3b. EI-1386 — overlap policy (D-014). The schedule's `concurrency` was authored
@@ -223,7 +265,15 @@ async function runScheduledPlanFireTx(
         `[plan-run] ${installSlug}: skipping fire of '${templateSlug}' — prior run ` +
           `${inFlight[0].id} still 'running' (concurrency='skip')`,
       );
-      return { instanceSlug, runId: -1, runSeq: -1, minted: 0, replayed: false, skippedForConcurrency: true };
+      return {
+        instanceSlug,
+        runId: -1,
+        runSeq: -1,
+        replayed: false,
+        skippedForConcurrency: true,
+        itemKind,
+        runInputs,
+      };
     }
   }
 
@@ -253,14 +303,21 @@ async function runScheduledPlanFireTx(
   const runInputsJson = runInputs === null || runInputs === undefined ? null : JSON.stringify(runInputs);
   const inputSchemaJson =
     template.input_schema == null ? null : JSON.stringify(template.input_schema);
+  // The template's `items` jsonb is the canonical derived index consumed by
+  // promotePlanItems. Copy it with the content snapshot: historical fixtures
+  // (and imported plans) may have a populated index even when their markdown
+  // predates strict item-line syntax, and silently dropping it would turn a
+  // valid run into a zero-work promotion.
+  const itemsJson = JSON.stringify(Array.isArray(template.items) ? template.items : []);
   const instanceContent = setFrontmatterScalar(template.content, 'slug', instanceSlug);
   const instanceContentHash = hashPlanContent(instanceContent);
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
-       template_slug, run_seq, origin, template, template_data, input_schema)
+       items, template_slug, run_seq, origin, template, template_data, input_schema)
     VALUES (${workspaceId}, ${planStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
-            ${instanceContent}, ${instanceContentHash}, ${templateSlug}, ${runSeq}, 'local',
+            ${instanceContent}, ${instanceContentHash}, ${itemsJson}::text::jsonb,
+            ${templateSlug}, ${runSeq}, 'local',
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
   `;
@@ -278,53 +335,92 @@ async function runScheduledPlanFireTx(
   `;
   const runId = Number(runRows[0].id);
 
-  // 7. Mint the template's open items as frontier work_items, run-scoped (D-016):
-  //    source_plan_slug = TEMPLATE (Queen frontier filter), payload.plan_run = the run.
-  //    Unclaimed/todo — the harness dispatcher executes them. ON CONFLICT keeps replay safe.
-  const items: TemplateItem[] = Array.isArray(template.items) ? (template.items as TemplateItem[]) : [];
-  let minted = 0;
-  for (const it of items) {
-    if (!it?.id || it.status === 'done' || it.status === 'dropped') continue;
-    const featureId = `PR-${runId}-${it.id}`;
-    const title = (it.text ?? it.id).replace(/\s+/g, ' ').trim().slice(0, 140);
-    // P-010: the run's inputs ride the work-item payload. The worker that eventually
-    // claims this item via scheduler:get_next is a DIFFERENT agent in a different
-    // process from whatever fired the run — without the arguments on the payload it
-    // inherits the plan text and nothing to run it against.
-    const payload = JSON.stringify({
-      plan_run: {
-        runId,
-        runSeq,
-        instancePlanSlug: instanceSlug,
-        templateSlug,
-        ...(runInputs === null || runInputs === undefined ? {} : { inputs: runInputs }),
-      },
-      plan_item: { plan_slug: instanceSlug, item_id: it.id, harness_slug: installSlug },
-    });
-    await sql.unsafe(
-      `INSERT INTO harness_shared.work_items
-         (harness_slug, feature_id, title, summary, status, attempts, item_kind, payload,
-          needs_human_review, workspace_id, ts, created_ts, updated_ts, source_plan_slug)
-       VALUES ($1,$2,$3,$4,'todo',0,$9,$5::text::jsonb,FALSE,$6,$7,$7,$7,$8)
-       ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
-      [installSlug, featureId, title, it.text ?? null, payload, workspaceId, now, templateSlug, itemKind],
-    );
-    minted += 1;
-  }
-
-  console.log(
-    `[plan-run] ${installSlug}: minted run #${runSeq} of '${templateSlug}' → ${instanceSlug} ` +
-      `(plan_run ${runId}, ${minted} work-item(s))`,
-  );
-  return { instanceSlug, runId, runSeq, minted, replayed: false };
+  // Work-item creation is deliberately NOT implemented here. After this
+  // transaction commits, runScheduledPlanFire invokes promotePlanItems with
+  // the run context. That one implementation owns identity, provenance,
+  // blocker edges, lane gating, idempotency, and replay repair.
+  return { instanceSlug, runId, runSeq, replayed: false, itemKind, runInputs };
 }
 
-/** Mint one complete run atomically; callers never observe partial replay state. */
+/**
+ * Seed the immutable instance+ledger transaction, then invoke canonical
+ * promotion. The second phase is replay-healable: every deterministic replay
+ * resolves the original run id and re-enters idempotent promotion.
+ */
 export async function runScheduledPlanFire(
   sql: Sql,
   opts: ScheduledPlanFireOptions,
 ): Promise<ScheduledPlanFireResult | null> {
-  return sql.begin((tx) => runScheduledPlanFireTx(tx, opts));
+  const prepared = await sql.begin((tx) => runScheduledPlanFireTx(tx, opts));
+  if (!prepared) return null;
+  if (prepared.skippedForConcurrency) {
+    return {
+      instanceSlug: prepared.instanceSlug,
+      runId: prepared.runId,
+      runSeq: prepared.runSeq,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: prepared.replayed,
+      skippedForConcurrency: true,
+    };
+  }
+
+  const planRun: PlanRunPromotionContext = {
+    runId: prepared.runId,
+    runSeq: prepared.runSeq,
+    instancePlanSlug: prepared.instanceSlug,
+    templateSlug: opts.templateSlug,
+    ...(prepared.runInputs === null || prepared.runInputs === undefined
+      ? {}
+      : { inputs: prepared.runInputs }),
+  };
+  const promotion = await promotePlanItems({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.installSlug,
+    planSlug: prepared.instanceSlug,
+    createdBy: PLAN_RUN_LAUNCHER,
+    planRun,
+    itemKind: prepared.itemKind,
+  });
+  if (promotion.flagOff) {
+    throw new Error(`plan_run_promotion_disabled:${prepared.instanceSlug}`);
+  }
+  if (promotion.specTriadBlocked) {
+    throw new Error(
+      `plan_run_spec_triad_blocked:${prepared.instanceSlug}:${promotion.specTriadMissing?.join(',') ?? 'unknown'}`,
+    );
+  }
+  if (promotion.specQualityBlocked) {
+    throw new Error(`plan_run_spec_quality_blocked:${prepared.instanceSlug}`);
+  }
+  const expectedOpenItems = promotion.promoted + promotion.skipped;
+  if (promotion.workItems.length !== expectedOpenItems) {
+    throw new Error(
+      `plan_run_promotion_incomplete:${prepared.instanceSlug}:${promotion.workItems.length}/${expectedOpenItems}`,
+    );
+  }
+
+  const workItemIds = promotion.workItems.map((item) => item.workItemId);
+  const actionableWorkItemIds = promotion.workItems
+    .filter((item) => item.actionable)
+    .map((item) => item.workItemId);
+  console.log(
+    `[plan-run] ${opts.installSlug}: ${prepared.replayed ? 'replayed' : 'minted'} run #${prepared.runSeq} ` +
+      `of '${opts.templateSlug}' → ${prepared.instanceSlug} (plan_run ${prepared.runId}, ` +
+      `${promotion.promoted} new / ${workItemIds.length} total work-item(s), ` +
+      `${actionableWorkItemIds.length} actionable)`,
+  );
+  return {
+    instanceSlug: prepared.instanceSlug,
+    runId: prepared.runId,
+    runSeq: prepared.runSeq,
+    minted: promotion.promoted,
+    workItemIds,
+    actionableWorkItemIds,
+    promotion,
+    replayed: prepared.replayed,
+  };
 }
 
 /** The registered `system:plan-run` handler. Never throws (durable-step contract). */

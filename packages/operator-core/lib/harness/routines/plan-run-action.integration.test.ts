@@ -16,6 +16,44 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
 
+const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+
+// Canonical promotion deliberately routes through the shared stores rather than
+// borrowing runScheduledPlanFire's transaction client. Point every production
+// store seam at this file's throwaway DB so the suite exercises the real
+// promoter/reader/work-item/DAG path without ever touching the developer DB.
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    withWorkspace: async <T>(_workspaceId: string, fn: (tx: Sql) => Promise<T>) => fn(h.sql),
+  };
+});
+vi.mock('@papercusp/flags/server', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
+  return {
+    ...actual,
+    getFlag: async (flag: string) =>
+      flag === 'papercusp-spec-triad-required' ? false : true,
+  };
+});
+vi.mock('../../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../../workspace-registry')>('../../workspace-registry');
+  return { ...actual, activeWorkspaceId: () => 'ws-planrun' };
+});
+vi.mock('../../agent-tools/plans/plan-spec-quality-gate', () => ({
+  evaluatePlanSpecQualityGate: vi.fn(async ({ planSlug }: { planSlug: string }) => ({
+    satisfied: true,
+    applicable: false,
+    mode: 'report-only',
+    planSlug,
+    specSetHash: null,
+    wouldBlock: ['no-first-class-spec-clauses'],
+  })),
+}));
+
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-planrun';
@@ -34,12 +72,19 @@ const TEMPLATE = 'monitor-x';
 const ITEMS = [
   { id: 'P-001', text: 'check campaign stats', status: 'todo' },
   { id: 'P-002', text: 'already handled', status: 'done' }, // skipped (done)
-  { id: 'P-003', text: 'post the summary', status: 'todo' },
+  { id: 'P-003', text: 'post the summary', status: 'todo', blockedBy: ['P-001'] },
 ];
 
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  h.sql = sql;
+  await sql`
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+    VALUES (${WS}, ${HARNESS}, ${Buffer.from([0])}, 'kc-plan-run-it', 0)
+    ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
+  `;
 });
 afterAll(async () => {
   await org?.cleanup();
@@ -85,6 +130,8 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(res!.replayed).toBe(false);
     expect(res!.runSeq).toBe(0);
     expect(res!.minted).toBe(2); // P-001 + P-003 (P-002 is done → skipped)
+    expect(res!.workItemIds).toHaveLength(2);
+    expect(res!.actionableWorkItemIds).toHaveLength(1); // P-003 is blocked by P-001
 
     // Instance plan: a copy pinned to the template, hidden from the main list.
     const inst = await sql<Array<{ template_slug: string; run_seq: number; content: string }>>`
@@ -115,12 +162,18 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       SELECT feature_id, source_plan_slug, status, payload FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = ${HARNESS} AND workspace_id = ${WS} AND source_plan_slug = ${TEMPLATE}`;
     expect(wis).toHaveLength(2);
+    expect(wis.map((wi) => wi.status).sort()).toEqual(['blocked', 'open']);
     for (const wi of wis) {
-      expect(wi.status).toBe('todo');
       expect(wi.source_plan_slug).toBe(TEMPLATE);
       expect((wi.payload as any).plan_run.runId).toBe(res!.runId);
       expect((wi.payload as any).plan_run.templateSlug).toBe(TEMPLATE);
+      expect((wi.payload as any).plan_item.plan_slug).toBe(res!.instanceSlug);
     }
+    const edges = await sql<Array<{ blocked_ref: string; blocker_ref: string }>>`
+      SELECT blocked_ref, blocker_ref
+        FROM harness_shared.work_item_deps
+       WHERE dep_type = 'blocks'`;
+    expect(edges).toHaveLength(1);
   });
 
   it('is replay-safe: re-firing the same claim is a no-op (no duplicate run)', async () => {
@@ -129,6 +182,9 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     const replay = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
     expect(first!.replayed).toBe(false);
     expect(replay!.replayed).toBe(true);
+    expect(replay!.runId).toBe(first!.runId);
+    expect(replay!.minted).toBe(0);
+    expect(replay!.workItemIds).toEqual(first!.workItemIds);
     const runCount = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
     expect(runCount[0].n).toBe(1);

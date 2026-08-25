@@ -142,7 +142,7 @@ vi.mock('../with-plan-lock', async (orig) => {
 
 import tool from '../start';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
-import { promotePlanItems } from '../../../plan-workitem-promotion-run';
+import { promotePlanItems, type PromotePlanResult } from '../../../plan-workitem-promotion-run';
 
 const promotePlanItemsMock = vi.mocked(promotePlanItems);
 
@@ -159,6 +159,7 @@ const NO_EDGES = {
   blockersDangling: 0,
   blockersUnresolved: 0,
   edgesPreserved: 0,
+  workItems: [] as PromotePlanResult['workItems'],
 } as const;
 
 const MAKE_CTX = () =>

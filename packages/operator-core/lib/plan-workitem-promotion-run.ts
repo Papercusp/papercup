@@ -33,7 +33,7 @@ import { FLAGS } from '@papercusp/flags';
 import { resolveEffectiveStatusForItems, type ItemStatus, type PlanItem } from '@papercusp/plan-parser';
 import { systemDistinctId } from './flag-distinct-id';
 import { readPlanBySlug, type PlanRow } from './agent-tools/plans/source';
-import { getWorkItem, linkWorkItem } from './work-items';
+import { getWorkItem, linkWorkItem, type FeatureFamilyKind } from './work-items';
 import { upsertConditionWorkItem } from './coord/condition-upsert';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import {
@@ -120,6 +120,47 @@ export interface PromotePlanResult {
    * silently destroy an edge some other author wrote. Counts EDGES, like `edgesWritten`.
    */
   edgesPreserved: number;
+  /**
+   * The concrete execution records covering this promotion's open plan items.
+   * Includes idempotently-adopted rows, not only rows minted by this call, so a
+   * replaying plan-run can deterministically resume assignment/wake without a
+   * second provenance query.
+   */
+  workItems: PromotedPlanWorkItem[];
+}
+
+/** Per-run provenance stamped onto every work item promoted from an instance plan. */
+export interface PlanRunPromotionContext {
+  runId: number;
+  runSeq: number;
+  instancePlanSlug: string;
+  templateSlug: string;
+  inputs?: unknown;
+}
+
+/** One open plan item and the canonical work item that executes it. */
+export interface PromotedPlanWorkItem {
+  planItemId: string;
+  workItemId: string;
+  /** True only when this call won the condition-key mint. */
+  newlyPromoted: boolean;
+  /** Canonical plan-DAG frontier verdict at promotion time. */
+  actionable: boolean;
+}
+
+export interface PromotePlanItemsOptions {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  createdBy: string;
+  /**
+   * Scheduled/event/manual run context. The plan item still implements the
+   * INSTANCE plan, while sourcePlanSlug groups the execution under the stable
+   * TEMPLATE and payload.plan_run identifies this immutable fire.
+   */
+  planRun?: PlanRunPromotionContext;
+  /** Preserve the plan template's authored feature-family executor kind. */
+  itemKind?: FeatureFamilyKind;
 }
 
 /** The zero-edge result shape shared by every early return (nothing minted ⇒ nothing to link). */
@@ -130,6 +171,7 @@ const NO_EDGES = {
   blockersDangling: 0,
   blockersUnresolved: 0,
   edgesPreserved: 0,
+  workItems: [] as PromotedPlanWorkItem[],
 } as const;
 
 function isOpenStatus(status: string | null): boolean {
@@ -236,12 +278,17 @@ async function evaluateSpecTriadForPromotion(
  * (re-running mints only newly-open items, never duplicates). Throws on a genuine
  * error so a direct caller/test sees it; plans:start wraps the call in .catch().
  */
-export async function promotePlanItems(opts: {
-  workspaceId: string;
-  harnessSlug: string;
-  planSlug: string;
-  createdBy: string;
-}): Promise<PromotePlanResult> {
+export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<PromotePlanResult> {
+  if (opts.planRun) {
+    if (opts.planRun.instancePlanSlug !== opts.planSlug) {
+      throw new Error(
+        `plan_run_instance_slug_mismatch:${opts.planRun.instancePlanSlug}:${opts.planSlug}`,
+      );
+    }
+    if (!Number.isSafeInteger(opts.planRun.runId) || opts.planRun.runId <= 0) {
+      throw new Error('plan_run_id_invalid');
+    }
+  }
   const enabled = await getFlag(FLAGS.PLAN_WORKITEM_PROMOTION, systemDistinctId());
   if (!enabled) return { promoted: 0, skipped: 0, flagOff: true, ...NO_EDGES };
 
@@ -367,6 +414,16 @@ export async function promotePlanItems(opts: {
     openItems,
     existingPromotedItemIds: alreadyIds,
   });
+  const allRunSpecsByPlanItem = opts.planRun
+    ? new Map(
+        computePromotions({
+          planSlug: opts.planSlug,
+          harness: opts.harnessSlug,
+          openItems,
+          existingPromotedItemIds: [],
+        }).map((spec) => [spec.sourcePlanItemIds[0], spec]),
+      )
+    : new Map<string, ReturnType<typeof computePromotions>[number]>();
 
   // EI-18802263047567602: a promoted work-item belongs to the same explicit
   // relevance areas as its source plan. Before this inheritance, plans tagged
@@ -379,9 +436,21 @@ export async function promotePlanItems(opts: {
   // plan tags are the reusable source of truth and avoid a second classifier.
   // Topic routing enriches promotion; it must not become a new availability gate
   // on the primary plan→work path if the coordination store is temporarily down.
-  const planTopics = await listObjectTags('plan', opts.planSlug).catch(() => []);
+  const planTopics = await listObjectTags(
+    'plan',
+    opts.planRun?.templateSlug ?? opts.planSlug,
+  ).catch(() => []);
 
   const textById = new Map(openItems.map((i) => [i.id, i.text]));
+  const stampForPlanItem = (itemId: string): PlanItemStamp => {
+    const itemTextHash = planItemTextHash(textById.get(itemId));
+    return {
+      plan_slug: opts.planSlug,
+      item_id: itemId,
+      harness_slug: opts.harnessSlug,
+      ...(itemTextHash ? { item_text_hash: itemTextHash } : {}),
+    };
+  };
   let promoted = 0;
   /**
    * P-006 PASS 1 — mint every item first, recording `planItemId → workItemId`.
@@ -394,6 +463,7 @@ export async function promotePlanItems(opts: {
    * so translation is order-independent.
    */
   const mintedByPlanItem = new Map<string, string>();
+  const newlyPromotedPlanItemIds = new Set<string>();
   const rawByPlanItem = new Map(rawItems.map((item) => [item.id, item]));
   for (const spec of specs) {
     const itemId = spec.sourcePlanItemIds[0];
@@ -404,13 +474,7 @@ export async function promotePlanItems(opts: {
     // inert. `textById` already holds the parser's SEMANTIC text (readRawPlanItems takes
     // `.text` from the PG-canonical row or the parsed item, never the raw line), which is
     // why a status flip or a blocked-by edit still does not read as drift.
-    const itemTextHash = planItemTextHash(textById.get(itemId));
-    const stamp: PlanItemStamp = {
-      plan_slug: opts.planSlug,
-      item_id: itemId,
-      harness_slug: opts.harnessSlug,
-      ...(itemTextHash ? { item_text_hash: itemTextHash } : {}),
-    };
+    const stamp = stampForPlanItem(itemId);
     // D-046 (byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 / WI-40754): ONE canonical
     // promoted work-item per (workspace, harness, plan, item), serialized IN POSTGRES —
     // not by the coverage read above. That read stays as a cheap idempotency
@@ -425,15 +489,16 @@ export async function promotePlanItems(opts: {
     const minted = await upsertConditionWorkItem(
       planPromotionConditionKey(opts.workspaceId, opts.harnessSlug, opts.planSlug, itemId),
       {
-        kind: spec.kind,
+        kind: opts.itemKind ?? spec.kind,
         title: spec.title,
         summary: textById.get(itemId) ?? undefined,
         harness: spec.harness,
         workspaceId: opts.workspaceId,
-        sourcePlanSlug: spec.sourcePlanSlug,
+        sourcePlanSlug: opts.planRun?.templateSlug ?? spec.sourcePlanSlug,
         topics: planTopics,
         payload: {
           plan_item: stamp,
+          ...(opts.planRun ? { plan_run: opts.planRun } : {}),
           needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(itemId)?.phase),
         },
         createdBy: opts.createdBy,
@@ -482,20 +547,97 @@ export async function promotePlanItems(opts: {
       });
     }
     mintedByPlanItem.set(itemId, minted.id);
-    if (minted.created) promoted++;
+    if (minted.created) {
+      promoted++;
+      newlyPromotedPlanItemIds.add(itemId);
+    }
   }
+
+  // A deterministic run replay must recover the SAME execution records even
+  // when this invocation minted none. Resolve every open item's canonical
+  // stamp after the write pass; newly-minted ids stay query-free.
+  const workItemByPlanItem = new Map(mintedByPlanItem);
+  for (const item of openItems) {
+    if (workItemByPlanItem.has(item.id)) continue;
+    const existing = await findConvertedWorkItemByStamp(opts.planSlug, item.id, opts.harnessSlug);
+    if (existing?.id) {
+      workItemByPlanItem.set(item.id, existing.id);
+      continue;
+    }
+    if (!opts.planRun) continue;
+
+    // The plan-run replay path has a stronger identity oracle than the generic
+    // stamp read: the per-instance promotion condition key. The stamp helper's
+    // legacy read resolves feature rows through the process-global active
+    // workspace, which can legitimately differ from this explicit run's
+    // workspace. Adopt the condition-key winner instead of returning an empty
+    // replay mapping (or silently fabricating success). This also self-heals a
+    // missing implements edge on the canonical winner.
+    const spec = allRunSpecsByPlanItem.get(item.id);
+    if (!spec) continue;
+    const adopted = await upsertConditionWorkItem(
+      planPromotionConditionKey(opts.workspaceId, opts.harnessSlug, opts.planSlug, item.id),
+      {
+        kind: opts.itemKind ?? spec.kind,
+        title: spec.title,
+        summary: textById.get(item.id) ?? undefined,
+        harness: spec.harness,
+        workspaceId: opts.workspaceId,
+        sourcePlanSlug: opts.planRun.templateSlug,
+        topics: planTopics,
+        payload: {
+          plan_item: stampForPlanItem(item.id),
+          plan_run: opts.planRun,
+          needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(item.id)?.phase),
+        },
+        createdBy: opts.createdBy,
+      },
+    );
+    if (!adopted.id) continue;
+    workItemByPlanItem.set(item.id, adopted.id);
+    if (adopted.created) {
+      promoted++;
+      newlyPromotedPlanItemIds.add(item.id);
+    }
+    const wi = (await getWorkItem(adopted.id, spec.harness)) ?? (await getWorkItem(adopted.id));
+    await linkWorkItem(
+      adopted.id,
+      { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) },
+      IMPLEMENTS_REL,
+      { harness: wi?.harness ?? spec.harness, by: opts.createdBy },
+    );
+  }
+
+  const workItems: PromotedPlanWorkItem[] = openItems.flatMap((item) => {
+    const workItemId = workItemByPlanItem.get(item.id);
+    if (!workItemId) return [];
+    const effective = effectiveById.get(item.id);
+    return [{
+      planItemId: item.id,
+      workItemId,
+      newlyPromoted: newlyPromotedPlanItemIds.has(item.id),
+      actionable:
+        effective?.effectiveStatus === 'todo' &&
+        effective.unresolvedBlockers.length === 0 &&
+        !effective.needsHuman,
+    }];
+  });
 
   const edgeCounts = await writePromotedDependencyEdges({
     planSlug: opts.planSlug,
     harnessSlug: opts.harnessSlug,
-    mintedByPlanItem,
+    // Ordinary plans retain the original "new rows only" write. A run replay
+    // deliberately replays the full run-local graph so a crash after node mint
+    // but before edge completion heals rather than staying permanently partial.
+    mintedByPlanItem: opts.planRun ? workItemByPlanItem : mintedByPlanItem,
     blockedByById: new Map(rawItems.map((i) => [i.id, i.blockedBy])),
     statusById: new Map(rawItems.map((i) => [i.id, i.status])),
     cyclicPlanItemIds,
     knownPlanItemIds: new Set(rawItems.map((i) => i.id)),
+    preserveExistingEdges: Boolean(opts.planRun),
   });
 
-  return { promoted, skipped: openItems.length - promoted, ...edgeCounts, specQuality };
+  return { promoted, skipped: openItems.length - promoted, ...edgeCounts, workItems, specQuality };
 }
 
 /**
