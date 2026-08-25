@@ -121,6 +121,7 @@ import {
   ompTitleMitigationArgs,
   reportSessionEnded,
   reportSessionResumed,
+  describeResumeClaimRefusal,
   reportSessionRespawned,
   reportSessionPortDelivery,
   tryRematerializeFromArchive,
@@ -8324,7 +8325,7 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         token: "tok-1",
         resumeClaimKey: "resume-claim-1",
       }),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ claimed: true });
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(
       "http://op:1/api/agent-mcp/console/bootstrap-su/session-resumed",
@@ -8358,7 +8359,7 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         sleep: async () => {},
         onNotice: () => {},
       }),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ claimed: true });
     expect(calls).toEqual([
       { advSessionId: 42, resumeClaimKey: "resume-claim-replay-1" },
       { advSessionId: 42, resumeClaimKey: "resume-claim-replay-1" },
@@ -8377,11 +8378,11 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ claimed: false, reason: "no-session" });
     expect(calls).toHaveLength(0);
   });
 
-  it("false claim or a response without explicit reactivated:true fails closed", async () => {
+  it("false claim or a response without explicit reactivated:true is CONTENDED", async () => {
     const falseClaim = async () => ({
       ok: true,
       json: async () => ({ ok: true, reactivated: false }),
@@ -8396,40 +8397,126 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ claimed: false, reason: "contended" });
     await expect(
       reportSessionResumed(42, {
         fetchImpl: noClaimField,
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ claimed: false, reason: "contended" });
   });
 
-  it("HTTP/transport failures fail closed — no resume process may spawn", async () => {
+  it("an HTTP failure is reported as HTTP, not as a lost race", async () => {
     const httpFailure = async () => ({
       ok: false,
+      status: 503,
       json: async () => ({ ok: true, reactivated: true }),
     });
-    await expect(
-      reportSessionResumed(42, {
-        fetchImpl: httpFailure,
-        operatorUrl: "http://op:1",
-        token: "t",
-      }),
-    ).resolves.toBe(false);
+    const outcome = await reportSessionResumed(42, {
+      fetchImpl: httpFailure,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    expect(outcome.claimed).toBe(false);
+    expect(outcome.reason).toBe("http");
+    expect(outcome.detail).toContain("503");
+  });
+
+  it("an unreadable response body is HTTP (the operator answered badly), not transport", async () => {
+    const badBody = async () => ({
+      ok: true,
+      json: async () => {
+        throw new Error("Unexpected token < in JSON");
+      },
+    });
+    const outcome = await reportSessionResumed(42, {
+      fetchImpl: badBody,
+      operatorUrl: "http://op:1",
+      token: "t",
+    });
+    expect(outcome.claimed).toBe(false);
+    expect(outcome.reason).toBe("http");
+  });
+
+  it("a thrown transport error is captured, not swallowed", async () => {
     const fetchImpl = async () => {
       throw new Error("ECONNREFUSED");
     };
-    await expect(
+    const outcome = await reportSessionResumed(42, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+      connectBudgetMs: 0,
+      timeoutRetries: 0,
+    });
+    expect(outcome.claimed).toBe(false);
+    expect(outcome.reason).toBe("transport");
+    // The swallowed catch was the whole defect: the cause existed and was
+    // discarded. What it discarded is better than the raw errno —
+    // fetchWithResilience rewrites connect failures into an actionable operator
+    // diagnosis (which URL, for how long, how to repair it). Assert that
+    // remediation text survives the catch rather than the bare "ECONNREFUSED".
+    expect(outcome.detail).toBeTruthy();
+    expect(outcome.detail).toMatch(/operator/i);
+  });
+
+  it("EVERY refusal path still fails closed — claimed is never true", async () => {
+    const refusals = await Promise.all([
+      reportSessionResumed(null, { operatorUrl: "http://op:1" }),
       reportSessionResumed(42, {
-        fetchImpl,
+        fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }),
         operatorUrl: "http://op:1",
-        token: "t",
+      }),
+      reportSessionResumed(42, {
+        fetchImpl: async () => ({ ok: true, json: async () => ({ reactivated: false }) }),
+        operatorUrl: "http://op:1",
+      }),
+      reportSessionResumed(42, {
+        fetchImpl: async () => {
+          throw new Error("boom");
+        },
+        operatorUrl: "http://op:1",
         connectBudgetMs: 0,
         timeoutRetries: 0,
       }),
-    ).resolves.toBe(false);
+    ]);
+    expect(refusals.map((r) => r.claimed)).toEqual([false, false, false, false]);
+    // ...and each names a DISTINCT cause. This is the regression guard: the bug
+    // was four causes wearing one message (EI-21414979137146784).
+    expect(refusals.map((r) => r.reason)).toEqual([
+      "no-session",
+      "http",
+      "contended",
+      "transport",
+    ]);
+  });
+});
+
+describe("describeResumeClaimRefusal — four causes must not share one sentence", () => {
+  it("only the genuine race mentions another process holding the row", () => {
+    expect(describeResumeClaimRefusal({ claimed: false, reason: "contended" })).toContain(
+      "another process holds the row",
+    );
+    for (const reason of ["http", "transport", "no-session"] as const) {
+      expect(describeResumeClaimRefusal({ claimed: false, reason })).not.toContain(
+        "another process holds the row",
+      );
+    }
+  });
+
+  it("renders a DISTINCT sentence per reason, and surfaces the detail", () => {
+    const sentences = (["no-session", "http", "contended", "transport"] as const).map(
+      (reason) => describeResumeClaimRefusal({ claimed: false, reason }),
+    );
+    expect(new Set(sentences).size).toBe(4);
+    expect(
+      describeResumeClaimRefusal({
+        claimed: false,
+        reason: "transport",
+        detail: "ECONNREFUSED",
+      }),
+    ).toContain("ECONNREFUSED");
   });
 });
 
@@ -8453,9 +8540,9 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
   it("exits immediately when the ended-session resume claim is lost", () => {
     const claim = body.indexOf(
-      "const claimed = await reportSessionResumed(session.id);",
+      "const claim = await reportSessionResumed(session.id);",
     );
-    const refusal = body.indexOf("if (!claimed) {", claim);
+    const refusal = body.indexOf("if (!claim.claimed) {", claim);
     const nextClaimState = body.indexOf("resumeClaimed = true;", refusal);
     const refusalBody = body.slice(refusal, nextClaimState);
 

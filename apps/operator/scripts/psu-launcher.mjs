@@ -7066,11 +7066,26 @@ export async function reportSessionEnded(
  * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
  * Exported with injectables for tests.
  *
+ * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
+ * Four independent conditions refuse the claim — no row, an HTTP/body failure, a
+ * genuinely lost race, and a thrown transport error — and collapsing them into
+ * `false` made the ONE call site assert contention for all four. A headless
+ * consult revival then reported "its resume claim was not acquired" (i.e. someone
+ * else won) when the truth was an unreachable operator, sending whoever debugged
+ * it hunting a racing process that never existed. `claimed` remains the ONLY gate
+ * on spawning — the fail-closed property is unchanged; `reason` exists so the
+ * refusal can say WHICH of the four happened.
+ *
+ * @typedef {{ claimed: true }
+ *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport', detail?: string }
+ * } ResumeClaimOutcome
+ *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
  * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
  *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
  *           sleep?: (ms:number) => Promise<void>, now?: () => number,
  *           onNotice?: (message:string) => void, resumeClaimKey?: string }} [opts]
+ * @returns {Promise<ResumeClaimOutcome>}
  */
 export async function reportSessionResumed(
   advSessionId,
@@ -7087,7 +7102,7 @@ export async function reportSessionResumed(
     resumeClaimKey = randomUUID(),
   } = {},
 ) {
-  if (!advSessionId) return false;
+  if (!advSessionId) return { claimed: false, reason: "no-session" };
   try {
     const tok = token ?? readToken();
     const response = await fetchWithResilience(
@@ -7115,12 +7130,70 @@ export async function reportSessionResumed(
         label: `resume claim for session #${advSessionId}`,
       },
     );
-    if (!response?.ok || typeof response.json !== "function") return false;
-    const body = await response.json();
-    return body?.reactivated === true;
-  } catch {
-    /* fail closed — never spawn without the atomic claim */
-    return false;
+    if (!response?.ok || typeof response.json !== "function") {
+      const status = typeof response?.status === "number" ? response.status : null;
+      return {
+        claimed: false,
+        reason: "http",
+        detail:
+          status == null
+            ? "operator returned an unusable response"
+            : `operator returned HTTP ${status}`,
+      };
+    }
+    let body;
+    try {
+      body = await response.json();
+    } catch (err) {
+      // A malformed body is the OPERATOR answering badly, not the network
+      // failing — classify it with the other HTTP-shaped failures so the
+      // refusal does not blame the transport.
+      return {
+        claimed: false,
+        reason: "http",
+        detail: `operator response body was unreadable (${err instanceof Error ? err.message : String(err)})`,
+      };
+    }
+    // The endpoint's explicit reactivated:true is the single-winner claim.
+    // Anything else means another writer holds the row: genuine contention.
+    if (body?.reactivated === true) return { claimed: true };
+    return { claimed: false, reason: "contended" };
+  } catch (err) {
+    /* fail closed — never spawn without the atomic claim. The error was
+       previously swallowed entirely; capture it so the refusal can name the
+       transport fault instead of asserting a race that never happened. */
+    return {
+      claimed: false,
+      reason: "transport",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Render a refused {@link ResumeClaimOutcome} as the clause the operator reads
+ * (EI-21414979137146784). Each reason gets its OWN sentence: the old single
+ * message asserted contention ("its resume claim was not acquired") for all
+ * four refusal paths, so an unreachable operator or a 500 was reported as a
+ * lost race. Every branch still refuses — this names the cause, it does not
+ * soften the guard.
+ *
+ * @param {{ claimed: false, reason: 'no-session'|'http'|'contended'|'transport', detail?: string }} outcome
+ * @returns {string}
+ */
+export function describeResumeClaimRefusal(outcome) {
+  const detail = outcome?.detail ? ` (${outcome.detail})` : "";
+  switch (outcome?.reason) {
+    case "contended":
+      return "its ended-session resume claim was not acquired — another process holds the row";
+    case "http":
+      return `the operator refused the ended-session resume claim${detail}`;
+    case "transport":
+      return `the ended-session resume claim could not reach the operator${detail}`;
+    case "no-session":
+      return "it has no tracked adv-session row to claim";
+    default:
+      return `the ended-session resume claim failed for an unrecognized reason${detail}`;
   }
 }
 
@@ -8300,10 +8373,10 @@ async function launchResume(
   // claimAdvSessionResume's claim window makes this a stale-safe single-winner handoff.
   // A lost/unknown claim must never launch a second exact-session writer.
   if (!fork && session.id != null) {
-    const claimed = await reportSessionResumed(session.id);
-    if (!claimed) {
+    const claim = await reportSessionResumed(session.id);
+    if (!claim.claimed) {
       console.error(
-        `psu: refusing to resume session #${session.id} — its ended-session resume claim was not acquired; no agent process was spawned.`,
+        `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim)}; no agent process was spawned.`,
       );
       // Headless revival runs this launcher beneath a detached, non-interactive
       // shell whose lifetime is the launcher's lifetime. Setting exitCode and
