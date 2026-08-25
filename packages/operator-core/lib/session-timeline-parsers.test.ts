@@ -207,4 +207,63 @@ describe('createOmpTimelineParser', () => {
       message: { role: 'user', content: 'plain' },
     }))).toEqual([{ kind: 'prompt', text: 'plain', ts: 't' }]);
   });
+
+  // A failed turn writes `content: []`, so the block loop emits nothing. Before
+  // WI-41660 that made a rate-limited session render as a BLANK timeline while the
+  // provider's reason sat unread on the wire. Shapes below are the live omp wire.
+  it('surfaces an errored turn whose content array is EMPTY', () => {
+    expect(p().parseLine(JSON.stringify({
+      type: 'message', timestamp: 't',
+      message: {
+        role: 'assistant', content: [], stopReason: 'error',
+        errorStatus: 402,
+        errorMessage: '402 Insufficient credits. This account never purchased credits.',
+      },
+    }))).toEqual([{
+      kind: 'status',
+      text: '[error] (402) 402 Insufficient credits. This account never purchased credits.',
+      ts: 't',
+    }]);
+  });
+
+  it('omits the parenthetical when the failure carries no HTTP status', () => {
+    // Retry-budget exhaustion has no errorStatus — 9 of 68 sampled records.
+    expect(p().parseLine(JSON.stringify({
+      type: 'message', timestamp: 't',
+      message: {
+        role: 'assistant', content: [], stopReason: 'error',
+        errorMessage: 'Retry budget exhausted after 10 retries: 429 Provider returned error',
+      },
+    }))).toEqual([{
+      kind: 'status',
+      text: '[error] Retry budget exhausted after 10 retries: 429 Provider returned error',
+      ts: 't',
+    }]);
+  });
+
+  it('still reports the error when the turn produced text BEFORE failing', () => {
+    // The regression that matters: a partial turn must not read as a success.
+    expect(p().parseLine(JSON.stringify({
+      type: 'message', timestamp: 't',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'starting on the resolver' }],
+        stopReason: 'error', errorStatus: 429, errorMessage: '429 Provider returned error',
+      },
+    }))).toEqual([
+      { kind: 'text', text: 'starting on the resolver', ts: 't' },
+      { kind: 'status', text: '[error] (429) 429 Provider returned error', ts: 't' },
+    ]);
+  });
+
+  it('does not invent an error entry for an ordinary empty or non-errored turn', () => {
+    expect(p().parseLine(JSON.stringify({
+      type: 'message', timestamp: 't', message: { role: 'assistant', content: [] },
+    }))).toEqual([]);
+    // stopReason set but no message to show ⇒ nothing to surface.
+    expect(p().parseLine(JSON.stringify({
+      type: 'message', timestamp: 't',
+      message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '   ' },
+    }))).toEqual([]);
+  });
 });
