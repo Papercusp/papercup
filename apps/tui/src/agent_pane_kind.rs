@@ -390,10 +390,7 @@ mod tests {
     fn generated_agent_labels_use_the_active_lexicon_without_rewriting_names() {
         let lex = crate::lexicon::Lexicon::default();
         assert_eq!(normalize_agent_label("overwatch", &lex), "Kettle");
-        assert_eq!(
-            normalize_agent_label("queen su-75cee", &lex),
-            "Mug su-75cee"
-        );
+        assert_eq!(normalize_agent_label("queen su-75cee", &lex), "Mug su-75cee");
         assert_eq!(
             normalize_agent_label("overwatch · papercup/kettle", &lex),
             "Kettle · Papercup/Kettle"

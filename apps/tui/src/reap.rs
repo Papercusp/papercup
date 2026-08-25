@@ -84,7 +84,8 @@ pub fn live_session_exists(name: &str) -> bool {
 ///     Scoped to `own` being a dock — a `wb`/`reap` pass never reaps live docks,
 ///     and `pui-wb-*` / foreign sessions are never touched by this rule.
 pub fn plan(list_output: &str, own: &str, is_alive: impl Fn(u32) -> bool) -> Vec<Action> {
-    let launching_dock = session_kind(own) == Some("dock") || stable_kind(own) == Some("dock");
+    let launching_dock =
+        session_kind(own) == Some("dock") || stable_kind(own) == Some("dock");
     let mut actions = Vec::new();
     for line in list_output.lines() {
         let Some(name) = line.split_whitespace().next() else {

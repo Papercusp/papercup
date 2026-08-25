@@ -98,10 +98,7 @@ pub fn model_options(tiers: &[ModelTier], surface_default: Option<&str>) -> Vec<
             // UNKNOWN stays unknown — we do not invent the server's default.
             _ => "Default (server picks)".to_string(),
         },
-        hint: Some(
-            "Send no model override; the server applies this surface's configured model."
-                .to_string(),
-        ),
+        hint: Some("Send no model override; the server applies this surface's configured model.".to_string()),
         disabled: false,
     });
     for t in tiers {
@@ -556,10 +553,7 @@ mod tests {
         let opts = account_options(&[r], None);
         let row = opts.iter().find(|o| o.id == "acct-1").expect("listed");
         assert!(!row.disabled, "capacity never disables a row");
-        assert_eq!(
-            row.hint.as_deref(),
-            Some("anthropic · rate-limited right now")
-        );
+        assert_eq!(row.hint.as_deref(), Some("anthropic · rate-limited right now"));
     }
 
     #[test]
@@ -568,13 +562,7 @@ mod tests {
         r.available = Some(false);
         r.reading_status = Some("stale".into());
         let opts = account_options(&[r], None);
-        let hint = opts
-            .iter()
-            .find(|o| o.id == "acct-1")
-            .unwrap()
-            .hint
-            .clone()
-            .unwrap();
+        let hint = opts.iter().find(|o| o.id == "acct-1").unwrap().hint.clone().unwrap();
         assert!(hint.contains("capacity unknown"), "got {hint}");
         assert!(!hint.contains("rate-limited"));
     }
@@ -702,10 +690,7 @@ mod tests {
 
     #[test]
     fn a_failed_setter_is_reported_as_failed_not_applied() {
-        let out = describe_pin_outcome(
-            &json!({ "ok": false, "error": "no such account" }),
-            "acct-9",
-        );
+        let out = describe_pin_outcome(&json!({ "ok": false, "error": "no such account" }), "acct-9");
         assert!(!out.in_force);
         assert!(out.summary.contains("FAILED"));
         assert!(out.summary.contains("no such account"));

@@ -329,7 +329,11 @@ mod tests {
         assert_eq!(e.launch_argv.len(), 4);
 
         // The pure diff produces exactly the pane that RUNS this launch.
-        let out = panes_to_open(&TrackedPanes::new(), &resp.pending, "dev-box-linux");
+        let out = panes_to_open(
+            &TrackedPanes::new(),
+            &resp.pending,
+            "dev-box-linux",
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].adv_session_id, 608);
         assert_eq!(out[0].spec.argv, e.launch_argv);

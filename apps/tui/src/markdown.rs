@@ -88,7 +88,10 @@ pub fn render(body: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
             // indentation and alignment, which is the entire point of a code
             // block. Reflowing it would silently corrupt what it shows.
             for chunk in hard_split(raw, width.saturating_sub(2)) {
-                out.push(Line::from(Span::styled(format!("  {chunk}"), code_style())));
+                out.push(Line::from(Span::styled(
+                    format!("  {chunk}"),
+                    code_style(),
+                )));
             }
             continue;
         }
@@ -125,7 +128,12 @@ pub fn render(body: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
             let prefix = format!("{}{} ", " ".repeat(indent), marker);
             let cont = prefix.chars().count();
             let segs = parse_inline(rest, Style::default(), open_ok);
-            out.extend(wrap_segs(&segs, width, Some((prefix, Theme::dim())), cont));
+            out.extend(wrap_segs(
+                &segs,
+                width,
+                Some((prefix, Theme::dim())),
+                cont,
+            ));
             continue;
         }
 
@@ -197,11 +205,7 @@ fn parse_inline(src: &str, base: Style, open_ok: bool) -> Vec<Seg> {
             if open_ok {
                 flush_lit!();
                 let inner: String = chars[i + 2..].iter().collect();
-                out.extend(parse_inline(
-                    &inner,
-                    base.add_modifier(Modifier::BOLD),
-                    true,
-                ));
+                out.extend(parse_inline(&inner, base.add_modifier(Modifier::BOLD), true));
                 break;
             }
             lit.push(c);
@@ -374,14 +378,15 @@ fn wrap_segs(
         spans.push(Span::styled(p.clone(), *st));
     }
 
-    let break_line =
-        |out: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>, cur_w: &mut usize| {
-            out.push(Line::from(std::mem::take(spans)));
-            *cur_w = cont_indent;
-            if cont_indent > 0 {
-                spans.push(Span::raw(" ".repeat(cont_indent)));
-            }
-        };
+    let break_line = |out: &mut Vec<Line<'static>>,
+                          spans: &mut Vec<Span<'static>>,
+                          cur_w: &mut usize| {
+        out.push(Line::from(std::mem::take(spans)));
+        *cur_w = cont_indent;
+        if cont_indent > 0 {
+            spans.push(Span::raw(" ".repeat(cont_indent)));
+        }
+    };
 
     for tok in toks {
         match tok {
@@ -564,15 +569,9 @@ mod tests {
 
     #[test]
     fn a_heading_drops_its_hashes_but_an_issue_ref_keeps_them() {
-        assert_eq!(
-            flat(&render("## Verification", 80, false)),
-            vec!["Verification"]
-        );
+        assert_eq!(flat(&render("## Verification", 80, false)), vec!["Verification"]);
         // No space ⇒ not a heading. Agent output is full of `#41189` refs.
-        assert_eq!(
-            flat(&render("#41189 landed", 80, false)),
-            vec!["#41189 landed"]
-        );
+        assert_eq!(flat(&render("#41189 landed", 80, false)), vec!["#41189 landed"]);
     }
 
     #[test]

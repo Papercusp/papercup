@@ -91,10 +91,7 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
     // pane stays unadorned.
     let scope = match &app.wake_filter {
         crate::app::WakeFilter::All => String::new(),
-        crate::app::WakeFilter::Queen => format!(
-            " · {} mug",
-            crate::agent_pane_kind::AgentPaneKind::Queen.glyph()
-        ),
+        crate::app::WakeFilter::Queen => format!(" · {} mug", crate::agent_pane_kind::AgentPaneKind::Queen.glyph()),
         crate::app::WakeFilter::Owner(id) => format!(" · {}", trunc(id, 14)),
         crate::app::WakeFilter::Hive(h) => format!(" · ⬡ {}", trunc(h, 14)),
     };
