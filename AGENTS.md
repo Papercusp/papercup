@@ -440,12 +440,6 @@ suite.
 ⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
 expensive mistake, and no amount of care in the steps below can recover from it.**
 
-✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
-
-```
-state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
-```
-
 ## Ratified designs: implementation owes current passing visual evidence
 
 ## Ratified designs owe current passing visual evidence
@@ -655,6 +649,13 @@ the poll command, because the fix is one step earlier:
 > **`capability:bash { run_in_background: true }`** and read it with
 > **`capability:bash_output { bash_id, filter }`**. The `filter` regex means only
 > matching lines enter your context — no `2>&1 | tail -60`.
+>
+> ⚠ **Duration is not the only trigger — LIFETIME is. If a process is what makes
+> an owner-facing deliverable VALID (an OAuth flow, a callback listener, a
+> tunnel, a signing session), background it however short it is.** A CLI child
+> dies with your session, and every carry-respawn and `claude --resume` IS a
+> session death, so the link you sent can be dead on arrival — and a dead one
+> looks identical to a live one. Say what its lifetime is bound to (EI-16611).
 
 ⚠ **Filter background output at READ TIME, never at LAUNCH TIME.** Let the job
 write its stdout/stderr unfiltered to the durable log, then pass `filter` to
@@ -665,6 +666,7 @@ the failure. Read-time filtering is repeatable with a different pattern and
 also works on the stranded-job recovery path. If launch-time filtering is
 unavoidable, use a line-buffered consumer such as `grep --line-buffered` or
 `stdbuf -oL`, but prefer keeping the durable log unfiltered.
+
 
 ⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep -f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: `pgrep -f` matches the FULL command line, and your own `bash -c` argv contains the literal pattern, so the poll matches ITSELF and the condition stays true forever — the same self-match class as the documented `pkill -f` trap. `ps … | grep <pat>` loop conditions share the defect, and `grep -v grep` does NOT save you (the `bash -c` wrapper still matches). The PreToolUse gate now denies the loop form. Wait on the PID instead (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the loop) — or, if you genuinely must pattern-poll, bracket the first character so the pattern cannot match its own argv: `pgrep -f '[l]int-tsc'`.
 
@@ -684,13 +686,6 @@ matches, and a peer's prose or JSON payload is still ignored.
 
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
-
-⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
-service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
-work runs in a child, so measuring it alone reports "idle" about a process
-burning a full core. 
-
-Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one to reach for, because it needs no column-index guess (`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and misreading it yields a whole column of `S` that looks like data).
 
 ## Feature flags + PostHog
 
@@ -902,7 +897,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **11 part(s) (6,499 chars) did not fit this client's
+> ⚠ **15 part(s) (7,200 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -917,12 +912,14 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 - `running-testing-this-app-it-the-30553070-layer-i` — *▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp* — The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
+- `commit-discipline-git-sync-o-one-call-answers-st` — *Commit discipline: git-sync owns commit + push — you do neither* — ✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
+- `commit-discipline-git-sync-o` — *Commit discipline: git-sync owns commit + push — you do neither* — ```
 - `commit-discipline-git-sync-o-it-returns-the-judg` — *Commit discipline: git-sync owns commit + push — you do neither* — It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its…
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
 - `long-jobs-background-them-at-is-this-process-act` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 - `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
+- `long-jobs-background-them-at-measure-the-whole-p` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 - `long-jobs-background-them-at-a-corollary-worth-k` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠ A corollary worth knowing before you design one: **a liveness/progress beat
-- `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
-- `use-context7-for-current-lib-before-non-trivial` — *Use Context7 for current library docs* — Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
+- …and 3 more. The list is capped so the pointer cannot itself consume the budget; the COMPLETE cut set is every projected part whose `part_key` does not appear above in this file, which the query above returns.

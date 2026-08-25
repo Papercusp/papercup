@@ -1772,16 +1772,11 @@ the poll command, because the fix is one step earlier:
 > matching lines enter your context — no `2>&1 | tail -60`.
 >
 > ⚠ **Duration is not the only trigger — LIFETIME is. If a process is what makes
-> an owner-facing deliverable VALID, background it no matter how short it is.**
-> An OAuth/device-code consent flow, a local callback listener, a tunnel, a
-> signing session — anything whose output expires when the process does. A
-> CLI-child process dies with your session, and every carry-respawn, cold-loop
-> wake and `claude --resume` **is** a session death, so the thing you asked the
-> owner to click can be dead before they read the message. Nothing warns you: a
-> dead link looks identical to a live one. Say what the deliverable's lifetime is
-> bound to when you hand it over — the operator-owned scope is not
-> restart-durable either (EI-16611), so "valid while my session lives" is a
-> different promise from "valid for 10 minutes".
+> an owner-facing deliverable VALID (an OAuth flow, a callback listener, a
+> tunnel, a signing session), background it however short it is.** A CLI child
+> dies with your session, and every carry-respawn and `claude --resume` IS a
+> session death, so the link you sent can be dead on arrival — and a dead one
+> looks identical to a live one. Say what its lifetime is bound to (EI-16611).
 
 ⚠ **Filter background output at READ TIME, never at LAUNCH TIME.** Let the job
 write its stdout/stderr unfiltered to the durable log, then pass `filter` to
@@ -1792,7 +1787,7 @@ the failure. Read-time filtering is repeatable with a different pattern and
 also works on the stranded-job recovery path. If launch-time filtering is
 unavoidable, use a line-buffered consumer such as `grep --line-buffered` or
 `stdbuf -oL`, but prefer keeping the durable log unfiltered.
-A session handed the owner a PKCE-bound OAuth consent URL whose `gcloud` process was a child of its CLI; the carry-respawn killed it ~19s later, so the link was dead on arrival and nothing said so. Only `node scripts/proc-guard.mjs check` revealed it — bare `ps`/`pgrep` self-matches the query string and reports phantom liveness (EI-21442716425230784).
+A session handed the owner a PKCE-bound OAuth consent URL whose `gcloud` process was a child of its CLI; the carry-respawn killed it ~19s later, so the link was dead on arrival and nothing said so. Only `node scripts/proc-guard.mjs check` revealed it — bare `ps`/`pgrep` self-matches the query string and reports phantom liveness (EI-21442716425230784). State the lifetime binding explicitly when you hand such a deliverable over: the operator-owned background scope is not restart-durable either (EI-16611), so "valid while my session lives" is a different promise from "valid for 10 minutes".
 
 
 ⚠ **A background job still has a wall-clock deadline, and reaching it TERMINATES the
