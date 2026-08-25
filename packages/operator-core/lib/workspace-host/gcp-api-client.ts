@@ -26,10 +26,14 @@ import type {
   GcpFirewallObservation,
   GcpInstanceInsertInput,
   GcpInstanceObservation,
+  GcpNatInsertInput,
+  GcpNatObservation,
   GcpNetworkInsertInput,
   GcpOperationObservation,
   GcpOperationRef,
   GcpResourceObservation,
+  GcpRouterInsertInput,
+  GcpRouterObservation,
   GcpSnapshotInsertInput,
   GcpSnapshotObservation,
   GcpSubnetworkInsertInput,
@@ -91,6 +95,22 @@ interface RawInstance extends RawResource {
   }>;
   serviceAccounts?: Array<{ email?: string; scopes?: string[] }>;
   metadata?: { items?: Array<{ key?: string; value?: string }> };
+}
+
+interface RawNat {
+  name?: string;
+  natIpAllocateOption?: string;
+  sourceSubnetworkIpRangesToNat?: string;
+  minPortsPerVm?: number;
+  enableEndpointIndependentMapping?: boolean;
+  subnetworks?: Array<{ name?: string; sourceIpRangesToNat?: string[] }>;
+}
+
+interface RawRouter extends RawResource {
+  network?: string;
+  region?: string;
+  fingerprint?: string;
+  nats?: RawNat[];
 }
 
 interface RawMachineType {
@@ -350,7 +370,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     location: string | undefined,
     requestId: string,
     url: string,
-    method: 'POST' | 'DELETE',
+    method: 'POST' | 'PATCH' | 'DELETE',
     body?: unknown,
   ): Promise<GcpOperationRef> {
     const separator = url.includes('?') ? '&' : '?';
@@ -533,6 +553,54 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     };
   }
 
+  private getRawRouter(projectId: string, region: string, name: string): Promise<RawRouter | undefined> {
+    return this.getOrUndefined<RawRouter>(
+      `${this.projectBase(projectId)}/regions/${segment(region, 'region')}/routers/${segment(name, 'router_name')}`,
+    );
+  }
+
+  async getRouter(projectId: string, region: string, name: string): Promise<GcpRouterObservation | undefined> {
+    const raw = await this.getRawRouter(projectId, region, name);
+    if (!raw) return undefined;
+    return {
+      ...observedResource(raw, this.now()),
+      network: required(lastSegment(raw.network), 'router_network'),
+      region,
+      natNames: (raw.nats ?? []).map(({ name: natName }) => required(natName, 'nat_name')),
+    };
+  }
+
+  async getNat(
+    projectId: string,
+    region: string,
+    routerName: string,
+    name: string,
+  ): Promise<GcpNatObservation | undefined> {
+    const router = await this.getRawRouter(projectId, region, routerName);
+    const nat = router?.nats?.find((candidate) => candidate.name === name);
+    if (!router || !nat) return undefined;
+    if (
+      nat.natIpAllocateOption !== 'AUTO_ONLY' ||
+      nat.sourceSubnetworkIpRangesToNat !== 'LIST_OF_SUBNETWORKS'
+    ) {
+      throw new Error('gcp_workspace_host_nat_policy_invalid');
+    }
+    const subnetwork = required(lastSegment(nat.subnetworks?.[0]?.name), 'nat_subnetwork');
+    return {
+      name: required(nat.name, 'nat_name'),
+      selfLink:
+        `${this.projectBase(projectId)}/regions/${segment(region, 'region')}/routers/` +
+        `${segment(routerName, 'router_name')}/nats/${segment(name, 'nat_name')}`,
+      observedAt: this.now(),
+      routerName,
+      network: required(lastSegment(router.network), 'router_network'),
+      subnetwork,
+      region,
+      natIpAllocateOption: 'AUTO_ONLY',
+      sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+    };
+  }
+
   async getDisk(projectId: string, zone: string, name: string): Promise<GcpDiskObservation | undefined> {
     const raw = await this.getOrUndefined<RawDisk>(
       `${this.projectBase(projectId)}/zones/${segment(zone, 'zone')}/disks/${segment(name, 'disk_name')}`,
@@ -619,6 +687,65 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
       `${this.projectBase(projectId)}/global/firewalls`,
       'POST',
       { ...input, network: resourcePath(input.network, 'global/networks') },
+    );
+  }
+
+  insertRouter(
+    projectId: string,
+    region: string,
+    input: GcpRouterInsertInput,
+    requestId: string,
+  ): Promise<GcpOperationRef> {
+    const { region: _region, ...body } = input;
+    return this.mutate(
+      projectId,
+      'region',
+      region,
+      requestId,
+      `${this.projectBase(projectId)}/regions/${segment(region, 'region')}/routers`,
+      'POST',
+      { ...body, network: resourcePath(body.network, 'global/networks') },
+    );
+  }
+
+  async insertNat(
+    projectId: string,
+    region: string,
+    input: GcpNatInsertInput,
+    requestId: string,
+  ): Promise<GcpOperationRef> {
+    const router = await this.getRawRouter(projectId, region, input.routerName);
+    if (!router) throw new Error(`gcp_workspace_host_router_${input.routerName}_missing`);
+    const otherNats = (router.nats ?? []).filter(({ name }) => name !== input.name);
+    if (otherNats.length > 0) throw new Error('gcp_workspace_host_managed_router_contains_foreign_nat');
+    const body = {
+      name: input.routerName,
+      network: resourcePath(input.network, 'global/networks'),
+      ...(router.fingerprint ? { fingerprint: router.fingerprint } : {}),
+      nats: [
+        {
+          name: input.name,
+          natIpAllocateOption: input.natIpAllocateOption,
+          sourceSubnetworkIpRangesToNat: input.sourceSubnetworkIpRangesToNat,
+          minPortsPerVm: input.minPortsPerVm,
+          enableEndpointIndependentMapping: input.enableEndpointIndependentMapping,
+          subnetworks: [
+            {
+              name: resourcePath(input.subnetwork, `regions/${region}/subnetworks`),
+              sourceIpRangesToNat: ['ALL_IP_RANGES'],
+            },
+          ],
+        },
+      ],
+    };
+    return this.mutate(
+      projectId,
+      'region',
+      region,
+      requestId,
+      `${this.projectBase(projectId)}/regions/${segment(region, 'region')}/routers/${segment(input.routerName, 'router_name')}`,
+      'PATCH',
+      body,
     );
   }
 
@@ -756,6 +883,44 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
 
   deleteNetwork(projectId: string, name: string, requestId: string): Promise<GcpOperationRef> {
     return this.deleteGlobal(projectId, 'networks', name, requestId);
+  }
+
+  async deleteNat(
+    projectId: string,
+    region: string,
+    routerName: string,
+    name: string,
+    requestId: string,
+  ): Promise<GcpOperationRef> {
+    const router = await this.getRawRouter(projectId, region, routerName);
+    if (!router) throw new Error(`gcp_workspace_host_router_${routerName}_missing`);
+    const nats = (router.nats ?? []).filter(({ name: candidate }) => candidate !== name);
+    const body = {
+      name: routerName,
+      network: required(router.network, 'router_network'),
+      ...(router.fingerprint ? { fingerprint: router.fingerprint } : {}),
+      nats,
+    };
+    return this.mutate(
+      projectId,
+      'region',
+      region,
+      requestId,
+      `${this.projectBase(projectId)}/regions/${segment(region, 'region')}/routers/${segment(routerName, 'router_name')}`,
+      'PATCH',
+      body,
+    );
+  }
+
+  deleteRouter(projectId: string, region: string, name: string, requestId: string): Promise<GcpOperationRef> {
+    return this.mutate(
+      projectId,
+      'region',
+      region,
+      requestId,
+      `${this.projectBase(projectId)}/regions/${segment(region, 'region')}/routers/${segment(name, 'router_name')}`,
+      'DELETE',
+    );
   }
 
   private deleteGlobal(
