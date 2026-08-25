@@ -1,33 +1,42 @@
 /**
- * P-009 — "prove no mask-based bypass".
+ * P-009 — "prove no mask-based bypass" — and EI-21414614584540571, its sequel.
  *
  * Plan: ratified-mockup-implementation-validation-2026-08-24.
  *
- * `IgnoredRegion` carries the invariant in its own docstring: "an unexplained
- * mask is a bypass." Until this file existed, that sentence was the whole
- * enforcement — `ignoredRegions` had ZERO test coverage in any casing, and the
- * P-009 inventory that first went looking for its proof matched on the word
- * "mask" and found `overlay-not-gateable.test.ts`, which is about the Figma
- * OVERLAY UX and has nothing to do with region masking. The class was recorded
- * as proven while being untested.
+ * HISTORY, because the current shape only makes sense against it: an earlier
+ * revision ACCEPTED `ignoredRegions` on `CompareRenderInput` and STAMPED it
+ * onto the stored result — while `provider.compare()` took two image paths, a
+ * diff path and a threshold, and nothing else. No code anywhere read a
+ * region's geometry. The mask was INERT: a region declared ignored was still
+ * fully compared, and the stored evidence said otherwise. That was fail-safe
+ * in the direction that matters (you could not hide a real diff behind a mask)
+ * and misleading in the other (evidence asserted an exclusion that never
+ * happened — a false statement in the one table this subsystem cannot afford
+ * one in).
  *
- * What is actually true today, measured rather than assumed: `ignoredRegions`
- * is accepted on `CompareRenderInput` and STAMPED onto the stored result, but
- * it never reaches the engine — `provider.compare()` takes the two image paths,
- * the diff path and a threshold, and nothing else. No code anywhere reads a
- * region's geometry. The mask is INERT: a region declared ignored is still
- * fully compared.
+ * EI-21414614584540571 resolved that by REMOVING the field rather than wiring
+ * it through: real masking is a design decision (engine support, non-empty
+ * justification/authority validation, a mask-area cap), not something to
+ * inherit from a field that was never connected. What this file now pins:
  *
- * That is fail-safe in the direction that matters (you cannot hide a real diff
- * behind a mask) and misleading in the other (the stored evidence says regions
- * were excluded when none were). Both halves are pinned here, because the
- * dangerous moment is not now — it is when someone wires up real masking and
- * inherits a field that already appears on records, with no validation of who
- * authorized it and no guard against a mask that covers the whole image.
+ *  1. A compare request that still supplies `ignoredRegions` — the TS type no
+ *     longer carries it, but a JSON-boundary caller can — is REFUSED loudly
+ *     (`validation-failed`), and NO evidence is minted for it. Neither silent
+ *     option is acceptable: recording the mask asserts an exclusion that never
+ *     happened, and dropping it leaves the caller believing pixels were
+ *     excluded that were fully compared.
+ *  2. The engine never receives anything region-shaped.
+ *  3. Stored evidence never carries an `ignoredRegions` field.
+ *  4. CALIBRATION: a mask-free compare still passes when the implementation
+ *     matches — the refusal is about masks, not a verb that always says no.
+ *
+ * The day someone implements masking for real, tests 1–3 fail, and they are
+ * forced to answer the question the original file was waiting for: what stops
+ * a mask from suppressing a real difference?
  */
 import { describe, expect, it } from 'vitest';
-import type { CaptureEnvironment, IgnoredRegion, ThresholdPolicy } from './contract';
-import type { ComparisonProvider, ImageProbe } from './provider';
+import type { CaptureEnvironment, ThresholdPolicy } from './contract';
+import type { ComparisonProvider, ImageProbe, ProviderRequest } from './provider';
 import { createInMemoryReferenceStore } from './reference-store';
 import {
   type CompareRenderInput,
@@ -66,8 +75,18 @@ const CASE_TARGET = {
   targetKind: 'storybook-story',
 } as const;
 
+/** The shape the retired field used to carry. Local on purpose: the contract no longer exports it. */
+interface RegionAttempt {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly justification: string;
+  readonly authorizedBy: string;
+}
+
 /** A mask covering the ENTIRE reference — the maximal bypass attempt. */
-const WHOLE_IMAGE_MASK: IgnoredRegion = {
+const WHOLE_IMAGE_MASK: RegionAttempt = {
   x: 0,
   y: 0,
   width: 1280,
@@ -77,7 +96,7 @@ const WHOLE_IMAGE_MASK: IgnoredRegion = {
 };
 
 /** A mask with no real justification or authority behind it. */
-const UNEXPLAINED_MASK: IgnoredRegion = {
+const UNEXPLAINED_MASK: RegionAttempt = {
   x: 0,
   y: 0,
   width: 40,
@@ -86,18 +105,21 @@ const UNEXPLAINED_MASK: IgnoredRegion = {
   authorizedBy: '',
 };
 
-/** Reports a difference far above policy — a real, failing implementation. */
-function failingProvider(): ComparisonProvider & { sawRegions: unknown } {
+/**
+ * Reports a difference far above policy — a real, failing implementation —
+ * and records the exact request object the adapter handed it.
+ */
+function failingProvider(): ComparisonProvider & { sawRequest: ProviderRequest | undefined } {
   const provider = {
-    sawRegions: undefined as unknown,
+    sawRequest: undefined as ProviderRequest | undefined,
     engine: { engine: 'fake/pixelmatch', engineVersion: '9.9.9' },
-    async compare(request: { readonly ignoredRegions?: unknown }) {
-      provider.sawRegions = request.ignoredRegions;
+    async compare(request: ProviderRequest) {
+      provider.sawRequest = request;
       // 25% of a 1280x800 image differs: three orders of magnitude over policy.
       return { pixelDifference: 256_000, diffArtifactWritten: true };
     },
   };
-  return provider as ComparisonProvider & { sawRegions: unknown };
+  return provider;
 }
 
 const probeOk: ImageProbe = () => ({ exists: true, dimensions: { width: 1280, height: 800 } });
@@ -143,7 +165,7 @@ function ratifyInput(overrides: Partial<RatifyReferenceInput> = {}): RatifyRefer
   };
 }
 
-function compareInput(overrides: Partial<CompareRenderInput> = {}): CompareRenderInput {
+function compareInput(): CompareRenderInput {
   return {
     featureId: FEATURE,
     referenceId: REFERENCE,
@@ -152,62 +174,100 @@ function compareInput(overrides: Partial<CompareRenderInput> = {}): CompareRende
     policy: POLICY,
     actualImagePath: '/tmp/actual.png',
     diffImagePath: '/tmp/diff.png',
-    ...overrides,
   };
 }
 
-describe('a mask cannot turn a failing comparison into a passing one', () => {
-  it('still fails when the ENTIRE image is declared ignored', async () => {
+/**
+ * What a JSON-boundary caller can still send: the compare input WITH the
+ * retired field attached. The TS type no longer admits it, which is exactly
+ * why the cast exists — the runtime guard, not the type, is the enforcement.
+ */
+function compareInputWithMask(regions: readonly RegionAttempt[]): CompareRenderInput {
+  return { ...compareInput(), ignoredRegions: regions } as CompareRenderInput;
+}
+
+describe('a compare request carrying ignoredRegions is refused, never silently run', () => {
+  it('refuses the maximal bypass attempt — the ENTIRE image declared ignored', async () => {
     const d = deps();
     expect((await ratifyReferenceVerb(ratifyInput(), CALLER, d)).ok).toBe(true);
 
-    const compared = await compareRenderVerb(
-      compareInput({ ignoredRegions: [WHOLE_IMAGE_MASK] }),
-      CALLER,
-      d,
-    );
+    const compared = await compareRenderVerb(compareInputWithMask([WHOLE_IMAGE_MASK]), CALLER, d);
+
+    expect(compared.ok).toBe(false);
+    if (compared.ok) return;
+    expect(compared.code).toBe('validation-failed');
+    expect(compared.detail).toContain('ignoredRegions');
+  });
+
+  it('refuses an unexplained mask identically — the refusal is structural, not a policy call', async () => {
+    const d = deps();
+    expect((await ratifyReferenceVerb(ratifyInput(), CALLER, d)).ok).toBe(true);
+
+    const compared = await compareRenderVerb(compareInputWithMask([UNEXPLAINED_MASK]), CALLER, d);
+
+    expect(compared.ok).toBe(false);
+    if (compared.ok) return;
+    expect(compared.code).toBe('validation-failed');
+  });
+
+  it('mints NO evidence for a refused mask request', async () => {
+    const d = deps();
+    expect((await ratifyReferenceVerb(ratifyInput(), CALLER, d)).ok).toBe(true);
+    await compareRenderVerb(compareInputWithMask([WHOLE_IMAGE_MASK]), CALLER, d);
+
+    const read = await getDesignEvidenceVerb({ featureId: FEATURE, referenceId: REFERENCE }, CALLER, d);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    // A refusal is not a comparison. Were an evidence row minted here, a host
+    // misconfiguration would enter the evidence table wearing the clothes of
+    // evidence — the exact confusion the verb header forbids.
+    expect(read.evidence).toHaveLength(0);
+    const covered = read.coverage.find((c) => c.caseId === 'panel-desktop');
+    expect(covered?.verdict).toBeNull();
+  });
+});
+
+describe('nothing region-shaped survives anywhere downstream', () => {
+  it('never hands the engine anything beyond paths and threshold on a normal compare', async () => {
+    const provider = failingProvider();
+    const d = deps({ comparison: { provider, probe: probeOk } });
+    await ratifyReferenceVerb(ratifyInput(), CALLER, d);
+    const compared = await compareRenderVerb(compareInput(), CALLER, d);
 
     expect(compared.ok).toBe(true);
     if (!compared.ok) return;
-    // The maximal bypass attempt: if a mask could ever suppress a verdict, a
-    // mask covering every pixel would be the one that did it.
     expect(compared.result.verdict).toBe('fail');
+
+    // The engine seam is exactly four fields. The day regions are threaded
+    // through, this fails, and whoever did it must answer the bypass question
+    // deliberately: what stops a mask from suppressing a real difference?
+    expect(provider.sawRequest).toBeDefined();
+    expect(Object.keys(provider.sawRequest!).sort()).toEqual([
+      'actualImagePath',
+      'diffImagePath',
+      'referenceImagePath',
+      'threshold',
+    ]);
   });
 
-  it('still fails when the mask carries no justification or authority', async () => {
+  it('stored evidence never carries an ignoredRegions field', async () => {
     const d = deps();
-    expect((await ratifyReferenceVerb(ratifyInput(), CALLER, d)).ok).toBe(true);
-
-    const compared = await compareRenderVerb(
-      compareInput({ ignoredRegions: [UNEXPLAINED_MASK] }),
-      CALLER,
-      d,
-    );
-
-    expect(compared.ok).toBe(true);
-    if (!compared.ok) return;
-    expect(compared.result.verdict).toBe('fail');
-  });
-
-  it('does not let a mask satisfy a required case through the gate view', async () => {
-    const d = deps();
-    expect((await ratifyReferenceVerb(ratifyInput(), CALLER, d)).ok).toBe(true);
-    await compareRenderVerb(compareInput({ ignoredRegions: [WHOLE_IMAGE_MASK] }), CALLER, d);
+    await ratifyReferenceVerb(ratifyInput(), CALLER, d);
+    await compareRenderVerb(compareInput(), CALLER, d);
 
     const read = await getDesignEvidenceVerb({ featureId: FEATURE, referenceId: REFERENCE }, CALLER, d);
     expect(read.ok).toBe(true);
     if (!read.ok) return;
 
-    const covered = read.coverage.find((c) => c.caseId === 'panel-desktop');
-    // Evidence EXISTS for the case, so it is not uncovered — but its verdict is
-    // the failing one, which is what the gate refuses on. A mask changes
-    // neither fact.
-    expect(covered?.verdict).toBe('fail');
+    expect(read.evidence).toHaveLength(1);
+    // Not "empty" or "undefined" — ABSENT. Evidence must not even hint that
+    // region exclusion is a thing this pipeline can do.
+    expect('ignoredRegions' in read.evidence[0]!.deterministic).toBe(false);
   });
+});
 
-  it('CALIBRATION: the same setup passes when the implementation actually matches', async () => {
-    // Without this, every assertion above also passes if compare_render were
-    // broken into always failing — a guard that proves only that it can say no.
+describe('CALIBRATION: the refusal is about masks, not a verb that always says no', () => {
+  it('a mask-free compare still passes when the implementation actually matches', async () => {
     const passing: ComparisonProvider = {
       engine: { engine: 'fake/pixelmatch', engineVersion: '9.9.9' },
       async compare() {
@@ -217,54 +277,9 @@ describe('a mask cannot turn a failing comparison into a passing one', () => {
     const d = deps({ comparison: { provider: passing, probe: probeOk } });
     expect((await ratifyReferenceVerb(ratifyInput(), CALLER, d)).ok).toBe(true);
 
-    const compared = await compareRenderVerb(
-      compareInput({ ignoredRegions: [WHOLE_IMAGE_MASK] }),
-      CALLER,
-      d,
-    );
+    const compared = await compareRenderVerb(compareInput(), CALLER, d);
     expect(compared.ok).toBe(true);
     if (!compared.ok) return;
     expect(compared.result.verdict).toBe('pass');
-  });
-});
-
-describe('masks are recorded but inert, and that must not drift silently', () => {
-  it('records the declared regions on the stored evidence', async () => {
-    const d = deps();
-    await ratifyReferenceVerb(ratifyInput(), CALLER, d);
-    await compareRenderVerb(compareInput({ ignoredRegions: [WHOLE_IMAGE_MASK] }), CALLER, d);
-
-    const read = await getDesignEvidenceVerb({ featureId: FEATURE, referenceId: REFERENCE }, CALLER, d);
-    expect(read.ok).toBe(true);
-    if (!read.ok) return;
-
-    // The regions ARE persisted, which is exactly why the next test matters:
-    // a reader of this record sees an exclusion that was never performed.
-    expect(read.evidence[0]!.deterministic.ignoredRegions).toEqual([WHOLE_IMAGE_MASK]);
-  });
-
-  it('never hands the regions to the engine, so no masking can occur', async () => {
-    const provider = failingProvider();
-    const d = deps({ comparison: { provider, probe: probeOk } });
-    await ratifyReferenceVerb(ratifyInput(), CALLER, d);
-    await compareRenderVerb(compareInput({ ignoredRegions: [WHOLE_IMAGE_MASK] }), CALLER, d);
-
-    /**
-     * This is the load-bearing assertion of the file, and it is deliberately
-     * the OPPOSITE of what the field's presence suggests.
-     *
-     * `provider.compare()` is invoked with exactly four fields — the two image
-     * paths, the diff path, and the engine threshold. `ignoredRegions` is not
-     * among them and is not part of `ProviderRequest` at all. So a declared
-     * mask is accepted from the caller, persisted onto the evidence record, and
-     * never reaches anything capable of acting on it.
-     *
-     * Pinning the ABSENCE is what makes the guard useful. The day someone
-     * threads regions through to an engine, this expectation fails, and they
-     * are forced to answer the question the other tests here are waiting for:
-     * what stops a mask from suppressing a real difference? Right now nothing
-     * needs to stop it, because nothing can perform it.
-     */
-    expect(provider.sawRegions).toBeUndefined();
   });
 });
