@@ -298,6 +298,14 @@ export function isLoopPressureShed(error: any): boolean;
  * Pure — exported for focused diagnostics tests.
  */
 export function formatToolCallFailure(toolName: any, error: any, { idempotencyKey }?: {}): string;
+/**
+ * Format a tools/list failure as the PRE-DISPATCH stage it is. A named ptool
+ * invocation must discover the catalog before it can resolve the tool schema,
+ * read-only hint, or output contract. Until that succeeds, no tools/call has
+ * been sent, so retrying is safe and outcome=unknown guidance is incorrect.
+ * Pure — exported for focused diagnostics tests.
+ */
+export function formatToolCatalogFailure(requestedToolName: any, error: any): string;
 export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, sleep, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;

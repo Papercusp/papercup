@@ -1027,13 +1027,6 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // deadline; preserve the typed receipt instead of surfacing a transport
   // timeout that invites an unsafe replay.
   ['coord:send', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
-  // EI-21417837903888552: coord:read is a bounded indexed read, but it still
-  // traverses the same proxy/dispatch path as the compound coordination reads
-  // above. Under operator pressure the valid server call can outlive the flat
-  // 30s client budget while remaining inside the dispatcher's 60s default.
-  // Keep the client outside that server budget so callers receive the message
-  // envelope (or the server's typed timeout) instead of an opaque -32001.
-  ['coord:read', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.
@@ -1144,6 +1137,23 @@ export function formatToolCallFailure(toolName, error, { idempotencyKey } = {}) 
     ? ` outcome=unknown; idempotencyKey=${idempotencyKey}; after reconciling state, replay this logical call with --idempotency-key ${idempotencyKey} instead of creating a new invocation.`
     : '';
   return `ptool: tools/call ${name} failed: ${detail}; the tool call may have executed — verify its state before retrying. Do not blindly retry a mutation.${receipt}`;
+}
+
+/**
+ * Format a tools/list failure as the PRE-DISPATCH stage it is. A named ptool
+ * invocation must discover the catalog before it can resolve the tool schema,
+ * read-only hint, or output contract. Until that succeeds, no tools/call has
+ * been sent, so retrying is safe and outcome=unknown guidance is incorrect.
+ * Pure — exported for focused diagnostics tests.
+ */
+export function formatToolCatalogFailure(requestedToolName, error) {
+  const requested = typeof requestedToolName === 'string' && requestedToolName
+    ? ` for requested tool ${requestedToolName}`
+    : '';
+  return (
+    `ptool: tool catalog discovery failed${requested}: ${errorDetail(error)}; ` +
+    'failure_stage=tools/list; no named tool was dispatched, so retrying this CLI invocation is safe.'
+  );
 }
 
 export async function callToolWithPressureRetry(
@@ -1791,7 +1801,14 @@ async function main() {
   });
   let client = await connectOperator();
   try {
-    const tools = await listAllTools(client, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) });
+    let tools;
+    try {
+      tools = await listAllTools(client, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) });
+    } catch (error) {
+      console.error(formatToolCatalogFailure(args.tool, error));
+      process.exitCode = 1;
+      return;
+    }
     const grouped = groupTools(tools);
     const byName = new Map(tools.map((t) => [t.name, t]));
 

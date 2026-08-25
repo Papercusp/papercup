@@ -13,6 +13,7 @@ import {
   resolveTokenPath,
   resolveTokenPaths,
   formatToolCallFailure,
+  formatToolCatalogFailure,
   isLoopPressureShed,
   isReadOnlyTool,
   isTransportFailure,
@@ -139,7 +140,6 @@ describe('ptool bearer-token resolution', () => {
 describe('ptool call deadlines', () => {
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('coord:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
     // EI-21388931083718076: the respawn orchestration's client deadline must outlive
@@ -243,10 +243,6 @@ describe('ptool call deadlines', () => {
       args: {},
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
-      name: 'coord:read',
-      args: { msg_id: 'mt8hc76p-0000-772c15a73b164cf4bb1c9e0ff669d7fe' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('tools:invoke', {
       name: 'templates:new-app',
       args: { template: 'papercusp-android-app', slug: 'demo' },
     })).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
@@ -285,6 +281,17 @@ describe('ptool call deadlines', () => {
 });
 
 describe('ptool tools/call failure diagnostics', () => {
+  it('identifies a catalog timeout as pre-dispatch and safe to retry', () => {
+    const error = Object.assign(new Error('Request timed out'), { code: -32001 });
+    const message = formatToolCatalogFailure('coord:read', error);
+
+    expect(message).toContain('tool catalog discovery failed for requested tool coord:read');
+    expect(message).toContain('failure_stage=tools/list');
+    expect(message).toContain('no named tool was dispatched');
+    expect(message).toContain('retrying this CLI invocation is safe');
+    expect(message).not.toContain('may have executed');
+  });
+
   it('preserves transport and cause details while requiring state verification before retry', () => {
     const error = Object.assign(new TypeError('fetch failed'), {
       cause: { code: 'UND_ERR_SOCKET', message: 'other side closed' },
