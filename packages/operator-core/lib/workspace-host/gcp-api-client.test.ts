@@ -13,6 +13,7 @@ import {
   type GcpOperationRef,
   type GcpRouterInsertInput,
 } from './gcp-provider';
+import { censusGcpWorkspaceHostResources } from './gcp-safety';
 
 const PROJECT = 'active-alcove-504205-q3';
 const ZONE = 'us-central1-a';
@@ -495,6 +496,92 @@ describe('ADC-backed GCP workspace-host API client', () => {
     expect(
       calls.filter(({ url, init }) => url.includes('/routers/pc-host-router?') && init?.method === 'PATCH'),
     ).toHaveLength(2);
+  });
+
+  it('collects non-vacuous all-kind inventory evidence for the orphan census', async () => {
+    const managedLabels = {
+      'papercusp-managed': 'true',
+      'papercusp-host-id': 'host-gcp-live-client',
+      'papercusp-workspace-id': 'workspace-1',
+    };
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/aggregated/instances?')) {
+        return json({ items: { [`zones/${ZONE}`]: { instances: [{ name: 'pc-host-vm', labels: managedLabels }] } } });
+      }
+      if (url.includes('/aggregated/disks?')) {
+        return json({ items: { [`zones/${ZONE}`]: { disks: [{ name: 'pc-host-data', labels: managedLabels }] } } });
+      }
+      if (url.includes('/global/snapshots?')) return json({ items: [{ name: 'pc-host-snapshot', labels: managedLabels }] });
+      if (url.endsWith('/global/networks/pc-host-net')) return json({ name: 'pc-host-net' });
+      if (url.endsWith(`/regions/${REGION}/subnetworks/pc-host-subnet`)) return json({ name: 'pc-host-subnet' });
+      if (url.endsWith('/global/firewalls/pc-host-iap')) {
+        return json({
+          name: 'pc-host-iap',
+          direction: 'INGRESS',
+          sourceRanges: ['35.235.240.0/20'],
+          targetTags: ['pc-host'],
+          allowed: [{ IPProtocol: 'tcp', ports: ['22'] }],
+        });
+      }
+      if (url.endsWith(`/regions/${REGION}/routers/pc-host-router`)) {
+        return json({
+          name: 'pc-host-router',
+          network: 'global/networks/pc-host-net',
+          region: `regions/${REGION}`,
+          nats: [
+            {
+              name: 'pc-host-nat',
+              natIpAllocateOption: 'AUTO_ONLY',
+              sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+              subnetworks: [
+                { name: `regions/${REGION}/subnetworks/pc-host-subnet`, sourceIpRangesToNat: ['ALL_IP_RANGES'] },
+              ],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    }) as typeof fetch;
+    const client = makeClient(fetchImpl);
+    const inventory = await client.inventoryManagedResources({
+      projectId: PROJECT,
+      region: REGION,
+      workspaceId: 'workspace-1',
+      deterministicNames: {
+        networks: ['pc-host-net'],
+        subnetworks: ['pc-host-subnet'],
+        firewalls: ['pc-host-iap'],
+        routers: ['pc-host-router'],
+        nats: [{ routerName: 'pc-host-router', name: 'pc-host-nat' }],
+      },
+    });
+
+    expect(inventory.complete).toBe(true);
+    expect(inventory.inventoryEvidence.map(({ kind }) => kind)).toEqual([
+      'vm',
+      'disk',
+      'firewall',
+      'subnetwork',
+      'network',
+      'snapshot',
+      'router',
+      'nat',
+    ]);
+    expect(inventory.observed.map(({ resource }) => resource.kind).sort()).toEqual(
+      ['vm', 'disk', 'snapshot', 'network', 'subnetwork', 'firewall', 'router', 'nat'].sort(),
+    );
+    expect(
+      censusGcpWorkspaceHostResources({
+        hostId: 'host-gcp-live-client',
+        workspaceId: 'workspace-1',
+        expected: inventory.observed.map(({ resource }) => resource),
+        observed: inventory.observed,
+        inventoryEvidence: inventory.inventoryEvidence,
+        evaluatedAt: NOW,
+        orphanGraceMs: 60_000,
+      }),
+    ).toMatchObject({ inventoryComplete: true, clean: true, untracked: [], missing: [], labelMismatches: [] });
   });
 
   it('wires the explicit ADC production composition without changing injected-client fail-closed construction', async () => {
