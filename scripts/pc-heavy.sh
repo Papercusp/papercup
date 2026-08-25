@@ -169,6 +169,14 @@
 #                         leader (default 1800). Leader liveness is OBSERVED
 #                         (pid + start-time), so this only bounds a leader that
 #                         is hung-but-alive; a dead leader is detected at once.
+#   PC_HEAVY_RETRY_PREEMPTIONS
+#                         opt-in number of bounded retries when an attempt is
+#                         preempted by the exclusive materializer. Only the
+#                         exact machine-readable
+#                         `status=preempted reason=exclusive-materializer`
+#                         result is retryable; unrelated exit 75 results are
+#                         returned unchanged. Retry attempts disable coalescing
+#                         so a preempted rc=75 cannot be replayed. Default: 0.
 #
 # Crash-safe: the slot is an flock held on an open fd for the child's whole
 # lifetime; the kernel releases it when this process exits for ANY reason
@@ -380,12 +388,22 @@ _pc_heavy_internal_preempt_run() {
     local _status="$1" _reason="$2" _exit_code="${3:-}"
     if [ "${_preempt_result_emitted:-0}" = 1 ]; then return 0; fi
     _preempt_result_emitted=1
+    local _result_line="PC_HEAVY_RESULT status=$_status reason=$_reason"
     if [ -n "$_exit_code" ]; then
-      _preempt_notify "PC_HEAVY_RESULT status=$_status reason=$_reason exit=$_exit_code"
-    else
-      # Preserve the established preemption marker byte-for-byte; downstream
-      # readers already key on its status/reason pair.
-      _preempt_notify "PC_HEAVY_RESULT status=$_status reason=$_reason"
+      _result_line="$_result_line exit=$_exit_code"
+    fi
+    # Preserve the established marker byte-for-byte on stderr while also
+    # publishing one private, per-attempt result for the optional outer retry
+    # loop. The atomic rename keeps the wrapper from observing a half-written
+    # marker if the monitor and its parent finish at the same instant.
+    _preempt_notify "$_result_line"
+    if [ -n "${PC_HEAVY_PREEMPT_RESULT_FILE:-}" ]; then
+      local _result_tmp="${PC_HEAVY_PREEMPT_RESULT_FILE}.$$"
+      if printf '%s\n' "$_result_line" > "$_result_tmp" 2>/dev/null; then
+        mv -f "$_result_tmp" "${PC_HEAVY_PREEMPT_RESULT_FILE}" 2>/dev/null || rm -f "$_result_tmp" 2>/dev/null || true
+      else
+        rm -f "$_result_tmp" 2>/dev/null || true
+      fi
     fi
   }
 
