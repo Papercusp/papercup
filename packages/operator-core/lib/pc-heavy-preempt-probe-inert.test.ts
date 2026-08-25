@@ -64,11 +64,11 @@ describe('pc-heavy preempt probe is inert (EI-21355065353185484)', () => {
 
   it('declares materializer intent BEFORE queuing for the writer mutex', () => {
     const intentAt = source.indexOf('{_exclusive_intent_fd}>>"$_exclusive_intent_path"');
-    const writerWaitAt = source.indexOf('while ! flock -n "$_exclusive_writer_fd"');
+    const writerWaitAt = source.indexOf('flock "$_exclusive_writer_fd" &');
     expect(intentAt, 'materializer must establish the intent lock').toBeGreaterThan(-1);
-    expect(writerWaitAt).toBeGreaterThan(-1);
+    expect(writerWaitAt, 'materializer must join the kernel writer queue').toBeGreaterThan(-1);
     // Order matters: a materializer QUEUED behind another materializer holds the
-    // writer lock precisely never, so intent declared after this loop would leave
+    // writer lock precisely never, so intent declared after joining the queue would leave
     // it invisible to ordinary holders — exactly the case that starved.
     expect(intentAt).toBeLessThan(writerWaitAt);
   });

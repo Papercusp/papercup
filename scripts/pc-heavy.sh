@@ -1465,7 +1465,23 @@ if [ "$_exclusive_all_slots" = 1 ]; then
   _exclusive_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
   case "$_exclusive_heartbeat_every" in ''|*[!0-9]*) _exclusive_heartbeat_every=15 ;; esac
   _exclusive_writer_announced=0
-  while ! flock -n "$_exclusive_writer_fd"; do
+  _exclusive_writer_wait_pid=''
+  _exclusive_writer_wait_rc=0
+  _exclusive_writer_unbounded=0
+  case "${PC_HEAVY_RELEASE_GATE:-}" in
+    1|on|ON|true|TRUE|yes|YES) _exclusive_writer_unbounded=1 ;;
+  esac
+  if ! flock -n "$_exclusive_writer_fd"; then
+    # WI-41318 recurrence (2026-08-25): polling `flock -n` every 200ms is a
+    # mutex, but it is not a queue. Later materializers can repeatedly win the
+    # free-lock race ahead of a release gate that has already waited for
+    # minutes. Put one blocking waiter in the kernel queue instead. It locks
+    # this parent's inherited open-file description, so the lock remains held
+    # after the helper exits and through the final `exec` below.
+    flock "$_exclusive_writer_fd" &
+    _exclusive_writer_wait_pid=$!
+  fi
+  while [ -n "$_exclusive_writer_wait_pid" ] && kill -0 "$_exclusive_writer_wait_pid" 2>/dev/null; do
     _exclusive_writer_now=$(date +%s)
     if [ "$_exclusive_writer_announced" = 0 ]; then
       echo "[pc-heavy] another exclusive materializer owns the writer lock — waiting before touching heavy slots" >&2
@@ -1478,7 +1494,20 @@ if [ "$_exclusive_all_slots" = 1 ]; then
       echo "[pc-heavy] still waiting for the exclusive materialization writer ($((_exclusive_writer_now - _exclusive_writer_started))s elapsed)" >&2
       _exclusive_writer_last_heartbeat="$_exclusive_writer_now"
     fi
-    if [ "$_exclusive_writer_now" -ge "$_exclusive_writer_deadline" ]; then
+    # A release gate is already inside its separately bounded setup process.
+    # Applying the ordinary 900s admission deadline here spends a one-shot
+    # qualification on queueing and emits green:null before the suite. Keep
+    # ordinary materializers bounded; the gate's outer setup timeout remains
+    # its lifecycle bound while this healthy serialized queue drains.
+    if [ "$_exclusive_writer_unbounded" = 0 ] && [ "$_exclusive_writer_now" -ge "$_exclusive_writer_deadline" ]; then
+      kill "$_exclusive_writer_wait_pid" 2>/dev/null || true
+      wait "$_exclusive_writer_wait_pid" 2>/dev/null
+      _exclusive_writer_wait_rc=$?
+      _exclusive_writer_wait_pid=''
+      # The waiter may have acquired and exited between kill -0 and kill. A
+      # successful wait means this parent owns the flock; do not misreport that
+      # narrow race as a refusal.
+      [ "$_exclusive_writer_wait_rc" -eq 0 ] && break
       echo "[pc-heavy] REFUSED materialization after ${_timeout}s: another exclusive materializer still owns the writer lock; no heavy slots were acquired" >&2
       _exclusive_writer_holders="$(_exclusive_describe_holders "$_exclusive_writer_path")"
       if [ -n "$_exclusive_writer_holders" ]; then
@@ -1491,6 +1520,15 @@ if [ "$_exclusive_all_slots" = 1 ]; then
     fi
     sleep 0.2
   done
+  if [ -n "$_exclusive_writer_wait_pid" ]; then
+    wait "$_exclusive_writer_wait_pid" 2>/dev/null
+    _exclusive_writer_wait_rc=$?
+    _exclusive_writer_wait_pid=''
+    if [ "$_exclusive_writer_wait_rc" -ne 0 ]; then
+      echo "[pc-heavy] REFUSED materialization: exclusive writer queue wait ended without acquiring the lock" >&2
+      exit 75
+    fi
+  fi
   echo "[pc-heavy] exclusive materialization writer acquired — beginning heavy-slot drain" >&2
 
   _exclusive_slot_count="$_ceil"

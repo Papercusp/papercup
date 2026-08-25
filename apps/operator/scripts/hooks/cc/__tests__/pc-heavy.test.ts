@@ -1141,6 +1141,78 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('keeps a release gate kernel-queued past the ordinary writer deadline and ahead of a later writer', async () => {
+    const order = join(dir, 'exclusive-writer-order');
+    const firstStarted = join(dir, 'exclusive-first-started');
+    const releaseFirst = join(dir, 'exclusive-release-first');
+    const firstEnv = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '10',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+    };
+    const first = spawn(
+      'bash',
+      [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `echo first-start >> "${order}"; touch "${firstStarted}"; while [ ! -f "${releaseFirst}" ]; do sleep 0.05; done; echo first-end >> "${order}"`],
+      { env: baseEnv(firstEnv), cwd: dir, detached: true },
+    );
+    const firstErr = createTextCollector(first.stderr);
+    let gate: ReturnType<typeof spawn> | undefined;
+    let later: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(first, firstErr, (t) => t.includes('exclusive materialization barrier acquired'), 'the first healthy writer acquiring the barrier');
+      await waitFor('the first writer child starting', () => existsSync(firstStarted));
+
+      gate = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `echo gate >> "${order}"; sleep 1`],
+        {
+          env: baseEnv({
+            ...firstEnv,
+            PC_HEAVY_TIMEOUT_SEC: '1',
+            PC_HEAVY_RELEASE_GATE: '1',
+          }),
+          cwd: dir,
+          detached: true,
+        },
+      );
+      const gateErr = createTextCollector(gate.stderr);
+      const gateExit = new Promise<number>((res) => gate?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(gate, gateErr, (t) => t.includes('another exclusive materializer owns the writer lock'), 'the release gate joining the kernel writer queue');
+
+      later = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `echo later >> "${order}"`],
+        { env: baseEnv(firstEnv), cwd: dir, detached: true },
+      );
+      const laterErr = createTextCollector(later.stderr);
+      const laterExit = new Promise<number>((res) => later?.on('exit', (c) => res(c ?? -1)));
+      await untilStderr(later, laterErr, (t) => t.includes('another exclusive materializer owns the writer lock'), 'the later writer queueing behind the gate');
+
+      // The old polling/deadline path exited 75 here. The gate must remain
+      // alive after its ordinary one-second budget because the existing writer
+      // is healthy and the checkpoint process owns the outer lifecycle bound.
+      await new Promise((resolve) => setTimeout(resolve, 1_300));
+      expect(gate.exitCode).toBeNull();
+
+      writeFileSync(releaseFirst, 'release\n');
+      expect(await gateExit).toBe(0);
+      expect(await laterExit).toBe(0);
+      expect(readFileSync(order, 'utf8').trim().split('\n')).toEqual([
+        'first-start',
+        'first-end',
+        'gate',
+        'later',
+      ]);
+      expect(gateErr.text()).not.toContain('REFUSED materialization after 1s');
+      expect(gateErr.text()).toContain('exclusive materialization writer acquired');
+    } finally {
+      killGroup(first);
+      if (gate) killGroup(gate);
+      if (later) killGroup(later);
+    }
+  }, 30_000);
+
   it('still throttles an ordinary sweep when GREEN_CHECKPOINT is unset', () => {
     // The other half of the invariant above: the exemption must be keyed to the release
     // gate, not accidentally open to everyone.
