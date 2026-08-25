@@ -253,6 +253,33 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
     expect(rows[0].verify_text).toContain('npm run build');
   });
 
+  // P-003 (D-002/D-005) — the invariant stated executably, as the recurrence guard
+  // for the whole CLASS rather than for one reproduction: NO imported feature may
+  // carry a claim id with no assertion row. Features live in the target harness DB
+  // and assertion rows in operator PG, so nothing but write ORDER enforces this;
+  // this fails if the order is ever reversed back to import-then-persist, or if a
+  // claim is ever threaded from an assertion that was not durably stored.
+  //
+  // It reads the REAL payload the handler POSTed and the REAL PG rows, so unlike a
+  // stubbed unit assertion it cannot pass by construction.
+  it('no imported feature carries a claim id whose assertion row is missing (P-003)', async () => {
+    const claimed = [
+      ...new Set(captured.flatMap((c) => c.features).flatMap((f) => f.claims ?? [])),
+    ];
+    // Calibration: if claims ever stop being threaded onto the payload, the
+    // dangling-set check below would pass VACUOUSLY and silently stop guarding
+    // anything. A guard that cannot fail is not a guard.
+    expect(claimed.length).toBeGreaterThan(0);
+
+    const rows = await admin<{ val_id: string }[]>`
+      SELECT val_id
+        FROM harness_shared.harness_plan_assertions
+       WHERE plan_slug = ${SLUG}
+    `;
+    const persisted = new Set(rows.map((r) => r.val_id));
+    expect(claimed.filter((v) => !persisted.has(v))).toEqual([]);
+  });
+
   it('marks the covered plan items done and writes back the ## Promoted block + draft→active (real PG)', async () => {
     // marked_items reported on the (single) apply result.
     expect((applyData.applied.marked_items as string[]).sort()).toEqual(['P-001', 'P-002']);
