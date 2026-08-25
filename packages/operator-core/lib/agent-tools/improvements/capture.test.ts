@@ -670,6 +670,21 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     }
   });
 
+  it('coerces numeric toolFailure status codes to strings (EI-21444808398450659)', () => {
+    const r = argsSchema.safeParse({
+      title: 'numeric tool failure status',
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'work_items:complete',
+        errorCode: 'invalid_args',
+        status: 400,
+        message: 'terminal writer rejected a numeric status',
+      },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).toMatchObject({ toolFailure: { status: '400' } });
+  });
+
   it('makes direct-evidence flag placement explicit and keeps the top-level shape invalid', () => {
     const json = z.toJSONSchema(captureTool.args as never) as {
       properties?: { toolFailure?: { description?: string } };

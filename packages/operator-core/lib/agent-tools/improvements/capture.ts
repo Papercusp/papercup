@@ -311,7 +311,12 @@ const suspectedToolFailureSchema = z
   .object({
     toolName: z.string().min(1).max(160),
     errorCode: z.string().max(160).optional(),
-    status: z.string().max(80).optional(),
+    // Tool transports commonly expose HTTP-like status codes as numbers. Keep
+    // the persisted classifier input textual while accepting that wire shape.
+    status: z.preprocess(
+      (value) => (typeof value === 'number' ? String(value) : value),
+      z.string().max(80).optional(),
+    ),
     message: z.string().min(1).max(4000),
     schemaRevision: z.string().max(160).optional(),
     fieldPath: z.string().max(300).optional(),
