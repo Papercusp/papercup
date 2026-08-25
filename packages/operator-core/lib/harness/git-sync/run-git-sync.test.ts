@@ -32,7 +32,10 @@ import {
   GIT_SYNC_BOT_EMAIL,
   GIT_SYNC_BOT_NAME,
   affectsToolRouting,
+  affectsGeneratedDeclarations,
   checkToolRoutingBeforeCommit,
+  generatedDeclarationPair,
+  regenerateGeneratedDeclarationsBeforeCommit,
   regenerateToolCatalogBeforeCommit,
   type RunGit,
 } from './run-git-sync';
@@ -145,6 +148,86 @@ describe('WI-39922 tool-catalog pre-commit regeneration', () => {
   });
 });
 
+describe('EI-21444216858331991 generated declarations pre-commit regeneration', () => {
+  it('maps both halves of a generated declaration pair and ignores unrelated paths', () => {
+    expect(generatedDeclarationPair('apps/operator/scripts/psu-launcher.mjs')).toEqual({
+      source: 'apps/operator/scripts/psu-launcher.mjs',
+      artifact: 'apps/operator/scripts/psu-launcher.d.mts',
+    });
+    expect(generatedDeclarationPair('apps/operator/scripts/psu-launcher.d.mts')).toEqual({
+      source: 'apps/operator/scripts/psu-launcher.mjs',
+      artifact: 'apps/operator/scripts/psu-launcher.d.mts',
+    });
+    expect(affectsGeneratedDeclarations('tsconfig.declarations.json')).toBe(true);
+    expect(affectsGeneratedDeclarations('package-lock.json')).toBe(true);
+    expect(affectsGeneratedDeclarations('README.md')).toBe(false);
+  });
+
+  it('regenerates an enrolled dirty source and returns the pair as one atomic commit group', async () => {
+    const source = 'apps/operator/scripts/psu-launcher.mjs';
+    const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
+    let statusReads = 0;
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'status') {
+        statusReads += 1;
+        return {
+          code: 0,
+          stdout: statusReads === 1 ? ` M ${source}\0` : ` M ${source}\0 M ${artifact}\0`,
+          stderr: '',
+        };
+      }
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout: `scripts/gen-declarations.ts\ntsconfig.declarations.json\npackage.json\npackage-lock.json\n${source}\n${artifact}\n`,
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: 'emitted 1 declaration', stderr: '' }));
+    const logs: string[] = [];
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      runGenerator,
+    );
+
+    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
+    expect(logs.join('\n')).toMatch(/regenerated tracked declarations before commit/);
+  });
+
+  it('fails closed when the writer cannot produce a coherent projection', async () => {
+    const source = 'apps/operator/scripts/psu-launcher.mjs';
+    const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'status') return { code: 0, stdout: ` M ${source}\0`, stderr: '' };
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout: `scripts/gen-declarations.ts\ntsconfig.declarations.json\n${source}\n${artifact}\n`,
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    const logs: string[] = [];
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      async () => ({ code: 1, stdout: '', stderr: 'declaration emit failed' }),
+    );
+
+    expect(result).toEqual({
+      status: 'blocked',
+      atomicPaths: [source, artifact],
+      detail: 'declaration emit failed',
+    });
+    expect(logs.join('\n')).toMatch(/deferring the superproject commit/);
+  });
+});
+
 describe('EI-20428405431869483 generated tool-routing pre-commit check', () => {
   it('limits the dirty-path trigger to routing sources, excluding pair tests', () => {
     expect(affectsToolRouting('packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts')).toBe(true);
@@ -169,8 +252,7 @@ describe('EI-20428405431869483 generated tool-routing pre-commit check', () => {
       if (args[0] === 'ls-files') {
         return {
           code: 0,
-          stdout:
-            'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
+          stdout: 'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
           stderr: '',
         };
       }
@@ -218,8 +300,7 @@ describe('EI-20428405431869483 generated tool-routing pre-commit check', () => {
       if (args[0] === 'ls-files') {
         return {
           code: 0,
-          stdout:
-            'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
+          stdout: 'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
           stderr: '',
         };
       }
@@ -311,10 +392,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const bridged = git(originDir, 'rev-parse', 'refs/heads/staging');
     expect(bridged).not.toBe(stagingBefore);
     expect(git(originDir, 'rev-parse', `${bridged}^{tree}`)).toBe(stagingTree);
-    expect(git(originDir, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([
-      stagingBefore,
-      isolatedMain,
-    ]);
+    expect(git(originDir, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([stagingBefore, isolatedMain]);
     expect(git(originDir, 'merge-base', '--is-ancestor', isolatedMain, bridged)).toBe('');
     expect(logs.join('\n')).toMatch(/bridged fully-represented origin\/main into current ancestry/);
   });
@@ -359,10 +437,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const bridged = git(repo, 'rev-parse', 'HEAD');
     expect(bridged).not.toBe(stagingBefore);
     expect(git(repo, 'rev-parse', 'HEAD^{tree}')).toBe(stagingTree);
-    expect(git(repo, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([
-      stagingBefore,
-      isolatedMain,
-    ]);
+    expect(git(repo, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([stagingBefore, isolatedMain]);
     expect(git(repo, 'merge-base', '--is-ancestor', isolatedMain, bridged)).toBe('');
     expect(git(originDir, 'rev-parse', 'refs/heads/staging')).toBe(stagingBefore);
   });
@@ -434,9 +509,7 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(out.status).toBe('synced');
     expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
-    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(
-      `${ignoredPath}/transient-artifact`,
-    );
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(`${ignoredPath}/transient-artifact`);
     expect(readFileSync(ignoredArtifact, 'utf8')).toBe('must remain local and untracked\n');
     expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
   });
@@ -464,9 +537,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
     for (const markerPath of markerPaths) {
       expect(originFiles).not.toContain(markerPath);
-      expect(git(repo, 'check-ignore', '-v', '--no-index', markerPath)).toContain(
-        '.build-pending-*/',
-      );
+      expect(git(repo, 'check-ignore', '-v', '--no-index', markerPath)).toContain('.build-pending-*/');
     }
     expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
   });
@@ -480,21 +551,25 @@ describe('runGitSync (real git, no submodule)', () => {
       repoPath: repo,
       config: cfg,
       excludePaths: ['file.txt'],
-      liveLockHoldings: [{
-        path: 'file.txt',
-        owner: 'su-peer',
-        intent: 'editing the source half of an atomic change',
-      }],
+      liveLockHoldings: [
+        {
+          path: 'file.txt',
+          owner: 'su-peer',
+          intent: 'editing the source half of an atomic change',
+        },
+      ],
       log: (message) => logs.push(message),
     });
 
     expect(out.status).toBe('synced');
-    expect(out.skippedPaths).toEqual([{
-      scope: 'superproject',
-      path: 'file.txt',
-      owner: 'su-peer',
-      intent: 'editing the source half of an atomic change',
-    }]);
+    expect(out.skippedPaths).toEqual([
+      {
+        scope: 'superproject',
+        path: 'file.txt',
+        owner: 'su-peer',
+        intent: 'editing the source half of an atomic change',
+      },
+    ]);
     expect(logs.join('\n')).toContain('committing the unlocked remainder');
 
     // The protected edit remains local, while unrelated finished work reaches origin.
@@ -512,22 +587,114 @@ describe('runGitSync (real git, no submodule)', () => {
       config: cfg,
       // Holder provenance alone is sufficient to protect the path; callers cannot
       // accidentally omit the parallel exclusion projection and commit through a lock.
-      liveLockHoldings: [{
-        path: 'file.txt',
-        owner: 'su-peer',
-        intent: 'editing the source half of an atomic change',
-      }],
+      liveLockHoldings: [
+        {
+          path: 'file.txt',
+          owner: 'su-peer',
+          intent: 'editing the source half of an atomic change',
+        },
+      ],
     });
 
     expect(out.status).toBe('skipped-locked');
-    expect(out.skippedPaths).toEqual([{
-      scope: 'superproject',
-      path: 'file.txt',
-      owner: 'su-peer',
-      intent: 'editing the source half of an atomic change',
-    }]);
+    expect(out.skippedPaths).toEqual([
+      {
+        scope: 'superproject',
+        path: 'file.txt',
+        owner: 'su-peer',
+        intent: 'editing the source half of an atomic change',
+      },
+    ]);
     expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+  });
+
+  it('EI-21444216858331991: regenerates and commits an attributed source with its declaration atomically', async () => {
+    const generator = join(repo, 'scripts', 'gen-declarations.ts');
+    const config = join(repo, 'tsconfig.declarations.json');
+    const sourceRel = 'apps/operator/scripts/psu-launcher.mjs';
+    const artifactRel = 'apps/operator/scripts/psu-launcher.d.mts';
+    const source = join(repo, sourceRel);
+    const artifact = join(repo, artifactRel);
+    mkdirSync(join(repo, 'scripts'), { recursive: true });
+    mkdirSync(join(repo, 'apps', 'operator', 'scripts'), { recursive: true });
+    writeFileSync(generator, '// declaration generator fixture\n');
+    writeFileSync(config, '{"files":["apps/operator/scripts/psu-launcher.mjs"]}\n');
+    writeFileSync(join(repo, 'package.json'), '{"private":true}\n');
+    writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":3}\n');
+    writeFileSync(source, 'export const version = 1;\n');
+    writeFileSync(artifact, 'export declare const version = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed declaration fixture');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(source, 'export const version = 2;\n');
+    const runGenerator = vi.fn(async (repoPath: string) => {
+      expect(readFileSync(join(repoPath, sourceRel), 'utf8')).toContain('version = 2');
+      writeFileSync(join(repoPath, artifactRel), 'export declare const version = 2;\n');
+      return { code: 0, stdout: 'emitted declaration', stderr: '' };
+    });
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      generatedDeclarationsRegenerator: (context) => regenerateGeneratedDeclarationsBeforeCommit(context, runGenerator),
+      loadRoster: async () => [
+        {
+          agent: 'cup-declarations',
+          agentLabel: 'Declaration Author',
+          intent: 'change the launcher source',
+          files: [sourceRel],
+        },
+      ],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(git(originDir, 'show', `main:${sourceRel}`)).toContain('version = 2');
+    expect(git(originDir, 'show', `main:${artifactRel}`)).toContain('version = 2');
+    const sourceCommit = git(originDir, 'log', '-1', '--format=%H', 'main', '--', sourceRel);
+    const artifactCommit = git(originDir, 'log', '-1', '--format=%H', 'main', '--', artifactRel);
+    expect(sourceCommit).toBe(artifactCommit);
+    expect(originLog()).not.toMatch(/change the launcher source/);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('EI-21444216858331991: a failed declaration emit leaves the source uncommitted', async () => {
+    const generator = join(repo, 'scripts', 'gen-declarations.ts');
+    const config = join(repo, 'tsconfig.declarations.json');
+    const sourceRel = 'apps/operator/scripts/psu-launcher.mjs';
+    const artifactRel = 'apps/operator/scripts/psu-launcher.d.mts';
+    const source = join(repo, sourceRel);
+    const artifact = join(repo, artifactRel);
+    mkdirSync(join(repo, 'scripts'), { recursive: true });
+    mkdirSync(join(repo, 'apps', 'operator', 'scripts'), { recursive: true });
+    writeFileSync(generator, '// declaration generator fixture\n');
+    writeFileSync(config, '{"files":["apps/operator/scripts/psu-launcher.mjs"]}\n');
+    writeFileSync(source, 'export const version = 1;\n');
+    writeFileSync(artifact, 'export declare const version = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed declaration fixture');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(source, 'export const version = 2;\n');
+    const logs: string[] = [];
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      log: (message) => logs.push(message),
+      generatedDeclarationsRegenerator: (context) =>
+        regenerateGeneratedDeclarationsBeforeCommit(context, async () => ({
+          code: 1,
+          stdout: '',
+          stderr: 'fixture emit failed',
+        })),
+    });
+
+    expect(out.status).toBe('error');
+    expect(git(originDir, 'show', `main:${sourceRel}`)).toContain('version = 1');
+    expect(git(originDir, 'show', `main:${artifactRel}`)).toContain('version = 1');
+    expect(git(repo, 'status', '--porcelain', '--', sourceRel)).toMatch(/psu-launcher\.mjs/);
+    expect(logs.join('\n')).toMatch(/deferring the superproject commit/);
   });
 
   it('WI-39922: a generator failure remains fail-soft and the tool source still commits', async () => {
@@ -595,7 +762,9 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(runCheck).toHaveBeenCalledOnce();
     expect(out.status).toBe('synced');
     expect(logs.join('\n')).toMatch(/generated tool-routing check failed.*continuing with the commit fail-soft/);
-    expect(git(originDir, 'show', 'main:packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts')).toContain('version = 2');
+    expect(
+      git(originDir, 'show', 'main:packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts'),
+    ).toContain('version = 2');
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
@@ -667,9 +836,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
       ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
     ]);
-    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain(
-      'email-verification-fallback.txt',
-    );
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('email-verification-fallback.txt');
   });
 
   it('EI-20378687739683215: does not rewrite a non-GitHub email-verification rejection', async () => {

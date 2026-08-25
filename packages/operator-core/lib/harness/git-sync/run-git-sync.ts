@@ -442,6 +442,204 @@ export async function regenerateToolCatalogBeforeCommit(
   }
 }
 
+const DECLARATIONS_GENERATOR_PATH = 'scripts/gen-declarations.ts';
+const DECLARATIONS_CONFIG_PATH = 'tsconfig.declarations.json';
+const DECLARATIONS_PACKAGE_INPUTS = ['package.json', 'package-lock.json'] as const;
+const DECLARATIONS_TRACKED_PATHS = [DECLARATIONS_GENERATOR_PATH, DECLARATIONS_CONFIG_PATH] as const;
+
+interface DeclarationPair {
+  source: string;
+  artifact: string;
+}
+
+/** Map either half of an `.mjs` → generated `.d.mts` pair to both paths. */
+export function generatedDeclarationPair(path: string): DeclarationPair | null {
+  if (path.endsWith('.mjs')) return { source: path, artifact: path.replace(/\.mjs$/, '.d.mts') };
+  if (path.endsWith('.d.mts')) return { source: path.replace(/\.d\.mts$/, '.mjs'), artifact: path };
+  return null;
+}
+
+/** Inputs whose dirty working-tree bytes may change the tracked declaration projection. */
+export function affectsGeneratedDeclarations(path: string): boolean {
+  return (
+    path === DECLARATIONS_GENERATOR_PATH ||
+    path === DECLARATIONS_CONFIG_PATH ||
+    DECLARATIONS_PACKAGE_INPUTS.includes(path as (typeof DECLARATIONS_PACKAGE_INPUTS)[number]) ||
+    generatedDeclarationPair(path) !== null
+  );
+}
+
+export interface GeneratedDeclarationsGeneratorResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type RunGeneratedDeclarationsGenerator = (repoPath: string) => Promise<GeneratedDeclarationsGeneratorResult>;
+
+export type GeneratedDeclarationsRepairResult =
+  | { status: 'not-needed'; atomicPaths: string[] }
+  | { status: 'regenerated'; atomicPaths: string[] }
+  | { status: 'blocked'; atomicPaths: string[]; detail: string };
+
+export type GeneratedDeclarationsRegenerator = (
+  context: ToolCatalogRegeneratorContext,
+) => Promise<GeneratedDeclarationsRepairResult>;
+
+/**
+ * Run declaration emit in a bounded child. Unlike the tool-catalog repair, a
+ * failure is returned to the caller as `blocked`: committing the source without
+ * its generated declaration is the exact torn-snapshot class this seam closes.
+ */
+const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerator = (repoPath) =>
+  new Promise((resolve) => {
+    const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_DECLARATIONS_TIMEOUT_MS', 120_000);
+    const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [DECLARATIONS_GENERATOR_PATH], {
+      cwd: repoPath,
+      env: process.env,
+    });
+    const out = collectChildOutput(child);
+    let settled = false;
+    let timedOut = false;
+    let closeFallback: ReturnType<typeof setTimeout> | null = null;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      if (closeFallback) clearTimeout(closeFallback);
+      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
+    };
+    const killer = setTimeout(() => {
+      timedOut = true;
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}declaration regeneration timed out after ${timeoutMs}ms`);
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      closeFallback = setTimeout(() => finish(-1), 5_000);
+      closeFallback.unref?.();
+    }, timeoutMs);
+    killer.unref?.();
+    child.on('error', (e) => {
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}${String(e)}`);
+      finish(-1);
+    });
+    child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
+  });
+
+/**
+ * Regenerate tracked declaration pairs before git-sync snapshots the tree.
+ *
+ * The tracked-pair check keeps this Papercusp-specific writer out of arbitrary
+ * repositories and avoids treating hand-written `.d.mts` siblings as generated.
+ * `atomicPaths` is consumed by the attribution layer: every affected source and
+ * artifact is withheld from per-agent commits and lands together in the single
+ * catch-all commit. A failed emit is fail-CLOSED for the superproject commit;
+ * publishing a stale pair and relying on the gate to red later is not recovery.
+ */
+export async function regenerateGeneratedDeclarationsBeforeCommit(
+  context: ToolCatalogRegeneratorContext,
+  runGenerator: RunGeneratedDeclarationsGenerator = defaultRunGeneratedDeclarationsGenerator,
+): Promise<GeneratedDeclarationsRepairResult> {
+  const { runGit, repoPath, log } = context;
+  try {
+    const status = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
+    if (status.code !== 0) {
+      return {
+        status: 'blocked',
+        atomicPaths: [],
+        detail: 'could not inspect dirty paths before declaration regeneration',
+      };
+    }
+    const dirtyBefore = parseDirtyPaths(status.stdout);
+    if (!dirtyBefore.some(affectsGeneratedDeclarations)) return { status: 'not-needed', atomicPaths: [] };
+
+    // One bounded inventory read gives us both canonical-surface proof and the
+    // enrolled source/artifact pairs. Git's `*.mjs` pathspec recurses here.
+    const tracked = await runGit(
+      ['ls-files', '--', ...DECLARATIONS_TRACKED_PATHS, ...DECLARATIONS_PACKAGE_INPUTS, '*.mjs', '*.d.mts'],
+      repoPath,
+    );
+    const trackedPaths = new Set(
+      tracked.stdout
+        .split('\n')
+        .map((path) => path.trim())
+        .filter(Boolean),
+    );
+    if (tracked.code !== 0 || !DECLARATIONS_TRACKED_PATHS.every((path) => trackedPaths.has(path))) {
+      return { status: 'not-needed', atomicPaths: [] };
+    }
+
+    const isTrackedPair = (pair: DeclarationPair): boolean =>
+      trackedPaths.has(pair.source) && trackedPaths.has(pair.artifact);
+    const hasMetaInput = dirtyBefore.some(
+      (path) =>
+        path === DECLARATIONS_GENERATOR_PATH ||
+        path === DECLARATIONS_CONFIG_PATH ||
+        DECLARATIONS_PACKAGE_INPUTS.includes(path as (typeof DECLARATIONS_PACKAGE_INPUTS)[number]),
+    );
+    const affectedPairs = dirtyBefore
+      .map(generatedDeclarationPair)
+      .filter((pair): pair is DeclarationPair => pair !== null && isTrackedPair(pair));
+    if (!hasMetaInput && affectedPairs.length === 0) return { status: 'not-needed', atomicPaths: [] };
+
+    let result: GeneratedDeclarationsGeneratorResult;
+    try {
+      result = await runGenerator(repoPath);
+    } catch (error) {
+      result = { code: -1, stdout: '', stderr: String(error) };
+    }
+    if (result.code !== 0) {
+      const detail = (result.stderr || result.stdout || `exit ${result.code}`).trim().slice(0, 300);
+      log(
+        `[git-sync] ${repoPath}: declaration regeneration failed (${detail}) — deferring the superproject commit so source and generated artifacts cannot split`,
+      );
+      return {
+        status: 'blocked',
+        atomicPaths: [...new Set(affectedPairs.flatMap((pair) => [pair.source, pair.artifact]))],
+        detail,
+      };
+    }
+
+    // The writer may dirty several outputs after a config/compiler-input change.
+    // Re-read status and expand every enrolled dirty half back to its complete pair.
+    const after = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
+    if (after.code !== 0) {
+      return {
+        status: 'blocked',
+        atomicPaths: [],
+        detail: 'could not verify dirty paths after declaration regeneration',
+      };
+    }
+    const dirtyAfter = parseDirtyPaths(after.stdout);
+    const atomicPaths = new Set<string>();
+    for (const path of dirtyAfter) {
+      const pair = generatedDeclarationPair(path);
+      if (pair && isTrackedPair(pair)) {
+        atomicPaths.add(pair.source);
+        atomicPaths.add(pair.artifact);
+      } else if (
+        path === DECLARATIONS_GENERATOR_PATH ||
+        path === DECLARATIONS_CONFIG_PATH ||
+        DECLARATIONS_PACKAGE_INPUTS.includes(path as (typeof DECLARATIONS_PACKAGE_INPUTS)[number])
+      ) {
+        atomicPaths.add(path);
+      }
+    }
+    log(
+      `[git-sync] ${repoPath}: regenerated tracked declarations before commit (${affectedPairs.length} dirty pair(s), ${atomicPaths.size} atomic path(s))`,
+    );
+    return { status: 'regenerated', atomicPaths: [...atomicPaths] };
+  } catch (error) {
+    const detail = String(error).slice(0, 300);
+    log(
+      `[git-sync] ${repoPath}: declaration pre-commit repair threw (${detail}) — deferring the superproject commit fail-closed`,
+    );
+    return { status: 'blocked', atomicPaths: [], detail };
+  }
+}
+
 const TOOL_ROUTING_GENERATOR_PATH = 'scripts/gen-tool-routing.ts';
 const TOOL_ROUTING_TABLE_PATH = 'packages/operator-core/lib/bash-substitution/routing-table.ts';
 const TOOL_ROUTING_PAIRS_PREFIX = 'packages/operator-core/lib/bash-substitution/pairs/';
@@ -565,7 +763,9 @@ export async function checkToolRoutingBeforeCommit(
       `[git-sync] ${repoPath}: generated tool-routing check passed before commit (${affected.length} routing-affecting dirty path(s))`,
     );
   } catch (e) {
-    log(`[git-sync] ${repoPath}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`);
+    log(
+      `[git-sync] ${repoPath}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`,
+    );
   }
 }
 
@@ -583,10 +783,8 @@ export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: st
  *  account behind that key has no verified email. The configured HTTPS credential may belong to
  *  a different, write-capable automation account, so this is the same credential-plane failure
  *  class as a missing SSH key — but only after the configured remote is proven to be GitHub SSH. */
-export const isGitHubSshEmailVerificationFailure = (result: {
-  stdout: string;
-  stderr: string;
-}): boolean => /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
+export const isGitHubSshEmailVerificationFailure = (result: { stdout: string; stderr: string }): boolean =>
+  /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
 
 const isGitHubSshRemoteUrl = (url: string): boolean =>
   /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url.trim());
@@ -903,6 +1101,10 @@ export interface RunGitSyncOpts {
   /** WI-39922: pre-superproject-commit repair for the tracked tool catalog.
    *  Defaults to the conditional, bounded, fail-soft regenerator above. */
   toolCatalogRegenerator?: ToolCatalogRegenerator;
+  /** EI-21444216858331991: pre-superproject-commit declaration projection repair.
+   *  Defaults to the conditional bounded writer above. Unlike the catalog repair,
+   *  this is fail-closed because a torn source/declaration pair is a false gate red. */
+  generatedDeclarationsRegenerator?: GeneratedDeclarationsRegenerator;
   /** EI-20428405431869483: pre-superproject-commit generated routing drift check.
    *  Defaults to the conditional, bounded, fail-soft checker above. */
   toolRoutingChecker?: ToolRoutingChecker;
@@ -2233,9 +2435,12 @@ export async function commitAttributedGroups(
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
-    }
-    else if (!nothingToCommit(c)) {
-      return { committedAny, committedCount, error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}` };
+    } else if (!nothingToCommit(c)) {
+      return {
+        committedAny,
+        committedCount,
+        error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
+      };
     }
   }
   return { committedAny, committedCount };
@@ -2266,6 +2471,9 @@ interface CommitRepoOpts {
    *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
    *  to today's single commit. */
   attribution?: Map<string, FileAttribution>;
+  /** Source/generated pairs that must bypass per-agent peeling and land together
+   *  in the catch-all commit. They remain stageable; this is NOT an exclusion. */
+  forceCatchAllPaths?: string[];
   /** WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): diff-derived commit subjects (see RunGitSyncOpts). */
   diffSubjects?: boolean;
 }
@@ -2309,10 +2517,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   const skippedPaths = o.protectedHoldings
     .filter((holding) =>
       dirty.some(
-        (file) =>
-          file === holding.path ||
-          file.startsWith(`${holding.path}/`) ||
-          holding.path.startsWith(`${file}/`),
+        (file) => file === holding.path || file.startsWith(`${holding.path}/`) || holding.path.startsWith(`${file}/`),
       ),
     )
     .map((holding) => ({
@@ -2459,9 +2664,14 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // each declaring agent's dirty files into its OWN commit (intent subject + Co-Authored-By)
     // BEFORE the catch-all. Absent/empty → no-op, so the flag-OFF path stays byte-identical.
     if (o.attribution && o.attribution.size > 0) {
-      const res = await commitAttributedGroups(runGit, repoPath, o.attribution, stagingExcludePaths, message, {
-        diffSubjects: o.diffSubjects,
-      });
+      const res = await commitAttributedGroups(
+        runGit,
+        repoPath,
+        o.attribution,
+        [...stagingExcludePaths, ...(o.forceCatchAllPaths ?? [])],
+        message,
+        { diffSubjects: o.diffSubjects },
+      );
       if (res.error) {
         // STRANDING GUARD (2026-06-30): a failed per-agent attributed commit — e.g. an
         // index.lock race under heavy fleet contention — must NEVER short-circuit the
@@ -2586,14 +2796,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     }
     if (!catchAllSubjected) commitArgs.push('-m', message);
     let c = await runGit(commitArgs, repoPath);
-    c = await recoverIndexLockContention(
-      c,
-      () => runGit(commitArgs, repoPath),
-      runGit,
-      repoPath,
-      'git commit',
-      o.log,
-    );
+    c = await recoverIndexLockContention(c, () => runGit(commitArgs, repoPath), runGit, repoPath, 'git commit', o.log);
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
@@ -2671,10 +2874,7 @@ export async function bridgeContainedCommitIntoCurrentBranch(
     return { status: 'declined', reason: `${sourceRef} has no merge base with HEAD` };
   }
 
-  const changed = await runGit(
-    ['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${sourceRef}`],
-    repoPath,
-  );
+  const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${sourceRef}`], repoPath);
   if (changed.code !== 0) {
     return { status: 'error', message: `could not enumerate ${sourceRef}-only paths` };
   }
@@ -2702,10 +2902,7 @@ export async function bridgeContainedCommitIntoCurrentBranch(
     }
   }
 
-  const merge = await runGit(
-    [...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', sourceRef],
-    repoPath,
-  );
+  const merge = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', sourceRef], repoPath);
   if (merge.code !== 0) {
     await runGit(['merge', '--abort'], repoPath);
     return {
@@ -3041,6 +3238,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const readText = opts.readText ?? defaultReadText;
   const writeText = opts.writeText ?? defaultWriteText;
   const toolCatalogRegenerator = opts.toolCatalogRegenerator ?? regenerateToolCatalogBeforeCommit;
+  const generatedDeclarationsRegenerator =
+    opts.generatedDeclarationsRegenerator ?? regenerateGeneratedDeclarationsBeforeCommit;
   const toolRoutingChecker = opts.toolRoutingChecker ?? checkToolRoutingBeforeCommit;
   const protectedPaths = [...new Set((opts.excludePaths ?? []).map((path) => path.trim()).filter(Boolean))];
   const protectedHoldings = (opts.liveLockHoldings ?? [])
@@ -3320,12 +3519,37 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         `[git-sync] ${repo}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`,
       );
     }
+    // EI-21444216858331991: a scheduled candidate was cut two seconds after an
+    // `.mjs` source commit and eleven minutes before its generated `.d.mts` repair.
+    // Regenerate here, then force every affected pair past per-agent peeling so
+    // the source and projection share the same catch-all commit. Failure is
+    // deliberately fail-closed: a dirty tree is recoverable; a published torn
+    // snapshot can freeze `main` for the entire fleet.
+    let declarationRepair: GeneratedDeclarationsRepairResult;
+    try {
+      declarationRepair = await generatedDeclarationsRegenerator({ runGit, repoPath: repo, log });
+    } catch (e) {
+      declarationRepair = { status: 'blocked', atomicPaths: [], detail: String(e).slice(0, 300) };
+    }
+    if (declarationRepair.status === 'blocked') {
+      const dirtyPathCount = (await dirtyFiles(runGit, repo)).length;
+      return {
+        committedLocal: false,
+        dirtyPathCount,
+        committedCount: 0,
+        error: `generated declaration repair blocked the commit: ${declarationRepair.detail}`,
+        oversized: [],
+        contentErrors: [],
+        skippedPaths: [],
+      };
+    }
     return commitOneRepo(runGit, repo, {
       ...repoO,
       scope: 'superproject',
       excludePaths: superprojectExcludePaths,
       protectedHoldings: superprojectProtectedHoldings,
       attribution: attributionMapForRepo(roster, '', repo),
+      forceCatchAllPaths: declarationRepair.atomicPaths,
     });
   });
   const commitMetrics = {
@@ -3365,7 +3589,13 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           contentErrors: commitRes.contentErrors,
           skippedPaths: commitRes.skippedPaths,
         }
-      : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
+      : {
+          status: 'nothing',
+          ...commitMetrics,
+          oversized: commitRes.oversized,
+          contentErrors: commitRes.contentErrors,
+          skippedPaths: commitRes.skippedPaths,
+        };
     log(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
@@ -3408,17 +3638,24 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         log(`[git-sync] ${repo}: release-main ancestry bridge declined — ${releaseBridge.reason}`);
       }
       const bridged = releaseBridge.status === 'bridged';
-      repoResult = commitRes.committedLocal || bridged
-        ? {
-            status: 'synced',
-            ...commitMetrics,
-            pushed: false,
-            merged: bridged,
-            oversized: commitRes.oversized,
-            contentErrors: commitRes.contentErrors,
-            skippedPaths: commitRes.skippedPaths,
-          }
-        : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
+      repoResult =
+        commitRes.committedLocal || bridged
+          ? {
+              status: 'synced',
+              ...commitMetrics,
+              pushed: false,
+              merged: bridged,
+              oversized: commitRes.oversized,
+              contentErrors: commitRes.contentErrors,
+              skippedPaths: commitRes.skippedPaths,
+            }
+          : {
+              status: 'nothing',
+              ...commitMetrics,
+              oversized: commitRes.oversized,
+              contentErrors: commitRes.contentErrors,
+              skippedPaths: commitRes.skippedPaths,
+            };
     }
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
@@ -3453,19 +3690,63 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0)
-    return { status: 'conflict', dirtyPathCount, committedCount, conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
+    return {
+      status: 'conflict',
+      dirtyPathCount,
+      committedCount,
+      conflicts,
+      errors,
+      pushed,
+      merged,
+      mergeCompleted,
+      oversized,
+      contentErrors,
+      skippedPaths,
+      strandedSubmodules,
+    };
   if (errors.length > 0)
-    return { status: 'error', dirtyPathCount, committedCount, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
+    return {
+      status: 'error',
+      dirtyPathCount,
+      committedCount,
+      errors,
+      pushed,
+      merged,
+      mergeCompleted,
+      oversized,
+      contentErrors,
+      skippedPaths,
+      strandedSubmodules,
+    };
   // A live lock is a partial exclusion, not a fleet-wide stop. Report the legacy
   // skipped verdict only when every visible dirty path was protected and the pass
   // made no progress anywhere. A pass that committed/pushed an unlocked sibling is
   // `synced` and still carries skippedPaths for observability + the next retry.
   if (skippedPaths.length > 0 && !didSomething)
-    return { status: 'skipped-locked', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+    return {
+      status: 'skipped-locked',
+      dirtyPathCount,
+      committedCount,
+      skippedPaths,
+      mergeCompleted,
+      oversized,
+      contentErrors,
+      strandedSubmodules,
+    };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo
   // is invisible — so this is the last status that should omit it.
-  if (!didSomething) return { status: 'nothing', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+  if (!didSomething)
+    return {
+      status: 'nothing',
+      dirtyPathCount,
+      committedCount,
+      skippedPaths,
+      mergeCompleted,
+      oversized,
+      contentErrors,
+      strandedSubmodules,
+    };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {
