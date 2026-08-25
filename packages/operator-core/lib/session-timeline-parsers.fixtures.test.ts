@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createCodexTimelineParser, createOmpTimelineParser } from './session-timeline-parsers';
 import { createAgentTimelineParser } from './endpoint-route/routes/harness/streams';
+import { blockPayloadText, codexToolCallArgsRaw } from './transcript-wire';
 import {
   ALL_WIRE_FIXTURES,
   CLAUDE_WIRE_FIXTURES,
@@ -269,6 +270,71 @@ describe('createAgentTimelineParser — real claude transcript records', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe('falsifiability — the PRE-FIX readers, kept as permanent controls', () => {
+  // A guard that has never failed is a guard nobody has tested, and this whole
+  // work-item exists because a green suite sat over a broken popup for weeks.
+  //
+  // These are the two reads exactly as they were BEFORE WI-41498, kept here
+  // rather than reconstructed by mutating the shared tree (a mutation probe
+  // holds a file wrong for the length of a suite run, and git-sync sweeps the
+  // whole tree on a schedule — it has committed a mutant that way before).
+  // Each control is asserted to FAIL on the same real record the real reader
+  // passes, so if someone reverts the fix, or writes a new reader with the old
+  // assumption, the fixtures above are provably the thing that catches it.
+
+  /** Pre-fix: `session-timeline-parsers` read ONLY `arguments`. */
+  const preFixToolArgs = (payload: Record<string, unknown>): unknown => payload.arguments;
+
+  /** Pre-fix: anything not a string was `JSON.stringify`d into the pane. */
+  const preFixOutputText = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v) ?? '');
+
+  it('the pre-fix args read returns NOTHING for a real custom_tool_call', () => {
+    const payload = byName(CODEX_WIRE_FIXTURES, 'custom_tool_call (the ~97% case)').record.payload as Record<string, unknown>;
+
+    expect(preFixToolArgs(payload)).toBeUndefined();       // ← the bug: an empty chip
+    expect(codexToolCallArgsRaw(payload)).toBe(payload.input); // ← calibration: the fix reads it
+  });
+
+  it('the pre-fix args read STILL WORKS for function_call — which is why it looked fine', () => {
+    // The reason this survived review: the shape the old test covered was the
+    // one shape the old code got right. It was also 6 of 176 real tool calls.
+    const payload = byName(CODEX_WIRE_FIXTURES, 'function_call —').record.payload as Record<string, unknown>;
+    expect(preFixToolArgs(payload)).toBe(payload.arguments);
+    expect(codexToolCallArgsRaw(payload)).toBe(payload.arguments);
+  });
+
+  it('the pre-fix output read dumps raw JSON for a real block-array output', () => {
+    const payload = byName(CODEX_WIRE_FIXTURES, 'custom_tool_call_output —').record.payload as Record<string, unknown>;
+
+    const old = preFixOutputText(payload.output);
+    expect(old).toContain('"type":"input_text"');           // ← the bug: a JSON dump in the pane
+    expect(blockPayloadText(payload.output)).not.toContain('input_text'); // ← calibration
+    expect(blockPayloadText(payload.output)).toContain('Script completed');
+  });
+
+  it('the pre-fix output read is CORRECT for the string variant — the other reason it hid', () => {
+    const payload = byName(CODEX_WIRE_FIXTURES, 'still-running variant').record.payload as Record<string, unknown>;
+    expect(preFixOutputText(payload.output)).toBe(payload.output);
+    expect(blockPayloadText(payload.output)).toBe(payload.output);
+  });
+
+  it('the invented shape the OLD test used does not occur in any real fixture', () => {
+    // `output: 'patched'` — a short bare string standing in for a tool result.
+    // The string variant IS real, but it is a still-running cell's progress
+    // text, not a completed result: no real completed output looks like this.
+    // Pinning it stops the old fixture style from creeping back in.
+    const outputs = CODEX_WIRE_FIXTURES
+      .filter((f) => f.name.includes('output'))
+      .map((f) => (f.record.payload as { output?: unknown }).output);
+
+    expect(outputs.length).toBeGreaterThan(1);
+    for (const out of outputs) {
+      if (typeof out !== 'string') continue;
+      expect(out.length, 'a real codex output string is a multi-line report, not a token').toBeGreaterThan(20);
+    }
+  });
+});
 
 describe('every backend parser survives the others’ wire', () => {
   // The route picks ONE parser per request off `sessionThinkingKey`. If a key
