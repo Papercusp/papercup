@@ -169,6 +169,9 @@ import './tui/dispatch';
 import './activity/report';
 import './activity/bash_substitution_report';
 import './activity/recent';
+// goal-mode-e2e activity-shape instrument — server-side bounded summary so saved
+// recipes do not embed opaque raw-SQL reads of tool_invocations.
+import './activity/mix';
 // deterministic-context-carry-2026-07-14 P-013 — the bare tool-call log render.
 import './activity/tool-log';
 // deterministic-context-carry-2026-07-14 P-012 — the per-turn journal
