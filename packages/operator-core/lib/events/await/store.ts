@@ -114,6 +114,7 @@ function mapAwait(r: any): AwaitRow {
     scopeKind: r.scope_kind ?? null,
     scopeRef: r.scope_ref ?? null,
     causalGeneration: r.causal_generation != null ? Number(r.causal_generation) : null,
+    logicalGateKey: r.logical_gate_key ?? null,
     expectedCondition: parseJsonb(r.expected_condition),
     supersededAt: r.superseded_at ? new Date(r.superseded_at).toISOString() : null,
     firedBy: r.fired_by ?? null,
@@ -186,8 +187,11 @@ export async function registerAwait(input: {
   producerHealthCertificate?: ProducerHealthCertificate | null;
   /** Lifecycle owner for auto/suggested-armed rows. Manual awaits omit it. */
   boundTo?: LifecycleBinding | null;
-  /** Retire this owner's pending exact-key rows atomically with the replacement insert. */
+  /** Retire this owner's pending rows atomically with the replacement insert. */
   supersedePending?: {
+    /** Retire matching rows across every event key for this subscriber. Callers
+     *  using this mode must identify one coordination surface by note prefix. */
+    allEventKeys?: boolean;
     /** Preserve rows owned by a different coordination surface. */
     excludeNotePrefix?: string;
     /** Restrict cancellation to one coordination surface (used by re-stage). */
@@ -207,30 +211,39 @@ export async function registerAwait(input: {
     // ISO text, not a raw Date — the live org postgres-js client throws on
     // Date binding (the repo's known quirk); PG casts text→timestamptz.
     input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null;
-  if (input.supersedePending) {
+  const supersedePending = input.supersedePending;
+  if (supersedePending) {
     return boundedOrgTxn(async (tx) => {
-      // Serialize only the exact subscriber/key pair. Every superseding
-      // registration retires the prior pending row(s) and inserts its own
-      // replacement before releasing the lock, so concurrent retries cannot
-      // leave multiple active awaits behind.
-      const lockKey = `event-await:${ws}:${input.subscriberId}:${input.eventKey}`;
+      const allEventKeys = supersedePending.allEventKeys === true;
+      if (allEventKeys && !supersedePending.includeNotePrefix) {
+        throw new Error('allEventKeys supersession requires includeNotePrefix');
+      }
+      // Exact-key supersession serializes one subscriber/key pair. A coordination
+      // surface that owns at most one current row per subscriber (fleet:bench)
+      // serializes at subscriber scope so concurrent cross-key retargets cannot
+      // leave two active replacements behind.
+      const lockKey = allEventKeys
+        ? `event-await:${ws}:${input.subscriberId}:*`
+        : `event-await:${ws}:${input.subscriberId}:${input.eventKey}`;
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+      const eventFilter = allEventKeys ? tx`` : tx`AND event_key = ${input.eventKey}`;
       const noteFilter =
-        input.supersedePending?.includeNotePrefix != null
-          ? tx`AND note LIKE ${input.supersedePending.includeNotePrefix + '%'}`
-          : input.supersedePending?.excludeNotePrefix != null
-            ? tx`AND (note IS NULL OR note NOT LIKE ${input.supersedePending.excludeNotePrefix + '%'})`
+        supersedePending.includeNotePrefix != null
+          ? tx`AND note LIKE ${supersedePending.includeNotePrefix + '%'}`
+          : supersedePending.excludeNotePrefix != null
+            ? tx`AND (note IS NULL OR note NOT LIKE ${supersedePending.excludeNotePrefix + '%'})`
             : tx``;
-      await tx`
+      const superseded = await tx`
         UPDATE harness_shared.event_awaits
            SET cancelled_at = now()
          WHERE workspace_id = ${ws}
            AND subscriber_id = ${input.subscriberId}
-           AND event_key = ${input.eventKey}
+           ${eventFilter}
            AND policy <> 'announce'
            AND once = true
            AND fired_at IS NULL AND cancelled_at IS NULL
            ${noteFilter}
+        RETURNING id
       `;
       const rows = input.boundTo
         ? await tx`
@@ -259,7 +272,7 @@ export async function registerAwait(input: {
                ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
             RETURNING *
           `;
-      return mapAwait(rows[0]);
+      return { ...mapAwait(rows[0]), supersededPendingCount: superseded.length };
     });
   }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
@@ -638,6 +651,106 @@ export async function cancelAwait(input: {
     RETURNING id
   `;
   return rows.length > 0;
+}
+
+export type RetireAnnouncementReason =
+  | 'not_found'
+  | 'not_yours'
+  | 'generation_mismatch'
+  | 'already_settled';
+
+export interface RetireAnnouncementResult {
+  retired: boolean;
+  announcementId: number;
+  eventKey?: string;
+  generation?: number | null;
+  supersededAt?: string | null;
+  reason?: RetireAnnouncementReason;
+}
+
+/** Retire one of MY current, unfired announced gate declarations.
+ *
+ * Retirement is deliberately different from ordinary await cancellation:
+ * announcements are discovery/latch rows, so setting superseded_at preserves
+ * their history while leaving every ordinary waiter row on the same key alone.
+ * The per-key advisory lock is shared with declaration and fire-latch writes;
+ * this makes retirement race-safe with both a replacement declaration and the
+ * real event emit.
+ */
+export async function retireAnnouncement(input: {
+  announcementId: number;
+  subscriberId: string;
+  expectedGeneration?: number;
+}): Promise<RetireAnnouncementResult> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  return sql.begin(async (tx) => {
+    const candidates = await tx`
+      SELECT event_key
+        FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws}
+         AND id = ${input.announcementId}
+         AND policy = 'announce'
+       LIMIT 1
+    `;
+    if (candidates.length === 0) {
+      return { retired: false, announcementId: input.announcementId, reason: 'not_found' };
+    }
+
+    const eventKey = String(candidates[0].event_key);
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + eventKey}, 0))`;
+    const rows = await tx`
+      SELECT *
+        FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws}
+         AND id = ${input.announcementId}
+         AND policy = 'announce'
+       FOR UPDATE
+    `;
+    if (rows.length === 0) {
+      return { retired: false, announcementId: input.announcementId, reason: 'not_found' };
+    }
+
+    const row = rows[0] as any;
+    const generation = row.causal_generation != null ? Number(row.causal_generation) : null;
+    const base = {
+      retired: false as const,
+      announcementId: input.announcementId,
+      eventKey,
+      generation,
+    };
+    if (String(row.subscriber_id) !== input.subscriberId) {
+      return { ...base, reason: 'not_yours' as const };
+    }
+    if (input.expectedGeneration != null && generation !== input.expectedGeneration) {
+      return { ...base, reason: 'generation_mismatch' as const };
+    }
+    if (row.fired_at != null || row.cancelled_at != null || row.superseded_at != null) {
+      return { ...base, reason: 'already_settled' as const };
+    }
+
+    const retired = await tx`
+      UPDATE harness_shared.event_awaits
+         SET superseded_at = now()
+       WHERE workspace_id = ${ws}
+         AND id = ${input.announcementId}
+         AND policy = 'announce'
+         AND fired_at IS NULL
+         AND cancelled_at IS NULL
+         AND superseded_at IS NULL
+       RETURNING event_key, causal_generation, superseded_at
+    `;
+    if (retired.length === 0) {
+      return { ...base, reason: 'already_settled' as const };
+    }
+    return {
+      retired: true,
+      announcementId: input.announcementId,
+      eventKey: String(retired[0].event_key),
+      generation: retired[0].causal_generation != null ? Number(retired[0].causal_generation) : null,
+      supersededAt: retired[0].superseded_at ? new Date(retired[0].superseded_at).toISOString() : null,
+    };
+  }) as Promise<RetireAnnouncementResult>;
 }
 
 /**
@@ -1932,6 +2045,8 @@ export async function registerAnnouncement(input: {
   scopeRef?: string | null;
   /** Optional declared completion condition, normalized by events:emit. */
   expectedCondition?: unknown | null;
+  /** Stable identity for the logical gate represented by this route. */
+  logicalGateKey?: string | null;
   /** Durable owner selector used by exact-key status to resolve successors. */
   boundTo?: LifecycleBinding | null;
   /** Seconds until the DECLARATION lapses (sweeper marks it fired_reason='expired'); null = standing. */
@@ -1939,11 +2054,36 @@ export async function registerAnnouncement(input: {
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const logicalGateKey = input.logicalGateKey?.trim() || null;
   const expiresTs = input.expiresSec != null ? new Date(Date.now() + input.expiresSec * 1000).toISOString() : null;
   // P-018: every declaration is a durable causal generation.  The advisory
   // transaction lock closes max(generation) -> insert races for the same key;
   // older rows are marked superseded instead of mutated/erased.
   return sql.begin(async (tx) => {
+    // Serialize the logical identity before the transport-key lock. Two
+    // concurrent declarations for one gate but different event keys must not
+    // both pass the active-identity check.
+    if (logicalGateKey) {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce-logical:' + ws + ':' + logicalGateKey}, 0))`;
+      const conflicts = await tx`
+        SELECT event_key, causal_generation
+          FROM harness_shared.event_awaits
+         WHERE workspace_id = ${ws}
+           AND policy = 'announce'
+           AND logical_gate_key = ${logicalGateKey}
+           AND event_key <> ${input.eventKey}
+           AND superseded_at IS NULL
+           AND cancelled_at IS NULL
+           AND fired_at IS NULL
+         ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+         LIMIT 1
+      `;
+      if (conflicts.length > 0) {
+        throw new Error(
+          `logical gate '${logicalGateKey}' is already announced on event key '${conflicts[0].event_key}'`,
+        );
+      }
+    }
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + input.eventKey}, 0))`;
     const generationRows = await tx`
       SELECT COALESCE(MAX(causal_generation), 0)::bigint + 1 AS next_generation
@@ -1961,11 +2101,12 @@ export async function registerAnnouncement(input: {
       INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,
          once, min_sleep_sec, urgency, payload_filter, scope_kind, scope_ref, causal_generation,
-         expected_condition, bound_to)
+         expected_condition, logical_gate_key, bound_to)
       VALUES
         (${ws}, ${input.subscriberId}, ${input.eventKey}, 'announce', ${input.note ?? null}, NULL,
          'expire', ${expiresTs}, false, NULL, false, NULL, ${input.scopeKind}, ${input.scopeRef ?? null},
          ${generation}, ${input.expectedCondition != null ? JSON.stringify(input.expectedCondition) : null}::text::jsonb,
+         ${logicalGateKey},
          ${input.boundTo ? JSON.stringify(assertLifecycleBinding(input.boundTo)) : null}::text::jsonb)
       RETURNING *
     `;

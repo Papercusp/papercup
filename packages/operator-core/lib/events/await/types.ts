@@ -76,6 +76,9 @@ export type WakeHandle =
 
 export interface AwaitRow {
   id: number;
+  /** Number of pending rows retired atomically by this registration. Present
+   *  only when registerAwait was called with supersedePending. */
+  supersededPendingCount?: number;
   workspaceId: string;
   subscriberId: string;
   eventKey: string;
@@ -118,6 +121,8 @@ export interface AwaitRow {
   /** P-018: monotonic generation of an announced event key. Null on ordinary
    *  waiter rows; generation N is superseded when N+1 is declared. */
   causalGeneration?: number | null;
+  /** Stable identity for the logical gate represented by an announced route. */
+  logicalGateKey?: string | null;
   /** Optional completion condition declared by the gate emitter. */
   expectedCondition?: unknown | null;
   /** A newer announcement generation replaced this row. */
