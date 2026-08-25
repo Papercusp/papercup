@@ -24,6 +24,7 @@ import {
   runJudgeAgreement,
   RELEVANCE_PASS_BAR,
   SEARCH_RELEVANCE_RUBRIC,
+  synthesizePairRun,
   type JudgedPair,
   type PairOutcome,
 } from './judge-agreement';
@@ -180,6 +181,141 @@ describe('content-derived rubric version', () => {
     expect(JUDGE_AGREEMENT_RUBRIC_VERSION).toBe(
       versionOf(SEARCH_RELEVANCE_RUBRIC.axes, JUDGE_INSTRUCTION_CONTRACT),
     );
+  });
+
+  /**
+   * EI-21446121743333195 — the THIRD instance of this defect class, and the reason
+   * the contract now covers the transcript as well as the instructions. These four
+   * values all reach the judge through `synthesizePairRun`: the framing prose and
+   * finishReason via formatTranscript (judge.ts:331,341), the two numbers via
+   * formatTelemetry (judge.ts:352-363), and scenarioId via the system prompt's first
+   * line (judge.ts:232). Permanently-resident defective controls, each mutating a COPY.
+   */
+  it.each([
+    ['scenarioId', { scenarioId: 'generic-eval' }],
+    ['transcriptTemplate', { transcriptTemplate: 'Document for "{query}":\n\n{docText}' }],
+    ['turnFinishReason', { turnFinishReason: 'error' as const }],
+    ['turnLatencyMs', { turnLatencyMs: 12 }],
+    ['turnCostUsd', { turnCostUsd: 0.01 }],
+  ])('moves the cache namespace when %s changes', (_field, override) => {
+    const mutated = { ...JUDGE_INSTRUCTION_CONTRACT, ...override };
+    expect(versionOf(SEARCH_RELEVANCE_RUBRIC.axes, mutated)).not.toBe(
+      JUDGE_AGREEMENT_RUBRIC_VERSION,
+    );
+  });
+
+  it('is NOT the pre-fix instructions-only derivation (the EI-21446121743333195 pin)', () => {
+    // The regression pin for THIS fix, mirroring the axes-only pin above. Before it,
+    // the contract held only these four fields and the transcript framing sat outside
+    // the hash entirely — under that derivation every transcript control above would
+    // still pass while the defect was fully present.
+    const { scenarioTemplate, personaSummary, goalSummary, criticality } =
+      JUDGE_INSTRUCTION_CONTRACT;
+    const preFix = versionOf(SEARCH_RELEVANCE_RUBRIC.axes, {
+      scenarioTemplate,
+      personaSummary,
+      goalSummary,
+      criticality,
+    });
+    expect(JUDGE_AGREEMENT_RUBRIC_VERSION).not.toBe(preFix);
+  });
+});
+
+/**
+ * Hashing a field is worthless if the code that talks to the judge does not READ it.
+ * These assert the binding itself — that the prompt-visible half of the synthesized
+ * run is derived from the hashed contract — which is the half a version test cannot see.
+ */
+describe('synthesizePairRun prompt-visible fields derive from the hashed contract', () => {
+  const pair = {
+    pairId: 'ref-1:verbatim:pos',
+    query: 'vector index rebuild',
+    docId: 'doc-1',
+    docText: 'How to rebuild the vector index.',
+  };
+
+  it('builds the transcript turn from transcriptTemplate, not a restated literal', () => {
+    const run = synthesizePairRun(pair, 'test-model');
+    expect(run.turns[0]!.assistantText).toBe(
+      JUDGE_INSTRUCTION_CONTRACT.transcriptTemplate
+        .replace('{query}', pair.query)
+        .replace('{docText}', pair.docText),
+    );
+    // Both per-pair halves must survive substitution — they are what the judge scores.
+    expect(run.turns[0]!.assistantText).toContain(pair.query);
+    expect(run.turns[0]!.assistantText).toContain(pair.docText);
+    expect(run.turns[0]!.assistantText).not.toContain('{query}');
+    expect(run.turns[0]!.assistantText).not.toContain('{docText}');
+  });
+
+  it('takes finishReason and the telemetry numbers from the contract', () => {
+    const run = synthesizePairRun(pair, 'test-model');
+    expect(run.turns[0]!.finishReason).toBe(JUDGE_INSTRUCTION_CONTRACT.turnFinishReason);
+    expect(run.turns[0]!.latencyMs).toBe(JUDGE_INSTRUCTION_CONTRACT.turnLatencyMs);
+    expect(run.turns[0]!.costUsd).toBe(JUDGE_INSTRUCTION_CONTRACT.turnCostUsd);
+    expect(run.totalCostUsd).toBe(JUDGE_INSTRUCTION_CONTRACT.turnCostUsd);
+  });
+
+  it('carries NO per-pair identity into scenarioId, which the cache key cannot see', () => {
+    // `pair_id` is INSERTed into search_judge_grades but is NOT one of the six key
+    // columns, so a scenarioId varying by pairId would let two pairs sharing a key be
+    // judged under different prompts. Per-pair identity belongs on runId/identityHash,
+    // neither of which reaches the prompt.
+    const a = synthesizePairRun(pair, 'test-model');
+    const b = synthesizePairRun({ ...pair, pairId: 'ref-9:degraded:neg' }, 'test-model');
+    expect(a.scenarioId).toBe(JUDGE_INSTRUCTION_CONTRACT.scenarioId);
+    expect(a.scenarioId).toBe(b.scenarioId);
+    expect(a.scenarioId).not.toContain(pair.pairId);
+    expect(a.runId).not.toBe(b.runId);
+  });
+
+  it('does not let $-sequences in a document corrupt the substitution', () => {
+    // String.prototype.replace makes `$&`, `$\``, `$'` and `$1` SPECIAL in the
+    // replacement, so a document containing them would be rewritten into a copy of the
+    // matched placeholder. Corpus text is arbitrary, so this is reachable, and it would
+    // silently change what the judge scores rather than throwing.
+    const nasty = { ...pair, docText: "cost is $& plus $' and $1", query: 'price of $&' };
+    const run = synthesizePairRun(nasty, 'test-model');
+    expect(run.turns[0]!.assistantText).toContain("cost is $& plus $' and $1");
+    expect(run.turns[0]!.assistantText).toContain('price of $&');
+  });
+
+  it('CALIBRATION: the pre-fix restated-literal synthesizer fails these same assertions', () => {
+    // A permanently-resident defective control. This is what synthesizePairRun did
+    // before EI-21446121743333195 — a hand-written literal and a per-pair scenarioId,
+    // with the naive two-pass replace. Asserting it FAILS the checks the real function
+    // passes is what shows those checks discriminate, rather than holding for any
+    // implementation. Without this, every assertion above could be vacuously true.
+    const defective = (p: typeof pair) => ({
+      scenarioId: `search-relevance-${p.pairId}`,
+      assistantText: `Search result document for the query "${p.query}":\n\n${p.docText}`,
+    });
+
+    // 1. per-pair identity leaks into the prompt-visible scenarioId
+    const a = defective(pair);
+    const b = defective({ ...pair, pairId: 'ref-9:degraded:neg' });
+    expect(a.scenarioId).not.toBe(b.scenarioId);
+    expect(a.scenarioId).toContain(pair.pairId);
+
+    // 2. the framing is a second copy, so rewording the contract does NOT move it
+    const reworded = { ...JUDGE_INSTRUCTION_CONTRACT, transcriptTemplate: 'Doc: {docText}' };
+    expect(defective(pair).assistantText).not.toBe(
+      reworded.transcriptTemplate.replace('{docText}', pair.docText),
+    );
+    // ...while the real synthesizer tracks the contract it is derived from.
+    expect(synthesizePairRun(pair, 'test-model').turns[0]!.assistantText).toBe(
+      JUDGE_INSTRUCTION_CONTRACT.transcriptTemplate
+        .replace('{query}', pair.query)
+        .replace('{docText}', pair.docText),
+    );
+  });
+
+  it('does not re-substitute a placeholder that appears inside a substituted value', () => {
+    // Two sequential replaces would let a query containing the literal `{docText}`
+    // capture the document. One pass with a single regex cannot.
+    const run = synthesizePairRun({ ...pair, query: 'literally {docText}' }, 'test-model');
+    expect(run.turns[0]!.assistantText).toContain('literally {docText}');
+    expect(run.turns[0]!.assistantText).toContain(pair.docText);
   });
 });
 

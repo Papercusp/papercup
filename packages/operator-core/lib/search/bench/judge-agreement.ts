@@ -88,26 +88,55 @@ const SEARCH_RELEVANCE_RUBRIC_CONTENT: Pick<JudgeRubric, 'axes'> = {
 
 /**
  * The INSTRUCTION half of the judging contract — everything handed to the judge that
- * is not the rubric object. `judgeRun` assembles scenarioDescription / personaSummary /
- * goalSummary straight into the prompt (judge.ts:236,239,242), and reads
- * `rubric.criticality` to decide single- vs multi-pass judging (judge.ts:81), so all
- * four are judging inputs and every one of them must be inside the cache key.
+ * is not the rubric object.
  *
- * `scenarioTemplate` carries a `{query}` placeholder rather than interpolating the
- * pair's query directly: the INVARIANT text — what the judge is being asked to do —
- * stays a hashable constant, while the per-pair query is already covered by
- * `query_hash` in the search_judge_grades primary key.
+ * ⚠ THE MEMBERSHIP RULE, AND WHY IT IS THE WHOLE POINT (EI-21446121743333195).
+ *   `judgeRun` builds the model input from exactly FOUR sources — the system prompt
+ *   from `opts` (judge.ts:230-303), `formatTranscript(run.turns)` (:325-345),
+ *   `formatTelemetry(run)` (:352-363) and the violations block (empty here). Anything
+ *   reaching ANY of those four is a judging input, and every judging input must be
+ *   either INSIDE this object or inside the six-column cache key
+ *   (workspace_id, judge_model, rubric_version, query_hash, doc_id, doc_text_hash).
+ *   A value in neither is a silent drift trap: edit it and the judge reads something
+ *   different while cached grades produced under the OLD text keep serving.
+ *
+ *   That trap has now been found three times at three different depths — the axes
+ *   (EI-21443136282514038), the instruction fields (EI-21444532129225543), and the
+ *   transcript framing below. Each looked covered because its NEIGHBOUR was. So the
+ *   fields here are deliberately not just "the instructions": they are the complete
+ *   set of prompt-visible values this bench authors.
+ *
+ * WHY TEMPLATES RATHER THAN INTERPOLATED STRINGS: `scenarioTemplate` and
+ * `transcriptTemplate` carry `{query}` / `{docText}` placeholders instead of the
+ * pair's own text. The INVARIANT half — what the judge is asked to do, and how the
+ * document is framed — stays a hashable constant, while the per-pair halves are
+ * already covered by `query_hash` / `doc_text_hash` in the primary key. Interpolating
+ * them here would make the version vary per pair and defeat the cache outright,
+ * which is the opposite failure and just as wrong.
+ *
+ * WHY `scenarioId` IS A CONSTANT: judge.ts:232 puts it in the prompt's FIRST LINE, and
+ * it is the one prompt-visible value that used to carry per-pair identity
+ * (`search-relevance-${pairId}`) while `pair_id` is NOT in the cache key — so two pairs
+ * sharing a key could be judged under different prompts. That was safe only while
+ * pairId stayed a function of (query, doc), an invariant nothing pinned. Per-pair
+ * identity still lives on `runId` / `identityHash`, neither of which reaches the prompt.
  *
  * This object is the single source for BOTH the prompt and the version hash, so the
- * two cannot diverge. Editing any string here moves JUDGE_AGREEMENT_RUBRIC_VERSION and
+ * two cannot diverge. Editing any value here moves JUDGE_AGREEMENT_RUBRIC_VERSION and
  * makes prior paid grades unreachable — which is the intended behaviour, never an update.
  */
 export const JUDGE_INSTRUCTION_CONTRACT: {
+  scenarioId: string;
   scenarioTemplate: string;
   personaSummary: string;
   goalSummary: string;
+  transcriptTemplate: string;
+  turnFinishReason: RunSummary['turns'][number]['finishReason'];
+  turnLatencyMs: number;
+  turnCostUsd: number;
   criticality: JudgeRubric['criticality'] | null;
 } = {
+  scenarioId: 'search-relevance',
   scenarioTemplate:
     'Search-relevance check. A user issued the query "{query}". The assistant turn ' +
     'shows ONE document a retrieval system could return for it, verbatim. Score ONLY ' +
@@ -115,10 +144,36 @@ export const JUDGE_INSTRUCTION_CONTRACT: {
     'to evaluate and no tool use — ignore both.',
   personaSummary: 'n/a — non-interactive relevance bench (no sim-user)',
   goalSummary: 'Topical relevance of one document to one query.',
+  // Reaches the judge verbatim through formatTranscript (judge.ts:331). It reads as
+  // incidental scaffolding, which is exactly why it sat outside the hash: it is free
+  // prose in a template literal, the easiest kind of judging input to reword by accident.
+  transcriptTemplate: 'Search result document for the query "{query}":\n\n{docText}',
+  // Emitted as `**finishReason:** done` (judge.ts:341) and as the telemetry strip
+  // (judge.ts:352-363). Constant today — but "constant today" is the assumption this
+  // whole defect class is made of, so they are pinned rather than trusted.
+  turnFinishReason: 'done',
+  turnLatencyMs: 0,
+  turnCostUsd: 0,
   // null, not undefined: JSON.stringify DROPS undefined keys, so an undefined
   // criticality would leave this axis outside the hash exactly as before.
   criticality: null,
 };
+
+/**
+ * Substitute `{query}` / `{docText}` into a contract template.
+ *
+ * Deliberately ONE pass with a FUNCTION replacer, for two reasons that both bite
+ * silently. A string replacement makes `$&`, `` $` ``, `$'` and `$1` special in the
+ * REPLACEMENT — so a document containing `$&` would be corrupted into a copy of the
+ * matched placeholder — and a function replacer is the documented way to disable that.
+ * One pass also stops a substituted value that happens to contain `{docText}` from
+ * being re-substituted by a later pass.
+ */
+function fillTemplate(template: string, values: Readonly<Record<string, string>>): string {
+  return template.replace(/\{(query|docText)\}/g, (whole, key: string) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key]! : whole,
+  );
+}
 
 // The cache key must move whenever the actual judging contract moves. Keeping this
 // derived from the serialized contract removes the old hand-maintained
@@ -301,12 +356,20 @@ export interface JudgeVerdict {
   judgeNotes?: string;
 }
 
-/** Synthesize the minimal one-turn RunSummary `judgeRun` consumes. */
+/**
+ * Synthesize the minimal one-turn RunSummary `judgeRun` consumes.
+ *
+ * Every field below that REACHES THE PROMPT is read from JUDGE_INSTRUCTION_CONTRACT, so
+ * editing the framing necessarily moves the cache namespace. The fields that do NOT
+ * reach the prompt — runId, identityHash, sutModel, personaTraits, workspaceMode,
+ * transportMode, scenarioVersion, timestamps — stay per-pair for debuggability at zero
+ * cache cost. That split is the whole design; see the contract's membership rule.
+ */
 export function synthesizePairRun(pair: JudgeableDoc, judgeModel: string): RunSummary {
   const now = new Date();
   return {
     runId: `p038-${pair.pairId}`,
-    scenarioId: `search-relevance-${pair.pairId}`,
+    scenarioId: JUDGE_INSTRUCTION_CONTRACT.scenarioId,
     scenarioVersion: 1,
     identityHash: `p038:${JUDGE_AGREEMENT_RUBRIC_VERSION}:${pair.pairId}`,
     sutModel: 'derived-gold pair (no retrieval system in the loop)',
@@ -317,19 +380,23 @@ export function synthesizePairRun(pair: JudgeableDoc, judgeModel: string): RunSu
     transportMode: 'in-process',
     turns: [
       {
-        assistantText: `Search result document for the query "${pair.query}":\n\n${pair.docText}`,
+        assistantText: fillTemplate(JUDGE_INSTRUCTION_CONTRACT.transcriptTemplate, {
+          query: pair.query,
+          docText: pair.docText,
+        }),
         toolCalls: [],
         cards: [],
         controlTags: [],
-        costUsd: 0,
-        latencyMs: 0,
-        finishReason: 'done',
+        costUsd: JUDGE_INSTRUCTION_CONTRACT.turnCostUsd,
+        latencyMs: JUDGE_INSTRUCTION_CONTRACT.turnLatencyMs,
+        finishReason: JUDGE_INSTRUCTION_CONTRACT.turnFinishReason,
         rawSseTape: [],
       },
     ],
     toolInvocations: [],
     continueChainRows: [],
-    totalCostUsd: 0,
+    // Also prompt-visible: formatTelemetry emits `Total: N USD` (judge.ts:358).
+    totalCostUsd: JUDGE_INSTRUCTION_CONTRACT.turnCostUsd,
     startedAt: now,
     finishedAt: now,
     finishReason: 'completed',
@@ -358,10 +425,9 @@ export async function judgeRelevance(
       scenarioId: run.scenarioId,
       // Built FROM the hashed contract, never restated here — a second copy of this
       // text is exactly what would let the prompt drift away from the cache key.
-      scenarioDescription: JUDGE_INSTRUCTION_CONTRACT.scenarioTemplate.replace(
-        '{query}',
-        pair.query,
-      ),
+      scenarioDescription: fillTemplate(JUDGE_INSTRUCTION_CONTRACT.scenarioTemplate, {
+        query: pair.query,
+      }),
       personaSummary: JUDGE_INSTRUCTION_CONTRACT.personaSummary,
       goalSummary: JUDGE_INSTRUCTION_CONTRACT.goalSummary,
       ...(temperature !== undefined ? { temperature } : {}),
