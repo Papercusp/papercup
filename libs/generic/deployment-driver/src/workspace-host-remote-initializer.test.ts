@@ -204,7 +204,7 @@ function gitBindInput(generation = 1) {
 const STEP_INPUTS: Record<string, Record<string, unknown>> = {
   'create-workspace': { workspaceId: 'ws-1', hostId: 'byoc-canary-01' },
   'clone-repository': {
-    repositoryUrl: 'https://github.com/papercupai/papercusp-byoc-canary.git',
+    repositoryUrl: 'https://github.com/Papercusp/papercusp-byoc-canary.git',
     visibility: 'private',
     destination: '/srv/workspace/repo',
     credentialChannel: 'git',
@@ -462,7 +462,7 @@ describe('executeWorkspaceHostRemoteInitializerStep', () => {
         executeWorkspaceHostRemoteInitializerStep(
           parseWorkspaceHostRemoteInitializerRequest(
             request('clone-repository', {
-              repositoryUrl: 'https://github.com/papercupai/papercusp-byoc-canary.git',
+              repositoryUrl: 'https://github.com/Papercusp/papercusp-byoc-canary.git',
               visibility: 'private',
               destination: '/srv/workspace/repo',
             }),

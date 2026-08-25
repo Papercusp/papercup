@@ -330,7 +330,7 @@ describe('workspace-host credential namespace', () => {
       requestedAt: REQUESTED_AT,
       source: {
         kind: 'git',
-        repositoryUrl: 'https://github.com/papercupai/papercusp-byoc-canary.git',
+        repositoryUrl: 'https://github.com/Papercusp/papercusp-byoc-canary.git',
         visibility: 'private',
         destination: 'repos/papercusp-byoc-canary',
         revision: 'main',
