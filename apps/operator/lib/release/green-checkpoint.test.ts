@@ -4643,6 +4643,75 @@ describe("runGreenCheckpoint", () => {
 
       expect(calls).toContain("commitsInRange");
     });
+
+    // WI-41655: the estimate above is a MEASUREMENT only when the suite actually ran. The
+    // early changed-file typecheck preflight short-circuits `deps.runGreen`, so the measured
+    // interval collapses to ~0ms (clamped to 1ms) — which makes `salvageOutOfTime` false in
+    // every practical case AND seeds `initialConfirmEstimateMs` with the same ~0ms, so the
+    // first full confirm suite starts unbudgeted. That is the SIGTERM-mid-confirm verdict
+    // loss WI-39450 added the gate for. Same fixture as the test above, inverted: with no
+    // suite to reason from, a run that has already burned its budget must still DECLINE.
+    async function earlyPreflightRedFixture() {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await commit("a", "2", "c2");
+      await commit("unrelated.ts", "x", "c3");
+      const { deps, calls } = bothPathsWired({ passesAtTip: false });
+      deps.changedFilesForRange = async () => [
+        "packages/operator-core/lib/thing.ts",
+      ];
+      deps.runChangedFileTypecheckPreflight = async () => {
+        calls.push("runChangedFileTypecheckPreflight");
+        return {
+          status: "failed" as const,
+          summary: "thing.ts(1,1): error TS2322: Type 'string' is not assignable.",
+          failingSignatures: ["lint:tsc"],
+        };
+      };
+      return { c2, deps, calls };
+    }
+
+    it("WI-41655: an early-preflight red measured NO suite, so it falls back to the conservative whole-run estimate and SKIPS the salvage", async () => {
+      const { c2, deps, calls } = await earlyPreflightRedFixture();
+      const now = Date.now();
+
+      const r = await runGreenCheckpoint(cfg(), deps, {
+        candidate: c2,
+        noPush: true,
+        // 55m of one-time setup already spent, 10m of budget left: a confirm suite cannot
+        // fit. ONLY a near-zero estimate would admit it.
+        runStartedAtMs: now - 55 * 60_000,
+        salvageDeadlineMs: now + 10 * 60_000,
+      });
+
+      // The preflight really did short-circuit the affected-test sweep...
+      expect(calls).toContain("runChangedFileTypecheckPreflight");
+      expect(calls).not.toContain("runGreen");
+      // ...and the expensive salvage never STARTED — commitsInRange is its first call.
+      expect(calls).not.toContain("commitsInRange");
+      // The verdict still lands intact. That is the whole point of declining.
+      expect(r.green).toBe(false);
+      expect(r.candidate).toBe(c2);
+    });
+
+    // CONTROL for the test above: the deadline must be the ONLY thing suppressing the
+    // salvage. Without this, a fallback that simply disabled salvage on the early-preflight
+    // path would pass the skip-test and look like a fix.
+    it("WI-41655 control: the same early-preflight red WITH budget remaining still salvages", async () => {
+      const { c2, deps, calls } = await earlyPreflightRedFixture();
+      const now = Date.now();
+
+      await runGreenCheckpoint(cfg(), deps, {
+        candidate: c2,
+        noPush: true,
+        // Same 55m of setup, but 60m of budget — the fallback estimate now fits.
+        runStartedAtMs: now - 55 * 60_000,
+        salvageDeadlineMs: now + 60 * 60_000,
+      });
+
+      expect(calls).toContain("runChangedFileTypecheckPreflight");
+      expect(calls).toContain("commitsInRange");
+    });
   });
 
   // EI-18759362119598634: a LINT/TYPECHECK red never populates `failingFiles` (that list
