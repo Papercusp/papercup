@@ -261,6 +261,56 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     });
     expect(await getLoopCarryNote(LOOP)).toBe('newer checkpoint');
   });
+
+  it('discards an older in-flight writer when admission timestamps are equal', async () => {
+    await setLoopCarryNote(LOOP, 'baseline checkpoint');
+    const scope = loopScope(LOOP.harness, LOOP.ownerId);
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let lockedResolve!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      lockedResolve = resolve;
+    });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`
+        SELECT note
+          FROM harness_shared.carry_notes
+         WHERE workspace_id = 'default' AND scope = ${scope}
+         FOR UPDATE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    // Force both callers to capture the same admission watermark. The newer
+    // request is queued first and commits first; the older request then sees
+    // an equal updated_ts. A strict `>` stale-write guard incorrectly admits
+    // that older write and loses the newer checkpoint.
+    const fixedNow = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(fixedNow);
+    const newer = setLoopCarryNoteWithPrior(LOOP, 'newer checkpoint');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const stale = setLoopCarryNoteWithPrior(LOOP, 'stale checkpoint');
+    clock.mockRestore();
+
+    release();
+    const [newerResult, staleResult] = await Promise.all([newer, stale]);
+    await blocker;
+
+    expect(newerResult.stored).toBe('newer checkpoint');
+    expect(staleResult).toMatchObject({
+      stored: 'newer checkpoint',
+      blockedReason: 'stale_write_older_than_current',
+      staleWrite: {
+        writeStartedAtMs: fixedNow,
+        currentUpdatedAtMs: fixedNow,
+      },
+    });
+    expect(await getLoopCarryNote(LOOP)).toBe('newer checkpoint');
+  });
 });
 
 describe('D-003 shared semantics + journaling modes', () => {
