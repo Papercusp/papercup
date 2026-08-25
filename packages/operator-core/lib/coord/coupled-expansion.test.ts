@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { resolveCoupledPeers, type CoupledPeer, type DerivedCoupling } from './couplings';
+import { deriveCouplings } from './coupling-derivation';
 import {
   buildCoupledExpansion,
   expandedBecauseOf,
@@ -280,5 +281,96 @@ describe('P-008 composition — obligations survive truncation, symmetric peers 
     const ids = buildCoupledExpansion(peers, []).expanded.map((e) => e.ownerId);
     expect(ids).toContain('su-zzz-owed');
     expect(ids).toContain('su-zzz-owing');
+  });
+});
+
+/**
+ * ── THE CONSUMER SURFACE: an obligation TRAVERSES source → derivation → peers → render ──
+ *
+ * ⚠ ADDED AFTER A SECOND INDEPENDENT VETTING PASS (EI-21417137611872652 / WI-41623) FOUND
+ * THE SAME GAP ONE LAYER UP. Round 1 caught that ordering and truncation were each proven
+ * while their COMPOSITION was only inferred. Round 2 caught that the end-to-end criterion
+ * had the identical shape: it bound a producer test and a renderer test, so each half was
+ * green and the WIRING BETWEEN THEM was never exercised.
+ *
+ * The criterion claims an open consult "SURFACES to its requester". Surfacing is a property
+ * of the composed path, not of either end — an obligation can be produced correctly and
+ * rendered correctly and still never reach a reader if the source is not wired into the
+ * derivation, or the derived edge is dropped before the expansion. That failure is exactly
+ * the born-unobservable shape this codebase keeps re-encountering (D-088), and no test
+ * over either end alone can see it.
+ *
+ * So this drives the REAL path with only the IO leg injected: an obligation source goes
+ * into `deriveCouplings`, and the assertion is made on the RENDERED expansion entry a
+ * reader actually receives.
+ */
+describe('consumer surface — a consult obligation reaches a rendered peer, liveness intact', () => {
+  const rosterRow = (ownerId: string) => ({ ownerId, ownerLabel: `label-${ownerId}` });
+
+  /** The producer's own output shape, as `fetchConsultObligations` emits it. */
+  const consultObligation = {
+    ownerId: 'su-responder',
+    direction: 'owes-me' as const,
+    what: 'a consult reply',
+    since: '2026-08-25T02:03:31.581Z',
+    handle: 'conv-mt80to4a-0000-767222ae228f4ace98123e6c16c382a8',
+    counterpartLiveness: 'ended' as const,
+  };
+
+  it('an open consult obligation arrives in the rendered expansion, carrying age, handle AND liveness', async () => {
+    const roster = [rosterRow('su-me'), rosterRow('su-responder')];
+    // Only the IO leg is injected. Everything downstream is the production path.
+    const derived = await deriveCouplings('su-me', roster, {
+      obligations: async () => [consultObligation],
+    });
+    const peers = resolveCoupledPeers('su-me', derived, []);
+    const entry = buildCoupledExpansion(peers, roster).expanded.find(
+      (e: CoupledExpansionEntry) => e.ownerId === 'su-responder',
+    );
+
+    expect(entry).toBeDefined();
+    // The reader must be able to act without opening anything else: WHO owes, WHAT,
+    // HOW LONG, WHICH conversation, and whether the counterpart still exists.
+    expect(entry?.expandedBecause).toContain('they owe you a consult reply');
+    expect(entry?.expandedBecause).toContain('open ');
+    expect(entry?.expandedBecause).toContain(consultObligation.handle);
+    expect(entry?.expandedBecause).toContain('counterpart ended');
+  });
+
+  it('a DISCHARGED consult produces no rendered peer at all — the other half of the outcome', async () => {
+    // The producer's contract is that a discharged consult emits nothing; this asserts the
+    // consequence a reader sees. An obligation that never clears becomes noise they learn
+    // to ignore, which is as bad as one that never appears.
+    const roster = [rosterRow('su-me'), rosterRow('su-responder')];
+    const derived = await deriveCouplings('su-me', roster, { obligations: async () => [] });
+    const peers = resolveCoupledPeers('su-me', derived, []);
+    expect(buildCoupledExpansion(peers, roster).expanded).toHaveLength(0);
+  });
+
+  it('CONTROL: an obligation source that is NOT WIRED renders nothing — proving the wiring is what this measures', async () => {
+    // Permanent wrong-implementation control. Omitting the `obligations` source entirely
+    // is precisely the born-unobservable failure: the producer could be perfect and the
+    // renderer could be perfect, and a reader still receives nothing. If the assertion
+    // above ever passes against an unwired source, it is not measuring the wiring.
+    const roster = [rosterRow('su-me'), rosterRow('su-responder')];
+    const derived = await deriveCouplings('su-me', roster, {});
+    const peers = resolveCoupledPeers('su-me', derived, []);
+    expect(buildCoupledExpansion(peers, roster).expanded).toHaveLength(0);
+  });
+
+  it('survives the render cap: the consult obligation is retained among 40 symmetric peers', async () => {
+    const roster = [
+      rosterRow('su-me'),
+      rosterRow('su-responder'),
+      ...Array.from({ length: 40 }, (_, i) => rosterRow(`su-aaa${String(i).padStart(3, '0')}`)),
+    ];
+    const derived = await deriveCouplings('su-me', roster, {
+      obligations: async () => [consultObligation],
+      recentPartners: async () =>
+        Array.from({ length: 40 }, (_, i) => `su-aaa${String(i).padStart(3, '0')}`),
+    });
+    const peers = resolveCoupledPeers('su-me', derived, []);
+    const ids = buildCoupledExpansion(peers, roster).expanded.map((e) => e.ownerId);
+    expect(ids).toContain('su-responder');
   });
 });
