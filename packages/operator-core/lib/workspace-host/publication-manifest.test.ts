@@ -15,8 +15,9 @@ import { describe, expect, it } from 'vitest';
 
 import { ARTIFACT_TRUST_PIPELINE_VERSION, type ArtifactTrustReport } from './artifact-trust';
 import {
+  WORKSPACE_HOST_PUBLICATION_KIND,
   WORKSPACE_HOST_PUBLICATION_MANIFEST_KEYS,
-  WORKSPACE_HOST_PUBLICATION_MANIFEST_VERSION,
+  WORKSPACE_HOST_PUBLICATION_SCHEMA_VERSION,
   WorkspaceHostPublicationManifestError,
   buildWorkspaceHostPublicationManifest,
   serializeWorkspaceHostPublicationManifest,
@@ -188,18 +189,19 @@ describe('workspace-host publication manifest', () => {
   it('assembles the closed D-107 envelope from a complete, digest-bound release', () => {
     const manifest = buildWorkspaceHostPublicationManifest(input());
 
-    expect(manifest.version).toBe(WORKSPACE_HOST_PUBLICATION_MANIFEST_VERSION);
-    expect(manifest.objects.bundle).toEqual({
+    expect(manifest.schemaVersion).toBe(WORKSPACE_HOST_PUBLICATION_SCHEMA_VERSION);
+    expect(manifest.kind).toBe(WORKSPACE_HOST_PUBLICATION_KIND);
+    expect(manifest.files.bundle).toEqual({
       name: 'server.tgz',
       sha256: RELEASE_DIGEST,
-      bytes: BUNDLE_BYTES,
+      sizeBytes: BUNDLE_BYTES,
     });
-    expect(manifest.objects.signature).toEqual({
+    expect(manifest.files.signature).toEqual({
       name: 'server.tgz.minisig',
       sha256: SIGNATURE_DIGEST,
-      bytes: SIGNATURE_BYTES,
+      sizeBytes: SIGNATURE_BYTES,
     });
-    expect(manifest.trust.version).toBe(ARTIFACT_TRUST_PIPELINE_VERSION);
+    expect(manifest.trustReport.version).toBe(ARTIFACT_TRUST_PIPELINE_VERSION);
   });
 
   it('publishes exactly the closed key set, so widening the contract cannot pass unnoticed', () => {
@@ -224,7 +226,7 @@ describe('workspace-host publication manifest', () => {
 
     expect(second).toBe(first);
     // Key order is normalized rather than inherited from construction order.
-    expect(first.indexOf('"artifact"')).toBeLessThan(first.indexOf('"version"'));
+    expect(first.indexOf('"artifact"')).toBeLessThan(first.indexOf('"schemaVersion"'));
   });
 
   it('throws with every reason rather than returning a partially-valid manifest', () => {
@@ -506,5 +508,81 @@ describe('workspace-host publication manifest', () => {
     candidate.artifact = { ...candidate.artifact, buildManifest: stripped };
 
     expect(codes(candidate)).toContain('invalid-image-artifact');
+  });
+
+  /**
+   * Each of these is enforced by the operator-public publisher (WI-41736). A producer that does
+   * not enforce them can assemble a manifest that is rejected at upload, which is the same
+   * two-systems failure D-108 forbids — just discovered later and against a live bucket.
+   */
+  describe('refuses inputs the publisher would reject at its boundary', () => {
+    it('rejects a build manifest describing different bytes than the published bundle', () => {
+      const candidate = input();
+      candidate.bundle = { sha256: RELEASE_DIGEST, bytes: BUNDLE_BYTES + 1 };
+      candidate.trustReport = {
+        ...candidate.trustReport,
+        subject: { ...candidate.trustReport.subject, bytes: BUNDLE_BYTES + 1 },
+      };
+
+      expect(codes(candidate)).toContain('build-artifact-mismatch');
+    });
+
+    it('rejects a release that is no longer active, which a permanent address cannot take back', () => {
+      const candidate = input();
+      candidate.artifact = {
+        ...candidate.artifact,
+        lifecycle: { state: 'withdrawn', publishedAt: '2026-08-22T00:00:00Z' },
+      };
+
+      expect(codes(candidate)).toContain('inactive-lifecycle');
+    });
+
+    it('rejects a duplicate evidence class, which first-match lookups would never examine', () => {
+      const candidate = input();
+      const report = candidate.trustReport;
+      const weakerSignature = {
+        ...report.evidence[0],
+        valid: false,
+      } as (typeof report.evidence)[number];
+      candidate.trustReport = { ...report, evidence: [...report.evidence, weakerSignature] };
+
+      expect(codes(candidate)).toContain('duplicate-trust-evidence');
+    });
+
+    it('rejects a vulnerability scan bound to a different SBOM than the one published', () => {
+      const candidate = input();
+      const report = candidate.trustReport;
+      candidate.trustReport = {
+        ...report,
+        evidence: report.evidence.map((entry) =>
+          entry.kind === 'vulnerability-scan' ? { ...entry, sbomSha256: '9'.repeat(64) } : entry,
+        ),
+      };
+
+      expect(codes(candidate)).toContain('sbom-binding-mismatch');
+    });
+
+    it('rejects an attestation freshness bound that cannot bind anything', () => {
+      const candidate = input();
+      candidate.trustReport = {
+        ...candidate.trustReport,
+        policy: { ...candidate.trustReport.policy, maxAttestationAgeMs: 0 },
+      };
+
+      expect(codes(candidate)).toContain('invalid-trust-policy');
+    });
+
+    it('rejects evidence that does not record the exact tool that produced it', () => {
+      const candidate = input();
+      const report = candidate.trustReport;
+      candidate.trustReport = {
+        ...report,
+        evidence: report.evidence.map((entry) =>
+          entry.kind === 'sbom' ? { ...entry, tool: { name: '  ', version: '' } } : entry,
+        ),
+      };
+
+      expect(codes(candidate)).toContain('missing-trust-evidence');
+    });
   });
 });
