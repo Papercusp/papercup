@@ -3668,6 +3668,14 @@ export function mapCheckpointRunInFlight(
   const progressAtMs = active && cachedDescribesNow ? cachedRun!.progressAtMs : undefined;
   const currentPhase = active && cachedDescribesNow ? cachedRun!.currentPhase : undefined;
   const systemd = cachedDescribesNow ? cachedRun!.systemd : undefined;
+  // Terminal marker/evidence are facts about the most recently finished unit, not detail
+  // about the run that is active now. A live lock can release between the derived snapshot
+  // and this read while the cached row still says `active:true`; applying the active-run
+  // identity join to these immutable post-unit facts would erase the only evidence that an
+  // external StopUnit cancelled the candidate. Keep them whenever the final liveness answer
+  // is idle, while the candidate/timing/progress fields above remain identity-bound.
+  const terminalMarker = !active && cachedRun?.terminalMarker !== undefined ? cachedRun.terminalMarker : undefined;
+  const terminalEvidence = !active && cachedRun?.terminalEvidence ? cachedRun.terminalEvidence : undefined;
   // The marker only describes a LIVE run; attaching it to an idle probe would assert a refire
   // is in flight for a run that has already finished.
   const marker = active && retriage ? retriage : null;
@@ -3679,12 +3687,8 @@ export function mapCheckpointRunInFlight(
   return {
     active,
     ...(systemd !== undefined ? { systemd } : {}),
-    ...(!active && cachedDescribesNow && cachedRun!.terminalMarker !== undefined
-      ? { terminalMarker: cachedRun!.terminalMarker }
-      : {}),
-    ...(!active && cachedDescribesNow && cachedRun!.terminalEvidence
-      ? { terminalEvidence: cachedRun!.terminalEvidence }
-      : {}),
+    ...(terminalMarker !== undefined ? { terminalMarker } : {}),
+    ...(terminalEvidence ? { terminalEvidence } : {}),
     // Emitted only when the lock answered, so the cache-only shape is byte-identical to before.
     ...(lockDecides ? { activeSource: liveLock?.source ?? ('run-lock' as const) } : {}),
     ...(active && liveLock?.source === 'process-authority' && liveLock.processAuthority

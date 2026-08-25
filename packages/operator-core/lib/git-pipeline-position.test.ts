@@ -5689,6 +5689,43 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
       expect(out?.elapsedSec).toBeNull();
     });
 
+    it('EI-21356516911755816: preserves finished-unit cancellation evidence across a live-lock release', () => {
+      const terminalEvidence = {
+        source: 'systemd-exec-stop-post' as const,
+        candidate: 'cancelled-candidate',
+        serviceResult: 'success',
+        exitCode: 'killed',
+        exitStatus: 'TERM',
+        abnormal: true,
+      };
+      const cacheStillLabelsUnitActive = {
+        activeRun: {
+          active: true,
+          candidate: 'cancelled-candidate',
+          startedAtMs: NOW - 120 * 60_000,
+          elapsedSec: 120 * 60,
+          terminalMarker: false,
+          terminalEvidence,
+        },
+        computedAtMs: NOW - 1_000,
+      };
+
+      const out = mapCheckpointRunInFlight(cacheStillLabelsUnitActive, NOW, null, {
+        held: false,
+        elapsedSec: null,
+      });
+
+      expect(out).toMatchObject({
+        active: false,
+        activeSource: 'run-lock',
+        candidate: null,
+        startedAtMs: null,
+        elapsedSec: null,
+        terminalMarker: false,
+        terminalEvidence,
+      });
+    });
+
     it('answers liveness with NO cache at all — previously UNKNOWN, though the lock could answer for free', () => {
       expect(mapCheckpointRunInFlight(null, NOW, null, { held: true, elapsedSec: 60 })).toMatchObject({
         active: true,
