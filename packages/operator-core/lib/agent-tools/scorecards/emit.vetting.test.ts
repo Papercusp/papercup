@@ -218,6 +218,21 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it('teaches plan-subject acceptance authors to omit vetting linkage and cite the meta-scorecard', async () => {
+    const res = await emitScorecard(
+      vettingArgs({ subject: { kind: 'plan', ref: 'some-plan-2026-08-17' } }) as never,
+      EMIT_INPUT,
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('only valid on the META-RUBRIC scorecard');
+    expect(res.error).toContain("subject:{ kind:'rubric'");
+    expect(res.error).toContain('omit vettingConsult/vettingWorkItem');
+    expect(res.error).toContain('cite the separately emitted meta-rubric scorecard');
+    expect(getRubric).not.toHaveBeenCalledWith('some-plan-2026-08-17');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('refuses a subject that does not resolve to a rubric (dangling link)', async () => {
     const res = await emitScorecard(
       vettingArgs({ subject: { kind: 'rubric', ref: 'no-such-rubric' } }) as never,
