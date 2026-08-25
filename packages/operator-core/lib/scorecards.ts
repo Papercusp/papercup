@@ -383,8 +383,10 @@ export interface ScorecardRetractionResult {
 
 /**
  * Retract one scorecard without deleting or flattening its evidence payload.
- * `mergeIssuePayload` only merges the payload root, so the COMPLETE nested
- * observation must be written back with the retraction marker attached.
+ * `mergeIssuePayload` only merges the payload root, so the nested scorecard
+ * observation must be written back with the retraction marker attached. This
+ * deliberately accepts incomplete historical cards: retraction is the cleanup
+ * path for malformed scorecards that predate the emit completeness gate.
  */
 export async function retractScorecard(
   issueId: string,
@@ -405,11 +407,14 @@ export async function retractScorecard(
   if (!rawObservation || typeof rawObservation !== 'object' || Array.isArray(rawObservation)) {
     return { ok: false, issueId, retracted: false, error: `'${issueId}' is not a scorecard` };
   }
-  const observation = asStructuredObservation(rawObservation);
-  if (!observation?.rubricRef || !observation.ratings) {
+  const raw = rawObservation as Record<string, unknown>;
+  const hasRubricRef = typeof raw.rubricRef === 'string' && raw.rubricRef.trim().length > 0;
+  const hasRatingsRecord = raw.ratings !== null && typeof raw.ratings === 'object' && !Array.isArray(raw.ratings);
+  if (!hasRubricRef || !hasRatingsRecord) {
     return { ok: false, issueId, retracted: false, error: `'${issueId}' is not a complete scorecard` };
   }
-  if (observation.retracted) {
+  const observation = asStructuredObservation(rawObservation);
+  if (observation?.retracted) {
     return { ok: true, issueId, retracted: true, retraction: observation.retracted };
   }
 

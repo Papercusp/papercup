@@ -47,7 +47,7 @@ import { getRubric } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { getIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
-import { emitScorecard } from './emit';
+import { emitScorecard, scorecardEmitArgs } from './emit';
 import { evaluateScorecard } from './evaluate';
 
 const getRubricM = vi.mocked(getRubric);
@@ -87,6 +87,37 @@ const RATINGS = {
   'crit-b': { rating: 'pass', evidence: 'observed B working' },
 };
 
+const RERUN_RECIPE = {
+  schemaVersion: 1 as const,
+  evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  selection: {
+    planSlug: 'reconnect-plan',
+    specId: 'SPEC-003-01',
+    specRevision: 1,
+    specFingerprint: 'sha256:spec-v1',
+    evidence: [{ evidenceKind: 'integration fixture', evidenceRef: 'surface:reconnect' }],
+  },
+  current: {
+    supplied: true,
+    fingerprints: [
+      {
+        evidenceKind: 'integration fixture',
+        evidenceRef: 'surface:reconnect',
+        sourceFingerprint: 'git:abc',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: 'sha256:fixture',
+        rubricFingerprint: 'sha256:rubric',
+        environmentFingerprint: 'node:24',
+      },
+    ],
+  },
+  derivation: {
+    kind: 'listSpecEvidence.currentness' as const,
+    classifier: 'classifySpecEvidenceCurrentness' as const,
+    unknownWhenMissing: true as const,
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   sameAuthorM.mockImplementation(async (author, candidate) => author === candidate);
@@ -101,6 +132,15 @@ describe('emitScorecard', () => {
     getRubricM.mockResolvedValue(null);
     const r = await emitScorecard({ rubricRef: 'nope', ratings: RATINGS }, { createdBy: 'su-1' });
     expect(r).toMatchObject({ ok: false, error: expect.stringContaining("'nope' not found") });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('empty ratings → ok:false with missing criteria, never files an incomplete card', async () => {
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: {} }, { createdBy: 'su-1' });
+    expect(r).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('missing required criterion key(s): crit-a, crit-b'),
+    });
     expect(captureM).not.toHaveBeenCalled();
   });
 
@@ -124,6 +164,52 @@ describe('emitScorecard', () => {
       createdBy: 'su-1',
       payloadExtra: { observation: { rubricRef: 'test-rubric' } },
     });
+  });
+
+  it('accepts, persists, and fingerprints the spec-test-adequacy rerun recipe', async () => {
+    const parsed = scorecardEmitArgs.safeParse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rerunRecipe: RERUN_RECIPE,
+    });
+    expect(parsed.success).toBe(true);
+
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, rerunRecipe: RERUN_RECIPE },
+      { createdBy: 'su-1' },
+    );
+    const expectedFingerprint = scorecardEvidenceFingerprint({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rerunRecipe: RERUN_RECIPE,
+    });
+    expect(r).toMatchObject({ ok: true, created: true, evidenceFingerprint: expectedFingerprint });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { rubricRef: 'test-rubric', rerunRecipe: RERUN_RECIPE } },
+    });
+  });
+
+  it('uses a persisted rerun recipe in the latest-hash fallback for legacy rows without a stored fingerprint', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'ISS-RECIPE',
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        rerunRecipe: RERUN_RECIPE,
+        missingKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: null,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, rerunRecipe: RERUN_RECIPE },
+      { createdBy: 'su-1' },
+    );
+    expect(r).toMatchObject({ ok: true, created: false, reason: 'unchanged-evidence', previousIssueId: 'ISS-RECIPE' });
+    expect(captureM).not.toHaveBeenCalled();
   });
 
   it('files the scorecard ALREADY-TERMINAL (initialState done) — a verdict, not pending work (D-002, observation-lane-scorecard-classification-2026-08-16)', async () => {

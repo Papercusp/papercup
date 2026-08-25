@@ -43,6 +43,33 @@ describe('retractScorecard', () => {
     });
   });
 
+  it('retracts an incomplete historical scorecard with an empty ratings map', async () => {
+    const getIssue = vi.fn(async () => ({
+      payload: { observation: { rubricRef: 'rubric-a', ratings: {} } },
+    }));
+    const mergeIssuePayload = vi.fn(async () => ({ id: 'EI-1' }));
+
+    const result = await retractScorecard(
+      'EI-1',
+      { by: 'su-1', reason: 'incomplete legacy card', at: '2026-08-14T23:00:00.000Z' },
+      { getIssue: getIssue as never, mergeIssuePayload: mergeIssuePayload as never },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      issueId: 'EI-1',
+      retracted: true,
+      retraction: { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'incomplete legacy card' },
+    });
+    expect(mergeIssuePayload).toHaveBeenCalledWith('EI-1', {
+      observation: {
+        rubricRef: 'rubric-a',
+        ratings: {},
+        retracted: { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'incomplete legacy card' },
+      },
+    });
+  });
+
   it('is idempotent and does not rewrite an already retracted scorecard', async () => {
     const prior = { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'withdrawn' };
     const getIssue = vi.fn(async () => ({

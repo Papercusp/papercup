@@ -19,6 +19,7 @@ import {
   type ObservationRatings,
   type ScorecardVetting,
   type ScorecardAcceptance,
+  type SpecTestAdequacyRerunRecipe,
   asStructuredObservation,
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
@@ -81,6 +82,59 @@ import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 export const SCORECARD_EMIT_TIMEOUT_SEC = 15 * 60;
 export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 13 * 60_000;
 
+const specTestAdequacyFingerprintSchema = z.string().trim().min(1).max(256);
+const specTestAdequacyRerunRecipeSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    evaluator: z.literal('plans:evaluate-spec-test-adequacy'),
+    selection: z
+      .object({
+        planSlug: z.string().trim().min(1).max(120),
+        specId: z.string().trim().min(1).max(200),
+        specRevision: z.number().int().positive(),
+        specFingerprint: specTestAdequacyFingerprintSchema,
+        evidence: z
+          .array(
+            z
+              .object({
+                evidenceKind: z.string().trim().min(1).max(120),
+                evidenceRef: z.string().trim().min(1).max(2000),
+              })
+              .strict(),
+          )
+          .max(500),
+      })
+      .strict(),
+    current: z
+      .object({
+        supplied: z.boolean(),
+        fingerprints: z
+          .array(
+            z
+              .object({
+                evidenceKind: z.string().trim().min(1).max(120),
+                evidenceRef: z.string().trim().min(1).max(2000),
+                sourceFingerprint: specTestAdequacyFingerprintSchema,
+                testFingerprint: specTestAdequacyFingerprintSchema.nullable(),
+                fixtureFingerprint: specTestAdequacyFingerprintSchema.nullable(),
+                rubricFingerprint: specTestAdequacyFingerprintSchema.nullable(),
+                environmentFingerprint: specTestAdequacyFingerprintSchema.nullable(),
+              })
+              .strict(),
+          )
+          .max(500),
+      })
+      .strict(),
+    derivation: z
+      .object({
+        kind: z.literal('listSpecEvidence.currentness'),
+        classifier: z.literal('classifySpecEvidenceCurrentness'),
+        unknownWhenMissing: z.literal(true),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const scorecardEmitArgs = z
   .object({
     rubricRef: z.string().min(1).max(120),
@@ -100,6 +154,7 @@ export const scorecardEmitArgs = z
         "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. Independent graders omit it.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
+    rerunRecipe: specTestAdequacyRerunRecipeSchema.optional(),
     subject: z
       .object({
         kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
@@ -316,6 +371,18 @@ export async function emitScorecard(
     }
     const ratings = normalizeScorecardRatings(args.ratings as ObservationRatings, rubric);
     const observationForValidation = { rubricRef: args.rubricRef, ratings };
+    // `validateScorecardCompleteness` intentionally permits an empty ratings map
+    // for generic/free-text observations. scorecards:emit is different: it has
+    // already resolved a rubric, so an empty map is an incomplete scorecard and
+    // must fail before any deduplication or ledger write can occur.
+    if (Object.keys(ratings).length === 0 && rubric.criteria.length > 0) {
+      throw new ObservationEvidenceError(
+        `scorecard for rubric '${args.rubricRef}' is INVALID/INCOMPLETE — missing required criterion key(s): ` +
+          `${rubric.criteria.map((criterion) => criterion.key).join(', ')}. ` +
+          `A rubric scorecard must rate exactly the declared criteria (rate a not-assessable one 'unknown' ` +
+          'WITH evidence, never omit every criterion).',
+      );
+    }
     validateObservationRatings(observationForValidation);
     validateScorecardCompleteness(
       observationForValidation,
@@ -328,6 +395,7 @@ export async function emitScorecard(
       ratings,
       instrumentSnapshots,
       ...(acceptance ? { acceptance } : {}),
+      ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe as SpecTestAdequacyRerunRecipe } : {}),
     });
     const instrumentContract = evaluateScorecardInstrumentContract({
       rubric,
@@ -603,6 +671,7 @@ export async function emitScorecard(
           rubricRef: latest.rubricRef,
           ratings: latest.ratings,
           ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
+          ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
         }))
       : null;
     const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
@@ -744,6 +813,7 @@ export async function emitScorecard(
           rubricRef: args.rubricRef,
           ratings,
           ...(acceptance ? { acceptance } : {}),
+          ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe } : {}),
           ...(sourceHive ? { sourceHive } : {}),
           ...(args.targetHive ? { targetHive: args.targetHive } : {}),
           ...(instrumentSnapshots ? { instrumentSnapshots } : {}),
