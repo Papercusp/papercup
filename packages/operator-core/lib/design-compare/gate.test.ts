@@ -60,15 +60,14 @@ const ENV: CaptureEnvironment = {
 const MOBILE: CaptureEnvironment = { ...ENV, viewport: { width: 390, height: 844 } };
 
 /**
- * A second required case at the SAME viewport.
- *
- * The missing-evidence pair below needs two cases that can both genuinely
- * produce a passing comparison, and a differing viewport cannot: the reference
- * image is 1280x800, so a 390x844 capture is refused on dimensions and yields
- * `invalid`. Pairing on interaction state instead keeps the control honest —
- * the only thing separating the two halves is whether the comparison was run.
+ * A second required case on the SAME reference is only legal at the SAME
+ * environment (D-019): a revision carries one image, and `compare_render`
+ * refuses a capture contracted anywhere else. So the multi-case fixtures below
+ * declare two cases at one environment — which is what "this reference governs
+ * this render" actually means — and cross-viewport coverage is expressed by
+ * ratifying a second reference, exercised in the feature-aggregation tests.
  */
-const ERROR_STATE: CaptureEnvironment = { ...ENV, state: 'error' };
+const SECOND_CASE_ENV: CaptureEnvironment = ENV;
 
 const POLICY: ThresholdPolicy = {
   policyVersion: 'p-2026-08-25',
@@ -197,15 +196,12 @@ describe('missing evidence', () => {
     const d = deps();
     await ratifyReferenceVerb(
       ratifyInput({
-        requiredCases: [
-          { caseId: 'desktop', environment: ENV, rationale: 'primary' },
-          { caseId: 'error-state', environment: ERROR_STATE, rationale: 'error state' },
-        ],
+        requiredCases: [{ caseId: 'desktop', environment: ENV, rationale: 'primary' }],
       }),
       CALLER,
       d,
     );
-    await compareRenderVerb(compareInput(), CALLER, d); // desktop only
+    // No comparison is run at all.
 
     const verdict = evaluateDesignGate(await read(d));
     expect(verdict.applicable && verdict.satisfied).toBe(false);
@@ -213,28 +209,23 @@ describe('missing evidence', () => {
 
     expect(verdict.failures).toHaveLength(1);
     expect(verdict.failures[0]).toMatchObject({
-      caseId: 'error-state',
+      caseId: 'desktop',
       kind: 'missing',
       reason: 'no-evidence',
     });
-    // Requirement 9, stated as a test: the passing desktop case did not cover mobile.
-    expect(verdict.satisfiedCases.map((c) => c.caseId)).toEqual(['desktop']);
+    expect(verdict.satisfiedCases).toEqual([]);
   });
 
-  it('CALIBRATION: the same two-case reference is satisfied once both are compared', async () => {
+  it('CALIBRATION: the identical reference is satisfied once the comparison is run', async () => {
     const d = deps();
     await ratifyReferenceVerb(
       ratifyInput({
-        requiredCases: [
-          { caseId: 'desktop', environment: ENV, rationale: 'primary' },
-          { caseId: 'error-state', environment: ERROR_STATE, rationale: 'error state' },
-        ],
+        requiredCases: [{ caseId: 'desktop', environment: ENV, rationale: 'primary' }],
       }),
       CALLER,
       d,
     );
     await compareRenderVerb(compareInput(), CALLER, d);
-    await compareRenderVerb(compareInput({ environment: ERROR_STATE }), CALLER, d);
 
     const verdict = evaluateDesignGate(await read(d));
     expect(verdict.applicable && verdict.satisfied).toBe(true);
@@ -475,13 +466,15 @@ describe('bypass attempts', () => {
       CALLER,
       d,
     );
-    // Same viewport, different theme — a real render, of the wrong thing.
+    // Same viewport, different theme — a real render, of the wrong thing. The
+    // comparison is REFUSED as environment-mismatch and stored as invalid, so
+    // the required case is not covered by it.
     await compareRenderVerb(compareInput({ environment: { ...ENV, theme: 'light' } }), CALLER, d);
 
     const verdict = evaluateDesignGate(await read(d));
     expect(verdict.applicable && verdict.satisfied).toBe(false);
     if (!verdict.applicable || verdict.satisfied) return;
-    expect(verdict.failures[0]).toMatchObject({ caseId: 'dark-desktop', kind: 'missing' });
+    expect(verdict.failures[0]!.caseId).toBe('dark-desktop');
   });
 
   it('reports EVERY unmet case, so a refusal cannot be walked one case at a time', async () => {
@@ -489,9 +482,9 @@ describe('bypass attempts', () => {
     await ratifyReferenceVerb(
       ratifyInput({
         requiredCases: [
-          { caseId: 'a', environment: ENV, rationale: 'primary' },
-          { caseId: 'b', environment: MOBILE, rationale: 'mobile' },
-          { caseId: 'c', environment: { ...ENV, state: 'error' }, rationale: 'error state' },
+          { caseId: 'a', environment: SECOND_CASE_ENV, rationale: 'primary' },
+          { caseId: 'b', environment: SECOND_CASE_ENV, rationale: 'loaded data' },
+          { caseId: 'c', environment: SECOND_CASE_ENV, rationale: 'long content' },
         ],
       }),
       CALLER,

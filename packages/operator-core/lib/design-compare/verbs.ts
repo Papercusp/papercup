@@ -45,6 +45,7 @@ import {
   type ImplementationTarget,
   type ReferenceIdentity,
   type ThresholdPolicy,
+  describeEnvironment,
   environmentsMatch,
 } from './contract';
 import type { PngDimensions } from './png-header';
@@ -402,14 +403,6 @@ export async function compareRenderVerb(
 
   const result = await compareAgainstReference(requestFor(materialized.path), deps.comparison);
   return persist(result, input, deps);
-}
-
-function describeEnvironment(env: CaptureEnvironment): string {
-  return (
-    `${env.viewport.width}x${env.viewport.height}@${env.deviceScaleFactor} ` +
-    `${env.browser}/${env.theme}/${env.fontSet}` +
-    `${env.fixture ? `/fixture:${env.fixture}` : ''}${env.state ? `/state:${env.state}` : ''}`
-  );
 }
 
 function invalidResult(args: {

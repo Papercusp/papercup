@@ -63,6 +63,48 @@ describe('validateRatification', () => {
     expect(errors.map((e) => e.code)).toContain('duplicate-case');
   });
 
+  /**
+   * D-019 (surfaced by P-007). A revision carries ONE reference image, and
+   * `compare_render` refuses a capture whose environment differs from
+   * `referenceEnvironment`. A required case at any other environment is
+   * therefore unsatisfiable by construction: every comparison for it returns
+   * `invalid: environment-mismatch`, so the reference reads as stricter than a
+   * single-case one while being a gate no implementation can ever pass.
+   */
+  it('refuses a required case contracted at a different viewport from the reference image', () => {
+    const errors = validateRatification(
+      ref({
+        requiredCases: [
+          requiredCase(),
+          requiredCase({
+            caseId: 'mobile',
+            environment: env({ viewport: { width: 390, height: 844 } }),
+          }),
+        ],
+      }),
+    );
+    expect(errors.map((e) => e.code)).toContain('case-environment-mismatch');
+    // The message must point at the remedy, not just state the mismatch.
+    expect(errors.find((e) => e.code === 'case-environment-mismatch')!.message).toContain(
+      'separate reference',
+    );
+  });
+
+  it('refuses a required case that differs only by interaction state', () => {
+    const errors = validateRatification(
+      ref({ requiredCases: [requiredCase({ caseId: 'error', environment: env({ state: 'error' }) })] }),
+    );
+    expect(errors.map((e) => e.code)).toContain('case-environment-mismatch');
+  });
+
+  /**
+   * CALIBRATION. Without this, a validator that rejected every required case
+   * would satisfy both assertions above.
+   */
+  it('accepts a required case contracted at the reference environment', () => {
+    expect(validateRatification(ref({ requiredCases: [requiredCase()] }))).toEqual([]);
+  });
+
   it('requires a revision to increase', () => {
     const previous = ref({ identity: { ...ref().identity, revision: 4 } });
     const errors = validateRatification(ref({ identity: { ...ref().identity, revision: 4 } }), previous);

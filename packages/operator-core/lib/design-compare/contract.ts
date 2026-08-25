@@ -236,6 +236,24 @@ export function environmentsMatch(a: CaptureEnvironment, b: CaptureEnvironment):
   );
 }
 
+/**
+ * One-line human rendering of a capture environment.
+ *
+ * Lives here, beside `environmentsMatch`, because both the comparison path and
+ * the ratification path have to say "these two environments differ" to a human.
+ * It was previously private to the verbs module, which meant the second caller
+ * either imported across a module cycle or wrote a near-identical renderer —
+ * two spellings of the same environment, drifting apart, in the exact messages
+ * someone reads while debugging an environment mismatch.
+ */
+export function describeEnvironment(env: CaptureEnvironment): string {
+  return (
+    `${env.viewport.width}x${env.viewport.height}@${env.deviceScaleFactor} ` +
+    `${env.browser}/${env.theme}/${env.fontSet}` +
+    `${env.fixture ? `/fixture:${env.fixture}` : ''}${env.state ? `/state:${env.state}` : ''}`
+  );
+}
+
 export interface VerdictInput {
   readonly counts: EngineCounts;
   readonly policy: ThresholdPolicy;

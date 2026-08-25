@@ -10,7 +10,13 @@
  * absence of a ratification record rather than as a state we track.
  */
 
-import type { CaptureEnvironment, ReferenceClass, ReferenceIdentity } from './contract';
+import {
+  type CaptureEnvironment,
+  type ReferenceClass,
+  type ReferenceIdentity,
+  describeEnvironment,
+  environmentsMatch,
+} from './contract';
 
 /**
  * The lifecycle of a ratified reference. `exploring` is deliberately NOT here:
@@ -70,6 +76,7 @@ export interface RatificationError {
     | 'not-active'
     | 'no-required-cases'
     | 'duplicate-case'
+    | 'case-environment-mismatch'
     | 'revision-not-monotonic'
     | 'class-mismatch'
     | 'missing-derivation';
