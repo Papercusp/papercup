@@ -745,6 +745,7 @@ dependency_generation_ensure() {
   after_manifest="$build/.source-after"
   mkdir -p "$tree"
   dependency_generation_write_owner "$build/.papercusp-generation-writer"
+  dependency_generation_log 'capturing live dependency manifest (before copy)'
   dependency_generation_set_manifest "$integration_root" > "$before_manifest" || {
     dependency_generation_remove_build "$build"
     return 1
@@ -753,11 +754,16 @@ dependency_generation_ensure() {
     dependency_generation_remove_build "$build"
     return 1
   }
+  dependency_generation_log \
+    "captured live dependency manifest (before copy): trees=$(wc -l < "$before_manifest") source=$source_before"
   identity="v1-$source_before"
   generation="$generation_root/$identity"
   incumbent_token_before="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+  dependency_generation_log "validating existing generation $identity"
   if dependency_generation_is_valid \
     "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
+    dependency_generation_log "validated existing generation $identity; confirming live source stability"
+    dependency_generation_log 'capturing live dependency manifest (after existing-generation validation)'
     dependency_generation_set_manifest "$integration_root" > "$after_manifest" || {
       dependency_generation_remove_build "$build"
       return 1
@@ -766,6 +772,8 @@ dependency_generation_ensure() {
       dependency_generation_remove_build "$build"
       return 1
     }
+    dependency_generation_log \
+      "captured live dependency manifest (after existing-generation validation): trees=$(wc -l < "$after_manifest") source=$source_after"
     if [ "$source_after" != "$source_before" ]; then
       dependency_generation_log_manifest_delta "$before_manifest" "$after_manifest"
       dependency_generation_remove_build "$build"
@@ -794,18 +802,23 @@ dependency_generation_ensure() {
   dependency_generation_log "building $identity from a stable live dependency snapshot"
   while IFS= read -r nm; do
     rel="${nm#"$integration_root"/}"
+    dependency_generation_log "copying dependency tree: $rel"
     if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
       dependency_generation_remove_build "$build"
       return 1
     fi
     dependency_generation_prune_ephemeral "$tree/$rel"
+    dependency_generation_log "copied dependency tree: $rel"
   done < <(dependency_generation_enumerate_node_modules "$integration_root")
 
   if [ -n "${DEPENDENCY_GENERATION_AFTER_COPY_HOOK:-}" ]; then
     bash -c "$DEPENDENCY_GENERATION_AFTER_COPY_HOOK"
   fi
+  dependency_generation_log 'capturing live dependency manifest (after copy)'
   dependency_generation_set_manifest "$integration_root" > "$after_manifest" 2>/dev/null || true
   source_after="$(dependency_generation_source_fingerprint "$after_manifest" 2>/dev/null || true)"
+  dependency_generation_log \
+    "captured live dependency manifest (after copy): trees=$(wc -l < "$after_manifest") source=${source_after:-unresolved}"
   if [ -z "$source_after" ] || [ "$source_after" != "$source_before" ]; then
     dependency_generation_log_manifest_delta "$before_manifest" "$after_manifest"
     dependency_generation_log 'FATAL: live node_modules changed during generation build; refusing a torn snapshot'
@@ -815,11 +828,14 @@ dependency_generation_ensure() {
   # Freeze file contents before recording the snapshot identity because mode is
   # part of the metadata fingerprint. Recording first would make every freshly
   # published generation invalidate itself on its next read.
+  dependency_generation_log 'freezing copied dependency file modes'
   find "$tree" -type f -exec chmod a-w {} +
+  dependency_generation_log 'fingerprinting immutable copied dependency snapshot'
   snapshot="$(dependency_generation_set_fingerprint "$tree")" || {
     dependency_generation_remove_build "$build"
     return 1
   }
+  dependency_generation_log "fingerprinted immutable copied dependency snapshot: snapshot=$snapshot"
   marker="$build/.papercusp-dependency-generation"
   printf 'schema=1\nidentity=%s\nsource=%s\nclosure=%s\nsnapshot=%s\ncreated=%s\n%s\n' \
     "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
@@ -829,6 +845,7 @@ dependency_generation_ensure() {
     dependency_generation_remove_build "$build"
     return $?
   }
+  dependency_generation_log "acquired dependency-generation publish lock for $identity"
   # Keep the build-owner marker until the short publish lock is held; otherwise
   # a concurrent cleanup can mistake this complete-but-not-yet-published tree
   # for an abandoned build. A generation may have appeared since our initial
@@ -847,13 +864,17 @@ dependency_generation_ensure() {
   publish_replacement='1'
   if [ -n "$incumbent_token" ] && [ "$incumbent_token" = "$current_incumbent_token" ]; then
     dependency_generation_log "unchanged invalid generation $identity; skipping repeat validation under publish lock"
-  elif dependency_generation_is_valid \
-    "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
-    dependency_generation_remove_build "$build"
-    DEPENDENCY_GENERATION_REUSED='true'
-    publish_replacement='0'
   else
-    :
+    dependency_generation_log "validating concurrent generation winner for $identity"
+    if dependency_generation_is_valid \
+      "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
+      dependency_generation_log "reusing valid concurrent generation winner for $identity"
+      dependency_generation_remove_build "$build"
+      DEPENDENCY_GENERATION_REUSED='true'
+      publish_replacement='0'
+    else
+      dependency_generation_log "no valid concurrent generation winner for $identity"
+    fi
   fi
   if [ "$publish_replacement" = '1' ]; then
     if [ -e "$generation" ]; then
@@ -863,6 +884,7 @@ dependency_generation_ensure() {
     fi
     mv "$build" "$generation"
     DEPENDENCY_GENERATION_REUSED='false'
+    dependency_generation_log "published immutable dependency generation $identity"
   fi
   dependency_generation_release_publish_lock
 
