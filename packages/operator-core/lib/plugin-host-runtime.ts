@@ -322,9 +322,33 @@ export async function registerPluginReactionRules(
 async function discover(): Promise<HostState> {
   let loaded: LoadedPlugin[] = [];
   let loadErrors: Array<{ error: string; path: string }> = [];
+  const harnessSlugs = discoverHarnessSlugs();
+
+  // Publish the design-compare verb surface BEFORE plugins load (P-006, D-017).
+  //
+  // The design-phase plugin is CommonJS in the `libs/papercusp` submodule and
+  // deliberately does not require this package; it reads a slot pinned on
+  // globalThis instead. Installing here is what puts anything in that slot —
+  // without it, design-phase.compare_render / ratify_reference / get_design_evidence
+  // refuse with `engine-unavailable`, which is the correct behaviour for a
+  // standalone papercusp install and a silent feature outage in the operator.
+  //
+  // Ordering is not load-bearing (the plugin reads the slot per call, not at
+  // load), but installing first means the surface is never briefly absent for a
+  // plugin that loaded fast. Install is lazy — no PG connection is opened here.
+  try {
+    const { installDesignCompareForHarness } = await import('./design-compare/host-install');
+    for (const slug of harnessSlugs) installDesignCompareForHarness(slug);
+  } catch (e: any) {
+    loadErrors.push({
+      error: `design-compare host install failed: ${e?.message ?? e}`,
+      path: '<design-compare-host-install>',
+    });
+  }
+
   try {
     const r = await loadPlugins({
-      harnessSlugs: discoverHarnessSlugs(),
+      harnessSlugs,
       // Pick up bundled in-repo plugins (Repomix, fetch-plus, code2prompt,
       // firecrawl-bridge, etc) without requiring symlinks into ~/.papercusp.
       projectDir: findBundledPluginsParent() ?? undefined,
