@@ -115,7 +115,11 @@
 #                         command that publishes PC_HEAVY_PREEMPT_READY_FILE
 #                         after its irreversible setup/derivation. While that
 #                         marker exists, an exclusive materializer waits for
-#                         the command to finish instead of preempting it.
+#                         the command to finish instead of preempting it, up to
+#                         PC_HEAVY_PREEMPT_READY_MAX_SEC (default 600s; 0 opts
+#                         into the legacy unbounded wait). The default stays
+#                         below the materializer's 900s drain budget so a
+#                         protected test cannot starve every release gate.
 #                         The wrapper creates a unique marker path and exports
 #                         it to the child; the child owns publication/cleanup.
 #   PC_HEAVY_PREEMPT_READY_DIR  directory for those per-run marker paths
@@ -264,9 +268,11 @@ _pc_heavy_internal_preempt_run() {
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
   local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
   local _preempt_ready_file="${PC_HEAVY_PREEMPT_READY_FILE:-}"
+  local _preempt_ready_max="${PC_HEAVY_PREEMPT_READY_MAX_SEC:-600}"
   local _preempt_caller_pid="${PC_HEAVY_CALLER_PID:-}"
   local _preempt_caller_start_ticks="${PC_HEAVY_CALLER_START_TICKS:-}"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at='' _preempt_free_since=''
+  local _preempt_ready_seen_at=''
   local _preempt_now='' _preempt_start_deadline='' _preempt_term_deadline=''
   local _preempt_result_emitted=0
 
@@ -295,6 +301,7 @@ _pc_heavy_internal_preempt_run() {
   case "$_preempt_grace" in ''|*[!0-9]*) _preempt_grace=30 ;; esac
   case "$_preempt_term_grace" in ''|*[!0-9]*) _preempt_term_grace=30 ;; esac
   case "$_preempt_poll" in ''|*[!0-9.]*) _preempt_poll=0.1 ;; esac
+  case "$_preempt_ready_max" in ''|*[!0-9]*) _preempt_ready_max=600 ;; esac
   case "$_preempt_caller_pid" in ''|*[!0-9]*) _preempt_caller_pid=''; _preempt_caller_start_ticks='' ;; esac
   case "$_preempt_caller_start_ticks" in
     ''|*[!0-9]*) _preempt_caller_pid=''; _preempt_caller_start_ticks='' ;;
@@ -567,16 +574,34 @@ _pc_heavy_internal_preempt_run() {
     fi
     if _preempt_writer_is_held; then
       # Once the child has completed its irreversible derivation and published
-      # the marker, the exclusive materializer must wait for the whole run. The
-      # marker is deliberately checked by the monitor (rather than inferred
-      # from argv or elapsed time) so a slow derivation remains preemptible and
-      # the protected execution phase is exact.
+      # the marker, give its protected execution phase a bounded lease before
+      # the exclusive materializer wins. The marker is deliberately checked by
+      # the monitor (rather than inferred from argv or elapsed time) so a slow
+      # derivation remains preemptible and the protected phase is exact. The
+      # lease is also deliberately shorter than the ordinary materializer's
+      # 900-second drain budget: an after-ready test may finish atomically, but
+      # it may not starve every release gate on the host indefinitely.
       if _preempt_ready_is_published; then
         _preempt_seen_at=''
         _preempt_free_since=''
+        _preempt_now=$(date +%s)
+        if [ -z "$_preempt_ready_seen_at" ]; then
+          _preempt_ready_seen_at="$_preempt_now"
+          if [ "$_preempt_ready_max" -gt 0 ]; then
+            _preempt_notify "[pc-heavy] after-ready protection active — exclusive materializer may wait up to ${_preempt_ready_max}s"
+          fi
+        fi
+        if [ "$_preempt_ready_max" -gt 0 ] && [ $(( _preempt_now - _preempt_ready_seen_at )) -ge "$_preempt_ready_max" ]; then
+          _preempt_notify "[pc-heavy] after-ready protection expired after ${_preempt_ready_max}s — PREEMPTING ordinary holder for exclusive materialization (pid=$_preempt_child_pid)"
+          _preempt_reap_group
+          trap - EXIT TERM INT HUP
+          _preempt_emit_result preempted exclusive-materializer
+          return 75
+        fi
         sleep "$_preempt_poll"
         continue
       fi
+      _preempt_ready_seen_at=''
       _preempt_now=$(date +%s)
       _preempt_free_since=''
       if [ -z "$_preempt_seen_at" ]; then
@@ -590,7 +615,7 @@ _pc_heavy_internal_preempt_run() {
         _preempt_emit_result preempted exclusive-materializer
         return 75
       fi
-    elif [ -n "$_preempt_seen_at" ]; then
+    elif [ -n "$_preempt_seen_at" ] || [ -n "$_preempt_ready_seen_at" ]; then
       # A grace clock is already running. Abandon it only after the intent signal
       # has stayed absent for _preempt_clear_after seconds — a single free poll is
       # noise, not evidence the materializer left.
@@ -599,6 +624,7 @@ _pc_heavy_internal_preempt_run() {
         _preempt_free_since="$_preempt_now"
       elif [ $(( _preempt_now - _preempt_free_since )) -ge "$_preempt_clear_after" ]; then
         _preempt_seen_at=''
+        _preempt_ready_seen_at=''
         _preempt_free_since=''
       fi
     fi
