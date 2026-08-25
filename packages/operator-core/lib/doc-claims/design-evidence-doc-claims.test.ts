@@ -106,7 +106,7 @@ function cliFlagsReadByReportCli(): readonly string[] {
 
 /** A minimal page that satisfies every rule — the base every fixture mutates. */
 function correctDoc(code: DesignEvidenceCodeFacts): string {
-  const vocab = [...code.refusalCodes, ...code.invalidReasons]
+  const vocab = [...code.refusalCodes, ...code.invalidReasons, ...code.gateFailureReasons]
     .map((v) => `\`${v}\``)
     .join(' · ');
   const classRows = [...code.eligibility]
