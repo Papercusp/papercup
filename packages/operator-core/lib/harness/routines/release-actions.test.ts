@@ -171,6 +171,13 @@ import {
   type GitCheckRunner,
 } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
+// EI-21462211894072863: the abort-advice table is the SURFACING half of the no-verdict split —
+// recording a crash that no reader can be advised about would leave the fix half-landed.
+import {
+  isRecordedInconclusiveStatus,
+  classifyGateAbort,
+  gateAbortRefireClause,
+} from '../../release/gate-abort-status';
 import type { QualificationAdmission } from '../../release-checkpoint-config';
 import type { FlakeSuspect } from '../../dev-data';
 import {
@@ -398,16 +405,57 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     }
   });
 
-  // CONTROL for the test above — the load-bearing half of WI-39841's Defect 2. A crash and a
-  // deadline-kill both reach the routine as "non-zero exit, no parseable marker"; the ONLY
-  // thing separating them is `RunResult.timedOut`, stamped by the timer that does the killing.
-  // If that distinction were ever lost, 'error' would silently follow 'deadline-exceeded' into
-  // the noop class and a genuinely CRASHING gate would stop counting reds entirely — failing
-  // exactly the way this whole classifier exists to prevent. Pinning both directions in one
-  // assertion is what makes that regression impossible to land quietly.
-  it('WI-39841 control: a genuine CRASH is still a red — only the deadline-kill was carved out', () => {
-    expect(classifyGateStallStatus('error', false)).toBe('red');
+  /**
+   * CONTROL — inherited from WI-39841's Defect 2 and STRENGTHENED, not relaxed, by
+   * EI-21462211894072863.
+   *
+   * WI-39841 pinned `'error' === 'red'`. The property it was protecting was never "a crash is a
+   * red" — it was "a genuinely CRASHING gate must not go SILENT", because 'error' is the
+   * unknown-cause bucket and silence there is how `main` freezes with nobody told. That property
+   * is unchanged and still guarded here.
+   *
+   * What changed is that the old test could only express it by conflating two claims. A tick with
+   * no parseable result marker judged NO code, so calling it a red asserts a broken build on no
+   * evidence — and hands the reader a failing-test list that some older run named. Measured
+   * 2026-08-25: `consecutiveReds` reached 42 while the last real verdict predated the last fire by
+   * 5.7h, so a WEDGED gate read as a merely-red one and agents were dispatched at tests nothing
+   * had named.
+   *
+   * So the control now pins BOTH failure directions at once, which is stronger than the single
+   * assertion it replaces:
+   *   · NOT 'noop'  — the silence regression WI-39841 feared. A crash must still be counted.
+   *   · NOT 'red'   — the false-verdict regression EI-21462211894072863 fixed.
+   * The counting itself lives in `consecutiveNoVerdict` and escalates on the same threshold; see
+   * the gate-health suite for the assertion that a crash tick leaves `consecutiveReds` alone.
+   */
+  it('control: a genuine CRASH is a NON-VERDICT that still counts — neither a red nor a silent noop', () => {
+    expect(classifyGateStallStatus('error', false)).toBe('no-verdict');
+    // The two directions this class sits between, stated explicitly so neither collapse is
+    // reachable without failing here.
+    expect(classifyGateStallStatus('error', false)).not.toBe('red');
+    expect(classifyGateStallStatus('error', false)).not.toBe('noop');
+    // Unchanged neighbour: a deadline-kill remains a true noop (a peer/backstop owns it).
     expect(classifyGateStallStatus('deadline-exceeded', false)).toBe('noop');
+    // …and a moved pin still wins over everything, exactly as for every other status.
+    expect(classifyGateStallStatus('error', true)).toBe('reset');
+  });
+
+  /**
+   * EI-21462211894072863 — the SURFACING half. Counting a crash correctly is only half the fix;
+   * a reader also has to be able to see it. 'error' must therefore be a status the abort-advice
+   * table knows about, or it records a tick nobody can be advised about.
+   *
+   * Its kind is deliberately 'unknown': a run that died without saying why gives no evidence
+   * either way about whether a re-fire hits the same wall, and gate-abort-status.ts exists
+   * precisely to stop that gap being filled with a confident guess in either direction.
+   */
+  it('EI-21462211894072863: a crash is a RECORDED abort, classified honestly as unknown', () => {
+    expect(isRecordedInconclusiveStatus('error')).toBe(true);
+    expect(classifyGateAbort('error')).toBe('unknown');
+    // The conservative wording is the point — neither "re-firing aborts the same way" nor
+    // "nothing blocks a re-fire" is knowable here.
+    expect(gateAbortRefireClause('error')).not.toMatch(/aborts the same way/);
+    expect(gateAbortRefireClause('error')).not.toMatch(/blocks a re-fire/);
   });
 
   describe('WI-39450: a PROVEN-STALE pass is a non-verdict, not a red', () => {

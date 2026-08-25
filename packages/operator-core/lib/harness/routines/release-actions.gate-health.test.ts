@@ -51,6 +51,14 @@ const fakeSql = {
     if (/UPDATE\s+harness_shared\.harness_escalations/i.test(query)) {
       return Promise.resolve({ count: seededGh?.stallAlerted ? 1 : 0 });
     }
+    // EI-21462211894072863: the no-verdict streak bump is the one write here whose RESULT is
+    // read (it RETURNINGs the post-increment streak + the one-shot flag, so the caller can
+    // decide whether to escalate without a second round-trip). Simulate the SQL faithfully —
+    // old value + 1, and the PRE-existing alerted flag — or the escalation edge is untestable.
+    if (/consecutiveNoVerdict/.test(query) && /RETURNING/i.test(query)) {
+      const prev = typeof seededGh?.consecutiveNoVerdict === 'number' ? (seededGh.consecutiveNoVerdict as number) : 0;
+      return Promise.resolve([{ streak: prev + 1, alerted: seededGh?.noVerdictAlerted === true }]);
+    }
     // the routines gate_health write and any escalation upsert are not read for
     // their result.
     return Promise.resolve({ count: 0 });
@@ -251,6 +259,15 @@ describe('P-003: trackGateStall ANNOUNCES a torn sweep on the record-only tick',
  * (`green-checkpoint:red` existed only as an event key, never as a conditionKey, so
  * a plain red gate had no ownable item and a 6-red streak held `main` ~4h unowned).
  */
+/**
+ * ⚠ EI-21462211894072863 — why the red-tick tests below say `'not-green'` where they once said
+ * `'error'`. They were never ABOUT 'error'; it was simply a convenient non-green status back when
+ * every non-green status was a red. It no longer is: a run that publishes no result marker judged
+ * no code, so 'error' is now the 'no-verdict' class and writes no verdict at all. Driving a
+ * red-streak test with it would assert red behaviour through a status that deliberately produces
+ * none. `'not-green'` is a real verdict — the gate ran and judged the code red — which is exactly
+ * what these tests mean. The 'error' path has its own suite at the bottom of this file.
+ */
 describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () => {
   /** `lastGateHealthWrite()` with the null-check folded in — every test here writes one. */
   const written = (): Record<string, unknown> => {
@@ -268,7 +285,7 @@ describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () 
     // what fires (isolating the count trigger).
     seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() };
 
-    await trackGateStall(ctx, 'error');
+    await trackGateStall(ctx, 'not-green');
 
     expect(broadcastSevereEvent).toHaveBeenCalledTimes(1);
     const ev = broadcastSevereEvent.mock.calls[0]![0]!;
@@ -283,7 +300,7 @@ describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () 
   it('does NOT open below the threshold — a single self-healing red mints nothing', async () => {
     seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
 
-    await trackGateStall(ctx, 'error');
+    await trackGateStall(ctx, 'not-green');
 
     expect(broadcastSevereEvent).not.toHaveBeenCalled();
     expect(written().consecutiveReds).toBe(1);
@@ -295,7 +312,7 @@ describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () 
     // condition the responder is already working and re-spam the whole fleet.
     seededGh = { consecutiveReds: stallReds + 2, stallAlerted: true, lastGreenAt: Date.now() };
 
-    await trackGateStall(ctx, 'error');
+    await trackGateStall(ctx, 'not-green');
 
     expect(broadcastSevereEvent).not.toHaveBeenCalled();
   });
@@ -346,7 +363,7 @@ describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () 
     // silencing it, so "fails safe" cannot quietly become "fails silently".
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(trackGateStall(ctx, 'error')).resolves.not.toThrow();
+    await expect(trackGateStall(ctx, 'not-green')).resolves.not.toThrow();
 
     expect(written().consecutiveReds).toBe(stallReds);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('red-streak condition broadcast failed'));
@@ -402,7 +419,7 @@ describe('trackGateStall gate_health cross-writer preservation (EI-7472)', () =>
     // threshold so only the SELECT + the final gate_health UPDATE run.
     seededGh = { consecutiveReds: 0, watchdogAlerted: true, stallAlerted: false, lastGreenAt: Date.now() };
 
-    await trackGateStall(ctx, 'error');
+    await trackGateStall(ctx, 'not-green');
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
@@ -505,7 +522,7 @@ describe('trackGateStall persists failingTests into gate_health (EI-7505)', () =
   it('persists the failing-test list on a RED tick', async () => {
     seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
 
-    await trackGateStall(ctx, 'error', 'deadbeefcafe', ['pkgA/foo.test.ts', 'pkgB/bar.test.ts']);
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', ['pkgA/foo.test.ts', 'pkgB/bar.test.ts']);
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
@@ -516,7 +533,7 @@ describe('trackGateStall persists failingTests into gate_health (EI-7505)', () =
     seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
     const tests = Array.from({ length: 30 }, (_, i) => `pkg/file-${i}.test.ts`);
 
-    await trackGateStall(ctx, 'error', 'deadbeefcafe', tests);
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', tests);
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
@@ -527,7 +544,7 @@ describe('trackGateStall persists failingTests into gate_health (EI-7505)', () =
   it('persists an empty list on a RED tick with no failingTests param (never undefined)', async () => {
     seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
 
-    await trackGateStall(ctx, 'error');
+    await trackGateStall(ctx, 'not-green');
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
@@ -826,7 +843,7 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
       return { ok: true, stdout: '1' };
     };
 
-    await trackGateStall(ctx, 'error', undefined, undefined, null, undefined, null, counting);
+    await trackGateStall(ctx, 'not-green', undefined, undefined, null, undefined, null, counting);
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
