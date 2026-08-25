@@ -34,8 +34,6 @@ export default defineTool({
   }),
   async handler(args) {
     const match = findFuzzyDuplicate(args.candidate, args.existing);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ match, threshold: FUZZY_THRESHOLD }) }],
-    };
+    return { data: { match, threshold: FUZZY_THRESHOLD } };
   },
 });

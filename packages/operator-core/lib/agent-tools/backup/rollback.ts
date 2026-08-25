@@ -31,6 +31,6 @@ export default defineTool({
   args: z.object({ brokenPath: z.string().min(1) }),
   async handler(args) {
     const result = await durableRollbackPromote(activeWorkspaceId(), args);
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    return { data: result };
   },
 });

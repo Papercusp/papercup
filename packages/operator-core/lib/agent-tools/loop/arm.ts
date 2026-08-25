@@ -515,7 +515,7 @@ export default defineTool({
     const ownerId = args.ownerId ?? identity.ownerId;
     const ownerLabel = args.ownerId ? `su · ${shortOwnerLabel(args.ownerId)}` : identity.ownerLabel;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const isConcreteHarness = (value?: string | null): boolean => {
+    const isConcreteHarness = (value?: string | null): value is string => {
       const trimmed = value?.trim().toLowerCase();
       return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
     };

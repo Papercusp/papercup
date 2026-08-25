@@ -34,8 +34,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const stats = await readOperatorStats();
-    return {
-      content: [{ type: 'text', text: JSON.stringify(stats) }],
-    };
+    return { data: stats };
   },
 });

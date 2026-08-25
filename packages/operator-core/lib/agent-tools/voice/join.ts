@@ -24,6 +24,6 @@ export default defineTool({
   args: z.object({ channel: z.string().min(1).describe('Channel id (vc-…) or name') }),
   async handler(args) {
     const status = await joinVoiceChannel(args.channel);
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, status }) }] };
+    return { data: { ok: true, status } };
   },
 });

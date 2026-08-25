@@ -23,10 +23,6 @@ export default defineTool({
   }),
   async handler(args) {
     const out = await listHandoffs({ status: args.status });
-    return {
-      content: [
-        { type: 'text' as const, text: JSON.stringify({ handoffs: out }) },
-      ],
-    };
+    return { data: { handoffs: out } };
   },
 });

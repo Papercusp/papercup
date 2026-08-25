@@ -30,6 +30,6 @@ export default defineTool({
   async handler(args, ctx) {
     const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: args.harness });
     const left = await leaveWorkGroup(workspaceId, harnessSlug, args.plan, bestEffortOwnerUser(ctx));
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, left }) }] };
+    return { data: { ok: true, left } };
   },
 });

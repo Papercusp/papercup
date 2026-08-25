@@ -39,8 +39,6 @@ export default defineTool({
   }),
   async handler(args) {
     const fired = await maybeFireNudge(args.kind as NudgeKind);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ fired, kind: args.kind }) }],
-    };
+    return { data: { fired, kind: args.kind } };
   },
 });

@@ -28,13 +28,6 @@ export default defineTool({
     const { computeStorageUsage } = await import('../../storage/usage');
     const categories = await computeStorageUsage();
     const totalBytes = categories.reduce((a, c) => a + c.totalBytes, 0);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ ok: true, totalBytes, categories }, null, 2),
-        },
-      ],
-    };
+    return { data: { ok: true, totalBytes, categories } };
   },
 });
