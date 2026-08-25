@@ -133,6 +133,32 @@ function mapAwait(r: any): AwaitRow {
   };
 }
 
+export type AwaitGenerationState = 'undeclared' | 'declared' | 'fired' | 'expired' | 'cancelled' | 'superseded';
+
+/**
+ * Raised when an events:await caller pins a declaration generation that is no
+ * longer the current, unfired declaration for the key. The handler turns this
+ * into a structured resync response; keeping the check in the store makes the
+ * status-read → await-registration handoff atomic with announcement writers.
+ */
+export class AwaitGenerationMismatchError extends Error {
+  readonly code = 'await_generation_mismatch' as const;
+
+  constructor(
+    readonly eventKey: string,
+    readonly expectedGeneration: number,
+    readonly currentGeneration: number | null,
+    readonly currentState: AwaitGenerationState,
+    readonly firedAt: string | null = null,
+  ) {
+    super(
+      `events:await generation pin ${expectedGeneration} for "${eventKey}" does not match ` +
+        `the current ${currentState} declaration generation ${currentGeneration ?? 'none'}`,
+    );
+    this.name = 'AwaitGenerationMismatchError';
+  }
+}
+
 function mapDelivery(r: any): DeliveryRow {
   return {
     id: Number(r.id),
@@ -185,6 +211,8 @@ export async function registerAwait(input: {
   payloadFilter?: unknown | null;
   /** Optional verified-wait producer certificate. Legacy awaits omit it. */
   producerHealthCertificate?: ProducerHealthCertificate | null;
+  /** Pin this await to the exact current announced declaration generation. */
+  expectedGeneration?: number | null;
   /** Lifecycle owner for auto/suggested-armed rows. Manual awaits omit it. */
   boundTo?: LifecycleBinding | null;
   /** Retire this owner's pending rows atomically with the replacement insert. */
@@ -212,12 +240,53 @@ export async function registerAwait(input: {
     // Date binding (the repo's known quirk); PG casts text→timestamptz.
     input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null;
   const supersedePending = input.supersedePending;
+  const assertGenerationPin = async (tx: any): Promise<void> => {
+    if (input.expectedGeneration == null) return;
+
+    // registerAnnouncement and stampAnnouncementsFired use this same key lock.
+    // Holding it through the declaration read and await insert closes the
+    // status → await replacement race without adding a generation column to
+    // ordinary waiter rows.
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + input.eventKey}, 0))`;
+    const declarations = await tx`
+      SELECT causal_generation, fired_at, fired_reason, cancelled_at, superseded_at
+        FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws}
+         AND event_key = ${input.eventKey}
+         AND policy = 'announce'
+       ORDER BY causal_generation DESC NULLS LAST, created_at DESC
+       LIMIT 1
+    `;
+    const declaration = declarations[0] as any;
+    const currentGeneration = declaration?.causal_generation != null ? Number(declaration.causal_generation) : null;
+    const currentState: AwaitGenerationState = !declaration
+      ? 'undeclared'
+      : declaration.fired_at
+        ? declaration.fired_reason === 'expired'
+          ? 'expired'
+          : 'fired'
+        : declaration.cancelled_at
+          ? 'cancelled'
+          : declaration.superseded_at
+            ? 'superseded'
+            : 'declared';
+    if (currentGeneration !== input.expectedGeneration || currentState !== 'declared') {
+      throw new AwaitGenerationMismatchError(
+        input.eventKey,
+        input.expectedGeneration,
+        currentGeneration,
+        currentState,
+        declaration?.fired_at ? new Date(declaration.fired_at).toISOString() : null,
+      );
+    }
+  };
   if (supersedePending) {
     return boundedOrgTxn(async (tx) => {
       const allEventKeys = supersedePending.allEventKeys === true;
       if (allEventKeys && !supersedePending.includeNotePrefix) {
         throw new Error('allEventKeys supersession requires includeNotePrefix');
       }
+      await assertGenerationPin(tx);
       // Exact-key supersession serializes one subscriber/key pair. A coordination
       // surface that owns at most one current row per subscriber (fleet:bench)
       // serializes at subscriber scope so concurrent cross-key retargets cannot
