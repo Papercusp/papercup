@@ -1500,6 +1500,19 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   };
   JOBS.set(id, job);
 
+  // The confined runner owns command bytes, while this append-only stream owns
+  // operator diagnostics and the FINAL normalized marker. A runner marker can
+  // already be present (and is the only marker after host-reader loss); when the
+  // operator survives, its later marker supersedes the raw service verdict.
+  const appendRunnerOwnedDiagnostic = (chunk: string): void => {
+    if (!runnerOwnsLog || !chunk) return;
+    try {
+      job.logStream?.write(chunk);
+    } catch {
+      /* a spill-write fault must not crash the job */
+    }
+  };
+
   const redactor = createStreamingSecretRedactor(opts.redactValues);
   const missingCommandDetector = createMissingCommandMarkerDetector(id);
   const preflightFailureDetector = createPreflightFailureMarkerDetector();
@@ -1608,12 +1621,13 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
         `semaphore (see PC_HEAVY_TIMEOUT_SEC / host load) and never began real work, rather ` +
         `than timing out mid-execution. (If this job does not use pc-heavy.sh, disregard.)`
       : '';
-    appendRawOutput(
+    const deadlineDiagnostic =
       `\n[capability:bash] deadline reached: exceeded ${effectiveTimeoutMs}ms wall-clock.` +
         queuedHint +
         ` Sending SIGTERM (SIGKILL in ${TIMEOUT_SIGTERM_GRACE_MS}ms if it does not exit). ` +
-        `For a longer job pass an explicit \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms).\n`,
-    );
+        `For a longer job pass an explicit \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms).\n`;
+    appendRawOutput(deadlineDiagnostic);
+    appendRunnerOwnedDiagnostic(deadlineDiagnostic);
     // SIGTERM first so the job's own trap/finally can clean up (temp trees,
     // checkouts, spawned sidecars). SIGKILL skips all of it, which is how a
     // timed-out job used to leak gigabytes.
@@ -1631,7 +1645,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   }, effectiveTimeoutMs);
 
   child.on('error', (err) => {
-    appendRawOutput(`\n[spawn error] ${err instanceof Error ? err.message : String(err)}\n`);
+    const spawnDiagnostic = `\n[spawn error] ${err instanceof Error ? err.message : String(err)}\n`;
+    appendRawOutput(spawnDiagnostic);
+    appendRunnerOwnedDiagnostic(spawnDiagnostic);
     job.status = 'failed';
     job.endedAt = Date.now();
     clearTimeout(timer);
@@ -1640,7 +1656,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
     // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
     // tell "finished" from "nothing written yet" without a second call.
-    appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
+    const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);
+    appendRawOutput(terminalMarker);
+    appendRunnerOwnedDiagnostic(terminalMarker);
     try {
       job.logStream?.end();
     } catch {
@@ -1670,7 +1688,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     flushRedactor();
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
-    appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
+    const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);
+    appendRawOutput(terminalMarker);
+    appendRunnerOwnedDiagnostic(terminalMarker);
     try {
       job.logStream?.end();
     } catch {
