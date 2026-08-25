@@ -56,6 +56,7 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
       "include_intents",
       "max_body_chars",
       "unanswered_only",
+      "unansweredOnly",
     ]) {
       expect(keys).toContain(accepted);
     }

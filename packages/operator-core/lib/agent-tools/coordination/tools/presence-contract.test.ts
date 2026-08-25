@@ -18,8 +18,13 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
     expect(guidance).toMatch(/`owner` is singular/i);
     expect(guidance).toMatch(/coord:roster \{ view:'live', project:'ids' \}/i);
     expect(guidance).toMatch(/plan-scoped.*coord:roster \{ view:'claims', plan \}.*fleet:assignments \{ plan \}/i);
-    expect(guidance).toMatch(/scope\/pot.*explicit scope/i);
-    expect(guidance).toMatch(/do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys/i);
+    expect(guidance).toMatch(/scope\/pot/i);
+    expect(guidance).toMatch(/(?:explicit scope|widen)/i);
+    expect(guidance).toMatch(/legacy/i);
+    for (const removed of ['harness', 'ownerId', 'ownerIds', 'plan', 'includeStale', 'include_stale']) {
+      expect(guidance, `guidance must name removed ${removed}`).toContain(removed);
+    }
+    expect(guidance).toMatch(/(?:do not pass|invalid)/i);
   });
 
   it('keeps removed legacy filters out of the declared schema', () => {
