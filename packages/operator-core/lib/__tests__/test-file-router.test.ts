@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { transformSync } from 'esbuild';
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
@@ -435,6 +436,12 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(runStart).toBeGreaterThan(0);
     expect(runEnd).toBeGreaterThan(runStart);
     expect(source.slice(runStart, runEnd)).not.toContain('spawnSync');
+  });
+
+  it('remains importable by CommonJS-transformed consumers while settling its async exit code', () => {
+    const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
+    expect(() => transformSync(source, { format: 'cjs', loader: 'js', platform: 'node' })).not.toThrow();
+    expect(source).toContain('void main().then(');
   });
 });
 

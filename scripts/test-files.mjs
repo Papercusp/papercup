@@ -1969,5 +1969,16 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = await main();
+  // This module is also imported through TypeScript/tsx entrypoints whose dependency graph is
+  // transformed to CommonJS (for example apps/operator/scripts/lint-tests.ts). Keep the async
+  // exit-code handoff without top-level await, which esbuild correctly rejects in that format.
+  void main().then(
+    (exitCode) => {
+      process.exitCode = exitCode;
+    },
+    (error) => {
+      console.error(error);
+      process.exitCode = 2;
+    },
+  );
 }
