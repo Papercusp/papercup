@@ -137,6 +137,9 @@ export interface HolderLiveness {
   recordedEnded: boolean;
   heartbeatAt: string | null;
   lastActiveAt: string | null;
+  /** Newest durable tool-call ledger row for this owner. A Codex turn polling a
+   *  long-running exec advances this even when presence lastActiveAt does not. */
+  lastToolInvocationAt: string | null;
   itemLastProgressAt: string | null;
   /** ms since the FRESHEST of the three signals; null when none parses. */
   freshestAgeMs: number | null;
@@ -170,6 +173,9 @@ export interface ForceReleaseDeps {
   getPresence?: (
     ownerId: string,
   ) => Promise<{ heartbeatAt: string; lastActiveAt: string | null; agentRole: string | null } | null>;
+  /** Newest real tool invocation by the holder. Fail-soft: null means unknown,
+   *  never evidence of idleness. */
+  getLastToolInvocationAt?: (ownerId: string) => Promise<string | Date | null>;
   latestFleetMembership?: (
     workspaceId: string,
     ownerId: string,
@@ -226,6 +232,16 @@ export async function assessForceRelease(
   const now = (deps.now ?? Date.now)();
   const getPresence =
     deps.getPresence ?? (async (o: string) => (await import('../coordination/presence')).getPresence(o));
+  const getLastToolInvocationAt =
+    deps.getLastToolInvocationAt ??
+    (async (ownerId: string) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const rows = await getOrgPg().sql<{ last_tool_at: string | Date | null }[]>`
+        SELECT MAX(invoked_at) AS last_tool_at
+          FROM harness_shared.tool_invocations
+         WHERE coord_owner_id = ${ownerId}`;
+      return rows[0]?.last_tool_at ?? null;
+    });
   const endedOwnersOf =
     deps.endedRecordedOwnerIds ??
     (async (ownerIds: string[]) => (await import('../../adv-sessions')).endedRecordedOwnerIds(ownerIds));
@@ -243,8 +259,9 @@ export async function assessForceRelease(
       const map = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
       return map.get(ownerId) ?? null;
     });
-  const [holderPres, endedOwners, shutdownAcceptedOwners, oracleSignal] = await Promise.all([
+  const [holderPres, lastToolInvocationAt, endedOwners, shutdownAcceptedOwners, oracleSignal] = await Promise.all([
     getPresence(input.holderOwnerId).catch(() => null),
+    getLastToolInvocationAt(input.holderOwnerId).catch(() => null),
     endedOwnersOf([input.holderOwnerId]).catch(() => new Set<string>()),
     shutdownAcceptedOwnersOf([input.holderOwnerId]).catch(() => new Set<string>()),
     resolveHolderSessionState(input.holderOwnerId).catch(() => null),
@@ -267,9 +284,10 @@ export async function assessForceRelease(
 
   const heartbeatTs = holderPres ? parseTs(holderPres.heartbeatAt) : NaN;
   const lastActiveTs = holderPres ? parseTs(holderPres.lastActiveAt) : NaN;
+  const lastToolInvocationTs = parseTs(lastToolInvocationAt);
   const itemProgressTs = parseTs(input.itemLastProgressAt);
 
-  const signals = [heartbeatTs, lastActiveTs, itemProgressTs].filter((t) => Number.isFinite(t));
+  const signals = [heartbeatTs, lastActiveTs, lastToolInvocationTs, itemProgressTs].filter((t) => Number.isFinite(t));
   const freshest = signals.length ? Math.max(...signals) : null;
   // An ended newest adv-session row is authoritative over the warm presence row
   // that intentionally lingers for a short TTL after teardown. A resumed session
@@ -286,7 +304,15 @@ export async function assessForceRelease(
     Number.isFinite(itemProgressTs) &&
     now - lastActiveTs >= WARM_IDLE_ACTIVITY_STALE_MS &&
     now - itemProgressTs >= WARM_IDLE_ACTIVITY_STALE_MS;
-  const warmIdle = presenceLive && heartbeatFresh && bothActivitySignalsStale;
+  // EI-21377805080867612: Codex can remain inside one long turn while polling an
+  // exec session at tool boundaries. Those calls are durable, genuine activity
+  // even when presence.lastActiveAt and work-item checkpoints do not move. The
+  // exact incident was force-released as warm-idle while this ledger advanced
+  // every ~60s. A fresh tool row therefore vetoes warm-idle; an absent row remains
+  // unknown and preserves the pre-existing two-signal rule.
+  const recentToolInvocation =
+    Number.isFinite(lastToolInvocationTs) && now - lastToolInvocationTs < WARM_IDLE_ACTIVITY_STALE_MS;
+  const warmIdle = presenceLive && heartbeatFresh && bothActivitySignalsStale && !recentToolInvocation;
   // EI-18907586326157984: EITHER signal is now sufficient to declare the holder not
   // live — the raw heartbeat/activity heuristic (unchanged), OR the shared oracle
   // affirmatively saying the session is `ended`/`suspect`. Only when BOTH say "live"
@@ -299,6 +325,7 @@ export async function assessForceRelease(
     recordedEnded,
     heartbeatAt: holderPres?.heartbeatAt ?? null,
     lastActiveAt: holderPres?.lastActiveAt ?? null,
+    lastToolInvocationAt: lastToolInvocationAt == null ? null : String(lastToolInvocationAt),
     itemLastProgressAt: input.itemLastProgressAt == null ? null : String(input.itemLastProgressAt),
     freshestAgeMs: freshest == null ? null : now - freshest,
     warmIdle,

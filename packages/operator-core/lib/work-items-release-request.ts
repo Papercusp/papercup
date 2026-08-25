@@ -229,6 +229,7 @@ export interface DueReleaseRequestRow {
   harness: string | null;
   workspaceId: string;
   holderNow: string | null;
+  lastProgressAt: string | Date | null;
   /** The durable work-item touch-set used to target consequence lock release. */
   paths: string[];
   request: WorkItemReleaseRequest;
@@ -262,9 +263,9 @@ export async function findDueReleaseRequests(
   opts: { nowMs: number; limit?: number },
 ): Promise<DueReleaseRequestRow[]> {
   const rows = await sql<
-    { feature_id: string; harness_slug: string | null; workspace_id: string; taken_by: string | null; payload: Record<string, unknown> | null }[]
+    { feature_id: string; harness_slug: string | null; workspace_id: string; taken_by: string | null; last_progress_at: string | Date | null; payload: Record<string, unknown> | null }[]
   >`
-    SELECT feature_id, harness_slug, workspace_id, taken_by, payload
+    SELECT feature_id, harness_slug, workspace_id, taken_by, last_progress_at, payload
       FROM harness_shared.work_items
      WHERE payload ? 'release_request_by'
        AND COALESCE(payload->>'release_request_resolved', 'false') <> 'true'
@@ -280,6 +281,7 @@ export async function findDueReleaseRequests(
       harness: r.harness_slug,
       workspaceId: r.workspace_id,
       holderNow: r.taken_by,
+      lastProgressAt: r.last_progress_at,
       paths: readWorkItemPaths(r.payload),
       request,
     });

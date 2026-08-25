@@ -38,6 +38,11 @@ vi.mock('../attention-notify', () => ({
   notifyAttention: (...a: unknown[]) => notifyAttention(...a),
 }));
 
+const assessForceRelease = vi.fn();
+vi.mock('../agent-tools/work_items/release-force-guard', () => ({
+  assessForceRelease: (...a: unknown[]) => assessForceRelease(...a),
+}));
+
 const { buildDefaultChecks } = await import('./in-process-periodic');
 const check = buildDefaultChecks().find((c) => c.name === 'release-request-sweep')!;
 
@@ -48,6 +53,7 @@ function dueRow(overrides: Partial<{ id: string; harness: string | null; workspa
     harness: overrides.harness ?? 'papercup',
     workspaceId: overrides.workspaceId ?? 'default',
     holderNow: overrides.holderNow ?? 'holder-1',
+    lastProgressAt: null,
     paths: ['packages/target.ts'],
     request: {
       by: 'requester-1',
@@ -75,6 +81,7 @@ beforeEach(() => {
   releaseWorkItem.mockResolvedValue({ id: 'WI-1', assignee: null });
   setWorkItemClaimHold.mockResolvedValue({ id: 'WI-1', hold: false, applicable: true });
   releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
+  assessForceRelease.mockResolvedValue({ allowed: true, basis: 'holder-warm-idle', holderLiveness: {} });
 });
 
 describe('release-request-sweep check', () => {
@@ -98,6 +105,12 @@ describe('release-request-sweep check', () => {
 
     await check.tick();
 
+    expect(assessForceRelease).toHaveBeenCalledWith({
+      callerOwnerId: 'requester-1',
+      holderOwnerId: 'holder-1',
+      workspaceId: 'default',
+      itemLastProgressAt: null,
+    });
     expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'papercup', resolution: 'consequence-reclaim' });
     expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({
       ownerId: 'holder-1',
@@ -118,6 +131,23 @@ describe('release-request-sweep check', () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage.mock.calls[0][1]).toMatchObject({ to: ['holder-1', 'requester-1'] });
     expect(notifyAttention).not.toHaveBeenCalled();
+  });
+
+  it('EI-21377805080867612: a live progressing holder defers reclaim without resolving the request CAS', async () => {
+    const row = dueRow({ onSilence: 'reclaim' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    assessForceRelease.mockResolvedValue({
+      allowed: false,
+      holderLiveness: { live: true, lastToolInvocationAt: new Date().toISOString() },
+    });
+
+    await check.tick();
+
+    expect(resolveWorkItemReleaseRequest).not.toHaveBeenCalled();
+    expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it('terminalized before the deadline — superseded CAS produces no consequence side effects', async () => {

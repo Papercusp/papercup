@@ -68,6 +68,7 @@ const deps = (over: {
   leader?: string | null;
   recordedEnded?: boolean;
   shutdownAccepted?: boolean;
+  lastToolInvocationAt?: string | null;
   /** EI-18907586326157984: the shared liveness oracle's verdict for the holder.
    *  Defaults to `null` (no oracle signal — the pre-fix behavior every OTHER test
    *  here relies on) unless a test explicitly exercises the new oracle leg. */
@@ -76,6 +77,7 @@ const deps = (over: {
 }): ForceReleaseDeps => ({
   now: () => NOW,
   getPresence: async (o) => (o === 'su-holder' ? (over.holder ?? null) : (over.caller ?? null)),
+  getLastToolInvocationAt: async () => over.lastToolInvocationAt ?? null,
   latestFleetMembership: async () =>
     over.holderFleet === undefined ? null : { fleetSlug: over.holderFleet, fleetRole: 'member' },
   getFleet: async () => (over.leader === undefined ? null : { leaderOwnerId: over.leader }),
@@ -157,6 +159,24 @@ describe('assessForceRelease — liveness leg (a)', () => {
     // freshestAgeMs still reports the heartbeat's true age — the divergence is visible,
     // not hidden, even though the verdict is no longer "live".
     expect(v.holderLiveness.freshestAgeMs).toBe(44_000);
+  });
+
+  it('EI-21377805080867612: a fresh tool invocation vetoes warm-idle during a long Codex polling turn', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: iso(min(180)) },
+      deps({
+        holder: { heartbeatAt: iso(44_000), lastActiveAt: iso(min(171)), agentRole: 'su' },
+        lastToolInvocationAt: iso(min(1)),
+      }),
+    );
+
+    expect(v.allowed).toBe(false);
+    expect(v.holderLiveness).toMatchObject({
+      live: true,
+      warmIdle: false,
+      lastToolInvocationAt: iso(min(1)),
+      freshestAgeMs: 44_000,
+    });
   });
 
   it('warm-idle threshold is exclusive on the near side: just under WARM_IDLE_ACTIVITY_STALE_MS stays live', async () => {

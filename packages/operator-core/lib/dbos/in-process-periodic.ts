@@ -902,6 +902,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     const { findDueReleaseRequests, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
     const { releaseWorkItem, setWorkItemClaimHold, commentWorkItem } = await import('../work-items');
     const { releaseReclaimedWorkItemLocks } = await import('../work-item-lock-release');
+    const { assessForceRelease } = await import('../agent-tools/work_items/release-force-guard');
     const { sendMessage } = await import('../agent-tools/coordination/messages');
     const { notifyAttention } = await import('../attention-notify');
 
@@ -910,6 +911,30 @@ const releaseRequestSweepCheck: PeriodicCheck = {
       const { request: req } = row;
       const resolution =
         req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
+      if (req.onSilence === 'reclaim') {
+        // EI-21377805080867612: a durable request is not proof its holder saw it.
+        // A Codex session can spend the whole deadline inside one long turn while
+        // making tool calls; the pty host safely defers mid-turn injection, so the
+        // inbox message reaches the agent only after the turn settles. Re-check the
+        // shared force guard NOW, before resolving the request CAS: recent tool
+        // activity keeps the claim live and postpones the announced consequence;
+        // once the holder truly goes idle/dead, the same still-unresolved request is
+        // eligible on a later sweep. Caller authority remains a separate valid basis.
+        const holder = row.holderNow ?? req.holder;
+        const releaseVerdict = await assessForceRelease({
+          callerOwnerId: req.by,
+          holderOwnerId: holder,
+          workspaceId: row.workspaceId,
+          itemLastProgressAt: row.lastProgressAt,
+        }).catch(() => null);
+        if (!releaseVerdict?.allowed) {
+          console.warn(
+            `[release-request-sweep] ${row.id}: reclaim deferred — ${holder} still has live/progress evidence; ` +
+              'the unresolved request will be reconsidered after activity stops',
+          );
+          continue;
+        }
+      }
       // CAS FIRST — only the tick that wins the compare-and-resolve acts. A row a peer
       // resolved (holder released/declined) in the same window is a no-op here.
       const resolved = await resolveWorkItemReleaseRequest(row.id, { harness: row.harness ?? undefined, resolution }).catch(() => null);
@@ -933,11 +958,9 @@ const releaseRequestSweepCheck: PeriodicCheck = {
       console.warn(`[release-request-sweep] ${row.id}: ${resolution} (requested by ${resolved.by}, holder ${resolved.holder})`);
 
       if (req.onSilence === 'reclaim') {
-        // The announcement + expired deadline IS the authority basis here — deliberately
-        // NOT routed through release-force-guard's live-holder authority check (WI-4198):
-        // that guard exists to stop a SURPRISE force; this is the opposite, a force that
-        // was announced in advance with an explicit deadline the holder had the chance to
-        // contest (by releasing or declining) and did not.
+        // The announcement + expired deadline is necessary but no longer sufficient:
+        // the live/progress guard above proves the holder actually reached an idle/dead
+        // state (or the requester has independent force authority) before this mutation.
         // Release the former holder's declared touch-set BEFORE returning the
         // work-item to the claim pool. This is deliberately targeted: all_mine
         // would strand unrelated work owned by the same agent. A lock-plane

@@ -386,7 +386,7 @@ describe('findDueReleaseRequests', () => {
     const ids = due.map((d) => d.id).sort();
     expect(ids).toEqual(['WI-due-past-unresolved']);
     const row = due.find((d) => d.id === 'WI-due-past-unresolved')!;
-    expect(row).toMatchObject({ harness: H, holderNow: 'holder-1' });
+    expect(row).toMatchObject({ harness: H, holderNow: 'holder-1', lastProgressAt: null });
     expect(row.request).toMatchObject({ by: 'req-1', holder: 'holder-1', onSilence: 'reclaim' });
   });
 
