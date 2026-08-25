@@ -177,6 +177,14 @@ export default defineTool({
       .max(3600)
       .optional()
       .describe('Predicate poll cadence in seconds (predicate only; default 60).'),
+  }).superRefine((args, refinementCtx) => {
+    if (args.targetKind === 'interest' && args.predicate) {
+      refinementCtx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['predicate'],
+        message: 'targetKind:"interest" and predicate are mutually exclusive (one watch, one matcher).',
+      });
+    }
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);

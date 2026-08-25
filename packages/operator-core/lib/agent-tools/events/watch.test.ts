@@ -164,6 +164,21 @@ describe('WI-4014 Part 2: targetKind routing (wake:false only)', () => {
 describe('P-008 predicate watch routing', () => {
   const predicate = { tool: 'work_items:list', path: 'counts.open', op: 'gt', value: 5 };
 
+  it('schema rejects targetKind:"interest" combined with a predicate before handler dispatch', () => {
+    const parsed = watch.args.safeParse({ pattern: 'backlog', targetKind: 'interest', wake: true, predicate });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['predicate'],
+            message: 'targetKind:"interest" and predicate are mutually exclusive (one watch, one matcher).',
+          }),
+        ]),
+      );
+    }
+  });
+
   it('predicate on wake:false is rejected loudly', async () => {
     await expect(call({ pattern: 'backlog', predicate })).rejects.toThrow(/wake:true/);
     expect(subscribeTopic).not.toHaveBeenCalled();
