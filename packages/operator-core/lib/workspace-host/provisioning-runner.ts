@@ -749,3 +749,523 @@ export async function runWorkspaceHostProvisioning(
 
   throw new Error('Workspace-host provisioning exceeded its bounded controller transition budget');
 }
+
+function durableDestroyWorkflow(
+  input: RunWorkspaceHostDestroyInput,
+  operationId: string,
+  plan: WorkspaceHostPlan,
+  target: StoredWorkspaceHostDestroyTarget,
+): WorkspaceHostDurableWorkflowSpec {
+  const resources: WorkspaceHostDurableResourcePlan[] = plan.steps.map((step) => {
+    if (!step.destructive || step.action !== 'destroy') {
+      throw new WorkspaceHostProvisioningRequestError([
+        `discard destroy plan contains non-delete step '${step.id}'`,
+      ]);
+    }
+    // Resolve this before any plan checkpoint is written. That preserves an exact registered
+    // provider identity on every absence receipt and prevents the destroy oracle's provider-id
+    // match from becoming vacuous.
+    destroyResourceForStep(
+      step,
+      target.resources.map((entry) => entry.resource),
+    );
+    return {
+      logicalKey: step.id,
+      step,
+      createdByOperation: false,
+      deleteOnDestroy: true,
+    };
+  });
+  return {
+    identity: {
+      workspaceId: input.workspaceId,
+      hostId: input.hostId,
+      operationId,
+      planId: plan.planId,
+      target: plan.target,
+      desiredGeneration: 1,
+    },
+    action: 'destroy',
+    resources,
+    maxApplyAttempts: 3,
+  };
+}
+
+function destroyProgress(checkpoints: readonly WorkspaceHostResourceCheckpoint[], total: number): number {
+  if (total === 0) return 0;
+  const confirmed = checkpoints.filter(
+    (entry) => entry.state === 'absent' && entry.deletionConfirmation?.source === 'provider-read',
+  ).length;
+  return Math.max(0, Math.min(99, Math.floor((confirmed / total) * 100)));
+}
+
+function deterministicInventoryRequest(
+  input: RunWorkspaceHostDestroyInput,
+  target: StoredWorkspaceHostDestroyTarget,
+  destroyTargets: readonly WorkspaceHostResourceRef[],
+): GcpWorkspaceHostInventoryRequest {
+  const names = (kind: string): string[] =>
+    destroyTargets
+      .filter((resource) => resource.kind === kind)
+      .map((resource) => resource.providerId)
+      .sort();
+  const networks = names('network');
+  const subnetworks = names('subnetwork');
+  const firewalls = names('firewall');
+  const routers = names('router');
+  const natResources = destroyTargets.filter((resource) => resource.kind === 'nat');
+  const nats = natResources
+    .map((resource) => ({
+      routerName:
+        destroyTargets.find((candidate) => candidate.kind === 'router')?.providerId ?? '',
+      name: resource.providerId,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const missing = [
+    ['network', networks],
+    ['subnetwork', subnetworks],
+    ['firewall', firewalls],
+    ['router', routers],
+    ['nat', nats],
+  ]
+    .filter(([, entries]) => entries.length === 0)
+    .map(([kind]) => kind);
+  if (missing.length > 0 || nats.some((entry) => !entry.routerName)) {
+    throw new WorkspaceHostProvisioningRequestError([
+      `destroy census requires registered managed network identities: ${missing.join(', ') || 'NAT router'}`,
+    ]);
+  }
+  const projectId =
+    destroyTargets.find((resource) => resource.parentProviderId)?.parentProviderId ?? target.desired.scope.id;
+  return {
+    projectId: nonEmpty(projectId, 'destroy census projectId'),
+    region: nonEmpty(target.desired.region, 'destroy census region'),
+    workspaceId: input.canary.workspaceId,
+    deterministicNames: { networks, subnetworks, firewalls, routers, nats },
+  };
+}
+
+function restoreCanaryLedger(
+  input: RunWorkspaceHostDestroyInput,
+  target: StoredWorkspaceHostDestroyTarget,
+  destroyTargets: readonly WorkspaceHostResourceRef[],
+): WorkspaceHostLiveCanaryHarness {
+  const tags = assertDestroyCanaryLabels(target.desired, input.canary);
+  const ledger = new WorkspaceHostLiveCanaryHarness({
+    runId: input.canary.runId,
+    workspaceId: input.canary.workspaceId,
+    target: input.provider.target,
+    scope: target.desired.scope,
+    cloudCredentialRef: input.connection.cloudCredentialRef,
+    contractApproval: input.canary.contractApproval,
+    ...(input.canary.maxSpendCents !== undefined ? { maxSpendCents: input.canary.maxSpendCents } : {}),
+    teardownDeadlineAt: input.canary.teardownDeadlineAt,
+  });
+  for (const resource of destroyTargets) {
+    const persisted = target.resources.find(
+      (entry) =>
+        entry.resource.target === resource.target &&
+        entry.resource.kind === resource.kind &&
+        entry.resource.providerId === resource.providerId,
+    );
+    if (!persisted) {
+      throw new WorkspaceHostProvisioningRequestError([
+        `destroy resource '${resource.providerId}' is absent from the durable canary population`,
+      ]);
+    }
+    ledger.restoreRegisteredResource({ resource, tags, createdAt: persisted.registeredAt });
+  }
+  ledger.recordObservedSpend(input.canary.preRunZeroBaseline);
+  for (const evidence of input.canary.costEvidence) ledger.recordObservedSpend(evidence);
+  for (const evidence of input.canary.lateObservedSpend ?? []) ledger.recordObservedSpend(evidence);
+  return ledger;
+}
+
+async function finalizeDestroyEvidence(
+  input: RunWorkspaceHostDestroyInput,
+  store: WorkspaceHostDestroyStore,
+  target: StoredWorkspaceHostDestroyTarget,
+  workflow: WorkspaceHostDurableWorkflowSpec,
+  checkpoints: readonly WorkspaceHostResourceCheckpoint[],
+): Promise<WorkspaceHostDestroyEvidenceResult> {
+  const destroyTargets = workflow.resources.map((resource) =>
+    destroyResourceForStep(
+      resource.step,
+      target.resources.map((entry) => entry.resource),
+    ),
+  );
+  if (destroyTargets.length === 0) {
+    throw new WorkspaceHostProvisioningRequestError(['destroy evidence cannot be produced over an empty resource population']);
+  }
+  const ledger = restoreCanaryLedger(input, target, destroyTargets);
+  const manualDestroyReceipts: WorkspaceHostManualDestroyReceipt[] = [];
+  for (const checkpoint of checkpoints) {
+    const confirmation = checkpoint.deletionConfirmation;
+    if (!confirmation || checkpoint.state !== 'absent') {
+      throw new Error(`Destroy checkpoint '${checkpoint.logicalKey}' has no provider-read absence receipt`);
+    }
+    ledger.confirmResourceAbsent(confirmation);
+    if (input.canary.emergencyManualDestroy) {
+      const resource = destroyTargets.find(
+        (candidate) => candidate.providerId === confirmation.providerResourceId,
+      );
+      if (!resource) throw new Error(`Manual destroy confirmation '${confirmation.providerResourceId}' is unregistered`);
+      const receipt = createWorkspaceHostManualDestroyReceipt({
+        runId: input.canary.runId,
+        resource,
+        actorId: input.canary.emergencyManualDestroy.actorId,
+        reason: input.canary.emergencyManualDestroy.reason,
+        procedureRef: input.canary.emergencyManualDestroy.procedureRef,
+        issuedAt: confirmation.confirmedAbsentAt,
+        confirmation,
+        providerEvidence: {
+          source: 'workspace-host-destroy-checkpoint',
+          logicalKey: checkpoint.logicalKey,
+          providerRequestId: checkpoint.providerRequestId,
+        },
+      });
+      ledger.recordManualDestroyReceipt(receipt);
+      manualDestroyReceipts.push(receipt);
+    }
+  }
+
+  const inventory = await inventoryProvider(input.provider).inventoryManagedResources(
+    deterministicInventoryRequest(input, target, destroyTargets),
+  );
+  if (!inventory.complete) throw new Error('Provider managed-resource inventory is incomplete');
+  const observed = inventory.observed.map((entry) => ({ resource: entry.resource, tags: entry.labels }));
+  const providerCensus = censusGcpWorkspaceHostResources({
+    hostId: input.hostId,
+    workspaceId: input.canary.workspaceId,
+    expected: [],
+    observed: inventory.observed,
+    inventoryEvidence: inventory.inventoryEvidence,
+    evaluatedAt: new Date().toISOString(),
+    orphanGraceMs: 60_000,
+  });
+  const orphanCensus = ledger.orphanCensus(observed);
+  if (!providerCensus.clean || !orphanCensus.clean) {
+    throw new Error('Workspace-host destroy orphan census is not clean');
+  }
+  const completionReceipt = ledger.finalize(observed);
+  if (completionReceipt.resourceCount === 0) {
+    throw new Error('Workspace-host destroy completion receipt has an empty resource population');
+  }
+  const result: WorkspaceHostDestroyEvidenceResult = {
+    completionReceipt,
+    orphanCensus,
+    providerCensus,
+    budgetEvidenceRef: input.canary.budgetEvidenceRef,
+    preRunZeroBaseline: { ...input.canary.preRunZeroBaseline },
+    manualDestroyReceipts,
+  };
+  await store.recordSignals({
+    workspaceId: input.workspaceId,
+    hostId: input.hostId,
+    costSignals: [
+      {
+        kind: 'workspace-host-canary-cost-evidence-v1',
+        runId: input.canary.runId,
+        budgetEvidenceRef: input.canary.budgetEvidenceRef,
+        preRunZeroBaseline: input.canary.preRunZeroBaseline,
+        cumulative: input.canary.costEvidence,
+        lateObservedSpend: input.canary.lateObservedSpend ?? [],
+        completion: completionReceipt,
+      },
+    ],
+  });
+  return result;
+}
+
+/**
+ * Production discard teardown through the same replay-safe controller and host-scoped DBOS mutex
+ * as provisioning. No caller may report success from accepted delete requests alone: every owned
+ * resource needs a matching provider-read receipt and an independent all-kind inventory must be
+ * clean before the host becomes absent.
+ */
+export async function runWorkspaceHostDestroy(
+  input: RunWorkspaceHostDestroyInput,
+): Promise<WorkspaceHostDestroyResult> {
+  const store = input.store ?? DEFAULT_DESTROY_STORE;
+  const workspaceId = nonEmpty(input.workspaceId, 'workspaceId');
+  const hostId = nonEmpty(input.hostId, 'hostId');
+  const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
+  if (input.disposition !== 'discard') {
+    throw new WorkspaceHostProvisioningRequestError([
+      'production destroy currently permits disposition=discard only; snapshot and backup teardown are not complete',
+    ]);
+  }
+  if (input.confirmation.expectedHostId !== hostId) {
+    throw new WorkspaceHostProvisioningRequestError(['destroy confirmation expectedHostId must match hostId']);
+  }
+  nonEmpty(input.confirmation.confirmedBy, 'destroy confirmation confirmedBy');
+  isoTimestamp(input.confirmation.confirmedAt, 'destroy confirmation confirmedAt');
+  validateDestroyCanaryEvidence(input.canary, workspaceId);
+
+  const target = await store.readTarget(workspaceId, hostId);
+  if (!target) throw new WorkspaceHostProvisioningRequestError([`workspace host '${hostId}' was not found`]);
+  if (target.id !== hostId || target.desired.hostId !== hostId) {
+    throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match destroy hostId']);
+  }
+  if (target.target !== 'gcp' || target.desired.target !== 'gcp' || input.provider.target !== 'gcp') {
+    throw new WorkspaceHostProvisioningRequestError(['production discard destroy is implemented for GCP only']);
+  }
+  if (input.connection.target !== target.target) {
+    throw new WorkspaceHostProvisioningRequestError(['workspace-host connection target does not match stored host']);
+  }
+  assertDestroyCanaryLabels(target.desired, input.canary);
+
+  const context: WorkspaceHostProviderContext = {
+    workspaceId,
+    requestId: operationId,
+    connection: { ...input.connection, scope: target.desired.scope },
+    ...(input.actorId ? { actorId: input.actorId } : {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+  };
+  let validation;
+  try {
+    validation = await input.provider.validateConnection(context);
+  } catch {
+    throw new WorkspaceHostProvisioningConnectionError(['provider connection validation failed']);
+  }
+  if (!validation.ok) {
+    throw new WorkspaceHostProvisioningConnectionError(
+      validation.errors.length > 0 ? validation.errors : ['provider connection is not usable'],
+    );
+  }
+
+  const host = {
+    hostId,
+    target: target.desired.target,
+    resources: target.resources.map((entry) => entry.resource),
+  } as const;
+  let plan: WorkspaceHostPlan;
+  try {
+    plan = await input.provider.plan(
+      {
+        action: 'destroy',
+        operationId,
+        idempotencyKey: `workspace-host:${workspaceId}:${hostId}:${operationId}:destroy`,
+        host,
+        disposition: 'discard',
+        confirmation: input.confirmation,
+      },
+      context,
+    );
+  } catch (error) {
+    throw new WorkspaceHostProvisioningRequestError([message(error)]);
+  }
+  const identityProblems: string[] = [];
+  if (plan.operationId !== operationId) identityProblems.push('provider destroy plan changed operationId');
+  if (plan.hostId !== hostId) identityProblems.push('provider destroy plan changed hostId');
+  if (plan.target !== target.desired.target) identityProblems.push('provider destroy plan changed target');
+  if (identityProblems.length > 0) throw new WorkspaceHostProvisioningRequestError(identityProblems);
+
+  const workflow = durableDestroyWorkflow(input, operationId, plan, target);
+  let checkpoints = await store.readCheckpoints(workspaceId, hostId, operationId);
+  if (checkpoints.length === 0) {
+    await store.updateHostState({ workspaceId, hostId, state: 'destroying' });
+  }
+  await store.beginOperation({
+    workspaceId,
+    operationId,
+    hostId,
+    action: 'destroy',
+    status: 'running',
+    message: 'Workspace-host discard teardown started',
+    request: {
+      disposition: 'discard',
+      confirmation: input.confirmation,
+      canary: input.canary,
+    },
+  });
+
+  for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
+    const action = nextWorkspaceHostControllerAction(workflow, checkpoints);
+    if (action.kind === 'record-plan') {
+      for (const resource of action.resources) {
+        const checkpoint: WorkspaceHostResourceCheckpoint = {
+          logicalKey: resource.logicalKey,
+          state: 'planned',
+          attempts: 0,
+          providerResource: destroyResourceForStep(
+            resource.step,
+            target.resources.map((entry) => entry.resource),
+          ),
+        };
+        await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint });
+        checkpoints = replaceCheckpoint(checkpoints, checkpoint);
+      }
+      await store.appendEvent({
+        workspaceId,
+        hostId,
+        operationId,
+        phase: 'plan',
+        status: 'running',
+        message: `Recorded ${action.resources.length} discard resource plan(s) before mutation`,
+      });
+      continue;
+    }
+
+    if (action.kind === 'apply' || action.kind === 'retry' || action.kind === 'reconcile') {
+      const prior = checkpoints.find((entry) => entry.logicalKey === action.resource.logicalKey);
+      if (!prior) throw new Error(`Missing destroy checkpoint '${action.resource.logicalKey}'`);
+      const attempts = prior.attempts + 1;
+      const beforeCall: WorkspaceHostResourceCheckpoint = {
+        logicalKey: prior.logicalKey,
+        state: action.kind === 'reconcile' ? 'reconciling' : 'applying',
+        attempts,
+        ...(prior.providerResource ? { providerResource: prior.providerResource } : {}),
+        ...(prior.providerRequestId ? { providerRequestId: prior.providerRequestId } : {}),
+      };
+      await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: beforeCall });
+      checkpoints = replaceCheckpoint(checkpoints, beforeCall);
+      const applyRequest = {
+        planId: plan.planId,
+        operationId,
+        step: action.resource.step,
+        knownResources: knownResources(checkpoints),
+      };
+      let providerResult: WorkspaceHostApplyResult;
+      try {
+        providerResult =
+          action.kind === 'reconcile'
+            ? await input.provider.reconcile(
+                {
+                  ...applyRequest,
+                  reason: 'resume',
+                  ...(prior.providerRequestId ? { previousProviderRequestId: prior.providerRequestId } : {}),
+                },
+                context,
+              )
+            : await input.provider.apply(applyRequest, context);
+      } catch (error) {
+        const failed: WorkspaceHostResourceCheckpoint = {
+          logicalKey: prior.logicalKey,
+          state: 'failed',
+          attempts,
+          retryClass: 'ambiguous',
+          retryAfterMs: DEFAULT_RETRY_AFTER_MS,
+          ...(prior.providerResource ? { providerResource: prior.providerResource } : {}),
+          ...(prior.providerRequestId ? { providerRequestId: prior.providerRequestId } : {}),
+          error: message(error),
+        };
+        await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: failed });
+        checkpoints = replaceCheckpoint(checkpoints, failed);
+        await store.updateOperation({
+          workspaceId,
+          operationId,
+          status: 'running',
+          percent: destroyProgress(checkpoints, plan.steps.length),
+          message: `Destroy outcome for '${prior.logicalKey}' is uncertain; reconciliation required`,
+        });
+        await store.appendEvent({
+          workspaceId,
+          hostId,
+          operationId,
+          phase: prior.logicalKey,
+          status: 'running',
+          level: 'warn',
+          message: 'Destroy outcome is uncertain; the next request will reconcile before deleting',
+          details: { error: message(error) },
+        });
+        return { status: 'in-progress', operationId, hostId, plan, checkpoints, retryAfterMs: DEFAULT_RETRY_AFTER_MS };
+      }
+
+      const afterCall = resultCheckpoint(prior, attempts, providerResult);
+      await store.upsertCheckpoint({ workspaceId, hostId, operationId, checkpoint: afterCall });
+      checkpoints = replaceCheckpoint(checkpoints, afterCall);
+      const waiting = providerResult.state === 'in-progress';
+      await store.updateOperation({
+        workspaceId,
+        operationId,
+        status: 'running',
+        percent: destroyProgress(checkpoints, plan.steps.length),
+        message: waiting
+          ? `Provider delete '${prior.logicalKey}' is still in progress`
+          : `Provider delete '${prior.logicalKey}' confirmed ${providerResult.state}`,
+      });
+      await store.appendEvent({
+        workspaceId,
+        hostId,
+        operationId,
+        phase: prior.logicalKey,
+        status: 'running',
+        message: waiting ? 'Provider delete is still in progress' : `Provider delete ${providerResult.state}`,
+        details: {
+          state: providerResult.state,
+          ...(providerResult.state === 'destroyed' ? { confirmation: providerResult.confirmation } : {}),
+        },
+      });
+      if (waiting) {
+        return {
+          status: 'in-progress',
+          operationId,
+          hostId,
+          plan,
+          checkpoints,
+          retryAfterMs: providerResult.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS,
+        };
+      }
+      continue;
+    }
+
+    if (action.kind === 'complete' && action.status === 'succeeded') {
+      try {
+        const evidence = await finalizeDestroyEvidence(input, store, target, workflow, checkpoints);
+        const completedAt = evidence.completionReceipt.completedAt;
+        await store.updateHostState({ workspaceId, hostId, state: 'absent', observedAt: completedAt, discard: true });
+        await store.updateOperation({
+          workspaceId,
+          operationId,
+          status: 'succeeded',
+          percent: 100,
+          message: 'Workspace-host discard teardown and evidence census completed',
+        });
+        await store.appendEvent({
+          workspaceId,
+          hostId,
+          operationId,
+          phase: 'destroy-evidence',
+          status: 'succeeded',
+          message: 'Every registered resource is absent and the provider census is clean',
+          details: evidence,
+        });
+        return { status: 'succeeded', operationId, hostId, plan, checkpoints, evidence };
+      } catch (error) {
+        await store.updateOperation({
+          workspaceId,
+          operationId,
+          status: 'failed',
+          percent: 99,
+          message: 'Workspace-host resources were deleted, but terminal evidence is incomplete',
+          error: { reason: message(error) },
+        });
+        await store.appendEvent({
+          workspaceId,
+          hostId,
+          operationId,
+          phase: 'destroy-evidence',
+          status: 'failed',
+          level: 'error',
+          message: 'Destroy cannot complete without provider-read receipts, cost evidence, and a clean census',
+          details: { error: message(error) },
+        });
+        return { status: 'failed', operationId, hostId, plan, checkpoints };
+      }
+    }
+
+    const reason = action.kind === 'blocked' ? action.reason : action.kind === 'complete' ? action.status : action.kind;
+    await store.updateOperation({
+      workspaceId,
+      operationId,
+      status: 'failed',
+      percent: destroyProgress(checkpoints, plan.steps.length),
+      message: 'Workspace-host destroy controller is blocked',
+      error: { reason },
+    });
+    return { status: 'failed', operationId, hostId, plan, checkpoints };
+  }
+
+  throw new Error('Workspace-host destroy exceeded its bounded controller transition budget');
+}
