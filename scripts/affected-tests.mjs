@@ -4362,10 +4362,15 @@ for (const scheduled of initialPool.results) {
     } else if (exitClass === "not-checked") {
       // "I could not look" is not "I found a violation" — see EXIT_NOT_CHECKED above. Reported
       // LOUDLY rather than swallowed: the guard really did verify nothing, and a reader who
-      // takes this run as coverage of the strand class would be wrong. It just is not the
-      // failing task's fault, and it cannot be fixed by anyone downstream of it.
+      // takes this run as coverage of the strand class would be wrong. It is not a content
+      // failure, but it is still an UNDETERMINED verdict that must keep the run non-green;
+      // otherwise `failed=0` would falsely present missing coverage as a pass.
+      undeterminedTasks++;
+      const taskName = `${t.ws.name} :: ${t.script}`;
+      undeterminedTaskNames.push(taskName);
       errSync(
-        `\n  ⚠ ${t.ws.name} :: ${t.script} examined NOTHING (exit ${EXIT_NOT_CHECKED}) — not gating.\n` +
+        `\n  ⚠ ${taskName} NOT CHECKED (exit ${EXIT_NOT_CHECKED}) — verdict is UNDETERMINED; ` +
+          `not retrying and keeping the affected-tests run non-green.\n` +
           `    This guard infers its subject from the working diff, which is empty in a clean\n` +
           `    checkout, so it has no opinion here. It speaks in a LOCAL run, where the edit\n` +
           `    that triggers it is still uncommitted.`,

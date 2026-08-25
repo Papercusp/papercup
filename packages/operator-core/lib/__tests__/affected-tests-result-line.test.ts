@@ -290,6 +290,23 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       expect(source).toMatch(/outSync\(resultLine\('passed'\)\);/);
     });
 
+    it('counts a non-gating NOT CHECKED task as undetermined instead of passing', () => {
+      // A real non-zero guard run needs a specially staged clean/dirty fixture and is too
+      // expensive for this suite. Pin the executable counter wiring here; the classifier
+      // tests separately prove that this class remains non-retryable.
+      const notCheckedBlock = source.match(/else if \(exitClass === 'not-checked'\) \{[\s\S]*?\n    \}/)?.[0];
+      expect(notCheckedBlock).toBeTruthy();
+      expect(notCheckedBlock).toContain('undeterminedTasks++;');
+      expect(notCheckedBlock).toContain('undeterminedTaskNames.push(taskName);');
+      expect(notCheckedBlock).not.toContain('failed++;');
+
+      expect(source).toContain('AFFECTED_TESTS_UNDETERMINED tasks=${undeterminedTasks}');
+      const undeterminedBlock = source.match(/if \(!failed && undeterminedTasks\) \{[\s\S]*?\n\}/)?.[0];
+      expect(undeterminedBlock).toBeTruthy();
+      expect(undeterminedBlock).toContain("errSync(resultLine('failed'));");
+      expect(undeterminedBlock).toContain('process.exit(1);');
+    });
+
     it('the failure announcement and process.exit(1) remain inseparable (why the divergence cannot originate here)', () => {
       // Regression guard for the underlying claim in the EI-18796017307093897
       // comment: there is exactly one `if (failed) { ... }` block, and it always
