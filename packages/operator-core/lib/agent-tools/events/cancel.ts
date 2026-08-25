@@ -145,7 +145,7 @@ export default defineTool({
             out.error = retired.reason ?? 'not_found_or_not_yours_or_already_settled';
           }
         }
-        if (out.ok !== true) out.error = 'not_found_or_not_yours_or_already_settled';
+        if (out.ok !== true && out.error == null) out.error = 'not_found_or_not_yours_or_already_settled';
         return out as { ok: boolean; await_id?: number; delivery_id?: number; root_id?: number; announcement_id?: number; error?: string };
       },
       { keyOf: (item) => ({ ...(item.await_id != null ? { await_id: item.await_id } : {}), ...(item.delivery_id != null ? { delivery_id: item.delivery_id } : {}), ...(item.root_id != null ? { root_id: item.root_id } : {}), ...(item.announcement_id != null ? { announcement_id: item.announcement_id } : {}) }) },
