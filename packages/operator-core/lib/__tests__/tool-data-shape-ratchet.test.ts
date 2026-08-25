@@ -245,7 +245,27 @@ for (const file of TOOL_FILES) {
 // it was a textbook single mechanical return, and migrating all three DID lower the
 // count by three. They were evidently refactored since 08-02. Verify per file —
 // the walk-recount above is the check that settles it either way.
-const BASELINE = 434;
+//
+// 2026-08-25 (WI-41709, su-8c79a): reds at 435 vs 434 — one over, un-attributable
+// net growth by several hands since the 08-24 batch consumed the headroom. Paid off
+// in the intended currency rather than bumped, per this file's own thrice-stated
+// instruction. Migrated eight mechanical single-return, no-isError handlers to
+// `{ data }`: coordination/tools/handoffs, backup/rollback, operator/{stats,nudge,
+// dedup_check}, voice/join, plan-items/leave-group, storage/usage. Real count
+// 435 → 427, verified by re-running the discovery walk after the batch (dropped by
+// exactly eight, the trap-(1) proof). Ceiling 434 → 429, keeping the established
+// two slots of churn headroom.
+//
+// ⚠ TRAP (1)'s NAMED LIST IS STALE AGAIN, third confirmation: it names
+// coordination/tools/handoffs as stringifying outside its return. Read at HEAD on
+// 08-25 it was a textbook single mechanical return, and migrating it lowered the
+// count. Treat that list as a historical note with NO current authority — only the
+// per-file read plus the walk-recount settles a candidate. Candidate-picking that
+// worked here: exactly ONE `text: JSON.stringify(` in the file, no `isError`
+// anywhere (there is no isError slot in `{ data }`, so migrating such a tool would
+// silently drop its error signaling), and the stringify confirmed to sit inside the
+// `return { content: [...] }`.
+const BASELINE = 429;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {
