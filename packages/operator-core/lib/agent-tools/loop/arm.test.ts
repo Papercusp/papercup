@@ -229,6 +229,47 @@ describe('loop:arm — WI-1471 ownerId override', () => {
   });
 });
 
+describe('loop:arm — dispatch harness scope authority', () => {
+  it('uses the verified request-origin harness when operator ctx is wildcard-scoped', async () => {
+    homePotM.mockResolvedValue('sb-devboard-hive');
+    potHomeM.mockImplementation((value) => value ?? null);
+
+    const out = (await tool.handler(
+      { intervalSec: 120, goal: 'g' } as never,
+      {
+        harnessSlug: '*',
+        workspaceId: 'ws-1',
+        requestOrigin: { transport: 'mcp', query: { harness: 'papercusp' } },
+      } as never,
+    )) as Out;
+    const b = body(out);
+
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }));
+    expect(homePotM).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inner harness that conflicts with the verified dispatch scope', async () => {
+    const out = (await tool.handler(
+      { intervalSec: 120, goal: 'g', harness: 'other-harness' } as never,
+      {
+        harnessSlug: '*',
+        workspaceId: 'ws-1',
+        requestOrigin: { transport: 'mcp', query: { harness: 'papercusp' } },
+      } as never,
+    )) as Out;
+    const b = body(out);
+
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'harness_scope_mismatch',
+      dispatchHarness: 'papercusp',
+      requestedHarness: 'other-harness',
+    });
+    expect(materializeM).not.toHaveBeenCalled();
+  });
+});
+
 describe('loop:arm — WI-5345: mode reaches materializeLoop + the response (previously only threaded into the wake-prompt template, never persisted/observable)', () => {
   it("defaults to mode:'work' when omitted", async () => {
     const b = body(await call({}));

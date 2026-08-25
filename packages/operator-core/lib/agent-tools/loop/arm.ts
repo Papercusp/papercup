@@ -515,6 +515,39 @@ export default defineTool({
     const ownerId = args.ownerId ?? identity.ownerId;
     const ownerLabel = args.ownerId ? `su · ${shortOwnerLabel(args.ownerId)}` : identity.ownerLabel;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const isConcreteHarness = (value?: string | null): boolean => {
+      const trimmed = value?.trim().toLowerCase();
+      return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
+    };
+    // A superuser MCP scope is carried on the verified request origin rather than
+    // in the tool args. Preserve it through tools:invoke: otherwise an operator
+    // session has ctx.harnessSlug='*', misses args.harness, and silently falls
+    // through to the workspace home pot (which may be a different harness).
+    const dispatchHarness = ctx.requestOrigin?.query?.harness?.trim();
+    const requestedHarness = isConcreteHarness(args.harness)
+      ? args.harness.trim()
+      : isConcreteHarness(dispatchHarness)
+        ? dispatchHarness
+        : undefined;
+    if (isConcreteHarness(args.harness) && isConcreteHarness(dispatchHarness) && args.harness.trim() !== dispatchHarness) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'harness_scope_mismatch',
+              dispatchHarness,
+              requestedHarness: args.harness.trim(),
+              message:
+                `Refusing to arm: dispatch scope harness "${dispatchHarness}" conflicts with inner harness "${args.harness.trim()}". ` +
+                'The verified dispatch scope is authoritative; re-arm with a matching harness.',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     const requestedMode = args.mode ?? 'work';
     let preparedMonitorConfig: PersistedMonitorConfig | null = null;
     if (requestedMode === 'monitor') {
@@ -567,10 +600,6 @@ export default defineTool({
         `[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`,
       );
     }
-    const isConcreteHarness = (value?: string | null): boolean => {
-      const trimmed = value?.trim().toLowerCase();
-      return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
-    };
     const explicitWorkItem = args.workItem?.trim();
     const monitorAuthorityWorkItem =
       preparedMonitorConfig?.authority.kind === 'work-item' ? preparedMonitorConfig.authority.workItem : undefined;
@@ -597,7 +626,7 @@ export default defineTool({
     const autoDetectedWorkItemForScope =
       !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(rawGoal) ?? undefined) : undefined;
     const scopeWorkItem = explicitWorkItem ?? monitorAuthorityWorkItem ?? autoDetectedWorkItemForScope;
-    const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
+    const onlyWorkspaceScope = !isConcreteHarness(requestedHarness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
     // EI-20245033088778955: an ACTIVE routine's install scope is authoritative
     // for a wildcard re-arm. It is the scope the existing wake marker and cold
@@ -615,7 +644,7 @@ export default defineTool({
     // both fleet admission and the compare-and-claim. An explicit harness remains the
     // caller's choice, and an active loop's existing install scope remains authoritative
     // above, so ordinary re-arms do not silently migrate an already-installed routine.
-    if (!isConcreteHarness(args.harness) && !harness && scopeWorkItem) {
+    if (!isConcreteHarness(requestedHarness) && !harness && scopeWorkItem) {
       try {
         const item = await getWorkItem(scopeWorkItem.toUpperCase());
         if (isConcreteHarness(item?.harness)) {
@@ -651,7 +680,7 @@ export default defineTool({
         harness = resolvePotHomeSlug(brief!.harnessSlug!, undefined);
       }
     }
-    harness ??= resolvePotHomeSlug(args.harness, ctx.harnessSlug);
+    harness ??= resolvePotHomeSlug(requestedHarness, ctx.harnessSlug);
     if (!harness) {
       return {
         content: [
