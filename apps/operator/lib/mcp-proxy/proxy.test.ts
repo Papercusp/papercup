@@ -1885,7 +1885,9 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     await listen(upstream);
 
     const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
-    const upstreamAgent = new http.Agent({ keepAlive: false, maxSockets: 2 });
+    // Let the fixture reach the proxy's global ceiling (one held handshake + two ordinary
+    // forwards). The proxy's maxInFlight:3, rather than the test agent, is the hard cap under test.
+    const upstreamAgent = new http.Agent({ keepAlive: false, maxSockets: 3 });
     const proxy = track(createMcpProxy({
       listenPort: 0,
       targetHost: '127.0.0.1',
