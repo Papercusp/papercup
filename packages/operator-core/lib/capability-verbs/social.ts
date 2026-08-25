@@ -879,7 +879,7 @@ export function getSocialWriteAdapter(platform: SocialPlatformId): SocialWriteAd
  */
 export function socialReplyIdempotencyKey(ref: SocialPostRef, text: string): string {
   let hash = 0x811c9dc5;
-  for (const char of `${formatSocialPostRef(ref)}${text.trim()}`) {
+  for (const char of `${formatSocialPostRef(ref)}\x1f${text.trim()}`) {
     hash ^= char.codePointAt(0)!;
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
@@ -902,7 +902,7 @@ export function socialReplyIdempotencyKey(ref: SocialPostRef, text: string): str
  */
 export function socialPostIdempotencyKey(ref: SocialDestinationRef, text: string): string {
   let hash = 0x811c9dc5;
-  for (const char of `${formatSocialDestinationRef(ref)}${text.trim()}`) {
+  for (const char of `${formatSocialDestinationRef(ref)}\x1f${text.trim()}`) {
     hash ^= char.codePointAt(0)!;
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
