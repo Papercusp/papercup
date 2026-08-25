@@ -108,7 +108,12 @@ function cliFlagsReadByReportCli(): readonly string[] {
 
 /** A minimal page that satisfies every rule — the base every fixture mutates. */
 function correctDoc(code: DesignEvidenceCodeFacts): string {
-  const vocab = [...code.refusalCodes, ...code.invalidReasons, ...code.gateFailureReasons]
+  const vocab = [
+    ...code.refusalCodes,
+    ...code.invalidReasons,
+    ...code.gateFailureReasons,
+    ...code.notEnforceableReasons,
+  ]
     .map((v) => `\`${v}\``)
     .join(' · ');
   const classRows = [...code.eligibility]
@@ -147,6 +152,23 @@ describe('design-evidence doc claims', () => {
   });
 
   describe('fixture controls (the detector must be able to FAIL)', () => {
+    /**
+     * P-011/D-023. The reason a completion was NOT refused is the vocabulary an
+     * operator is least likely to look up, so it is the one most worth pinning:
+     * unexplained, "NOT ENFORCED (uncalibrated-host)" reads as noise attached
+     * to a pass. This control proves the judge can actually fail on it, rather
+     * than the axis merely being listed.
+     */
+    it('catches a NEW not-enforceable reason the doc never explains', () => {
+      const doc = correctDoc(code);
+      const verdict = judgeDesignEvidenceDoc(
+        { docTokens: extractInlineCodeTokens(doc), docText: doc },
+        { ...code, notEnforceableReasons: [...code.notEnforceableReasons, 'host-clock-skew'] },
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations.join('\n')).toMatch(/host-clock-skew/);
+    });
+
     it('catches a NEW invalid reason the doc never explains', () => {
       const doc = correctDoc(code);
       const verdict = judgeDesignEvidenceDoc(
