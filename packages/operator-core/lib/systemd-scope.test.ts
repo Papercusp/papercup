@@ -1,10 +1,22 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildIsolatedScopeArgv,
   buildTaskScopeArgv,
   buildTaskServiceArgv,
+  createSecretEnvironmentTransport,
   escapeSystemdServiceArgument,
+  SYSTEMD_ENV_RUNNER_PATH,
 } from './systemd-scope';
+import {
+  SYSTEMD_RUNNER_JOB_END_PREFIX,
+  SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
+  SYSTEMD_RUNNER_REDACTIONS_ENV,
+} from './systemd-scope-env-runner.mjs';
 
 const PROPS = { unit: 'papercusp-bash-job-test.service', slice: 'papercusp-bash-job.slice' };
 
@@ -58,5 +70,51 @@ describe('transient service payload escaping', () => {
 
     const protectedOrchestrator = buildIsolatedScopeArgv(['/bin/false'], 6, 'deny');
     expect(protectedOrchestrator).toContain('--property=MemorySwapMax=0');
+  });
+
+  it('keeps a redacted file-backed service log after the live pipe reader disappears', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'systemd-runner-output-'));
+    const logPath = join(dir, 'durable.log');
+    const secret = 'runner-reader-loss-secret-0123456789';
+    const transport = createSecretEnvironmentTransport({
+      PATH: process.env.PATH,
+      RUNNER_TEST_SECRET: secret,
+      [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: logPath,
+      [SYSTEMD_RUNNER_REDACTIONS_ENV]: Buffer.from(JSON.stringify([secret]), 'utf8').toString('base64'),
+    });
+    const script =
+      `process.stdout.write('first:' + process.env.RUNNER_TEST_SECRET + '\\n');` +
+      `setTimeout(() => process.stdout.write('second:' + process.env.RUNNER_TEST_SECRET + ` +
+      `' internal=' + (process.env.${SYSTEMD_RUNNER_OUTPUT_PATH_ENV} || 'none') + '\\n'), 150);`;
+    const child = spawn(
+      process.execPath,
+      [SYSTEMD_ENV_RUNNER_PATH, '--env-fd-path', transport.sourcePath, '--', process.execPath, '-e', script],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('runner did not produce its first mirrored chunk')), 5_000);
+        child.stdout?.once('data', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      // Simulate the operator/systemd-run client disappearing. The runner's
+      // stdout/stderr mirrors lose their readers, while its file sink remains.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
+
+      expect({ code, signal }).toEqual({ code: 0, signal: null });
+      const output = readFileSync(logPath, 'utf8');
+      expect(output).toContain('first:[REDACTED integration credential]');
+      expect(output).toContain('second:[REDACTED integration credential] internal=none');
+      expect(output).toContain(`${SYSTEMD_RUNNER_JOB_END_PREFIX}: status=completed exit=0`);
+      expect(output).not.toContain(secret);
+    } finally {
+      transport.release();
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
   });
 });
