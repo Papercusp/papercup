@@ -295,8 +295,20 @@ export interface ScorecardGradingAudit {
 }
 
 export interface ScorecardVetting {
-  /** conversation_id of the get_feedback consult that critiqued the vetted rubric. */
-  consultId: string;
+  /**
+   * conversation_id of the get_feedback consult that critiqued the vetted rubric.
+   * EXACTLY ONE of `consultId` / `workItemId` is present — the two are alternate
+   * recording channels for the same non-vacuity predicate (WI-41477).
+   */
+  consultId?: string;
+  /**
+   * WI-41477: the work-item whose third-party comments carry the critique — the
+   * channel a LAUNCHED independent reviewer (learning-loop-backlog-triage-2026-08-22
+   * D-049) can actually write to, since consult participants are router-assigned and
+   * a launched reviewer is never enrolled. Same predicate as the consult channel:
+   * ≥1 comment authored by neither the emitter nor the vetted rubric's author.
+   */
+  workItemId?: string;
   /** The vetted rubric's plan-row `version` (harness_plans.version) at emit time —
    *  how the gate decides the attestation covers the CURRENT revision. Absent when
    *  the version read failed at emit; the gate then treats the card as NOT current

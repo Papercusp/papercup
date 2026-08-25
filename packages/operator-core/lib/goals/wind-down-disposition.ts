@@ -377,7 +377,9 @@ export async function evaluateGoalAcceptanceGate(
       const metaCards = (await deps.listCards({ rubricRef: deps.metaRubricId, subjectRef: rubric.rubricId })).filter(
         (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized,
       );
-      const vettedCards = metaCards.filter((s) => s.vetting?.consultId);
+      // WI-41477: either critique channel counts — a get_feedback consult, or the
+      // review work-item a launched independent reviewer's comments land on.
+      const vettedCards = metaCards.filter((s) => s.vetting?.consultId || s.vetting?.workItemId);
       const current = vettedCards.find((s) => revision == null || s.vetting?.rubricRevision === revision);
       if (!current) {
         const stale = vettedCards.length > 0;

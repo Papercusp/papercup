@@ -421,9 +421,11 @@ export async function evaluatePlanAcceptanceGate(
       const metaCards = (
         await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, subjectRef: rubric.rubricId, limit: 50 })
       ).filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
-      // The linked consult is what makes an attestation a VETTING (a plain meta-grade
-      // without one skipped the external critique the flow exists to inject).
-      const vettedCards = metaCards.filter((s) => s.vetting?.consultId);
+      // The linked critique channel is what makes an attestation a VETTING (a plain
+      // meta-grade without one skipped the external critique the flow exists to
+      // inject). WI-41477: either channel counts — a get_feedback consult, or the
+      // review work-item a launched independent reviewer's comments land on.
+      const vettedCards = metaCards.filter((s) => s.vetting?.consultId || s.vetting?.workItemId);
       const current = vettedCards.find((s) => currentRevision == null || s.vetting?.rubricRevision === currentRevision);
       if (!current) {
         const vettedRevisions = [
@@ -452,7 +454,10 @@ export async function evaluatePlanAcceptanceGate(
               `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`,
         };
       }
-      if (current.vetting?.unanswered) {
+      // The unanswered waiver exists only on the consult channel (a work-item link
+      // with no third-party comment is refused at emit, never waived), so a waived
+      // stamp always carries its consultId.
+      if (current.vetting?.unanswered && current.vetting.consultId) {
         vettedUnderWaiver = {
           consultId: current.vetting.consultId,
           ...(current.vetting.unansweredReason ? { reason: current.vetting.unansweredReason } : {}),

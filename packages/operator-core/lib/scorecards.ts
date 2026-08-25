@@ -292,8 +292,10 @@ export interface ScorecardRow {
    * The vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004) —
    * present only on a vetting scorecard (a meta-rubric grading of an acceptance
    * rubric; `subject` then names the vetted rubric). The acceptance gate's
-   * `acceptance_rubric_unvetted` check reads `consultId` (the linked get_feedback
-   * consult) and `rubricRevision` (the vetted rubric's plan-row version at emit).
+   * `acceptance_rubric_unvetted` check reads the critique channel — `consultId`
+   * (the linked get_feedback consult) or `workItemId` (WI-41477: the review
+   * work-item a launched independent reviewer's comments land on) — and
+   * `rubricRevision` (the vetted rubric's plan-row version at emit).
    */
   vetting?: ScorecardVetting;
   /** The newest payload superseder that points at this scorecard, when known. */
@@ -1235,6 +1237,13 @@ export function computeRubricStaleness(
 export interface RubricTrend {
   rubricRef: string;
   sourceHive?: string;
+  /**
+   * Full rubric definition, opt-in for definition-aware detail surfaces. The trend
+   * aggregation already resolves this exact rubric once for rating-scale and contract-
+   * generation semantics, so including it adds no store read. Omitted by default to
+   * keep the agent-facing rubrics:trend payload compact.
+   */
+  definition?: Rubric;
   /** # scorecards aggregated in the window. */
   scorecardCount: number;
   /**
@@ -1323,6 +1332,11 @@ export interface ScorecardTrendFilter {
    * limit) while every known consumer wants the summary fields.
    */
   includeSeries?: boolean;
+  /**
+   * Include the already-resolved full rubric definition in the result. Default FALSE:
+   * replication drills can be long, and most trend consumers need only aggregates.
+   */
+  includeDefinition?: boolean;
 }
 
 /**
@@ -1476,6 +1490,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   return {
     rubricRef: filter.rubricRef,
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
+    ...(filter.includeDefinition && trendRubric ? { definition: trendRubric } : {}),
     scorecardCount: finalCards.length,
     sample: { limit: sampleLimit, inputCount: rows.length },
     supersededExcluded,
