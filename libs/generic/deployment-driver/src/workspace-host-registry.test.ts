@@ -71,7 +71,7 @@ describe('workspace-host provider contract', () => {
 
   it('covers the full durable lifecycle without the four frame verbs', () => {
     expect(WORKSPACE_HOST_LIFECYCLE_ACTIONS).toEqual([
-      'provision', 'start', 'stop', 'restart', 'snapshot', 'restore', 'upgrade', 'repair', 'destroy',
+      'provision', 'start', 'stop', 'restart', 'snapshot', 'restore', 'upgrade', 'repair', 'destroy', 'initialize',
     ]);
   });
 
