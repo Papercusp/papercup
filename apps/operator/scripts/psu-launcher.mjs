@@ -4993,6 +4993,42 @@ export function rehealResumeCredentials(configDir, { home = homedir() } = {}) {
 }
 
 /**
+ * Re-establish a resumed Codex session's default-account auth mirror.
+ *
+ * Fresh isolated CODEX_HOMEs inherit `~/.codex/auth.json` as a symlink, but an
+ * older home can predate the owner's system login (or Codex can replace the
+ * symlink during an OAuth refresh). An exact `--account=default` resume reuses
+ * that old home, so without this repair Codex opens its login screen even though
+ * the system account is already authenticated. This is the Codex counterpart of
+ * {@link rehealResumeCredentials}: explicit `default` means the system login,
+ * therefore the session home must resolve to the system auth file before spawn.
+ *
+ * Best-effort and idempotent. Gateway-routed resumes do not call this helper;
+ * a missing global login is a no-op so API-key-only/fresh boxes are untouched.
+ */
+export function rehealResumeCodexAuth(codexHome, { home = homedir() } = {}) {
+  try {
+    if (!codexHome) return;
+    const globalPath = join(home, ".codex", "auth.json");
+    if (!existsSync(globalPath)) return;
+    const sessPath = join(codexHome, "auth.json");
+    try {
+      if (
+        lstatSync(sessPath).isSymbolicLink() &&
+        realpathSync(sessPath) === realpathSync(globalPath)
+      )
+        return;
+    } catch {
+      /* missing or dangling — fall through and (re)heal */
+    }
+    rmSync(sessPath, { force: true });
+    symlinkSync(globalPath, sessPath);
+  } catch {
+    /* a launch must NEVER fail on credential reconciliation */
+  }
+}
+
+/**
  * Scan every real-file (non-symlink) `.credentials.json` fork under the
  * session-claude root (`sessionClaudeRoot`) for a bundle strictly newer than
  * `globalPath`'s CURRENT bundle, and promote the single newest one found into
@@ -8781,6 +8817,13 @@ async function launchResume(
           requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
         },
       );
+      // An exact resume reuses an older per-session CODEX_HOME. If that home
+      // predates the system login (or Codex replaced its symlink during OAuth
+      // refresh), explicit --account=default would otherwise open a login prompt
+      // despite ~/.codex/auth.json being healthy. Restore the same shared-auth
+      // invariant a fresh CODEX_HOME gets before applying the account route.
+      if (accountEnv?.mode === "default")
+        rehealResumeCodexAuth(env.CODEX_HOME);
       applyCodexGatewayRoute(env.CODEX_HOME, {
         mode: accountEnv?.mode ?? "default",
         id: accountEnv?.id ?? null,

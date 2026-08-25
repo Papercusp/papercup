@@ -59,6 +59,7 @@ import {
   applyOmpResumeAccountRoute,
   ompDirectModelForRoute,
   rehealResumeCredentials,
+  rehealResumeCodexAuth,
   claudeCredExpiresAt,
   gatewayPinEnv,
   gatewayAutoEnv,
@@ -7264,6 +7265,72 @@ describe("rehealResumeCredentials (WI-4727 — psu --resume re-login: heal the s
   });
 });
 
+describe("rehealResumeCodexAuth — default-account exact resumes reuse the system login", () => {
+  let home = "";
+  let codexHome = "";
+  const globalOf = () => join(home, ".codex", "auth.json");
+  const sessionOf = () => join(codexHome, "auth.json");
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-codex-auth-reheal-"));
+    codexHome = join(home, ".papercusp", "su-codex-homes", "session-42");
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    mkdirSync(codexHome, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
+
+  it("adds the missing auth symlink when the isolated home predates the system login", () => {
+    writeFileSync(globalOf(), '{"auth_mode":"chatgpt"}');
+    expect(existsSync(sessionOf())).toBe(false);
+
+    rehealResumeCodexAuth(codexHome, { home });
+
+    expect(lstatSync(sessionOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessionOf())).toBe(realpathSync(globalOf()));
+  });
+
+  it("replaces a stale isolated auth file with the explicit default system login", () => {
+    writeFileSync(globalOf(), '{"auth_mode":"chatgpt","account":"system"}');
+    writeFileSync(sessionOf(), '{"auth_mode":"chatgpt","account":"stale"}');
+
+    rehealResumeCodexAuth(codexHome, { home });
+
+    expect(lstatSync(sessionOf()).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessionOf())).toBe(realpathSync(globalOf()));
+    expect(readFileSync(sessionOf(), "utf8")).toContain('"account":"system"');
+  });
+
+  it("leaves a healthy system-auth symlink byte-identical", () => {
+    writeFileSync(globalOf(), '{"auth_mode":"chatgpt"}');
+    symlinkSync(globalOf(), sessionOf());
+    const before = lstatSync(sessionOf());
+
+    rehealResumeCodexAuth(codexHome, { home });
+
+    expect(lstatSync(sessionOf()).ino).toBe(before.ino);
+    expect(lstatSync(sessionOf()).mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it("does not clobber an isolated credential when no system login exists", () => {
+    rmSync(globalOf(), { force: true });
+    writeFileSync(sessionOf(), '{"auth_mode":"chatgpt","account":"isolated"}');
+
+    rehealResumeCodexAuth(codexHome, { home });
+
+    expect(lstatSync(sessionOf()).isSymbolicLink()).toBe(false);
+    expect(readFileSync(sessionOf(), "utf8")).toContain('"account":"isolated"');
+  });
+
+  it("never throws when the target home is absent", () => {
+    writeFileSync(globalOf(), '{"auth_mode":"chatgpt"}');
+    rmSync(codexHome, { recursive: true, force: true });
+    expect(() => rehealResumeCodexAuth(codexHome, { home })).not.toThrow();
+  });
+});
+
 describe("usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 3)", () => {
   const tty = { isTTY: true };
   const notTty = { isTTY: false };
@@ -8609,6 +8676,30 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(claim).toBeGreaterThan(-1);
     expect(configRepair).toBeGreaterThan(claim);
     expect(spawn).toBeGreaterThan(claim);
+  });
+
+  it("reheals default-account Codex auth after home repair and before route/spawn", () => {
+    const codexBranch = body.indexOf(
+      'if (session.agent === "codex" && env.CODEX_HOME)',
+    );
+    const homeRepair = body.indexOf("await ensureCodexHomeViaOperator(", codexBranch);
+    const authGuard = body.indexOf(
+      'if (accountEnv?.mode === "default")',
+      homeRepair,
+    );
+    const authRepair = body.indexOf(
+      "rehealResumeCodexAuth(env.CODEX_HOME);",
+      authGuard,
+    );
+    const route = body.indexOf("applyCodexGatewayRoute(env.CODEX_HOME", authRepair);
+    const spawn = body.indexOf("runWrapper({", route);
+
+    expect(codexBranch).toBeGreaterThan(-1);
+    expect(homeRepair).toBeGreaterThan(codexBranch);
+    expect(authGuard).toBeGreaterThan(homeRepair);
+    expect(authRepair).toBeGreaterThan(authGuard);
+    expect(route).toBeGreaterThan(authRepair);
+    expect(spawn).toBeGreaterThan(route);
   });
 
   it("exits immediately when the ended-session resume claim is lost", () => {
