@@ -22,6 +22,7 @@
  */
 import type { CaptureEnvironment, CompareVerdict, InvalidReason } from './contract';
 import { environmentsMatch } from './contract';
+import type { RequiredCaseTarget } from './ratification';
 import type { CoverageView, EvidenceView, GetDesignEvidenceResult } from './verbs';
 
 /**
@@ -52,13 +53,30 @@ export type DesignGateFailureReason =
   | 'unreadable-schema'
   | 'engine-invalid'
   | 'diff-exceeds-policy'
-  | 'no-required-cases';
+  | 'no-required-cases'
+  // D-020 class 4: evidence exists at the right environment, but it is a
+  // capture of a DIFFERENT surface. Distinguished from `no-evidence` because
+  // the remedy is opposite: not "run a comparison" — one was run, and it may
+  // even have passed at diff ratio 0 — but "capture the surface this case is
+  // actually about". Reporting it as missing would send someone to re-run the
+  // exact comparison that produced the misleading pass.
+  | 'wrong-surface';
 
 export interface DesignGateFailure {
   readonly caseId: string;
   readonly kind: DesignGateFailureKind;
   readonly reason: DesignGateFailureReason;
   readonly environment: CaptureEnvironment;
+  /**
+   * The surface this case is contracted against, so a refusal names what to
+   * capture.
+   *
+   * Optional for exactly one failure: `no-required-cases` is about the
+   * REFERENCE rather than any case, so there is no surface to name. Every
+   * failure derived from a required case carries it. This is a reporting field
+   * — `RequiredCase.target` stays required, and that is what closes the bypass.
+   */
+  readonly target?: RequiredCaseTarget;
   /** Why the reference requires this case, carried through so a refusal explains itself. */
   readonly rationale: string;
   /** The stored record this failure is about, when one exists. */
@@ -73,6 +91,8 @@ export interface DesignGateFailure {
 export interface DesignGateSatisfiedCase {
   readonly caseId: string;
   readonly environment: CaptureEnvironment;
+  /** The surface that was actually captured to satisfy this case. */
+  readonly target: RequiredCaseTarget;
   readonly evidenceArtifactId: string;
 }
 
@@ -128,8 +148,16 @@ function remedyFor(
   referenceId: string,
   activeRevision: number,
   caseId: string,
+  target?: RequiredCaseTarget,
 ): string {
   switch (reason) {
+    case 'wrong-surface':
+      return (
+        `capture ${target ? `${target.targetKind} '${target.targetId}'` : `the surface case '${caseId}' names`} ` +
+        `and re-run design-phase.compare_render for case '${caseId}' against ${referenceId} revision ${activeRevision}. ` +
+        `The current evidence at this environment is a capture of a different surface; it may carry a passing verdict, ` +
+        `because captures of different surfaces are sometimes byte-identical, but it does not answer this case`
+      );
     case 'no-evidence':
       return `run design-phase.compare_render for case '${caseId}' against ${referenceId} revision ${activeRevision}`;
     case 'superseded-revision':
@@ -171,14 +199,27 @@ function classifyUncovered(
   const sameEnvironment = evidence.filter((e) =>
     environmentsMatch(e.deterministic.environment, required.environment),
   );
-  const unreadable = sameEnvironment.find((e) => e.schemaVersionMismatch);
+  const sameSurface = sameEnvironment.filter(
+    (e) =>
+      e.deterministic.target.targetId === required.target.targetId &&
+      e.deterministic.target.targetKind === required.target.targetKind,
+  );
+
+  const unreadable = sameSurface.find((e) => e.schemaVersionMismatch);
   if (unreadable) return { kind: 'invalid', reason: 'unreadable-schema', match: unreadable };
 
   // Not current, but readable: it was measured against a revision that is no
   // longer active. That is the stale case, and it is the one an agent is most
   // likely to believe is a pass — the record says `verdict: 'pass'` right on it.
-  const superseded = sameEnvironment.find((e) => !e.current);
+  const superseded = sameSurface.find((e) => !e.current);
   if (superseded) return { kind: 'stale', reason: 'superseded-revision', match: superseded };
+
+  // Nothing for THIS surface, but something current at this environment for a
+  // different one. Naming it is the difference between a refusal someone can
+  // act on and one that sends them back to repeat their mistake — and under
+  // D-020 that other capture may carry a passing verdict at diff ratio 0.
+  const otherSurface = sameEnvironment.find((e) => e.current);
+  if (otherSurface) return { kind: 'missing', reason: 'wrong-surface', match: otherSurface };
 
   return { kind: 'missing', reason: 'no-evidence' };
 }
@@ -250,10 +291,11 @@ export function evaluateDesignGate(view: GetDesignEvidenceResult): DesignGateVer
         kind,
         reason,
         environment: required.environment,
+        target: required.target,
         rationale: required.rationale,
         ...(match ? { evidenceArtifactId: match.artifactId } : {}),
         ...(match?.deterministic.detail ? { detail: match.deterministic.detail } : {}),
-        remedy: remedyFor(reason, referenceId, activeRevision, required.caseId),
+        remedy: remedyFor(reason, referenceId, activeRevision, required.caseId, required.target),
       });
       continue;
     }
@@ -263,6 +305,7 @@ export function evaluateDesignGate(view: GetDesignEvidenceResult): DesignGateVer
       satisfiedCases.push({
         caseId: required.caseId,
         environment: required.environment,
+        target: required.target,
         evidenceArtifactId: required.evidenceArtifactId,
       });
       continue;
@@ -274,6 +317,7 @@ export function evaluateDesignGate(view: GetDesignEvidenceResult): DesignGateVer
       kind: outcome.kind,
       reason: outcome.reason,
       environment: required.environment,
+      target: required.target,
       rationale: required.rationale,
       evidenceArtifactId: required.evidenceArtifactId,
       ...(record?.deterministic.detail ? { detail: record.deterministic.detail } : {}),

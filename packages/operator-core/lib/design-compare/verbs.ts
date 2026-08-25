@@ -49,7 +49,12 @@ import {
   environmentsMatch,
 } from './contract';
 import type { PngDimensions } from './png-header';
-import type { RatifiedReference, ReferenceProvenance, RequiredCase } from './ratification';
+import type {
+  RatifiedReference,
+  ReferenceProvenance,
+  RequiredCase,
+  RequiredCaseTarget,
+} from './ratification';
 import {
   type ReferenceImageRef,
   type ReferenceScope,
@@ -389,6 +394,40 @@ export async function compareRenderVerb(
     return persist(invalid, input, deps);
   }
 
+  // PRECONDITION, BEFORE ANY ENGINE: the capture must be OF a surface this
+  // reference actually requires (D-020 class 4).
+  //
+  // Symmetric with the environment check above and refused for the same reason,
+  // one step further out: that one rejects the right surface rendered wrongly,
+  // this one rejects the wrong surface entirely. The engine cannot catch it,
+  // because there is nothing for it to catch — D-020 measured semantically
+  // different Storybook stories producing BYTE-IDENTICAL captures when their
+  // distinguishing content arrives after settle. The comparison then returns a
+  // diff ratio of 0: a perfect score, for the wrong thing. No threshold detects
+  // that, so the contract has to.
+  const requiredTargets = active.reference.requiredCases;
+  const targetIsRequired = requiredTargets.some(
+    (c) => c.target.targetId === input.target.targetId && c.target.targetKind === input.target.targetKind,
+  );
+  if (!targetIsRequired) {
+    const declared = requiredTargets
+      .map((c) => `'${c.target.targetId}' (${c.target.targetKind}, case '${c.caseId}')`)
+      .join(', ');
+    const invalid = invalidResult({
+      identity,
+      input,
+      capturedAt,
+      reason: 'target-mismatch',
+      detail:
+        `the capture is of ${input.target.targetKind} '${input.target.targetId}', which reference ` +
+        `${identity.referenceId}@${identity.revision} does not require. It requires ${declared}. ` +
+        `A comparison against an unrequired surface can still return a passing diff ratio — captures ` +
+        `of different surfaces are sometimes byte-identical — so the number it produces would look ` +
+        `like evidence of fidelity while measuring nothing that was asked for.`,
+    });
+    return persist(invalid, input, deps);
+  }
+
   const materialized = await deps.materializeReferenceImage(active.image);
   if ('error' in materialized) {
     // A reference that cannot be read is a storage/host problem, not a
@@ -506,6 +545,8 @@ export interface EvidenceView {
 export interface CoverageView {
   readonly caseId: string;
   readonly environment: CaptureEnvironment;
+  /** The surface this case is contracted against; half of what coverage matches on. */
+  readonly target: RequiredCaseTarget;
   readonly rationale: string;
   /** The current evidence for this case, or null when none has been produced. */
   readonly evidenceArtifactId: string | null;
@@ -590,12 +631,22 @@ export async function getDesignEvidenceVerb(
   });
 
   const coverage: CoverageView[] = (active?.reference.requiredCases ?? []).map((c: RequiredCase) => {
+    // Matched on environment AND surface. Environment alone was the D-020
+    // class-4 bypass: because D-019 contracts every case at the reference's own
+    // environment, an environment-keyed match cannot tell two cases apart, so
+    // the first evidence record silently answered all of them — including
+    // evidence captured from a surface the case was never about.
     const hit = evidence.find(
-      (e) => e.current && environmentsMatch(e.deterministic.environment, c.environment),
+      (e) =>
+        e.current &&
+        environmentsMatch(e.deterministic.environment, c.environment) &&
+        e.deterministic.target.targetId === c.target.targetId &&
+        e.deterministic.target.targetKind === c.target.targetKind,
     );
     return {
       caseId: c.caseId,
       environment: c.environment,
+      target: c.target,
       rationale: c.rationale,
       evidenceArtifactId: hit?.artifactId ?? null,
       verdict: hit?.deterministic.verdict ?? null,

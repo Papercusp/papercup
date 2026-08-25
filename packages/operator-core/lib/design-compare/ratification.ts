@@ -12,6 +12,7 @@
 
 import {
   type CaptureEnvironment,
+  type ImplementationTarget,
   type ReferenceClass,
   type ReferenceIdentity,
   describeEnvironment,
@@ -49,12 +50,40 @@ export interface ReferenceProvenance {
 }
 
 /**
- * One required comparison case: a viewport/state pair that must independently
- * pass. Requirement 9 — a passing case never covers a different one.
+ * Which implementation surface a required case is contracted against.
+ *
+ * No `implementationRevision`: that identifies the build a capture was taken
+ * from and changes every commit, whereas this identifies WHAT must be captured
+ * and changes only when the design's subject changes. Folding the two together
+ * would make the contract expire on every deploy.
+ */
+export interface RequiredCaseTarget {
+  readonly targetId: string;
+  readonly targetKind: ImplementationTarget['targetKind'];
+}
+
+/**
+ * One required comparison case: a surface, at an environment, that must
+ * independently pass. Requirement 9 — a passing case never covers a different
+ * one.
+ *
+ * `target` is required, and that is the whole enforcement of requirement 9.
+ * D-019 contracts every case at the reference's OWN environment, so all cases
+ * on a reference necessarily share one environment; a coverage matcher keyed on
+ * environment therefore cannot distinguish them at all, and the first evidence
+ * record answers every case at once. The surface is what actually differs.
+ *
+ * Making it optional would have been the smaller change and would have left the
+ * hole open: an unbound case matches any capture, which is exactly the D-020
+ * class-4 bypass — a reference ratified for one surface silently satisfied by a
+ * different surface whose capture is identical, at diff ratio 0, with the
+ * engine behaving perfectly.
  */
 export interface RequiredCase {
   readonly caseId: string;
   readonly environment: CaptureEnvironment;
+  /** The surface this case is contracted against. */
+  readonly target: RequiredCaseTarget;
   /** Why this case is required (e.g. 'mobile breakpoint', 'error state'). */
   readonly rationale: string;
 }
@@ -76,6 +105,7 @@ export interface RatificationError {
     | 'not-active'
     | 'no-required-cases'
     | 'duplicate-case'
+    | 'duplicate-case-target'
     | 'case-environment-mismatch'
     | 'revision-not-monotonic'
     | 'class-mismatch'
@@ -104,6 +134,7 @@ export function validateRatification(
   }
 
   const seen = new Set<string>();
+  const seenTargets = new Map<string, string>();
   for (const c of candidate.requiredCases) {
     if (seen.has(c.caseId)) {
       errors.push({
@@ -112,6 +143,31 @@ export function validateRatification(
       });
     }
     seen.add(c.caseId);
+
+    /**
+     * Two cases on one reference must not name the same surface.
+     *
+     * D-019 already forces every case onto the reference's single environment,
+     * so `target` is the ONLY thing distinguishing one case from another. Two
+     * cases sharing a target are therefore indistinguishable to the coverage
+     * matcher, and one capture would satisfy both — requirement 9's failure
+     * restated with an extra step. Rejecting it here keeps the matcher's
+     * one-evidence-one-case property true by construction rather than by
+     * convention.
+     */
+    const targetKey = `${c.target.targetKind}::${c.target.targetId}`;
+    const priorCaseId = seenTargets.get(targetKey);
+    if (priorCaseId !== undefined) {
+      errors.push({
+        code: 'duplicate-case-target',
+        message:
+          `required cases '${priorCaseId}' and '${c.caseId}' are both contracted against ` +
+          `${c.target.targetKind} '${c.target.targetId}' at the same environment, so no comparison ` +
+          `could ever satisfy one without satisfying the other; give them distinct surfaces or ` +
+          `declare a single case`,
+      });
+    }
+    seenTargets.set(targetKey, c.caseId);
 
     /**
      * A required case must be contracted at the SAME environment as the

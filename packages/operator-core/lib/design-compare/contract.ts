@@ -60,6 +60,12 @@ export const INVALID_REASONS = [
   'missing-capture',
   'dimension-mismatch',
   'environment-mismatch',
+  // D-020 class 4. The capture is of a surface this reference does not require.
+  // It is listed beside the other preconditions because it fails the same way:
+  // the engine would happily measure it and return a number, and for the
+  // indistinguishable-capture case that number is 0 — a perfect score for
+  // building the wrong thing.
+  'target-mismatch',
   'capture-failed',
   'engine-error',
   'engine-timeout',
