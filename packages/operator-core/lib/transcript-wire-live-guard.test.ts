@@ -134,47 +134,66 @@ describe('transcript wire fixtures still match the live wire', () => {
         expect(records.length).toBeGreaterThan(0);
       });
 
+      // One record type can legitimately carry SEVERAL shapes — a claude
+      // tool_result's `content` is a bare string 43 times and a block array 24
+      // times across the same three transcripts; a codex tool output is an
+      // array 164 times and a string 6 times. So the unit of comparison is the
+      // VARIANT GROUP (every fixture sharing a discriminator), and the question
+      // is whether each real record satisfies AT LEAST ONE known variant.
+      //
+      // Checking fixtures one at a time cannot express that: it either fails on
+      // the sibling shape or, if the discriminator is narrowed to select only
+      // its own shape, goes vacuous — and a genuinely NEW third shape would
+      // then match no fixture and pass unnoticed, which is the whole failure
+      // being guarded against.
+      const groups = new Map<string, WireFixture[]>();
       for (const fixture of fixtures) {
-        it(`${fixture.name}`, () => {
-          const real = records.filter((r) => matchesDiscriminator(r, fixture.discriminator));
+        const key = JSON.stringify(fixture.discriminator);
+        groups.set(key, [...(groups.get(key) ?? []), fixture]);
+      }
 
-          // A variant this session never produced is not a failure — a rollout
-          // with no `function_call` records proves nothing either way. It is
-          // reported so a variant that quietly STOPS appearing everywhere is
-          // still visible to someone reading the run.
-          if (real.length === 0) {
-            console.warn(
-              `[wire-guard] ${backend}: no real record matched "${fixture.name}" ` +
-              `in ${paths.length} transcript(s) — variant not observed, not disproved.`,
-            );
-            return;
-          }
+      for (const [key, group] of groups) {
+        const real = records.filter((r) => matchesDiscriminator(r, JSON.parse(key)));
+        const label = group.map((f) => f.name).join('  ||  ');
 
-          for (const path of fixture.readFields) {
-            const expected = resolveWirePath(fixture.record, path);
-            expect(expected, `fixture lost its own ${path}`).not.toHaveLength(0);
-            const expectedTypes = new Set(expected.map(wireTypeOf));
+        // A variant this machine's sessions never produced is not a failure —
+        // three rollouts with no `function_call` disprove nothing. Reported as
+        // a SKIP so it stays visible in the run without inventing evidence.
+        const test = real.length === 0 ? it.skip : it;
 
-            // EVERY matching real record must carry the field. One that does
-            // not is precisely the WI-41498 shape: the parser reads it, the
-            // wire stopped writing it, and the popup renders a blank chip.
-            for (const rec of real) {
-              const actual = resolveWirePath(rec, path);
-              expect(
-                actual,
-                `${backend}: real record matching "${fixture.name}" has no ${path}. ` +
-                `The wire moved — update transcript-wire-fixtures.ts AND the parser that reads it.`,
-              ).not.toHaveLength(0);
+        test(`${label}`, () => {
+          for (const rec of real) {
+            const failures: string[] = [];
 
-              const actualTypes = new Set(actual.map(wireTypeOf));
-              for (const t of actualTypes) {
-                expect(
-                  expectedTypes,
-                  `${backend}: ${path} is now "${t}" on the wire but "${[...expectedTypes].join('|')}" ` +
-                  `in the fixture. A shape change here silently reshapes what the popup renders.`,
-                ).toContain(t);
+            const satisfied = group.some((fixture) => {
+              for (const path of fixture.readFields) {
+                const expected = resolveWirePath(fixture.record, path);
+                expect(expected, `fixture "${fixture.name}" lost its own ${path}`).not.toHaveLength(0);
+                const expectedTypes = new Set(expected.map(wireTypeOf));
+
+                const actual = resolveWirePath(rec, path);
+                if (actual.length === 0) {
+                  failures.push(`${fixture.name}: no ${path}`);
+                  return false;
+                }
+                const wrongType = actual.map(wireTypeOf).find((t) => !expectedTypes.has(t));
+                if (wrongType !== undefined) {
+                  failures.push(
+                    `${fixture.name}: ${path} is "${wrongType}", fixture has "${[...expectedTypes].join('|')}"`,
+                  );
+                  return false;
+                }
               }
-            }
+              return true;
+            });
+
+            expect(
+              satisfied,
+              `${backend}: a real record matching this variant group fits NO known fixture.\n` +
+              `  ${failures.join('\n  ')}\n` +
+              `The wire moved. Update transcript-wire-fixtures.ts AND the parser that reads it — ` +
+              `a field the parser reads but the wire no longer writes renders as an empty chip, silently.`,
+            ).toBe(true);
           }
         });
       }

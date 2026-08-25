@@ -166,7 +166,6 @@ export const CODEX_WIRE_FIXTURES: readonly WireFixture[] = [
     discriminator: [
       { path: 'type', value: 'response_item' },
       { path: 'payload.type', value: 'custom_tool_call_output' },
-      { path: 'payload.output', type: 'array' },
     ],
     readFields: ['payload.type', 'payload.call_id', 'payload.output[].text'],
     record: {
@@ -194,7 +193,6 @@ export const CODEX_WIRE_FIXTURES: readonly WireFixture[] = [
     discriminator: [
       { path: 'type', value: 'response_item' },
       { path: 'payload.type', value: 'custom_tool_call_output' },
-      { path: 'payload.output', type: 'string' },
     ],
     readFields: ['payload.type', 'payload.call_id', 'payload.output'],
     record: {
@@ -509,6 +507,34 @@ export const CLAUDE_WIRE_FIXTURES: readonly WireFixture[] = [
             content: [
               { type: 'tool_reference', tool_name: 'mcp__papercusp-su__work_items_get' },
             ],
+          },
+        ],
+      },
+    },
+  },
+  {
+    // The MAJORITY shape, and the one the fixtures originally missed: measured
+    // across the three newest live transcripts, a tool_result block's `content`
+    // is a bare string 43 times and a block array 24 times. Two shapes of one
+    // record type, so a reader that handled either alone would blank most of
+    // the pane's tool results — the same defect as WI-41498, one backend over.
+    name: 'user tool_result (string variant) — `content` is a bare STRING',
+    discriminator: [
+      { path: 'type', value: 'user' },
+      { path: 'message.content[].type', value: 'tool_result' },
+    ],
+    readFields: ['message.content[].type', 'message.content[].tool_use_id', 'message.content[].content'],
+    record: {
+      type: 'user',
+      uuid: 'a1b2c3d4-0000-4000-8000-000000000005',
+      sessionId: 'c0ed9f5c-2506-4375-8c97-08001014d8c0',
+      timestamp: '2026-08-25T02:57:10.004Z',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_01Qz9WvUtSrQpOnMlKjIhGfE',
+            content: 'packages/operator-core/lib/transcript-wire.ts\n',
           },
         ],
       },
