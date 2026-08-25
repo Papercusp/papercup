@@ -429,6 +429,44 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.reason).not.toContain('testing:flakiness');
   });
 
+  it('does not project a historical red while the exact candidate is actively being judged', () => {
+    const checkpointRun = {
+      active: true,
+      activeSource: 'run-lock' as const,
+      candidate: sha,
+      startedAtMs: 123,
+      elapsedSec: 42,
+      asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+          gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
+        }),
+        gate: {
+          ...input().gate,
+          state: 'gate-red',
+          authoritative: true,
+          consecutiveReds: 4,
+          failingTests: ['historical-red.test.ts'],
+          observedCandidate: sha,
+          recordedVerdict: null,
+          checkpointRunInFlight: checkpointRun,
+        },
+      }),
+    );
+
+    expect(out.gate.candidateVerdict).toMatchObject({
+      state: 'unknown',
+      status: 'unknown',
+      green: null,
+      candidate: sha,
+    });
+    expect(out.gate.candidateVerdict.reason).toContain('active checkpoint');
+    expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
+  });
+
   describe('an exact-candidate recorded terminal verdict is immutable history', () => {
     // EI-21432980132792683 / EI-21433072117655298. Candidate 74027d.. was judged authoritative
     // exact RED and ratified terminal by stable-candidate-related-gate-2026-08-23#D-059/#D-060.
