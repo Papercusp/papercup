@@ -749,8 +749,11 @@ export class WorkspaceHostLiveCanaryHarness {
     return { ...stored };
   }
 
-  registerResource(input: WorkspaceHostCanaryResource): WorkspaceHostCanaryResource {
-    this.assertCanStartProviderWork();
+  private storeResource(
+    input: WorkspaceHostCanaryResource,
+    options: { admitProviderWork: boolean },
+  ): WorkspaceHostCanaryResource {
+    if (options.admitProviderWork) this.assertCanStartProviderWork();
     requireTimestamp(input.createdAt, 'canary resource createdAt');
     if (input.resource.target !== this.spec.target)
       throw new Error('Canary resource target does not match the run target');
@@ -765,6 +768,22 @@ export class WorkspaceHostLiveCanaryHarness {
     const stored = { ...input, tags: { ...input.tags } };
     this.resources.push(stored);
     return { ...stored, tags: { ...stored.tags } };
+  }
+
+  registerResource(input: WorkspaceHostCanaryResource): WorkspaceHostCanaryResource {
+    return this.storeResource(input, { admitProviderWork: true });
+  }
+
+  /**
+   * Rehydrate a resource that was registered before a controller restart.
+   *
+   * This validates the same identity/tag contract as registerResource but deliberately does not
+   * admit new provider work or re-apply the teardown deadline. Destroy must remain recoverable
+   * after its deadline; treating durable-ledger replay as a new create would strand the very
+   * resources the deadline exists to remove.
+   */
+  restoreRegisteredResource(input: WorkspaceHostCanaryResource): WorkspaceHostCanaryResource {
+    return this.storeResource(input, { admitProviderWork: false });
   }
 
   confirmResourceAbsent(confirmation: WorkspaceHostDestroyConfirmation): void {

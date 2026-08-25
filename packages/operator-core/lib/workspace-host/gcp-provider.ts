@@ -1202,6 +1202,17 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     return this.client.estimatePrice(desired, ctx.connection);
   }
 
+  /**
+   * Controller-independent, all-kind inventory used by the terminal destroy proof.
+   * Keeping this on the configured provider preserves the one credential-resolution seam: the
+   * DBOS workflow never serializes a client and the destroy runner never creates a second one.
+   */
+  inventoryManagedResources(
+    request: GcpWorkspaceHostInventoryRequest,
+  ): Promise<GcpWorkspaceHostInventorySnapshot> {
+    return this.client.inventoryManagedResources(request);
+  }
+
   async plan(request: WorkspaceHostPlanRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPlan> {
     if (request.action !== 'provision' && request.host.target !== GCP_WORKSPACE_HOST_TARGET) {
       throw new Error(`GCP provider cannot plan host target '${request.host.target}'`);

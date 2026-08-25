@@ -10,11 +10,19 @@
 import { randomUUID } from 'node:crypto';
 import {
   assertWorkspaceHostSecretIsolation,
+  createWorkspaceHostManualDestroyReceipt,
   nextWorkspaceHostControllerAction,
+  WORKSPACE_HOST_CANARY_TAG_KEYS,
+  WorkspaceHostLiveCanaryHarness,
   type WorkspaceHostApplyResult,
+  type WorkspaceHostCanaryCompletionReceipt,
+  type WorkspaceHostCanaryCostEvidence,
+  type WorkspaceHostCanaryOrphanCensus,
+  type WorkspaceHostContractApproval,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostDurableResourcePlan,
   type WorkspaceHostDurableWorkflowSpec,
+  type WorkspaceHostManualDestroyReceipt,
   type WorkspaceHostObservation,
   type WorkspaceHostPlan,
   type WorkspaceHostPlanStep,
@@ -24,11 +32,22 @@ import {
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
+import type {
+  GcpWorkspaceHostInventoryRequest,
+  GcpWorkspaceHostInventorySnapshot,
+} from './gcp-provider';
+import {
+  censusGcpWorkspaceHostResources,
+  type GcpWorkspaceHostResourceCensus,
+} from './gcp-safety';
 import {
   appendWorkspaceHostEvent,
   beginWorkspaceHostOperation,
+  readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostObservation,
+  recordWorkspaceHostSignals,
+  updateWorkspaceHostLifecycleState,
   updateWorkspaceHostOperation,
   upsertWorkspaceHost,
   upsertWorkspaceHostResourceCheckpoint,
@@ -97,6 +116,85 @@ export interface WorkspaceHostProvisioningResult {
   plan: WorkspaceHostPlan;
   checkpoints: readonly WorkspaceHostResourceCheckpoint[];
   retryAfterMs?: number;
+}
+
+/** External evidence the operator cannot manufacture from Compute Engine itself. */
+export interface WorkspaceHostDestroyCanaryEvidence {
+  runId: string;
+  workspaceId: string;
+  contractApproval: WorkspaceHostContractApproval;
+  maxSpendCents?: number;
+  teardownDeadlineAt: string;
+  /** Durable Cloud Billing budget resource (or an equally authoritative external budget). */
+  budgetEvidenceRef: string;
+  /** A provider read establishing the cumulative project baseline before this run mutated anything. */
+  preRunZeroBaseline: WorkspaceHostCanaryCostEvidence;
+  /** Cumulative, named cost entries known when teardown begins. */
+  costEvidence: readonly WorkspaceHostCanaryCostEvidence[];
+  /** Provider-delayed billing entries learned after the initial settle. */
+  lateObservedSpend?: readonly WorkspaceHostCanaryCostEvidence[];
+  /**
+   * Audit context for an emergency/manual teardown. Confirmations are intentionally absent here:
+   * the runner creates them only from provider-produced post-delete reads.
+   */
+  emergencyManualDestroy?: {
+    actorId: string;
+    reason: string;
+    procedureRef: string;
+  };
+}
+
+export interface WorkspaceHostDestroyEvidenceResult {
+  completionReceipt: WorkspaceHostCanaryCompletionReceipt;
+  orphanCensus: WorkspaceHostCanaryOrphanCensus;
+  providerCensus: GcpWorkspaceHostResourceCensus;
+  budgetEvidenceRef: string;
+  preRunZeroBaseline: WorkspaceHostCanaryCostEvidence;
+  manualDestroyReceipts: readonly WorkspaceHostManualDestroyReceipt[];
+}
+
+export interface WorkspaceHostDestroyResult extends WorkspaceHostProvisioningResult {
+  evidence?: WorkspaceHostDestroyEvidenceResult;
+}
+
+export interface WorkspaceHostDestroyStore {
+  readTarget: typeof readWorkspaceHostDestroyTarget;
+  beginOperation: typeof beginWorkspaceHostOperation;
+  updateOperation: typeof updateWorkspaceHostOperation;
+  readCheckpoints: typeof readWorkspaceHostResourceCheckpoints;
+  upsertCheckpoint: typeof upsertWorkspaceHostResourceCheckpoint;
+  appendEvent: typeof appendWorkspaceHostEvent;
+  recordSignals: typeof recordWorkspaceHostSignals;
+  updateHostState: typeof updateWorkspaceHostLifecycleState;
+}
+
+const DEFAULT_DESTROY_STORE: WorkspaceHostDestroyStore = {
+  readTarget: readWorkspaceHostDestroyTarget,
+  beginOperation: beginWorkspaceHostOperation,
+  updateOperation: updateWorkspaceHostOperation,
+  readCheckpoints: readWorkspaceHostResourceCheckpoints,
+  upsertCheckpoint: upsertWorkspaceHostResourceCheckpoint,
+  appendEvent: appendWorkspaceHostEvent,
+  recordSignals: recordWorkspaceHostSignals,
+  updateHostState: updateWorkspaceHostLifecycleState,
+};
+
+export interface RunWorkspaceHostDestroyInput {
+  workspaceId: string;
+  hostId: string;
+  connection: WorkspaceHostProviderConnection;
+  provider: WorkspaceHostProvider;
+  disposition: 'discard';
+  confirmation: {
+    expectedHostId: string;
+    confirmedBy: string;
+    confirmedAt: string;
+  };
+  canary: WorkspaceHostDestroyCanaryEvidence;
+  operationId?: string;
+  actorId?: string;
+  signal?: AbortSignal;
+  store?: WorkspaceHostDestroyStore;
 }
 
 function message(error: unknown): string {
