@@ -335,6 +335,10 @@ describe('coord:send handler (bulk keyed-array)', () => {
 
     expect(wakeM).toHaveBeenCalledTimes(1);
     expect(wakeM).toHaveBeenCalledWith(['bee-1'], expect.anything());
+    expect(wakeM.mock.calls[0]?.[1]).toMatchObject({
+      requiredWake: true,
+      workspaceId: 'ws1',
+    });
     expect(b.results[0].wake).toMatchObject({
       mode: 'required',
       queued: 1,
