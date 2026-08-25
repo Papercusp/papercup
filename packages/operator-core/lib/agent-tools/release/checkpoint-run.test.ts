@@ -1243,6 +1243,82 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     };
   }
 
+  it('EI-214151 begins successor reconciliation before reading the queue-selected candidate', async () => {
+    const order: string[] = [];
+    qualificationMocks.begin.mockImplementationOnce(async (_target: unknown, input: Record<string, unknown>) => {
+      order.push('begin-successor');
+      return {
+        status: 'updated',
+        transaction: qualificationTransaction(input),
+        repairQueueReconciliation: {
+          status: 'retired',
+          reason: 'exact-safe-unstarted',
+          predecessorAttemptId: 'attempt-old',
+          successorAttemptId: String(input.attemptId),
+          candidate: QUEUE_HEAD,
+        },
+      };
+    });
+    vi.doMock('../../release/checkpoint-required-ancestor', async (orig) => ({
+      ...(await orig()),
+      assessFrozenRepairQueuePreflight: vi.fn(async () => {
+        order.push('read-queue-policy');
+        return {
+          proceed: true,
+          reason: 'clear' as const,
+          candidate: CURRENT,
+          candidateSource: 'current-quiet-cut' as const,
+          repairQueue: null,
+          queueDecision: 'run-normal-gate' as const,
+          nextAttempt: null,
+          fixerSpawnId: null,
+          fixerAlive: null,
+        };
+      }),
+    }));
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/x.log',
+      willJudge: {
+        candidate: CURRENT,
+        tip: CURRENT,
+        quietCutApplied: false,
+        quietCutSec: 240,
+        excludedCommits: [],
+        excludedPaths: [],
+        excludedEligibility: [],
+        soonestEligibleInSec: null,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      assessPreLaunchExclusion: vi.fn(async () => ({
+        ...await PRELAUNCH_OPEN(),
+        candidate: CURRENT,
+        tip: CURRENT,
+      })),
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(order).toEqual(['begin-successor', 'read-queue-policy']);
+    expect(qualificationMocks.begin).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ candidate: CURRENT }),
+      { reconcileTerminalRepairQueueForSuccessor: true },
+    );
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({ candidate: CURRENT }));
+    expect(result).toMatchObject({
+      ok: true,
+      willJudge: { candidate: CURRENT, candidateSource: 'current-quiet-cut' },
+    });
+  });
+
   it('EI-21137440735672596: refuses an ordinary launch when the queue would dispatch a fixer', async () => {
     mockQueue({
       ...awaitingFixerQueue({ attempts: 2, fixerSpawnId: null }),
