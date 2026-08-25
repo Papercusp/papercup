@@ -6,14 +6,20 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { deriveRubricVersion, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import type { LlmCallFn } from '@papercusp/testing-shell/llm';
 import type { GoldQuery } from '@papercusp/memory/bench';
 import type { MemoryBackend, MemoryEntry, RememberOptions } from '@papercusp/memory';
 
 import {
   JUDGED_CLASSES,
+  JUDGED_INSTRUCTION_CONTRACT,
   JUDGED_TIER_JUDGE_MODEL,
+  JUDGED_TIER_RUBRIC_VERSION,
+  MEMORY_USEFULNESS_RUBRIC,
+  MEMORY_USEFULNESS_RUBRIC_CONTENT,
   aggregateOutcomes,
+  deriveJudgedTierRubricVersion,
   renderTopHit,
   runJudgedTier,
   sampleGoldForJudging,
@@ -62,9 +68,49 @@ describe('renderTopHit / synthesizeRun', () => {
     const run = synthesizeRun(gq('x-1', 'lexical-gap'), 'text', 12, 'judge-model');
     expect(run.turns).toHaveLength(1);
     expect(run.turns[0].assistantText).toBe('text');
-    expect(run.turns[0].latencyMs).toBe(12);
+    expect(run.turns[0].latencyMs).toBe(JUDGED_INSTRUCTION_CONTRACT.turnLatencyMs);
+    expect(run.turns[0].costUsd).toBe(JUDGED_INSTRUCTION_CONTRACT.turnCostUsd);
+    expect(run.scenarioId).toBe(JUDGED_INSTRUCTION_CONTRACT.scenarioId);
     expect(run.finishReason).toBe('completed');
     expect(run.judgeModel).toBe('judge-model');
+  });
+});
+
+describe('content-derived judged rubric contract', () => {
+  const versionOf = (rubric: unknown, instructions: unknown, scaffold = JUDGE_PROMPT_SCAFFOLD_VERSION) =>
+    deriveRubricVersion('memory-usefulness', { rubric, instructions, scaffold });
+
+  it('derives the live version from rubric, caller contract, and testing-shell scaffold', () => {
+    expect(JUDGED_TIER_RUBRIC_VERSION).toBe(
+      deriveJudgedTierRubricVersion(JUDGE_PROMPT_SCAFFOLD_VERSION),
+    );
+    expect(MEMORY_USEFULNESS_RUBRIC.version).toBe(JUDGED_TIER_RUBRIC_VERSION);
+  });
+
+  it('moves the version when rubric content, instructions, or scaffold changes', () => {
+    expect(versionOf(
+      { axes: [{ ...MEMORY_USEFULNESS_RUBRIC.axes[0], description: 'changed' }] },
+      JUDGED_INSTRUCTION_CONTRACT,
+    )).not.toBe(
+      versionOf(MEMORY_USEFULNESS_RUBRIC_CONTENT, JUDGED_INSTRUCTION_CONTRACT),
+    );
+    expect(versionOf(MEMORY_USEFULNESS_RUBRIC_CONTENT, {
+      ...JUDGED_INSTRUCTION_CONTRACT,
+      goalSummary: 'changed',
+    })).not.toBe(
+      versionOf(MEMORY_USEFULNESS_RUBRIC_CONTENT, JUDGED_INSTRUCTION_CONTRACT),
+    );
+    expect(versionOf(MEMORY_USEFULNESS_RUBRIC_CONTENT, JUDGED_INSTRUCTION_CONTRACT, 'aaaaaaaaaaaa')).not.toBe(
+      versionOf(MEMORY_USEFULNESS_RUBRIC_CONTENT, JUDGED_INSTRUCTION_CONTRACT, 'bbbbbbbbbbbb'),
+    );
+  });
+
+  it('keeps prompt-visible caller values on the shared contract path', () => {
+    const run = synthesizeRun(gq('x-1', 'lexical-gap'), renderTopHit(gq('x-1', 'lexical-gap'), null), 99, 'judge-model');
+
+    expect(run.turns[0].assistantText).toContain('(no result — the store returned nothing)');
+    expect(run.turns[0].finishReason).toBe(JUDGED_INSTRUCTION_CONTRACT.turnFinishReason);
+    expect(run.totalCostUsd).toBe(JUDGED_INSTRUCTION_CONTRACT.turnCostUsd);
   });
 });
 
@@ -165,6 +211,7 @@ describe('runJudgedTier (fake llm + in-memory backend)', () => {
     expect(entries.length).toBeGreaterThan(50);
 
     expect(report.judgeModel).toBe(JUDGED_TIER_JUDGE_MODEL);
+    expect(report.rubricVersion).toBe(JUDGED_TIER_RUBRIC_VERSION);
     expect(report.sampleSize).toBe(2 * JUDGED_CLASSES.length);
     expect(report.cards).toHaveLength(1);
 
