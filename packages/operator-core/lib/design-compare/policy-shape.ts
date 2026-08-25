@@ -36,6 +36,14 @@ export interface ClassCalibration {
   /**
    * Capture-to-capture variance of an UNCHANGED surface. The maximum is what
    * matters: a threshold below the worst observed noise fails correct work.
+   *
+   * REAL CAPTURES ONLY — see D-021. The synthetic corpus contributes nothing
+   * here even for a class it also models, because capture noise is by
+   * definition the variance between two CAPTURES of one target and the corpus
+   * never captures anything. Its `faithful` pair models a fidelity difference,
+   * which is a different quantity; pooling the two took the max of a modelled
+   * 0.0025 and a measured 0.0, produced a floor ~2600x too high, and demoted
+   * the one class that is genuinely gateable.
    */
   readonly noise: {
     readonly n: number;
@@ -46,19 +54,51 @@ export interface ClassCalibration {
    * Difference between two genuinely different renders. The minimum is what
    * matters: a threshold above the smallest observed real difference passes a
    * regression.
+   *
+   * A pair measuring EXACTLY zero is excluded and recorded in
+   * `indistinguishablePairs` instead. That is not convenience: a zero is not a
+   * measurement of how small a real change can be, it is a measurement that the
+   * two captures are the same image, and admitting it would define the
+   * regression floor as 0 — the assertion that a real change can differ by no
+   * pixels, which is false rather than merely inconvenient.
    */
   readonly regression: {
     readonly n: number;
     readonly minDiffRatio: number | null;
     readonly samples: readonly CalibrationSample[];
   };
+  /**
+   * Pairs of DIFFERENT surfaces whose captures were byte-identical (D-020).
+   *
+   * Loud rather than dropped. Each one is a live bypass: a reference ratified
+   * against one of these surfaces passes against an implementation of the
+   * other, at diff ratio zero, with the engine behaving perfectly.
+   */
+  readonly indistinguishablePairs: readonly string[];
+  /**
+   * The synthetic corpus leg, kept apart from the threshold inputs above.
+   *
+   * It answers a different question — does the ENGINE separate a faithful
+   * implementation from a drifted one, and how long does a comparison take —
+   * and it is the only leg available for classes this repo cannot capture.
+   */
+  readonly fidelityCorpus: {
+    readonly faithfulMaxDiffRatio: number | null;
+    readonly driftedMinDiffRatio: number | null;
+    readonly samples: readonly CalibrationSample[];
+  };
   readonly captureRuntime: RuntimeStats;
   readonly comparisonRuntime: RuntimeStats;
   /**
-   * The smallest image the class was measured on. One differing pixel in this
-   * image is the finest distinction the measurement could have made, and is
-   * what the derivation uses instead of treating an observed zero as a true
-   * zero.
+   * The smallest image the NOISE samples were measured on — not the smallest
+   * image in the whole cohort. One differing pixel in it is the finest
+   * distinction the noise measurement could have made, and is what the
+   * derivation uses instead of treating an observed zero as a true zero.
+   *
+   * Scoped to the noise leg deliberately: taking it from the cohort at large
+   * would let the 320x240 synthetic corpus set the precision floor for
+   * 1280x800 real captures, inflating it ~13x for no reason connected to the
+   * measurement it is supposed to bound.
    */
   readonly smallestPixelsTotal: number | null;
 }
