@@ -109,12 +109,14 @@ describe('prepareForward — classify + inject idempotencyKey', () => {
     const body = Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/list"}');
     const r = prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen });
     expect(r.klass).toBe('idempotent');
+    expect(r.rpcMethods).toEqual(['tools/list']);
     expect(r.body).toBe(body);
   });
   it('a batch [tools/call, tools/list] → keyed, key injected only into the call', () => {
     const body = Buffer.from(JSON.stringify([{ method: 'tools/call', params: { name: 'a' } }, { method: 'tools/list' }]));
     const r = prepareForward('POST', {}, body, { keyingEnabled: true, genKey: () => 'BK' });
     expect(r.klass).toBe('keyed');
+    expect(r.rpcMethods).toEqual(['tools/call', 'tools/list']);
     const arr = JSON.parse(r.body.toString());
     expect(arr[0].params._meta.idempotencyKey).toBe('BK');
     expect(arr[1].method).toBe('tools/list');
@@ -1050,6 +1052,53 @@ describe('WI-6740: upstream silence — bounded + replayed for the handshake, ne
     // not fall through to postConnectRetryable and create a fourth attempt.
     expect(calls).toBe(MAX_HANDSHAKE_TIMEOUT_RETRIES + 1);
     expect(JSON.parse(r.body).attempts).toBe(MAX_HANDSHAKE_TIMEOUT_RETRIES + 1);
+  });
+
+  it('WI-41042: timeout telemetry names tools/list instead of only the broad idempotent class', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const logFile = path.join(os.tmpdir(), `mcp-proxy-method-attribution-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    try {
+      const upstream = track(http.createServer(() => {
+        /* silent forever — force the retry and terminal records */
+      }));
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: '127.0.0.1',
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          retryBackoffMs: 10,
+          handshakeTimeoutMs: 40,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const body = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}';
+      expect((await request(port(proxy), body)).status).toBe(502);
+
+      const records = fs
+        .readFileSync(logFile, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { kind?: string; klass?: string; rpcMethods?: string[] });
+      const relevant = records.filter((record) =>
+        record.kind === 'handshake_timeout_retry' || record.kind === 'upstream_error',
+      );
+      expect(relevant.length).toBeGreaterThanOrEqual(2);
+      expect(relevant.every((record) => record.klass === 'idempotent')).toBe(true);
+      expect(relevant.every((record) => JSON.stringify(record.rpcMethods) === '["tools/list"]')).toBe(true);
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (previous === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
   });
 
   it('handshakeTimeoutRetryable — idempotent only, bounded, in-window (pure)', () => {

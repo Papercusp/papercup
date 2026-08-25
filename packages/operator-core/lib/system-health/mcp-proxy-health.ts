@@ -50,6 +50,8 @@ export interface McpProxyFailureRecord {
   attempts?: number;
   connection?: string | null;
   method?: string;
+  /** Bounded JSON-RPC protocol methods recorded by the proxy; never args/tool names. */
+  rpcMethods?: string[];
   path?: string;
   elapsedMs?: number;
   // P-006 instance tags — which proxy instance wrote this record (forensic attribution
