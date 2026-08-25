@@ -156,8 +156,7 @@ function makeExec(responses: ExecResp[]) {
   const exec: CheckpointExec = async (cmd, args, opts) => {
     calls.push({ cmd, args, opts });
     const isDependencyGenerationPublisher =
-      cmd === "bash" &&
-      args[0]?.endsWith("dependency-generation.sh") &&
+      args.some((arg) => arg.endsWith("dependency-generation.sh")) &&
       args.includes("--integration");
     // Exact-generation selection is now a setup precondition, not part of the
     // downstream command sequence each older fixture is programming. Give it a
@@ -2063,6 +2062,23 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
   const generationId = FIXTURE_DEPENDENCY_GENERATION_ID;
 
+  function expectMutexGuardedGenerationPublisher(
+    call: { cmd: string; args: string[] },
+  ) {
+    expect(call.cmd).toBe(process.execPath);
+    expect(call.args).toEqual([
+      expect.stringMatching(/scripts\/npm-install-safe\.mjs$/),
+      "--repo-root",
+      "/int",
+      "--exec-under-lock",
+      "--",
+      "bash",
+      expect.stringMatching(/apps\/operator\/bin\/release\/dependency-generation\.sh$/),
+      "--integration",
+      "/int",
+    ]);
+  }
+
   it("P-007: prepares exact source-only checkout and probes related tests in that candidate tree", async () => {
     const { exec, calls } = makeExec([
       {
@@ -2142,7 +2158,14 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       workspaceDirs: ["apps/operator", "packages/operator-core"],
     });
 
+    expect(calls[0].cmd).toBe(process.execPath);
     expect(calls[0].args).toEqual([
+      expect.stringMatching(/scripts\/npm-install-safe\.mjs$/),
+      "--repo-root",
+      "/int",
+      "--exec-under-lock",
+      "--",
+      "bash",
       expect.stringMatching(
         /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
       ),
@@ -2171,14 +2194,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       },
     ]);
     const setup = await realCheckpointDeps(cfg, exec).setupTree("cand123");
-    expect(calls[0].cmd).toBe("bash");
-    expect(calls[0].args).toEqual([
-      expect.stringMatching(
-        /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
-      ),
-      "--integration",
-      "/int",
-    ]);
+    expectMutexGuardedGenerationPublisher(calls[0]);
     expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
     expect(calls[0].opts).toMatchObject({
       timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
