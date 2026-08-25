@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -21,6 +21,7 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from '../../migration-deploy-guard';
+import { resolveCanonicalStagingRoot, resolveCanonicalStagingSqlDir } from '../../migration-drift';
 import { migrationReservationGuardSql } from '../../migration-reservation';
 // Local bindings for this module's own use — the `export { … } from` below
 // re-exports the same names for existing importers but creates no local binding.
@@ -35,6 +36,36 @@ import {
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 60;
+
+/**
+ * EI-21413636618986324: resolve `file` DETERMINISTICALLY, independent of this
+ * serving process's cwd. A relative path used to be handed raw to readFileSync
+ * and the psql `\i`, so it resolved against whichever checkout the answering
+ * worker ran from — `:3070` is a reuseport cluster, so a dry-run could resolve
+ * (ok:true) and the immediately-following confirm ENOENT on the SAME canonical
+ * relative path. Relative paths now resolve against the CANONICAL staging tree
+ * (`PAPERCUSP_INTEGRATION_ROOT` — the same source db:migrations/db:check_drift
+ * scan): first as repo-root-relative, then (bare filenames only) under the
+ * canonical sql dir. Absolute paths pass through untouched, and when the
+ * canonical root cannot be resolved the raw path is kept (legacy behavior).
+ * `attempted` lists every location tried, for the unreadable-file report.
+ */
+export function resolveMigrationFilePath(file: string): { resolved: string; attempted: string[] } {
+  if (path.isAbsolute(file)) return { resolved: file, attempted: [file] };
+  const root = resolveCanonicalStagingRoot();
+  if (!root) return { resolved: file, attempted: [file] };
+  const repoRelative = path.resolve(root, file);
+  const attempted = [repoRelative];
+  if (!existsSync(repoRelative) && path.basename(file) === file) {
+    const sqlDir = resolveCanonicalStagingSqlDir();
+    if (sqlDir) {
+      const bare = path.join(sqlDir, file);
+      attempted.push(bare);
+      if (existsSync(bare)) return { resolved: bare, attempted };
+    }
+  }
+  return { resolved: repoRelative, attempted };
+}
 
 // EI-9417: harness_shared.coord_presence / coord_event_log / work_items are
 // extremely hot (every agent heartbeat/declare-intent writes them), so even a
@@ -377,7 +408,15 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    file: z.string().min(1).describe('Absolute path to the .sql migration file to apply.'),
+    file: z
+      .string()
+      .min(1)
+      .describe(
+        'Path to the .sql migration file to apply. Absolute paths are used as-is; a relative path (or bare ' +
+          'filename) resolves against the CANONICAL staging tree (PAPERCUSP_INTEGRATION_ROOT — the same tree ' +
+          'db:migrations/db:check_drift scan), never against the serving process cwd, so dry run and confirmed ' +
+          'apply provably resolve the same file (EI-21413636618986324).',
+      ),
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
     escalate: z
@@ -415,15 +454,21 @@ export default defineTool({
     // read again inside guardResource's callback, where ENOENT escaped as an
     // opaque handler error after the caller had already acquired the schema
     // lock (EI-20208885180481722).
+    // EI-21413636618986324: resolve the path ONCE, before the early read, so the
+    // dry-run and the confirmed apply provably read the SAME file regardless of
+    // which serving checkout/worker answers each call.
+    const { resolved: resolvedFile, attempted: attemptedLocations } = resolveMigrationFilePath(args.file);
     let sqlText: string;
     try {
-      sqlText = readFileSync(args.file, 'utf8');
+      sqlText = readFileSync(resolvedFile, 'utf8');
     } catch (err) {
       return json({
         ok: false,
         applied: false,
         reason: 'migration_file_unreadable',
         file: args.file,
+        resolved_file: resolvedFile,
+        attempted_locations: attemptedLocations,
         error: err instanceof Error ? err.message : String(err),
         note: 'The migration file could not be read; no lock was acquired and no SQL was applied.',
       });
@@ -433,7 +478,9 @@ export default defineTool({
       return json({
         ok: true,
         dry_run: true,
-        would_run: `psql <admin-url> -v ON_ERROR_STOP=1 -f ${args.file}`,
+        file: args.file,
+        resolved_file: resolvedFile,
+        would_run: `psql <admin-url> -v ON_ERROR_STOP=1 -f ${resolvedFile}`,
         note: 'Pass confirm:true to acquire exclusive(db-schema), drain, then apply. The real apply also requires PAPERCUSP_ALLOW_DB_MIGRATE=1.',
       });
     }
@@ -442,9 +489,9 @@ export default defineTool({
     // Keep db:migrate fail-closed too: it is the sanctioned manual applier and
     // must not provide a route around the release-before-schema ordering rule.
     try {
-      const sqlDir = path.dirname(path.resolve(args.file));
+      const sqlDir = path.dirname(path.resolve(resolvedFile));
       const guard = verifyPendingCodeDeployMigration({
-        filename: path.basename(args.file),
+        filename: path.basename(resolvedFile),
         sqlText,
         releaseRoot: resolveDeployedReleaseRoot(sqlDir),
       });
@@ -488,7 +535,7 @@ export default defineTool({
           resource: 'db-schema',
           mode: 'exclusive',
           maxDrainSec: effectiveMaxDrainSec,
-          reason: `apply migration ${args.file}`,
+          reason: `apply migration ${resolvedFile}`,
           onTick: ({ waited_sec, holders }) => {
             emitProgress(
               undefined,
@@ -517,7 +564,7 @@ export default defineTool({
             // deploy re-runs the file (a lock-contending re-run can trip a
             // deploy's lock_timeout) — always include the INSERT in the same BEGIN/COMMIT.
             const url = getHarnessAdminUrl();
-            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n\\i ${args.file}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(args.file)}', '<sha256 of the file bytes, e.g. sha256sum ${args.file}>');\nCOMMIT;\nSQL`;
+            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n\\i ${resolvedFile}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(resolvedFile)}', '<sha256 of the file bytes, e.g. sha256sum ${resolvedFile}>');\nCOMMIT;\nSQL`;
             // EI-13299: escalate:true is the sanctioned fast path when the caller
             // (typically a cup with no shell/PG access at all) has no other way to
             // get an urgent, already-committed migration applied while the deploy
@@ -534,18 +581,18 @@ export default defineTool({
                   typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
                 const rec = await openEscalation(coordIdentity, {
                   severity: 'blocker',
-                  summary: `db:migrate withheld for ${path.basename(args.file)} — ${ownerLabel} needs a human/su to apply it (no PAPERCUSP_ALLOW_DB_MIGRATE, no shell/PG access of their own)`,
+                  summary: `db:migrate withheld for ${path.basename(resolvedFile)} — ${ownerLabel} needs a human/su to apply it (no PAPERCUSP_ALLOW_DB_MIGRATE, no shell/PG access of their own)`,
                   body:
                     `Requester: ${ownerId} (${ownerLabel})\n` +
-                    `File: ${args.file}\n` +
+                    `File: ${resolvedFile}\n` +
                     `exclusive(db-schema) is ALREADY held + drained under this request (safe to apply now).\n\n` +
-                    `Ready-to-run command (fill in the sha256 first — sha256sum ${args.file}):\n${readyCommand}\n\n` +
+                    `Ready-to-run command (fill in the sha256 first — sha256sum ${resolvedFile}):\n${readyCommand}\n\n` +
                     `Why this fired: the requester called db:migrate with escalate:true, meaning the normal apply ` +
                     `path (PAPERCUSP_ALLOW_DB_MIGRATE, or the release deploy pipeline's boot-apply) is unavailable ` +
                     `or blocked (e.g. the deploy gate is red) and the migration is urgent.`,
                   ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
                   meta: {
-                    subjectSignature: `db-migrate-withheld:${path.basename(args.file)}`,
+                    subjectSignature: `db-migrate-withheld:${path.basename(resolvedFile)}`,
                     ...(harnessSlug ? { harnessSlug } : {}),
                   },
                 });
@@ -589,7 +636,7 @@ export default defineTool({
           // D-001 resource-side idempotency: make the su_meta migration-name check
           // EXPLICIT. A retried / zombie re-apply of the SAME file short-circuits
           // here as a checked no-op even if fencing were somehow bypassed.
-          const actionKey = `migrate:${path.basename(args.file)}`;
+          const actionKey = `migrate:${path.basename(resolvedFile)}`;
           const prior = await checkResourceAction(getTxPool(), coordinationDomain, actionKey);
           if (prior.applied) {
             return json({
@@ -619,8 +666,8 @@ export default defineTool({
           // meta-command interpreter (dollar-quotes, DO blocks, COPY), keeping
           // the perf:allow A4 rationale below intact.
           const sha256 = createHash('sha256').update(sqlText).digest('hex');
-          const filenameLiteral = path.basename(args.file).replace(/'/g, "''");
-          const reservationGuard = migrationReservationGuardSql(path.basename(args.file));
+          const filenameLiteral = path.basename(resolvedFile).replace(/'/g, "''");
+          const reservationGuard = migrationReservationGuardSql(path.basename(resolvedFile));
           const backupLockGuard = migrationBackupLockGuardSql();
           // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
           // description above) — falls back to the EI-9417 default when omitted,
@@ -643,7 +690,7 @@ export default defineTool({
             // `\\i`, so no migration statement is issued behind the backup.
             backupLockGuard +
             reservationGuard +
-            `\\i ${args.file}\n` +
+            `\\i ${resolvedFile}\n` +
             `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
             `COMMIT;\n`;
           // perf:allow A4 — this tool IS the sanctioned dev-only migration
@@ -657,7 +704,7 @@ export default defineTool({
           // caller watching progress sees the phase change instead of silence
           // resuming right as the (potentially multi-attempt, backoff-retried)
           // apply begins.
-          emitProgress(undefined, JSON.stringify({ phase: 'applying', file: path.basename(args.file) }));
+          emitProgress(undefined, JSON.stringify({ phase: 'applying', file: path.basename(resolvedFile) }));
           // EI-9417: retries automatically on "canceling statement due to lock
           // timeout" against a hot coordination table (coord_presence et al) —
           // see runMigrationWithLockRetry above.
@@ -679,7 +726,7 @@ export default defineTool({
                 undefined,
                 JSON.stringify({
                   phase: 'applying',
-                  file: path.basename(args.file),
+                  file: path.basename(resolvedFile),
                   heartbeat: true,
                   elapsed_sec: elapsedSec,
                 }),
@@ -695,7 +742,7 @@ export default defineTool({
             // error skips straight to the real failure report, unchanged.
             if (
               isDuplicateMigrationLedgerFailure(r.stderr ?? '') &&
-              (await checkSchemaMigrationsRecorded(url, path.basename(args.file)))
+              (await checkSchemaMigrationsRecorded(url, path.basename(resolvedFile)))
             ) {
               return json({
                 ok: true,

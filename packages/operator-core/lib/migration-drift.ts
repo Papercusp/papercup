@@ -123,10 +123,28 @@ export function resolveDeployedSqlDir(currentSqlDir: string | null): string | nu
  * regardless of what "current" happens to be.
  */
 export function resolveCanonicalStagingSqlDir(): string | null {
+  const root = resolveCanonicalStagingRoot();
+  if (!root) return null;
+  const dir = path.resolve(root, ...SQL_DIR_REL_SEGMENTS);
+  return fs.existsSync(dir) ? dir : null;
+}
+
+/**
+ * EI-21413636618986324: the canonical staging tree's ROOT (the sibling of
+ * {@link resolveCanonicalStagingSqlDir}, which returns its sql dir). Callers
+ * that accept repo-root-relative paths (db:migrate) resolve them against THIS
+ * root — never against `process.cwd()`, which on a serving process is whichever
+ * checkout that worker happens to run from (`:3070` release vs `:3170` staging,
+ * and a reuseport cluster can even answer two consecutive calls from workers
+ * with different cwds — measured as dry-run ok then confirm ENOENT for the
+ * SAME relative path). Null when `PAPERCUSP_INTEGRATION_ROOT` is unset or does
+ * not exist — callers must fall back to their legacy behavior, not throw.
+ */
+export function resolveCanonicalStagingRoot(): string | null {
   const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
   if (!integrationRoot) return null;
-  const dir = path.resolve(integrationRoot, ...SQL_DIR_REL_SEGMENTS);
-  return fs.existsSync(dir) ? dir : null;
+  const root = path.resolve(integrationRoot);
+  return fs.existsSync(root) ? root : null;
 }
 
 /**
