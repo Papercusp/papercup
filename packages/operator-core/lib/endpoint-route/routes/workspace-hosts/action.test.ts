@@ -55,6 +55,7 @@ function harness() {
     name: 'Canary host',
     connectionId: 'connection-1',
     target: 'gcp',
+    observedState: 'running',
     desired,
     resources: [],
   }));

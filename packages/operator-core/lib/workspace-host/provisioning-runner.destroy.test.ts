@@ -13,6 +13,7 @@ import {
   runWorkspaceHostDestroy,
   type RunWorkspaceHostDestroyInput,
   type WorkspaceHostDestroyStore,
+  WorkspaceHostProvisioningRequestError,
 } from './provisioning-runner';
 
 const NOW = '2026-08-25T00:00:00.000Z';
@@ -184,6 +185,7 @@ function storeHarness() {
       name: 'Canary host',
       connectionId: 'connection-1',
       target: 'gcp',
+      observedState: 'running',
       desired,
       resources: resources.map((resource) => ({ resource, registeredAt: NOW })),
     })),
@@ -275,5 +277,20 @@ describe('runWorkspaceHostDestroy', () => {
     expect(result.status).toBe('failed');
     expect(updateHostState).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'absent' }));
     expect(updateOperation).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'failed', percent: 99 }));
+  });
+
+  it('rejects invalid cumulative evidence before planning or deleting any provider resource', async () => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness();
+    const input = runInput(provider, store);
+    input.canary = {
+      ...input.canary,
+      costEvidence: [{ cents: 2_501, observedAt: LATER, providerEvidenceRef: 'gcp://billing/over-ceiling' }],
+      lateObservedSpend: [],
+    };
+
+    await expect(runWorkspaceHostDestroy(input)).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
   });
 });

@@ -33,6 +33,53 @@ interface WorkspaceHostActionBody {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+function isCostEvidence(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.cents === 'number' &&
+    typeof value.observedAt === 'string' &&
+    typeof value.providerEvidenceRef === 'string' &&
+    (value.reservationId === undefined || typeof value.reservationId === 'string')
+  );
+}
+
+function parseCanaryEvidence(value: unknown): WorkspaceHostDestroyCanaryEvidence | null {
+  if (!isRecord(value) || !isRecord(value.contractApproval) || !isCostEvidence(value.preRunZeroBaseline)) {
+    return null;
+  }
+  if (!Array.isArray(value.costEvidence) || !value.costEvidence.every(isCostEvidence)) return null;
+  if (
+    value.lateObservedSpend !== undefined &&
+    (!Array.isArray(value.lateObservedSpend) || !value.lateObservedSpend.every(isCostEvidence))
+  ) {
+    return null;
+  }
+  if (
+    value.emergencyManualDestroy !== undefined &&
+    (!isRecord(value.emergencyManualDestroy) ||
+      typeof value.emergencyManualDestroy.actorId !== 'string' ||
+      typeof value.emergencyManualDestroy.reason !== 'string' ||
+      typeof value.emergencyManualDestroy.procedureRef !== 'string')
+  ) {
+    return null;
+  }
+  if (
+    typeof value.runId !== 'string' ||
+    typeof value.workspaceId !== 'string' ||
+    typeof value.teardownDeadlineAt !== 'string' ||
+    typeof value.budgetEvidenceRef !== 'string' ||
+    (value.maxSpendCents !== undefined && typeof value.maxSpendCents !== 'number') ||
+    value.contractApproval.status !== 'approved' ||
+    typeof value.contractApproval.suiteVersion !== 'string' ||
+    typeof value.contractApproval.reportRef !== 'string' ||
+    typeof value.contractApproval.approvedBy !== 'string' ||
+    typeof value.contractApproval.approvedAt !== 'string'
+  ) {
+    return null;
+  }
+  return value as unknown as WorkspaceHostDestroyCanaryEvidence;
+}
+
 export interface WorkspaceHostActionRouteDependencies {
   activeWorkspaceId: () => string;
   provisioningAvailable: () => boolean;
@@ -90,7 +137,8 @@ export function createWorkspaceHostActionRoute(
       if (expectedHostId !== hostId || !confirmedBy || !Number.isFinite(Date.parse(confirmedAt))) {
         return requestError('destroy confirmation must name this host, an actor, and an ISO timestamp');
       }
-      if (!isRecord(body.canary)) return requestError('destroy canary evidence is required');
+      const canary = parseCanaryEvidence(body.canary);
+      if (!canary) return requestError('valid destroy canary evidence is required');
       if (!dependencies.provisioningAvailable()) {
         return requestError('workspace-host provisioning workflow is unavailable on this operator', 503);
       }
@@ -118,7 +166,7 @@ export function createWorkspaceHostActionRoute(
           connection: { ...stored.connection, scope: target.desired.scope },
           disposition: 'discard',
           confirmation: { expectedHostId, confirmedBy, confirmedAt },
-          canary: body.canary as unknown as WorkspaceHostDestroyCanaryEvidence,
+          canary,
           ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
           actorId: confirmedBy,
         });

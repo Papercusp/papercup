@@ -126,6 +126,7 @@ describe('workspace-host observability store', () => {
         name: 'Canary host',
         connection_id: 'connection-1',
         target: 'gcp',
+        observed_state: 'running',
         desired_spec: { hostId: 'host-1', target: 'gcp', region: 'us-central1' },
       },
     ]);
