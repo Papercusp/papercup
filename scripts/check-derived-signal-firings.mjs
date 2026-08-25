@@ -293,21 +293,25 @@ const MEANING = {
   'no-data': 'nothing censused in this window — uninterpretable, neither pass nor fail',
 };
 
-export function formatReport(rows, roll, now, ctx = {}) {
+export function formatReport(rows, roll, now, scope = {}) {
+  // The CLI passes the result of resolveTelemetryScope here.  Keep the formatter
+  // on that resolved report-scope surface rather than treating an ambient MCP
+  // context's `harnessSlug` (which may be the '*' sentinel) as an identity.
+  const { workspaceId, harnessSlug, censusRows = 0, staleVersionRows = 0 } = scope;
   const out = [`\nDERIVED-SIGNAL FIRING PROBE — is each derived relation alive in production? (P-007 / D-088)\n`];
-  if (ctx.workspaceId || ctx.harnessSlug) {
+  if (workspaceId || harnessSlug) {
     out.push(
-      `  scope: workspace=${ctx.workspaceId ?? DEFAULT_WORKSPACE_ID} · ` +
-        `harness=${ctx.harnessSlug ?? DEFAULT_HARNESS_SLUG} + ${WORKSPACE_GLOBAL_HARNESS_SLUG}\n`,
+      `  scope: workspace=${workspaceId ?? DEFAULT_WORKSPACE_ID} · ` +
+        `harness=${harnessSlug ?? DEFAULT_HARNESS_SLUG} + ${WORKSPACE_GLOBAL_HARNESS_SLUG}\n`,
     );
   }
-  out.push(`  window: ${WINDOW_DAYS}d · census rows: ${ctx.censusRows ?? 0} (v${CENSUS_VERSION}) · source: ${RELATIONS_SOURCE}\n`);
-  if (ctx.staleVersionRows) {
+  out.push(`  window: ${WINDOW_DAYS}d · census rows: ${censusRows} (v${CENSUS_VERSION}) · source: ${RELATIONS_SOURCE}\n`);
+  if (staleVersionRows) {
     // Say this out loud rather than reporting a quietly smaller number: during the
     // changeover the excluded rows are the MAJORITY, and a reader who does not know
     // that will read a thin post-bump window as "the signal went quiet".
     out.push(
-      `  ⚠ ${ctx.staleVersionRows} row(s) in this window are from an OLDER census instrument (not v${CENSUS_VERSION}) and are\n` +
+      `  ⚠ ${staleVersionRows} row(s) in this window are from an OLDER census instrument (not v${CENSUS_VERSION}) and are\n` +
         `    excluded — they measured \`inputs\` differently, so folding them in would average two instruments.\n` +
         `    Expected while the bump rolls out; the window refills at the current version.\n`,
     );
