@@ -2882,7 +2882,7 @@ export async function reserveFrozenCandidateRepairFixer(
         AND (
           ${allowCreate ? "metadata->'repair_queue' IS NULL OR metadata->'repair_queue' = 'null'::jsonb OR" : ''}
           (
-            metadata->'repair_queue' - 'dispatchReservation' = $4::jsonb
+            (metadata->'repair_queue') - 'dispatchReservation' = $4::jsonb
             AND (
               metadata->'repair_queue'->'dispatchReservation' IS NULL
               OR COALESCE(

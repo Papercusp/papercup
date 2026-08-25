@@ -153,6 +153,7 @@ import {
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
   readFrozenCandidateRepairQueue,
+  reserveFrozenCandidateRepairFixer,
   writeFrozenCandidateRepairQueue,
   type AutoServePlan,
   type DeployEventRow,
@@ -2167,6 +2168,35 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       ),
       ['ws-42', 'my-harness'],
     );
+  });
+
+  it('reserves an unassigned fixer with precedence-safe JSONB subtraction', async () => {
+    const awaitingQueue: FrozenCandidateRepairQueue = {
+      ...queue,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      phase: 'awaiting-fixer',
+      repairHead: queue.candidate,
+      attempts: 0,
+      fixerSpawnId: null,
+    };
+    fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
+      const reservedQueue = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
+      return [{ repair_queue: reservedQueue }] as never;
+    });
+
+    const reserved = await reserveFrozenCandidateRepairFixer(target, awaitingQueue, { nowMs: 100 });
+
+    expect(reserved).toMatchObject({
+      phase: 'awaiting-fixer',
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: {
+        claimedAtMs: 100,
+        expiresAtMs: 300_100,
+      },
+    });
+    const [statement] = fakeSql.unsafe.mock.calls.at(-1)!;
+    expect(statement).toContain("(metadata->'repair_queue') - 'dispatchReservation'");
   });
 });
 
