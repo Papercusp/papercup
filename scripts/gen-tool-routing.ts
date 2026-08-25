@@ -73,20 +73,13 @@ function nodeScript(script: string, args: string[], input?: string): string {
 }
 
 function readCanonicalRoutingPart(): string {
-  const body = nodeScript(SET_DOC_PART, [
-    '--doc-id',
+  return nodeScript(SET_DOC_PART, [
+    "--doc-id",
     DOC_ID,
-    '--part-key',
+    "--part-key",
     ROUTING_PART_KEY,
-    '--show',
+    "--show",
   ]);
-
-  // `set-doc-part --show` writes through writeStdoutSync, whose safety contract
-  // appends one line terminator before the child exits. The generated block has
-  // no trailing newline, so remove that transport terminator before comparing it
-  // with renderRoutingBlock. Without this, --check reports false drift and the
-  // guarded write then correctly refuses the identical body.
-  return body.endsWith('\n') ? body.slice(0, -1) : body;
 }
 
 function writeCanonicalRoutingPart(body: string): void {
