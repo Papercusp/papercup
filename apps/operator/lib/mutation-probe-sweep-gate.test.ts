@@ -73,12 +73,12 @@ let subject: string;
  * git-sync lock resource from the repo root it is standing in, so running here
  * also proves that name is DERIVED rather than hardcoded to this checkout.
  */
-function runProbe(args: string[]) {
+function runProbe(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync('bash', [PROBE, ...args], {
     cwd: scratch,
     encoding: 'utf8',
     timeout: 60_000,
-    env: { ...process.env, TMPDIR: scratch },
+    env: { ...process.env, TMPDIR: scratch, ...extraEnv },
   });
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
@@ -136,6 +136,33 @@ afterAll(() => {
 });
 
 describe('mutation-probe.sh --in-tree sweep-race gate', () => {
+  it('REFUSES --in-tree from a capability:bash foreground child before touching the tracked file', () => {
+    const { status, out } = runProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--sweep-lock-held',
+      ],
+      {
+        PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '1',
+        PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS: '50000',
+      },
+    );
+
+    // The foreground handler kills the whole child tree at its deadline, so
+    // this refusal must happen before the probe creates scratch state or
+    // applies the deliberately-wrong tracked-file mutation.
+    expect(status).toBe(2);
+    expect(out).toContain('REFUSING --in-tree from capability:bash foreground execution');
+    expect(out).toContain('captured timeout: 50000ms');
+    expect(out).toContain('run_in_background: true');
+    expect(out).not.toContain('mutant applied:');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
   it('REFUSES --in-tree with no acknowledgement, and hands over the exact lock incantation', () => {
     const { status, out } = runProbe([
       '--file', subject,

@@ -3,7 +3,7 @@
  * for one capability:bash child without entering the command, operator process
  * environment, result, streamed events, or spill output.
  */
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,7 +24,11 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
 }));
 
 import bashTool from './bash';
-import { __resetBashJobs } from './bash-jobs';
+import {
+  CAPABILITY_BASH_FOREGROUND_ENV,
+  CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV,
+  __resetBashJobs,
+} from './bash-jobs';
 
 type ToolResult = {
   content: Array<{ text: string }>;
@@ -63,6 +67,36 @@ afterEach(() => {
 });
 
 describe('capability:bash integration_env', () => {
+  it('marks foreground children and clears the marker for background children', async () => {
+    const { ctx } = makeCtx();
+    const foreground = await bash.handler(
+      {
+        command: `printf '%s|%s' "$${CAPABILITY_BASH_FOREGROUND_ENV}" "$${CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV}"`,
+        timeout: 12_345,
+      },
+      ctx,
+    );
+    expect(foreground.content[0]!.text).toContain('1|12345');
+
+    const markerFile = join(STATE, `foreground-marker-${process.pid}-${Date.now()}`);
+    try {
+      await bash.handler(
+        {
+          command: `printf '%s|%s' "$${CAPABILITY_BASH_FOREGROUND_ENV}" "$${CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV}" > ${JSON.stringify(markerFile)}`,
+          run_in_background: true,
+          timeout: 1_000,
+        },
+        ctx,
+      );
+      for (let attempt = 0; attempt < 100 && !existsSync(markerFile); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(readFileSync(markerFile, 'utf8')).toBe('|');
+    } finally {
+      if (existsSync(markerFile)) unlinkSync(markerFile);
+    }
+  });
+
   it('injects by saved name into only the child and returns names/masks while redacting output', async () => {
     const { ctx, emitted } = makeCtx({ codeMode: true });
     const result = await bash.handler(
