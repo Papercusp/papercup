@@ -146,6 +146,8 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:cancel')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('work_items:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('loop:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
@@ -158,6 +160,14 @@ describe('ptool call deadlines', () => {
       name: 'work_items:get',
       args: { id: 'EI-21281814895308307' },
     })).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'activity:tool-log',
+      args: { owner: 'su-04f38', max_lines: 20 },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:deploy',
+      args: { op: 'status' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'events:cancel',
       args: { delivery_id: 164257 },

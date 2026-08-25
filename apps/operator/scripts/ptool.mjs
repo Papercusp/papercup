@@ -895,6 +895,17 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // may-have-executed timeout.
   ['plans:set-plan-status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
+  // EI-21386877660531420: activity:tool-log scans and compacts the activity
+  // ledger. In a concurrent projected batch that read can outlive ptool's
+  // ordinary 30s deadline even though it is bounded and still progressing.
+  // Keep the client outside the transport cap so tools:invoke returns the
+  // structured log instead of an ambiguous MCP -32001.
+  ['activity:tool-log', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21386877660531420: release:deploy status fans out through the release
+  // pipeline and has a 20s server-side status bound. The dispatch queue and
+  // projection overhead can consume the ordinary 30s client budget when it
+  // runs beside other compound reads; preserve its typed status envelope.
+  ['release:deploy', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21385061122156093: these durable writers can each spend the full
   // coordination/serialization window before returning their receipt. A 30s
   // client cutoff abandoned all three calls in one concurrent batch; loop's
