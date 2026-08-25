@@ -33,7 +33,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -146,6 +146,47 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     expect(fn).toMatch(/echo "\$1"/);
   });
 
+  it('protects the run only until its first federation leg is decided', () => {
+    // EI-21412456902012315: five consecutive pc-heavy preemptions killed the gate during
+    // rebuild and banked content-matrix/from-repo/local-matrix all as '?'. Reuse pc-heavy's
+    // after-ready barrier instead of disabling cooperative preemption for the whole multi-hour
+    // gate: the marker is active through content-matrix, then removed before the long tail.
+    const wrapper = gate
+      .split('\n')
+      .find((line) => line.includes('PC_HEAVY_PREEMPT_AFTER_READY='));
+    expect(wrapper, 'the gate wrapper no longer opts into pc-heavy after-ready protection').toBeTruthy();
+    expect(wrapper).toContain('${PC_HEAVY_PREEMPT_AFTER_READY:-1}');
+
+    const protectCalls = [...gate.matchAll(/^gate_preempt_protect_until_first_verdict$/gm)];
+    const releaseCalls = [...gate.matchAll(/^gate_preempt_release_after_first_verdict$/gm)];
+    expect(protectCalls, 'the protection helper must be called exactly once').toHaveLength(1);
+    expect(releaseCalls, 'the release helper must be called exactly once').toHaveLength(1);
+
+    const protectAt = protectCalls[0].index!;
+    const firstFreshExit = gate.indexOf('# ── fresh-exit:');
+    const matrixInit = gate.indexOf('MATRIX_RES="${ATTESTATION_WALL_TOKEN:-SKIPPED}"');
+    const releaseAt = releaseCalls[0].index!;
+    const fromRepoInit = gate.indexOf('FROMREPO_RES="${ATTESTATION_WALL_TOKEN:-SKIPPED}"');
+    expect(protectAt).toBeLessThan(firstFreshExit);
+    expect(firstFreshExit).toBeLessThan(matrixInit);
+    expect(releaseAt).toBeGreaterThan(matrixInit);
+    expect(releaseAt).toBeLessThan(fromRepoInit);
+    expect(gate.slice(matrixInit, releaseAt)).toContain('log "content-matrix → $MATRIX_RES"');
+
+    const publishFn = gate.match(/^gate_preempt_protect_until_first_verdict\(\) \{[\s\S]*?^\}$/m)?.[0];
+    const releaseFn = gate.match(/^gate_preempt_release_after_first_verdict\(\) \{[\s\S]*?^\}$/m)?.[0];
+    expect(publishFn).toContain('set -C');
+    expect(publishFn).toContain('exit 75');
+    expect(releaseFn).toContain('rm -f -- "$marker"');
+    // Permanent negative control: disabling preemption outright would satisfy the no-'?'
+    // symptom by starving every exclusive materializer behind a potentially multi-hour run.
+    const executableDisable = gate
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .filter((line) => line.includes('PC_HEAVY_PREEMPTIBLE=0'));
+    expect(executableDisable).toEqual([]);
+  });
+
   it('keeps the bank a FILE under $STATE_DIR, for the same reason the markers are', () => {
     // The gate must keep recording when the operator/PG is down.
     const decl = gate.match(/^GATE_VERDICT_LOG="\$\{GATE_VERDICT_LOG:-[^"]*\}"$/m)?.[0];
@@ -248,6 +289,22 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     const rows = readBank(dir);
     expect(rows).toHaveLength(1);
     expect(rows[0].verdict).toBe('FRESH');
+  }, 60_000);
+
+  it('publishes the real after-ready marker and pc-heavy cleans it on an early verdict', () => {
+    const stateDir = freshStateDir('last-green');
+    const readyDir = mkdtempSync(join(tmpdir(), 'lfg-preempt-ready-'));
+    const { stdout, stderr, status } = runGate({
+      GATE_STATE_DIR: stateDir,
+      PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+    });
+
+    expect(status, `${stdout}\n${stderr}`).toBe(0);
+    expect(stdout).toMatch(/^GATE: FRESH /m);
+    expect(stderr).toContain('pc-heavy protection ACTIVE until content-matrix has a concrete state');
+    // This FRESH path exits before the in-script release boundary. The outer monitor is the
+    // last-resort cleanup owner, so even an early verdict must leave no stale protection file.
+    expect(readdirSync(readyDir)).toEqual([]);
   }, 60_000);
 
   it('records WHETHER the run was journald-observable — the distinction that lost the 08-12 green', () => {
