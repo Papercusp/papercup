@@ -72,6 +72,7 @@ export default defineTool({
 
     const opened = await openConversation(identity, {
       kind: 'discussion',
+      producer: 'conversations:post',
       body: args.body,
       title: args.title,
       topics: args.topics,

@@ -271,6 +271,7 @@ export function makeLiveBoundaryPorts(opts: { identity: AgentIdentity; harness?:
     async openAsk(env) {
       const res = await openConversation(opts.identity, {
         kind: 'question',
+        producer: 'cross-hive-boundary',
         title: `[cross-Hive ask · ${peerTag(env.fromHivePubkey)}] ${env.subject}`,
         body: env.body,
         ...(opts.harness ? { harness_slug: opts.harness } : {}),

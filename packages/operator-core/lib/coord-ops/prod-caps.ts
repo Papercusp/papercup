@@ -108,6 +108,7 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
       }
       const r = await openConversation(identity, {
         kind: input.kind ?? 'discussion',
+        producer: input.producer,
         body,
         title: input.title,
         topics: input.topics,

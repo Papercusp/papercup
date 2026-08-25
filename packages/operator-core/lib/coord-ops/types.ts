@@ -25,6 +25,7 @@ import type { ZodType } from 'zod';
 // and re-exported so coord-op consumers keep one type.
 import type { ProgramOutcome } from '@papercusp/step-program';
 import type { InterestAutoArmHandle } from '../interest-auto-arm.js';
+import type { ConversationProducer } from '../agent-tools/coordination/conversations-store.js';
 export type { ProgramOutcome };
 
 /** A thread post as the collect/aggregate ops consume it (a slim ThreadPostRow). */
@@ -77,6 +78,12 @@ export interface CoordOpCaps {
     kind?: 'question' | 'discussion';
     topics?: string[];
     harness?: string;
+    /** Which tool this thread is being opened BY (EI-21462599108204160).
+     *  Threaded through the capability rather than hardcoded in prod-caps
+     *  because more than one op opens threads through this same seam — the
+     *  owner ask (`coord:ask-owner`) and `coord:thread-open` are not the
+     *  same producer, and only the op knows which it is. */
+    producer: ConversationProducer;
     /** Replace an open owner ask instead of creating a second live gate. */
     supersedes_conversation_id?: string;
   }): Promise<{ thread_id: string; conversation_id: string; interest_watch?: InterestAutoArmHandle }>;

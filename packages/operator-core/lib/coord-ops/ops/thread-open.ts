@@ -31,6 +31,7 @@ export const threadOpenOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
       title: a.title,
       body: a.body ?? a.title ?? 'Coordination thread',
       kind: a.kind,
+      producer: 'coord:thread-open',
       topics: a.topics,
       harness: a.harness ?? ctx.harnessSlug,
     });

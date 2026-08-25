@@ -68,6 +68,7 @@ export default defineTool({
 
     const opened = await openConversation(identity, {
       kind: 'question',
+      producer: 'coord:ask',
       body: args.question,
       topics: args.topics,
       harness_slug: args.harness,

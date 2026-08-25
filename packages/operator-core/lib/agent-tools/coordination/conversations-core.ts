@@ -305,6 +305,7 @@ export async function openConversationCore(
     asker_id: identity.ownerId,
     title: input.title ?? null,
     body: input.body,
+    producer: input.producer,
     created_ts: now,
   });
   return materializeOpenedConversation(deps, identity, input, conversation);
@@ -348,6 +349,14 @@ export async function supersedeConversationCore(
   if (!input.replacement.body.trim()) return { error: 'invalid_replacement' };
 
   const now = deps.nowIso();
+  // The replacement INHERITS the original's producer: superseding is a retraction
+  // and re-ask of the SAME question by the same tool, so attributing it to the
+  // supersede verb would lose exactly the attribution this column exists to keep.
+  // A row opened before the column existed (or federated from an older peer) has
+  // nothing to inherit — only then does the supersede verb name itself.
+  const replacementProducer: ConversationProducer = isConversationProducer(old.producer)
+    ? old.producer
+    : 'conversations:supersede';
   const replacementInput: CreateConversationInput = {
     id: deps.newId('conv'),
     kind: input.replacement.kind ?? old.kind,
@@ -356,6 +365,7 @@ export async function supersedeConversationCore(
     asker_id: identity.ownerId,
     title: input.replacement.title ?? old.title,
     body: input.replacement.body,
+    producer: replacementProducer,
     created_ts: now,
   };
   const swapped = await deps.conversations.supersede(old.id, replacementInput, { now_ts: now });
@@ -372,6 +382,7 @@ export async function supersedeConversationCore(
     {
       kind: replacementInput.kind,
       body: replacementInput.body,
+      producer: replacementProducer,
       title: replacementInput.title ?? undefined,
       topics: input.replacement.topics,
       scope: replacementInput.scope,

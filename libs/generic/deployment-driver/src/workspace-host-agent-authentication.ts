@@ -68,6 +68,19 @@ export interface WorkspaceHostAgentAuthenticationProbeSpec {
 }
 
 /**
+ * Matches "<label><separator><subject>" in a status line, where the subject is an email or a
+ * bare account identifier.
+ *
+ * The separator class is `[^A-Za-z0-9]`, NOT `\D`. `\D` means "not a digit", so it matches
+ * letters — a greedy run of it consumes the subject and backtracks to capture only the tail
+ * ("ai" of "canary@papercup.ai"), producing a stable-looking digest of the wrong string. A class
+ * that cannot consume the capture's own first character makes that failure impossible rather
+ * than merely unlikely.
+ */
+const SUBJECT_PATTERN =
+  /(?:account|email|organi[sz]ation|org|logged in as|signed in as)\b[^A-Za-z0-9]{0,24}([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9][A-Za-z0-9._-]{2,63})/i;
+
+/**
  * The defaults, grounded in each CLI's own documented help output.
  *
  * `subjectPattern` is deliberately permissive about surrounding prose and strict about the shape
@@ -82,8 +95,9 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES: Readonly<
     args: ['auth', 'status'],
     endpoint: 'https://api.anthropic.com',
     // An email, or an account/organization identifier, whichever the status line reports.
-    subjectPattern:
-      /(?:account|email|organization|org|logged in as)\D{0,24}([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9][A-Za-z0-9._-]{2,63})/i,
+    // The separator class deliberately EXCLUDES alphanumerics: a `\D`-style separator matches
+    // letters, so a greedy run would swallow the subject itself and capture only its tail.
+    subjectPattern: SUBJECT_PATTERN,
     subjectDisclosure: 'digest',
   },
   codex: {
@@ -91,8 +105,7 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_AUTHENTICATION_PROBES: Readonly<
     command: 'codex',
     args: ['login', 'status'],
     endpoint: 'https://api.openai.com',
-    subjectPattern:
-      /(?:account|email|organization|org|logged in as|signed in as)\D{0,24}([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z0-9][A-Za-z0-9._-]{2,63})/i,
+    subjectPattern: SUBJECT_PATTERN,
     subjectDisclosure: 'digest',
   },
   omp: {

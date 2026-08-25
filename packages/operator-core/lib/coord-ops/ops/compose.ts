@@ -135,6 +135,11 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
       title: a.question,
       body: a.body ?? a.question,
       kind: 'question',
+      // This op is registered as `coord:ask` but the EXPOSED agent tool is
+      // `coord:ask-owner` (coord-ops/agent-tools.ts:101,137) — the user-facing
+      // name is what makes the attribution readable, and it is distinct from
+      // the agent-to-agent `coord:ask` in tools/ask.ts.
+      producer: 'coord:ask-owner',
       topics: a.topics,
       harness: ctx.harnessSlug,
       supersedes_conversation_id: a.supersedes_conversation_id,

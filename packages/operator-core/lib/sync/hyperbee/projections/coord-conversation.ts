@@ -49,6 +49,9 @@ export interface CoordConversationRow {
   accepted_answer: string | null;
   capture_target: string | null;
   promoted_issue_id: string | null;
+  /** The tool that opened it. NULL from a peer running pre-attribution code —
+   *  federation must not invent one (EI-21462599108204160). */
+  producer: string | null;
   created_at: number;          // epoch ms
   updated_at: number;          // epoch ms
   resolved_at: number | null;  // epoch ms | null
@@ -82,6 +85,7 @@ export function isCoordConversationRow(input: unknown): input is CoordConversati
   if (!isStringOrNull(r.accepted_answer)) return false;
   if (!isStringOrNull(r.capture_target)) return false;
   if (!isStringOrNull(r.promoted_issue_id)) return false;
+  if (!isStringOrNull(r.producer)) return false;
   if (!isFiniteNumber(r.created_at)) return false;
   if (!isFiniteNumber(r.updated_at)) return false;
   if (!(r.resolved_at === null || isFiniteNumber(r.resolved_at))) return false;
@@ -164,12 +168,12 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.coord_conversations
       (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, state,
-       accepted_answer, capture_target, promoted_issue_id,
+       accepted_answer, capture_target, promoted_issue_id, producer,
        created_at, updated_at, resolved_at, origin, author_pubkey, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.id}, ${row.kind}, 'harness', ${row.harness_slug}, ${row.asker_id},
        ${row.title}, ${row.body}, ${row.state}, ${row.accepted_answer}, ${row.capture_target},
-       ${row.promoted_issue_id},
+       ${row.promoted_issue_id}, ${row.producer},
        to_timestamp(${row.created_at} / 1000.0),
        to_timestamp(${row.updated_at} / 1000.0),
        ${row.resolved_at === null ? null : sql`to_timestamp(${row.resolved_at} / 1000.0)`},
@@ -183,6 +187,7 @@ async function writeToPg(
       accepted_answer   = EXCLUDED.accepted_answer,
       capture_target    = EXCLUDED.capture_target,
       promoted_issue_id = EXCLUDED.promoted_issue_id,
+      producer          = EXCLUDED.producer,
       updated_at        = EXCLUDED.updated_at,
       resolved_at       = EXCLUDED.resolved_at,
       origin            = EXCLUDED.origin,

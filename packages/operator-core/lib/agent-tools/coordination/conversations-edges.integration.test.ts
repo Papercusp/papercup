@@ -37,12 +37,21 @@ import type { AgentIdentity } from './identity';
 import {
   answerQuestionCore,
   getConversationCore,
-  openConversationCore,
+  openConversationCore as openConversationCoreRaw,
   promoteConversationCore,
   resolveConversationCore,
   type CaptureFn,
   type ConversationDeps,
 } from './conversations-core';
+
+/** See the note in __tests__/conversations-core.test.ts: `producer` is required on
+ *  the open path (EI-21462599108204160); these suites are not about attribution. */
+type OpenArg = Parameters<typeof openConversationCoreRaw>[2];
+const openConversationCore = (
+  deps: Parameters<typeof openConversationCoreRaw>[0],
+  identity: Parameters<typeof openConversationCoreRaw>[1],
+  input: Omit<OpenArg, 'producer'> & Partial<Pick<OpenArg, 'producer'>>,
+) => openConversationCoreRaw(deps, identity, { producer: 'test', ...input } as OpenArg);
 
 const WS = 'default';
 

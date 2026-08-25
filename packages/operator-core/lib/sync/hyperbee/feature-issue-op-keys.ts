@@ -516,6 +516,7 @@ function toConversationValue(row: Record<string, unknown>): CoordConversationRow
     state: String(row.state ?? 'open'),
     accepted_answer: strOrNull(row.accepted_answer),
     capture_target: strOrNull(row.capture_target),
+    producer: strOrNull(row.producer),
     promoted_issue_id: strOrNull(row.promoted_issue_id),
     created_at: isoOrMsToEpochMs(row.created_at) ?? 0,
     updated_at: isoOrMsToEpochMs(row.updated_at) ?? 0,

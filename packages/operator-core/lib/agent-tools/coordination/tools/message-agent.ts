@@ -82,6 +82,7 @@ export default defineTool({
     // 1. Open the durable, browseable conversation (scoped to the work-item).
     const opened = await openConversation(identity, {
       kind: 'discussion',
+      producer: 'coord:message-agent',
       title,
       body: args.body,
       topics: args.topics,

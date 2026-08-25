@@ -163,7 +163,10 @@ export default defineTool({
             },
           }),
         open: async (input) => {
-          const opened = await conversations.openConversation(identity, input);
+          const opened = await conversations.openConversation(identity, {
+            ...input,
+            producer: 'consult:get_feedback',
+          });
           return {
             conversation_id: opened.conversation.id,
             thread_id: opened.thread_id,

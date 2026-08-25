@@ -59,7 +59,7 @@ import {
   joinConversationCore,
   leaveConversationCore,
   listConversationsWithTopicsCore,
-  openConversationCore,
+  openConversationCore as openConversationCoreRaw,
   postReplyCore,
   promoteConversationCore,
   resolveConversationCore,
@@ -69,6 +69,20 @@ import {
   type ConversationDeps,
   type ConversationStoreLike,
 } from '../conversations-core';
+
+/**
+ * `producer` is REQUIRED on the open path (EI-21462599108204160) so no production
+ * caller can land an unattributed conversation. These suites assert routing,
+ * fan-out and lifecycle — not attribution — so this shim supplies `producer:
+ * 'test'` and lets the call sites below stay about what they actually test.
+ * A test that DOES care about attribution passes its own producer explicitly.
+ */
+type OpenArg = Parameters<typeof openConversationCoreRaw>[2];
+const openConversationCore = (
+  deps: Parameters<typeof openConversationCoreRaw>[0],
+  identity: Parameters<typeof openConversationCoreRaw>[1],
+  input: Omit<OpenArg, 'producer'> & Partial<Pick<OpenArg, 'producer'>>,
+) => openConversationCoreRaw(deps, identity, { producer: 'test', ...input } as OpenArg);
 
 const WS = 'default';
 // Far-future clock: the InMemory subscription store filters expiry against the
