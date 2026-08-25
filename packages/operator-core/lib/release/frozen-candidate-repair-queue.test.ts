@@ -62,6 +62,7 @@ describe('frozen-candidate repair queue', () => {
   it('persists C before its first suite, resumes that exact SHA, and transitions red in place', () => {
     const queue = createFrozenCandidateQueue({
       candidate: C,
+      qualificationAttemptId: 'qualification-attempt-1',
       base: BASE,
       worktreePath: ROOT,
       affectedTestProofGroup: 'initial-gate-run',
@@ -72,6 +73,7 @@ describe('frozen-candidate repair queue', () => {
       schemaVersion: 3,
       phase: 'ready-to-test',
       candidate: C,
+      qualificationAttemptId: 'qualification-attempt-1',
       repairHead: C,
       attempts: 0,
       fixerSpawnId: null,
@@ -134,6 +136,18 @@ describe('frozen-candidate repair queue', () => {
         affectedTestProofGroup: { corrupt: true },
       }),
     ).toMatchObject({ schemaVersion: 3, affectedTestProofGroup: null });
+    expect(
+      parseFrozenCandidateRepairQueue({
+        ...current,
+        qualificationAttemptId: '',
+      }),
+    ).toBeNull();
+    expect(
+      parseFrozenCandidateRepairQueue({
+        ...current,
+        qualificationAttemptId: undefined,
+      }),
+    ).toMatchObject({ schemaVersion: 3, qualificationAttemptId: null });
   });
 
   it('leaves an absent queue on the existing normal gate path', () => {
