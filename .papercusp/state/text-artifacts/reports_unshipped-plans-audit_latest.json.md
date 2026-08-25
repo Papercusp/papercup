@@ -1,21 +1,21 @@
 ---
 rel_path: "reports/unshipped-plans-audit/latest.json"
-updated_at: 1787691824798
+updated_at: 1787692503888
 _body: "content"
 ---
 
 {
   "schemaVersion": "unshipped-plans-audit-manifest-v2",
-  "generatedAt": "2026-08-25T21:03:44.734Z",
+  "generatedAt": "2026-08-25T21:15:03.830Z",
   "workspace": "papercusp-workspace",
   "scope": {
-    "snapshotStartedAt": "2026-08-25T21:03:42.577Z",
-    "snapshotFinishedAt": "2026-08-25T21:03:44.734Z",
-    "liveOwnershipMeasuredAt": "2026-08-25T21:03:42.626Z",
-    "nonterminalListedAtSnapshot": 597,
-    "materialized": 595,
+    "snapshotStartedAt": "2026-08-25T21:15:01.413Z",
+    "snapshotFinishedAt": "2026-08-25T21:15:03.830Z",
+    "liveOwnershipMeasuredAt": "2026-08-25T21:15:01.430Z",
+    "nonterminalListedAtSnapshot": 596,
+    "materialized": 594,
     "catalogFailures": 2,
-    "classifiedRows": 597,
+    "classifiedRows": 596,
     "rule": "Point-in-time, read-only audit. Ongoing plans are protected; no lifecycle, item, blocker, claim, assignment, or ownership state is changed.",
     "classifierRevision": 2,
     "classifierCorrection": "Plan-level supersession requires an explicit plan-subject assertion in the Now state; mentions of superseded decisions or sub-approaches never retire the whole plan."
@@ -24,9 +24,9 @@ _body: "content"
     "acceptance-residue": {
       "count": 18,
       "byStatus": {
-        "ready": 12,
+        "ready": 11,
         "draft": 3,
-        "active": 3
+        "active": 4
       }
     },
     "catalog-residue": {
@@ -36,10 +36,10 @@ _body: "content"
       }
     },
     "closeout-evidence-missing": {
-      "count": 182,
+      "count": 181,
       "byStatus": {
         "draft": 26,
-        "active": 75,
+        "active": 74,
         "ready": 81
       }
     },
@@ -71,10 +71,10 @@ _body: "content"
       }
     },
     "plan-item-reconcile": {
-      "count": 15,
+      "count": 14,
       "byStatus": {
         "active": 6,
-        "ready": 8,
+        "ready": 7,
         "draft": 1
       }
     },
@@ -149,11 +149,11 @@ _body: "content"
       }
     },
     "unblocked-partial-no-owner": {
-      "count": 42,
+      "count": 43,
       "byStatus": {
         "active": 20,
         "draft": 7,
-        "ready": 15
+        "ready": 16
       }
     },
     "unstarted-no-blocker": {
@@ -167,15 +167,15 @@ _body: "content"
   },
   "bands": {
     "protected": 8,
-    "closeoutOrReconcile": 222,
+    "closeoutOrReconcile": 220,
     "supersedeOrRetire": 238,
     "blockerClaims": 85,
-    "unblockedPartial": 42,
+    "unblockedPartial": 43,
     "catalogResidue": 2
   },
   "closeoutEvidence": {
     "staleAuditAndRubric": 3,
-    "missingAuditOrAcceptance": 182
+    "missingAuditOrAcceptance": 181
   },
   "blockerEvidence": {
     "typedCurrent": 58,
@@ -183,12 +183,12 @@ _body: "content"
     "textOnly": 17
   },
   "currentRegistryAtPublish": {
-    "total": 1379,
+    "total": 1380,
     "active": 270,
-    "ready": 230,
+    "ready": 229,
     "draft": 97,
-    "shipped": 580,
-    "superseded": 202
+    "shipped": 581,
+    "superseded": 203
   },
   "rows": [
     {
@@ -316,6 +316,51 @@ _body: "content"
       "nowNext": "Read job 7739468b-1eb — the full 11-suite batch (the original 8 PLUS launch-agent, terminal and psu-launcher), which is the batch that should have backed the original claim. Only after it is green may this plan re-report verified. Then: resolve the authorship answer from su-790ce4f8 into the record; live exercise on :3170. Still blocked on deploy skew, unchanged: WI-38001..38007 cannot close (do NOT retry), no acceptance rubric possible (EI-20204370492002514), and do NOT retire ~/.papercusp/bin/bun (positions.deployed=false)."
     },
     {
+      "slug": "cdn-egress-fixes-2026-08-02",
+      "title": "Eliminate runtime public-CDN dependencies (the vditor class) — 6 remaining instances",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "acceptance-residue",
+      "reason": "Implementation appears substantially complete, but acceptance/closeout work remains.",
+      "recommendation": "Finish the current audit/rubric/verdict evidence, then close or supersede.",
+      "created": "2026-08-02",
+      "updated": "2026-08-02 15:33:47.142774-04",
+      "itemTotal": 7,
+      "terminalPlanItems": 7,
+      "openPlanItems": 0,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "done": 5,
+        "dropped": 2
+      },
+      "audit": {
+        "auditSeq": 1,
+        "createdAt": "2026-08-25 17:03:21.353223-04",
+        "auditedSha": "2009a0a9c1",
+        "auditedItems": 7
+      },
+      "acceptanceRubric": {
+        "rubricId": "acceptance-cdn-egress-fixes-2026-08-02",
+        "status": "active"
+      },
+      "gateVerdict": {
+        "satisfied": false,
+        "code": "acceptance_ungraded",
+        "message": "plan 'cdn-egress-fixes-2026-08-02' cannot be marked shipped: its acceptance rubric 'acceptance-cdn-egress-fixes-2026-08-02' has no complete grading. A NON-implementer (someone other than 'su-b75762dd-6c36-44e6-8a04-668a24fbb8a8') grades it — scorecards:emit { rubricRef:'acceptance-cdn-egress-fixes-2026-08-02', ratings:{ <every criterion key> } } with concrete evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005)."
+      },
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "COMPLETE — all 7 items terminal, verified at RUNTIME (D-004: a bundle grep cannot decide this class; every fix overrides behaviour at runtime, so the CDN strings survive in the bundle either way). FIXED + VERIFIED: P-001 Monaco (local /monaco/vs/* incl. all 4 workers, mirror 151/151), P-002 PlantUML (end-to-end probe: block rendered, class neutralized 1/raw 0, zero <object>, zero plantuml.com requests — the only content-egress finding), P-003 Porcupine (vendored, immutable-sha + sha256 pinned and matching, served HTTP 200, NEW guard test porcupine-cdn.test.ts 6/6 negative-controlled; live wake-word NOT exercised — needs mic + access key), P-004 Excalidraw (asset path active, esm.sh=0, mirror complete 300/301 zero missing so the unconditional fallback is unreachable). PROVEN NOT LIVE, dropped: P-005 emoji-mart (bare-specifier import, Vite resolves at build time; picker loaded only local chunks) and P-006 speech-rule-engine (SRE is in vditor's MathJax bundle, we pin KaTeX; real math rendered katexNodes=4 mathjaxNodes=0, zero mathmaps requests). Non-local fetches across every surface exercised: 0. Both scratch probe plans archived.",
+      "nowNext": "Nothing on this plan — it is drained. Follow-ups live as their own items: EI-19369470572700441 (major: verify-tauri-headless.sh bypasses the WI-7101 target-dir claim) and EI-19370965762703309 (minor: extend the every-entry-point invariant to math.engine). Next work is the sibling plan egress-monitor-origin-axis-2026-08-02."
+    },
+    {
       "slug": "context-injection-audit-2026-07-28",
       "title": "Automatic context-injection audit — the recall query represents the human rather than the turn, and the telemetry conflated two score scales (D-001 retracts this plan's original \"precision floor is absent on every push path\" headline)",
       "harness": "papercusp",
@@ -434,52 +479,6 @@ _body: "content"
       },
       "nowState": "APPROVED AND IN EXECUTION. Avi approved start-to-finish implementation on 2026-08-13 and required acceptance grading to launch a fresh dedicated headless non-implementer rather than distract an existing peer. The requirements/design spec triad is complete; P-010 and D-006 encode the grader workflow. WI-38399 is being closed, then Phase 1 begins in dependency order. No implementation claim should skip the lossless-foundations ordering.",
       "nowNext": "Close WI-38399 with plan revision 20 evidence; convert and claim P-001; inspect the universal result-door writer and existing overflow-family work before editing."
-    },
-    {
-      "slug": "email-app-2026-08-23",
-      "title": "Email app — standalone papercusp app (own harness) on triggers + Gmail, web + desktop",
-      "harness": "papercusp",
-      "status": "ready",
-      "category": "acceptance-residue",
-      "reason": "Implementation appears substantially complete, but acceptance/closeout work remains.",
-      "recommendation": "Finish the current audit/rubric/verdict evidence, then close or supersede.",
-      "created": "2026-08-23",
-      "updated": "2026-08-24 19:40:41.463249-04",
-      "itemTotal": 7,
-      "terminalPlanItems": 7,
-      "openPlanItems": 0,
-      "workItemTotal": 7,
-      "openWorkItems": 0,
-      "workItemStates": {
-        "done": 7
-      },
-      "itemCounts": {
-        "done": 7
-      },
-      "audit": {
-        "auditSeq": 1,
-        "createdAt": "2026-08-24 19:45:51.167528-04",
-        "auditedSha": "0e1a4bc9b04e18ce1dabe2837b782737cfa073fb",
-        "auditedItems": 7
-      },
-      "acceptanceRubric": {
-        "rubricId": "acceptance-email-app-2026-08-23",
-        "status": "active"
-      },
-      "gateVerdict": {
-        "satisfied": false,
-        "code": "self_graded_only",
-        "message": "plan 'email-app-2026-08-23' cannot be marked shipped: acceptance rubric 'acceptance-email-app-2026-08-23' is only graded by its own author ('su-9613bc92-8c36-43d1-a4af-fce37e0502fc') — grader ≠ implementer (plan D-005, the self-graded-homework guard). A different agent or the owner must file the grading scorecard."
-      },
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Owner re-authorized direct implementation in AUTO mode on 2026-08-24. Prior fleet member is ended and holds no claims. The canonical seven-item plan is now owned by su-9613bc92; requirements and design are audited against the full source conversation.",
-      "nowNext": "Materialize the `email` app through `templates:new-app` only after verifying the live `skipWorkspaceTx` fix and ensuring no stranded `email` directory or harness registration exists. Then implement P-002 through P-007 in dependency order."
     },
     {
       "slug": "fundraise-automation-2026-08-23",
@@ -1634,44 +1633,6 @@ _body: "content"
       },
       "nowState": "",
       "nowNext": ""
-    },
-    {
-      "slug": "cdn-egress-fixes-2026-08-02",
-      "title": "Eliminate runtime public-CDN dependencies (the vditor class) — 6 remaining instances",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "closeout-evidence-missing",
-      "reason": "All tracked work is terminal, but current code-truth audit and acceptance evidence are incomplete.",
-      "recommendation": "Run code-truth and acceptance closeout; ship only if the current gate passes, otherwise supersede with rationale.",
-      "created": "2026-08-02",
-      "updated": "2026-08-02 15:33:47.142774-04",
-      "itemTotal": 7,
-      "terminalPlanItems": 7,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 5,
-        "dropped": 2
-      },
-      "audit": {
-        "auditSeq": 1,
-        "createdAt": "2026-08-25 17:03:21.353223-04",
-        "auditedSha": "2009a0a9c1",
-        "auditedItems": 7
-      },
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "COMPLETE — all 7 items terminal, verified at RUNTIME (D-004: a bundle grep cannot decide this class; every fix overrides behaviour at runtime, so the CDN strings survive in the bundle either way). FIXED + VERIFIED: P-001 Monaco (local /monaco/vs/* incl. all 4 workers, mirror 151/151), P-002 PlantUML (end-to-end probe: block rendered, class neutralized 1/raw 0, zero <object>, zero plantuml.com requests — the only content-egress finding), P-003 Porcupine (vendored, immutable-sha + sha256 pinned and matching, served HTTP 200, NEW guard test porcupine-cdn.test.ts 6/6 negative-controlled; live wake-word NOT exercised — needs mic + access key), P-004 Excalidraw (asset path active, esm.sh=0, mirror complete 300/301 zero missing so the unconditional fallback is unreachable). PROVEN NOT LIVE, dropped: P-005 emoji-mart (bare-specifier import, Vite resolves at build time; picker loaded only local chunks) and P-006 speech-rule-engine (SRE is in vditor's MathJax bundle, we pin KaTeX; real math rendered katexNodes=4 mathjaxNodes=0, zero mathmaps requests). Non-local fetches across every surface exercised: 0. Both scratch probe plans archived.",
-      "nowNext": "Nothing on this plan — it is drained. Follow-ups live as their own items: EI-19369470572700441 (major: verify-tauri-headless.sh bypasses the WI-7101 target-dir claim) and EI-19370965762703309 (minor: extend the every-entry-point invariant to math.engine). Next work is the sibling plan egress-monitor-origin-axis-2026-08-02."
     },
     {
       "slug": "chat-popup-fleet-peers-rail-2026-08-09",
@@ -7317,22 +7278,15 @@ _body: "content"
           "ownerId": "su-fa4d2b67-2783-4718-b647-8973814386b4",
           "ownerLabel": "su · su-fa4d2",
           "fleet": null,
-          "intent": "[idle 11m] WI-41515/P-003 cold monitor after committed repair-queue root fix; preserve WI-40086 serializer and await the ordinary post-fix gate terminal verdict",
+          "intent": "WI-41515/P-003 cold monitor after committed repair-queue root fix; preserve WI-40086 serializer and await the ordinary post-fix gate terminal verdict",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-fa4d2b67-2783-4718-b647-8973814386b4",
           "ownerLabel": "su · su-fa4d2",
           "fleet": null,
-          "intent": "[idle 11m] WI-41515/P-003 cold monitor after committed repair-queue root fix; preserve WI-40086 serializer and await the ordinary post-fix gate terminal verdict",
+          "intent": "WI-41515/P-003 cold monitor after committed repair-queue root fix; preserve WI-40086 serializer and await the ordinary post-fix gate terminal verdict",
           "source": "work-item-hold"
-        },
-        {
-          "ownerId": "su-fa4d2b67-2783-4718-b647-8973814386b4",
-          "ownerLabel": "su · su-fa4d2",
-          "fleet": null,
-          "intent": "[idle 11m] WI-41515/P-003 cold monitor after committed repair-queue root fix; preserve WI-40086 serializer and await the ordinary post-fix gate terminal verdict",
-          "source": "plan-item-claim"
         }
       ],
       "blocker": {
@@ -7380,21 +7334,21 @@ _body: "content"
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "Resume WI-41476/P-006 only: verify the ordinary post-fix exact-candidate checkpoint verdict, full release lineage, then live vettingWorkItem schema and stored closure chain if genuinely green.",
+          "intent": "Resume WI-41476 and plan item P-006: audit the exact 21:15Z ordinary post-fix checkpoint and release lineage",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "Resume WI-41476/P-006 only: verify the ordinary post-fix exact-candidate checkpoint verdict, full release lineage, then live vettingWorkItem schema and stored closure chain if genuinely green.",
+          "intent": "Resume WI-41476 and plan item P-006: audit the exact 21:15Z ordinary post-fix checkpoint and release lineage",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "Resume WI-41476/P-006 only: verify the ordinary post-fix exact-candidate checkpoint verdict, full release lineage, then live vettingWorkItem schema and stored closure chain if genuinely green.",
+          "intent": "Resume WI-41476 and plan item P-006: audit the exact 21:15Z ordinary post-fix checkpoint and release lineage",
           "source": "plan-item-claim"
         }
       ],
@@ -7416,7 +7370,7 @@ _body: "content"
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-22",
-      "updated": "2026-08-25 16:26:56.945683-04",
+      "updated": "2026-08-25 17:14:41.431892-04",
       "itemTotal": 88,
       "terminalPlanItems": 63,
       "openPlanItems": 25,
@@ -7442,34 +7396,34 @@ _body: "content"
           "ownerId": "su-5453d2ea-ac6e-4b22-a79a-a28a632a30ef",
           "ownerLabel": "su · su-5453d",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h53m] Reconcile sixth work-item:claimable timeout and pull only scheduler-admitted BYOC work",
+          "intent": "[idle 3h4m] Reconcile sixth work-item:claimable timeout and pull only scheduler-admitted BYOC work",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-8933b4af-f527-4695-9627-33f0d66d6f55",
           "ownerLabel": "su · su-8933b",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 19m] Reconcile timed-out BYOC claimable await; pull only a currently scheduler-admitted row",
+          "intent": "[idle 31m] Reconcile timed-out BYOC claimable await; pull only a currently scheduler-admitted row",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-96686267-95f6-492f-8b47-a361d4113de2",
           "ownerLabel": "su · su-96686",
-          "fleet": null,
+          "fleet": "byoc-p046-e2e-prep-20260825",
           "intent": "WI-40474/P-046 canary unblock: extend existing GCP auth composition for safe gcloud active-user token reference; test, stage, then run+teardown one bounded canary",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-96686267-95f6-492f-8b47-a361d4113de2",
           "ownerLabel": "su · su-96686",
-          "fleet": null,
+          "fleet": "byoc-p046-e2e-prep-20260825",
           "intent": "WI-40474/P-046 canary unblock: extend existing GCP auth composition for safe gcloud active-user token reference; test, stage, then run+teardown one bounded canary",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-96686267-95f6-492f-8b47-a361d4113de2",
           "ownerLabel": "su · su-96686",
-          "fleet": null,
+          "fleet": "byoc-p046-e2e-prep-20260825",
           "intent": "WI-40474/P-046 canary unblock: extend existing GCP auth composition for safe gcloud active-user token reference; test, stage, then run+teardown one bounded canary",
           "source": "plan-item-claim"
         },
@@ -7477,7 +7431,7 @@ _body: "content"
           "ownerId": "su-fd77bfef-1e0b-4f4b-b730-87ca4d75c732",
           "ownerLabel": "su · su-fd77b",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 2h55m] Reconcile delayed loop delivery; pull only newly claimable BYOC plan work",
+          "intent": "[idle 3h6m] Reconcile delayed loop delivery; pull only newly claimable BYOC plan work",
           "source": "declared-plan"
         }
       ],
@@ -7613,14 +7567,7 @@ _body: "content"
           "ownerId": "su-9cc35159-3cdc-43c2-860b-8a30ef45214a",
           "ownerLabel": "su · su-9cc35",
           "fleet": null,
-          "intent": "[idle 18m] Hold WI-41480 after canonical D-068 queue retirement; ignore obsolete receipt timeout and await the next ordinary scheduled checkpoint under D-069.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-9cc35159-3cdc-43c2-860b-8a30ef45214a",
-          "ownerLabel": "su · su-9cc35",
-          "fleet": null,
-          "intent": "[idle 18m] Hold WI-41480 after canonical D-068 queue retirement; ignore obsolete receipt timeout and await the next ordinary scheduled checkpoint under D-069.",
+          "intent": "Reconcile WI-41480 against the next ordinary scheduled checkpoint; honor newest governing decision and do not use manual release controls",
           "source": "work-item-hold"
         }
       ],
@@ -7671,7 +7618,7 @@ _body: "content"
           "ownerId": "su-0ed9ff1e-ba24-4e33-a5e4-cc540c8c4901",
           "ownerLabel": "su · su-0ed9f",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 48m] Resume rev47 fleet drain after deterministic carry-respawn; reconcile live state and pull the next admitted item.",
+          "intent": "[idle 59m] Resume rev47 fleet drain after deterministic carry-respawn; reconcile live state and pull the next admitted item.",
           "source": "declared-plan"
         },
         {
@@ -7682,10 +7629,17 @@ _body: "content"
           "source": "declared-plan"
         },
         {
+          "ownerId": "su-35251aba-31e0-4c72-9b68-6e33f6c12a94",
+          "ownerLabel": "su · su-35251",
+          "fleet": "nonp2p-bug-drain-luna-max-20260820",
+          "intent": "Reconcile the active nonp2p rev47 fleet drain and pull only admitted work; preserve current plan constraints.",
+          "source": "declared-plan"
+        },
+        {
           "ownerId": "su-4e78491b-aa28-4b97-be52-cf1dba7aec82",
           "ownerLabel": "su · su-4e784",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Resume the existing scoped rev47 fleet monitor and verify EI-21368451119935744; no new claim, wake, protected-item mutation, source edit, checkpoint, deploy, or audit mutation.",
+          "intent": "Resume the held work item EI-21368451119935744: verify the cold work_items semantic-search retry implementation, run focused tests, and complete it with evidence.",
           "source": "declared-plan"
         },
         {
@@ -7699,7 +7653,7 @@ _body: "content"
           "ownerId": "su-51eae3b1-4813-420a-9b7b-1b0604cc7a4e",
           "ownerLabel": "su · su-51eae",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Resume monitor-only reconciliation for the active rev47 non-p2p fleet lane; preserve no-claim, no-wake, no-takeover, no-protected-item mutation, no-source-edit, no-checkpoint, no-deploy, and no-audit walls.",
+          "intent": "monitor-only live reconciliation for nonp2p-bug-drain-fleet-2026-08-16; preserve no-claim/no-wake/no-takeover/no-source-edit/no-work-item-checkpoint/no-deploy/no-audit walls",
           "source": "declared-plan"
         },
         {
@@ -7713,14 +7667,7 @@ _body: "content"
           "ownerId": "su-6832ab37-a7df-40ea-83f8-86eb5975a06f",
           "ownerLabel": "su · su-6832a",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 8h5m] Implement and verify EI-21379983011497058: propagate validated MCP idempotencyKey through UnifiedToolContext and derive deterministic coord:send msgId per bulk index.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-6b85f18c-10b1-4ef3-9aee-b8abd2782075",
-          "ownerLabel": "su · su-6b85f",
-          "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "EI-21457496000758376: exec_command tool-call failure (proc_race_noise)",
+          "intent": "[idle 8h16m] Implement and verify EI-21379983011497058: propagate validated MCP idempotencyKey through UnifiedToolContext and derive deterministic coord:send msgId per bulk index.",
           "source": "declared-plan"
         },
         {
@@ -7734,14 +7681,21 @@ _body: "content"
           "ownerId": "su-7954d67c-4a42-49ed-9507-ddad2a87e1d6",
           "ownerLabel": "su · su-7954d",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "EI-21371345580765504: docs:search engineering lexical query times out",
+          "intent": "[idle 7m] EI-21371345580765504: docs:search engineering lexical query times out",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-92ae8f77-20b3-4274-835a-a0a452cf85da",
           "ownerLabel": "su · su-92ae8",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 2h54m] Resume EI-21401267453185406 validation: verify the live claim/checkpoint and inspect the ready-plan autostart contract/tests without source edits.",
+          "intent": "[idle 3h6m] Resume EI-21401267453185406 validation: verify the live claim/checkpoint and inspect the ready-plan autostart contract/tests without source edits.",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-a70e4ef4-a9ae-4c32-9614-ac07b28abb0f",
+          "ownerLabel": "su · su-a70e4",
+          "fleet": "nonp2p-bug-drain-luna-max-20260820",
+          "intent": "EI-21458455211655064: coord required-wake reports recipient absent while work-item reclaim oracle classifies same recorded session live",
           "source": "declared-plan"
         },
         {
@@ -7755,28 +7709,21 @@ _body: "content"
           "ownerId": "su-c0b227b9-88f2-46e1-97f0-4df25928fb53",
           "ownerLabel": "su · su-c0b22",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 13m] EI-21359747901133021: work_items:checkpoint append refuses when merged checks exceed the 12-row cap",
+          "intent": "[idle 25m] EI-21359747901133021: work_items:checkpoint append refuses when merged checks exceed the 12-row cap",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-da001445-7252-40c1-87b3-b2df8e3a5a02",
           "ownerLabel": "su · su-da001",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Monitor-only reconciliation for nonp2p-bug-drain-fleet-2026-08-16; preserve no-claim, no-wake, no-takeover, no-source-edit, no-work-item-checkpoint, no-deploy, and no-audit walls.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-dde58716-5caa-4312-a7b8-cc96e50e34b5",
-          "ownerLabel": "su · su-dde58",
-          "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Resume read-only reconciliation of nonp2p-bug-drain-luna-max-20260820; verify live state and preserve monitor-only walls",
+          "intent": "Resume monitor-only reconciliation for nonp2p-bug-drain-fleet-2026-08-16; preserve no-claim/no-wake/no-takeover/no-source-edit/no-work-item-checkpoint/no-deploy/no-audit walls",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-eec7f1fb-d875-4fdc-b3b1-51e82fb83ca0",
           "ownerLabel": "su · su-eec7f",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 39m] Resume EI-21372550685346519 under the active rev47 non-p2p fleet lane; trace and verify the first-call MCP wrapper hydration defect.",
+          "intent": "[idle 51m] Resume EI-21372550685346519 under the active rev47 non-p2p fleet lane; trace and verify the first-call MCP wrapper hydration defect.",
           "source": "declared-plan"
         }
       ],
@@ -7831,14 +7778,14 @@ _body: "content"
           "ownerId": "su-3ae5e799-c39d-4c77-b059-21d76935fe0c",
           "ownerLabel": "su · su-3ae5e",
           "fleet": null,
-          "intent": "[idle 29m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
+          "intent": "[idle 40m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-3ae5e799-c39d-4c77-b059-21d76935fe0c",
           "ownerLabel": "su · su-3ae5e",
           "fleet": null,
-          "intent": "[idle 29m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
+          "intent": "[idle 40m] Audit timed-out P-020 deploy blocker; verify gate progress or take over the unblock",
           "source": "work-item-hold"
         }
       ],
@@ -7887,22 +7834,29 @@ _body: "content"
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
+          "intent": "[idle 11m] Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
+          "intent": "[idle 11m] Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
+          "intent": "[idle 11m] Continue WI-41252/P-009 under D-069: reconcile live authority, run corrected token-bound two-sample admission, then detached pure only if clear twice",
           "source": "plan-item-claim"
+        },
+        {
+          "ownerId": "su-7f1b5470-52ac-46f3-bbd6-3b7f26799df0",
+          "ownerLabel": "su · su-7f1b5",
+          "fleet": null,
+          "intent": "AUTO: resume and drive stable-candidate-related-gate-2026-08-23 to verified greening completion.",
+          "source": "declared-plan"
         }
       ],
       "blocker": {
@@ -8083,40 +8037,6 @@ _body: "content"
       },
       "nowState": "",
       "nowNext": ""
-    },
-    {
-      "slug": "gmail-respond-with-draft-2026-08-22",
-      "title": "Gmail message — respond with a draft",
-      "harness": "papercusp",
-      "status": "ready",
-      "category": "plan-item-reconcile",
-      "reason": "Linked work is terminal while one or more plan-item statuses remain open.",
-      "recommendation": "Reconcile the plan-item ledger against the completed work; do not reimplement it.",
-      "created": "2026-08-22",
-      "updated": "2026-08-25 16:39:23.925386-04",
-      "itemTotal": 1,
-      "terminalPlanItems": 0,
-      "openPlanItems": 1,
-      "workItemTotal": 1,
-      "openWorkItems": 0,
-      "workItemStates": {
-        "done": 1
-      },
-      "itemCounts": {
-        "todo": 1
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Ready built-in template. Each inbound Gmail message creates one isolated event run.",
-      "nowNext": "Read the trigger inputs, draft a useful response, and save it to the originating Gmail thread."
     },
     {
       "slug": "guidance-overlap-contradiction-scan-2026-08-08",
@@ -11342,6 +11262,36 @@ _body: "content"
       "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
     },
     {
+      "slug": "acceptance-cdn-egress-fixes-2026-08-02",
+      "title": "Acceptance — runtime public-CDN egress fixes",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "supersede-or-rescope-empty",
+      "reason": "The plan has no executable plan items or linked work.",
+      "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
+      "created": "2026-08-25",
+      "updated": "2026-08-25 17:04:06.746089-04",
+      "itemTotal": 0,
+      "terminalPlanItems": 0,
+      "openPlanItems": 0,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {},
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "Rubric-template plan (template:rubric). Its structured fields (characteristic,\ncriteria, ratingScale, methodRef) live in `template_data`, queried via\nrubrics:list/get/search; this body is the narrative model/method context. Status\n`active` ⇒ a active rubric.",
+      "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
+    },
+    {
       "slug": "acceptance-context-trimming-tiers-2026-07-01",
       "title": "Acceptance: short-window agents stay within context and transport budgets without silent loss",
       "harness": "papercusp",
@@ -11471,36 +11421,6 @@ _body: "content"
       "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
       "created": "2026-08-14",
       "updated": "2026-08-13 21:49:34.185964-04",
-      "itemTotal": 0,
-      "terminalPlanItems": 0,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {},
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Rubric-template plan (template:rubric). Its structured fields (characteristic,\ncriteria, ratingScale, methodRef) live in `template_data`, queried via\nrubrics:list/get/search; this body is the narrative model/method context. Status\n`active` ⇒ a active rubric.",
-      "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
-    },
-    {
-      "slug": "acceptance-email-app-2026-08-23",
-      "title": "Acceptance — standalone Email app, one core across web and desktop",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "supersede-or-rescope-empty",
-      "reason": "The plan has no executable plan items or linked work.",
-      "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
-      "created": "2026-08-25",
-      "updated": "2026-08-24 20:27:59.523362-04",
       "itemTotal": 0,
       "terminalPlanItems": 0,
       "openPlanItems": 0,
@@ -19514,6 +19434,41 @@ _body: "content"
       },
       "nowState": "CORE SHIPPED (2026-07-03, su-7e21a, AUTO). The generic mechanism is live: `fuzzyEnum(allowed | sync-resolver, { applies, normalize, label, k, maxRatio, maxListed })` in packages/agent-mcp/src/fuzzy-enum.ts (exported from @papercusp/agent-mcp) — a zod string schema that, on a closed-set miss, returns nearest-match + the allowed list. It rides the EXISTING standardValidate→formatInvalidArgs path (D-001) so NO formatter change was needed (P-003); FAILS OPEN on an empty/cold set. First consumer: fleet:launch-on-plan `model` = fuzzyEnum(localModelIdsSync, {applies:isOmpLocalModel, normalize:strip-ollama-cc-prefix}) — the normalize was ESSENTIAL: the registry stores BARE ids but leaders pass ollama-cc/-prefixed, so without it a VALID ornith model would be false-rejected. `agent` deliberately stays z.enum (keeps its up-front JSON-schema enum). GREEN: 12 fuzzy-enum tests (incl. the prefixed-ornith no-false-reject case) + 18 launch-on-plan + 50 tools-md-sync; toJSONSchema no-throw verified; operator-core typecheck at baseline (224); :3170 restarted+live; resolver source live-confirmed (gateway:local_backend_list → ornith-llamaserver). FOLLOW-ONS (todo): P-007 wire more closed-set args (harness/plan/flag/role); P-008 insight doc; P-010 up-front advertisement of dynamic values.",
       "nowNext": "P-009 — on a WARM cache (or the next ornith fleet launch), confirm a typo'd local model returns {nearest, allowed[]} and a valid ollama-cc/…ornith passes; then P-007 rollout to other args (additive one-liners)."
+    },
+    {
+      "slug": "gmail-respond-with-draft-2026-08-22",
+      "title": "Gmail message — respond with a draft",
+      "harness": "papercusp",
+      "status": "ready",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-08-22",
+      "updated": "2026-08-25 16:39:23.925386-04",
+      "itemTotal": 1,
+      "terminalPlanItems": 0,
+      "openPlanItems": 1,
+      "workItemTotal": 2,
+      "openWorkItems": 1,
+      "workItemStates": {
+        "todo": 1,
+        "done": 1
+      },
+      "itemCounts": {
+        "todo": 1
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "Ready built-in template. Each inbound Gmail message creates one isolated event run.",
+      "nowNext": "Read the trigger inputs, draft a useful response, and save it to the originating Gmail thread."
     },
     {
       "slug": "implement-grade-findings-2026-07-10",
