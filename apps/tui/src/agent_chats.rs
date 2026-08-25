@@ -609,6 +609,9 @@ mod tests {
                 "tokens_in": 11,
                 "tokens_out": 7,
                 "cost_cents": 1.25,
+                "engine": "loop",
+                "model": "claude-sonnet-4-6:high",
+                "account_route": "auto",
                 "unreportedFrames": 1,
                 "tools": [{
                     "name": "chat:ask_choice",
@@ -626,6 +629,12 @@ mod tests {
         }))
         .expect("decode chat");
         assert_eq!(chat.transcript[0].unreported_frames, Some(1));
+        assert_eq!(chat.transcript[0].engine.as_deref(), Some("loop"));
+        assert_eq!(
+            chat.transcript[0].model.as_deref(),
+            Some("claude-sonnet-4-6:high")
+        );
+        assert_eq!(chat.transcript[0].account_route.as_deref(), Some("auto"));
         assert_eq!(
             chat.transcript[0].tools[0].answered.as_ref().unwrap().picks[0].option_id,
             "yes"
@@ -637,6 +646,13 @@ mod tests {
     fn decodes_every_owned_loop_event_variant() {
         let cases = vec![
             frame("heartbeat", json!({"tsMs": 7})),
+            frame(
+                "provenance",
+                json!({
+                    "type": "provenance", "engine": "loop",
+                    "model": "claude-sonnet-4-6:high", "accountRoute": "acct-7"
+                }),
+            ),
             frame("step_start", json!({"type": "step_start", "stepIndex": 0})),
             frame(
                 "text_delta",
@@ -700,42 +716,50 @@ mod tests {
         ));
         assert!(matches!(
             decoded[1],
+            AgentChatEvent::Provenance {
+                ref engine,
+                ref model,
+                ref account_route,
+            } if engine == "loop" && model == "claude-sonnet-4-6:high" && account_route == "acct-7"
+        ));
+        assert!(matches!(
+            decoded[2],
             AgentChatEvent::StepStart { step_index: 0 }
         ));
-        assert!(matches!(decoded[2], AgentChatEvent::TextDelta { ref text, .. } if text == "hi"));
+        assert!(matches!(decoded[3], AgentChatEvent::TextDelta { ref text, .. } if text == "hi"));
         assert!(
-            matches!(decoded[3], AgentChatEvent::ReasoningDelta { ref text, .. } if text == "hmm")
+            matches!(decoded[4], AgentChatEvent::ReasoningDelta { ref text, .. } if text == "hmm")
         );
         assert!(matches!(
-            decoded[4],
+            decoded[5],
             AgentChatEvent::ToolCall {
                 needs_approval: true,
                 ..
             }
         ));
         assert!(matches!(
-            decoded[5],
+            decoded[6],
             AgentChatEvent::ApprovalResolved {
                 approved: false,
                 ..
             }
         ));
         assert!(matches!(
-            decoded[6],
+            decoded[7],
             AgentChatEvent::ToolResult { denied: true, .. }
         ));
         assert!(matches!(
-            decoded[7],
+            decoded[8],
             AgentChatEvent::StepEnd {
                 tool_call_count: 1,
                 ..
             }
         ));
         assert!(
-            matches!(decoded[8], AgentChatEvent::Done { ref final_text, .. } if final_text == "hi")
+            matches!(decoded[9], AgentChatEvent::Done { ref final_text, .. } if final_text == "hi")
         );
         assert!(
-            matches!(decoded[9], AgentChatEvent::Error { ref message } if message == "provider unavailable")
+            matches!(decoded[10], AgentChatEvent::Error { ref message } if message == "provider unavailable")
         );
     }
 

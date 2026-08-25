@@ -1713,7 +1713,11 @@ fn chat_step_label(app: &App) -> String {
         step.tool_call_count,
         if step.tool_call_count == 1 { "" } else { "s" }
     );
-    if let Some(reason) = step.stop_reason.as_deref().filter(|reason| !reason.is_empty()) {
+    if let Some(reason) = step
+        .stop_reason
+        .as_deref()
+        .filter(|reason| !reason.is_empty())
+    {
         label.push_str(" · ");
         label.push_str(reason);
     }
@@ -1896,12 +1900,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
-    let title = format!(
-        " {}Agent Chat{}{} ",
-        dock_focus,
-        earlier,
-        streaming_title,
-    );
+    let title = format!(" {}Agent Chat{}{} ", dock_focus, earlier, streaming_title,);
     let para = Paragraph::new(lines).scroll((top, 0)).block(
         Block::default()
             .borders(Borders::ALL)
@@ -5365,10 +5364,35 @@ mod tests {
         if let Some(m) = app.chat_messages.last_mut() {
             m.content = "<say>typing in pro".into();
         }
+        app.update(crate::event::Event::ChatProvenance(
+            crate::models::ChatProvenance {
+                engine: "loop".into(),
+                model: "claude-sonnet-4-6:high".into(),
+                account_route: "auto".into(),
+            },
+        ));
+        app.update(crate::event::Event::ChatStepStarted { step_index: 1 });
         let text = render(&app, 100, 16);
         assert!(text.contains("typing in pro"));
         assert!(!text.contains("<say>")); // tags stripped from the preview
-        assert!(text.contains("thinking")); // streaming indicator in the title
+        assert!(text.contains("claude-sonnet-4-6:high"));
+        assert!(text.contains("account auto"));
+        assert!(text.contains("step 2 running"));
+        assert!(text.contains("input locked"));
+    }
+
+    #[test]
+    fn chat_approval_prompt_shows_the_exact_call_id() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.begin_user_send("change it");
+        app.pending_approvals.push(crate::models::PendingApproval {
+            call_id: "call-exact-7f2".into(),
+            tool_name: "capability:edit".into(),
+        });
+        let text = render(&app, 100, 16);
+        assert!(text.contains("call-exact-7f2"), "{text}");
+        assert!(text.contains("Ctrl+Y approve"), "{text}");
     }
 
     #[test]

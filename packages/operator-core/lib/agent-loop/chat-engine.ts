@@ -26,24 +26,14 @@
 import type { TranscriptTurn } from '../agent-chats-data';
 import { splitModelSpec } from '../agent-config-constants';
 import type { ModelMessage, ModelPort, ModelUsage } from './model-port';
-import {
-  runAgentLoop,
-  stepCountIs,
-  type ApprovalPort,
-  type LoopStopReason,
-  type LoopTool,
-} from './loop';
+import { runAgentLoop, stepCountIs, type ApprovalPort, type LoopStopReason, type LoopTool } from './loop';
 import { createRoutedModelPort } from './provider-router';
-import {
-  awaitLoopApprovalDecision,
-  createLoopApproval,
-} from './approval-store';
+import { awaitLoopApprovalDecision, createLoopApproval } from './approval-store';
 import { maybeCompactSession } from './session-compaction';
 import type { LoopSessionRow, LoopSessionStore } from './session-store';
 
 /** Interactive default — overridable per message (`body.model`) or by env. */
-export const DEFAULT_LOOP_CHAT_MODEL =
-  process.env.PAPERCUSP_LOOP_CHAT_MODEL || 'claude-sonnet-4-6';
+export const DEFAULT_LOOP_CHAT_MODEL = process.env.PAPERCUSP_LOOP_CHAT_MODEL || 'claude-sonnet-4-6';
 
 export const DEFAULT_LOOP_CHAT_MAX_STEPS = 24;
 
@@ -52,9 +42,7 @@ export const DEFAULT_LOOP_CHAT_MAX_STEPS = 24;
  * persisted transcript can never disagree with the model handed to the loop. */
 export function resolveLoopChatModel(opts: { model?: string; effort?: string }): string {
   const baseModel = opts.model ?? DEFAULT_LOOP_CHAT_MODEL;
-  return opts.effort
-    ? `${splitModelSpec(baseModel).model ?? baseModel}:${opts.effort}`
-    : baseModel;
+  return opts.effort ? `${splitModelSpec(baseModel).model ?? baseModel}:${opts.effort}` : baseModel;
 }
 
 /** Wire-copy guard: a tool_result payload larger than this rides as a
@@ -197,23 +185,16 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     }
   }
   const lastTurn = opts.transcript[opts.transcript.length - 1];
-  const freshUserText =
-    lastTurn && lastTurn.role === 'user' ? (lastTurn.content ?? '').trim() : '';
+  const freshUserText = lastTurn && lastTurn.role === 'user' ? (lastTurn.content ?? '').trim() : '';
   // Freshness anchor: the stored row was saved against transcript length N
   // (base + the assistant turn the route persisted); this call's transcript
   // must be exactly N + 1 (the just-appended user turn). Anything else means
   // another lane (legacy CLI-spawn) or a failed persist moved the chat —
   // replaying the stored session would silently drop those turns, so fall
   // back to the text rebuild instead.
-  const session =
-    stored && freshUserText && stored.transcriptTurns + 1 === opts.transcript.length
-      ? stored
-      : null;
+  const session = stored && freshUserText && stored.transcriptTurns + 1 === opts.transcript.length ? stored : null;
   const messages: ModelMessage[] = session
-    ? [
-        ...session.messages,
-        { role: 'user' as const, content: [{ type: 'text' as const, text: freshUserText }] },
-      ]
+    ? [...session.messages, { role: 'user' as const, content: [{ type: 'text' as const, text: freshUserText }] }]
     : transcriptToMessages(opts.transcript);
   const priorSummary = session ? session.summary : null;
   const priorCompactedCount = session ? session.compactedCount : 0;
@@ -346,8 +327,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
             : {}),
           ...(turnUsage.cacheCreationTokens !== undefined || s.cacheCreationTokens !== undefined
             ? {
-                cacheCreationTokens:
-                  (turnUsage.cacheCreationTokens ?? 0) + (s.cacheCreationTokens ?? 0),
+                cacheCreationTokens: (turnUsage.cacheCreationTokens ?? 0) + (s.cacheCreationTokens ?? 0),
               }
             : {}),
           ...(turnUsage.costUsd !== undefined || s.costUsd !== undefined

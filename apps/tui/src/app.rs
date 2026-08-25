@@ -11643,9 +11643,23 @@ mod tests {
         assert_eq!(a.agent_chat_id.as_deref(), Some("chat_42"));
 
         a.begin_user_send("hi");
+        a.update(Event::ChatProvenance(crate::models::ChatProvenance {
+            engine: "loop".into(),
+            model: "claude-sonnet-4-6:high".into(),
+            account_route: "auto".into(),
+        }));
+        a.update(Event::ChatStepStarted { step_index: 0 });
+        assert_eq!(a.chat_step.as_ref().unwrap().step, 1);
+        assert!(a.chat_step.as_ref().unwrap().running);
         a.update(Event::ChatDelta("plain ".into()));
         a.update(Event::ChatDelta("native text".into()));
         a.update(Event::ChatReasoning("checked the store".into()));
+        a.update(Event::ChatStepEnded {
+            step_index: 0,
+            tool_call_count: 2,
+            stop_reason: Some("complete".into()),
+        });
+        assert!(!a.chat_step.as_ref().unwrap().running);
         // done.finalText is authoritative and may be the provider's ONLY text.
         a.update(Event::ChatFinal("authoritative native text".into()));
         a.update(Event::ChatDone);
@@ -11653,6 +11667,11 @@ mod tests {
         assert!(!a.chat_messages[1].streaming);
         assert_eq!(a.chat_messages[1].content, "authoritative native text");
         assert_eq!(a.chat_messages[1].reasoning, "checked the store");
+        assert_eq!(
+            a.chat_messages[1].provenance.as_ref().unwrap().model,
+            "claude-sonnet-4-6:high"
+        );
+        assert!(a.chat_step.is_none());
 
         // Re-announcing just moves the pane to the new chat — it never opens a
         // parallel transcript alongside the old one.

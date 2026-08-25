@@ -3085,15 +3085,15 @@ fn native_turn_to_message(t: agent_chats::AgentChatTranscriptTurn) -> Option<mod
     } else {
         t.content
     };
-    let provenance = t
-        .engine
-        .zip(t.model)
-        .zip(t.account_route)
-        .map(|((engine, model), account_route)| models::ChatProvenance {
-            engine,
-            model,
-            account_route,
-        });
+    let provenance =
+        t.engine
+            .zip(t.model)
+            .zip(t.account_route)
+            .map(|((engine, model), account_route)| models::ChatProvenance {
+                engine,
+                model,
+                account_route,
+            });
     Some(models::ChatMessage {
         role: t.role,
         content,
@@ -3106,6 +3106,21 @@ fn native_turn_to_message(t: agent_chats::AgentChatTranscriptTurn) -> Option<mod
             .collect(),
         streaming: false,
     })
+}
+
+fn surface_agent_chat_approval_hydration_failure(
+    tx: &UnboundedSender<Event>,
+    chat_id: &str,
+    error: &impl std::fmt::Display,
+) {
+    let _ = tx.send(Event::Error(format!(
+        "native agent chat approval hydration ({chat_id}): {error}"
+    )));
+}
+
+fn finish_native_agent_chat_turn(tx: &UnboundedSender<Event>, final_text: String) {
+    let _ = tx.send(Event::ChatFinal(final_text));
+    let _ = tx.send(Event::ChatDone);
 }
 
 async fn agent_chat_load(
@@ -3175,10 +3190,7 @@ async fn agent_chat_load(
                     // Keep the transcript usable, but never turn an unreadable
                     // parked-approval set into a confident empty set. The status
                     // error remains visible after the chat itself loads.
-                    let _ = tx.send(Event::Error(format!(
-                        "native agent chat approval hydration ({}): {error}",
-                        chat.id
-                    )));
+                    surface_agent_chat_approval_hydration_failure(&tx, &chat.id, &error);
                     Vec::new()
                 }
             };
@@ -3283,9 +3295,7 @@ async fn stream_agent_chat_turn(
             ));
         }
         Err(error) => {
-            let _ = tx.send(Event::Error(format!(
-                "native agent chat approval hydration ({chat_id}): {error}"
-            )));
+            surface_agent_chat_approval_hydration_failure(&tx, &chat_id, &error);
         }
     }
 
@@ -3437,8 +3447,7 @@ async fn stream_agent_chat_turn(
             // the task HERE so there is exactly one ChatDone emission site for a
             // successful native turn.
             AgentChatEvent::Done { final_text, .. } => {
-                let _ = tx.send(Event::ChatFinal(final_text));
-                let _ = tx.send(Event::ChatDone);
+                finish_native_agent_chat_turn(&tx, final_text);
                 return;
             }
             // Heartbeats carry no pane state.
@@ -4632,5 +4641,31 @@ mod tests {
         assert_eq!(n.message, "coord: coord-escalation");
         assert_eq!(n.level, "coord-escalation");
         assert_eq!(n.harness, None);
+    }
+
+    #[test]
+    fn native_chat_terminal_helper_emits_final_then_exactly_one_done() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        finish_native_agent_chat_turn(&tx, "authoritative".into());
+        assert!(matches!(rx.try_recv(), Ok(Event::ChatFinal(ref text)) if text == "authoritative"));
+        assert!(matches!(rx.try_recv(), Ok(Event::ChatDone)));
+        assert!(
+            rx.try_recv().is_err(),
+            "terminal helper emitted a duplicate event"
+        );
+    }
+
+    #[test]
+    fn approval_hydration_failures_are_loud_without_becoming_chat_terminal() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        surface_agent_chat_approval_hydration_failure(&tx, "chat-7", &"backend offline");
+        let event = rx.try_recv().expect("hydration failure event");
+        assert!(matches!(
+            event,
+            Event::Error(ref message)
+                if message.contains("approval hydration (chat-7)")
+                    && message.contains("backend offline")
+        ));
+        assert!(rx.try_recv().is_err());
     }
 }

@@ -104,9 +104,7 @@ export interface FeatureLockState {
   active: boolean;
 }
 
-export type Result<T> =
-  | { ok: true; data: T }
-  | { ok: false; status: number; error: string };
+export type Result<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
 
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9_-]*[A-Z0-9]$/i;
 
@@ -167,8 +165,7 @@ export function rowToChat(r: Record<string, unknown>): ChatRow {
 /** Map a projected list row (no transcript body, a `turn_count` instead) to a
  *  ChatSummary. Reuses the same bigint/epoch-ms coercions as rowToChat. */
 export function rowToChatSummary(r: Record<string, unknown>): ChatSummary {
-  const toNum = (v: unknown): number =>
-    typeof v === 'bigint' ? Number(v) : ((v as number | undefined) ?? 0);
+  const toNum = (v: unknown): number => (typeof v === 'bigint' ? Number(v) : ((v as number | undefined) ?? 0));
   return {
     id: r.id as string,
     role: r.role as string,
@@ -184,10 +181,7 @@ export function rowToChatSummary(r: Record<string, unknown>): ChatSummary {
   };
 }
 
-export async function readFeatureLockState(
-  slug: string,
-  featureId: string,
-): Promise<FeatureLockState | null> {
+export async function readFeatureLockState(slug: string, featureId: string): Promise<FeatureLockState | null> {
   try {
     const db = dbForSlug(slug);
     const row = (await db
@@ -237,10 +231,7 @@ export interface ListChatsInput {
 export async function listChats(input: ListChatsInput): Promise<Result<{ chats: ChatSummary[] }>> {
   try {
     const db = dbForSlug(input.slug);
-    const limit = Math.min(
-      LIST_CHATS_MAX_LIMIT,
-      Math.max(1, Math.trunc(input.limit ?? LIST_CHATS_DEFAULT_LIMIT)),
-    );
+    const limit = Math.min(LIST_CHATS_MAX_LIMIT, Math.max(1, Math.trunc(input.limit ?? LIST_CHATS_DEFAULT_LIMIT)));
     const offset = Math.max(0, Math.trunc(input.offset ?? 0));
     // Workspace-scope the list (WI-5125). The per-harness `agent_chats` view
     // filters on harness_slug ALONE, so an unscoped list returns rows from EVERY
@@ -271,14 +262,12 @@ export async function getChat(
 ): Promise<Result<ChatRow & { feature_lock: FeatureLockState | null }>> {
   try {
     const db = dbForSlug(input.slug);
-    const row = (await db
-      .prepare('SELECT * FROM agent_chats WHERE id = ?')
-      .get(input.chatId)) as Record<string, unknown> | undefined;
+    const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(input.chatId)) as
+      | Record<string, unknown>
+      | undefined;
     if (!row) return { ok: false, status: 404, error: 'chat not found' };
     const chat = rowToChat(row);
-    const featureLock = chat.feature_id
-      ? await readFeatureLockState(input.slug, chat.feature_id)
-      : null;
+    const featureLock = chat.feature_id ? await readFeatureLockState(input.slug, chat.feature_id) : null;
     return { ok: true, data: { ...chat, feature_lock: featureLock } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to load chat: ${(e as Error).message}` };
@@ -309,8 +298,7 @@ export async function createChat(
   }
 
   const id = randomUUID();
-  const title =
-    input.title ?? (input.feature_id ? `${input.role} · ${input.feature_id}` : input.role);
+  const title = input.title ?? (input.feature_id ? `${input.role} · ${input.feature_id}` : input.role);
 
   try {
     const db = dbForSlug(input.slug);
@@ -328,13 +316,8 @@ export async function createChat(
          VALUES (?, ?, ?, ?, ?, ?::jsonb)`,
       )
       .run(id, activeWorkspaceId(), input.role, input.feature_id ?? null, title, '[]');
-    const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as Record<
-      string,
-      unknown
-    >;
-    const featureLock = input.feature_id
-      ? await readFeatureLockState(input.slug, input.feature_id)
-      : null;
+    const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as Record<string, unknown>;
+    const featureLock = input.feature_id ? await readFeatureLockState(input.slug, input.feature_id) : null;
 
     return { ok: true, data: { ...rowToChat(row), feature_lock: featureLock } };
   } catch (e) {
