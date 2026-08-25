@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readDocClaimPins, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -398,6 +398,38 @@ describe('the budget — the output can never exceed it', () => {
       ]),
     ).toEqual(['safety-rail']);
     expect(invariantCutKeys([part({ kind: 'pointer' }), part({ kind: 'recipe' })])).toEqual([]);
+  });
+
+  it('names a dropped part carrying a live-doc pin, regardless of its row kind', () => {
+    const pins = [{ id: 'pin-1', client: 'claude', needles: ['must remain visible'], source: 'claim.test.ts' }];
+    const matches = docClaimCutMatches(
+      [part({ kind: 'pointer', part_key: 'pinned-pointer', body: 'this rule must remain visible' })],
+      { client: 'claude', pins },
+    );
+    expect(matches).toEqual([{ part_key: 'pinned-pointer', pins }]);
+  });
+
+  it('does not report a pin for a different client or a part without its needle', () => {
+    const pins = [{ id: 'pin-1', client: 'claude', needles: ['must remain visible'], source: 'claim.test.ts' }];
+    expect(docClaimCutMatches(
+      [part({ body: 'this rule must remain visible' })],
+      { client: 'codex', pins },
+    )).toEqual([]);
+    expect(docClaimCutMatches(
+      [part({ body: 'an unrelated rule' })],
+      { client: 'claude', pins },
+    )).toEqual([]);
+  });
+
+  it('validates and loads the checked-in pin manifest used by the CLI', () => {
+    expect(readDocClaimPins()).toEqual([
+      {
+        id: 'EI-19444215495255056.pgrep-q',
+        client: 'claude',
+        needles: ['`pgrep -q` DOES NOT EXIST'],
+        source: 'packages/operator-core/lib/claude-md-proc-guard-claim.test.ts',
+      },
+    ]);
   });
 
   it('within one rank the LARGEST part is cut first — most rules retained per char surrendered', () => {

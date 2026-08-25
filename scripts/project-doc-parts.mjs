@@ -65,6 +65,15 @@ export const EVIDENCE_SUFFIX = '#evidence';
 export const CORPUS_FILE = 'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md';
 
 /**
+ * Explicit pins for tests that assert live text in a generated client file. The
+ * projector is JavaScript, while the pins belong beside the doc-claims tests, so
+ * this small JSON manifest is the shared bridge rather than a fragile source-code
+ * parser. A pin's `needles` are independent identifying snippets: if any snippet
+ * appears in a cut part, the projection cannot safely write that client file.
+ */
+export const DOC_CLAIM_PINS_FILE = 'packages/operator-core/lib/doc-claims/projection-pins.json';
+
+/**
  * Compare the DB-composed corpus with the committed DB-free subject.
  *
  * The provenance banner's source sha only identifies the CLAUDE.md snapshot from which
@@ -298,6 +307,43 @@ export function cutOrder(a, b) {
  */
 export function invariantCutKeys(dropped) {
   return dropped.filter((part) => part.kind === 'invariant').map((part) => part.part_key);
+}
+
+/**
+ * Return the dropped parts carrying a registered live-doc assertion pin.
+ *
+ * This is deliberately separate from `invariantCutKeys`: a test may pin a rule
+ * whose canonical row is a pointer, recipe, or another future kind. The budget
+ * guard protects the consumer (the test), not the row's classification.
+ */
+export function docClaimCutMatches(dropped, { client, pins }) {
+  const applicable = pins.filter((pin) => pin.client === client);
+  return dropped.flatMap((part) => {
+    const matches = applicable.filter((pin) => pin.needles.some((needle) => part.body.includes(needle)));
+    return matches.length ? [{ part_key: part.part_key, pins: matches }] : [];
+  });
+}
+
+/** Read and validate the checked-in projection-pin manifest used by the CLI. */
+export function readDocClaimPins(file = resolve(ROOT, DOC_CLAIM_PINS_FILE)) {
+  const parsed = JSON.parse(readFileSync(file, 'utf8'));
+  if (!parsed || parsed.schema !== 'doc-claim-projection-pins/1' || !Array.isArray(parsed.pins)) {
+    throw new Error(`invalid doc-claim projection-pin manifest: ${file}`);
+  }
+  const clients = new Set(CLIENTS.map((entry) => entry.client));
+  const ids = new Set();
+  return parsed.pins.map((pin, index) => {
+    if (!pin || typeof pin !== 'object') throw new Error(`invalid doc-claim pin at index ${index}`);
+    if (typeof pin.id !== 'string' || !pin.id) throw new Error(`doc-claim pin ${index} has no id`);
+    if (ids.has(pin.id)) throw new Error(`duplicate doc-claim pin id: ${pin.id}`);
+    ids.add(pin.id);
+    if (!clients.has(pin.client)) throw new Error(`doc-claim pin ${pin.id} names unknown client: ${pin.client}`);
+    if (!Array.isArray(pin.needles) || pin.needles.length === 0 || pin.needles.some((needle) => typeof needle !== 'string' || !needle)) {
+      throw new Error(`doc-claim pin ${pin.id} must have non-empty string needles`);
+    }
+    if (typeof pin.source !== 'string' || !pin.source) throw new Error(`doc-claim pin ${pin.id} has no source`);
+    return { id: pin.id, client: pin.client, needles: [...pin.needles], source: pin.source };
+  });
 }
 
 /** The banner every projected file opens with. */
@@ -751,6 +797,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     argv.find((a) => a.startsWith('--chars-per-token='))?.split('=')[1] ?? CHARS_PER_TOKEN_KNOWN_MODEL,
   );
   const budget = memoryWarningThreshold({ contextTokens, charsPerToken });
+  let docClaimPins;
+  try {
+    docClaimPins = readDocClaimPins();
+  } catch (err) {
+    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
 
   // ── no-DB degrade, CHECK PATH ONLY ───────────────────────────────────────
   // `gen:client-docs:check` is this file with no flags, and until EI-20272515693397454
@@ -847,6 +900,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     for (const spec of CLIENTS) {
       const out = projectClient(parts, { ...spec, docId, budget });
       const invariantCuts = invariantCutKeys(out.dropped);
+      const docClaimCuts = docClaimCutMatches(out.dropped, { client: spec.client, pins: docClaimPins });
       const path = resolve(ROOT, spec.file);
       const missing = verifyBodiesPresent(out.text, out.kept);
       const onDisk = existsSync(path) && !lstatSync(path).isSymbolicLink() ? readFileSync(path, 'utf8') : null;
@@ -871,8 +925,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         console.error(
           `    ✗ SAFETY REFUSAL: the budget would cut ${invariantCuts.length} invariant(s): ` +
             `${invariantCuts.join(', ')}. Split evidence out of those canonical rows or ` +
-            `reduce other invariant prose; never green a projection that silently omits a safety rail.`,
+          `reduce other invariant prose; never green a projection that silently omits a safety rail.`,
         );
+      }
+      if (docClaimCuts.length) {
+        failed = true;
+        console.error(
+          `    ✗ DOC-CLAIM PIN REFUSAL: the budget would cut ${docClaimCuts.length} part(s) carrying ` +
+            `live assertions for ${spec.client}:`,
+        );
+        for (const cut of docClaimCuts) {
+          for (const pin of cut.pins) {
+            console.error(`      ${cut.part_key} carries ${pin.id} (${pin.source}) via ${pin.needles.map((needle) => JSON.stringify(needle)).join(', ')}`);
+          }
+        }
       }
       for (const warning of out.warnings) console.warn(`    ⚠ projection warning: ${warning}`);
 
@@ -926,6 +992,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         console.error(`    ✗ NOT writing ${spec.file}: the composition self-check above failed.`);
       } else if (invariantCuts.length) {
         console.error(`    ✗ NOT writing ${spec.file}: the invariant-cut safety check above failed.`);
+      } else if (docClaimCuts.length) {
+        console.error(`    ✗ NOT writing ${spec.file}: the doc-claim pin safety check above failed.`);
       } else if (write) {
         // The symlink is retired here, not by hand, so each client genuinely owns its
         // file. Unlinking first matters: writeFileSync THROUGH a symlink would write
