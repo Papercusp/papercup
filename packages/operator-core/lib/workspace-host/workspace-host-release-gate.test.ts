@@ -5,8 +5,10 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
+  deriveWorkspaceHostCanonicalArtifactUrls,
   buildWorkspaceHostCleanRoomInstallFixture,
   workspaceHostCleanRoomFixtureAttestation,
   type WorkspaceHostCleanRoomAcceptanceReport,
@@ -56,6 +58,14 @@ function artifact(version = '2026.8.22-1'): WorkspaceHostImageArtifact {
         sha256: RELEASE_DIGEST,
         sizeBytes: 42_000,
       },
+      // A shippable bundle must carry the remote initializer as an executable, or the image
+      // installs and reports healthy and then fails every initialization at the far end.
+      {
+        path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+        sha256: 'e'.repeat(64),
+        sizeBytes: 2_048,
+        executable: true,
+      },
     ],
     parameters: [{ name: 'distribution_profile', value: 'vm-release' }],
     targets: [{ provider: 'gcp', locations: ['us-central1'] }],
@@ -66,9 +76,12 @@ function artifact(version = '2026.8.22-1'): WorkspaceHostImageArtifact {
     buildManifest,
     release: {
       version,
-      bundleUrl: `https://releases.papercusp.com/server/${version}.tgz`,
+      // Derived from the digest, not hand-authored against a hostname that does not resolve:
+      // the canonical publication path is content-addressed, so the address and the integrity
+      // check are the same value.
+      bundleUrl: deriveWorkspaceHostCanonicalArtifactUrls(RELEASE_DIGEST).bundleUrl,
       bundleSha256: RELEASE_DIGEST,
-      signatureUrl: `https://releases.papercusp.com/server/${version}.tgz.minisig`,
+      signatureUrl: deriveWorkspaceHostCanonicalArtifactUrls(RELEASE_DIGEST).signatureUrl,
       signingPublicKey: SIGNING_PUBLIC_KEY,
       signingKeySha256: SIGNING_KEY_DIGEST,
     },

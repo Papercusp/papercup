@@ -5,8 +5,10 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
+  deriveWorkspaceHostCanonicalArtifactUrls,
   buildWorkspaceHostCleanRoomInstallFixture,
   workspaceHostCleanRoomFixtureAttestation,
   type WorkspaceHostCleanRoomAcceptanceReport,
@@ -57,7 +59,17 @@ function artifact(): WorkspaceHostImageArtifact {
       templatePath: 'infra/images/workspace-host.pkr.hcl',
       templateSha256: 'e'.repeat(64),
     },
-    materials: [{ path: 'dist/papercusp-server.tgz', sha256: RELEASE_SHA, sizeBytes: 42_000 }],
+    materials: [
+      { path: 'dist/papercusp-server.tgz', sha256: RELEASE_SHA, sizeBytes: 42_000 },
+      // A shippable bundle must carry the remote initializer as an executable, or the image
+      // installs and reports healthy and then fails every initialization at the far end.
+      {
+        path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+        sha256: 'e'.repeat(64),
+        sizeBytes: 2_048,
+        executable: true,
+      },
+    ],
     parameters: [{ name: 'distribution_profile', value: 'vm-release' }],
     targets: [{ provider: 'aws', locations: [...REGIONS] }],
   });
@@ -67,9 +79,12 @@ function artifact(): WorkspaceHostImageArtifact {
     buildManifest,
     release: {
       version: VERSION,
-      bundleUrl: `https://releases.papercusp.com/server/${VERSION}.tgz`,
+      // Derived from the digest, not hand-authored against a hostname that does not resolve:
+      // the canonical publication path is content-addressed, so the address and the integrity
+      // check are the same value.
+      bundleUrl: deriveWorkspaceHostCanonicalArtifactUrls(RELEASE_SHA).bundleUrl,
       bundleSha256: RELEASE_SHA,
-      signatureUrl: `https://releases.papercusp.com/server/${VERSION}.tgz.minisig`,
+      signatureUrl: deriveWorkspaceHostCanonicalArtifactUrls(RELEASE_SHA).signatureUrl,
       signingPublicKey: SIGNING_PUBLIC_KEY,
       signingKeySha256: SIGNING_KEY_SHA,
     },
