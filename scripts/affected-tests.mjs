@@ -2231,8 +2231,13 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // defaults to HEAD and becomes NOT_CHECKED as soon as git-sync commits the edit
     // that selected it.
     forwardBase: true,
-    // TS-family only: nothing else can declare a runtime export for a factory to omit.
-    appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
+    // The same exact-path attribution as required-field-strands. In particular, a
+    // superproject diff represents every submodule-internal edit as the bare gitlink path;
+    // the guard expands that root against the forwarded base inside the owning repository.
+    forwardChangedPaths: true,
+    // TS-family files, plus submodule roots — the only changed-path shape under which a
+    // runtime export added inside one of the 39 submodules reaches this registry.
+    appliesTo: (f) => /\.[cm]?tsx?$/.test(f) || gitmodulePaths().has(f),
   },
   {
     // WI-38401 / EI-20020054576584970 — the sibling of the entry above, and the same
