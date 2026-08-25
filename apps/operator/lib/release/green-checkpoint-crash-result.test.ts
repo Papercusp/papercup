@@ -7,6 +7,16 @@ import {
   emitTerminalCheckpointResult,
   GREEN_CHECKPOINT_RESULT_MARKER,
 } from './green-checkpoint';
+// EI-21465187777146773: the CONSUMER half of the seam these builders sit on. Imported for real
+// (as torn-sweep-classification-path.test.ts does) rather than restated as a literal — the whole
+// defect was that the producer's vocabulary and the consumer's class list drifted apart while
+// both suites stayed green.
+import { classifyGateStallStatus } from '@papercusp/operator-core/lib/harness/routines/release-actions';
+import {
+  classifyGateAbort,
+  gateAbortLever,
+  isRecordedInconclusiveStatus,
+} from '@papercusp/operator-core/lib/release/gate-abort-status';
 
 describe('EI-21462448110688084: process-level fatal errors await terminal finalization', () => {
   it('does not exit until the typed-result finalizer completes', async () => {
@@ -79,7 +89,9 @@ describe('EI-21462448110688084: process-level fatal errors await terminal finali
     expect(terminal).toMatchObject({
       candidate,
       green: null,
-      reason: 'not-green',
+      // EI-21465187777146773: the marker a CAUGHT crash publishes now carries the same
+      // no-verdict status an UNREPORTED crash gets from checkpointFallbackStatus.
+      reason: 'error',
       crashed: true,
       runId: 'scheduled-05a2a744',
     });
@@ -106,7 +118,7 @@ describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash 
     const r = buildCrashCheckpointResult({ candidate: 'abc123', error: new Error('lint:plane-ratchet exited 1'), runId: 'run-1' });
     expect(r.green).toBeNull();
     expect(r.advanced).toBe(false);
-    expect(r.reason).toBe('not-green');
+    expect(r.reason).toBe('error');
     expect(r.crashed).toBe(true);
     expect(r.from).toBeNull();
     expect(r.candidate).toBe('abc123');
