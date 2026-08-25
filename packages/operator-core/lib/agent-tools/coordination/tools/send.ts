@@ -54,6 +54,7 @@ import {
   resolveCouplingDivergenceStamps,
   COUPLING_DIVERGENCE_FIELD,
 } from '../coupling-divergence-stamp';
+import { resolveStaleQuoteStamps, STALE_QUOTE_FIELD } from '../stale-quote-stamp';
 // TYPE ONLY — erased at compile time, so it creates no runtime edge. A VALUE
 // import of this module would be a load-time hazard here: `coord/couplings`
 // (which `derived-signal-census` imports for DERIVED_COUPLING_RELATIONS) statically
@@ -948,6 +949,24 @@ async function sendOne(
       ...(observeCensus ? { observe: observeCensus } : {}),
     });
     if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
+  }
+  // P-011 (state-plane-adoption-2026-08-02): stamp stale-value QUOTING — a
+  // section that cites a registered cell's identity while the sender's
+  // invocation log holds no fresh read of that cell's door this turn. Same
+  // seam contracts as the stamps above: pure gate before IO, fail-soft, ALL
+  // detections ride (the aggregate read needs the denominator), and per D-090
+  // this is data about the fleet's habits, never a per-sender nag.
+  if (fieldStamp.sections) {
+    try {
+      const staleQuoteStamps = await resolveStaleQuoteStamps({
+        selfOwnerId: identity.ownerId,
+        sections: fieldStamp.sections,
+        workspaceId: identity.workspaceId,
+      });
+      if (staleQuoteStamps.length) extra[STALE_QUOTE_FIELD] = staleQuoteStamps;
+    } catch {
+      /* fail-soft: stale-quote stamping never blocks a send */
+    }
   }
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
