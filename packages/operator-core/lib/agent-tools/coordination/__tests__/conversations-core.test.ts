@@ -117,6 +117,9 @@ class InMemoryConversationStore implements ConversationStoreLike {
       accepted_post_id: null,
       capture_target: null,
       promoted_issue_id: null,
+      // Carried through like PG does — a fake that dropped it would make every
+      // attribution assertion below vacuously pass (EI-21462599108204160).
+      producer: input.producer,
       superseded_by: null,
       created_ts: input.created_ts,
       updated_ts: input.created_ts,
@@ -449,6 +452,7 @@ describe('postReplyCore', () => {
       scope: 'operator',
       asker_id: 'someone',
       body: 'created off-path, no thread',
+      producer: 'test',
       created_ts: T0,
     });
     expect(await threads.getThreadByParent({ kind: 'conversation', ref: 'conv-bare' })).toBeNull();
@@ -798,12 +802,139 @@ describe('getConversationCore', () => {
   });
 
   it('a thread-less off-path row reads back with empty posts/topics and zero subscribers', async () => {
-    await store.create({ id: 'conv-bare', kind: 'discussion', scope: 'operator', asker_id: 'a', body: 'b', created_ts: T0 });
+    await store.create({ id: 'conv-bare', kind: 'discussion', scope: 'operator', asker_id: 'a', body: 'b', producer: 'test', created_ts: T0 });
     const detail = await getConversationCore(deps, 'conv-bare');
     expect(detail?.conversation.id).toBe('conv-bare');
     expect(detail?.posts).toEqual([]);
     expect(detail?.topics).toEqual([]);
     expect(detail?.subscriber_count).toBe(0);
+  });
+});
+
+/**
+ * EI-21462599108204160 — attribution must SURVIVE the answer.
+ *
+ * Before `producer`, the only record of which tool opened a conversation was the
+ * Decision-tier escalation twin that `coord:ask-owner` writes alongside it. That
+ * twin is CLOSED when the question is answered (correctly — it is the
+ * EI-19399318647145782 zombie fix). So attribution existed only while a question
+ * was unanswered, and "what fraction of owner asks get answered" — the one number
+ * the table is asked for — was structurally uncomputable: every row that would
+ * have counted in the numerator had destroyed its own attribution on the way in.
+ *
+ * These tests pin the property that fixes it: the producer is written at open
+ * time and is untouched by every later lifecycle transition.
+ */
+describe('conversation producer attribution (EI-21462599108204160)', () => {
+  it('records the producer the caller declared at open time', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      body: 'did you approve this?',
+      producer: 'coord:ask-owner',
+    });
+    expect((await store.get(opened.conversation.id))?.producer).toBe('coord:ask-owner');
+  });
+
+  it('THE DEFECT: the producer survives resolution — an ANSWERED ask is still attributable', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      body: 'q',
+      producer: 'coord:ask-owner',
+    });
+    const res = await resolveConversationCore(deps, ident('asker'), {
+      conversation_id: opened.conversation.id,
+      accepted_answer: 'yes',
+    });
+    expect('error' in res).toBe(false);
+
+    const row = await store.get(opened.conversation.id);
+    // The state DID flip — otherwise this asserts attribution survives a
+    // transition that never happened, which is how a guard passes vacuously.
+    expect(row?.state).toBe('resolved');
+    expect(row?.accepted_answer).toBe('yes');
+    expect(row?.producer).toBe('coord:ask-owner');
+  });
+
+  it('keeps producers DISTINCT across resolved rows, so answer-rate-per-tool is computable', async () => {
+    // The control that makes the two tests above non-vacuous: if `producer` were
+    // dropped on the write path, defaulted, or overwritten by the lifecycle, this
+    // group-by collapses and the count this column exists to serve is wrong.
+    const ownerAsk = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      body: 'owner q',
+      producer: 'coord:ask-owner',
+    });
+    const peerAsk = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      body: 'peer q',
+      producer: 'coord:ask',
+    });
+    const consult = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      body: 'consult q',
+      producer: 'consult:get_feedback',
+    });
+
+    // Answer two of the three; the unanswered one must stay attributable too.
+    for (const c of [ownerAsk, peerAsk]) {
+      const r = await resolveConversationCore(deps, ident('asker'), {
+        conversation_id: c.conversation.id,
+        accepted_answer: 'answered',
+      });
+      expect('error' in r).toBe(false);
+    }
+
+    const rows = await Promise.all(
+      [ownerAsk, peerAsk, consult].map((c) => store.get(c.conversation.id)),
+    );
+    expect(rows.map((r) => [r?.producer, r?.state])).toEqual([
+      ['coord:ask-owner', 'resolved'],
+      ['coord:ask', 'resolved'],
+      ['consult:get_feedback', 'open'],
+    ]);
+  });
+
+  it('a superseding replacement INHERITS the original producer, not the supersede verb', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      body: 'original',
+      producer: 'coord:ask-owner',
+    });
+    const res = await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: opened.conversation.id,
+      replacement: { body: 'the premise changed' },
+    });
+    if ('error' in res) throw new Error(res.error);
+
+    // Retract-and-re-ask is the SAME tool asking again. Attributing the
+    // replacement to `conversations:supersede` would lose the attribution
+    // precisely when a question is re-asked, which is when it matters most.
+    expect((await store.get(res.replacement.conversation.id))?.producer).toBe('coord:ask-owner');
+  });
+
+  it('falls back to the supersede verb only when the original had no producer to inherit', async () => {
+    // Models a row opened before this column existed, or federated from a peer
+    // running older code — the only way a live row carries a NULL producer.
+    await store.create({
+      id: 'conv-legacy',
+      kind: 'question',
+      scope: 'operator',
+      asker_id: 'asker',
+      body: 'pre-attribution row',
+      producer: 'test',
+      created_ts: T0,
+    });
+    const legacy = await store.get('conv-legacy');
+    if (!legacy) throw new Error('fixture missing');
+    legacy.producer = null;
+    store.rows.set('conv-legacy', legacy);
+
+    const res = await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: 'conv-legacy',
+      replacement: { body: 'replacement' },
+    });
+    if ('error' in res) throw new Error(res.error);
+    expect((await store.get(res.replacement.conversation.id))?.producer).toBe('conversations:supersede');
   });
 });
 
