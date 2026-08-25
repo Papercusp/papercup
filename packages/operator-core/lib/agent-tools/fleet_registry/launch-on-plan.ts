@@ -59,7 +59,12 @@ import {
   type FleetHeadcountConfig,
   type FleetType,
 } from '../../agent-fleets-store';
-import { describeLaunchRoles, resolveLaunchOptions } from './pair-launch-options';
+import {
+  describeLaunchRoles,
+  expandPairedMembers,
+  resolveLaunchOptions,
+  wholePairSeats,
+} from './pair-launch-options';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
 import {
@@ -1768,6 +1773,42 @@ export default defineTool({
     // createFleetIfAbsent, because a top-up joins an existing fleet whose stored
     // type wins over whatever this call asked for.
     let launchFleetType: FleetType = launchOptions.type;
+
+    // D-014 / P-011: a paired launch is expressed as the EXISTING per-member
+    // override list, not a second member-command path. Two translations happen
+    // here and nowhere else:
+    //
+    //   1. `count` means PAIRS on this arm (D-012), so the fleet TARGET is
+    //      pairs*2 seats. Everything downstream — the capacity clamp, the
+    //      headcount governor, MAX_MEMBERS, the deficit math — keeps treating
+    //      `args.count` as a seat target and needs no paired-awareness at all.
+    //   2. Each seat's role slice becomes a `members[]` entry, so the fold, the
+    //      launch-context composition and the attestation records all apply
+    //      unchanged.
+    //
+    // Done BEFORE resolveSavedFleetLaunchSpec so the saved-spec round trip sees
+    // the same effective inputs the governor and command composer will.
+    let pairedAnnouncement: string[] | null = null;
+    if (launchOptions.type === 'paired') {
+      if (args.members?.length) {
+        return err(
+          "`members` cannot be combined with type:'paired': the per-member override list IS how the " +
+            'director/implementer split is expressed, so supplying your own would silently overwrite one ' +
+            'half of every pair. Configure the roles with directors:{…} / implementers:{…} instead.',
+        );
+      }
+      const pairs = launchOptions.pairs ?? 1;
+      const seats = wholePairSeats(pairs * 2);
+      if (seats < 2) {
+        return err(
+          `count:${pairs} does not open a whole pair. A paired fleet is 1:1, so count is the number of PAIRS ` +
+            '(count:1 opens 1 director + 1 implementer = 2 members). Pass count >= 1.',
+        );
+      }
+      args.count = seats;
+      args.members = expandPairedMembers(launchOptions, seats) as typeof args.members;
+      pairedAnnouncement = describeLaunchRoles(launchOptions);
+    }
 
     const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);
     // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
@@ -4309,10 +4350,24 @@ export default defineTool({
         memberLaunchContextPath,
         perMemberLaunchContextPaths,
         briefReadError,
+        // D-008 / D-014: the fleet's type, and — when paired — the per-role spawn
+        // announcement the persona rule owes the owner. `announcement` is ONE LINE
+        // PER ROLE on purpose: a merged summary is unreadable exactly when the two
+        // roles differ, which is the only case worth announcing. `pairs` reports
+        // whole pairs actually opened, which is what a clamped wave changes.
+        fleetType: launchFleetType,
+        pairing:
+          launchFleetType === 'paired'
+            ? {
+                pairs: Math.floor(fill.fleetSize / 2),
+                requestedPairs: Math.floor(count / 2),
+                announcement: pairedAnnouncement ?? [],
+              }
+            : null,
         opened,
         failed,
         launchTransaction,
-        message: lines.join('\n'),
+        message: [...(pairedAnnouncement ?? []), ...lines].join('\n'),
       },
       launchTransaction.verifiedMemberIds.length === 0,
     );
