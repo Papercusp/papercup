@@ -67,6 +67,7 @@ const WS = 'ws-planrun';
 // the 'papercup' the test asked for and later reads back). Any non-reserved slug avoids
 // the trigger's WHEN clause entirely.
 const HARNESS = 'plan-run-it-fixture';
+const APP_HARNESS = 'email-plan-run-it-fixture';
 const TEMPLATE = 'monitor-x';
 
 const ITEMS = [
@@ -82,7 +83,8 @@ beforeAll(async () => {
   await sql`
     INSERT INTO harness_shared.pots
       (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
-    VALUES (${WS}, ${HARNESS}, ${Buffer.from([0])}, 'kc-plan-run-it', 0)
+    VALUES (${WS}, ${HARNESS}, ${Buffer.from([0])}, 'kc-plan-run-it', 0),
+           (${WS}, ${APP_HARNESS}, ${Buffer.from([1])}, 'kc-plan-run-app-it', 0)
     ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
   `;
 });
@@ -92,9 +94,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.routines`;
-  await sql`DELETE FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS}`;
-  await sql`DELETE FROM harness_shared.harness_plans WHERE harness_slug = ${HARNESS} AND workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${HARNESS} AND workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.plan_runs WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS})`;
+  await sql`DELETE FROM harness_shared.harness_plans WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
   // Seed the TEMPLATE plan with a parsed items index.
   await sql`
     INSERT INTO harness_shared.harness_plans
@@ -174,6 +176,80 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         FROM harness_shared.work_item_deps
        WHERE dep_type = 'blocks'`;
     expect(edges).toHaveLength(1);
+  });
+
+  it('inherits schedule execution, promotes in the app harness, and dispatches only the actionable frontier', async () => {
+    const execution = { appHarnessSlug: APP_HARNESS, agentName: 'email-agent' };
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', execution })}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    await stampClaim(new Date('2026-06-16T10:00:00.000Z'));
+    const dispatch = vi.fn(async (args: { workItemIds: readonly string[]; targetAgent: string }) => ({
+      ok: true,
+      target: {
+        requested: args.targetAgent,
+        ownerId: 'su-email-live',
+        present: true,
+        sessionState: 'parked',
+        wakeable: true,
+      },
+      assignment: {
+        ok: true,
+        targetAgent: args.targetAgent,
+        requested: [...args.workItemIds],
+        actionable: [...args.workItemIds],
+        assigned: [...args.workItemIds],
+        retained: [],
+        skipped: [],
+        failed: [],
+        executionWorkItemIds: [...args.workItemIds],
+      },
+      wake: {
+        targets: ['su-email-live'],
+        keys: ['coord:inbox-wake:su-email-live'],
+        queued: 1,
+        woken: 1,
+        pickupConfirmed: false,
+        staged: 0,
+        stagedTargets: [],
+        fanoutCapped: [],
+        timedOutTargets: [],
+      },
+    }));
+
+    const result = await runScheduledPlanFire(
+      sql,
+      { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE },
+      { dispatch },
+    );
+
+    expect(result).toMatchObject({ execution, dispatch: { ok: true } });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workItemIds: result!.actionableWorkItemIds,
+        targetAgent: 'email-agent',
+        workspaceId: WS,
+        harness: APP_HARNESS,
+      }),
+    );
+    expect(result!.actionableWorkItemIds).toHaveLength(1);
+    expect(result!.workItemIds).toHaveLength(2);
+
+    const appRows = await sql<Array<{ harness: string; payload: Record<string, any> }>>`
+      SELECT harness_slug AS harness, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS}
+         AND payload -> 'plan_run' ->> 'runId' = ${String(result!.runId)}
+       ORDER BY feature_id`;
+    expect(appRows).toHaveLength(2);
+    expect(appRows.every((row) => row.harness === APP_HARNESS)).toBe(true);
+    expect(appRows.every((row) => row.payload.plan_run.execution.agentName === 'email-agent')).toBe(true);
+    const ledger = await sql<Array<{ harness: string }>>`
+      SELECT harness_slug AS harness FROM harness_shared.plan_runs
+       WHERE workspace_id = ${WS} AND id = ${result!.runId}`;
+    expect(ledger[0].harness).toBe(APP_HARNESS);
   });
 
   it('is replay-safe: re-firing the same claim is a no-op (no duplicate run)', async () => {
