@@ -506,6 +506,7 @@ export default defineTool({
     const manualRunAdmission = await readManualRunAdmission();
     if (manualRunAdmission.status !== 'clear') {
       const held = manualRunAdmission.status === 'held' ? manualRunAdmission.hold : null;
+      const unreadable = manualRunAdmission.status === 'unknown' ? manualRunAdmission.reason : 'unknown';
       ctx.metadata?.({
         standDown: held ? 'manual_run_authority_withheld' : 'manual_run_authority_unreadable',
         ...(held?.governingRef ? { standDownGoverningRef: held.governingRef } : {}),
@@ -528,7 +529,7 @@ export default defineTool({
                 'newer decision granting manual authority and clear the hold with release:checkpoint-config { op:"unhold", scope:"manual-run" }.'
               : 'NOT launched: the manual-run authority token could not be read, so this tool cannot prove a recorded ' +
                 'decision does not forbid this launch. It fails closed before spending a ~55min suite; retry after the ' +
-                `authority read recovers (${manualRunAdmission.reason}).`,
+                `authority read recovers (${unreadable}).`,
           }),
         }],
       };
