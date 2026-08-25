@@ -136,6 +136,17 @@ vi.mock('../premise-resolve', async (importOriginal) => ({
   resolvePremiseStamps: vi.fn(async () => []),
 }));
 
+// state-plane-adoption-2026-08-02 P-011 (acceptance C5): the stale-quote RESOLVER
+// is stubbed so the WIRING is asserted without a PG round-trip (detection/scoring
+// + the always-fresh falsifiability control live in stale-quote-stamp.test.ts).
+// Same importOriginal rule as premise-resolve above: send.ts imports
+// STALE_QUOTE_FIELD from this module — a bare factory would drop it
+// (EI-19281789650149592 class).
+vi.mock('../stale-quote-stamp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../stale-quote-stamp')>()),
+  resolveStaleQuoteStamps: vi.fn(async () => []),
+}));
+
 import { sendMessage, getMessageById, resolveMessageRef, getUnresolvedAudienceSelectors } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
@@ -149,6 +160,8 @@ import { getFlag } from '@papercusp/flags/server';
 import { deriveBasedOn } from '../based-on';
 import { resolvePremiseStamps } from '../premise-resolve';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
+import { resolveStaleQuoteStamps, STALE_QUOTE_FIELD } from '../stale-quote-stamp';
+const staleQuoteM = vi.mocked(resolveStaleQuoteStamps);
 const premiseM = vi.mocked(resolvePremiseStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
 const sendM = vi.mocked(sendMessage);
@@ -226,6 +239,9 @@ beforeEach(() => {
   basedOnM.mockResolvedValue([] as never);
   // WI-6731: no premises resolved by default, so an ordinary send is unchanged.
   premiseM.mockResolvedValue([] as never);
+  // state-plane-adoption P-011: no stale quotes by default — an ordinary send is
+  // unchanged (matches the real resolver's []-on-anything-unresolvable contract).
+  mockResolvedTyped(staleQuoteM, []);
 });
 
 describe('coord:send handler (bulk keyed-array)', () => {
@@ -2055,6 +2071,58 @@ describe('premiseStamps — the resolved half of `premises`, stamped at send', (
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
     expect(opts.extra).not.toHaveProperty('premiseStamps');
+  });
+});
+
+/**
+ * state-plane-adoption-2026-08-02 P-011 — stale-quote stamps reach the envelope.
+ *
+ * The module suite (stale-quote-stamp.test.ts) proves detection + scoring with a
+ * permanent always-fresh falsifiability control — but a green module suite says
+ * nothing about the CHOKEPOINT: send.ts could drop the resolveStaleQuoteStamps
+ * call and every pre-existing test would stay green (the "C5 measures presence,
+ * not enforcement" gap named by the acceptance-rubric vetting, conv-mt8toi80).
+ * What is pinned here is the WIRING, mirroring the premiseStamps describe above:
+ * the resolver is invoked from the send path with the sender's own
+ * identity/workspace and the message's sections, its stamps ride the envelope
+ * the seam persists, and a resolver failure never eats the message.
+ */
+describe('staleValueQuotes — the P-011 stamp, wired at the coord:send chokepoint', () => {
+  const sections = [{ text: 'candidate is gate.greenCheckpoint.candidate at abc123ff' }];
+
+  it('invokes the resolver with the sender identity/sections and rides the envelope', async () => {
+    const stamps = [
+      {
+        section: 0,
+        cell: 'gate.greenCheckpoint.candidate',
+        token: 'gate.greenCheckpoint.candidate',
+        verdict: 'quoted-without-fresh-read' as const,
+      },
+    ];
+    mockResolvedTyped(staleQuoteM, stamps);
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections });
+
+    expect(staleQuoteM).toHaveBeenCalledTimes(1);
+    const arg = staleQuoteM.mock.calls[0]![0];
+    expect(arg).toMatchObject({ selfOwnerId: 'me', workspaceId: 'ws1' });
+    expect(arg.sections.length).toBeGreaterThan(0);
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.[STALE_QUOTE_FIELD]).toEqual(stamps);
+  });
+
+  it('leaves the envelope unchanged when nothing is detected', async () => {
+    mockResolvedTyped(staleQuoteM, []);
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty(STALE_QUOTE_FIELD);
+  });
+
+  it('never fails a send when the resolver blows up — a stamp must not eat a message', async () => {
+    staleQuoteM.mockRejectedValue(new Error('pg is down'));
+    const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty(STALE_QUOTE_FIELD);
   });
 });
 
