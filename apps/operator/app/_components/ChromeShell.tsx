@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
 import { animate, stagger } from 'motion';
@@ -88,6 +88,11 @@ const INTRO_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 const HEADER_QUOTE = 'Nothing Is So Painful To The Human Mind As A Great And Sudden Change';
 const HEADER_QUOTE_DELAY_MS = 950;
 const HEADER_QUOTE_CHARACTER_MS = 24;
+/** Compact against the header's REAL content box, not window.innerWidth. The
+ * docked chat/steering/dev rails can leave less than this at a 1440px desktop,
+ * while Tauri's native minWidth=800 makes the old viewport-only 760px branch
+ * unreachable at the shell minimum. */
+const COMPACT_HEADER_MAX_WIDTH = 760;
 
 function AnimatedHeaderQuote({ animateQuote }: { animateQuote: boolean }) {
   const [text, setText] = useState(() => (animateQuote ? '' : HEADER_QUOTE));
@@ -165,6 +170,35 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
       ? { ...mainNavJumpGateProps, className: 'pc-header-nav-link active', 'aria-current': 'page' as const }
       : { ...mainNavJumpGateProps, className: 'pc-header-nav-link' };
   };
+
+  useLayoutEffect(() => {
+    const header = headerRef.current;
+    if (chromeless || !header) return;
+
+    const syncCompactState = (width: number) => {
+      // jsdom and a detached first measurement can report zero. Wait for the
+      // observer's first real box rather than falsely compacting on no data.
+      if (width <= 0) return;
+      header.classList.toggle(
+        'pc-header--compact',
+        width <= COMPACT_HEADER_MAX_WIDTH,
+      );
+    };
+    syncCompactState(header.getBoundingClientRect().width);
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => header.classList.remove('pc-header--compact');
+    }
+    const observer = new ResizeObserver((entries) => {
+      const ownEntry = entries.find((entry) => entry.target === header);
+      syncCompactState(ownEntry?.contentRect.width ?? header.getBoundingClientRect().width);
+    });
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      header.classList.remove('pc-header--compact');
+    };
+  }, [chromeless]);
 
   useEffect(() => {
     const header = headerRef.current;

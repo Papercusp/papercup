@@ -12,11 +12,20 @@
  *   - OPERATOR_CHAT_SIDEBAR gating: the revived OperatorChatSidebar renders
  *     iff ITS flag is on (independent of TESTING); OracleDock + Tutorial
  *     stay retired regardless of flags
+ *   - narrow chrome responds to the header's observed content-box width, not
+ *     an unreachable viewport breakpoint below Tauri's native minimum
  *   - the website-matched header quote types on the measured cadence and
  *     settles immediately when motion/effects are disabled
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
+
+const operatorRoot = existsSync(resolve(process.cwd(), 'app/globals.css'))
+  ? process.cwd()
+  : resolve(process.cwd(), 'apps/operator');
+const GLOBAL_CSS = readFileSync(resolve(operatorRoot, 'app/globals.css'), 'utf8');
 
 /* ── Hook mocks (controllable per-test) ────────────────────────────── */
 let pathname = '/';
@@ -98,6 +107,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('ChromeShell', () => {
@@ -122,6 +132,53 @@ describe('ChromeShell', () => {
     expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'DEV' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'GitHub' })).toBeTruthy();
+  });
+
+  it('compacts from the header content box and restores when dock space returns', () => {
+    let notifyWidth: ((width: number) => void) | null = null;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          notifyWidth = (width: number) =>
+            callback(
+              [
+                {
+                  target: document.querySelector('.pc-header'),
+                  contentRect: { width },
+                } as unknown as ResizeObserverEntry,
+              ],
+              this as unknown as ResizeObserver,
+            );
+        }
+        observe = observe;
+        disconnect = disconnect;
+      },
+    );
+
+    const { container, unmount } = render(<ChromeShell />);
+    const header = container.querySelector('.pc-header')!;
+    expect(observe).toHaveBeenCalledWith(header);
+
+    act(() => notifyWidth?.(640));
+    expect(header.classList.contains('pc-header--compact')).toBe(true);
+    act(() => notifyWidth?.(900));
+    expect(header.classList.contains('pc-header--compact')).toBe(false);
+
+    unmount();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(header.classList.contains('pc-header--compact')).toBe(false);
+  });
+
+  it('gives the measured compact class one-column, horizontal-scroll chrome', () => {
+    expect(GLOBAL_CSS).toMatch(
+      /\.pc-header\.pc-header--compact\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
+    );
+    expect(GLOBAL_CSS).toMatch(
+      /\.pc-header--compact \.pc-header-center,\s*\.pc-header--compact \.pc-header-right\s*\{[^}]*flex-wrap:\s*nowrap[^}]*overflow-x:\s*auto/s,
+    );
   });
 
   it('types the header quote on the papercusp.com cadence, then settles', () => {

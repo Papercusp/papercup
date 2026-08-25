@@ -1017,6 +1017,61 @@ html[data-route-pending="true"] .pc-header::after {
   }
 }
 
+/* A viewport breakpoint cannot describe this header's usable width: the
+   docked steering/chat/dev rails subtract from `.pc-header` itself, and the
+   Tauri window cannot shrink below 800px. ChromeShell's ResizeObserver stamps
+   this class from the ACTUAL header content box so wrapped utility controls
+   grow the header in normal flow instead of painting over the page below. */
+.pc-header.pc-header--compact {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 8px;
+}
+
+.pc-header--compact .pc-header-left,
+.pc-header--compact .pc-header-center,
+.pc-header--compact .pc-header-right {
+  grid-column: 1;
+  width: 100%;
+  min-width: 0;
+}
+
+.pc-header--compact .pc-header-quote {
+  display: none;
+}
+
+.pc-header--compact .pc-header-center,
+.pc-header--compact .pc-header-right {
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pc-header--compact .pc-header-center {
+  gap: 8px;
+}
+
+.pc-header--compact .pc-header-right {
+  column-gap: 10px;
+  row-gap: 0;
+}
+
+.pc-header--compact .pc-header-center::-webkit-scrollbar,
+.pc-header--compact .pc-header-right::-webkit-scrollbar {
+  display: none;
+}
+
+.pc-header--compact .pc-header-cta {
+  margin-left: 0;
+}
+
+.pc-header--compact .pc-header-center > *,
+.pc-header--compact .pc-header-right > * {
+  flex: 0 0 auto;
+}
+
 .pc-header .brand {
   display: inline-flex;
   align-items: center;
