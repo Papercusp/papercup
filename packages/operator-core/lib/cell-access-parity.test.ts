@@ -359,6 +359,21 @@ const CALL_SITE_ALLOWLIST: Record<string, string> = {
   // whose entire job is to be complete.
   'packages/operator-core/lib/agent-plane-measurement-sweep.ts':
     'P-008 tenure census: counts the registry to emit a cut-or-keep verdict per cell; inventory only, never serves a value',
+  // The stale-quote stamp indexes cell IDENTITIES to recognise a cell the SENDER
+  // already named in their OWN message sections (`buildCellTokenIndex` feeds
+  // `detectQuotedCells(opts.sections, index)`). No cell VALUE is read, and no cell
+  // name the sender did not already write is ever surfaced — so there is nothing
+  // for an audience check to protect here. Its other unchecked call is a
+  // `.length === 0` COUNT, guarding idempotent built-in registration.
+  //
+  // `listCells(reader)` would be actively WRONG, not merely unavailable: an
+  // audience-filtered index makes `detectQuotedCells` fail to match a cell the
+  // sender genuinely quoted, so the message ships with NO staleness stamp at all.
+  // That inverts the safety property — the recipient reads an unmarked stale quote,
+  // which is precisely the outcome the stamp exists to prevent. Filtering here would
+  // trade a non-existent disclosure risk for a real correctness regression.
+  'packages/operator-core/lib/agent-tools/coordination/stale-quote-stamp.ts':
+    'stale-quote stamping: indexes cell identities to match names the sender already wrote; never serves a value, and filtering would silently drop the stamp',
 };
 
 function scanForBypassCallSites(rootDir: string, repoRoot: string): string[] {
