@@ -22,6 +22,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import {
   claimWorkItem,
   classifyClaimFailure,
+  commentWorkItem,
   getWorkItem,
   readUnresolvedDepBlockers,
   type UnresolvedDepBlocker,
@@ -63,6 +64,11 @@ import {
   recordForceTransitionAudit,
   type ForceReleaseBasis,
 } from './release-force-guard';
+import {
+  readWorkItemReleaseRequest,
+  resolveWorkItemReleaseRequest,
+  type WorkItemReleaseRequest,
+} from '../../work-items-release-request';
 // TYPE-only: erased at runtime, so it adds no import edge and cannot reintroduce an ESM
 // cycle with the scheduler (the VALUE side is dynamically imported at its use site below,
 // the same way fleet:leader-brief reaches this store).
@@ -371,7 +377,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // liveness/authority decision, then pass the exact holder into the UPDATE as an
   // expected-assignee CAS leg. If the holder changes after this read, the CAS
   // refuses the claim rather than stealing the new holder's work.
-  let forced: { holder: string; basis: ForceReleaseBasis; reason: string } | undefined;
+  let forced:
+    | { holder: string; basis: ForceReleaseBasis; reason: string; releaseRequest?: WorkItemReleaseRequest }
+    | undefined;
   const currentHolder = preClaimItem?.assignee?.trim();
   if (it.force && currentHolder && currentHolder !== identity.ownerId) {
     const reason = (it.reason ?? '').trim();
@@ -384,11 +392,13 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         hint: `force would replace ${currentHolder}'s claim — pass a \`reason\` the holder and owner can audit (WI-20417350647749715).`,
       };
     }
+    const releaseRequest = readWorkItemReleaseRequest(preClaimItem?.payload);
     const verdict = await assessForceRelease({
       callerOwnerId: identity.ownerId,
       holderOwnerId: currentHolder,
       workspaceId: identity.workspaceId ?? '',
       itemLastProgressAt: preClaimItem?.lastProgressAt ?? null,
+      releaseRequest,
     });
     if (!verdict.allowed) {
       return {
@@ -400,7 +410,12 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         hint: forceRefusalHint(currentHolder),
       };
     }
-    forced = { holder: currentHolder, basis: verdict.basis as ForceReleaseBasis, reason };
+    forced = {
+      holder: currentHolder,
+      basis: verdict.basis as ForceReleaseBasis,
+      reason,
+      ...(verdict.basis === 'announced-release-request-expired' && releaseRequest ? { releaseRequest } : {}),
+    };
   }
   // EI-19313376980892266: RESOLVE the concurrency verdict BEFORE the claim mutates the rows it
   // counts. Starting the read early is not enough — it is `getActiveClaimsForBee` against the
@@ -439,6 +454,32 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       operation: 'claim',
       replacementAssignee: claimer,
     });
+    // The manual claim path can now execute an expired announced reclaim. Resolve
+    // the exact request row only AFTER the holder-CAS claim lands; a requester refresh
+    // racing this call is protected by expectedDeadlineAt. Bookkeeping is best-effort
+    // because the ownership mutation already committed.
+    if (forced.basis === 'announced-release-request-expired' && forced.releaseRequest) {
+      try {
+        const req = forced.releaseRequest;
+        const resolved = await resolveWorkItemReleaseRequest(it.id, {
+          harness: workItem.harness ?? it.harness ?? undefined,
+          resolution: 'consequence-reclaim',
+          expectedBy: req.by,
+          expectedHolder: req.holder,
+          expectedDeadlineAt: req.deadlineAt,
+        });
+        if (resolved) {
+          await commentWorkItem(
+            it.id,
+            `⏰ Release request from ${resolved.by} → ${resolved.holder} EXPIRED unanswered — announced onSilence:"reclaim" fired via work_items:claim; replacement assignee: ${claimer}.`,
+            claimerDefault,
+            { harness: workItem.harness ?? it.harness ?? undefined },
+          ).catch(() => {});
+        }
+      } catch {
+        /* best-effort — never turn a landed holder-CAS claim into a reported failure */
+      }
+    }
   }
   if (workItem) {
     // WI-5826: see terminalClaimWarning — a by-id claim of a finished row stays ALLOWED

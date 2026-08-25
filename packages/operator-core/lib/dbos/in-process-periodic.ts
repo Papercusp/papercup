@@ -926,6 +926,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
           holderOwnerId: holder,
           workspaceId: row.workspaceId,
           itemLastProgressAt: row.lastProgressAt,
+          releaseRequest: req,
         }).catch(() => null);
         if (!releaseVerdict?.allowed) {
           console.warn(
@@ -937,7 +938,13 @@ const releaseRequestSweepCheck: PeriodicCheck = {
       }
       // CAS FIRST — only the tick that wins the compare-and-resolve acts. A row a peer
       // resolved (holder released/declined) in the same window is a no-op here.
-      const resolved = await resolveWorkItemReleaseRequest(row.id, { harness: row.harness ?? undefined, resolution }).catch(() => null);
+      const resolved = await resolveWorkItemReleaseRequest(row.id, {
+        harness: row.harness ?? undefined,
+        resolution,
+        expectedBy: req.by,
+        expectedHolder: req.holder,
+        expectedDeadlineAt: req.deadlineAt,
+      }).catch(() => null);
       if (!resolved) continue;
 
       // The resolver can win the request CAS after the item has already settled. In

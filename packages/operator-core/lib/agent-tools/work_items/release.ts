@@ -228,7 +228,15 @@ export default defineTool({
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
         // identify the holder; a cross-holder force must pass the authority/liveness
         // guard, carry a reason, and leave an audit + notification trail.
-        let forced: { holder: string; basis: ForceReleaseBasis; reason: string; reasonTruncated?: true } | undefined;
+        let forced:
+          | {
+              holder: string;
+              basis: ForceReleaseBasis;
+              reason: string;
+              reasonTruncated?: true;
+              releaseRequest?: ReturnType<typeof readWorkItemReleaseRequest>;
+            }
+          | undefined;
         // WI-6678: the force path already reads the row — reuse that read for the
         // released/previousAssignee delta below instead of paying a second round-trip.
         let forcedPrior: string | null | undefined;
@@ -248,12 +256,13 @@ export default defineTool({
                 hint: `force would clear ${holder}'s claim — pass a \`reason\` the holder and owner can audit (WI-4198).`,
               };
             }
+            const releaseRequest = readWorkItemReleaseRequest(current.payload);
             const verdict = await assessForceRelease({
               callerOwnerId: ident.ownerId,
               holderOwnerId: holder,
               workspaceId: ident.workspaceId ?? '',
-              itemLastProgressAt:
-                (current as { lastProgressAt?: string | Date | null }).lastProgressAt ?? null,
+              itemLastProgressAt: (current as { lastProgressAt?: string | Date | null }).lastProgressAt ?? null,
+              releaseRequest,
             });
             if (!verdict.allowed) {
               return {
@@ -269,6 +278,7 @@ export default defineTool({
               holder,
               basis: verdict.basis as ForceReleaseBasis,
               reason: forceReason,
+              ...(verdict.basis === 'announced-release-request-expired' && releaseRequest ? { releaseRequest } : {}),
               ...(reasonTruncated ? { reasonTruncated: true as const } : {}),
             };
           }
@@ -298,7 +308,10 @@ export default defineTool({
         // by someone else" — re-read to tell them apart and report an honest error.
         const workItem = await releaseWorkItem(it.id, {
           harness,
-          expectedAssignee: force ? undefined : ident.ownerId,
+          // Every cross-holder force is authorized against one exact pre-read holder.
+          // Preserve that holder as the mutation CAS so a successor claim that races
+          // the authorization can never be cleared.
+          expectedAssignee: forced ? forced.holder : force ? undefined : ident.ownerId,
           onPriorState: (p) => {
             prior.assignee = p.assignee;
             prior.wasClaimed = p.wasClaimed;
@@ -369,8 +382,19 @@ export default defineTool({
         try {
           const pendingReq = readWorkItemReleaseRequest(workItem.payload);
           if (pendingReq && !pendingReq.resolved) {
-            const resolution = forced ? 'superseded' : 'holder-released';
-            const resolved = await resolveWorkItemReleaseRequest(it.id, { harness: workItem.harness ?? harness, resolution });
+            const consequenceFired = forced?.basis === 'announced-release-request-expired';
+            const resolution = consequenceFired ? 'consequence-reclaim' : forced ? 'superseded' : 'holder-released';
+            const resolved = await resolveWorkItemReleaseRequest(it.id, {
+              harness: workItem.harness ?? harness,
+              resolution,
+              ...(consequenceFired && forced?.releaseRequest
+                ? {
+                    expectedBy: forced.releaseRequest.by,
+                    expectedHolder: forced.releaseRequest.holder,
+                    expectedDeadlineAt: forced.releaseRequest.deadlineAt,
+                  }
+                : {}),
+            });
             if (resolved) {
               const { sendMessage: notifyRequester } = await import('../coordination/messages');
               await notifyRequester(ident, {
@@ -378,13 +402,17 @@ export default defineTool({
                 summary:
                   resolution === 'holder-released'
                     ? `✅ ${it.id}: ${ident.ownerId} released the item you requested (reason: ${resolved.reason.slice(0, 140)}) — no reclaim needed.`
-                    : `✅ ${it.id}: released via a different authorized path before your request's deadline — no reclaim needed.`,
+                    : resolution === 'consequence-reclaim'
+                      ? `⏰ ${it.id}: release request expired unanswered — RECLAIMED via work_items:release per the announced consequence.`
+                      : `✅ ${it.id}: released via a different authorized path before your request's deadline — no reclaim needed.`,
                 harnessSlug: workItem.harness ?? undefined,
                 extra: { auto: true, lifecycle: 'release_request_resolved', work_item: it.id, resolution },
               }).catch(() => {});
               await commentWorkItem(
                 it.id,
-                `✅ Release request from ${resolved.by} resolved early (${resolution}) by ${ident.ownerId}'s release — no consequence needed.`,
+                resolution === 'consequence-reclaim'
+                  ? `⏰ Release request from ${resolved.by} → ${resolved.holder} EXPIRED unanswered — announced onSilence:"reclaim" fired via work_items:release.`
+                  : `✅ Release request from ${resolved.by} resolved early (${resolution}) by ${ident.ownerId}'s release — no consequence needed.`,
                 ident.ownerId,
                 { harness: workItem.harness ?? harness },
               ).catch(() => {});

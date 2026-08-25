@@ -28,6 +28,7 @@
  */
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import type { LivenessVerdict } from '../coordination/liveness-oracle';
+import type { WorkItemReleaseRequest } from '../../work-items-release-request';
 
 export type ForceReleaseBasis =
   | 'holder-not-live'
@@ -36,6 +37,7 @@ export type ForceReleaseBasis =
   | 'holder-shutdown-accepted'
   | 'holder-session-ended'
   | 'holder-wake-missed'
+  | 'announced-release-request-expired'
   | 'queen'
   | 'leads-holder-fleet';
 
@@ -226,6 +228,10 @@ export async function assessForceRelease(
     holderOwnerId: string;
     workspaceId: string;
     itemLastProgressAt: string | Date | null;
+    /** A pending work_items:request_release read from this exact item snapshot.
+     *  When its announced reclaim deadline has expired, it is an authority basis
+     *  only for the original requester against the original holder. */
+    releaseRequest?: WorkItemReleaseRequest | null;
   },
   deps: ForceReleaseDeps = {},
 ): Promise<ForceReleaseVerdict> {
@@ -266,12 +272,9 @@ export async function assessForceRelease(
     shutdownAcceptedOwnersOf([input.holderOwnerId]).catch(() => new Set<string>()),
     resolveHolderSessionState(input.holderOwnerId).catch(() => null),
   ]);
-  const oracleSessionState =
-    typeof oracleSignal === 'string' ? oracleSignal : oracleSignal?.sessionState ?? null;
+  const oracleSessionState = typeof oracleSignal === 'string' ? oracleSignal : (oracleSignal?.sessionState ?? null);
   const oracleWakeAttemptMiss =
-    oracleSignal != null && typeof oracleSignal === 'object'
-      ? oracleSignal.wakeAttemptMiss === true
-      : null;
+    oracleSignal != null && typeof oracleSignal === 'object' ? oracleSignal.wakeAttemptMiss === true : null;
   const recordedEnded = endedOwners.has(input.holderOwnerId);
   const shutdownAccepted = shutdownAcceptedOwners.has(input.holderOwnerId);
   // 'suspect' = the oracle CONFIRMED the process is gone (pid-probed ESRCH or
@@ -352,6 +355,31 @@ export async function assessForceRelease(
             : oracleNotLive
               ? 'holder-session-ended'
               : 'holder-wake-missed',
+      holderLiveness,
+    };
+  }
+
+  // EI-21458682859181510: an expired onSilence:"reclaim" request is itself an
+  // announced authority basis. The old code delegated the deadline sweep AND both
+  // manual force surfaces to this ordinary liveness guard, so a process heartbeat or
+  // background tool row could veto the promised consequence forever. Keep the
+  // long-turn safety rail from EI-21377805080867612: an oracle `live`/`draining`
+  // session may still be inside the turn that has not received the request. But once
+  // the shared oracle says `parked` or `recorded`, there is no turn in flight; the
+  // original requester may execute exactly the consequence they announced.
+  const releaseRequest = input.releaseRequest;
+  const announcedReclaimExpired =
+    releaseRequest != null &&
+    !releaseRequest.resolved &&
+    releaseRequest.onSilence === 'reclaim' &&
+    releaseRequest.deadlineAt <= now &&
+    releaseRequest.by === input.callerOwnerId &&
+    releaseRequest.holder === input.holderOwnerId;
+  const oracleBetweenTurns = oracleSessionState === 'parked' || oracleSessionState === 'recorded';
+  if (announcedReclaimExpired && oracleBetweenTurns) {
+    return {
+      allowed: true,
+      basis: 'announced-release-request-expired',
       holderLiveness,
     };
   }

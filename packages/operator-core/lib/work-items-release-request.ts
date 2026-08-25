@@ -191,7 +191,15 @@ export async function setWorkItemReleaseRequest(
  */
 export async function resolveWorkItemReleaseRequest(
   id: string,
-  opts: { harness?: string; resolution: ReleaseRequestResolution; expectedBy?: string; expectedHolder?: string },
+  opts: {
+    harness?: string;
+    resolution: ReleaseRequestResolution;
+    expectedBy?: string;
+    expectedHolder?: string;
+    /** CAS the exact announced deadline too. A requester may refresh their own
+     *  request; an old sweep/manual force must never resolve the refreshed row. */
+    expectedDeadlineAt?: number;
+  },
 ): Promise<WorkItemReleaseRequest | null> {
   const { sql } = getOrgPg();
   const located = await locateWorkItem(sql, id, opts.harness);
@@ -199,6 +207,7 @@ export async function resolveWorkItemReleaseRequest(
   const resolvedAt = Date.now();
   const expectedBy = opts.expectedBy?.trim() || null;
   const expectedHolder = opts.expectedHolder?.trim() || null;
+  const expectedDeadlineAt = Number.isFinite(opts.expectedDeadlineAt) ? opts.expectedDeadlineAt! : null;
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
        SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
@@ -219,6 +228,7 @@ export async function resolveWorkItemReleaseRequest(
        AND COALESCE(payload->>'release_request_resolved', 'false') <> 'true'
        AND (${expectedBy}::text IS NULL OR payload->>'release_request_by' = ${expectedBy})
        AND (${expectedHolder}::text IS NULL OR payload->>'release_request_holder' = ${expectedHolder})
+       AND (${expectedDeadlineAt}::bigint IS NULL OR (payload->>'release_request_deadline_at')::bigint = ${expectedDeadlineAt})
      RETURNING payload`;
   if (!rows[0]) return null;
   return readWorkItemReleaseRequest(rows[0].payload);
