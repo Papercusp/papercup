@@ -196,9 +196,16 @@ export default function ReviewReportShell({
 
   const selectAll = () => setSelected(new Set(pendingIds));
   const clearSelection = () => setSelected(new Set());
+  const selectionStatus = busy
+    ? "Updating report. Please wait."
+    : `${liveSelected.size} of ${pendingIds.size} selectable recommendation${pendingIds.size === 1 ? "" : "s"} selected.`;
 
   return (
-    <section className="review-report" data-testid="review-report">
+    <section
+      className="review-report"
+      data-testid="review-report"
+      aria-busy={busy || undefined}
+    >
       <header className="review-report__head">
         <div className="review-report__identity">
           {icon != null ? (
@@ -251,7 +258,16 @@ export default function ReviewReportShell({
             data-testid="review-report-selection-summary"
           >
             <span className="review-report__selection-kicker">
-              Ready to apply
+              {busy ? "Updating report" : "Ready to apply"}
+            </span>
+            <span
+              className="pc-sr-only"
+              data-testid="review-report-status"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {selectionStatus}
             </span>
             <strong
               className="review-report__selection-total"
