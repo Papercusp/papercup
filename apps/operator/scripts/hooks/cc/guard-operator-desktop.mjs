@@ -107,8 +107,9 @@ function isExplicitlyLocal(host) {
   );
 }
 
-/** Resolve via the SAME path the tools use (nsswitch → /etc/hosts, then DNS). */
-function resolvesToLoopback(host) {
+/** Resolve via the SAME path the tools use (nsswitch → /etc/hosts, then DNS).
+ *  Returns the addresses when EVERY address is loopback, else null. */
+function loopbackAddrs(host) {
   let out;
   try {
     out = execFileSync('getent', ['hosts', host], {
@@ -117,14 +118,90 @@ function resolvesToLoopback(host) {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch {
-    return false; // no such host, getent missing, or timeout → fail OPEN
+    return null; // no such host, getent missing, or timeout → fail OPEN
   }
   const addrs = out
     .split('\n')
     .map((l) => l.trim().split(/\s+/)[0])
     .filter(Boolean);
   // ALL addresses loopback ⇒ every connection to this name lands locally.
-  return addrs.length > 0 && addrs.every((a) => LOOPBACK_ADDR.test(a));
+  return addrs.length > 0 && addrs.every((a) => LOOPBACK_ADDR.test(a)) ? addrs : null;
+}
+
+/* ── Tunnel-forward exemption (EI-21290819499876110) ───────────────────────
+ * The premise above — "resolves to loopback ⇒ the connection lands on a LOCAL
+ * server" — stopped being universally true on 2026-08-23. papercusp-sni-bypass
+ * .service holds SSH `-L` forwards on 127.0.0.10-.17:443 whose far end is the
+ * REAL origin, because the LAN gateway forges DNS for papercusp hostnames and
+ * silently drops TLS by SNI (EI-18859147091614600). A probe through one of
+ * those aliases reaches PROD with end-to-end TLS and a validating cert —
+ * verified by comparing `server:` headers through the tunnel against the same
+ * request run on the origin host (both nginx/1.27.5, matching timestamps).
+ *
+ * So loopback-ness alone can no longer decide this, and the block message was
+ * asserting something FALSE about where the connection lands. We DERIVE the
+ * answer rather than allowlisting addresses — an allowlist silently rots the
+ * moment someone adds a hostname (derived-truth ladder, CLAUDE.md). The live
+ * process's own argv is the source of truth for what it forwards, and since
+ * the unit runs with ExitOnForwardFailure=yes, a LIVE main process still
+ * holding that `-L` is proof the bind actually succeeded.
+ *
+ * DIRECTION OF FAILURE IS THE WHOLE DESIGN: this can only ever turn a BLOCK
+ * into an ALLOW, and only on positive proof. Unit inactive or absent, no
+ * systemctl, pid gone between the two reads, port not forwarded, anything
+ * unexpected → fall through to the original block. The guard is preserved
+ * intact; only the provably-safe case is carved out.
+ */
+const BYPASS_UNIT = 'papercusp-sni-bypass.service';
+
+function systemctlValue(args) {
+  return execFileSync('systemctl', args, {
+    encoding: 'utf8',
+    timeout: 2000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
+
+/** MainPID of the bypass unit, but ONLY while it is actually active. */
+function bypassMainPid() {
+  try {
+    if (systemctlValue(['is-active', BYPASS_UNIT]) !== 'active') return null;
+    const pid = systemctlValue(['show', BYPASS_UNIT, '-p', 'MainPID', '--value']);
+    return /^[1-9]\d*$/.test(pid) ? pid : null;
+  } catch {
+    return null; // no systemctl / unit unknown / inactive → not proven
+  }
+}
+
+/** The "addr:port" binds the LIVE bypass process is actually forwarding. */
+function bypassForwards() {
+  const pid = bypassMainPid();
+  if (!pid) return null;
+  let argv;
+  try {
+    // Reading this also proves the process still exists right now.
+    argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+  } catch {
+    return null; // died between the two reads → not proven
+  }
+  const binds = new Set();
+  for (let i = 0; i < argv.length; i += 1) {
+    const spec =
+      argv[i] === '-L' ? argv[i + 1] : argv[i].startsWith('-L') ? argv[i].slice(2) : null;
+    if (!spec) continue;
+    // ssh's 4-field form: bind_address:port:host:hostport
+    const parts = spec.split(':');
+    if (parts.length === 4 && parts[0] && parts[1]) binds.add(`${parts[0]}:${parts[1]}`);
+  }
+  return binds.size ? binds : null;
+}
+
+/** True only when EVERY resolved address is a live forward on this port. */
+function isTunnelForward(addrs, port) {
+  if (!port) return false;
+  const binds = bypassForwards();
+  if (!binds) return false;
+  return addrs.every((a) => binds.has(`${a}:${port}`));
 }
 
 const loopbackMsg = (host, url) =>
