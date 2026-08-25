@@ -7,6 +7,7 @@ import {
   buildIndex,
   classifySpecifier,
   isTestFile,
+  playwrightOwnedTest,
   selectRelatedTests,
   transitiveDeps,
 } from '../../../../scripts/lib/related-tests.mjs';
@@ -337,5 +338,108 @@ describe('repository test import surfaces', () => {
     // the barrel; this guard targets only the single-blueprint contract tests.
     expect(singleBlueprintTests.length).toBeGreaterThan(0);
     expect(barrelImporters).toEqual([]);
+  });
+});
+
+/**
+ * EI-21440128879545486. A selection is narrowed only into VITEST lanes, so a test some other
+ * RUNNER owns can never execute there — it reaches vitest as a positional filter matching
+ * nothing, and the router refuses the whole partial-match run rather than false-greening it.
+ * The task then reds with ZERO attributable test files: no `test_runs` fail rows to triage and
+ * nothing for the gate's isolation re-run to isolate. Two Playwright specs entering the
+ * `@papercusp/web :: test` selection that way red-pinned green-checkpoint and froze `main`.
+ *
+ * The discriminator under test is RUNNER OWNERSHIP, never the file extension — `.spec.ts` is a
+ * legitimate VITEST include in search-core and the three papergrid packages, and excluding
+ * those would silently shrink real runs, which is the failure this whole file guards against.
+ */
+describe('playwrightOwnedTest — ownership by runner, not by extension', () => {
+  const PW_CONFIG = `
+    import { defineConfig } from '@playwright/test';
+    export default defineConfig({
+      testDir: './e2e',
+      testMatch: /.*\\.spec\\.ts$/,
+    });
+  `;
+
+  /** A reader over a virtual workspace; anything unlisted throws, as the real fs does. */
+  const reader = (files: Record<string, string>) => (p: string) => {
+    if (p in files) return files[p];
+    throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+  };
+
+  const owned = (files: Record<string, string>) =>
+    playwrightOwnedTest('/ws', { readFile: reader(files) });
+
+  it('claims a Playwright spec inside the declared testDir', () => {
+    expect(owned({ '/ws/playwright.config.ts': PW_CONFIG })('/ws/e2e/docs-routes.spec.ts')).toBe(
+      true,
+    );
+  });
+
+  it('leaves a vitest .test.ts in the same workspace alone', () => {
+    const isOwned = owned({ '/ws/playwright.config.ts': PW_CONFIG });
+    expect(isOwned('/ws/lib/thing.test.ts')).toBe(false);
+    expect(isOwned('/ws/e2e/helper.test.ts')).toBe(false);
+  });
+
+  it('leaves a .spec.ts OUTSIDE testDir alone — it is a real vitest include elsewhere', () => {
+    // search-core / papergrid ship `src/**/*.spec.ts` as their VITEST include. Claiming these
+    // would drop real tests from the run and certify code nothing exercised.
+    expect(owned({ '/ws/playwright.config.ts': PW_CONFIG })('/ws/src/query.spec.ts')).toBe(false);
+  });
+
+  it('never claims a testDir PREFIX match (e2e-utils/ is not e2e/)', () => {
+    expect(owned({ '/ws/playwright.config.ts': PW_CONFIG })('/ws/e2e-utils/a.spec.ts')).toBe(false);
+  });
+
+  it('owns nothing when the workspace has no Playwright config', () => {
+    expect(owned({})('/ws/src/query.spec.ts')).toBe(false);
+    expect(owned({})('/ws/e2e/docs-routes.spec.ts')).toBe(false);
+  });
+
+  it('owns nothing when the config parses to no declaration — the failure stays LOUD', () => {
+    // Fail-safe direction: withholding nothing means a genuine mismatch still reds the gate
+    // naming the file, instead of a test silently disappearing from the run.
+    const noDecl = owned({ '/ws/playwright.config.ts': 'export default defineConfig({});' });
+    expect(noDecl('/ws/e2e/docs-routes.spec.ts')).toBe(false);
+  });
+
+  it('follows testDir when it moves — derived from the config, not a hardcoded e2e/ glob', () => {
+    const moved = owned({
+      '/ws/playwright.config.ts': PW_CONFIG.replace("'./e2e'", "'./browser-tests'"),
+    });
+    expect(moved('/ws/browser-tests/docs-routes.spec.ts')).toBe(true);
+    expect(moved('/ws/e2e/docs-routes.spec.ts')).toBe(false);
+  });
+
+  it('is stateless across calls even if the config regex carries /g', () => {
+    // A surviving `lastIndex` would make identical calls alternate true/false.
+    const g = owned({ '/ws/playwright.config.ts': PW_CONFIG.replace('$/,', '$/g,') });
+    const file = '/ws/e2e/docs-routes.spec.ts';
+    expect([g(file), g(file), g(file)]).toEqual([true, true, true]);
+  });
+});
+
+describe('playwrightOwnedTest — against the real repository tree', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const OPERATOR = join(REPO_ROOT, 'apps/operator');
+
+  it('claims every Playwright spec in apps/operator and no vitest test', () => {
+    const isOwned = playwrightOwnedTest(OPERATOR);
+    const e2eDir = join(OPERATOR, 'e2e');
+    const specs = readdirSync(e2eDir).filter((n) => n.endsWith('.spec.ts'));
+
+    // Positive control: an empty list would make the "claims all" assertion vacuously true.
+    expect(specs.length).toBeGreaterThan(0);
+    expect(specs.filter((n) => !isOwned(join(e2eDir, n)))).toEqual([]);
+
+    // The two specs that actually red-pinned the gate.
+    expect(isOwned(join(e2eDir, 'design-dashboard-flow.spec.ts'))).toBe(true);
+    expect(isOwned(join(e2eDir, 'docs-routes.spec.ts'))).toBe(true);
+
+    // Negative control: vitest files in the same workspace must survive selection.
+    expect(isOwned(join(OPERATOR, 'lib/sync-sse.test.ts'))).toBe(false);
+    expect(isOwned(join(OPERATOR, 'vitest.config.ts'))).toBe(false);
   });
 });
