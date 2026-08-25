@@ -28,8 +28,10 @@ type EscalationInputLike = {
   body: string;
   meta?: { subjectSignature?: string };
 };
+type ExecFileCallback = (error: (Error & { code?: number | string }) | null, stdout: string, stderr: string) => void;
 
 const h = vi.hoisted(() => ({
+  execFile: vi.fn(),
   spawnSync: vi.fn(),
   readFileSync: vi.fn(() => 'CREATE TABLE foo (id int);\n'),
   checkResourceAction: vi.fn(async (): Promise<ResourceActionResult> => ({ applied: false })),
@@ -59,7 +61,7 @@ const h = vi.hoisted(() => ({
   ),
 }));
 
-vi.mock('node:child_process', () => ({ execFile: vi.fn(), spawnSync: h.spawnSync }));
+vi.mock('node:child_process', () => ({ execFile: h.execFile, spawnSync: h.spawnSync }));
 // Keep the real fs surface for transitive imports (self-describing-store uses
 // existsSync while locating the repository root); only replace migration-file reads.
 vi.mock('node:fs', async (importOriginal) => ({
@@ -96,6 +98,7 @@ import migrateTool, {
   connectionRetryBackoffMs,
   isDuplicateMigrationLedgerFailure,
   migrationBackupLockGuardSql,
+  PSQL_PROGRESS_INTERVAL_MS,
 } from './migrate';
 
 const CTX = { role: 'operator' } as never;
@@ -106,6 +109,28 @@ const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
 
 beforeEach(() => {
   h.spawnSync.mockReset().mockReturnValue({ status: 0, stdout: '', stderr: '' });
+  h.execFile.mockReset().mockImplementation(
+    (cmd: string, args: string[], opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+      stdin: {
+        end: (input?: string) => {
+          const result = h.spawnSync(cmd, args, {
+            ...opts,
+            ...(input === undefined ? {} : { input }),
+          });
+          queueMicrotask(() => {
+            const status = typeof result.status === 'number' ? result.status : 1;
+            callback(
+              status === 0
+                ? null
+                : Object.assign(new Error(result.stderr || `psql exited ${status}`), { code: status }),
+              result.stdout ?? '',
+              result.stderr ?? '',
+            );
+          });
+        },
+      },
+    }),
+  );
   h.readFileSync.mockReset().mockReturnValue('CREATE TABLE foo (id int);\n');
   h.checkResourceAction.mockReset().mockResolvedValue({ applied: false });
   h.recordResourceAction.mockReset().mockResolvedValue(undefined);
@@ -342,6 +367,39 @@ describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559
       .map((c) => JSON.parse(c[1] as string))
       .find((p) => p.phase === 'applying' && !('retry_attempt' in p));
     expect(applying).toMatchObject({ phase: 'applying', file: '999-fake.sql' });
+  });
+
+  it('keeps emitting applying heartbeats while async psql remains pending, then clears the timer', async () => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    vi.useFakeTimers();
+    try {
+      let finish: ExecFileCallback | undefined;
+      h.execFile.mockImplementationOnce(
+        (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => {
+          finish = callback;
+          return { stdin: { end: vi.fn() } };
+        },
+      );
+      const { ctx, progress } = progressCtx();
+      const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, ctx);
+
+      await vi.advanceTimersByTimeAsync(PSQL_PROGRESS_INTERVAL_MS);
+      const heartbeat = progress.mock.calls
+        .map((c) => JSON.parse(c[1] as string))
+        .find((p) => p.phase === 'applying' && p.heartbeat === true);
+      expect(heartbeat).toMatchObject({ phase: 'applying', file: '999-fake.sql', heartbeat: true });
+
+      expect(finish).toBeDefined();
+      finish?.(null, '', '');
+      const out = parse(await promise);
+      expect(out.applied).toBe(true);
+
+      const progressCallsAfterExit = progress.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(PSQL_PROGRESS_INTERVAL_MS * 2);
+      expect(progress).toHaveBeenCalledTimes(progressCallsAfterExit);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('emits a retry-attempt progress tick on attempt 2+ but not on the first attempt', async () => {
