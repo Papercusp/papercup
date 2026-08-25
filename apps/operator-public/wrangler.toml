@@ -50,7 +50,8 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ENVIRONMENT = "production"
 CUPBOARD_HOST = "cupboard.papercusp.com"
-# Comma-separated GitHub user ids allowed to use the /admin moderation surface.
+# Comma-separated GitHub user ids allowed to use /admin operator surfaces
+# (moderation and artifact publication).
 # GitHub user ids are public (not secret), so this is a var. Empty ⇒ no
 # operators ⇒ /admin endpoints all 403. These are GitHub *user* ids (from
 # `gh api user --jq .id`), NOT repo ids. 279242982 = papercupai — the account
