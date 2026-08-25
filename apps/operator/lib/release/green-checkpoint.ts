@@ -58,6 +58,7 @@ import {
 } from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
+import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -699,6 +700,8 @@ export interface CheckpointDeps {
    *  realCheckpointDeps stamps a fresh randomUUID() per process; existing test stubs may
    *  omit it (payloads then carry `runId: null` rather than throwing). */
   runId?: string;
+  /** Logical qualification transported by the detached launcher. */
+  qualificationAttemptId?: string;
 }
 
 export interface CheckpointResult {
@@ -7506,6 +7509,7 @@ async function runGreenCheckpointInner(
   ) {
     repairQueue = createFrozenCandidateQueue({
       candidate,
+      qualificationAttemptId: deps.qualificationAttemptId ?? null,
       base: lastReady,
       worktreePath: path.join(
         cfg.integrationRoot,
@@ -8111,6 +8115,7 @@ async function runGreenCheckpointInner(
       } else if (!repairQueue) {
         repairQueue = createFrozenCandidateRepairQueue({
           candidate,
+          qualificationAttemptId: deps.qualificationAttemptId ?? null,
           base: lastReady,
           worktreePath: path.join(
             cfg.integrationRoot,
@@ -11621,6 +11626,8 @@ export function realCheckpointDeps(
     concurrentRun,
     workspaceRerun,
     runId,
+    qualificationAttemptId:
+      process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined,
     async checkDiskHeadroom() {
       const { detectCriticalWriteHeadroom, diskPolicyFromEnv } =
         await import("@papercusp/operator-core/lib/storage/disk-space-alarm");

@@ -351,6 +351,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       calls.push("runGreen");
       return { green: true, summary: "all pass" };
     };
+    deps.qualificationAttemptId = "qualification-attempt-1";
 
     const result = await runGreenCheckpoint(cfg(), deps, {
       candidate,
@@ -373,6 +374,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       schemaVersion: 3,
       phase: "ready-to-test",
       candidate,
+      qualificationAttemptId: "qualification-attempt-1",
       repairHead: candidate,
       base: ready,
       attempts: 0,
