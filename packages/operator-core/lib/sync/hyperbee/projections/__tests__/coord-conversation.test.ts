@@ -45,6 +45,22 @@ describe('coord-conversation projection', () => {
     expect(isCoordConversationRow(valid)).toBe(true);
   });
 
+  it('accepts a row from a PRE-ATTRIBUTION peer that omits producer entirely (EI-21462599108204160)', () => {
+    // The wire-compat case that matters: a peer running older code sends no
+    // `producer` key at all. decodeValue DROPS a row the validator rejects, so
+    // treating the missing key as invalid would cost the whole conversation
+    // between versions — strictly worse than the missing attribution.
+    const { producer: _omitted, ...oldPeerRow } = valid;
+    expect('producer' in oldPeerRow).toBe(false);
+    expect(isCoordConversationRow(oldPeerRow)).toBe(true);
+    expect(_testing.decodeValue(oldPeerRow)).toEqual(oldPeerRow);
+  });
+
+  it('still rejects a producer of the wrong TYPE (the check is loosened for absent, not for garbage)', () => {
+    expect(isCoordConversationRow({ ...valid, producer: 42 })).toBe(false);
+    expect(isCoordConversationRow({ ...valid, producer: {} })).toBe(false);
+  });
+
   it('accepts a resolved conversation with an accepted answer + timestamp', () => {
     const resolved: CoordConversationRow = {
       ...valid,

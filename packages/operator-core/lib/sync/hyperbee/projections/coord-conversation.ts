@@ -49,9 +49,15 @@ export interface CoordConversationRow {
   accepted_answer: string | null;
   capture_target: string | null;
   promoted_issue_id: string | null;
-  /** The tool that opened it. NULL from a peer running pre-attribution code —
-   *  federation must not invent one (EI-21462599108204160). */
-  producer: string | null;
+  /** The tool that opened it (EI-21462599108204160).
+   *
+   *  OPTIONAL on the wire, and that is load-bearing, not laziness. A peer still
+   *  running pre-attribution code emits no `producer` key at all, so a REQUIRED
+   *  string|null would make isCoordConversationRow reject the row — and
+   *  decodeValue drops a failed row wholesale. Adding attribution would then
+   *  cost the ENTIRE conversation between versions, which is strictly worse
+   *  than the missing attribution it was meant to fix. Absent === unattributed. */
+  producer?: string | null;
   created_at: number;          // epoch ms
   updated_at: number;          // epoch ms
   resolved_at: number | null;  // epoch ms | null
@@ -85,7 +91,9 @@ export function isCoordConversationRow(input: unknown): input is CoordConversati
   if (!isStringOrNull(r.accepted_answer)) return false;
   if (!isStringOrNull(r.capture_target)) return false;
   if (!isStringOrNull(r.promoted_issue_id)) return false;
-  if (!isStringOrNull(r.producer)) return false;
+  // `undefined` is ACCEPTED here on purpose — see CoordConversationRow.producer.
+  // An older peer omits the key entirely; rejecting that would drop the whole row.
+  if (!(r.producer === undefined || isStringOrNull(r.producer))) return false;
   if (!isFiniteNumber(r.created_at)) return false;
   if (!isFiniteNumber(r.updated_at)) return false;
   if (!(r.resolved_at === null || isFiniteNumber(r.resolved_at))) return false;
@@ -173,7 +181,7 @@ async function writeToPg(
     VALUES
       (${opts.workspaceId}, ${row.id}, ${row.kind}, 'harness', ${row.harness_slug}, ${row.asker_id},
        ${row.title}, ${row.body}, ${row.state}, ${row.accepted_answer}, ${row.capture_target},
-       ${row.promoted_issue_id}, ${row.producer},
+       ${row.promoted_issue_id}, ${row.producer ?? null},
        to_timestamp(${row.created_at} / 1000.0),
        to_timestamp(${row.updated_at} / 1000.0),
        ${row.resolved_at === null ? null : sql`to_timestamp(${row.resolved_at} / 1000.0)`},
