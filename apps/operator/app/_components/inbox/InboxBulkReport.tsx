@@ -342,6 +342,7 @@ export default function InboxBulkReport({
       setNotice(null);
       try {
         const result = await applyRecommendation(item, runItem, draftOverride);
+        if (result.ok) setActiveDrillId(null);
         if (result.phase === "complete") onClose();
         return result;
       } finally {
