@@ -91,6 +91,9 @@ describe('processes:kill guidance matches what it can actually do', () => {
     expect(returns).toContain('EI-18698120633403217');
     expect(returns).toContain('termination is still pending');
     expect(returns).toContain('no retry');
+    expect(returns).toContain('bounded `systemctl stop` fallback');
+    expect(returns).toContain('only if that fallback and its re-probe still leave survivors');
+    expect(returns).toContain('Explicit SIGKILL never invokes `stop`');
   });
 });
 
