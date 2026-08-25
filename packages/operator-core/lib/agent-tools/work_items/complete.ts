@@ -103,6 +103,7 @@ import {
 } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { independentSiblingRepos } from '../../plan-audits';
@@ -1496,7 +1497,8 @@ export interface FinishWorkReceipt {
   workItemState: string;
   completionEvidenceStored: boolean;
   checkpointCleared: boolean;
-  planItem: 'not-linked' | 'done' | 'dropped' | 'failed';
+  /** The linked plan item's actual committed stored status after reflection. */
+  planItem: string;
   claimRelease: 'not-linked' | 'released-or-absent' | 'failed';
   errors?: string[];
 }
@@ -1513,6 +1515,33 @@ function reflectedTerminalStatus(state: string): 'done' | 'dropped' | null {
   if (state === 'passed' || state === 'resolved' || state === 'done') return 'done';
   if (state === 'deprecated' || state === 'closed' || state === 'dropped') return 'dropped';
   return null;
+}
+
+/**
+ * Read back the canonical plan-item index after the reflected write settles.
+ *
+ * `fireReactionInProcess` intentionally reports dispatch success only; a guarded
+ * `plans:set-status` no-op is therefore also `{ ok:true }`.  The post-write read is
+ * the only truthful answer to what status actually committed, and it is safe here:
+ * `plans:set-status` updates the canonical plan body and this derived index in the
+ * same locked transaction before its dispatch promise resolves.
+ */
+async function readCommittedPlanItemStatus(
+  stamp: FinishPlanStamp,
+  ctx: UnifiedToolContext,
+): Promise<string | null> {
+  const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ status: string | null }>>`
+    SELECT status
+      FROM harness_shared.plan_items
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${stamp.harness_slug}
+       AND plan_slug = ${stamp.plan_slug}
+       AND item_id = ${stamp.item_id}
+     LIMIT 1`;
+  const status = String(rows[0]?.status ?? '').trim().toLowerCase();
+  return status || null;
 }
 
 /**
@@ -1533,10 +1562,12 @@ export async function synchronizeFinishWork(
   deps: {
     clearCheckpoint?: typeof setWorkItemCheckpoint;
     fire?: typeof fireReactionInProcess;
+    readPlanItemStatus?: typeof readCommittedPlanItemStatus;
   } = {},
 ): Promise<FinishWorkReceipt> {
   const clearCheckpoint = deps.clearCheckpoint ?? setWorkItemCheckpoint;
   const fire = deps.fire ?? fireReactionInProcess;
+  const readPlanItemStatus = deps.readPlanItemStatus ?? readCommittedPlanItemStatus;
   const state = String(opts.workItem.state ?? '').toLowerCase();
   const reflected = reflectedTerminalStatus(state);
   const stamp = finishPlanStamp(opts.workItem);
@@ -1600,14 +1631,23 @@ export async function synchronizeFinishWork(
         rootRunId: typeof opts.ctx.runId === 'string' ? opts.ctx.runId : null,
       },
     }).catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }));
-    // Fidelity caveat: fire() returns FireReactionResult = { ok, error?, runId? } and
-    // carries NO tool payload, so a guard SKIP — which returns ok:true, with
-    // skipped:'coverage_guard' and a coveredBy list, and deliberately does NOT flip — is
-    // indistinguishable here from a flip that landed. `planItem` therefore means "the
-    // reflection was requested and not rejected", NOT "the plan item is now <reflected>".
-    // Do not read this field as proof of a flip; read the plan item.
-    if (statusResult.ok) planItem = reflected;
-    else {
+    if (statusResult.ok) {
+      try {
+        const committedStatus = await readPlanItemStatus(stamp, opts.ctx);
+        if (committedStatus) planItem = committedStatus;
+        else {
+          planItem = 'failed';
+          errors.push(
+            `plan-item status readback failed: ${stamp.plan_slug}#${stamp.item_id} was not found after reflection`,
+          );
+        }
+      } catch (error) {
+        planItem = 'failed';
+        errors.push(
+          `plan-item status readback failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else {
       planItem = 'failed';
       errors.push(`plan-item status failed: ${statusResult.error ?? 'unknown error'}`);
     }

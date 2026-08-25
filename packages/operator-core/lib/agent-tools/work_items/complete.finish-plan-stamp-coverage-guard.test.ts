@@ -38,11 +38,16 @@ const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' } 
 type FiredReaction = { fire: string; args: Record<string, unknown> };
 
 /** Run the finish saga with a fake `fire`, and hand back every reaction it fired. */
-async function runFinish(state: string, stamp: unknown = STAMP) {
+async function runFinish(
+  state: string,
+  stamp: unknown = STAMP,
+  committedStatus: string | null = state === 'deprecated' ? 'dropped' : state,
+) {
   // Typed parameter, not a bare `async () => ...`: an untyped vi.fn infers its args as
   // the empty tuple `[]`, so reading `calls[n][0]` below is a type error (TS2493).
   const fire = vi.fn(async (_opts: FiredReaction) => ({ ok: true as const }));
   const clearCheckpoint = vi.fn(async () => undefined) as never;
+  const readPlanItemStatus = vi.fn(async () => committedStatus);
   const receipt = await synchronizeFinishWork(
     {
       id: 'WI-39352',
@@ -50,10 +55,15 @@ async function runFinish(state: string, stamp: unknown = STAMP) {
       completionEvidenceStored: true,
       ctx,
     },
-    { fire: fire as never, clearCheckpoint },
+    { fire: fire as never, clearCheckpoint, readPlanItemStatus },
   );
   const calls: FiredReaction[] = fire.mock.calls.map((c) => c[0]);
-  return { receipt, calls, setStatus: calls.find((c) => c.fire === 'plans:set-status') };
+  return {
+    receipt,
+    calls,
+    readPlanItemStatus,
+    setStatus: calls.find((c) => c.fire === 'plans:set-status'),
+  };
 }
 
 describe('synchronizeFinishWork plan-item reflection carries the coverage guard', () => {
@@ -67,6 +77,20 @@ describe('synchronizeFinishWork plan-item reflection carries the coverage guard'
     // The regression itself: without this, completing one of N stamped siblings
     // de-queues a plan item other live work still covers.
     expect(setStatus!.args.onlyIfNoOtherOpenCoverage).toBe(true);
+  });
+
+  it('reports the canonical status left by a guarded no-op instead of the requested terminal status', async () => {
+    const { receipt, readPlanItemStatus } = await runFinish('done', STAMP, 'wip');
+
+    expect(readPlanItemStatus).toHaveBeenCalledOnce();
+    expect(receipt).toMatchObject({ complete: true, planItem: 'wip' });
+  });
+
+  it('fails the finish leg when the committed plan-item status cannot be read back', async () => {
+    const { receipt } = await runFinish('done', STAMP, null);
+
+    expect(receipt).toMatchObject({ complete: false, planItem: 'failed' });
+    expect(receipt.errors?.join(' ')).toMatch(/status readback failed.*not found/);
   });
 
   it('passes BOTH guards on a `dropped` reflection, matching reflect-rules.ts', async () => {

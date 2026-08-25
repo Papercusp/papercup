@@ -18,6 +18,20 @@ import { join } from 'node:path';
 import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 
+const dbMocks = vi.hoisted(() => ({
+  planItemStatusRows: vi.fn(),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({
+      sql: (strings: TemplateStringsArray, ...values: unknown[]) =>
+        dbMocks.planItemStatusRows(strings, ...values),
+    }),
+  };
+});
+
 const getWorkItem = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const setWorkItemClaimHold = vi.fn();
@@ -168,6 +182,8 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  dbMocks.planItemStatusRows.mockReset();
+  dbMocks.planItemStatusRows.mockResolvedValue([{ status: 'done' }]);
   getWorkItem.mockReset();
   setWorkItemStateWithAliasInfo.mockReset();
   setWorkItemClaimHold.mockReset();
@@ -338,6 +354,28 @@ describe('work_items:complete (keyed-array)', () => {
         args: { harness: 'papercup', plan: 'release-plan', item: 'P-007' },
       }),
     );
+  });
+
+  it('reports the linked plan item status that actually committed after a guarded no-op', async () => {
+    const linked = {
+      ...item,
+      payload: { plan_item: { plan_slug: 'release-plan', item_id: 'P-007', harness_slug: 'papercup' } },
+    };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'passed' }));
+    // `plans:set-status` can deliberately return ok:true without flipping when a
+    // coverage guard sees another open sibling. The canonical readback remains wip.
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([{ status: 'wip' }]);
+
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: { summary: 'this sibling is complete', tests: '12 green' },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.finish).toMatchObject({ complete: true, planItem: 'wip' });
+    expect(dbMocks.planItemStatusRows).toHaveBeenCalledOnce();
   });
 
   it('fails loudly after a partial finish and tells the caller the same call is retry-safe', async () => {
