@@ -12,11 +12,16 @@
  * Part of papercusp-systems-abstraction-2026-05-29 P-023/P-024.
  */
 
+import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, workspacesRoot } from '../workspace-registry';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { shouldRun } from '../search/battery-policy';
 import { configureBackup } from '@papercusp/backup';
+import {
+  BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
+  WORKSPACE_BACKUP_APPLICATION_NAME,
+} from '@papercusp/backup/application-names';
 import { readQualificationAdmission } from '../release-checkpoint-config';
 import { readCheckpointSerializerAuthority } from '../release/checkpoint-serializer-authority';
 
@@ -43,6 +48,42 @@ configureBackup({
   // every host seam on this object stays lazy so no partial mock of a source
   // module can throw while this side-effect import is being evaluated.
   getHarnessAdminUrl: () => getHarnessAdminUrlWithSource(),
+  /**
+   * Keep the rendezvous on a dedicated max:1 postgres-js session. The normal
+   * org handle is pooled, so an advisory lock acquired through it could land
+   * on a different connection from the later snapshot work and release early.
+   * This handle owns exactly one session for the whole snapshot lifecycle.
+   */
+  acquireMigrationLock: async () => {
+    const { url } = getHarnessAdminUrlWithSource();
+    const client = postgres(url, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+      connection: { application_name: WORKSPACE_BACKUP_APPLICATION_NAME },
+    });
+    try {
+      await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+    } catch (error) {
+      await client.end({ timeout: 5 }).catch(() => {});
+      throw error;
+    }
+
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        released = true;
+        try {
+          await client`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+        } finally {
+          // Closing the session is the final safety net: PostgreSQL releases a
+          // session advisory lock even if the explicit unlock fails.
+          await client.end({ timeout: 5 }).catch(() => {});
+        }
+      },
+    };
+  },
   // Interval-only release rendezvous. Every workspace pre-snapshot hook dumps
   // the SAME operator Postgres database, so its AccessShareLocks share one
   // lock domain even when the snapshot's filesystem workspace differs. Anchor

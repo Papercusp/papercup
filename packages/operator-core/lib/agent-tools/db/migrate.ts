@@ -29,6 +29,7 @@ import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-f
 import { openEscalation } from '../coordination/escalations';
 import { checkResourceAction, recordResourceAction, getTxPool, type ResourceHolder } from '../locks/su-lock-store';
 import {
+  BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
   BACKUP_APPLICATION_NAMES,
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
@@ -112,10 +113,22 @@ const CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS = 2;
 export const PSQL_PROGRESS_INTERVAL_MS = 30_000;
 
 export {
+  BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
   BACKUP_APPLICATION_NAMES,
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
 } from '@papercusp/backup/application-names';
+
+/**
+ * Transaction-scoped half of the backup/migration rendezvous. A backup holds
+ * the same key on a dedicated session for its complete snapshot lifecycle;
+ * this lock therefore waits before `\\i` can issue any migration DDL and is
+ * released automatically by COMMIT/ROLLBACK.
+ */
+export function migrationBackupAdvisoryLockSql(): string {
+  const key = BACKUP_MIGRATION_ADVISORY_LOCK_KEY.replace(/'/g, "''");
+  return `SELECT pg_advisory_xact_lock(hashtext('${key}'));\n`;
+}
 
 const BACKUP_APPLICATION_NAMES_SQL = BACKUP_APPLICATION_NAMES
   .map((name) => `'${name}'`)
@@ -668,6 +681,7 @@ export default defineTool({
           const sha256 = createHash('sha256').update(sqlText).digest('hex');
           const filenameLiteral = path.basename(resolvedFile).replace(/'/g, "''");
           const reservationGuard = migrationReservationGuardSql(path.basename(resolvedFile));
+          const backupMigrationLock = migrationBackupAdvisoryLockSql();
           const backupLockGuard = migrationBackupLockGuardSql();
           // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
           // description above) — falls back to the EI-9417 default when omitted,
@@ -684,6 +698,9 @@ export default defineTool({
             // WI-6381: caller-widened when riding out a known long-lived
             // non-operator holder instead (see migrationMaxAttempts above).
             `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n` +
+            // EI-21443484375613585: serialize against the backup session
+            // before the relation-lock fallback guard and before `\\i`.
+            backupMigrationLock +
             // EI-21374588273323330: refuse to enter DDL while the workspace
             // pg_dump transaction is visibly holding relation AccessShareLock.
             // The guard raises the normal retryable lock-timeout shape before

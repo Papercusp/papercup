@@ -100,9 +100,11 @@ import migrateTool, {
   isTransientConnectionFailure,
   connectionRetryBackoffMs,
   isDuplicateMigrationLedgerFailure,
+  BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
   BACKUP_APPLICATION_NAMES,
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
+  migrationBackupAdvisoryLockSql,
   migrationBackupLockGuardSql,
   PSQL_PROGRESS_INTERVAL_MS,
 } from './migrate';
@@ -537,6 +539,9 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     expect(out.attempts).toBe(1);
     const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
     expect(script).toContain("SET LOCAL lock_timeout = '10s';");
+    expect(script).toContain(
+      `SELECT pg_advisory_xact_lock(hashtext('${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}'));`,
+    );
     for (const applicationName of BACKUP_APPLICATION_NAMES) {
       expect(script).toContain(`'${applicationName}'`);
     }
@@ -544,6 +549,13 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     expect(script).toContain('backup pg_dump holds AccessShareLock');
     expect(script.indexOf('backup pg_dump holds AccessShareLock')).toBeLessThan(script.indexOf('\\i'));
     expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
+    expect(script.indexOf('pg_advisory_xact_lock')).toBeLessThan(script.indexOf('\\i'));
+  });
+
+  it('exports the transaction-scoped backup rendezvous using the canonical key', () => {
+    expect(migrationBackupAdvisoryLockSql()).toBe(
+      `SELECT pg_advisory_xact_lock(hashtext('${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}'));\n`,
+    );
   });
 
   it('exports a backup-lock guard that raises the retryable lock-timeout shape before DDL', () => {

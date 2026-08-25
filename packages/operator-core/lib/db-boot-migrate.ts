@@ -50,6 +50,7 @@ import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RESERVATION_ENFORCED_FROM, migrationNumberOf, reservationFilenameConflicts } from './migration-reservation';
+import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 
 export { RESERVATION_ENFORCED_FROM, migrationNumberOf } from './migration-reservation';
 
@@ -384,6 +385,13 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
     onnotice: () => {},
     connection: { lock_timeout: 15_000, application_name: 'papercusp-boot-migrate' },
   });
+  // Hold the same session advisory lock used by workspace backups. The
+  // connection-level lock_timeout above is intentionally disabled while
+  // acquiring this rendezvous: a long pg_dump must finish before boot can
+  // apply the armed migration, rather than timing out and leaving the next
+  // restart as the only retry. Restore the normal fail-fast timeout before
+  // entering the migration runner.
+  let backupMigrationLockHeld = false;
   // EI-19403856469813053: load the cross-boot cooldown BEFORE attempting
   // anything, so a file that failed recently (elsewhere: a prior boot, or a
   // prior gate-preflight call) is excluded from this attempt entirely — it
@@ -400,6 +408,10 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
   const coolingDown = new Map(coolingDownEntries);
   const skipFile = coolingDown.size > 0 ? (f: string) => defaultSkipFile(f) || coolingDown.has(f) : undefined;
   try {
+    await client`SET lock_timeout = 0`;
+    await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+    backupMigrationLockHeld = true;
+    await client`SET lock_timeout = '15s'`;
     // Retry ONLY pure transaction contention (lock timeout / deadlock /
     // serialization). Any other failure — a syntax error, a constraint
     // violation, a genuinely broken migration — is a real defect that no
@@ -543,6 +555,13 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
     console.error('[boot-migrate] boot apply failed (non-fatal):', err instanceof Error ? err.message : err);
     return null;
   } finally {
+    if (backupMigrationLockHeld) {
+      await client`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch((error) => {
+        console.warn(
+          `[boot-migrate] backup migration rendezvous unlock failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
     await client.end({ timeout: 5 }).catch(() => {});
   }
 }

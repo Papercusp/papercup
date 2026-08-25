@@ -33,7 +33,16 @@ const h = vi.hoisted(() => ({
   readCheckpointSerializerAuthority: vi.fn(),
 }));
 
+const pg = vi.hoisted(() => {
+  const client = Object.assign(
+    vi.fn((_strings: readonly string[], ..._values: unknown[]) => Promise.resolve([])),
+    { end: vi.fn(async () => {}) },
+  );
+  return { client, postgres: vi.fn(() => client) };
+});
+
 vi.mock('@papercusp/backup', () => ({ configureBackup: h.configureBackup }));
+vi.mock('postgres', () => ({ default: pg.postgres }));
 vi.mock('../release-checkpoint-config', () => ({
   readQualificationAdmission: h.readQualificationAdmission,
 }));
@@ -57,6 +66,7 @@ beforeEach(() => {
 
 async function configuredHost(): Promise<{
   readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
+  acquireMigrationLock: () => Promise<{ release: () => Promise<void> }>;
 }> {
   await import('./configure');
   return h.configureBackup.mock.calls[0]![0] as {
@@ -139,5 +149,32 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
       evidence: { itemId: 'WI-40086', ownerId: 'su-owner' },
     });
     expect(h.readCheckpointSerializerAuthority).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
+  });
+
+  it('uses one dedicated postgres session for the advisory lock and closes it on release', async () => {
+    const host = await configuredHost();
+
+    const lock = await host.acquireMigrationLock();
+    expect(pg.postgres).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        max: 1,
+        prepare: false,
+        connection: { application_name: 'pcbackup-workspace' },
+      }),
+    );
+    expect(pg.client).toHaveBeenCalledTimes(1);
+    expect(String(pg.client.mock.calls[0]![0])).toContain('pg_advisory_lock');
+
+    await lock.release();
+    expect(pg.client).toHaveBeenCalledTimes(2);
+    expect(String(pg.client.mock.calls[1]![0])).toContain('pg_advisory_unlock');
+    expect(pg.client.end).toHaveBeenCalledTimes(1);
+
+    // The release handle is idempotent, so a defensive double-finally cannot
+    // issue an unlock against a session that has already been closed.
+    await lock.release();
+    expect(pg.client).toHaveBeenCalledTimes(2);
+    expect(pg.client.end).toHaveBeenCalledTimes(1);
   });
 });
