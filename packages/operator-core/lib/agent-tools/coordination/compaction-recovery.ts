@@ -3,6 +3,9 @@ import {
   type CapPreservingOperativeTruncation,
 } from '../../operative-clause';
 import { workItemFetchHint } from '../../work-item-fetch-hint';
+import type { CarryBriefHeldItem } from '../../carry-brief';
+
+export const AUTOMATIC_COMPACTION_RECOVERY_SCHEMA = 'post-compaction-recovery-v1' as const;
 
 /**
  * Post-compaction recovery fold for coord:orient
@@ -89,6 +92,34 @@ export interface CompactionRecovery {
      *  nothing detectably changed since the summary. */
     warnings: string[];
   };
+  /** Which live recovery legs actually resolved. Empty data is still a
+   *  successful read; false means the leg threw and the automatic boundary
+   *  marker must remain incomplete so the successor falls back exactly once. */
+  coverage: {
+    selfSession: boolean;
+    control: boolean;
+    heldItems: boolean;
+    /** null means no compact-boundary timestamp was available, not a failure. */
+    staleness: boolean | null;
+  };
+}
+
+/** Structured marker carried by the deterministic boundary document. The
+ *  recovery payload itself remains the existing CompactionRecovery shape; this
+ *  wrapper only says whether it is safe to skip the old orient round-trip. */
+export interface AutomaticCompactionRecovery {
+  marker: {
+    schemaVersion: typeof AUTOMATIC_COMPACTION_RECOVERY_SCHEMA;
+    complete: boolean;
+    memoryEpoch: number;
+    controlGeneration: number | null;
+    fallback: {
+      verb: 'coord:orient';
+      args: { afterCompaction: true };
+      when: readonly ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'];
+    };
+  };
+  recovery: CompactionRecovery;
 }
 
 const MAX_HELD_ITEMS = 6;
@@ -103,13 +134,24 @@ export async function buildCompactionRecovery(
   /** EI-20451119672468393: `sessionHarness` is the harness the CALLER's session
    *  is scoped to (null/omitted ⇒ unscoped). Used ONLY to flag held items whose
    *  canonical harness contradicts it — never to filter them out. */
-  opts: { sessionHarness?: string | null } = {},
+  opts: {
+    sessionHarness?: string | null;
+    /** CarryDoc already paid this authoritative read. Reuse it so automatic
+     *  delivery does not query held items twice at the boundary. */
+    heldItems?: CarryBriefHeldItem[];
+  } = {},
 ): Promise<CompactionRecovery> {
   const recovery: CompactionRecovery = {
     selfRecall:
       "Your pre-compaction turns survive on disk and are INDEXED — recover any lost detail with " +
       "sessions:search { session:'self', mode:'verbatim', query:'<what you remember>' } " +
       "(or sessions:read { session:'self' } for the tail).",
+    coverage: {
+      selfSession: false,
+      control: false,
+      heldItems: false,
+      staleness: null,
+    },
   };
 
   // (c) self live-tail + pointer — freshness at the moment of hand-out.
@@ -127,6 +169,7 @@ export async function buildCompactionRecovery(
     } else {
       recovery.selfSession = null;
     }
+    recovery.coverage.selfSession = true;
   } catch {
     recovery.selfSession = null;
   }
@@ -145,6 +188,7 @@ export async function buildCompactionRecovery(
         active: recovery.control.state.loop.active,
         intervalSec: recovery.control.state.loop.intervalSec,
       };
+      recovery.coverage.control = true;
       // WI-7302 part 2: the anchor was just rebuilt from the canonical stores
       // (including a LIVE wake-source read), so this reflects the world now —
       // not the last persisted transition. Attached only when it fires.
@@ -170,8 +214,13 @@ export async function buildCompactionRecovery(
   // carry-brief held-items read (compaction-continuity-hardening P-003) so this
   // fold and the compaction/cold-anchor briefs can never drift.
   try {
-    const { readHeldWorkItems } = await import('../../carry-brief');
-    const held = await readHeldWorkItems(ownerId, workspaceId, { limit: MAX_HELD_ITEMS });
+    const held = opts.heldItems
+      ? opts.heldItems.slice(0, MAX_HELD_ITEMS)
+      : await (async () => {
+          const { readHeldWorkItems } = await import('../../carry-brief');
+          return readHeldWorkItems(ownerId, workspaceId, { limit: MAX_HELD_ITEMS });
+        })();
+    recovery.coverage.heldItems = true;
     if (held.length) {
       recovery.checkpoints = held.map((h) => {
         // EI-19952485326105760: a plain head-only slice here reproduces the SAME
@@ -242,9 +291,49 @@ export async function buildCompactionRecovery(
             'quantities in the summary are hypotheses to re-verify, never facts.',
           warnings: await buildStalenessWarnings(ownerId, workspaceId, { summaryAtMs }),
         };
+        recovery.coverage.staleness = true;
       }
     }
   } catch { /* best-effort */ }
 
   return recovery;
+}
+
+/** Build the one automatic boundary payload shared by Claude/Codex
+ * carry-respawn and OMP deterministic maintenance compaction. Fail-soft like
+ * every underlying leg: an incomplete marker is still delivered, but it tells
+ * the successor to use the retained orient fallback exactly once. */
+export async function buildAutomaticCompactionRecovery(
+  ownerId: string,
+  workspaceId: string,
+  opts: { sessionHarness?: string | null; heldItems?: CarryBriefHeldItem[] } = {},
+): Promise<AutomaticCompactionRecovery> {
+  const [recovery, memoryEpoch] = await Promise.all([
+    buildCompactionRecovery(ownerId, workspaceId, opts),
+    (async () => {
+      try {
+        const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
+          import('../../memory/session-epoch-ledger'),
+          import('@papercusp/db-org'),
+        ]);
+        return await currentSessionEpoch(getOrgPg().sql, ownerId);
+      } catch {
+        return 0;
+      }
+    })(),
+  ]);
+  return {
+    marker: {
+      schemaVersion: AUTOMATIC_COMPACTION_RECOVERY_SCHEMA,
+      complete: recovery.coverage.control && recovery.coverage.heldItems,
+      memoryEpoch,
+      controlGeneration: recovery.control?.generation ?? null,
+      fallback: {
+        verb: 'coord:orient',
+        args: { afterCompaction: true },
+        when: ['marker-absent', 'marker-incomplete', 'control-generation-mismatch'],
+      },
+    },
+    recovery,
+  };
 }
