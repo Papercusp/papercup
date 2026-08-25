@@ -4623,6 +4623,26 @@ describe("runGreenCheckpoint", () => {
 
       expect(calls).toContain("commitsInRange");
     });
+
+    it("EI-21434759422783893: one-time setup age does not price a cheap salvage confirm out of budget", async () => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await commit("a", "2", "c2");
+      await commit("unrelated.ts", "x", "c3");
+      const { deps, calls } = bothPathsWired({ passesAtTip: false });
+      const now = Date.now();
+
+      await runGreenCheckpoint(cfg(), deps, {
+        candidate: c2,
+        noPush: true,
+        // The process spent 55m in one-time setup, while its in-memory candidate suite is
+        // cheap. The old whole-run estimate rejected salvage despite 10m of real headroom.
+        runStartedAtMs: now - 55 * 60_000,
+        salvageDeadlineMs: now + 10 * 60_000,
+      });
+
+      expect(calls).toContain("commitsInRange");
+    });
   });
 
   // EI-18759362119598634: a LINT/TYPECHECK red never populates `failingFiles` (that list
