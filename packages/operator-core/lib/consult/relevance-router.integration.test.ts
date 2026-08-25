@@ -140,6 +140,9 @@ beforeAll(async () => {
   await insertTurn('agent-self', 0, 1 * DAY);
   // machineonly: near-perfect similarity but machine-surface — must be excluded.
   await insertTurn('agent-machineonly', 0.05, 1 * DAY, { verdict: 'machine-surface' });
+  // looponly: near-perfect similarity but agent-injected loop-fire text — must
+  // be excluded from the routing evidence just like machine-surface text.
+  await insertTurn('agent-looponly', 0.04, 1 * DAY, { verdict: 'agent-injected' });
   // subfloor: sim cos(1.2)≈0.362 < DEFAULT_SIM_FLOOR, but massive fresh track
   // record — the D-003 hard-gate case.
   await insertTurn('agent-subfloor', 1.2, 0.5 * DAY);
@@ -187,6 +190,12 @@ describe('routeConsult — routing + blend', () => {
     const r = await routeConsult(baseParams, deps(0));
     const ids = r.snapshot.candidates.map((c) => c.ownerId);
     expect(ids).not.toContain('agent-machineonly');
+  });
+
+  it('excludes agent-injected loop-fire turns — replayed carry notes are not engagement', async () => {
+    const r = await routeConsult(baseParams, deps(0));
+    const ids = r.snapshot.candidates.map((c) => c.ownerId);
+    expect(ids).not.toContain('agent-looponly');
   });
 
   it('stale + unverified similarity alone does not qualify (beta below the blended floor)', async () => {
@@ -262,7 +271,9 @@ describe('routeConsult — D-003 honesty invariants', () => {
         ('default', 'claude', 'sess-lexical-best', 1, ${NOW.toISOString()}::timestamptz,
          'agent-lexical-best', 'assistant', 'consult router fallback evidence for manual review'),
         ('default', 'claude', 'sess-lexical-second', 1, ${new Date(NOW.getTime() - DAY).toISOString()}::timestamptz,
-         'agent-lexical-second', 'assistant', 'consult router fallback notes')
+         'agent-lexical-second', 'assistant', 'consult router fallback notes'),
+        ('default', 'claude', 'sess-lexical-loop', 1, ${NOW.toISOString()}::timestamptz,
+         'agent-lexical-loop', 'assistant', 'consult router fallback evidence for manual review', 'agent-injected')
     `;
     const r = await routeConsult(
       { ...baseParams, question: 'consult router fallback' },
