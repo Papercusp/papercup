@@ -456,9 +456,7 @@ pub(crate) fn decode_agent_chat_stream(
         // A closed SSE channel without `done` is a failed turn, not a
         // successful empty response. The stream task surfaces this as the
         // same typed error path as a decoder failure.
-        let _ = tx.send(Err(anyhow!(
-            "agent-chat SSE stream closed before done"
-        )));
+        let _ = tx.send(Err(anyhow!("agent-chat SSE stream closed before done")));
     });
     rx
 }
