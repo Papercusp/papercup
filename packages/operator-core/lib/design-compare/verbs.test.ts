@@ -167,28 +167,52 @@ describe('round trip: ratify → compare → read', () => {
   it('reports a required case as uncovered when no evidence exists for it', async () => {
     const d = deps();
     const mobile: CaptureEnvironment = { ...ENV, viewport: { width: 390, height: 844 } };
+
+    // Requirement 9 — a passing case never covers a different one — expressed at
+    // the grain the model actually supports. D-019: a revision carries ONE
+    // image, so a second viewport is a second REFERENCE, not a second case on
+    // this one. (This fixture previously declared both viewports as cases of a
+    // single reference, which ratification now refuses precisely because no
+    // comparison for the mobile case could ever have passed.)
+    await ratifyReferenceVerb(ratifyInput(), CALLER, d);
     await ratifyReferenceVerb(
       ratifyInput({
-        requiredCases: [
-          { caseId: 'desktop', environment: ENV, rationale: 'primary' },
-          { caseId: 'mobile', environment: mobile, rationale: 'mobile breakpoint' },
-        ],
+        referenceId: 'ref-checkout-mobile',
+        contentSha256: 'c'.repeat(64),
+        referenceEnvironment: mobile,
+        image: {
+          mediaType: 'image/png',
+          locator: '/refs/login-mobile.png',
+          byteLength: 2048,
+          width: 390,
+          height: 844,
+        },
+        requiredCases: [{ caseId: 'mobile', environment: mobile, rationale: 'mobile breakpoint' }],
       }),
       CALLER,
       d,
     );
     await compareRenderVerb(compareInput(), CALLER, d);
 
-    const read = await getDesignEvidenceVerb({ featureId: FEATURE, referenceId: REFERENCE }, CALLER, d);
-    expect(read.ok).toBe(true);
-    if (!read.ok) return;
-    // The mobile case must read as null, NOT inherit the desktop case's pass.
-    // A passing case never covers a different one (requirement 9), and this is
+    const desktop = await getDesignEvidenceVerb(
+      { featureId: FEATURE, referenceId: REFERENCE },
+      CALLER,
+      d,
+    );
+    expect(desktop.ok).toBe(true);
+    if (!desktop.ok) return;
+    expect(desktop.coverage.map((c) => [c.caseId, c.verdict])).toEqual([['desktop-default', 'pass']]);
+
+    const mobileRead = await getDesignEvidenceVerb(
+      { featureId: FEATURE, referenceId: 'ref-checkout-mobile' },
+      CALLER,
+      d,
+    );
+    expect(mobileRead.ok).toBe(true);
+    if (!mobileRead.ok) return;
+    // The mobile case must read as null, NOT inherit the desktop pass. This is
     // the shape of the bug that would silently ship an unverified breakpoint.
-    expect(read.coverage.map((c) => [c.caseId, c.verdict])).toEqual([
-      ['desktop', 'pass'],
-      ['mobile', null],
-    ]);
+    expect(mobileRead.coverage.map((c) => [c.caseId, c.verdict])).toEqual([['mobile', null]]);
   });
 });
 
