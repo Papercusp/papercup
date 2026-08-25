@@ -46,7 +46,16 @@
  * behind a click bought nothing. The toolbar slot the toggle vacated now holds
  * the sort picker. A stale `?opcf=…` deep link is inert.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   useQueryState,
@@ -275,6 +284,81 @@ function InboxRowIcon({ kind }: { kind: AttentionItem['kind'] }) {
   return <InboxIcon size={17} aria-hidden="true" />;
 }
 
+/**
+ * The expanded row's detail — OtherDetail's actions plus, when `?opcid` targets
+ * this row, the inline WorkItemDiscussion.
+ *
+ * WI-41602 gave both surfaces a focus contract for the ACTIVE close. This owns
+ * the PASSIVE half (WI-41640): the same subtree is removed with no close
+ * handler when the live `plans.attention` feed drops the row under the owner,
+ * when `onResolved` collapses the selection from a button inside it (hand
+ * resolve and bulk accept both land there), or when the virtualizer recycles a
+ * scrolled-away row. Keyboard focus then falls to <body> and the owner is
+ * stranded outside the pane.
+ *
+ * Two cleanups, deliberately:
+ *  - LAYOUT records whether focus was inside. React runs layout destroys while
+ *    the deleted subtree is still attached, so `contains` is still accurate.
+ *  - PASSIVE performs the restore, once the DOM has settled and `isConnected`
+ *    can distinguish a surviving row from one removed in the same commit.
+ *
+ * ReportTakeoverLayer treats `activeElement === body` as proof of a strand;
+ * that is sound there because the takeover focuses ITSELF on mount. This
+ * subtree never does, so body here can equally mean "the owner had focus
+ * nowhere" — and this pane is a sidebar the live feed mutates unprompted, so
+ * seizing focus on that reading would be worse than the bug being fixed.
+ */
+function InboxExpandedDetail({
+  itemId,
+  landmarkRef,
+  children,
+}: {
+  itemId: string;
+  landmarkRef: RefObject<HTMLElement | null>;
+  children: ReactNode;
+}) {
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  const heldFocus = useRef(false);
+
+  useLayoutEffect(() => {
+    const detail = detailRef.current;
+    if (!detail) return;
+    return () => {
+      const active = document.activeElement;
+      heldFocus.current =
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        detail.contains(active);
+    };
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (!heldFocus.current) return;
+      heldFocus.current = false;
+      const usable = (node: HTMLElement | null | undefined) =>
+        node && node.isConnected && !node.closest('[inert]') ? node : null;
+      // The row survives a collapse (setSel(null)) but not a feed removal.
+      const target =
+        usable(document.getElementById(`inbox-row-${itemId}`)) ??
+        usable(landmarkRef.current);
+      target?.focus({ preventScroll: true });
+    },
+    [itemId, landmarkRef],
+  );
+
+  return (
+    <div
+      ref={detailRef}
+      id={`inbox-expanded-${itemId}`}
+      className="op-inbox__detail"
+      data-testid={`inbox-expanded-${itemId}`}
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function InboxPane() {
   const { items, loading, error, refresh } = useInboxAttention();
   const [filter, setFilter] = useQueryState(
@@ -418,6 +502,7 @@ export default function InboxPane() {
 
   const lastScrolledSel = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const masterRef = useRef<HTMLElement | null>(null);
 
   // Resolve selection against the SCOPED feed, not the filtered list. The
   // selected row is admitted below even when a deep link's tier/kind/search
@@ -530,7 +615,17 @@ export default function InboxPane() {
 
   return (
     <div className="op-inbox" data-testid="inbox-tab">
-      <section className="op-inbox__master" aria-label="Resolution inbox items">
+      {/* tabIndex -1 (never tab-reachable): the stable landmark
+          InboxExpandedDetail returns keyboard focus to when a passively removed
+          row leaves no surviving row button. The pane styles focus rings with
+          :focus-visible, so a programmatic focus paints nothing. */}
+      <section
+        ref={masterRef}
+        tabIndex={-1}
+        className="op-inbox__master"
+        data-testid="inbox-master"
+        aria-label="Resolution inbox items"
+      >
       <header className="op-inbox__masthead">
         <span className="op-inbox__masthead-icon" aria-hidden="true">
           <InboxIcon size={18} />
@@ -800,11 +895,7 @@ export default function InboxPane() {
                 />
               ) : null}
               {isSel ? (
-                <div
-                  id={`inbox-expanded-${i.id}`}
-                  className="op-inbox__detail"
-                  data-testid={`inbox-expanded-${i.id}`}
-                >
+                <InboxExpandedDetail itemId={i.id} landmarkRef={masterRef}>
                   <OtherDetail
                     key={i.id}
                     item={i}
@@ -844,7 +935,7 @@ export default function InboxPane() {
                       />
                     );
                   })()}
-                </div>
+                </InboxExpandedDetail>
               ) : null}
                 </div>
               </div>

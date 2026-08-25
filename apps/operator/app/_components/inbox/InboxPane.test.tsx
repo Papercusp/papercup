@@ -191,11 +191,19 @@ function seedAttention(items: AttentionItem[]) {
   };
 }
 
-function renderPane(searchParams = '') {
+function renderPane(searchParams = '', opts: { hasMemory?: boolean } = {}) {
   const onUrlUpdate = vi.fn();
-  render(<InboxPane />, {
+  // `hasMemory` makes the adapter APPLY its own writes instead of only
+  // reporting them, which is what lets a test observe the pane react to its
+  // own setSel/setDiscussionRef. Off by default so the existing url-assertion
+  // tests keep their fixed starting state.
+  const view = render(<InboxPane />, {
     wrapper: ({ children }) => (
-      <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlUpdate}>
+      <NuqsTestingAdapter
+        searchParams={searchParams}
+        hasMemory={opts.hasMemory}
+        onUrlUpdate={onUrlUpdate}
+      >
         {children}
       </NuqsTestingAdapter>
     ),
@@ -204,7 +212,11 @@ function renderPane(searchParams = '') {
     onUrlUpdate.mock.calls.length
       ? onUrlUpdate.mock.calls[onUrlUpdate.mock.calls.length - 1][0].queryString
       : '';
-  return { onUrlUpdate, lastQuery };
+  // Re-render the SAME tree after re-seeding the feed: the pane sees a live
+  // `plans.attention` update with no user action, which is the only way to
+  // exercise a PASSIVE row removal.
+  const refeed = () => view.rerender(<InboxPane />);
+  return { onUrlUpdate, lastQuery, refeed };
 }
 
 afterEach(() => {
@@ -524,6 +536,89 @@ describe('<InboxPane>', () => {
     H.results['plans.attention'] = { data: [], loading: false, fetching: false, error: new Error('coord down'), invalidate: vi.fn() };
     renderPane();
     expect(screen.getByText(/coord down/)).toBeTruthy();
+  });
+});
+
+/**
+ * WI-41640 — the PASSIVE half of the focus-lifecycle chain. WI-41595/41601/41602
+ * covered every path that runs a close handler; nothing below invokes one. Each
+ * case removes the expanded detail out from under the owner and pins where
+ * keyboard focus lands, including the two cases where it must NOT be moved.
+ */
+describe('inbox passive-unmount focus lifecycle (WI-41640)', () => {
+  it('returns focus to the Inbox landmark when the live feed removes the expanded row', () => {
+    seedAttention([mkItem('d1'), mkItem('d2')]);
+    const { refeed } = renderPane('?opcis=d1');
+    const inside = screen.getByTestId('stub-resolve');
+    inside.focus();
+    expect(document.activeElement).toBe(inside);
+
+    // The owner touched nothing — plans.attention simply stopped carrying d1.
+    seedAttention([mkItem('d2')]);
+    refeed();
+
+    expect(screen.queryByTestId('inbox-row-d1')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId('inbox-master'));
+  });
+
+  it('restores from inside the inline discussion, not only the detail actions', () => {
+    const wi = mkItem('work-item-needs-human:WI-42', {
+      kind: 'work-item-needs-human',
+      ref: { kind: 'work-item-needs-human', workItemId: 'WI-42', itemKind: 'change' },
+    });
+    seedAttention([wi, mkItem('d2')]);
+    const { refeed } = renderPane(
+      '?opcis=work-item-needs-human%3AWI-42&opcid=papercusp%3A%3AWI-42',
+    );
+    const close = screen.getByTestId('work-item-discussion-close');
+    close.focus();
+    expect(document.activeElement).toBe(close);
+
+    seedAttention([mkItem('d2')]);
+    refeed();
+
+    expect(screen.queryByTestId('work-item-discussion-stub')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId('inbox-master'));
+  });
+
+  it('returns focus to the surviving row when resolving collapses the detail', async () => {
+    seedAttention([mkItem('d1')]);
+    renderPane('?opcis=d1', { hasMemory: true });
+    const resolve = screen.getByTestId('stub-resolve');
+    resolve.focus();
+    fireEvent.click(resolve);
+
+    await waitFor(() => expect(screen.queryByTestId('inbox-expanded-d1')).toBeNull());
+    expect(document.activeElement).toBe(screen.getByTestId('inbox-row-d1'));
+  });
+
+  it('leaves a focus that was never inside the removed row exactly where it is', () => {
+    seedAttention([mkItem('d1'), mkItem('d2')]);
+    const { refeed } = renderPane('?opcis=d1');
+    const search = screen.getByTestId('inbox-search');
+    search.focus();
+
+    seedAttention([mkItem('d2')]);
+    refeed();
+
+    expect(screen.queryByTestId('inbox-row-d1')).toBeNull();
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('does not seize focus onto the Inbox when the owner had focus nowhere', () => {
+    seedAttention([mkItem('d1'), mkItem('d2')]);
+    const { refeed } = renderPane('?opcis=d1');
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    seedAttention([mkItem('d2')]);
+    refeed();
+
+    expect(screen.queryByTestId('inbox-row-d1')).toBeNull();
+    // A sidebar the live feed mutates unprompted must never take focus the
+    // owner did not give it — this is what rules out ReportTakeoverLayer's
+    // `activeElement === body` strand heuristic for this surface.
+    expect(document.activeElement).toBe(document.body);
   });
 });
 
