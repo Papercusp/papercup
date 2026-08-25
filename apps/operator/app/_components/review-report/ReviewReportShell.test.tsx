@@ -26,7 +26,10 @@ function groupsFixture(): ReviewReportGroup[] {
           sourceLabel: "my-plan",
           referenceLabel: "P-001",
           transition: { from: "wip", to: "done" },
-          evidence: ["WI-100 done; completion recorded"],
+          evidence: [
+            "WI-100 done; completion recorded",
+            "plan item linked by coverage",
+          ],
           confidence: "provable",
         },
         {
@@ -93,11 +96,12 @@ describe("rendering", () => {
     expect(screen.getByText("Plan clean-up report")).toBeTruthy();
     expect(screen.getByTestId("review-report-icon")).toBeTruthy();
     expect(screen.getByText("run #7")).toBeTruthy();
-    expect(screen.getAllByText("Flip to done")).toHaveLength(2);
-    expect(screen.getByText("WI-100 done; completion recorded")).toBeTruthy();
+    expect(screen.getByText("Flip to done")).toBeTruthy();
     expect(
-      screen.getByTestId("review-group-columns-flip-to-done").textContent,
-    ).toContain("TargetProposed changeEvidenceConfidence");
+      screen.getByText(
+        "WI-100 done; completion recorded · plan item linked by coverage",
+      ),
+    ).toBeTruthy();
     expect(screen.getByText("my-plan")).toBeTruthy();
     expect(screen.getByText("P-001")).toBeTruthy();
     expect(
@@ -123,12 +127,10 @@ describe("rendering", () => {
     expect(screen.getByTestId("review-row-conf-f2").textContent).toBe(
       "recommended",
     );
+    expect(report.querySelector(".review-report__navigator")).toBeNull();
     expect(
-      screen.getByTestId("review-report-selection-total").textContent,
-    ).toContain("3 / 3");
-    expect(
-      screen.getByTestId("review-group-nav-flip-to-done").textContent,
-    ).toContain("2/2 selected");
+      screen.queryByTestId("review-group-columns-flip-to-done"),
+    ).toBeNull();
   });
 
   it("renders an applied row as done — status mark, no checkbox", () => {
@@ -188,12 +190,6 @@ describe("selection + apply", () => {
     expect(status.textContent).toBe(
       "2 of 3 selectable recommendations selected.",
     );
-    expect(
-      screen.getByTestId("review-report-selection-total").textContent,
-    ).toContain("2 / 3");
-    expect(
-      screen.getByTestId("review-group-nav-flip-to-done").textContent,
-    ).toContain("1/2 selected");
     fireEvent.click(applyBtn());
     expect(onApply).toHaveBeenCalledWith(["f1", "o2"]);
   });
@@ -208,59 +204,21 @@ describe("selection + apply", () => {
     expect(onApply).toHaveBeenCalledWith(["f1"]);
   });
 
-  it("selects and clears every selectable pending row from the command-center summary", () => {
-    renderShell({ defaultSelected: "none" });
-    const selectAll = screen.getByTestId(
-      "review-report-select-all",
-    ) as HTMLButtonElement;
-    const clear = screen.getByTestId(
-      "review-report-clear-selection",
-    ) as HTMLButtonElement;
-
-    expect(selectAll.disabled).toBe(false);
-    expect(clear.disabled).toBe(true);
-    fireEvent.click(selectAll);
-    expect(
-      screen.getByTestId("review-report-selection-total").textContent,
-    ).toContain("3 / 3");
-    expect(rowCheck("f1").getAttribute("aria-checked")).toBe("true");
-    expect(rowCheck("o2").getAttribute("aria-checked")).toBe("true");
-    expect(selectAll.disabled).toBe(true);
-    expect(clear.disabled).toBe(false);
-
-    fireEvent.click(clear);
-    expect(
-      screen.getByTestId("review-report-selection-total").textContent,
-    ).toContain("0 / 3");
-    expect(applyBtn().disabled).toBe(true);
-    expect(selectAll.disabled).toBe(false);
-    expect(clear.disabled).toBe(true);
-  });
-
-  it("dismiss fires onDismiss; busy disables apply, dismiss, selection controls and checkboxes", () => {
+  it("dismiss fires onDismiss; busy disables apply, dismiss and checkboxes", () => {
     const { onDismiss } = renderShell();
     fireEvent.click(screen.getByTestId("review-report-dismiss"));
     expect(onDismiss).toHaveBeenCalledTimes(1);
     cleanup();
     renderShell({ busy: true });
-    expect(
-      screen.getByTestId("review-report").getAttribute("aria-busy"),
-    ).toBe("true");
+    expect(screen.getByTestId("review-report").getAttribute("aria-busy")).toBe(
+      "true",
+    );
     expect(screen.getByTestId("review-report-status").textContent).toBe(
       "Updating report. Please wait.",
     );
-    expect(screen.getByText("Updating report")).toBeTruthy();
     expect(applyBtn().disabled).toBe(true);
     expect(
       (screen.getByTestId("review-report-dismiss") as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    expect(
-      (screen.getByTestId("review-report-select-all") as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    expect(
-      (screen.getByTestId("review-report-clear-selection") as HTMLButtonElement)
         .disabled,
     ).toBe(true);
     expect(rowCheck("f1").disabled).toBe(true);
@@ -322,30 +280,12 @@ describe("collapse", () => {
     expect(screen.getByTestId("review-row-f1")).toBeTruthy();
     fireEvent.click(screen.getByTestId("review-group-toggle-flip-to-done"));
     expect(screen.queryByTestId("review-row-f1")).toBeNull();
-    expect(
-      screen.queryByTestId("review-group-columns-flip-to-done"),
-    ).toBeNull();
     expect(applyBtn().textContent).toContain("(3)"); // selection preserved
     fireEvent.click(screen.getByTestId("review-group-toggle-flip-to-done"));
     expect(screen.getByTestId("review-row-f1")).toBeTruthy();
   });
 
-  it("the group navigator expands a collapsed group and moves focus to its heading", () => {
-    renderShell();
-    fireEvent.click(screen.getByTestId("review-group-toggle-flip-to-done"));
-    expect(screen.queryByTestId("review-row-f1")).toBeNull();
-
-    const nav = screen.getByTestId("review-group-nav-flip-to-done");
-    expect(nav.getAttribute("aria-controls")).toBe("review-report-group-0");
-    fireEvent.click(nav);
-
-    expect(screen.getByTestId("review-row-f1")).toBeTruthy();
-    expect(document.activeElement).toBe(
-      screen.getByTestId("review-group-toggle-flip-to-done"),
-    );
-  });
-
-  it("keeps selection and group navigation operable from the keyboard", async () => {
+  it("keeps selection and group collapse operable from the keyboard", async () => {
     const user = userEvent.setup();
     renderShell();
 
@@ -359,11 +299,5 @@ describe("collapse", () => {
     toggle.focus();
     await user.keyboard("{Enter}");
     expect(screen.queryByTestId("review-row-f1")).toBeNull();
-
-    const nav = screen.getByTestId("review-group-nav-flip-to-done");
-    nav.focus();
-    await user.keyboard("{Enter}");
-    expect(screen.getByTestId("review-row-f1")).toBeTruthy();
-    expect(document.activeElement).toBe(toggle);
   });
 });

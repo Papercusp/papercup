@@ -21,6 +21,8 @@
 
 /* ── Frame ─────────────────────────────────────────────────────────────── */
 .review-report {
+  --review-accent: color-mix(in oklab, var(--accent) 62%, var(--bad));
+  --review-accent-strong: color-mix(in oklab, var(--review-accent), white 28%);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -31,12 +33,12 @@
   box-sizing: border-box;
   font-size: 12.5px;
   color: var(--fg);
-  border: 1px solid color-mix(in oklab, var(--accent), var(--border) 64%);
-  border-radius: 16px;
+  border: 1px solid color-mix(in oklab, var(--review-accent), transparent 56%);
+  border-radius: 14px;
   background:
     radial-gradient(
       circle at 50% -12%,
-      color-mix(in oklab, var(--accent) 9%, transparent),
+      color-mix(in oklab, var(--review-accent) 8%, transparent),
       transparent 42%
     ),
     color-mix(in oklab, var(--bg) 94%, var(--bg-2));
@@ -70,15 +72,16 @@
   width: 38px;
   height: 38px;
   flex: 0 0 38px;
-  border: 1px solid color-mix(in oklab, var(--accent), transparent 44%);
+  border: 1px solid color-mix(in oklab, var(--review-accent), transparent 42%);
   border-radius: 10px;
-  color: color-mix(in oklab, var(--accent), white 30%);
+  color: var(--review-accent-strong);
   background: linear-gradient(
     145deg,
-    color-mix(in oklab, var(--accent) 58%, transparent),
-    color-mix(in oklab, var(--accent) 28%, var(--bg))
+    color-mix(in oklab, var(--review-accent) 58%, transparent),
+    color-mix(in oklab, var(--review-accent) 30%, var(--bg))
   );
-  box-shadow: 0 8px 24px color-mix(in oklab, var(--accent) 18%, transparent);
+  box-shadow: 0 8px 24px
+    color-mix(in oklab, var(--review-accent) 18%, transparent);
 }
 
 .review-report__head-text {
@@ -128,118 +131,6 @@
   cursor: default;
 }
 
-/* ── Command-center navigation ───────────────────────────────────────── */
-.review-report__body {
-  display: grid;
-  grid-template-columns: 184px minmax(0, 1fr);
-  align-items: start;
-  gap: 12px;
-}
-
-.review-report__navigator {
-  position: sticky;
-  top: 54px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.review-report__selection-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 11px 12px;
-  border: 1px solid color-mix(in oklab, var(--good), transparent 58%);
-  border-radius: 11px;
-  background: color-mix(in oklab, var(--good) 8%, var(--bg-2));
-}
-
-.review-report__selection-kicker {
-  color: var(--fg-mute);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.review-report__selection-total {
-  color: color-mix(in oklab, var(--good), white 28%);
-  font-size: 21px;
-  line-height: 1.1;
-}
-
-.review-report__selection-caption {
-  color: var(--fg-mute);
-  font-size: 10.5px;
-  line-height: 1.35;
-}
-
-.review-report__selection-actions {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  margin: 5px -5px -5px;
-}
-
-.review-report__selection-action.pc-btn {
-  flex: 1 1 0;
-  min-width: 0;
-  padding-inline: 5px;
-  color: var(--fg-mute);
-  font-size: 10px;
-}
-
-.review-report__nav-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.review-report__nav-button {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 8px;
-  width: 100%;
-  padding: 8px 9px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  color: var(--fg);
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.review-report__nav-button:hover {
-  border-color: var(--border);
-  background: color-mix(in oklab, var(--bg-2), white 3%);
-}
-
-.review-report__nav-button:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--accent), white 18%);
-  outline-offset: 1px;
-}
-
-.review-report__nav-label {
-  overflow: hidden;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.review-report__nav-count {
-  color: color-mix(in oklab, var(--accent), white 22%);
-  font-size: 10.5px;
-  font-weight: 750;
-}
-
-.review-report__nav-selection {
-  grid-column: 1 / -1;
-  color: var(--fg-mute);
-  font-size: 10px;
-}
-
 .review-report__groups {
   display: flex;
   flex-direction: column;
@@ -260,7 +151,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 42px;
+  min-height: 40px;
   padding: 0 12px;
   background: color-mix(in oklab, var(--bg-2), white 4%);
 }
@@ -281,6 +172,7 @@
 
 .review-report__chevron {
   flex: 0 0 auto;
+  margin-left: auto;
   transition: transform 120ms ease;
   color: var(--fg-mute);
 }
@@ -301,10 +193,10 @@
   min-width: 22px;
   min-height: 20px;
   padding: 0 7px;
-  border: 1px solid color-mix(in oklab, var(--accent), transparent 48%);
+  border: 1px solid color-mix(in oklab, var(--review-accent), transparent 44%);
   border-radius: 999px;
-  color: color-mix(in oklab, var(--accent), white 25%);
-  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--review-accent-strong);
+  background: color-mix(in oklab, var(--review-accent) 12%, transparent);
   font-size: 10.5px;
   font-weight: 750;
 }
@@ -318,34 +210,7 @@
   font-weight: 450;
 }
 
-.review-report__group-selection {
-  margin-left: auto;
-  color: var(--fg-mute);
-  font-size: 10.5px;
-  white-space: nowrap;
-}
-
 /* ── Rows ──────────────────────────────────────────────────────────────── */
-.review-report__column-head {
-  display: grid;
-  grid-template-columns:
-    26px minmax(120px, 180px) minmax(150px, 220px) minmax(0, 1fr)
-    88px;
-  gap: 10px;
-  padding: 6px 12px 5px;
-  border-top: 1px solid var(--border);
-  color: var(--fg-mute);
-  background: color-mix(in oklab, var(--bg-2), transparent 28%);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.review-report__column-head > span:last-child {
-  justify-self: end;
-}
-
 .review-report__rows {
   list-style: none;
   margin: 0;
@@ -355,11 +220,11 @@
 .review-report__row {
   display: grid;
   grid-template-columns:
-    26px minmax(120px, 180px) minmax(150px, 220px) minmax(0, 1fr)
-    88px;
+    20px minmax(145px, 205px) minmax(112px, max-content) minmax(0, 1fr)
+    max-content;
   align-items: center;
   gap: 10px;
-  min-height: 42px;
+  min-height: 38px;
   padding: 7px 12px;
   border-top: 1px solid var(--border);
 }
@@ -437,6 +302,22 @@
   border-color: color-mix(in oklab, var(--good), transparent 52%);
 }
 
+.review-report__state[data-state="wip"],
+.review-report__state[data-state="running"] {
+  color: var(--accent-strong);
+  border-color: color-mix(in oklab, var(--accent), transparent 52%);
+}
+
+.review-report__state[data-state="blocked"] {
+  color: var(--bad);
+  border-color: color-mix(in oklab, var(--bad), transparent 48%);
+}
+
+.review-report__state[data-state="archived"] {
+  color: var(--warn);
+  border-color: color-mix(in oklab, var(--warn), transparent 48%);
+}
+
 .review-report__transition-arrow {
   color: var(--fg-mute);
 }
@@ -449,7 +330,7 @@
 }
 
 .review-report__row-detail {
-  grid-column: 3 / -1;
+  grid-column: 2 / -1;
   min-width: 0;
   padding-top: 1px;
   color: var(--fg-mute);
@@ -457,15 +338,14 @@
 }
 
 .review-report__row-evidence {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+  overflow: hidden;
   min-width: 0;
   color: var(--fg-mute);
   font-size: 11.5px;
 }
 
 .review-report__evidence-item {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -526,19 +406,6 @@
     width: 100%;
   }
 
-  .review-report__body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .review-report__navigator {
-    position: static;
-  }
-
-  .review-report__nav-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-  }
-
   .review-report__apply.pc-btn {
     flex: 1 1 auto;
   }
@@ -549,17 +416,9 @@
     white-space: normal;
   }
 
-  .review-report__group-selection {
-    display: none;
-  }
-
   .review-report__row {
-    grid-template-columns: 26px minmax(0, 1fr) 78px;
+    grid-template-columns: 20px minmax(0, 1fr) max-content;
     align-items: start;
-  }
-
-  .review-report__column-head {
-    display: none;
   }
 
   .review-report__row-identity,
