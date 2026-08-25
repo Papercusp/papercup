@@ -443,9 +443,7 @@ export function censusGcpWorkspaceHostResources(
     }
     inventoryByKind.set(evidence.kind, evidence);
   }
-  const missingInventoryKinds = GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.filter(
-    (kind) => !inventoryByKind.has(kind),
-  );
+  const missingInventoryKinds = GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.filter((kind) => !inventoryByKind.has(kind));
   if (missingInventoryKinds.length > 0) {
     throw new Error(`GCP workspace-host census inventory incomplete: ${missingInventoryKinds.join(', ')}`);
   }
@@ -463,7 +461,10 @@ export function censusGcpWorkspaceHostResources(
       if (evidence.strategy !== 'deterministic-name' || !evidence.deterministicNames?.length) {
         throw new Error(`GCP workspace-host census '${kind}' inventory requires deterministic names`);
       }
-      deterministicNames.set(kind, new Set(evidence.deterministicNames.map((name) => requireNonEmpty(name, `${kind} name`))));
+      deterministicNames.set(
+        kind,
+        new Set(evidence.deterministicNames.map((name) => requireNonEmpty(name, `${kind} name`))),
+      );
     } else if (evidence.strategy !== 'managed-labels') {
       throw new Error(`GCP workspace-host census '${kind}' inventory requires managed-label enumeration`);
     }

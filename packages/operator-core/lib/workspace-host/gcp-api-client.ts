@@ -579,10 +579,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     const router = await this.getRawRouter(projectId, region, routerName);
     const nat = router?.nats?.find((candidate) => candidate.name === name);
     if (!router || !nat) return undefined;
-    if (
-      nat.natIpAllocateOption !== 'AUTO_ONLY' ||
-      nat.sourceSubnetworkIpRangesToNat !== 'LIST_OF_SUBNETWORKS'
-    ) {
+    if (nat.natIpAllocateOption !== 'AUTO_ONLY' || nat.sourceSubnetworkIpRangesToNat !== 'LIST_OF_SUBNETWORKS') {
       throw new Error('gcp_workspace_host_nat_policy_invalid');
     }
     const subnetwork = required(lastSegment(nat.subnetworks?.[0]?.name), 'nat_subnetwork');

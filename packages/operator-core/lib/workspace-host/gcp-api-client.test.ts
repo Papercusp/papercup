@@ -9,7 +9,9 @@ import {
   createAdcGcpWorkspaceHostProvider,
   type GcpDiskInsertInput,
   type GcpInstanceInsertInput,
+  type GcpNatInsertInput,
   type GcpOperationRef,
+  type GcpRouterInsertInput,
 } from './gcp-provider';
 
 const PROJECT = 'active-alcove-504205-q3';
@@ -396,6 +398,103 @@ describe('ADC-backed GCP workspace-host API client', () => {
       error: { code: 'QUOTA_EXCEEDED', message: 'GCP operation failed (QUOTA_EXCEEDED)' },
     });
     expect(JSON.stringify(observed)).not.toContain(TOKEN);
+  });
+
+  it('creates, reads, and deletes a dedicated regional Router/NAT with provider-read absence', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let router:
+      | {
+          name: string;
+          network: string;
+          region: string;
+          fingerprint: string;
+          nats: unknown[];
+        }
+      | undefined;
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url.endsWith(`/regions/${REGION}/routers/pc-host-router`)) {
+        return router ? json(router) : json({ error: { message: 'not found' } }, 404);
+      }
+      if (url.includes(`/regions/${REGION}/routers?`)) {
+        const body = JSON.parse(String(init?.body)) as typeof router;
+        router = { ...body!, fingerprint: 'fp-1', nats: [] };
+        return json({ name: 'insert-router-op', status: 'PENDING', region: `projects/${PROJECT}/regions/${REGION}` });
+      }
+      if (url.includes(`/regions/${REGION}/routers/pc-host-router?`) && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body)) as NonNullable<typeof router>;
+        router = { ...body, fingerprint: 'fp-2' };
+        return json({ name: 'patch-router-op', status: 'PENDING', region: `projects/${PROJECT}/regions/${REGION}` });
+      }
+      if (url.includes(`/regions/${REGION}/routers/pc-host-router?`) && init?.method === 'DELETE') {
+        router = undefined;
+        return json({ name: 'delete-router-op', status: 'PENDING', region: `projects/${PROJECT}/regions/${REGION}` });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    }) as typeof fetch;
+    const client = makeClient(fetchImpl);
+    const routerInput: GcpRouterInsertInput = {
+      name: 'pc-host-router',
+      network: 'pc-host-net',
+      region: REGION,
+    };
+    const natInput: GcpNatInsertInput = {
+      name: 'pc-host-nat',
+      routerName: 'pc-host-router',
+      network: 'pc-host-net',
+      subnetwork: 'pc-host-subnet',
+      region: REGION,
+      natIpAllocateOption: 'AUTO_ONLY',
+      sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+      minPortsPerVm: 64,
+      enableEndpointIndependentMapping: false,
+    };
+
+    await client.insertRouter(PROJECT, REGION, routerInput, REQUEST_ID);
+    await expect(client.getRouter(PROJECT, REGION, routerInput.name)).resolves.toMatchObject({
+      name: routerInput.name,
+      network: 'pc-host-net',
+      region: REGION,
+      natNames: [],
+    });
+    await client.insertNat(PROJECT, REGION, natInput, REQUEST_ID);
+    await expect(client.getNat(PROJECT, REGION, routerInput.name, natInput.name)).resolves.toMatchObject({
+      name: natInput.name,
+      routerName: routerInput.name,
+      subnetwork: 'pc-host-subnet',
+      natIpAllocateOption: 'AUTO_ONLY',
+      sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+    });
+    await client.deleteNat(PROJECT, REGION, routerInput.name, natInput.name, REQUEST_ID);
+    await expect(client.getNat(PROJECT, REGION, routerInput.name, natInput.name)).resolves.toBeUndefined();
+    await client.deleteRouter(PROJECT, REGION, routerInput.name, REQUEST_ID);
+    await expect(client.getRouter(PROJECT, REGION, routerInput.name)).resolves.toBeUndefined();
+
+    const natPatch = calls.find(
+      ({ url, init }) => url.includes('/routers/pc-host-router?') && init?.method === 'PATCH',
+    )!;
+    expect(JSON.parse(String(natPatch.init?.body))).toMatchObject({
+      network: 'global/networks/pc-host-net',
+      nats: [
+        {
+          name: 'pc-host-nat',
+          natIpAllocateOption: 'AUTO_ONLY',
+          sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+          minPortsPerVm: 64,
+          enableEndpointIndependentMapping: false,
+          subnetworks: [
+            {
+              name: `regions/${REGION}/subnetworks/pc-host-subnet`,
+              sourceIpRangesToNat: ['ALL_IP_RANGES'],
+            },
+          ],
+        },
+      ],
+    });
+    expect(
+      calls.filter(({ url, init }) => url.includes('/routers/pc-host-router?') && init?.method === 'PATCH'),
+    ).toHaveLength(2);
   });
 
   it('wires the explicit ADC production composition without changing injected-client fail-closed construction', async () => {

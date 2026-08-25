@@ -23,10 +23,14 @@ import {
   type GcpFirewallObservation,
   type GcpInstanceInsertInput,
   type GcpInstanceObservation,
+  type GcpNatInsertInput,
+  type GcpNatObservation,
   type GcpNetworkInsertInput,
   type GcpOperationObservation,
   type GcpOperationRef,
   type GcpResourceObservation,
+  type GcpRouterInsertInput,
+  type GcpRouterObservation,
   type GcpSnapshotInsertInput,
   type GcpSnapshotObservation,
   type GcpSubnetworkInsertInput,
@@ -80,6 +84,8 @@ function desired(network: 'managed' | 'existing' = 'managed'): WorkspaceHostDesi
               networkName: 'pc-host-gcp-1-net',
               subnetworkName: 'pc-host-gcp-1-subnet',
               firewallName: 'pc-host-gcp-1-iap',
+              routerName: 'pc-host-gcp-1-router',
+              natName: 'pc-host-gcp-1-nat',
               ipCidrRange: '10.132.12.0/24',
             }
           : {
@@ -120,6 +126,8 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   readonly insertNetworkCalls: Array<{ input: GcpNetworkInsertInput; requestId: string }> = [];
   readonly insertSubnetworkCalls: Array<{ input: GcpSubnetworkInsertInput; requestId: string }> = [];
   readonly insertFirewallCalls: Array<{ input: GcpFirewallInsertInput; requestId: string }> = [];
+  readonly insertRouterCalls: Array<{ input: GcpRouterInsertInput; requestId: string }> = [];
+  readonly insertNatCalls: Array<{ input: GcpNatInsertInput; requestId: string }> = [];
   readonly insertDiskCalls: Array<{ input: GcpDiskInsertInput; requestId: string }> = [];
   readonly insertInstanceCalls: Array<{ input: GcpInstanceInsertInput; requestId: string }> = [];
   readonly snapshotCalls: Array<{ input: GcpSnapshotInsertInput; requestId: string }> = [];
@@ -134,6 +142,8 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   private readonly networks = new Map<string, GcpResourceObservation>();
   private readonly subnetworks = new Map<string, GcpResourceObservation>();
   private readonly firewalls = new Map<string, GcpFirewallObservation>();
+  private readonly routers = new Map<string, GcpRouterObservation>();
+  private readonly nats = new Map<string, GcpNatObservation>();
   private readonly disks = new Map<string, GcpDiskObservation>();
   private readonly instances = new Map<string, GcpInstanceObservation>();
   private readonly snapshots = new Map<string, GcpSnapshotObservation>();
@@ -219,6 +229,14 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     return this.firewalls.get(name);
   }
 
+  async getRouter(_projectId: string, _region: string, name: string) {
+    return this.routers.get(name);
+  }
+
+  async getNat(_projectId: string, _region: string, routerName: string, name: string) {
+    return this.nats.get(`${routerName}:${name}`);
+  }
+
   async getDisk(_projectId: string, _zone: string, name: string) {
     return this.disks.get(name);
   }
@@ -256,6 +274,38 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
         allowed: input.allowed,
         observedAt: NOW,
       });
+    });
+  }
+
+  async insertRouter(_projectId: string, region: string, input: GcpRouterInsertInput, requestId: string) {
+    return this.mutation(requestId, 'region', region, () => {
+      this.insertRouterCalls.push({ input, requestId });
+      this.routers.set(input.name, {
+        name: input.name,
+        network: input.network,
+        region,
+        natNames: [],
+        observedAt: NOW,
+      });
+    });
+  }
+
+  async insertNat(_projectId: string, region: string, input: GcpNatInsertInput, requestId: string) {
+    return this.mutation(requestId, 'region', region, () => {
+      const router = this.routers.get(input.routerName);
+      if (!router) throw new Error('fake GCP NAT references an unknown router');
+      this.insertNatCalls.push({ input, requestId });
+      this.nats.set(`${input.routerName}:${input.name}`, {
+        name: input.name,
+        routerName: input.routerName,
+        network: input.network,
+        subnetwork: input.subnetwork,
+        region,
+        natIpAllocateOption: input.natIpAllocateOption,
+        sourceSubnetworkIpRangesToNat: input.sourceSubnetworkIpRangesToNat,
+        observedAt: NOW,
+      });
+      this.routers.set(input.routerName, { ...router, natNames: [input.name], observedAt: NOW });
     });
   }
 
@@ -341,6 +391,21 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   async deleteFirewall(_projectId: string, name: string, requestId: string) {
     this.deleteCalls += 1;
     return this.mutation(requestId, 'global', undefined, () => this.firewalls.delete(name));
+  }
+
+  async deleteNat(_projectId: string, region: string, routerName: string, name: string, requestId: string) {
+    this.deleteCalls += 1;
+    return this.mutation(requestId, 'region', region, () => {
+      this.nats.delete(`${routerName}:${name}`);
+      const router = this.routers.get(routerName);
+      if (router)
+        this.routers.set(routerName, { ...router, natNames: router.natNames.filter((item) => item !== name) });
+    });
+  }
+
+  async deleteRouter(_projectId: string, region: string, name: string, requestId: string) {
+    this.deleteCalls += 1;
+    return this.mutation(requestId, 'region', region, () => this.routers.delete(name));
   }
 
   async deleteSubnetwork(_projectId: string, region: string, name: string, requestId: string) {
@@ -447,8 +512,10 @@ describe('GCP workspace-host provider planning', () => {
       { id: 'create-network', dependsOn: [] },
       { id: 'create-subnetwork', dependsOn: ['create-network'] },
       { id: 'create-firewall', dependsOn: ['create-network'] },
+      { id: 'create-router', dependsOn: ['create-network'] },
+      { id: 'create-nat', dependsOn: ['create-router', 'create-subnetwork'] },
       { id: 'create-data-disk', dependsOn: [] },
-      { id: 'create-instance', dependsOn: ['create-subnetwork', 'create-firewall', 'create-data-disk'] },
+      { id: 'create-instance', dependsOn: ['create-subnetwork', 'create-firewall', 'create-nat', 'create-data-disk'] },
     ]);
     const requestIds = first.steps.map((step) => (step.input as { requestId: string }).requestId);
     expect(requestIds).toHaveLength(new Set(requestIds).size);
@@ -457,11 +524,27 @@ describe('GCP workspace-host provider planning', () => {
     );
     expect(gcpWorkspaceHostRequestUuid('operation-1')).toBe(gcpWorkspaceHostRequestUuid('operation-1'));
 
-    const firewall = (first.steps[2].input as unknown as { request: GcpFirewallInsertInput }).request;
+    const firewall = (
+      first.steps.find(({ id }) => id === 'create-firewall')!.input as unknown as { request: GcpFirewallInsertInput }
+    ).request;
     expect(firewall).toMatchObject({ sourceRanges: [GCP_IAP_TCP_FORWARDING_RANGE], allowed: [{ ports: ['22'] }] });
-    const disk = (first.steps[3].input as unknown as { request: GcpDiskInsertInput }).request;
+    const nat = (first.steps.find(({ id }) => id === 'create-nat')!.input as unknown as { request: GcpNatInsertInput })
+      .request;
+    expect(nat).toMatchObject({
+      routerName: 'pc-host-gcp-1-router',
+      subnetwork: 'pc-host-gcp-1-subnet',
+      natIpAllocateOption: 'AUTO_ONLY',
+      sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+      minPortsPerVm: 64,
+      enableEndpointIndependentMapping: false,
+    });
+    const disk = (
+      first.steps.find(({ id }) => id === 'create-data-disk')!.input as unknown as { request: GcpDiskInsertInput }
+    ).request;
     expect(disk).toMatchObject({ sizeGb: 120, type: 'pd-ssd', diskEncryptionKey: { kmsKeyName: expect.any(String) } });
-    const instance = (first.steps[4].input as unknown as { request: GcpInstanceInsertInput }).request;
+    const instance = (
+      first.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
     expect(instance.networkInterfaces[0]).not.toHaveProperty('accessConfigs');
     expect(instance.serviceAccounts).toEqual([
       {
@@ -532,6 +615,8 @@ describe('GCP workspace-host provider planning', () => {
     expect(plan.steps.map(({ id }) => id)).toEqual([
       'create-network',
       'create-subnetwork',
+      'create-router',
+      'create-nat',
       'create-data-disk',
       'create-instance',
     ]);
@@ -581,7 +666,12 @@ describe('GCP workspace-host provider planning', () => {
     );
     await expect(
       provider.apply(
-        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[1], knownResources: [] },
+        {
+          planId: plan.planId,
+          operationId: plan.operationId,
+          step: plan.steps.find(({ id }) => id === 'create-subnetwork')!,
+          knownResources: [],
+        },
         context(),
       ),
     ).rejects.toThrow('requires a persisted network resource identity');
@@ -589,13 +679,23 @@ describe('GCP workspace-host provider planning', () => {
 
     const disk = requireAppliedResource(
       await provider.apply(
-        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[3], knownResources: [] },
+        {
+          planId: plan.planId,
+          operationId: plan.operationId,
+          step: plan.steps.find(({ id }) => id === 'create-data-disk')!,
+          knownResources: [],
+        },
         context(),
       ),
     );
     await expect(
       provider.apply(
-        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[4], knownResources: [disk] },
+        {
+          planId: plan.planId,
+          operationId: plan.operationId,
+          step: plan.steps.find(({ id }) => id === 'create-instance')!,
+          knownResources: [disk],
+        },
         context(),
       ),
     ).rejects.toThrow('requires a persisted subnetwork/existing-subnetwork resource identity');
@@ -772,6 +872,8 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       'network',
       'subnetwork',
       'firewall',
+      'router',
+      'nat',
       'disk',
       'vm',
     ]);
@@ -779,6 +881,8 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       'pc-host-gcp-1-vm',
       'pc-host-gcp-1-data',
       'pc-host-gcp-1-iap',
+      'pc-host-gcp-1-nat',
+      'pc-host-gcp-1-router',
       'pc-host-gcp-1-subnet',
       'pc-host-gcp-1-net',
     ]);
@@ -833,6 +937,22 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       },
       context(),
     );
+    expect(destroy.steps.map(({ resourceKind }) => resourceKind)).toEqual([
+      'vm',
+      'disk',
+      'firewall',
+      'nat',
+      'router',
+      'subnetwork',
+      'network',
+    ]);
+    const natDelete = destroy.steps.find(({ resourceKind }) => resourceKind === 'nat')!;
+    const routerDelete = destroy.steps.find(({ resourceKind }) => resourceKind === 'router')!;
+    const subnetworkDelete = destroy.steps.find(({ resourceKind }) => resourceKind === 'subnetwork')!;
+    const networkDelete = destroy.steps.find(({ resourceKind }) => resourceKind === 'network')!;
+    expect(routerDelete.dependsOn).toContain(natDelete.id);
+    expect(subnetworkDelete.dependsOn).toContain(routerDelete.id);
+    expect(networkDelete.dependsOn).toContain(subnetworkDelete.id);
     for (const step of destroy.steps) {
       const result = await provider.apply(
         { planId: destroy.planId, operationId: destroy.operationId, step, knownResources: resources },
@@ -841,7 +961,20 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       expect(result.state).toBe('destroyed');
       if (result.state === 'destroyed') expect(result.confirmation.source).toBe('provider-read');
     }
-    expect(client.deleteCalls).toBe(5);
+    expect(client.deleteCalls).toBe(7);
+    await expect(
+      provider.reconcile(
+        {
+          planId: destroy.planId,
+          operationId: destroy.operationId,
+          step: natDelete,
+          knownResources: resources,
+          reason: 'idempotent-absence-check',
+        },
+        context(),
+      ),
+    ).resolves.toMatchObject({ state: 'destroyed', confirmation: { source: 'provider-read' } });
+    expect(client.deleteCalls).toBe(7);
   });
 
   it('reconciles an ambiguous instance insert by fresh resource read without a duplicate API mutation', async () => {

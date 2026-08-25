@@ -506,8 +506,7 @@ function suggestedRoles(missing: readonly string[]): string[] {
     )
   )
     roles.add('roles/compute.networkAdmin');
-  if (missing.some((permission) => permission.startsWith('compute.routers.')))
-    roles.add('roles/compute.networkAdmin');
+  if (missing.some((permission) => permission.startsWith('compute.routers.'))) roles.add('roles/compute.networkAdmin');
   if (missing.some((permission) => permission.startsWith('compute.firewalls.')))
     roles.add('roles/compute.securityAdmin');
   if (
