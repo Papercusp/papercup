@@ -99,16 +99,19 @@ export const MAX_BACKGROUND_TIMEOUT_MS = 12 * 60 * 60 * 1_000; // 12h
  * These are hard defaults, not host-global tuning knobs.  Callers that need the
  * deliberately larger green-checkpoint envelope already have the dedicated
  * checkpoint launcher and its capacity policy; arbitrary `capability:bash`
- * tests must not silently inherit that reserved-machine budget.
+ * tests must not silently inherit an unbounded reserved-machine budget.
  */
 export const BASH_TEST_MEMORY_MAX_BYTES = 16 * 1024 ** 3;
-// Keep this above the measured 1,517-task Vitest subtree documented above. A
-// 512-task scope looked conservative but made the cgroup itself reject forks:
-// the affected runner then surfaced `fork: Resource temporarily unavailable`
-// and bash lost the failed child's `wait_for` record. 2,048 preserves a finite,
-// task-local blast-radius ceiling while leaving ~35% headroom over that observed
-// legitimate peak.
-export const BASH_TEST_TASKS_MAX = 2_048;
+// Keep this above the measured legitimate subtree, not merely above its first
+// sample. A 512-task scope rejected forks, and the first correction to 2,048
+// failed the same way on 2026-08-25: the durable task ledger recorded
+// pidsCurrent=2,048 exactly while systemd recorded only 10.9 GiB peak RSS under
+// this door's 16 GiB cap. The affected runner then surfaced `fork: Resource
+// temporarily unavailable`, bash lost the child's `wait_for` record, and no
+// suite verdict existed. 4,096 is the largest envelope this policy's regression
+// guard has ever allowed; it remains a finite task-local blast radius while the
+// affected scheduler's PID budget keeps one high-fanout suite at a time inside it.
+export const BASH_TEST_TASKS_MAX = 4_096;
 
 const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*`;
 const DIRECT_TEST_RUNNER_RE = new RegExp(
@@ -284,7 +287,10 @@ function parseProcessCpuTicks(stat: string | null): number | null {
   if (!stat) return null;
   const closeParen = stat.lastIndexOf(')');
   if (closeParen < 0) return null;
-  const fields = stat.slice(closeParen + 1).trim().split(/\s+/);
+  const fields = stat
+    .slice(closeParen + 1)
+    .trim()
+    .split(/\s+/);
   const user = finiteNonNegativeNumber(fields[11] ?? null);
   const system = finiteNonNegativeNumber(fields[12] ?? null);
   return user == null || system == null ? null : user + system;
@@ -292,7 +298,10 @@ function parseProcessCpuTicks(stat: string | null): number | null {
 
 function boundedSnapshotText(value: string | null, maxLength: number): string | null {
   if (value == null) return null;
-  const normalized = value.replace(/\0/g, ' ').replace(/[\r\n]+/g, ' ').trim();
+  const normalized = value
+    .replace(/\0/g, ' ')
+    .replace(/[\r\n]+/g, ' ')
+    .trim();
   if (!normalized) return null;
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
 }
@@ -354,7 +363,10 @@ export function capturePreflightAttributionSnapshot(
   for (const candidate of candidatePids) {
     const command =
       redactSnapshotText(
-        boundedSnapshotText(parseProcCmdline(readText(`${procRoot}/${candidate}/cmdline`)), PREFLIGHT_SNAPSHOT_MAX_CMDLINE),
+        boundedSnapshotText(
+          parseProcCmdline(readText(`${procRoot}/${candidate}/cmdline`)),
+          PREFLIGHT_SNAPSHOT_MAX_CMDLINE,
+        ),
         options.redactValues,
       ) ?? '[unreadable cmdline]';
     const stat = readText(`${procRoot}/${candidate}/stat`);

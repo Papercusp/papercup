@@ -326,12 +326,7 @@ describe('background jobs', () => {
     let wrappedEnv: Readonly<Record<string, string | undefined>> | undefined;
     let wrappedCwd: string | undefined;
     const wrap = vi.fn(
-      (
-        binary: string,
-        argv: string[],
-        env?: Readonly<Record<string, string | undefined>>,
-        cwd?: string,
-      ) => {
+      (binary: string, argv: string[], env?: Readonly<Record<string, string | undefined>>, cwd?: string) => {
         wrappedEnv = env;
         wrappedCwd = cwd;
         return { binary, argv };
@@ -354,7 +349,8 @@ describe('background jobs', () => {
     try {
       const job = startBackground(
         {
-          command: 'printf "SID=%s|WS=%s|PATH=%s|EXPLICIT=%s|SECRET=%s" "$PAPERCUSP_SID" "$PAPERCUSP_WORKSPACE" "$PATH" "$EXPLICIT" "${DATABASE_URL:-unset}"',
+          command:
+            'printf "SID=%s|WS=%s|PATH=%s|EXPLICIT=%s|SECRET=%s" "$PAPERCUSP_SID" "$PAPERCUSP_WORKSPACE" "$PATH" "$EXPLICIT" "${DATABASE_URL:-unset}"',
           cwd: STATE,
           stateDir: STATE,
           env: { EXPLICIT: 'per-call' },
@@ -980,12 +976,13 @@ describe('background job deadlines (WI-6677)', () => {
     }
   });
 
-  it('keeps the finite test task budget above the measured legitimate subtree peak', () => {
-    // A real background Vitest run reached 1,517 cgroup tasks. Pin the safety
-    // relationship independently of beginSyncEnrolment's argument assertion:
-    // merely asserting that the writer receives its exported constant would
-    // still pass if the constant regressed below a workload we already measured.
-    expect(BASH_TEST_TASKS_MAX).toBeGreaterThan(1_517);
+  it('keeps the finite test task budget above the latest measured legitimate subtree peak', () => {
+    // A real background affected run reached the old 2,048 cgroup ceiling and
+    // failed before any suite verdict existed. Pin the safety relationship
+    // independently of beginSyncEnrolment's argument assertion: merely asserting
+    // that the writer receives its exported constant would still pass if the
+    // constant regressed to the ceiling a legitimate workload already exhausted.
+    expect(BASH_TEST_TASKS_MAX).toBeGreaterThan(2_048);
     expect(BASH_TEST_TASKS_MAX).toBeLessThanOrEqual(4_096);
   });
 
@@ -1063,9 +1060,11 @@ describe('background job deadlines (WI-6677)', () => {
 
 describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
   it('detects the reported shape: trailing append redirect with 2>&1', () => {
-    expect(detectSelfOutputRedirect('npm run --workspace "$ws" "$script" >> /tmp/p005-part3-guards.log 2>&1')).toEqual(
-      { target: '/tmp/p005-part3-guards.log', op: '>>', literalPath: true },
-    );
+    expect(detectSelfOutputRedirect('npm run --workspace "$ws" "$script" >> /tmp/p005-part3-guards.log 2>&1')).toEqual({
+      target: '/tmp/p005-part3-guards.log',
+      op: '>>',
+      literalPath: true,
+    });
   });
 
   it('detects a redirect ANYWHERE in the command, not just the last stage', () => {

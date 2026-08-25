@@ -487,8 +487,8 @@ describe('resolveMemoryBudgetMb', () => {
     expect(readTaskCgroupPidsMax({ readFile })).toBeNull();
   });
 
-  it('serializes a 2048-pid task scope instead of admitting two peak-sized test tasks', () => {
-    const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 2048 });
+  it('serializes a 4096-pid task scope instead of admitting two peak-sized test tasks', () => {
+    const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 4096 });
     expect(resolved).toMatchObject({
       mode: 'serial',
       maxConcurrentTasks: 1,
@@ -500,19 +500,19 @@ describe('resolveMemoryBudgetMb', () => {
     expect(marker).toContain('effectiveWorkers=4 maxTasks=1 reserveWorkers=1');
     expect(marker).toContain(
       'configuredMaxTasks=2 pidsMaxTasks=1 taskBoundBy=pids ' +
-        'taskCgroupPidsMax=2048 pidsPerTask=1536 pidsReserve=512',
+        'taskCgroupPidsMax=4096 pidsPerTask=3072 pidsReserve=1024',
     );
   });
 
-  it('keeps two-task scheduling in a 4096-pid scope and refuses an undersized scope', () => {
-    expect(resolveTaskBudget({ ...config, taskCgroupPidsMax: 4096 })).toMatchObject({
+  it('keeps two-task scheduling only in an 8192-pid scope and refuses an undersized scope', () => {
+    expect(resolveTaskBudget({ ...config, taskCgroupPidsMax: 8192 })).toMatchObject({
       mode: 'parallel',
       maxConcurrentTasks: 2,
       pidsMaxConcurrentTasks: 2,
       taskBoundBy: 'ceiling',
     });
-    expect(() => resolveTaskBudget({ ...config, taskCgroupPidsMax: 1024 })).toThrow(
-      /below one pidsPerConcurrentTask=1536 envelope; refusing before launch/,
+    expect(() => resolveTaskBudget({ ...config, taskCgroupPidsMax: 2048 })).toThrow(
+      /below one pidsPerConcurrentTask=3072 envelope; refusing before launch/,
     );
   });
 

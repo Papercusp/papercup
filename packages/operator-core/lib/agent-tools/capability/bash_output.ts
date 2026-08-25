@@ -291,10 +291,7 @@ export function diagnoseFromLedger(
   // never inferred from a partial pin set.
   if (row.pid && row.processIdentity && row.confined && row.scopeUnit && row.cgroupPath) {
     const now = probe(row.pid);
-    if (
-      now.processIdentity === row.processIdentity &&
-      now.cgroupPath === row.cgroupPath
-    ) {
+    if (now.processIdentity === row.processIdentity && now.cgroupPath === row.cgroupPath) {
       return { kind: 'confirmed_alive', pid: row.pid, scopeUnit: row.scopeUnit ?? null, taskId: row.taskId };
     }
   }
@@ -338,22 +335,17 @@ export async function taskScopeIsActive(
   row: Pick<TaskRow, 'taskId' | 'class' | 'confined' | 'scopeUnit'>,
   execFn: ScopeActiveExec = runScopeActiveExec,
 ): Promise<boolean> {
-  if (
-    row.class !== 'bash-job' ||
-    !row.confined ||
-    !row.scopeUnit
-  ) {
+  if (row.class !== 'bash-job' || !row.confined || !row.scopeUnit) {
     return false;
   }
   try {
     // Keep malformed or legacy rows fail-soft too: a liveness read must never
     // turn bad ledger metadata into a handler exception.
     if (row.scopeUnit !== serviceUnitForTask(row.taskId)) return false;
-    const { stdout } = await execFn(
-      'systemctl',
-      ['--user', 'show', '-p', 'ActiveState', '--value', row.scopeUnit],
-      { timeout: 2_000, maxBuffer: 64 * 1024 },
-    );
+    const { stdout } = await execFn('systemctl', ['--user', 'show', '-p', 'ActiveState', '--value', row.scopeUnit], {
+      timeout: 2_000,
+      maxBuffer: 64 * 1024,
+    });
     return LIVE_SCOPE_ACTIVE_STATES.has(stdout.trim());
   } catch {
     return false;
@@ -435,6 +427,60 @@ export function terminalStatusFromLedger(
   }
 }
 
+export type TerminalResourceLimitFields = {
+  failure_class: 'infrastructure-resource-limit';
+  resource_limit: {
+    kind: 'pids';
+    observed_tasks: number;
+    configured_tasks_max: number;
+    source: 'task-ledger-cgroup-sample';
+  };
+  test_verdict?: 'undetermined';
+  resource_advice: string;
+};
+
+/**
+ * Turn a terminal ledger sample at the cgroup's hard TasksMax into an explicit
+ * infrastructure verdict.
+ *
+ * EI-21437837415175286: a progressing `test:affected` run reached exactly 2,048
+ * tasks in its 2,048-task capability scope. The next shell fork failed with
+ * EAGAIN, pc-heavy lost bash's `wait_for` record, and callers received only
+ * `status=failed exit=254` — indistinguishable from a real red suite even though
+ * no AFFECTED_TESTS_RESULT existed. `pidsCurrent` is the reconciler's direct
+ * cgroup `pids.current` sample and `tasksMax` is the budget written to that same
+ * scope. Equality on a non-zero terminal row is therefore writer-owned evidence
+ * of the hard resource boundary, not an inference from host load.
+ */
+export function terminalResourceLimitFields(row: TaskRow | null): TerminalResourceLimitFields | null {
+  if (!row || !isTerminalState(row.state) || (row.state === 'exited' && row.exitCode === 0)) return null;
+  const observed = row.pidsCurrent;
+  const configured = row.tasksMax;
+  if (
+    observed == null ||
+    configured == null ||
+    !Number.isFinite(observed) ||
+    !Number.isFinite(configured) ||
+    observed < configured
+  ) {
+    return null;
+  }
+  const testRun = row.detail?.workloadClass === 'test-run';
+  return {
+    failure_class: 'infrastructure-resource-limit',
+    resource_limit: {
+      kind: 'pids',
+      observed_tasks: observed,
+      configured_tasks_max: configured,
+      source: 'task-ledger-cgroup-sample',
+    },
+    ...(testRun ? { test_verdict: 'undetermined' as const } : {}),
+    resource_advice:
+      `This task reached its own cgroup TasksMax (${observed}/${configured}); its non-zero shell exit is ` +
+      `${testRun ? 'an UNDETERMINED test run, not a red suite verdict' : 'an infrastructure resource-limit failure'}.`,
+  };
+}
+
 /**
  * Recover a terminal bash task when the durable detail bag did not carry its
  * process-local bash id. The ledger state is still authoritative for status;
@@ -465,6 +511,7 @@ function terminalBashTaskRecovery(
       ...(stranded ? { total_bytes: stranded.sizeBytes, total_bytes_written: stranded.sizeBytes } : {}),
       ...(row.logPath ? { log_path: row.logPath } : {}),
       recovered_from_ledger: true,
+      ...(terminalResourceLimitFields(row) ?? {}),
       ...(inspected.filterError ? { filter_error: inspected.filterError } : {}),
       output_tail: output,
       output,
@@ -511,7 +558,9 @@ const JOB_LOG_DIED_MARKER_RE = new RegExp(
 );
 
 /** Parse the recovery marker that records a ledger-confirmed unobserved death. */
-export function parseJobLogDiedMarker(log: string): { status: 'failed'; state: string; exitCode: number | null } | null {
+export function parseJobLogDiedMarker(
+  log: string,
+): { status: 'failed'; state: string; exitCode: number | null } | null {
   const match = JOB_LOG_DIED_MARKER_RE.exec(log);
   if (!match) return null;
   return {
@@ -563,8 +612,7 @@ export function inspectStrandedJobLog(
   // A caller asking for a filter needs the whole bounded body so a match before
   // the retained tail is not silently reported as absent. Without a filter,
   // preserve the established tail-only recovery contract and memory bound.
-  const body =
-    typeof log === 'string' ? log : filter && log.content !== undefined ? log.content : log.tail;
+  const body = typeof log === 'string' ? log : filter && log.content !== undefined ? log.content : log.tail;
   const filtered = filterOutputLines(body, filter);
   const terminal = parseJobLogEndMarker(body);
   const died = terminal ? null : parseJobLogDiedMarker(body);
@@ -639,7 +687,7 @@ export function sampleJobCpu(
 export default defineTool({
   name: 'capability:bash_output',
   description:
-    'Read new output from a background shell job (started by capability:bash run_in_background:true). Accepts its process-local bash_id or durable task_id, so a successor can reattach after carry. Returns output since the last read plus status (running/completed/failed/…) and exit code.',
+    'Read new output from a background shell job (started by capability:bash run_in_background:true). Accepts its process-local bash_id or durable task_id, so a successor can reattach after carry. Returns output since the last read plus status (running/completed/failed/…) and exit code. A terminal task that reached its own cgroup TasksMax also returns failure_class=infrastructure-resource-limit, the measured/max task counts, and test_verdict=undetermined for a test run — never read that shell exit as a red suite.',
   guidance: {
     when: 'Poll a background job started by capability:bash. Use task_id after compaction/carry; it resolves through the durable task ledger and NEVER starts a replacement job. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
     notWhen:
@@ -836,6 +884,7 @@ export default defineTool({
         ...(ledgerRow?.taskId ? { task_id: ledgerRow.taskId } : {}),
       };
       const ledgerVerdict = diagnoseFromLedger(ledgerRow);
+      const recoveredResourceLimitFields = terminalResourceLimitFields(ledgerRow);
       // The ledger path is authoritative across workers. Only fall back to the
       // local deterministic path when the durable path is absent/unreadable;
       // otherwise a stale same-ID file on this worker can mask a growing log.
@@ -935,6 +984,7 @@ export default defineTool({
                   ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   recovered_from_log_marker: true,
+                  ...(recoveredResourceLimitFields ?? {}),
                   ...selfRedirectFields,
                   ...strandedOutput,
                   output: recoveredStrandedOutput,
@@ -961,6 +1011,7 @@ export default defineTool({
                   ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   recovered_from_died_marker: true,
+                  ...(recoveredResourceLimitFields ?? {}),
                   ...selfRedirectFields,
                   ...strandedOutput,
                   output: strandedLog.output,
@@ -972,9 +1023,7 @@ export default defineTool({
         }
 
         const scopeActive =
-          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow
-            ? await taskScopeIsActive(ledgerRow)
-            : false;
+          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow ? await taskScopeIsActive(ledgerRow) : false;
 
         if (ledgerVerdict.kind === 'confirmed_alive' || scopeActive) {
           // EI-20218784292451325: a durable liveness proof is a successful
@@ -1014,9 +1063,7 @@ export default defineTool({
                   status: 'running',
                   exit_code: null,
                   running: true,
-                  ...(processAlive?.pid ?? ledgerRow?.pid
-                    ? { pid: processAlive?.pid ?? ledgerRow?.pid }
-                    : {}),
+                  ...((processAlive?.pid ?? ledgerRow?.pid) ? { pid: processAlive?.pid ?? ledgerRow?.pid } : {}),
                   scope_unit: processAlive?.scopeUnit ?? ledgerRow?.scopeUnit ?? null,
                   recovered_from_ledger: true,
                   ...(scopeActive
@@ -1031,19 +1078,18 @@ export default defineTool({
                   ...selfRedirectFields,
                   ...strandedOutput,
                   output: recoveredStrandedOutput,
-                  advice:
-                    scopeActive
-                      ? `This job's in-memory tracking is gone, but its durable systemd service ${ledgerRow?.scopeUnit} is ` +
-                        'CONFIRMED ACTIVE — verified just now with systemd ActiveState, independent of the worker-local ' +
-                        'registry and PID/cgroup probe. It may be queued behind pc-heavy and still produce no new output. ' +
-                        'Do NOT re-run capability:bash — that would start a SECOND concurrent job and double the load. ' +
-                        `${growthAdvice}${readPathAdvice}. To stop ${confirmedAliveStopAdvice()}`
-                      : `This job's in-memory tracking is gone, but its real OS process (pid ${processAlive?.pid}` +
-                        `${processAlive?.scopeUnit ? `, systemd scope ${processAlive.scopeUnit}` : ''}) is CONFIRMED ` +
-                        'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
-                        'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
-                        `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
-                        confirmedAliveStopAdvice(),
+                  advice: scopeActive
+                    ? `This job's in-memory tracking is gone, but its durable systemd service ${ledgerRow?.scopeUnit} is ` +
+                      'CONFIRMED ACTIVE — verified just now with systemd ActiveState, independent of the worker-local ' +
+                      'registry and PID/cgroup probe. It may be queued behind pc-heavy and still produce no new output. ' +
+                      'Do NOT re-run capability:bash — that would start a SECOND concurrent job and double the load. ' +
+                      `${growthAdvice}${readPathAdvice}. To stop ${confirmedAliveStopAdvice()}`
+                    : `This job's in-memory tracking is gone, but its real OS process (pid ${processAlive?.pid}` +
+                      `${processAlive?.scopeUnit ? `, systemd scope ${processAlive.scopeUnit}` : ''}) is CONFIRMED ` +
+                      'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
+                      'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
+                      `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
+                      confirmedAliveStopAdvice(),
                 }),
               },
             ],
@@ -1111,6 +1157,7 @@ export default defineTool({
                   ok: false,
                   ...jobIdentity,
                   reason: 'job_process_gone',
+                  ...(recoveredResourceLimitFields ?? {}),
                   advice:
                     "This job's in-memory tracking is gone, and the durable task ledger CONFIRMS it actually ended " +
                     `(state=${ledgerVerdict.state}${exitDetail}) — not a guess.${strandedAdvice ?? ''} Re-run ` +
@@ -1222,6 +1269,11 @@ export default defineTool({
       exitCode: job.exitCode,
       log: readJobLogForVerdict(job),
     });
+    let terminalLedgerRow = attachedLedgerRow;
+    if (job.status !== 'running' && (!terminalLedgerRow || !isTerminalState(terminalLedgerRow.state)) && job.taskId) {
+      terminalLedgerRow = await getTask(job.taskId).catch(() => terminalLedgerRow);
+    }
+    const resourceLimitFields = terminalResourceLimitFields(terminalLedgerRow);
     return {
       content: [
         {
@@ -1237,6 +1289,7 @@ export default defineTool({
             log_path: job.logPath,
             ...cpu,
             ...(filterError ? { filter_error: filterError } : {}),
+            ...(resourceLimitFields ?? {}),
             ...(deadTypecheck
               ? {
                   typecheck_verdict: deadTypecheck.reason,
