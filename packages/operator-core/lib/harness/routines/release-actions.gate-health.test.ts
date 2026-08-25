@@ -36,8 +36,21 @@ type UnsafeCall = { query: string; params: unknown[] };
 const calls: UnsafeCall[] = [];
 let seededGh: Record<string, unknown> | null = null;
 
+/**
+ * The shapes this fake returns, as ONE named union.
+ *
+ * Stated explicitly rather than inferred: without it TypeScript widens `unsafe` to a union of
+ * three separate `Promise<…>` types, and a `vi.spyOn(...).mockImplementation(...)` returning
+ * `Promise<A | B | C>` is then not assignable to `Promise<A> | Promise<B> | Promise<C>`. The
+ * annotation is what lets a test override this fake per-case (see the fail-safe test below).
+ */
+type FakeSqlResult =
+  | Array<{ gh: Record<string, unknown> | null }>
+  | Array<{ streak: number; alerted: boolean }>
+  | { count: number };
+
 const fakeSql = {
-  unsafe: (query: string, params: unknown[] = []) => {
+  unsafe: (query: string, params: unknown[] = []): Promise<FakeSqlResult> => {
     calls.push({ query, params });
     if (/SELECT\s+metadata->'gate_health'/i.test(query)) {
       return Promise.resolve([{ gh: seededGh }]);
