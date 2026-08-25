@@ -596,6 +596,103 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
     }
 
 
+def cgroup_cpu(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
+               sample_sec=CPU_SAMPLE_SEC, usage_reader=None,
+               monotonic_fn=time.monotonic, sleep_fn=time.sleep):
+    """Bounded two-sample cgroup-v2 CPU ownership attribution.
+
+    ``cpu.stat:usage_usec`` is a cumulative counter for a cgroup and its
+    descendants. Sampling the delta (rather than reading ps lifetime averages)
+    identifies which workload is consuming CPU during the pressure window. The
+    capture is intentionally forensic: it does not add a new threshold or claim
+    that the top cgroup caused PSI starvation by itself.
+
+    ``usage_reader``, ``monotonic_fn`` and ``sleep_fn`` are narrow test seams;
+    production leaves them unset. A disappearing cgroup, unreadable counter, or
+    partial walk is omitted/marked rather than converted into a reassuring zero.
+    """
+    root = root or os.environ.get("PAPERCUSP_PERF_CGROUP_ROOT", "/sys/fs/cgroup")
+    deadline = monotonic_fn() + budget_sec
+
+    def read_usage(dirpath):
+        if usage_reader is not None:
+            try:
+                value = usage_reader(dirpath)
+                return int(value) if value is not None else None
+            except Exception:
+                return None
+        try:
+            with open(os.path.join(dirpath, "cpu.stat")) as fh:
+                for line in fh:
+                    key, _, value = line.partition(" ")
+                    if key == "usage_usec":
+                        return int(value.strip())
+        except Exception:
+            return None
+        return None
+
+    def direct_pids(dirpath):
+        try:
+            with open(os.path.join(dirpath, "cgroup.procs")) as fh:
+                return sum(1 for line in fh if line.strip().isdigit())
+        except Exception:
+            return None
+
+    def collect():
+        rows = {}
+        scanned = 0
+        partial = False
+        try:
+            walker = os.walk(root)
+            for dirpath, dirnames, _files in walker:
+                dirnames.sort()
+                if monotonic_fn() > deadline or scanned >= max_scanned:
+                    partial = True
+                    break
+                usage = read_usage(dirpath)
+                if usage is None:
+                    continue
+                scanned += 1
+                rows[dirpath] = usage
+        except Exception:
+            partial = True
+        return rows, scanned, partial
+
+    first, first_scanned, first_partial = collect()
+    sample_started = monotonic_fn()
+    sleep_fn(max(0, sample_sec))
+    elapsed = max(0.0, monotonic_fn() - sample_started)
+    second, second_scanned, second_partial = collect()
+
+    rows = []
+    elapsed_usec = elapsed * 1_000_000
+    for dirpath, before in first.items():
+        after = second.get(dirpath)
+        if after is None or after < before or elapsed_usec <= 0:
+            continue
+        delta_usec = after - before
+        relative = os.path.relpath(dirpath, root)
+        rows.append({
+            "path": "/" if relative == "." else "/" + relative,
+            "cpuUsageUsecDelta": delta_usec,
+            "cpuPct": round(delta_usec / elapsed_usec * 100.0, 1),
+            "directPids": direct_pids(dirpath),
+        })
+
+    rows.sort(key=lambda row: (-row["cpuPct"], row["path"]))
+    return {
+        "accounting": "cgroup-v2-inclusive-descendants",
+        "top": rows[:top_n],
+        "scannedCgroups": max(first_scanned, second_scanned),
+        "candidateCgroups": len(rows),
+        "maxScanned": max_scanned,
+        "maxRows": top_n,
+        "sampleSec": elapsed,
+        "budgetSec": budget_sec,
+        "partial": first_partial or second_partial,
+    }
+
+
 def host_state(la):
     """stable | loaded | wedge-suspect — pure-local loadavg proxy. An agent run
     should overwrite with the real event-loop-lag verdict when available."""
@@ -652,6 +749,7 @@ def main():
             "kopia": kopia(),
             "psi": psi(),
             "cgroupMemory": cgroup_memory(),
+            "cgroupCpu": cgroup_cpu(),
             "inotify": inotify(),
             "sessionDirs": session_dirs(),
             "_mcp_supplemented": {
