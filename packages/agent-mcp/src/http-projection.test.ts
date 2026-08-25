@@ -234,6 +234,7 @@ describe('handleHttpToolRequest', () => {
   it('attaches principal + tx when bearer resolves', async () => {
     let captured: { hasPrincipal: boolean; hasTx: boolean } = { hasPrincipal: false, hasTx: false };
     registerProjectedTool(makeTool({
+      needsWorkspaceTx: true,
       fn: async (_input, ctx) => {
         captured = { hasPrincipal: !!ctx.principal, hasTx: !!ctx.tx };
         return { content: [{ type: 'text', text: 'ok' }] };
