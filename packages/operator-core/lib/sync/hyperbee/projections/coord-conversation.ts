@@ -58,13 +58,24 @@ export interface CoordConversationRow {
    *  cost the ENTIRE conversation between versions, which is strictly worse
    *  than the missing attribution it was meant to fix. Absent === unattributed. */
   producer?: string | null;
+  /** The replacement conversation when this ask was retracted. OPTIONAL for the
+   *  same wire-compat reason as `producer`: a peer on older code omits the key,
+   *  and a required field would drop its rows entirely. */
+  superseded_by?: string | null;
+  /** epoch ms | null — when it was retracted. Optional, as above. */
+  superseded_at?: number | null;
   created_at: number;          // epoch ms
   updated_at: number;          // epoch ms
   resolved_at: number | null;  // epoch ms | null
 }
 
 const KINDS = new Set(['question', 'discussion']);
-const STATES = new Set(['open', 'resolved', 'closed']);
+// 'superseded' is FEDERATABLE (EI-21466427005733939). Its absence here was not a
+// missing column but a dropped ROW: the local table has allowed the state since
+// conversations-store.ts:490, so every retracted ask failed isCoordConversationRow
+// and decodeValue discarded it wholesale — a retraction was invisible to peers,
+// who could then answer a question that had been explicitly withdrawn.
+const STATES = new Set(['open', 'resolved', 'closed', 'superseded']);
 
 function isString(v: unknown): v is string {
   return typeof v === 'string';
@@ -94,6 +105,8 @@ export function isCoordConversationRow(input: unknown): input is CoordConversati
   // `undefined` is ACCEPTED here on purpose — see CoordConversationRow.producer.
   // An older peer omits the key entirely; rejecting that would drop the whole row.
   if (!(r.producer === undefined || isStringOrNull(r.producer))) return false;
+  if (!(r.superseded_by === undefined || isStringOrNull(r.superseded_by))) return false;
+  if (!(r.superseded_at === undefined || r.superseded_at === null || isFiniteNumber(r.superseded_at))) return false;
   if (!isFiniteNumber(r.created_at)) return false;
   if (!isFiniteNumber(r.updated_at)) return false;
   if (!(r.resolved_at === null || isFiniteNumber(r.resolved_at))) return false;
@@ -177,11 +190,14 @@ async function writeToPg(
     INSERT INTO harness_shared.coord_conversations
       (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, state,
        accepted_answer, capture_target, promoted_issue_id, producer,
+       superseded_by, superseded_at,
        created_at, updated_at, resolved_at, origin, author_pubkey, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.id}, ${row.kind}, 'harness', ${row.harness_slug}, ${row.asker_id},
        ${row.title}, ${row.body}, ${row.state}, ${row.accepted_answer}, ${row.capture_target},
        ${row.promoted_issue_id}, ${row.producer ?? null},
+       ${row.superseded_by ?? null},
+       ${row.superseded_at == null ? null : sql`to_timestamp(${row.superseded_at} / 1000.0)`},
        to_timestamp(${row.created_at} / 1000.0),
        to_timestamp(${row.updated_at} / 1000.0),
        ${row.resolved_at === null ? null : sql`to_timestamp(${row.resolved_at} / 1000.0)`},
@@ -202,6 +218,16 @@ async function writeToPg(
       -- silently re-opening EI-21462599108204160 across a mixed-version fleet.
       -- For an immutable field, preferring the non-null value is always correct.
       producer          = COALESCE(EXCLUDED.producer, coord_conversations.producer),
+      -- State-gated, mirroring setState's own CASE in conversations-store.ts:311.
+      -- Not a plain EXCLUDED and not a COALESCE: superseded_by legitimately goes
+      -- null -> id AND back to null when the state moves off 'superseded', so
+      -- COALESCE could never clear it, while a bare EXCLUDED would let a peer that
+      -- omits the key silently UN-supersede a retracted ask. Gating on the state
+      -- (which DOES federate) keeps the pair consistent with its own local rule.
+      -- An older peer sends state='superseded' with no id: the row still lands
+      -- retracted, just without the pointer — degraded, never wrong.
+      superseded_by     = CASE WHEN EXCLUDED.state = 'superseded' THEN EXCLUDED.superseded_by ELSE NULL END,
+      superseded_at     = CASE WHEN EXCLUDED.state = 'superseded' THEN EXCLUDED.superseded_at ELSE NULL END,
       updated_at        = EXCLUDED.updated_at,
       resolved_at       = EXCLUDED.resolved_at,
       origin            = EXCLUDED.origin,

@@ -99,6 +99,8 @@ describe('coord_conversations federation (real PG)', () => {
         capture_target    text,
         promoted_issue_id text,
         producer          text,   -- EI-21462599108204160 (mig 961): which tool opened it
+        superseded_by     text,        -- EI-21466427005733939: retraction must federate
+        superseded_at     timestamptz, -- EI-21466427005733939
         created_at        timestamptz DEFAULT now() NOT NULL,
         updated_at        timestamptz DEFAULT now() NOT NULL,
         resolved_at       timestamptz,
@@ -107,7 +109,7 @@ describe('coord_conversations federation (real PG)', () => {
         CONSTRAINT coord_conversations_pkey PRIMARY KEY (workspace_id, id),
         CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion'])),
         CONSTRAINT coord_conversations_scope_check CHECK (scope = ANY (ARRAY['operator','harness'])),
-        CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed'])),
+        CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed','superseded'])),
         CONSTRAINT coord_conversations_scope_slug_check CHECK (
             (scope = 'harness'  AND harness_slug IS NOT NULL AND harness_slug <> '')
          OR (scope = 'operator' AND harness_slug IS NULL))
@@ -268,6 +270,71 @@ describe('coord_conversations federation (real PG)', () => {
     expect(remaining).toHaveLength(0);
   });
 
+  it('a RETRACTED ask federates, and the state-gated upsert clears the pair when the state moves off (EI-21466427005733939)', async () => {
+    // Exercises the SQL the unit tests cannot reach: the to_timestamp conversion
+    // for superseded_at and the CASE gate in ON CONFLICT. Before this, a
+    // superseded row never even validated, so a peer could answer a withdrawn
+    // question.
+    const proj = buildCoordConversationProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    const base: CoordConversationRow = {
+      harness_slug: HARNESS,
+      id: 'conv-retracted',
+      kind: 'question',
+      scope: 'harness',
+      asker_id: 'peer-user',
+      producer: 'coord:ask-owner',
+      title: 'a question later withdrawn',
+      body: 'the premise changed',
+      state: 'open',
+      accepted_answer: null,
+      capture_target: null,
+      promoted_issue_id: null,
+      created_at: 1_700_000_000_000,
+      updated_at: 1_700_000_000_000,
+      resolved_at: null,
+    };
+    await proj.writeToPg(base, { authorPubkey: 'peerPubkeyBBB', origin: 'remote' });
+
+    await proj.writeToPg(
+      {
+        ...base,
+        state: 'superseded',
+        superseded_by: 'conv-replacement',
+        superseded_at: 1_700_000_300_000,
+        updated_at: 1_700_000_300_000,
+      },
+      { authorPubkey: 'peerPubkeyBBB', origin: 'remote' },
+    );
+    const [retracted] = await db.sql<{ state: string; superseded_by: string | null; superseded_at: Date | null }[]>`
+      SELECT state, superseded_by, superseded_at FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${WS} AND id = 'conv-retracted'`;
+    expect(retracted.state).toBe('superseded');
+    expect(retracted.superseded_by).toBe('conv-replacement');
+    expect(retracted.superseded_at).not.toBeNull();
+
+    // The CASE gate: the incoming row still CARRIES superseded_by, but a state
+    // that is not 'superseded' must clear the pair — mirroring setState's own
+    // rule locally, so federation cannot leave a stale retraction pointer.
+    await proj.writeToPg(
+      {
+        ...base,
+        state: 'open',
+        superseded_by: 'conv-replacement',
+        superseded_at: 1_700_000_300_000,
+        updated_at: 1_700_000_400_000,
+      },
+      { authorPubkey: 'peerPubkeyBBB', origin: 'remote' },
+    );
+    const [cleared] = await db.sql<{ state: string; superseded_by: string | null; superseded_at: Date | null }[]>`
+      SELECT state, superseded_by, superseded_at FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${WS} AND id = 'conv-retracted'`;
+    expect(cleared.state).toBe('open');
+    expect(cleared.superseded_by).toBeNull();
+    expect(cleared.superseded_at).toBeNull();
+
+    await proj.deleteFromPg('conv-retracted');
+  });
+
   it('two-peer convergence: a conversation written on A lands on B (origin=remote) via the real reshape→decode→project chain', async () => {
     // Peer B: a SEPARATE database with the post-144 coord_conversations shape.
     // (The Hyperswarm transport between A's outbox-drain and B's merge is proven
@@ -284,6 +351,7 @@ describe('coord_conversations federation (real PG)', () => {
           state text DEFAULT 'open' NOT NULL, accepted_answer text, accepted_post_id bigint,
           capture_target text, promoted_issue_id text,
           producer text, -- EI-21462599108204160 (mig 961): which tool opened it
+          superseded_by text, superseded_at timestamptz, -- EI-21466427005733939
           created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
           resolved_at timestamptz, origin text NOT NULL DEFAULT 'local', author_pubkey text,
           fed_ts bigint, -- EI-79 step 2 (mig 181): PG-level LWW guard column
@@ -291,7 +359,7 @@ describe('coord_conversations federation (real PG)', () => {
           CONSTRAINT coord_conversations_pkey PRIMARY KEY (workspace_id, id),
           CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion'])),
           CONSTRAINT coord_conversations_scope_check CHECK (scope = ANY (ARRAY['operator','harness'])),
-          CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed'])),
+          CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed','superseded'])),
           CONSTRAINT coord_conversations_scope_slug_check CHECK (
               (scope = 'harness' AND harness_slug IS NOT NULL AND harness_slug <> '')
            OR (scope = 'operator' AND harness_slug IS NULL))

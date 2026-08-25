@@ -61,6 +61,33 @@ describe('coord-conversation projection', () => {
     expect(isCoordConversationRow({ ...valid, producer: {} })).toBe(false);
   });
 
+  it('accepts a SUPERSEDED (retracted) conversation — the state federates (EI-21466427005733939)', () => {
+    // Before this, STATES omitted 'superseded', so a retracted ask failed the
+    // validator and decodeValue dropped the row. A peer never learned the
+    // question was withdrawn and could answer it.
+    const retracted: CoordConversationRow = {
+      ...valid,
+      state: 'superseded',
+      superseded_by: 'conv-replacement',
+      superseded_at: 1_700_000_200_000,
+    };
+    expect(isCoordConversationRow(retracted)).toBe(true);
+    expect(_testing.decodeValue(retracted)).toEqual(retracted);
+  });
+
+  it('accepts a superseded row from a peer that omits the superseded_* keys', () => {
+    // Wire-compat, same rule as producer: a peer on older code sends the state
+    // without the columns. It must still land RETRACTED (degraded, not dropped).
+    const oldPeerRetraction = { ...valid, state: 'superseded' };
+    expect('superseded_by' in oldPeerRetraction).toBe(false);
+    expect(isCoordConversationRow(oldPeerRetraction)).toBe(true);
+  });
+
+  it('still rejects superseded_* of the wrong TYPE', () => {
+    expect(isCoordConversationRow({ ...valid, superseded_by: 7 })).toBe(false);
+    expect(isCoordConversationRow({ ...valid, superseded_at: 'yesterday' })).toBe(false);
+  });
+
   it('accepts a resolved conversation with an accepted answer + timestamp', () => {
     const resolved: CoordConversationRow = {
       ...valid,

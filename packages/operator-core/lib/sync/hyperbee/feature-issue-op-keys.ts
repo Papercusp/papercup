@@ -518,6 +518,10 @@ function toConversationValue(row: Record<string, unknown>): CoordConversationRow
     capture_target: strOrNull(row.capture_target),
     producer: strOrNull(row.producer),
     promoted_issue_id: strOrNull(row.promoted_issue_id),
+    // EI-21466427005733939: a RETRACTED ask must be visible as retracted on every
+    // peer, or someone answers a question that was explicitly withdrawn.
+    superseded_by: strOrNull(row.superseded_by),
+    superseded_at: isoOrMsToEpochMs(row.superseded_at),
     created_at: isoOrMsToEpochMs(row.created_at) ?? 0,
     updated_at: isoOrMsToEpochMs(row.updated_at) ?? 0,
     resolved_at: isoOrMsToEpochMs(row.resolved_at),
