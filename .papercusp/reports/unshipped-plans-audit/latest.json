@@ -1,15 +1,15 @@
 {
   "schemaVersion": "unshipped-plans-audit-manifest-v2",
-  "generatedAt": "2026-08-25T08:09:52.971Z",
+  "generatedAt": "2026-08-25T08:27:14.427Z",
   "workspace": "papercusp-workspace",
   "scope": {
-    "snapshotStartedAt": "2026-08-25T08:09:29.613Z",
-    "snapshotFinishedAt": "2026-08-25T08:09:52.971Z",
-    "liveOwnershipMeasuredAt": "2026-08-25T08:09:29.676Z",
-    "nonterminalListedAtSnapshot": 615,
-    "materialized": 613,
+    "snapshotStartedAt": "2026-08-25T08:27:11.090Z",
+    "snapshotFinishedAt": "2026-08-25T08:27:14.427Z",
+    "liveOwnershipMeasuredAt": "2026-08-25T08:27:11.174Z",
+    "nonterminalListedAtSnapshot": 614,
+    "materialized": 612,
     "catalogFailures": 2,
-    "classifiedRows": 615,
+    "classifiedRows": 614,
     "rule": "Point-in-time, read-only audit. Ongoing plans are protected; no lifecycle, item, blocker, claim, assignment, or ownership state is changed.",
     "classifierRevision": 2,
     "classifierCorrection": "Plan-level supersession requires an explicit plan-subject assertion in the Now state; mentions of superseded decisions or sub-approaches never retire the whole plan."
@@ -59,11 +59,11 @@
       }
     },
     "ongoing-protected": {
-      "count": 18,
+      "count": 16,
       "byStatus": {
-        "ready": 13,
-        "draft": 2,
-        "active": 3
+        "ready": 12,
+        "active": 3,
+        "draft": 1
       }
     },
     "plan-item-reconcile": {
@@ -89,27 +89,27 @@
       }
     },
     "supersede-or-rescope-empty": {
-      "count": 111,
+      "count": 110,
       "byStatus": {
-        "active": 87,
+        "active": 86,
         "draft": 16,
         "ready": 8
       }
     },
     "supersede-or-review-deferred": {
-      "count": 38,
+      "count": 37,
       "byStatus": {
-        "ready": 19,
+        "ready": 18,
         "active": 9,
         "draft": 10
       }
     },
     "text-only-external-blocker": {
-      "count": 5,
+      "count": 6,
       "byStatus": {
         "active": 2,
         "ready": 2,
-        "draft": 1
+        "draft": 2
       }
     },
     "text-only-human-blocker": {
@@ -145,28 +145,28 @@
       }
     },
     "unblocked-partial-no-owner": {
-      "count": 42,
+      "count": 43,
       "byStatus": {
         "active": 20,
         "draft": 7,
-        "ready": 15
+        "ready": 16
       }
     },
     "unstarted-no-blocker": {
-      "count": 13,
+      "count": 14,
       "byStatus": {
+        "draft": 5,
         "ready": 7,
-        "draft": 4,
         "active": 2
       }
     }
   },
   "bands": {
-    "protected": 18,
+    "protected": 16,
     "closeoutOrReconcile": 229,
-    "supersedeOrRetire": 241,
-    "blockerClaims": 83,
-    "unblockedPartial": 42,
+    "supersedeOrRetire": 240,
+    "blockerClaims": 84,
+    "unblockedPartial": 43,
     "catalogResidue": 2
   },
   "closeoutEvidence": {
@@ -176,15 +176,15 @@
   "blockerEvidence": {
     "typedCurrent": 58,
     "typedWithStaleHint": 9,
-    "textOnly": 16
+    "textOnly": 17
   },
   "currentRegistryAtPublish": {
-    "total": 1364,
-    "active": 278,
-    "ready": 240,
-    "draft": 97,
-    "shipped": 565,
-    "superseded": 184
+    "total": 1365,
+    "active": 277,
+    "ready": 239,
+    "draft": 98,
+    "shipped": 566,
+    "superseded": 185
   },
   "rows": [
     {
@@ -7517,21 +7517,21 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-25",
-      "updated": "2026-08-25 04:00:01.090801-04",
+      "updated": "2026-08-25 04:26:23.525691-04",
       "itemTotal": 11,
-      "terminalPlanItems": 7,
-      "openPlanItems": 4,
+      "terminalPlanItems": 8,
+      "openPlanItems": 3,
       "workItemTotal": 11,
-      "openWorkItems": 4,
+      "openWorkItems": 3,
       "workItemStates": {
         "blocked": 2,
-        "open": 2,
-        "done": 7
+        "done": 8,
+        "open": 1
       },
       "itemCounts": {
         "blocked": 2,
-        "done": 7,
-        "todo": 2
+        "done": 8,
+        "todo": 1
       },
       "audit": null,
       "acceptanceRubric": null,
@@ -7548,7 +7548,7 @@
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "WI-41476: Re-run all prior residue plus the nine acceptance-rubric checks, correct the recovered plan's durable evidence, emit th…",
+          "intent": "[idle 12s] WI-41476: Re-run all prior residue plus the nine acceptance-rubric checks, correct the recovered plan's durable evidence, emit th…",
           "source": "declared-plan"
         }
       ],
@@ -7599,7 +7599,7 @@
           "ownerId": "su-b5090ea8-ecd9-415f-8612-5335847c3cc7",
           "ownerLabel": "su · su-b5090",
           "fleet": null,
-          "intent": "[idle 49m] Fix EI-21407741377036156 blocking WI-41515: reconcile canonical adequacy matching with grading-integrity rerunnable evidence",
+          "intent": "[idle 1h7m] Fix EI-21407741377036156 blocking WI-41515: reconcile canonical adequacy matching with grading-integrity rerunnable evidence",
           "source": "work-item-hold"
         }
       ],
@@ -7648,7 +7648,7 @@
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "WI-41476: Re-run all prior residue plus the nine acceptance-rubric checks, correct the recovered plan's durable evidence, emit th…",
+          "intent": "[idle 12s] WI-41476: Re-run all prior residue plus the nine acceptance-rubric checks, correct the recovered plan's durable evidence, emit th…",
           "source": "work-item-hold"
         }
       ],
@@ -7670,7 +7670,7 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-22",
-      "updated": "2026-08-25 03:21:43.14233-04",
+      "updated": "2026-08-25 04:27:01.484791-04",
       "itemTotal": 88,
       "terminalPlanItems": 63,
       "openPlanItems": 25,
@@ -7695,14 +7695,14 @@
           "ownerId": "su-2e168535-26bd-4410-8e8b-06ffa0713b31",
           "ownerLabel": "su · su-2e168",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "[idle 3h38m] Reconcile late stale BYOC blocker timeout before compaction; preserve holds and remain unassigned unless exact generation-3 gate fired",
+          "intent": "[idle 3h56m] Reconcile late stale BYOC blocker timeout before compaction; preserve holds and remain unassigned unless exact generation-3 gate fired",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-2e8b76e2-733a-4a27-82fd-ecb683a2e325",
           "ownerLabel": "su · su-2e8b7",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "Advance the BYOC fleet plan under D-053/D-093 authority; pull only fleet-admitted work and avoid duplicate checkpoint or feature-push actions.",
+          "intent": "[idle 17m] Advance the BYOC fleet plan under D-053/D-093 authority; pull only fleet-admitted work and avoid duplicate checkpoint or feature-push actions.",
           "source": "declared-plan"
         },
         {
@@ -7716,42 +7716,42 @@
           "ownerId": "su-5b92e2cb-443f-4dfe-868e-e73c57b9d655",
           "ownerLabel": "su · su-5b92e",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "[idle 3h36m] Reconcile out-of-order loop wake and live BYOC qualification/assignment state",
+          "intent": "[idle 3h54m] Reconcile out-of-order loop wake and live BYOC qualification/assignment state",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-7e12a68c-675b-48f8-8c64-c4c939cf0cbc",
           "ownerLabel": "su · su-7e12a",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 1h] Wind down predecessor BYOC fleet after scheduler authoritative pause; no claims or edits",
+          "intent": "[idle 1h18m] Wind down predecessor BYOC fleet after scheduler authoritative pause; no claims or edits",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-cc5e1819-d601-4198-beba-04b2f5b4e9b8",
           "ownerLabel": "su · su-cc5e1",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "[idle 18m] Reconcile BYOC claimable-work timeout and pull only newly admitted fleet-plan work",
+          "intent": "Reconcile second BYOC claimable timeout; pull only scheduler-admitted plan work",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-d50aa994-4e58-4d3c-8386-30c9eb4ba636",
           "ownerLabel": "su · su-d50aa",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "Reconcile timed-out D-053 gate await against live plan, WI-40086 progress, and fleet admission",
+          "intent": "[idle 16m] Reconcile timed-out D-053 gate await against live plan, WI-40086 progress, and fleet admission",
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-e9ee6d9c-cc6f-4805-8f64-8534a1c5b965",
-          "ownerLabel": "su · su-e9ee6",
-          "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "Standing down predecessor BYOC fleet after authoritative scheduler wind-down; zero claims and loop ended",
+          "ownerId": "su-df80a796-3ac0-4dc1-831b-faa7d507f3f2",
+          "ownerLabel": "su · su-df80a",
+          "fleet": "byoc-alpha-max-2026-08-23",
+          "intent": "Reconcile post-D052 global-gate timeout; verify serializer progress and accept only leader push",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-fe4f085d-2941-4ba6-af8e-6581274cda74",
           "ownerLabel": "su · su-fe4f0",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 1h34m] Standing down predecessor fleet byoc-cloud-workspaces-2026-08-22 after scheduler wind-down refusal; no claim acquired and no files touched.",
+          "intent": "[idle 1h52m] Standing down predecessor fleet byoc-cloud-workspaces-2026-08-22 after scheduler wind-down refusal; no claim acquired and no files touched.",
           "source": "declared-plan"
         }
       ],
@@ -7785,52 +7785,8 @@
         ],
         "staleHints": []
       },
-      "nowState": "ACTIVE/AUTO, ACCEPTANCE CLOSED. P-046 is dependency-ready but acceptance-gated under D-093; P-018 remains blocked by P-046. WI-40086 is open with live serializer su-87d8c; EI-21402283154473718, WI-41462, and WI-41596 are done. stable-candidate-related-gate D-052 permanently closes old generation 3 and forbids any 431d retry. D-053 is the sole post-D-052 authority and declares global `wi-40086-post-d052-qualified-current-tip` generation 1, currently declared/unfired. Corrected D-054 is explicit NON-AUTHORITY: its accidentally declared harness-scoped duplicate must remain unfired and MUST NEVER be awaited, emitted, aliased, or used. BYOC D-096 is RETRACTED and creates no authority. The D-053 route permits exactly one fresh current-tip checkpoint after its preflight; on authoritative exact green it requires green promotion/deploy and verified live parity before the global event fires. D-079 feature-push-only, D-093 acceptance, and D-094 headless-replacement rules remain binding.",
-      "nowNext": "su-87d8c executes only D-053's preflight and single new qualification route. Leader and benched members await only global `wi-40086-post-d052-qualified-current-tip`; never use the harness-scoped duplicate or old generation 3. On global fire, verify payload/current tip, promotion/deploy/live parity, then clear P-046 and admit the P-018 frontier only from that evidence. Until fire: no duplicate checkpoint, unrelated gate mutation, or feature push. Keep fleet transitions primary and the 1200s heartbeat fallback."
-    },
-    {
-      "slug": "derived-truth-audit-2026-08-21",
-      "title": "App-wide derived-truth audit: find every hand-authored code-describing surface, classify, and route to derive/pin/attest",
-      "harness": "papercusp",
-      "status": "ready",
-      "category": "ongoing-protected",
-      "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
-      "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
-      "created": "2026-08-21",
-      "updated": "2026-08-23 14:16:24.216004-04",
-      "itemTotal": 9,
-      "terminalPlanItems": 8,
-      "openPlanItems": 1,
-      "workItemTotal": 9,
-      "openWorkItems": 1,
-      "workItemStates": {
-        "done": 8,
-        "open": 1
-      },
-      "itemCounts": {
-        "done": 8,
-        "todo": 1
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [
-        {
-          "ownerId": "su-8ed3762c-4321-4b5f-8fab-0fbfd4a12470",
-          "ownerLabel": "su · su-8ed37",
-          "fleet": null,
-          "intent": "Monitor the sole D-053 post-D-052 generation-1 qualification run b543faf2 / invocation 3bf4b4dcce3b4b81b3761f6712a7dd35 without retry; bind terminal verdict, deploy parity, and global event",
-          "source": "work-item-hold"
-        }
-      ],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "EXECUTING [owner: Avi 2026-08-21] — session 9f294ece-b57a-4443-a1bb-ec808f618314 recovered into su-99ac2; AUTO active, fleet audit-calibration leadership taken, loop armed 120s. A1-A4 are already present in the canonical derived-truth-ladder projection and cite D-003/D-004. P-001 is done. P-002 is claimed as WI-40309; the inherited section classifies 11 of 30 surfaces with C-1..C-7. Current pass has opened the remaining source registries and validators; no new verdict is parked until every row is evidence-checked. WI-40302 remains open/unassigned with root cause proven and implementation + catalog-to-fires recurrence guard still required. WI-40304/05/06 remain open/unassigned residue follow-ups.",
-      "nowNext": "Continue P-002 from the remaining 19 surfaces (routines, blueprints, manifests, flags, claim specs, doc anchors, testing, lint baselines, chat/release/governor/generic/template registries); append evidence-checked rows, close P-002, then run P-003/P-004/P-005/P-008/P-009 and implement WI-40302's fix + standing reverse-direction guard."
+      "nowState": "ACTIVE/AUTO, ACCEPTANCE CLOSED. P-046 remains dependency-ready but acceptance-gated by D-093; P-018 remains blocked by P-046. Release-plan v145 D-055/D-056 now govern: D-053's sole candidate b543faf28c9ceaaa7bbeb1150aecce22eb62cfbd / run 6fa9b9ee-1a70-4bb2-b4cf-0cf313661d50 crashed before any suite when dependency generation timed out, so D-053 authority is consumed and MUST NEVER be retried, replaced, reinterpreted, promoted, deployed, or used for parity. Global `wi-40086-post-d052-qualified-current-tip` generation 1 remains declared but MUST remain unfired and is no longer an await target. D-052 keeps old generation 3 permanently closed; corrected D-054 keeps the harness-scoped duplicate permanently non-authoritative. Critical EI-21411600805243319 is live-owned by su-87d8c for the dependency-generation liveness/root-timeout fix and recurrence guard. EI-21408818446761858 is done with guarded announcement retirement plus concurrent logical-gate identity rejection (111 focused tests and operator-core TSC green). WI-41599/EI-21408554391241320 bench-retarget changes are committed on staging at 88297c28a with 35/35 unit, 55/55 PG integration, named-file TSC and diff-check green, but are not on main/deployed; live seven-member cleanup remains open. D-079 feature-push-only, D-093 acceptance, and D-094 headless-replacement rules remain binding.",
+      "nowNext": "Await only `work-item:done:EI-21411600805243319` plus fleet transition events; keep the 1200s leader loop as fallback. On blocker completion, read its root-cause/recurrence evidence and release-plan Decisions. Any qualification requires a NEW explicit decision, fresh serializer/action-instant preflight, then exact green → promotion/deploy → live parity; never reuse D-053 or fire its event. After the new bench writer is deployed, retarget the seven members and prove obsolete `work-item:done:WI-40086`/generation-3 benches are absent before closing WI-41599/EI-21408554391241320. Until then, no P-046 admission or BYOC E2E."
     },
     {
       "slug": "external-triggers-gmail-slack-2026-08-22",
@@ -7865,21 +7821,21 @@
           "ownerId": "su-16264482-0ec6-4d13-a6eb-5bb401901d57",
           "ownerLabel": "su · su-16264",
           "fleet": null,
-          "intent": "Continue WI-40939/P-013 by monitoring D-053 post-D052 qualification; preserve the live WI-40086 serializer lane unless demonstrably stranded",
+          "intent": "Continue WI-40939/P-013 fail-closed monitoring after terminal D-053; verify EI-21411600805243319 progress and authority before any qualification action",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-16264482-0ec6-4d13-a6eb-5bb401901d57",
           "ownerLabel": "su · su-16264",
           "fleet": null,
-          "intent": "Continue WI-40939/P-013 by monitoring D-053 post-D052 qualification; preserve the live WI-40086 serializer lane unless demonstrably stranded",
+          "intent": "Continue WI-40939/P-013 fail-closed monitoring after terminal D-053; verify EI-21411600805243319 progress and authority before any qualification action",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-16264482-0ec6-4d13-a6eb-5bb401901d57",
           "ownerLabel": "su · su-16264",
           "fleet": null,
-          "intent": "Continue WI-40939/P-013 by monitoring D-053 post-D052 qualification; preserve the live WI-40086 serializer lane unless demonstrably stranded",
+          "intent": "Continue WI-40939/P-013 fail-closed monitoring after terminal D-053; verify EI-21411600805243319 progress and authority before any qualification action",
           "source": "plan-item-claim"
         }
       ],
@@ -7934,7 +7890,7 @@
           "ownerId": "su-d460ca69-7199-44ea-a37e-c895735faf04",
           "ownerLabel": "su · su-d460c",
           "fleet": null,
-          "intent": "[idle 1h26m] Implement D-017/D-018 P-019 cross-client automatic-recovery success/fallback tests and CI recurrence guard against unconditional post-compaction orient wording.",
+          "intent": "[idle 1h44m] Implement D-017/D-018 P-019 cross-client automatic-recovery success/fallback tests and CI recurrence guard against unconditional post-compaction orient wording.",
           "source": "declared-plan"
         }
       ],
@@ -7946,59 +7902,6 @@
       },
       "nowState": "⛔ PLAN CLOSED — SHIPPED 2026-08-13. Nothing in this plan is actionable. Anything below this line is the last pre-shipped snapshot, kept for history: it described work that is finished or abandoned, so do not start from it. Read frontmatter `status`, not this prose, to learn whether a plan is live (stamped by plans:set-plan-status).\n\nAll SIX implementation items DONE and type-clean (P-001 agent-facing since_ts deleted from coord:inbox + coord:plan-events with consumers migrated; P-002 EI-9389 settle relocated server-side, which EXTENDS coverage to all CLIs rather than preserving it; P-003 coord:watermark-set retired, residue swept incl. the submodule's Overwatch MCP kit; P-004 turn-start orientation fold; P-005/P-006 measurement). Nothing left to BUILD.\n\nACCEPTANCE RUBRIC: RE-AUTHORED and VERIFIED GATE-VISIBLE (04:2xZ) — status=active, kind=acceptance, subjectPlan set, classRef=plan-class-feature-ship, 5 criteria with method+driftMarkers preserved byte-for-byte. This did NOT need the deploy: D-015's precondition was wrong and is corrected by D-016 — the requirement is a CURRENT-CODE DOOR, and :3170 staging is one.\n\n⚠ DO NOT GRADE IT YET, and the reason is NOT the old one. evaluatePlanAcceptanceGate accepts any COMPLETE, independent, non-synthesized scorecard and never inspects rating VALUES — so an all-'unknown' grading opens the gate. Criterion 5 (orientation-adoption-improves) is by design not measurable until the P-004 fold is live on :3070 PLUS a comparable post-deploy window. Grading now would ship this plan with its central thesis unverified. Filed as EI-20219715294870013; guard note on WI-38066.\n\nBLOCKER: the shared green gate (9 consecutive reds, ~20h). Root cause FOUND + FIXED by me — a prompt-weight budget breach, blender:grade-idea 1512 vs the 1500 cap, trimmed and verified 7/7 green. NOT tool-catalog drift (that theory retracted). Fix is committed at staging HEAD; the in-flight candidate a16e2c6b predates it, so expect one more red.",
       "nowNext": "none — the plan is shipped. (Pre-shipped next, no longer actionable: Wait for the candidate cut AFTER commit 54bc2039d2 (which carries the budget fix) to go green — do NOT fire a manual release:checkpoint-run into an in-flight run; then on green + :3070 deploy, run WI-38042's P-006 re-measurement (D-010/D-011 baseline: orient_per_1k_calls 2.83, pct_oriented 48.9%; SUCCESS = rate FALLS while coverage RISES), and only THEN have a non-implementer grade the rubric.)"
-    },
-    {
-      "slug": "learning-loop-backlog-triage-2026-08-22",
-      "title": "Triage the learning loop's unimplemented backlog — keep / discard / merge",
-      "harness": "papercusp",
-      "status": "draft",
-      "category": "ongoing-protected",
-      "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
-      "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
-      "created": "2026-08-22",
-      "updated": "2026-08-25 01:36:05.266015-04",
-      "itemTotal": 16,
-      "terminalPlanItems": 15,
-      "openPlanItems": 1,
-      "workItemTotal": 5,
-      "openWorkItems": 1,
-      "workItemStates": {
-        "done": 4,
-        "open": 1
-      },
-      "itemCounts": {
-        "dropped": 4,
-        "done": 11,
-        "todo": 1
-      },
-      "audit": {
-        "auditSeq": 1,
-        "createdAt": "2026-08-24 20:35:04.465222-04",
-        "auditedSha": "d2a71bfca575899c5e9beb93812c2292e06198b8",
-        "auditedItems": 16
-      },
-      "acceptanceRubric": {
-        "rubricId": "acceptance-learning-loop-backlog-triage-2026-08-22",
-        "status": "active"
-      },
-      "gateVerdict": null,
-      "owners": [
-        {
-          "ownerId": "su-0a2bb038-64d1-4795-b18f-8bcb24f59bc2",
-          "ownerLabel": "su · su-0a2bb",
-          "fleet": null,
-          "intent": "Monitor the sole D-053 qualification to terminal without duplicating successor mutations",
-          "source": "declared-plan"
-        }
-      ],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "REJECT stands (D-056, independent card EI-21389737020572400, grader su-8c02da6d). Do NOT ship. Status of the four clearing conditions, two settled and two blocked on a non-implementer:\n\n(1) EXECUTE THE D-004 MECHANISM — discard half DONE. 8 of the 9 verified discards are terminal (status='dropped') with a stated reason in terminal_completion_ref; verified by re-query, not by assertion. The 9th (EI-15119) is origin='remote' and STRUCTURALLY un-closable from this node — work_items:set_state refuses it as remote-authored (and returned an outer ok:true with an inner ok:false, so it was caught only by re-querying the row). D-058/D-059 record that status='dropped' is the correct terminal for these issue-family items (complete.ts:1507; all 28 'deprecated' rows are feature-family), and that D-004's payload.triage stamp was NEVER IMPLEMENTABLE when written — no agent tool could merge an arbitrary payload key onto an existing item, so the grader's headline `payload?triage = 0` measured a MISSING CAPABILITY, not a skipped step. That capability now exists (WI-41509, guarded payload merge on work_items:update, 61/61 green) but is committed-and-undeployed behind the deliberately PAUSED gate (D-042, WI-40086 live). So (1) is blocked on a DEPLOY, not on judgement. Do not force-deploy.\n\n(3) CLEARED — D-060.\n\n(2) and (4) require a NON-IMPLEMENTER and are therefore NOT the implementer chain's to close. Dispatched to su-8c02da6d 2026-08-25T05:30Z (msg mt888ec6, wake queued to a parked-but-wakeable session).",
-      "nowNext": "su-8c02da6d (non-implementer, authored the REJECT card) to close the two remaining conditions: (2) run the 20-item independent re-judge for reopened P-008 against harness_shared.triage_ledger, or DROP it with a stated reason recorded on the plan — a reasoned drop closes the condition as validly as a run; and (4) re-grade `retractions-are-recorded`, whose UNKNOWN D-056 attributes to surface reachability alone, recording explicitly WHICH surface was unreachable and whether it still is. CAUTION for (2): any past-tense liveness question must read the persisted routing record, never coord_presence — presence answers only NOW and is TTL-reaped, and is 84% false-positive on the provably-alive population (47 of 56 closed_answered), which is the artifact that forced a retraction on the sibling plan (D-007)."
     },
     {
       "slug": "loop-wake-reliability-2026-08-24",
@@ -8127,28 +8030,28 @@
           "ownerId": "su-1405afb7-e8c0-44f8-9119-e88fe978b57f",
           "ownerLabel": "su · su-1405a",
           "fleet": "nonp2p-bug-drain",
-          "intent": "[idle 22h38m] Resume nonp2p bug drain as fleet member after stand-down lift; pull the next scheduler-admitted item",
+          "intent": "[idle 22h55m] Resume nonp2p bug drain as fleet member after stand-down lift; pull the next scheduler-admitted item",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-549dda88-f0e5-4413-a675-127f2c6e5aed",
           "ownerLabel": "su · su-549dd",
           "fleet": null,
-          "intent": "[idle 22h34m] resume nonp2p bug-drain lane",
+          "intent": "[idle 22h51m] resume nonp2p bug-drain lane",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-8004efc4-926c-4160-a61f-79ffe6e0e5a1",
           "ownerLabel": "su · su-8004e",
           "fleet": null,
-          "intent": "[idle 21h18m] Resume nonp2p-bug-drain member lane after Avi lifted stand-down; reconcile live state and pull the next eligible bug.",
+          "intent": "[idle 21h36m] Resume nonp2p-bug-drain member lane after Avi lifted stand-down; reconcile live state and pull the next eligible bug.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-800ffeb0-f5de-4f61-9f3b-46fa85f4db8f",
           "ownerLabel": "su · su-800ff",
           "fleet": null,
-          "intent": "[idle 22h35m] Resume nonp2p bug-drain member lane after owner lifted stand-down",
+          "intent": "[idle 22h53m] Resume nonp2p bug-drain member lane after owner lifted stand-down",
           "source": "declared-plan"
         }
       ],
@@ -8213,14 +8116,14 @@
           "ownerId": "su-12c2d610-4885-4b80-b9bd-d39df8588e30",
           "ownerLabel": "su · su-12c2d",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Reconcile the live held claim EI-21392098254217280 after a stale loop delivery, then continue only that revision-47 bug; do not reclaim EI-21272296455025131.",
+          "intent": "Monitor-only reconciliation of bound plan nonp2p-bug-drain-fleet-2026-08-16; repeat exact rev47 checks; no claims, wakes, edits, checkpoints, deploys, or audits.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-23f5b141-8f0c-4791-a932-2d766542811f",
           "ownerLabel": "su · su-23f5b",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "EI-21394920667667604: work_items:checkpoint tool-call failure (append_checks_overflow)",
+          "intent": "Monitor-only reconciliation of nonp2p bug-drain fleet; preserve no-claim/no-wake/no-edit/no-checkpoint/no-deploy/no-audit walls.",
           "source": "declared-plan"
         },
         {
@@ -8228,6 +8131,13 @@
           "ownerLabel": "su · su-4298b",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
           "intent": "Reconcile nonp2p-bug-drain-fleet-2026-08-16 scope after stale cold-wake carry; monitor-only unless live plan now admits a claim",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-4b3f4479-dd24-4da6-92af-5264f6bc75d8",
+          "ownerLabel": "codex",
+          "fleet": "nonp2p-bug-drain-luna-max-20260820",
+          "intent": "",
           "source": "declared-plan"
         },
         {
@@ -8241,7 +8151,7 @@
           "ownerId": "su-50a456ac-704b-458a-951e-42c3d82ffe11",
           "ownerLabel": "su · su-50a45",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 21h7m] EI-21331232053861302: release:checkpoint-run waitForEligibility exceeds MCP request deadline",
+          "intent": "[idle 21h25m] EI-21331232053861302: release:checkpoint-run waitForEligibility exceeds MCP request deadline",
           "source": "declared-plan"
         },
         {
@@ -8255,7 +8165,7 @@
           "ownerId": "su-841b09c4-42f2-42dc-a411-436c8da33f40",
           "ownerLabel": "su · su-841b0",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 23h16m] Loop wake validation-only recheck for non-p2p drain; verify generation-2 gate, protected items, fleet leader health, claim-spec revision 47, and scheduler-admitted next work.",
+          "intent": "[idle 23h34m] Loop wake validation-only recheck for non-p2p drain; verify generation-2 gate, protected items, fleet leader health, claim-spec revision 47, and scheduler-admitted next work.",
           "source": "declared-plan"
         },
         {
@@ -8274,51 +8184,51 @@
         },
         {
           "ownerId": "su-a0b67ba2-e726-49ed-a9ef-2d4142e05e8b",
-          "ownerLabel": "su · su-a0b67",
+          "ownerLabel": "codex",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "EI-21365578331190155: work_items:checkpoint tool-call failure (append_checks_overflow)",
+          "intent": "",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-a52da6f4-5510-4751-9686-668b63314c2b",
           "ownerLabel": "su · su-a52da",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Read-only validation of EI-21387525449843790: verify delayed-vs-lost wake evidence and current pickup delivery behavior; no source edits or protected-item mutation.",
+          "intent": "[idle 26m] Read-only validation of EI-21387525449843790: verify delayed-vs-lost wake evidence and current pickup delivery behavior; no source edits or protected-item mutation.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-b73be5f2-3013-4d9e-acd3-4f94abef83fb",
           "ownerLabel": "su · su-b73be",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Implement EI-21379983011497058 from its durable checkpoint; preserve peer boundary excluding messages.ts and its tests.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-c39c2baa-cc6b-4960-bb2c-9e8b1b7a2e84",
-          "ownerLabel": "su · su-c39c2",
-          "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Resume nonp2p bug-drain member loop; reconcile live fleet/spec state before pulling next admitted rev47 bug.",
+          "intent": "Monitor-only reconciliation of the nonp2p bug-drain fleet and held EI-21379983011497058; verify exact rev47 live state with no claim, wake, edit, checkpoint, deploy, or audit mutation.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-ced63f75-8b69-43c6-a7c9-4b453e7b8bcc",
           "ownerLabel": "su · su-ced63",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 3h39m] Reconcile live non-p2p bug-drain monitor state; preserve protected-item and no-mutation walls until current plan state says otherwise.",
+          "intent": "[idle 3h57m] Reconcile live non-p2p bug-drain monitor state; preserve protected-item and no-mutation walls until current plan state says otherwise.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-cf19010e-8f19-4637-bcaf-c3f3bc7a59b5",
           "ownerLabel": "su · su-cf190",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 20h53m] EI-21329733885767129: Papercusp MCP transport send errors block checkpoint and compaction writes",
+          "intent": "[idle 21h11m] EI-21329733885767129: Papercusp MCP transport send errors block checkpoint and compaction writes",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-d2130409-0455-47ef-b148-f65b0a239cba",
+          "ownerLabel": "su · su-d2130",
+          "fleet": "nonp2p-bug-drain-luna-max-20260820",
+          "intent": "EI-21335893933674640: work_items:checkpoint tool-call failure (append_checks_overflow)",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-dcce6484-41bb-47ae-a01b-6da63f12556b",
           "ownerLabel": "su · su-dcce6",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 3h40m] Fresh loop wake: reconcile nonp2p bug-drain fleet state and advance only the currently admitted lane",
+          "intent": "[idle 3h57m] Fresh loop wake: reconcile nonp2p bug-drain fleet state and advance only the currently admitted lane",
           "source": "declared-plan"
         },
         {
@@ -8347,21 +8257,20 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-24",
-      "updated": "2026-08-25 03:26:56.000765-04",
+      "updated": "2026-08-25 04:18:56.635183-04",
       "itemTotal": 23,
-      "terminalPlanItems": 18,
-      "openPlanItems": 5,
-      "workItemTotal": 19,
+      "terminalPlanItems": 19,
+      "openPlanItems": 4,
+      "workItemTotal": 20,
       "openWorkItems": 1,
       "workItemStates": {
-        "done": 17,
-        "open": 1,
+        "done": 18,
+        "wip": 1,
         "dropped": 1
       },
       "itemCounts": {
-        "done": 17,
+        "done": 18,
         "dropped": 1,
-        "wip": 1,
         "todo": 1,
         "blocked": 3
       },
@@ -8381,21 +8290,21 @@
           "ownerId": "su-b1fa044b-80d4-4d87-8a45-e19e662ea462",
           "ownerLabel": "su · su-b1fa0",
           "fleet": null,
-          "intent": "Implement and verify WI-41603 P-019 Agent Chat primary-surface integration",
+          "intent": "WI-41606 / P-020: audit, implement, and verify full interactive Agent Chat behavior fidelity on the owned loop",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-b1fa044b-80d4-4d87-8a45-e19e662ea462",
           "ownerLabel": "su · su-b1fa0",
           "fleet": null,
-          "intent": "Implement and verify WI-41603 P-019 Agent Chat primary-surface integration",
+          "intent": "WI-41606 / P-020: audit, implement, and verify full interactive Agent Chat behavior fidelity on the owned loop",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-b1fa044b-80d4-4d87-8a45-e19e662ea462",
           "ownerLabel": "su · su-b1fa0",
           "fleet": null,
-          "intent": "Implement and verify WI-41603 P-019 Agent Chat primary-surface integration",
+          "intent": "WI-41606 / P-020: audit, implement, and verify full interactive Agent Chat behavior fidelity on the owned loop",
           "source": "plan-item-claim"
         }
       ],
@@ -8403,7 +8312,6 @@
         "typedBlocked": true,
         "typedHuman": false,
         "refs": [
-          "P-019",
           "P-020",
           "P-021",
           "P-022"
@@ -8454,7 +8362,7 @@
           "ownerId": "su-995c4bec-7464-4b3c-aab6-ba82f529118d",
           "ownerLabel": "su · su-995c4",
           "fleet": "finish-plan-acceptance-20260813",
-          "intent": "[idle 13m] Lead finish-plan-acceptance-20260813; reconcile D-053 post-D-052 generation-1 timeout for WI-40532",
+          "intent": "Lead finish-plan-acceptance-20260813; reconcile D-053 global generation-1 timeout and compact at clean boundary",
           "source": "declared-plan"
         }
       ],
@@ -8476,20 +8384,19 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-25",
-      "updated": "2026-08-25 03:58:15.656691-04",
+      "updated": "2026-08-25 04:22:37.439052-04",
       "itemTotal": 11,
-      "terminalPlanItems": 8,
-      "openPlanItems": 3,
+      "terminalPlanItems": 9,
+      "openPlanItems": 2,
       "workItemTotal": 11,
-      "openWorkItems": 3,
+      "openWorkItems": 2,
       "workItemStates": {
-        "done": 8,
-        "open": 2,
+        "done": 9,
+        "open": 1,
         "blocked": 1
       },
       "itemCounts": {
-        "done": 8,
-        "todo": 1,
+        "done": 9,
         "wip": 1,
         "blocked": 1
       },
@@ -8503,14 +8410,20 @@
           "fleet": null,
           "intent": "P-010 / WI-41541: author the operator documentation for the ratified-design comparison contract (workflow, provider contract, troubleshooting, policy revision, retention, disable path), validated against implemented CLI/MCP/CI behavior.",
           "source": "work-item-hold"
+        },
+        {
+          "ownerId": "su-884f6b9f-ce6c-49de-9869-66a2915e3924",
+          "ownerLabel": "su · su-884f6",
+          "fleet": null,
+          "intent": "P-010 / WI-41541: author the operator documentation for the ratified-design comparison contract (workflow, provider contract, troubleshooting, policy revision, retention, disable path), validated against implemented CLI/MCP/CI behavior.",
+          "source": "plan-item-claim"
         }
       ],
       "blocker": {
         "typedBlocked": true,
         "typedHuman": false,
         "refs": [
-          "P-009",
-          "P-010"
+          "P-009"
         ],
         "staleHints": []
       },
@@ -8526,7 +8439,7 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-23",
-      "updated": "2026-08-25 03:24:39.934501-04",
+      "updated": "2026-08-25 04:12:01.123448-04",
       "itemTotal": 15,
       "terminalPlanItems": 12,
       "openPlanItems": 3,
@@ -8550,35 +8463,63 @@
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "WI-41252 P-009: enforce D-052 singleton guard; sample canonical verifier admission and run direct-pure then direct-stateful only when fully clear",
+          "intent": "WI-41252 P-009: validate canonical verifier admission and run current-HEAD direct-pure then direct-stateful only under D-052/D-053",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "WI-41252 P-009: enforce D-052 singleton guard; sample canonical verifier admission and run direct-pure then direct-stateful only when fully clear",
+          "intent": "WI-41252 P-009: validate canonical verifier admission and run current-HEAD direct-pure then direct-stateful only under D-052/D-053",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-56efaf9b-2158-49b3-a1ec-53a183155047",
           "ownerLabel": "su · su-56efa",
           "fleet": null,
-          "intent": "WI-41252 P-009: enforce D-052 singleton guard; sample canonical verifier admission and run direct-pure then direct-stateful only when fully clear",
+          "intent": "WI-41252 P-009: validate canonical verifier admission and run current-HEAD direct-pure then direct-stateful only under D-052/D-053",
+          "source": "plan-item-claim"
+        },
+        {
+          "ownerId": "su-5b6f6687-d376-4f32-8691-c8328aef8201",
+          "ownerLabel": "su · su-5b6f6",
+          "fleet": null,
+          "intent": "Reconcile Plan v145 terminal D-052/D-053 state; supervise WI-40899 while awaiting EI-21411600805243319 and enforce no retry/release/event mutation",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-5b6f6687-d376-4f32-8691-c8328aef8201",
+          "ownerLabel": "su · su-5b6f6",
+          "fleet": null,
+          "intent": "Reconcile Plan v145 terminal D-052/D-053 state; supervise WI-40899 while awaiting EI-21411600805243319 and enforce no retry/release/event mutation",
+          "source": "work-item-hold"
+        },
+        {
+          "ownerId": "su-5b6f6687-d376-4f32-8691-c8328aef8201",
+          "ownerLabel": "su · su-5b6f6",
+          "fleet": null,
+          "intent": "Reconcile Plan v145 terminal D-052/D-053 state; supervise WI-40899 while awaiting EI-21411600805243319 and enforce no retry/release/event mutation",
           "source": "plan-item-claim"
         },
         {
           "ownerId": "su-71d10c80-4dd9-492b-892b-07577da8e3ec",
           "ownerLabel": "su · su-71d10",
           "fleet": null,
-          "intent": "[idle 3h7m] Supervise the exact D-051 checkpoint candidate to terminal verdict without retry",
+          "intent": "[idle 3h25m] Supervise the exact D-051 checkpoint candidate to terminal verdict without retry",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-895c83ee-c2bc-49f4-b867-f1dbe36bb29f",
+          "ownerLabel": "su · su-895c8",
+          "fleet": null,
+          "intent": "Reconcile timed-out D-051/D-052 checkpoint waits, answer directed messages, and preserve exact one-shot authority",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-8ed3762c-4321-4b5f-8fab-0fbfd4a12470",
           "ownerLabel": "su · su-8ed37",
           "fleet": null,
-          "intent": "Monitor the sole D-053 post-D-052 generation-1 qualification run b543faf2 / invocation 3bf4b4dcce3b4b81b3761f6712a7dd35 without retry; bind terminal verdict, deploy parity, and global event",
+          "intent": "[idle 12m] Monitor the sole D-053 post-D-052 generation-1 qualification run b543faf2 / invocation 3bf4b4dcce3b4b81b3761f6712a7dd35 without retry; bind terminal verdict, deploy parity, and global event",
           "source": "declared-plan"
         },
         {
@@ -8592,21 +8533,21 @@
           "ownerId": "su-f00c1a43-4ffb-4ef1-a90e-afe6aaea88c6",
           "ownerLabel": "su · su-f00c1",
           "fleet": null,
-          "intent": "[idle 14h25m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
+          "intent": "[idle 14h43m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-f00c1a43-4ffb-4ef1-a90e-afe6aaea88c6",
           "ownerLabel": "su · su-f00c1",
           "fleet": null,
-          "intent": "[idle 14h25m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
+          "intent": "[idle 14h43m] D-018/D-019 sole serializer: preserve exact candidate 83805ce3 without refire, verify terminal, require two Stable-C samples, emit generation-3 once, deploy/parity, notify WI-41332 owner, then continue BYOC.",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-fa443a90-fe85-48cf-8cff-17a36022141a",
           "ownerLabel": "su · su-fa443",
           "fleet": null,
-          "intent": "Control-generation-33 terminal D-053 audit: bind immutable b543faf2 infra-inconclusive marker, verify no release/event mutation, and ensure serializer records permanent no-retry disposition",
+          "intent": "[idle 11m] Control-generation-33 terminal D-053 audit: bind immutable b543faf2 infra-inconclusive marker, verify no release/event mutation, and ensure serializer records permanent no-retry disposition",
           "source": "declared-plan"
         }
       ],
@@ -8618,8 +8559,8 @@
         ],
         "staleHints": []
       },
-      "nowState": "D-052 remains terminal fail-closed: D-051 invocation 20231459 / run e94d3ef3-dd67-43ae-a2a4-ff2ab91cb271 / candidate 431d6f0b are consumed infra-inconclusive and MUST NEVER be retried or reinterpreted; old qualified-current-tip generation 3 remains permanently non-authoritative. WI-41462 and EI-21402283154473718 are committed-done with fresh affected/Cargo/type evidence. D-053 exclusively authorizes exactly one NEW prospective current-tip qualification after its action-instant ancestry/egress/serializer preflight. D-054 is correction/non-authority: the accidentally declared harness-scoped post-D052 event is superseded and MUST NEVER be awaited/emitted/aliased. The sole controlling rendezvous is global `wi-40086-post-d052-qualified-current-tip` generation 1, declared/unfired by the live WI-40086 serializer.",
-      "nowNext": "Sole WI-40086 serializer completes D-053 egress/preflight and invokes at most one new checkpoint. Any non-green outcome consumes authority and fails closed. Only after exact-green promotion, safe green-only deploy, and verified live parity may it fire global `wi-40086-post-d052-qualified-current-tip` generation 1; coordinator then independently verifies release/parity and terminal ledgers."
+      "nowState": "D-052 remains terminal fail-closed and old generation 3 remains permanently non-authoritative. D-053's distinct singleton is also terminal fail-closed under D-055/D-056: exact candidate b543faf28c9ceaaa7bbeb1150aecce22eb62cfbd / runId 6fa9b9ee-1a70-4bb2-b4cf-0cf313661d50 / invocation 3bf4b4dcce3b4b81b3761f6712a7dd35 ended advanced=false, green=null, reason=not-green, crashed=true before any suite. Dependency generation timed out while building generation v1-67682062… from a stable live snapshot; systemd recorded exit status 1. The marker preserved candidateSource=tip, so the provenance repair held. No verdict, green-pin advance, deploy, or parity occurred. D-053 authority is consumed and MUST NEVER be retried/replaced/reinterpreted. D-054's harness-scoped event remains correction/non-authority; global `wi-40086-post-d052-qualified-current-tip` generation 1 remains declared and MUST remain unfired for this route.",
+      "nowNext": "Live owner fixes critical EI-21411600805243319 at the dependency-generation liveness/timeout root, adds recurrence coverage, and verifies the affected radius. Coordinator awaits that work-item—not the unfireable D-053 global gate—and verifies no release/event mutation. Any future qualification requires a NEW explicit plan decision after the durable fix and fresh serializer/action-instant preflight; no implicit retry authority exists."
     },
     {
       "slug": "work-queue-admission-and-bulk-dedup-2026-08-24",
@@ -8630,7 +8571,7 @@
       "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
       "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
       "created": "2026-08-24",
-      "updated": "2026-08-25 04:08:05.847541-04",
+      "updated": "2026-08-25 04:16:04.036879-04",
       "itemTotal": 11,
       "terminalPlanItems": 1,
       "openPlanItems": 10,
@@ -8652,28 +8593,21 @@
           "ownerId": "su-2dbe26f2-91e5-4a7d-8ad9-904fa89df2d6",
           "ownerLabel": "su · su-2dbe2",
           "fleet": null,
-          "intent": "Continue WI-41382/WI-41383/WI-41384: implement and run the work-queue admission census, then promoter, under the audited plan",
+          "intent": "Implement WI-41382 P-001 census/shard-map runtime and baseline run; then finish P-002/P-003",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-2dbe26f2-91e5-4a7d-8ad9-904fa89df2d6",
           "ownerLabel": "su · su-2dbe2",
           "fleet": null,
-          "intent": "Continue WI-41382/WI-41383/WI-41384: implement and run the work-queue admission census, then promoter, under the audited plan",
+          "intent": "Implement WI-41382 P-001 census/shard-map runtime and baseline run; then finish P-002/P-003",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-5861b198-33ee-447c-a7b8-dc39fce17810",
-          "ownerLabel": "su · su-5861b",
+          "ownerLabel": "codex",
           "fleet": null,
-          "intent": "[idle 6m] Implement work-queue admission and bulk dedup backend core/tests under AUTO self route",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-5861b198-33ee-447c-a7b8-dc39fce17810",
-          "ownerLabel": "su · su-5861b",
-          "fleet": null,
-          "intent": "[idle 6m] Implement work-queue admission and bulk dedup backend core/tests under AUTO self route",
+          "intent": "",
           "source": "plan-item-claim"
         }
       ],
@@ -8687,8 +8621,8 @@
           "stored status is 'dropped' but blocked-by dependency (P-006) has not resolved — effectiveStatus is 'dropped' because a completed item cannot be blocked. The edge is likely stale, or was only partly required (the dependent finished against a partial result). Drop or repoint the blocked-by edge with plans:set-content if it no longer holds; if the dependency really was required in full, this item may have been closed early."
         ]
       },
-      "nowState": "IMPLEMENTATION STARTED 2026-08-24 (owner-directed solo, AUTO). DONE: (1) migration 944 WRITTEN + forward-compat linted + ARMED at libs/papercusp/libs/db/sql/944-work-queue-admission-dedup.sql — adds work_items.admission/admitted_at/admitted_by (NOT VALID check, no table scan) + partial pending index + 4 tables: dedup_edges, dedup_adjudications, admission_runs (stats ledger), dedup_shard_map. (2) Admission predicates isAdmitted/admittedWhereSql/admittedWhereSqlWi added to packages/operator-core/lib/work-items-admission.ts — deliberately EXTENDING the existing G2 module, not a parallel gate. (3) Guard test work-items-admission-gate.test.ts: 7/7 pass, incl. two permanently-in-tree falsifiability controls + a calibration case. BLOCKED ON: migration apply — work_items DDL needs ACCESS EXCLUSIVE and pg_dump holds AccessShareLock on every table for its whole run. Not applied yet (verified: 0 admission cols, 0 new tables, 0 schema_migrations row). The file is ARMED so boot auto-apply/db:migrate will land it when locks clear. FOUND + FIXED EN ROUTE: two runaway backends at 9.4h/9.1h on a recursive plan-DAG query held locks on work_items and blocked ALL DDL — filed WI-41392 (major) and cancelled them (pg_cancel_backend, read-only, no data loss). KEY RECON REVERSAL recorded as a decision: _create-core.ts ALREADY implements admissionIdentity + lexical/semantic dedup legs + exact-identity auto-fold via appendWorkItemOccurrence. The gap is NOT detection — it is that unresolved candidates are returned to the FILING AGENT as similarOpen, which is exactly what the owner ruled against. P-002/P-003 re-scoped accordingly.",
-      "nowNext": "Apply migration 944 once pg_dump clears (retry db:migrate; verify 3 cols + 4 tables + schema_migrations row before proceeding — an in-flight retry may already have landed it, so VERIFY, never blind-retry: the ADD CONSTRAINT is not idempotent). Then P-002: stamp admission at the _create-core choke point + stop returning similarOpen to filing agents, persisting candidates for the promoter instead. Then P-003 promoter reusing admissionIdentity/findFulltextLexicalDupes/appendWorkItemOccurrence rather than new equivalents."
+      "nowState": "RECOVERED 2026-08-25 in owner-directed AUTO/self continuation. Verified live: migration 944/946 schema is applied; P-002 born-pending + claim/list/dispatch admission floors are committed and focused guards are green (22/22 plus real-PG scheduler parity 24/24). No admission/census/bulk run has occurred: admission_runs contains zero papercusp rows with a passing table-exists positive control; no runtime writer exists yet. WI-41382/WI-41383/WI-41384 transferred from the ended cold successor to su-2dbe2. P-001/P-003 remain unimplemented. Migration allocator reserved 952-work-queue-admission-runtime.sql.DRAFT; prior 949 reservation is stale because unrelated migration 949 is committed (filed EI-21412047988807166).",
+      "nowNext": "Implement migration 952 plus the reusable P-001 census/shard-map runtime and real-Postgres recurrence guards under explicit manual locks. Apply/verify the migration, run the baseline census once, and record the first owner-inspectable admission_runs row. Then close P-001/P-002 with evidence and continue P-003 promoter + 30-minute durable cadence."
     },
     {
       "slug": "workflow-trigger-public-release-readiness-2026-08-24",
@@ -8724,14 +8658,14 @@
           "ownerId": "su-f3ce483f-b013-4bb7-a56c-d483646eaaeb",
           "ownerLabel": "su · su-f3ce4",
           "fleet": null,
-          "intent": "[idle 22m] Resume AUTO P-005 closure on WI-41584 after cold carry; reconcile WI-41600 independent grader pickup before author verdict",
+          "intent": "[idle 40m] Resume AUTO P-005 closure on WI-41584 after cold carry; reconcile WI-41600 independent grader pickup before author verdict",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-f3ce483f-b013-4bb7-a56c-d483646eaaeb",
           "ownerLabel": "su · su-f3ce4",
           "fleet": null,
-          "intent": "[idle 22m] Resume AUTO P-005 closure on WI-41584 after cold carry; reconcile WI-41600 independent grader pickup before author verdict",
+          "intent": "[idle 40m] Resume AUTO P-005 closure on WI-41584 after cold carry; reconcile WI-41600 independent grader pickup before author verdict",
           "source": "work-item-hold"
         }
       ],
@@ -12296,36 +12230,6 @@
       "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
     },
     {
-      "slug": "acceptance-gate-resilience-torn-sweeps-2026-08-14",
-      "title": "Acceptance — gate resilience vs torn git-sync sweeps",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "supersede-or-rescope-empty",
-      "reason": "The plan has no executable plan items or linked work.",
-      "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
-      "created": "2026-08-25",
-      "updated": "2026-08-25 03:57:39.804343-04",
-      "itemTotal": 0,
-      "terminalPlanItems": 0,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {},
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Rubric-template plan (template:rubric). Its structured fields (characteristic,\ncriteria, ratingScale, methodRef) live in `template_data`, queried via\nrubrics:list/get/search; this body is the narrative model/method context. Status\n`active` ⇒ a active rubric.",
-      "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
-    },
-    {
       "slug": "acceptance-hud-pot-scope-and-dropdown-2026-08-13",
       "title": "HUD pot scope and viewport-bounded selector acceptance",
       "harness": "papercusp",
@@ -15802,51 +15706,6 @@
       "nowNext": "Owner reviews the plan (WHAT/HOW nod) — in particular D-007 (keep the write-tier gate? recommended) and the candidate-scope choice (D-009). NO code until approved. On approval: plans:start, then Phase 1 (calibrate T,M on real+adversarial corpora) → Phase 2 (build resolver in tooldef + wire getByMcpName + flag + tests) → Phase 3 (live-verify on an ornith session + ship flag ON)."
     },
     {
-      "slug": "gate-resilience-vs-torn-git-sync-sweeps-retry-failing-files-2026-08-14",
-      "title": "Gate resilience vs torn git-sync sweeps: retry failing files at next sha before verdicting red (or per-package atomic sweeps)",
-      "harness": "papercusp",
-      "status": "ready",
-      "category": "supersede-or-review-deferred",
-      "reason": "The plan describes itself as deferred, paused, awaiting review, or designed but not approved/built.",
-      "recommendation": "Supersede unless the proposal is explicitly re-approved and re-owned now.",
-      "created": "2026-08-14",
-      "updated": "2026-08-25 03:41:18.291091-04",
-      "itemTotal": 7,
-      "terminalPlanItems": 6,
-      "openPlanItems": 1,
-      "workItemTotal": 3,
-      "openWorkItems": 1,
-      "workItemStates": {
-        "open": 1,
-        "done": 2
-      },
-      "itemCounts": {
-        "dropped": 1,
-        "done": 5,
-        "wip": 1
-      },
-      "audit": {
-        "auditSeq": 2,
-        "createdAt": "2026-08-25 03:02:24.209783-04",
-        "auditedSha": "2e527d5ae6bad5189a26c0a966bd2c78d335e40f",
-        "auditedItems": 6
-      },
-      "acceptanceRubric": {
-        "rubricId": "acceptance-gate-resilience-torn-sweeps-2026-08-14",
-        "status": "active"
-      },
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "✅ PLAN GREENLIT — APPROVED 2026-08-18. This plan is LIVE: its open items are real, claimable work and its Design is a ratified spec. Anything below this line is the pre-greenlight draft note, kept for history — it described the plan while it was still awaiting review, so do NOT read it as a reason to leave this work alone or to re-verify that the plan was approved. Read frontmatter `status`, not this prose, to learn whether a plan is live (stamped by plans:set-plan-status).\n\nDraft — autonomously generated by the Blender loop (hive-creative-ideation, D-002/D-010). Awaiting Mug/owner triage; not active until greenlit.",
-      "nowNext": "Review is COMPLETE — this plan is greenlit. Work its open items (see `plans:items`; a ratified plan's open items auto-promote to work-items on start). (Pre-greenlight next, no longer actionable: Mug reviews this proposal in the Mug↔Blender feedback loop: it promotes it to greenlight (ready), or `coord:send`s plan-keyed feedback to revise. Iterate while making good progress; if the premise will not reach ready, either party deprecates it with a `learnings` observation (no dead ends).)"
-    },
-    {
       "slug": "inference-gateway-audit-2026-06-23",
       "title": "Inference gateway — full-system audit (bugs + gaps) + the two thundering-herd fixes",
       "harness": "papercusp",
@@ -16735,6 +16594,51 @@
       },
       "nowState": "AUTO on [owner:Avi 2026-08-12: \"put yourself on auto mode and continue where you left off\"].\n\n✅ PHASE 3 IS DONE. BOTH runs graded by two DIFFERENT non-authors:\n- run #3 EI-20203104876436965 (su-850348fc) — 3 exemplary / 11 pass / 4 partial / 1 fail / 1 unknown + 5 notExercised\n- run #4 EI-20207296832797611 (su-38b44e43) — 7 exemplary / 10 pass / 4 partial / 1 fail / 3 unknown\nP-012 done, P-014 CLOSED (D-025): releaseGating stays FALSE. D-022 APPLIED via rubrics:amend — the stale 'rate the goal_id leg unknown' instruction is deleted and replaced with goal-scoped-denominator guidance (verified: stale text absent, new text at offset 1432).\n\n⚠⚠ THE HEADLINE IS A DEFECT IN MY LAUNCH PATH, NOT IN EITHER SUBJECT. Both runs fail/partial mode-and-subject-integrity because NO agent_modes goal row was ever written. Run #4's grader measured it with NO workspace predicate — the strongest of the three measurements, ruling out a filter hiding the row. My D-017 claimed the opposite and is RETRACTED (D-021); I had read a goal slug out of those rows' REASON text ('implied by goal — owns goal <slug>') and recorded it as a subject binding while subject stayed NULL. D-016's diagnosis STANDS and is BROADER: the launch route never bound #3/#4 either.\n\nSO THE MISSING EVIDENCE CLASS IS A PROPERLY GOAL-MODE-BOUND RUN. Neither sample is one, and grading MORE unbound samples cannot produce it. goals:start is the only atomic door (goals:create can never bind — it is an UPDATE ... WHERE mode='goal').\n\nOPEN: P-011 only — blocked on the deploy edge. deployedSha 7511ab5b unchanged; checkpoint run 27abaa83 started 01:04Z and DOES carry the change. Gate reds are stale-candidate artifacts per the release-fixer's 00:49Z verdict, holder su-e9d45c2c live on WI-38026 — NOT mine, nextAction:null.\n\nFILED, NOT MINE: EI-20205963184983095 — both ACTIVE releaseGating rubrics ~78-81h stale against a 6h threshold, watchdog fired 191x in 30d into a channel nobody actions.",
       "nowNext": "P-011 is the only open item: apply rubrics:set-history-reset { rubricRef:'goal-mode-e2e', at:'2026-08-10T23:34:31.149Z' } the moment a green carrying the change reaches :3070 (state:subscribe armed on deploy.3070.sha != 7511ab5b). NEVER a hand-written template_data UPDATE, and never fire release:checkpoint-run while a run is in flight. Separately, the launch-path defect (D-016/D-021) is what now blocks any properly goal-mode-BOUND evidence — that is the next real piece of work on this subject and it is NOT part of this plan."
+    },
+    {
+      "slug": "learning-loop-backlog-triage-2026-08-22",
+      "title": "Triage the learning loop's unimplemented backlog — keep / discard / merge",
+      "harness": "papercusp",
+      "status": "draft",
+      "category": "text-only-external-blocker",
+      "reason": "Plan prose claims an external/gate/time/provider blocker, but no structured blocker records it.",
+      "recommendation": "Revalidate the external condition and encode it structurally if real; otherwise finish or supersede.",
+      "created": "2026-08-22",
+      "updated": "2026-08-25 01:36:05.266015-04",
+      "itemTotal": 16,
+      "terminalPlanItems": 15,
+      "openPlanItems": 1,
+      "workItemTotal": 5,
+      "openWorkItems": 1,
+      "workItemStates": {
+        "done": 4,
+        "open": 1
+      },
+      "itemCounts": {
+        "dropped": 4,
+        "done": 11,
+        "todo": 1
+      },
+      "audit": {
+        "auditSeq": 1,
+        "createdAt": "2026-08-24 20:35:04.465222-04",
+        "auditedSha": "d2a71bfca575899c5e9beb93812c2292e06198b8",
+        "auditedItems": 16
+      },
+      "acceptanceRubric": {
+        "rubricId": "acceptance-learning-loop-backlog-triage-2026-08-22",
+        "status": "active"
+      },
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "REJECT stands (D-056, independent card EI-21389737020572400, grader su-8c02da6d). Do NOT ship. Status of the four clearing conditions, two settled and two blocked on a non-implementer:\n\n(1) EXECUTE THE D-004 MECHANISM — discard half DONE. 8 of the 9 verified discards are terminal (status='dropped') with a stated reason in terminal_completion_ref; verified by re-query, not by assertion. The 9th (EI-15119) is origin='remote' and STRUCTURALLY un-closable from this node — work_items:set_state refuses it as remote-authored (and returned an outer ok:true with an inner ok:false, so it was caught only by re-querying the row). D-058/D-059 record that status='dropped' is the correct terminal for these issue-family items (complete.ts:1507; all 28 'deprecated' rows are feature-family), and that D-004's payload.triage stamp was NEVER IMPLEMENTABLE when written — no agent tool could merge an arbitrary payload key onto an existing item, so the grader's headline `payload?triage = 0` measured a MISSING CAPABILITY, not a skipped step. That capability now exists (WI-41509, guarded payload merge on work_items:update, 61/61 green) but is committed-and-undeployed behind the deliberately PAUSED gate (D-042, WI-40086 live). So (1) is blocked on a DEPLOY, not on judgement. Do not force-deploy.\n\n(3) CLEARED — D-060.\n\n(2) and (4) require a NON-IMPLEMENTER and are therefore NOT the implementer chain's to close. Dispatched to su-8c02da6d 2026-08-25T05:30Z (msg mt888ec6, wake queued to a parked-but-wakeable session).",
+      "nowNext": "su-8c02da6d (non-implementer, authored the REJECT card) to close the two remaining conditions: (2) run the 20-item independent re-judge for reopened P-008 against harness_shared.triage_ledger, or DROP it with a stated reason recorded on the plan — a reasoned drop closes the condition as validly as a run; and (4) re-grade `retractions-are-recorded`, whose UNKNOWN D-056 attributes to surface reachability alone, recording explicitly WHICH surface was unreachable and whether it still is. CAUTION for (2): any past-tense liveness question must read the persisted routing record, never coord_presence — presence answers only NOW and is TTL-reaped, and is 84% false-positive on the provably-alive population (47 of 56 closed_answered), which is the artifact that forced a retraction on the sibling plan (D-007)."
     },
     {
       "slug": "oddsmith-gpt-analyst-liveness-honest-cost-2026-07-02",
@@ -20145,6 +20049,42 @@
       "nowNext": "Confirm the final 2-suite re-run green (task bckf570a6); after the next deploy, dogfood: write a checks:[] entry on a real checkpoint + verify checksLint and the cold-wake 🧪 block render. P-007 (cross-surface contradiction flag) and P-008 (fact supersede-notify) are the remaining follow-ups — fleet-placeable."
     },
     {
+      "slug": "derived-truth-audit-2026-08-21",
+      "title": "App-wide derived-truth audit: find every hand-authored code-describing surface, classify, and route to derive/pin/attest",
+      "harness": "papercusp",
+      "status": "ready",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-08-21",
+      "updated": "2026-08-25 04:13:28.382556-04",
+      "itemTotal": 9,
+      "terminalPlanItems": 8,
+      "openPlanItems": 1,
+      "workItemTotal": 9,
+      "openWorkItems": 1,
+      "workItemStates": {
+        "done": 8,
+        "open": 1
+      },
+      "itemCounts": {
+        "done": 8,
+        "todo": 1
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "EXECUTING [owner: Avi 2026-08-21] — session 9f294ece-b57a-4443-a1bb-ec808f618314 recovered into su-99ac2; AUTO active, fleet audit-calibration leadership taken, loop armed 120s. A1-A4 are already present in the canonical derived-truth-ladder projection and cite D-003/D-004. P-001 is done. P-002 is claimed as WI-40309; the inherited section classifies 11 of 30 surfaces with C-1..C-7. Current pass has opened the remaining source registries and validators; no new verdict is parked until every row is evidence-checked. WI-40302 remains open/unassigned with root cause proven and implementation + catalog-to-fires recurrence guard still required. WI-40304/05/06 remain open/unassigned residue follow-ups.",
+      "nowNext": "Continue P-002 from the remaining 19 surfaces (routines, blueprints, manifests, flags, claim specs, doc anchors, testing, lint baselines, chat/release/governor/generic/template registries); append evidence-checked rows, close P-002, then run P-003/P-004/P-005/P-008/P-009 and implement WI-40302's fix + standing reverse-direction guard."
+    },
+    {
       "slug": "fleet-launch-agent-inheritance-2026-07-03",
       "title": "fleet:launch-on-plan — inherit the caller's backend + leadership-fumble guards",
       "harness": "papercusp",
@@ -21254,6 +21194,38 @@
       },
       "nowState": "Flag default-ON; routing = two-gate guard (flag + per-harness `workerChunkLoop` knob, set on ZERO harnesses). BRIEF-15 OVERNIGHT (su-cb5de, AUTO, 2026-06-24) — the de-blocking engineering is BUILT + tested: ✅ P-020 metrics surface — migration 397 `worker_chunk_loop_outcomes` (lock-safe re-apply) + recordWorkerChunkOutcome at the single convergence point (both paths, keyed by executionPath) + summarizeWorkerChunkOutcomes (completion-rate + outcome-distribution + op−subprocess delta) + `dev:worker_chunk_loop_metrics` read tool. ✅ P-021 ramp-gate — pure `decideRampAdvance` (advance/hold/rollback at parity thresholds + an op-specific planning_failed-spike guard for the D-005 ctx risk), surfaced via the dev tool's `rampStep` arg. 18 new unit + 35+52 regression + 50 tools-md-sync GREEN. The metrics surface is the \"ramped ON metrics\" keystone the DoD needs. REMAINING is owner-attended only (see D-007): the dark-launch feature-RUN (needs a non-critical coding harness — none live) + the per-step %-advances. The dev tool/metrics need a deploy to go live on :3070 (not yet deployed).",
       "nowNext": "OWNER-ATTENDED: (1) stand up / pick a non-critical coding harness, set its `workerChunkLoop:true`, deploy the Brief-15 wiring, dispatch one real feature → op-path samples land in worker_chunk_loop_outcomes; (2) watch `dev:worker_chunk_loop_metrics`, approve each ramp step on its advance recommendation. Autonomously next: plan-impl P-014 Benchmark-trend Tauri verify + the dark-launch knob-set readiness."
+    },
+    {
+      "slug": "agent-session-scope-reaper-2026-08-25",
+      "title": "Agent-session scope reaper — close the process-residue class for good",
+      "harness": "papercusp",
+      "status": "draft",
+      "category": "unstarted-no-blocker",
+      "reason": "No progress and no legitimate blocker are recorded.",
+      "recommendation": "Supersede by default unless the work is explicitly re-approved now.",
+      "created": "2026-08-25",
+      "updated": "2026-08-25 04:23:13.878511-04",
+      "itemTotal": 8,
+      "terminalPlanItems": 0,
+      "openPlanItems": 8,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "todo": 8
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "",
+      "nowNext": ""
     },
     {
       "slug": "cold-carry-cross-platform-release-testing-2026-07-19",
