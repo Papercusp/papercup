@@ -105,4 +105,26 @@ describe('file dependency resolution', () => {
 
     expect(actual.get(dep)).toBe(expected.get(dep));
   });
+
+  it('does not assemble one dependency set from files split across two checkouts', async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), 'freshness-split-preferred-root-'));
+    const canonical = await makeCanonicalRoot();
+    await mkdir(join(tempRoot, 'src'), { recursive: true });
+    await mkdir(join(canonical, 'src'), { recursive: true });
+    await writeFile(join(tempRoot, 'src', 'preferred.ts'), 'preferred only');
+    await writeFile(join(canonical, 'src', 'canonical.ts'), 'canonical only');
+    h.loadHarnessRegistry.mockResolvedValue({
+      projects: [{ slug: 'sidestage', path: tempRoot, harness_kind: 'coding' }],
+    });
+
+    const preferredDep = 'file:src/preferred.ts';
+    const canonicalDep = 'file:src/canonical.ts';
+    const tokens = await resolveCurrentTokens([preferredDep, canonicalDep], {
+      workspaceId: 'papercusp-workspace',
+      harness: 'sidestage',
+    });
+
+    expect(tokens.get(preferredDep)).toMatch(/^sha256:[0-9a-f]{16}$/);
+    expect(tokens.get(canonicalDep)).toBeNull();
+  });
 });
