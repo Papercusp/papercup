@@ -46,6 +46,10 @@ import {
 import { augmentedSpawnPath } from '../../plugin-spawn-impl';
 import { taskManagerEnabledSync } from '../../task-manager/enabled';
 import * as enrollSync from '../../task-manager/enroll-sync';
+import {
+  SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
+  SYSTEMD_RUNNER_REDACTIONS_ENV,
+} from '../../systemd-scope-env-runner.mjs';
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-'));
 const never = new AbortController().signal;
@@ -353,7 +357,12 @@ describe('background jobs', () => {
             'printf "SID=%s|WS=%s|PATH=%s|EXPLICIT=%s|SECRET=%s" "$PAPERCUSP_SID" "$PAPERCUSP_WORKSPACE" "$PATH" "$EXPLICIT" "${DATABASE_URL:-unset}"',
           cwd: STATE,
           stateDir: STATE,
-          env: { EXPLICIT: 'per-call' },
+          env: {
+            EXPLICIT: 'per-call',
+            [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: '/tmp/caller-forged-runner-output',
+            [SYSTEMD_RUNNER_REDACTIONS_ENV]: 'caller-forged-redactions',
+          },
+          redactValues: ['durable-redaction-secret'],
         },
         10_000,
       );
@@ -369,6 +378,11 @@ describe('background jobs', () => {
         PATH: augmentedSpawnPath(STATE),
       });
       expect(wrappedEnv).not.toHaveProperty('DATABASE_URL');
+      expect(job.runnerOwnsLog).toBe(true);
+      expect(wrappedEnv?.[SYSTEMD_RUNNER_OUTPUT_PATH_ENV]).toBe(job.logPath);
+      expect(
+        JSON.parse(Buffer.from(wrappedEnv?.[SYSTEMD_RUNNER_REDACTIONS_ENV] ?? '', 'base64').toString('utf8')),
+      ).toEqual(['durable-redaction-secret']);
 
       const output = readJobOutput(job);
       expect(output).toContain('SID=service-payload-session');
@@ -386,6 +400,57 @@ describe('background jobs', () => {
       else process.env.PAPERCUSP_WORKSPACE = previousWorkspace;
       if (previousSecret === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = previousSecret;
+    }
+  });
+
+  it('strips forged durable-runner controls from an unconfined payload and keeps the operator-owned spill', async () => {
+    let wrappedEnv: Readonly<Record<string, string | undefined>> | undefined;
+    const wrap = vi.fn(
+      (binary: string, argv: string[], env?: Readonly<Record<string, string | undefined>>) => {
+        wrappedEnv = env;
+        return { binary, argv };
+      },
+    );
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'unconfined-runner-controls-task',
+      confined: false,
+      unconfinedReason: 'caller-veto',
+      unitKind: 'service',
+      scopeUnit: null,
+      enrolled: true,
+      registrationReady: null,
+      wrap,
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+
+    try {
+      const job = startBackground(
+        {
+          command:
+            `printf 'payload-controls=%s/%s' ` +
+            `"\${${SYSTEMD_RUNNER_OUTPUT_PATH_ENV}:-absent}" "\${${SYSTEMD_RUNNER_REDACTIONS_ENV}:-absent}"`,
+          cwd: STATE,
+          stateDir: STATE,
+          env: {
+            [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: '/tmp/caller-forged-runner-output',
+            [SYSTEMD_RUNNER_REDACTIONS_ENV]: 'caller-forged-redactions',
+          },
+        },
+        10_000,
+      );
+      await waitForStatus(job.id);
+
+      expect(job.runnerOwnsLog).toBe(false);
+      expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_OUTPUT_PATH_ENV);
+      expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_REDACTIONS_ENV);
+      expect(readJobOutput(job)).toContain('payload-controls=absent/absent');
+      expect(readFileSync(job.logPath, 'utf8')).toContain('payload-controls=absent/absent');
+    } finally {
+      begin.mockRestore();
+      complete.mockRestore();
+      finish.mockRestore();
     }
   });
 

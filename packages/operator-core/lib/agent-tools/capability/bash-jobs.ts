@@ -28,6 +28,10 @@ import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { buildCapabilitySandboxCommand, scrubExecEnv } from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
 import {
+  SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
+  SYSTEMD_RUNNER_REDACTIONS_ENV,
+} from '../../systemd-scope-env-runner.mjs';
+import {
   absCgroupDir,
   CGROUP_ROOT,
   parseCgroupInt,
@@ -142,6 +146,13 @@ export function isBackgroundTestCommand(command: string): boolean {
 /** Reserved child-env provenance for long-running physical drills. Only the
  * durable background seam may mint this marker; callers cannot override it. */
 export const CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV = 'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID';
+/** Reserved child-env marker for commands launched through capability:bash's
+ * foreground seam. A foreground timeout kills the whole process tree, so
+ * mutation probes use this to refuse in-tree mutations before touching a
+ * tracked file. The handler owns the marker; callers cannot forge or clear it
+ * through command environment input. */
+export const CAPABILITY_BASH_FOREGROUND_ENV = 'PAPERCUSP_CAPABILITY_BASH_FOREGROUND';
+export const CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV = 'PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS';
 export const PC_HEAVY_DURABLE_CALLER_ENV = 'PC_HEAVY_DURABLE_CALLER';
 /**
  * Grace between SIGTERM and SIGKILL when a job hits its OWN deadline (WI-6677).
@@ -460,6 +471,10 @@ export interface BashJob {
   /** Index into `buffer` already returned by bash_output (incremental reads). */
   readCursor: number;
   logStream: WriteStream | null;
+  /** A confined transient service writes command bytes + JOB END directly to
+   *  the spill file. The operator keeps an append-only stream for its bounded
+   *  diagnostics, but must not duplicate the runner's mirrored command bytes. */
+  runnerOwnsLog?: boolean;
   /**
    * task-manager-no-escape-2026-07-27 P-008 — the DURABLE half of this job's
    * identity. The Map above dies with the operator process (EI-8855: any agent
@@ -675,10 +690,12 @@ function appendOutput(job: BashJob, chunk: string): void {
     job.buffer = job.buffer.slice(overflow);
     job.readCursor = Math.max(0, job.readCursor - overflow);
   }
-  try {
-    job.logStream?.write(chunk);
-  } catch {
-    /* a spill-write fault must not crash the job */
+  if (!job.runnerOwnsLog) {
+    try {
+      job.logStream?.write(chunk);
+    } catch {
+      /* a spill-write fault must not crash the job */
+    }
   }
 }
 
@@ -1411,21 +1428,39 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const testBudget = isTestRun ? { memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX } : {};
   const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec, ...testBudget });
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
+  const runnerOwnsLog = enrolment.confined && enrolment.unitKind === 'service';
 
   // Physical drills are long-running and must survive the interactive caller.
   // Force the marker AFTER caller-provided env so a native PTY or a forged
   // `opts.env` value cannot make an unenrolled spawn look durable. An explicit
   // empty value when the task-manager flag is OFF keeps the reserved name from
   // leaking a caller-supplied marker through this seam.
-  const childEnv = {
-    ...(opts.env ?? {}),
+  const childEnv = { ...(opts.env ?? {}) };
+  // These names are an authenticated operator→runner control seam, not caller
+  // environment. Strip any supplied values first; on an unconfined fallback the
+  // workload must not see even empty internal control fields.
+  delete childEnv[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];
+  delete childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV];
+  Object.assign(childEnv, {
     [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: enrolment.enrolled ? enrolment.taskId : '',
     // EI-21434250273517260: the systemd-enrolled task is intentionally durable
     // across an operator-host restart. pc-heavy must keep its materializer
     // preemption policy, but must not mistake that old host PPID disappearing
     // for an orphaned workload and reap the still-authoritative task.
     [PC_HEAVY_DURABLE_CALLER_ENV]: enrolment.enrolled ? '1' : '',
-  };
+  });
+  if (runnerOwnsLog) {
+    // EI-21437837415175286: systemd-run --pipe belongs to the restartable
+    // operator host. Put the authoritative sink + redaction policy inside the
+    // existing anonymous credential payload so the transient-service runner
+    // keeps recording after that pipe reader disappears. The runner consumes
+    // and deletes both fields before spawning the workload.
+    childEnv[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] = logPath;
+    childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV] = Buffer.from(
+      JSON.stringify(opts.redactValues ?? []),
+      'utf8',
+    ).toString('base64');
+  }
 
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
@@ -1452,7 +1487,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     totalBytes: 0,
     logPath,
     readCursor: 0,
-    logStream: safeWriteStream(logPath),
+    // The runner truncates exactly once, then owns command output + JOB END.
+    // Keep only an O_APPEND stream here for operator-authored diagnostics such
+    // as the preflight snapshot; appendOutput deliberately skips mirrored
+    // command chunks while runnerOwnsLog is true.
+    logStream: safeWriteStream(logPath, runnerOwnsLog ? 'a' : 'w'),
+    runnerOwnsLog,
     taskId: enrolment.taskId,
     scopeUnit: enrolment.scopeUnit,
     timeoutMs: effectiveTimeoutMs,
@@ -1739,9 +1779,9 @@ function headTail(s: string): string {
   return `${head}\n\n… [${omitted} chars omitted — full output in the log file] …\n\n${tail}`;
 }
 
-function safeWriteStream(path: string): WriteStream | null {
+function safeWriteStream(path: string, flags: 'w' | 'a' = 'w'): WriteStream | null {
   try {
-    const stream = createWriteStream(path, { flags: 'w' });
+    const stream = createWriteStream(path, { flags });
     // EI-18764990059061608's own test suite surfaced this: a stream with no
     // 'error' listener turns ANY write-time fault (ENOSPC, EBADF, or a write
     // racing an `end()` issued elsewhere — e.g. __resetBashJobs tearing down a
