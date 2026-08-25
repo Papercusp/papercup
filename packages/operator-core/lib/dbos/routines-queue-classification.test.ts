@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
+  ROUTINES_LOOP_QUEUE,
+  LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
   queueForRoutine,
   shouldFireUnderPoolShed,
@@ -10,8 +12,9 @@ import {
 /**
  * 2026-06-23 routines-queue-starvation fix: git-sync must land on the protected `routines-critical` lane so
  * a saturated shared `routines` queue (long routines holding every slot) can never starve it (the 7h
- * deploy-freeze). Everything else — agent-role spawns, loops, long/unknown system actions — defaults to the
- * shared queue so a new routine can never silently starve the protected lane.
+ * deploy-freeze). EI-21386288922867645 adds a separate latency-isolated loop lane after a five-minute loop
+ * sat behind the shared queue for ~11 minutes. Long/unknown system actions and agent roles still default to
+ * the shared queue, so neither protected lane can be silently occupied by a new arbitrary routine.
  */
 describe('queueForRoutine — the protected git-sync lane', () => {
   it('routes the critical system action (git-sync) to the protected lane', () => {
@@ -47,6 +50,19 @@ describe('queueForRoutine — the protected git-sync lane', () => {
   });
 });
 
+describe('queueForRoutine — the latency-isolated loop lane', () => {
+  it('routes the exact materialized loop-wake target to routines-loop', () => {
+    expect(LOOP_WAKE_TARGET_ROLE).toBe('system:loop-wake');
+    expect(queueForRoutine(LOOP_WAKE_TARGET_ROLE)).toBe(ROUTINES_LOOP_QUEUE);
+  });
+
+  it('keeps near-miss target names on the shared queue (exact match)', () => {
+    expect(queueForRoutine('system:loop-wake-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:pre-loop-wake')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('loop-wake')).toBe(ROUTINES_QUEUE);
+  });
+});
+
 /**
  * EI-11171 critical-routine floor: when routinesTickImpl sheds on critical PG-pool starvation it
  * must still fire the protected critical-queue routine (git-sync) — the old bare `return` skipped
@@ -68,6 +84,7 @@ describe('shouldFireUnderPoolShed — the critical-routine floor (EI-11171)', ()
     expect(shouldFireUnderPoolShed('system:green-checkpoint')).toBe(false);
     expect(shouldFireUnderPoolShed('system:gym-cycle')).toBe(false);
     expect(shouldFireUnderPoolShed('system:blueprint-run')).toBe(false);
+    expect(shouldFireUnderPoolShed(LOOP_WAKE_TARGET_ROLE)).toBe(false);
     expect(shouldFireUnderPoolShed('mug')).toBe(false);
     expect(shouldFireUnderPoolShed('worker')).toBe(false);
     expect(shouldFireUnderPoolShed('')).toBe(false);
@@ -79,7 +96,7 @@ describe('shouldFireUnderPoolShed — the critical-routine floor (EI-11171)', ()
   });
 
   it('is exactly the protected-lane predicate (floor === critical queue)', () => {
-    for (const role of ['system:git-sync', 'system:green-checkpoint', 'mug', '']) {
+    for (const role of ['system:git-sync', LOOP_WAKE_TARGET_ROLE, 'system:green-checkpoint', 'mug', '']) {
       expect(shouldFireUnderPoolShed(role)).toBe(
         queueForRoutine(role) === ROUTINES_CRITICAL_QUEUE,
       );

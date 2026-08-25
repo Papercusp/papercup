@@ -30,6 +30,7 @@ import { queueConcurrency } from './queue-concurrency';
 import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
+  ROUTINES_LOOP_QUEUE,
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
@@ -84,7 +85,14 @@ const routinesCriticalQueue = idempotentWorkflowQueue(
   ROUTINES_CRITICAL_QUEUE,
   () => new WorkflowQueue(ROUTINES_CRITICAL_QUEUE, { concurrency: queueConcurrency(2) }),
 );
-export const ROUTINE_FIRE_QUEUES = [routinesQueue.name, routinesCriticalQueue.name] as const;
+// EI-21386288922867645: loop wakes are quick but deadline-sensitive. A five-minute
+// loop sat FIFO behind 29 shared-routines jobs for ~11 minutes; a separate bounded
+// lane keeps long green-checkpoint/gym fires from consuming its execution slots.
+const routinesLoopQueue = idempotentWorkflowQueue(
+  ROUTINES_LOOP_QUEUE,
+  () => new WorkflowQueue(ROUTINES_LOOP_QUEUE, { concurrency: queueConcurrency(4) }),
+);
+export const ROUTINE_FIRE_QUEUES = [routinesQueue.name, routinesCriticalQueue.name, routinesLoopQueue.name] as const;
 
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
 export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;
@@ -496,8 +504,8 @@ async function routinesTickImpl(): Promise<void> {
     void clearUnclaimableRoutine(sql, r.id);
     try {
       await DBOS.startWorkflow(routineFireWorkflow, {
-        // routines-queue-starvation fix (2026-06-23): git-sync → the protected `routines-critical` lane so a
-        // saturated shared queue can't starve commits; every other routine → the shared `routines` queue.
+        // Queue classification isolates both must-never-starve persistence work (git-sync)
+        // and deadline-sensitive loop wakes; long/unknown work stays on the shared lane.
         queueName: queueForRoutine(r.targetRole),
         enqueueOptions: { deduplicationID: `routine:${r.id}` },
         // A fire PENDING on a DEAD executor holds this dedup ID forever (DBOS

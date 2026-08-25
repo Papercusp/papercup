@@ -11,16 +11,20 @@
  * corroborates with the routinesTick SCHEDULER (so a busy queue is no longer read as a freeze), and — here —
  * git-sync gets a DEDICATED `routines-critical` lane so the shared queue's saturation can NEVER starve it.
  *
- * Kept deliberately MINIMAL: only actions whose starvation halts fleet-wide PERSISTENCE/coordination belong
- * in the protected lane. Everything else (agent-role spawns, loops, long/unknown system actions) stays on
- * the shared `routines` queue — it may queue under load, but that's now benign (no commit-freeze, no
- * watchdog false-restart). A NEW routine therefore defaults to the shared queue, so it can never silently
- * starve the protected lane.
+ * EI-21386288922867645 proves queueing a loop behind that shared backlog is NOT benign: a due loop fire sat
+ * FIFO behind 29 earlier jobs for ~11 minutes, so the owner received no turn by its five-minute deadline.
+ * Loop fires are quick but latency-sensitive, so they get their own bounded `routines-loop` lane. Git-sync
+ * remains the ONLY action on `routines-critical`; long/unknown system actions and agent roles still default
+ * to `routines`. This extends the existing queue mechanism without weakening its persistence invariant.
  */
 import { SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
 
 export const ROUTINES_QUEUE = 'routines';
 export const ROUTINES_CRITICAL_QUEUE = 'routines-critical';
+export const ROUTINES_LOOP_QUEUE = 'routines-loop';
+
+/** Mirrors loop.ts's materialized target_role without importing that stateful module here. */
+export const LOOP_WAKE_TARGET_ROLE = `${SYSTEM_TARGET_PREFIX}loop-wake`;
 
 /**
  * System actions whose STARVATION freezes fleet-wide persistence/coordination → the protected lane.
@@ -31,10 +35,11 @@ export const ROUTINES_CRITICAL_QUEUE = 'routines-critical';
 export const CRITICAL_ROUTINE_ACTIONS = new Set<string>(['git-sync']);
 
 /**
- * The queue NAME a routine fire should enqueue on, by its target role. A critical quick SYSTEM action → the
- * protected `routines-critical` lane; everything else → the shared `routines` queue.
+ * The queue NAME a routine fire should enqueue on, by its target role. A loop wake → the latency-isolated
+ * `routines-loop` lane; a critical quick SYSTEM action → `routines-critical`; everything else → `routines`.
  */
 export function queueForRoutine(targetRole: string): string {
+  if (targetRole === LOOP_WAKE_TARGET_ROLE) return ROUTINES_LOOP_QUEUE;
   if (
     targetRole.startsWith(SYSTEM_TARGET_PREFIX) &&
     CRITICAL_ROUTINE_ACTIONS.has(targetRole.slice(SYSTEM_TARGET_PREFIX.length))

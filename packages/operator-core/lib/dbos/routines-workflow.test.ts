@@ -76,7 +76,7 @@ vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
-import { routineFireWorkflow } from './routines-workflow';
+import { ROUTINE_FIRE_QUEUES, routineFireWorkflow } from './routines-workflow';
 
 beforeEach(() => {
   state.stepOutputs.length = 0;
@@ -84,6 +84,10 @@ beforeEach(() => {
 });
 
 describe('routineFireWorkflow — durable loop:wake output', () => {
+  it('registers the shared, critical, and deadline-sensitive loop queues at boot', () => {
+    expect(ROUTINE_FIRE_QUEUES).toEqual(['routines', 'routines-critical', 'routines-loop']);
+  });
+
   it('checkpoints and returns the complete LoopFireResult from the DBOS step', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
