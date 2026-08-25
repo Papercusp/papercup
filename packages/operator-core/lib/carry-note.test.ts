@@ -351,6 +351,51 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     }
   });
 
+  it('keeps subject-position "await remains pending" liveness evidence VERIFIED (EI-21415991464539447)', () => {
+    // The filed case: evidence factually describing an ACTIVE events:await
+    // registration that the claim is explicitly watching. "pending" is the
+    // verified state of the registration, not a contradiction of the claim.
+    const claim = 'gate generation 59 is declared and unfired; my await is registered on it';
+    const filedEvidence = 'newer await remains pending through 09:21:15Z';
+    expect(findVerificationConflict(filedEvidence, claim), filedEvidence).toBeNull();
+    const [row] = normalizeCheckEntries(
+      [{ claim, recheck: 'events:status', verified: filedEvidence }],
+      [],
+      Date.parse('2026-08-25T09:16:00.000Z'),
+    );
+    expect(row).toMatchObject({ claim, verified: expect.stringContaining(filedEvidence) });
+    expect(row).not.toHaveProperty('contested');
+
+    const healthyVariants = [
+      'the events:await on fleet:goal-drain:drained remains pending',
+      'exact event-await for the gate is still pending',
+      'both awaits remain pending until the emit',
+      'the watch was pending at last read',
+    ];
+    for (const evidence of healthyVariants) {
+      expect(findVerificationConflict(evidence, claim), evidence).toBeNull();
+    }
+  });
+
+  it('still downgrades unresolved-work evidence that merely uses verb-await prose', () => {
+    const claim = 'the review verdict is settled';
+    const unresolved = [
+      'the verdict remains pending',
+      'we await the verdict, which remains pending',
+      'approval remains pending while we await sign-off',
+    ];
+    for (const evidence of unresolved) {
+      expect(findVerificationConflict(evidence, claim), evidence).not.toBeNull();
+      const [row] = normalizeCheckEntries(
+        [{ claim, recheck: 'reread the review thread', verified: evidence }],
+        [],
+        Date.parse('2026-08-25T09:16:00.000Z'),
+      );
+      expect(row, evidence).toMatchObject({ claim, contested: expect.stringContaining(evidence) });
+      expect(row, evidence).not.toHaveProperty('verified');
+    }
+  });
+
   it('keeps literal lifecycle fields and await counts VERIFIED', () => {
     const literalStateEvidence = [
       'events:status expected_verdict=pending',
