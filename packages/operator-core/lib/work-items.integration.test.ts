@@ -1764,9 +1764,27 @@ describe('unified work_items surface (real PG)', () => {
       SELECT source_plan_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = ${unplanned.id}`;
     expect(uRow.source_plan_slug).toBeNull();
 
-    // Issue-family kinds ignore sourcePlanSlug (no frontier row / no such column) — must not throw.
-    const task = await wi.createWorkItem({ kind: 'task', title: 'issue task', harness: 'papercup', createdBy: 'agA', sourcePlanSlug: 'x' });
+    // Issue-family kinds persist the same indexed provenance on the shared base row.
+    // This guards the createWorkItem → createIssue forwarding path, which previously
+    // dropped sourcePlanSlug/sourcePlanItemIds before createIssue could persist them.
+    const task = await wi.createWorkItem({
+      kind: 'task',
+      title: 'issue task',
+      harness: 'papercup',
+      createdBy: 'agA',
+      sourcePlanSlug: 'x',
+      sourcePlanItemIds: ['P-001', ' P-002', ''],
+    });
     expect(task.family).toBe('issue');
+    const [taskProvenance] = await db.sql<{
+      source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null;
+    }[]>`
+      SELECT source_plan_slug, source_plan_item_ids
+        FROM harness_shared.work_items
+       WHERE feature_id = ${task.id}
+         AND item_kind = 'task'`;
+    expect(taskProvenance).toEqual({ source_plan_slug: 'x', source_plan_item_ids: ['P-001', 'P-002'] });
   });
 
   it('feature-family plan_item unset clears normalized provenance and exact coverage edges atomically', async () => {
