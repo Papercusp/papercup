@@ -311,10 +311,11 @@ export interface NamedViewReceipt {
   applied: boolean;
   /** The exact field set the version declares — what the successor actually got. */
   fields: string[];
+  /** Hard capsule ceiling, in UTF-8 BYTES (the wire unit — not UTF-16 code units). */
   budgetChars: number;
-  /** Serialized size BEFORE the view selected any fields. */
+  /** Serialized size BEFORE the view selected any fields, in UTF-8 bytes. */
   sourceChars: number;
-  /** Rendered size AFTER selection and any budget enforcement. */
+  /** Rendered size AFTER selection and any budget enforcement, in UTF-8 bytes. */
   returnedChars: number;
   /**
    * Set only when the budget actually bound. Carries the pre-enforcement size,
@@ -335,9 +336,39 @@ export interface AppliedNamedView {
   receipt: NamedViewReceipt;
 }
 
+const UTF8_ENCODER = new TextEncoder();
+
+/**
+ * UTF-8 byte length — the budget's unit. `String.length` counts UTF-16 code
+ * units, which under-counts every non-ASCII character (an `é` is 1 unit but
+ * 2 bytes; an emoji 2 units but 4 bytes), so a unit-counted ceiling can let a
+ * multibyte capsule exceed the declared byte budget ~3× while the receipt
+ * reads under it (D-001's R2 non-ASCII remainder).
+ */
+function utf8ByteLength(text: string): number {
+  return UTF8_ENCODER.encode(text).length;
+}
+
+/**
+ * Truncate to at most `maxBytes` UTF-8 bytes WITHOUT splitting a multibyte
+ * sequence. A naive `String.slice` cuts in UTF-16 code units and can split a
+ * surrogate pair, emitting a lone surrogate (invalid UTF-8) into the capsule.
+ * Cutting on an encoded-byte boundary and backing off any continuation bytes
+ * (0b10xxxxxx) guarantees the result is well-formed: a surrogate pair encodes
+ * as one 4-byte sequence, so it is either kept whole or dropped whole.
+ */
+function truncateToUtf8Bytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  const bytes = UTF8_ENCODER.encode(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return new TextDecoder().decode(bytes.subarray(0, end));
+}
+
 function serializedChars(value: unknown): number {
   try {
-    return (JSON.stringify(value) ?? String(value)).length;
+    return utf8ByteLength(JSON.stringify(value) ?? String(value));
   } catch {
     return 0;
   }
@@ -388,16 +419,16 @@ export function applyNamedView(
     };
   }
 
-  const receipt = namedViewReceipt(resolved, true, sourceChars, text.length);
+  const textBytes = utf8ByteLength(text);
+  const receipt = namedViewReceipt(resolved, true, sourceChars, textBytes);
   if (unmatched.length) receipt.unmatchedFields = [...unmatched];
 
-  if (text.length > def.budgetChars) {
-    const charsBefore = text.length;
-    const keep = Math.max(0, def.budgetChars - VIEW_BUDGET_MARKER.length);
-    text = text.slice(0, keep) + VIEW_BUDGET_MARKER;
+  if (textBytes > def.budgetChars) {
+    const keep = Math.max(0, def.budgetChars - utf8ByteLength(VIEW_BUDGET_MARKER));
+    text = truncateToUtf8Bytes(text, keep) + VIEW_BUDGET_MARKER;
     receipt.budgetEnforced = true;
-    receipt.charsBeforeBudget = charsBefore;
-    receipt.returnedChars = text.length;
+    receipt.charsBeforeBudget = textBytes;
+    receipt.returnedChars = utf8ByteLength(text);
   }
 
   return { text, receipt };

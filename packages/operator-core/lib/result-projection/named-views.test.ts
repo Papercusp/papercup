@@ -265,11 +265,12 @@ describe('named result views — the Design falsifiable check', () => {
 
     expect(receipt.applied).toBe(true);
     expect(receipt.view).toBe('capsule');
-    expect(receipt.sourceChars).toBe(JSON.stringify(oversized).length);
+    // The budget's unit is UTF-8 BYTES (the wire unit), not UTF-16 code units.
+    expect(receipt.sourceChars).toBe(Buffer.byteLength(JSON.stringify(oversized), 'utf8'));
     expect(receipt.sourceChars).toBeGreaterThan(receipt.returnedChars);
     // "returnedChars under the declared budget" — the budget is a guarantee.
     expect(receipt.returnedChars).toBeLessThanOrEqual(receipt.budgetChars);
-    expect(text.length).toBe(receipt.returnedChars);
+    expect(Buffer.byteLength(text, 'utf8')).toBe(receipt.returnedChars);
     // "the exact declared field set" — not a superset, not a subset.
     expect(receipt.fields).toEqual(resolved.def.fields);
     // Trimming must be self-announcing, never silent.
@@ -277,6 +278,63 @@ describe('named result views — the Design falsifiable check', () => {
     expect(receipt.charsBeforeBudget).toBeGreaterThan(receipt.budgetChars);
     expect(text).toContain(VIEW_BUDGET_MARKER.trim().slice(0, 20));
     expect(describeNamedView(receipt)).toContain('TRIMMED');
+  });
+
+  it('a MULTIBYTE capsule is budgeted by UTF-8 BYTES, not UTF-16 code units (D-001 R2 non-ASCII remainder)', () => {
+    const resolved = resolveNamedView('work_items:get', 'capsule');
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    const budget = resolved.def.budgetChars;
+
+    // Each '…' is ONE UTF-16 code unit but THREE UTF-8 bytes: a unit-counted
+    // ceiling would read this as ~1/3 the size it actually serializes to, and
+    // the receipt would report "under budget" for a capsule ~3× over it.
+    const multibyte = {
+      ...SAMPLE_WORK_ITEMS_GET,
+      results: [{ ...SAMPLE_WORK_ITEMS_GET.results[0], checkpoint: '…'.repeat(budget) }],
+    };
+
+    const { text, receipt } = applyNamedView(multibyte, resolved);
+
+    expect(receipt.sourceChars).toBe(Buffer.byteLength(JSON.stringify(multibyte), 'utf8'));
+    expect(receipt.budgetEnforced).toBe(true);
+    expect(Buffer.byteLength(text, 'utf8')).toBe(receipt.returnedChars);
+    // The guarantee is a BYTE guarantee — this is exactly the assertion a
+    // unit-counted ceiling fails (~3× over budget in bytes while under in units).
+    expect(receipt.returnedChars).toBeLessThanOrEqual(receipt.budgetChars);
+    expect(receipt.charsBeforeBudget).toBeGreaterThan(receipt.budgetChars);
+  });
+
+  it('the byte cut never splits a surrogate pair — no lone surrogate reaches the capsule', () => {
+    const resolved = resolveNamedView('work_items:get', 'capsule');
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    const budget = resolved.def.budgetChars;
+
+    // '🟩' is 2 UTF-16 code units (a surrogate pair) / 4 UTF-8 bytes. The pads
+    // shift the cut position by 1 unit each, so under ANY fixed-parity naive
+    // `String.slice` cut at least one variant lands mid-pair and emits a lone
+    // surrogate; a sequence-boundary byte cut never does.
+    for (const pad of ['', 'A', 'AB', 'ABC']) {
+      const emojiHeavy = {
+        ...SAMPLE_WORK_ITEMS_GET,
+        results: [
+          { ...SAMPLE_WORK_ITEMS_GET.results[0], checkpoint: pad + '🟩'.repeat(budget) },
+        ],
+      };
+
+      const { text, receipt } = applyNamedView(emojiHeavy, resolved);
+      expect(receipt.budgetEnforced, `pad=${JSON.stringify(pad)}`).toBe(true);
+      expect(receipt.returnedChars, `pad=${JSON.stringify(pad)}`).toBeLessThanOrEqual(
+        receipt.budgetChars,
+      );
+
+      // A lone surrogate cannot survive a UTF-8 round-trip: TextEncoder maps it
+      // to U+FFFD, so losslessness proves the capsule is well-formed UTF-8.
+      const roundTripped = new TextDecoder().decode(new TextEncoder().encode(text));
+      expect(roundTripped, `pad=${JSON.stringify(pad)}`).toBe(text);
+      expect(text.includes('�'), `pad=${JSON.stringify(pad)}`).toBe(false);
+    }
   });
 
   it('a result that FITS is not trimmed and says nothing about a budget', () => {
