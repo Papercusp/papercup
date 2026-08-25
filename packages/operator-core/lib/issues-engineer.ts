@@ -755,6 +755,9 @@ export interface CreateIssueInput {
   body?: string;
   severity?: IssueSeverity;
   source?: IssueSource;
+  /** Plan provenance carried through the unified work-item create path. */
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
   scope?: string; // omit → workspace platform Pot; or 'harness:<slug>'. 'operator'/global auto-homes to the platform Pot (createIssue, P-005).
   foundDuring?: string;
   topics?: string[];
@@ -869,21 +872,42 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   const bornAdmission: BornAdmission | null = input.admission ?? null;
   const bornAdmittedAt = bornAdmission && bornAdmission !== 'pending' ? created : null;
   const bornAdmittedBy = bornAdmission && bornAdmission !== 'pending' ? (input.admittedBy ?? null) : null;
+  const sourcePlanSlug =
+    typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
+  const sourcePlanItemIds = Array.isArray(input.sourcePlanItemIds)
+    ? input.sourcePlanItemIds.filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
+        .map((itemId) => itemId.trim())
+    : null;
   const issue = await boundedOrgTxn(async (tx) => {
     const id = input.id ?? (await nextIssueId(tx));
     const rows = await tx<IssueRowDb[]>`
       INSERT INTO harness_shared.engineer_issues
         (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
          assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at,
-         parent_id, admission, admitted_at, admitted_by)
+         parent_id, source_plan_slug, source_plan_item_ids, admission, admitted_at, admitted_by)
       VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${safeTitle}, ${safeBody ?? ''},
               ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, ${input.state ?? 'open'}, ${input.assignee ?? null},
               ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
               ${Object.keys(inputPayload).length > 0 ? JSON.stringify(inputPayload) : null}::text::jsonb, ${safeFoundDuring ?? null},
               ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created},
-              ${input.parent ?? null}, ${bornAdmission}, ${bornAdmittedAt}, ${bornAdmittedBy})
+              ${input.parent ?? null}, ${sourcePlanSlug}, ${sourcePlanItemIds}::text[],
+              ${bornAdmission}, ${bornAdmittedAt}, ${bornAdmittedBy})
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
     const inserted = toIssue(rows[0]);
+    // The engineer_issues compatibility view exposes these claim-spec columns, but
+    // its INSTEAD OF INSERT trigger predates that projection and does not thread them
+    // into the base row. Keep the view write for the canonical create path, then fill
+    // the indexed base columns in the SAME transaction so issue-family provenance is
+    // durable without an externally visible create/update gap.
+    if (sourcePlanSlug !== null || sourcePlanItemIds !== null) {
+      await tx`
+        UPDATE harness_shared.work_items
+           SET source_plan_slug = ${sourcePlanSlug},
+               source_plan_item_ids = ${sourcePlanItemIds}::text[]
+         WHERE workspace_id = ${issuesScopeWorkspace()}
+           AND feature_id = ${inserted.id}
+           AND item_kind = ${input.kind ?? 'bug'}`;
+    }
     // WI-8848: the topic tags + the author subscription commit in the SAME txn as the
     // INSERT. They used to run as bare awaits AFTER this txn had already committed, so
     // each was a fresh pool acquisition against an already-durable row — and a

@@ -1647,10 +1647,13 @@ type ResolvedWorkItemQueryEmbedder = Awaited<ReturnType<QueryEmbedderResolver>>;
  * only published after a real warmup embed succeeds.
  */
 const WORK_ITEM_EMBEDDER_WARMUP_TEXT = 'work-items search embedder warmup';
+const WORK_ITEM_EMBEDDER_RETRY_AFTER_MS = 1_000;
 let warmWorkItemEmbedder: ResolvedWorkItemQueryEmbedder = null;
 let workItemEmbedderWarmupInFlight: Promise<void> | null = null;
 let workItemEmbedderWarmupFailure: string | null = null;
 let workItemEmbedderWarmupGeneration = 0;
+let workItemEmbedderWarmupAttempt = 0;
+let workItemEmbedderWarmupRetryToken: string | null = null;
 
 async function resolveWorkItemQueryEmbedder(
   resolver?: QueryEmbedderResolver,
@@ -1663,6 +1666,8 @@ function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<vo
   if (workItemEmbedderWarmupInFlight) return workItemEmbedderWarmupInFlight;
 
   const generation = workItemEmbedderWarmupGeneration;
+  workItemEmbedderWarmupRetryToken =
+    `work-items-embedder-warmup:${generation}:${++workItemEmbedderWarmupAttempt}`;
   workItemEmbedderWarmupFailure = null;
   const started = (async () => {
     try {
@@ -1687,7 +1692,10 @@ function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<vo
         workItemEmbedderWarmupFailure = `query embedder warmup failed: ${(err as Error)?.message ?? String(err)}`;
       }
     } finally {
-      if (generation === workItemEmbedderWarmupGeneration) workItemEmbedderWarmupInFlight = null;
+      if (generation === workItemEmbedderWarmupGeneration) {
+        workItemEmbedderWarmupInFlight = null;
+        workItemEmbedderWarmupRetryToken = null;
+      }
     }
   })();
   workItemEmbedderWarmupInFlight = started;
@@ -1700,6 +1708,7 @@ export function resetWorkItemEmbedderWarmup(): void {
   warmWorkItemEmbedder = null;
   workItemEmbedderWarmupInFlight = null;
   workItemEmbedderWarmupFailure = null;
+  workItemEmbedderWarmupRetryToken = null;
 }
 
 /** Domain filters both work-item search sources honour — applied IN SQL, so the
@@ -1893,6 +1902,18 @@ export interface WorkItemSearchResult {
   legs: SearchLegs;
   /** P-017: which engine-level ranking defaults were in force for this search. */
   applied: AppliedDefaults;
+  /**
+   * A stable, process-local retry receipt while the query embedder is warming.
+   * The lexical result remains usable for availability, but callers must not
+   * treat a degraded zero-hit page as a verified dedup miss. The token is
+   * shared by concurrent searches in the same warmup flight, so a caller can
+   * retry once after `afterMs` without creating a duplicate warmup request.
+   */
+  retry?: {
+    token: string;
+    afterMs: number;
+    reason: 'query_embedder_warming';
+  };
 }
 
 /** Cross-kind hybrid search over both kind-tables (parity with issues:search).
@@ -1987,6 +2008,13 @@ export async function searchWorkItems(
   // nothing. Failing to resolve is never an error (fail-open).
   let embedder: ((t: string) => Promise<number[]>) | null = null;
   let embeddingMode: string | null = null;
+  let retry:
+    | {
+        token: string;
+        afterMs: number;
+        reason: 'query_embedder_warming';
+      }
+    | undefined;
   if (opts.semantic ?? !process.env.VITEST) {
     /**
      * The semantic leg was WANTED. If it cannot run, hand the engine an
@@ -2010,6 +2038,13 @@ export async function searchWorkItems(
       // Every concurrent cold caller shares the same promise and returns its
       // lexical result without awaiting it.
       void warmWorkItemQueryEmbedder(opts.embedderResolver);
+      if (workItemEmbedderWarmupRetryToken) {
+        retry = {
+          token: workItemEmbedderWarmupRetryToken,
+          afterMs: WORK_ITEM_EMBEDDER_RETRY_AFTER_MS,
+          reason: 'query_embedder_warming',
+        };
+      }
       embedder = async (): Promise<number[]> => {
         throw new Error(
           workItemEmbedderWarmupFailure ??
@@ -2053,7 +2088,7 @@ export async function searchWorkItems(
   for (const w of [...issueRows, ...featureRows]) byId.set(w.id, w);
   const items = results.map((r) => byId.get(r.source_id)).filter((w): w is WorkItem => w !== undefined);
 
-  return { items, legs, applied };
+  return { items, legs, applied, ...(retry ? { retry } : {}) };
 }
 
 // ── Writes ─────────────────────────────────────────────────────────────────────────
@@ -2103,15 +2138,16 @@ export interface CreateWorkItemInput {
   urgent?: boolean;
   /**
    * Source plan provenance (queen-steering-panel-2026-06-15 P-008): the plan slug
-   * this feature-family work-item was minted FROM — set at plan-item→work_item
-   * conversion (`convertPlanItem`). Written to the `source_plan_slug` column so the
-   * Queen's survey can HARD-filter the frontier by the owner's `eligible-plans`
-   * (surveyHive scopeFilter): a frontier item from a non-eligible plan is dropped at
-   * the source, making "work on these plans only" structurally binding rather than
-   * advisory. IGNORED for issue-family kinds (they hold no frontier row / no such
-   * column). Omit ⇒ unplanned/standalone work (source_plan_slug stays NULL).
+   * this work-item was minted FROM — set at plan-item→work_item conversion
+   * (`convertPlanItem`). Written to the indexed `source_plan_slug` column for both
+   * families so plan-scoped placement and completion can identify the source lane.
+   * Issue-family rows reach the same base columns through `createIssue`; feature-family
+   * rows write them directly. Omit ⇒ unplanned/standalone work
+   * (`source_plan_slug` stays NULL).
    */
   sourcePlanSlug?: string | null;
+  /** Plan-item ids covered by this work-item; paired with sourcePlanSlug for both families. */
+  sourcePlanItemIds?: string[] | null;
   /**
    * ADMISSION GATE (plan work-queue-admission-and-bulk-dedup-2026-08-24, P-002) — the
    * state this item is BORN with. 'pending' = born-pending, invisible to claim/place
@@ -2250,6 +2286,8 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       assignedBy: assignTo ? input.assignedBy : undefined,
       parent: input.parent,
       payload: input.payload,
+      sourcePlanSlug: input.sourcePlanSlug,
+      sourcePlanItemIds: input.sourcePlanItemIds,
       // P-002: the born-admission rides in createIssue's own INSERT (which reaches the
       // base columns through the engineer_issues INSTEAD OF trigger as of migration
       // 946) — never a post-create UPDATE from here, which would leave the row
@@ -2317,13 +2355,17 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // type ("could not determine data type of parameter $N"), same as the $6::jsonb cast.
   const sourcePlanSlug =
     typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
-  // The fixed base columns/values (params $1..$11). $6 jsonb + $11 text carry
-  // explicit casts because the org pool runs prepare:false (a bare param leaves the
-  // server unable to infer its type). The two INDEPENDENT optionals — taken_by/
+  const sourcePlanItemIds = Array.isArray(input.sourcePlanItemIds)
+    ? input.sourcePlanItemIds.filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
+        .map((itemId) => itemId.trim())
+    : null;
+  // The fixed base columns/values (params $1..$12). $6 jsonb, $11 text, and $12
+  // text[] carry explicit casts because the org pool runs prepare:false (a bare
+  // param leaves the server unable to infer its type). The two INDEPENDENT optionals — taken_by/
   // taken_at (B-LOOP-4 atomic claim) and workspace_id (EI-728) — are appended in a
   // fixed order with each param index computed off `params.length`, so they never
   // collide on a positional slot regardless of which (or both) is present.
-  const params: (string | number | null)[] = [
+  const params: (string | number | string[] | null)[] = [
     featureHarness,
     id,
     input.title,
@@ -2335,6 +2377,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     now,
     now,
     sourcePlanSlug,
+    sourcePlanItemIds,
   ];
   const cols = [
     'harness_slug',
@@ -2352,6 +2395,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     'created_ts',
     'updated_ts',
     'source_plan_slug',
+    'source_plan_item_ids',
   ];
   const vals = [
     '$1',
@@ -2394,6 +2438,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     '$9',
     '$10',
     '$11::text',
+    '$12::text[]',
   ];
   if (assignTo) {
     // Atomic create+claim: stamp the owner + lease time in the SAME INSERT (mirrors
