@@ -28,6 +28,7 @@ import {
   terminalStatusFromLedger,
 } from './bash_output';
 import { formatJobLogDiedMarker, formatJobLogEndMarker } from './bash-jobs';
+import { formatTaskBudgetRefusal } from '../../../../../scripts/lib/task-exit-class.mjs';
 import type { TaskRow } from '../../task-manager/types';
 import { serviceUnitForTask, scopeUnitForTask } from '../../task-manager/types';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -375,6 +376,112 @@ describe('terminalResourceLimitFields (EI-21437837415175286)', () => {
       resource_limit: { kind: 'pids', observed_tasks: 4_096, configured_tasks_max: 4_096 },
     });
     expect(result).not.toHaveProperty('test_verdict');
+  });
+});
+
+describe('terminalResourceLimitFields — pre-launch budget refusal (EI-21442389733525112)', () => {
+  // The exact shape of the row that went unclassified, from harness_shared.task_ledger:
+  //   task 0mt8v501616ghmdcqxv  tasks_max=512  pids_current=NULL  exit=1  workloadClass=test-run
+  // Its sibling (pids_current=512, tasks_max=512, exit=254) classified correctly, which is
+  // what made the gap invisible: the same root cause reported as infrastructure in one form
+  // and as a bare test red in the other.
+  const refusedRow = (overrides: Partial<TaskRow> = {}) =>
+    fakeRow({
+      state: 'exited',
+      exitCode: 1,
+      pidsCurrent: null,
+      tasksMax: 512,
+      detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'test-run' },
+      ...overrides,
+    });
+
+  // Built with the REAL emitter, so this suite fails if the emitter and the parser ever
+  // stop agreeing on the marker's grammar — the drift a hand-copied literal would hide.
+  const pidsRefusalLog = [
+    '[pc-heavy] slot acquired — starting real work',
+    'AFFECTED_TESTS_RESULT status=aborted tasks=0 failed=0 reason=exit-without-verdict code=1',
+    `Error: task cgroup pids.max=512 leaves 0 after pidsReserve=1024, below one pidsPerConcurrentTask=4096 envelope; refusing before launch ${formatTaskBudgetRefusal(
+      { kind: 'pids', unit: 'tasks', limit: 512, reserve: 1_024, requiredPerTask: 4_096 },
+    )}`,
+  ].join('\n');
+
+  it('classifies a refusal the ledger could not sample as infrastructure-undetermined', () => {
+    const result = terminalResourceLimitFields(refusedRow(), pidsRefusalLog);
+    expect(result).toMatchObject({
+      failure_class: 'infrastructure-resource-limit',
+      test_verdict: 'undetermined',
+      resource_limit: {
+        kind: 'pids',
+        unit: 'tasks',
+        configured_limit: 512,
+        reserve: 1_024,
+        required_per_task: 4_096,
+        source: 'pre-launch-budget-refusal',
+      },
+    });
+    // The advice must say the thing an agent needs to hear first, and name a live remedy.
+    expect(result?.resource_advice).toContain('NOTHING RAN');
+    expect(result?.resource_advice).toContain('not a red suite verdict');
+    expect(result?.resource_advice).toContain('processes:limit');
+  });
+
+  // CONTROL. Without this the suite would pass on a classifier that returned the verdict for
+  // any null-sample row, which is precisely the over-broad fix to avoid: `pidsCurrent: null`
+  // is also what a task that died for unrelated reasons looks like.
+  it('does not classify an identical row whose log carries no refusal marker', () => {
+    expect(terminalResourceLimitFields(refusedRow(), 'Test Files 1 failed | 340 passed')).toBeNull();
+    expect(terminalResourceLimitFields(refusedRow(), '')).toBeNull();
+  });
+
+  it('does not promote prose that merely discusses a budget refusal', () => {
+    expect(
+      terminalResourceLimitFields(
+        refusedRow(),
+        'note: we should check whether TASK_BUDGET_REFUSAL fires when pids.max is low',
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps a non-test refusal explicit without inventing a test verdict', () => {
+    const result = terminalResourceLimitFields(
+      refusedRow({ detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'other' } }),
+      pidsRefusalLog,
+    );
+    expect(result).toMatchObject({ failure_class: 'infrastructure-resource-limit' });
+    expect(result).not.toHaveProperty('test_verdict');
+  });
+
+  it('classifies the memory refusal site too, in its own unit', () => {
+    const result = terminalResourceLimitFields(
+      refusedRow(),
+      `task cgroup memory.max=2048MB leaves 512MB after reserve, below one workerMemoryMb=1024MB token; refusing before launch ${formatTaskBudgetRefusal(
+        { kind: 'memory', unit: 'mb', limit: 2_048, reserve: 1_536, requiredPerTask: 1_024 },
+      )}`,
+    );
+    expect(result).toMatchObject({
+      resource_limit: { kind: 'memory', unit: 'mb', source: 'pre-launch-budget-refusal' },
+    });
+    expect(result?.resource_advice).toContain('memoryMaxMb');
+  });
+
+  // The new path must be strictly additive: a row that satisfies the older cgroup-sample
+  // evidence keeps reporting that source even if a marker is also present in its log.
+  it('never displaces the cgroup-sample verdict when both evidences are present', () => {
+    expect(
+      terminalResourceLimitFields(
+        refusedRow({ exitCode: 254, pidsCurrent: 512 }),
+        `${pidsRefusalLog}\n/usr/bin/bash: fork: retry: Resource temporarily unavailable`,
+      ),
+    ).toMatchObject({
+      resource_limit: { source: 'task-ledger-cgroup-sample', observed_tasks: 512 },
+    });
+  });
+
+  it('still refuses to classify a clean exit or a live task', () => {
+    expect(terminalResourceLimitFields(refusedRow({ exitCode: 0 }), pidsRefusalLog)).toBeNull();
+    expect(
+      terminalResourceLimitFields(refusedRow({ state: 'running', exitCode: null }), pidsRefusalLog),
+    ).toBeNull();
   });
 });
 
