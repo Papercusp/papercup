@@ -25,6 +25,7 @@ import {
 } from './design-evidence-doc-claims';
 import { INVALID_REASONS, REFERENCE_CLASSES } from '../design-compare/contract';
 import { VERB_REFUSAL_CODES } from '../design-compare/verbs';
+import { DESIGN_GATE_FAILURE_REASONS } from '../design-compare/gate';
 import { explainPolicy } from '../design-compare/policy';
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
@@ -82,6 +83,7 @@ function liveCodeFacts(): DesignEvidenceCodeFacts {
     refusalCodes: VERB_REFUSAL_CODES,
     invalidReasons: INVALID_REASONS,
     referenceClasses: REFERENCE_CLASSES,
+    gateFailureReasons: DESIGN_GATE_FAILURE_REASONS,
     flagNames: [FLAGS.DESIGN_EVIDENCE_GATE, FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING],
     eligibility,
     ciRetentionDays: Number(retentionMatch![1]),

@@ -56,6 +56,16 @@ export interface DesignEvidenceCodeFacts {
   readonly refusalCodes: readonly string[];
   readonly invalidReasons: readonly string[];
   readonly referenceClasses: readonly string[];
+  /**
+   * Why the gate reports a required case unmet (`DesignGateFailureReason`).
+   *
+   * Pinned for the same reason as the vocabularies above and learned the same
+   * way: D-022 added `wrong-surface`, whose whole point is that its remedy is
+   * the OPPOSITE of the `no-evidence` one it would otherwise be mistaken for.
+   * A refusal vocabulary the page does not carry is one an operator meets for
+   * the first time in a refusal, which is the worst moment to meet it.
+   */
+  readonly gateFailureReasons: readonly string[];
   readonly flagNames: readonly string[];
   /** referenceClass -> 'gateable' | 'advisory-only' | 'absent', as policy.ts derives it today. */
   readonly eligibility: ReadonlyMap<string, string>;
@@ -116,6 +126,7 @@ export function judgeDesignEvidenceDoc(
     ['verb refusal code', code.refusalCodes],
     ['invalid reason', code.invalidReasons],
     ['reference class', code.referenceClasses],
+    ['gate failure reason', code.gateFailureReasons],
   ];
 
   for (const [label, values] of vocabularies) {
