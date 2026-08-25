@@ -54,7 +54,6 @@ import {
 } from '../../release/in-flight-retriage';
 import { readInFlightCandidate } from '../../release/in-flight-candidate';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
-import { applyPendingMigrationsNow } from '../../db-boot-migrate';
 import {
   readGateOwnership,
   shouldStandDownForLivePeer,
@@ -109,8 +108,7 @@ export default defineTool({
     "FIRE the green-checkpoint NOW — run the full gate suite against current staging on demand (instead of waiting for the hourly cron tick), and if it's green, advance the green pin so release:deploy can ship it. The gate's VERDICT producer had no manual lever (only routines:set cron/pause) — the same gap git-sync:run closed for the commit routine. Use it after you've fixed or quarantined the reds to force a fresh verdict instead of waiting up to an hour. Detached (the suite runs up to ~55 min) + self-locked against a concurrent tick (won't OOM). Watch /admin/git for the verdict, then release:deploy { op:status } → op:trigger.",
   capability: 'operator:write',
   guidance: {
-    when:
-      "You've fixed or quarantined the reds and want a FRESH green verdict now rather than waiting for the next hourly green-checkpoint. Or the gate looks stale and you want to re-run the suite on demand.",
+    when: "You've fixed or quarantined the reds and want a FRESH green verdict now rather than waiting for the next hourly green-checkpoint. Or the gate looks stale and you want to re-run the suite on demand.",
     notWhen:
       'To retune/pause the checkpoint cadence use routines:set. To SHIP an already-green pin use release:deploy op:trigger (checkpoint-run produces green; it does not deploy). To force an UN-green deploy use release:deploy op:force.',
     chaining:
@@ -144,10 +142,9 @@ export default defineTool({
       // SERIALIZED result, so a JSON-only gate can silently never fire. Fail open.
       const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
       const serializedField = (key: string): string | null => {
-        const match = new RegExp(
-          `\\b${key}\\b\\s*["']?\\s*:\\s*(?:"([^"]*)"|'([^']*)'|([^\\s,}\\]]+))`,
-          'i',
-        ).exec(text);
+        const match = new RegExp(`\\b${key}\\b\\s*["']?\\s*:\\s*(?:"([^"]*)"|'([^']*)'|([^\\s,}\\]]+))`, 'i').exec(
+          text,
+        );
         const value = match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
         return value && value !== 'null' ? value : null;
       };
@@ -182,14 +179,12 @@ export default defineTool({
         );
       }
       if (conditionClaimed) {
-        out.push(
-          {
-            tool: 'release:deploy',
-            selector: "{ op: 'status' }",
-            reason:
-              'the refusal does not carry the current gate/run status — re-read it before deciding whether another fire or an override is justified',
-          },
-        );
+        out.push({
+          tool: 'release:deploy',
+          selector: "{ op: 'status' }",
+          reason:
+            'the refusal does not carry the current gate/run status — re-read it before deciding whether another fire or an override is justified',
+        });
 
         if (canFollowGateCell) {
           out.push(
@@ -226,8 +221,7 @@ export default defineTool({
         if (safeTakenBy) {
           out.push({
             tool: 'coord:send',
-            selector:
-              `{ to: ['${safeTakenBy}'], body: [{ text: 'Ask for the current gate rescue/verdict status${safeWorkItem ? ` for ${safeWorkItem}` : ''}.' }], expects: 'answer', wake: 'required' }`,
+            selector: `{ to: ['${safeTakenBy}'], body: [{ text: 'Ask for the current gate rescue/verdict status${safeWorkItem ? ` for ${safeWorkItem}` : ''}.' }], expects: 'answer', wake: 'required' }`,
             reason:
               'hand the live gate owner a direct status request and wake them when needed instead of reconstructing the rescue from a stale refusal',
           });
@@ -264,7 +258,7 @@ export default defineTool({
       .array(z.string())
       .optional()
       .describe(
-      'Repo-relative files your change touches. The launch receipt reports callerEditsInCandidate { included, missing } for the exact candidate transported into the detached CLI. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed — and it is also what arms the pre-launch refusal (reason:would_exclude_declared_paths), which declines to spend a ~55min suite on a candidate that provably lacks these files.',
+        "Repo-relative files your change touches. The launch receipt reports callerEditsInCandidate { included, missing } for the exact candidate transported into the detached CLI. PASS THIS: without it the check falls back to the whole shared tree's uncommitted files, which includes peers' edits and cannot see a change you already committed — and it is also what arms the pre-launch refusal (reason:would_exclude_declared_paths), which declines to spend a ~55min suite on a candidate that provably lacks these files.",
       ),
     waitForEligibility: z
       .boolean()
@@ -277,7 +271,7 @@ export default defineTool({
       .regex(/^[0-9a-fA-F]{4,64}$/)
       .optional()
       .describe(
-        'Optional fail-CLOSED lineage guard for a release-critical repair SHA. Before spawning, checkpoint-run reads the existing frozen-candidate queue and applies the detached writer\'s shared queue policy: ready-to-test checks queue.candidate, ready-to-verify checks queue.repairHead, and an exhausted queue refuses because its blocked head remains authoritative rather than admitting a fresh tip. Live/unknown fixers and every other non-suite queue decision also refuse until the judged candidate is knowable. The selected candidate must satisfy `git merge-base --is-ancestor <requiredAncestorSha> <candidate>` exit 0. A miss or unreadable queue/object refuses without spending the singleton run. force:true does NOT bypass this explicit guarantee. Post-launch release:trace must still confirm the writer bound the same lineage.',
+        "Optional fail-CLOSED lineage guard for a release-critical repair SHA. Before spawning, checkpoint-run reads the existing frozen-candidate queue and applies the detached writer's shared queue policy: ready-to-test checks queue.candidate, ready-to-verify checks queue.repairHead, and an exhausted queue refuses because its blocked head remains authoritative rather than admitting a fresh tip. Live/unknown fixers and every other non-suite queue decision also refuse until the judged candidate is knowable. The selected candidate must satisfy `git merge-base --is-ancestor <requiredAncestorSha> <candidate>` exit 0. A miss or unreadable queue/object refuses without spending the singleton run. force:true does NOT bypass this explicit guarantee. Post-launch release:trace must still confirm the writer bound the same lineage.",
       ),
     // EI-20031402866608444: ACCEPTED, not ignored. This arg used to be undeclared, and the schema
     // is additionalProperties:false, so passing it was an `invalid_input` that launched NOTHING —
@@ -388,16 +382,18 @@ export default defineTool({
     if (args.resumePausedRoutine) {
       if (!args.prerequisiteWorkItems?.length) {
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              launched: false,
-              scheduled: false,
-              reason: 'serializer_transition_requires_prerequisites',
-              note: 'NOT resumed: pass prerequisiteWorkItems so the transition can prove every blocking repair is terminal in the same transaction.',
-            }),
-          }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                scheduled: false,
+                reason: 'serializer_transition_requires_prerequisites',
+                note: 'NOT resumed: pass prerequisiteWorkItems so the transition can prove every blocking repair is terminal in the same transaction.',
+              }),
+            },
+          ],
         };
       }
       let caller: ReturnType<typeof resolveAgentIdentity> | null = null;
@@ -408,38 +404,38 @@ export default defineTool({
       }
       if (!caller) {
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              launched: false,
-              scheduled: false,
-              reason: 'serializer_transition_identity_unreadable',
-              note: 'NOT resumed: the caller identity is required to prove gate ownership.',
-            }),
-          }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                scheduled: false,
+                reason: 'serializer_transition_identity_unreadable',
+                note: 'NOT resumed: the caller identity is required to prove gate ownership.',
+              }),
+            },
+          ],
         };
       }
       const ownership = await readGateOwnership();
-      if (
-        ownership.claimState !== 'held' ||
-        !ownership.workItem ||
-        ownership.takenBy !== caller.ownerId
-      ) {
+      if (ownership.claimState !== 'held' || !ownership.workItem || ownership.takenBy !== caller.ownerId) {
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              launched: false,
-              scheduled: false,
-              reason: 'serializer_transition_not_gate_owner',
-              work_item: ownership.workItem,
-              taken_by: ownership.takenBy,
-              claim_state: ownership.claimState,
-              note: 'NOT resumed: only the current gate-condition owner may complete the paused serializer transition.',
-            }),
-          }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                scheduled: false,
+                reason: 'serializer_transition_not_gate_owner',
+                work_item: ownership.workItem,
+                taken_by: ownership.takenBy,
+                claim_state: ownership.claimState,
+                note: 'NOT resumed: only the current gate-condition owner may complete the paused serializer transition.',
+              }),
+            },
+          ],
         };
       }
       const transition = await armPausedCheckpointTransition({
@@ -457,39 +453,43 @@ export default defineTool({
       if (transition.status === 'armed' || transition.status === 'already-armed') {
         const pipeline = operatorHomeHarnessSlug();
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: true,
-              launched: false,
-              scheduled: true,
-              reason: transition.status === 'armed' ? 'serializer_transition_armed' : 'serializer_transition_already_armed',
-              work_item: ownership.workItem,
-              prerequisite_work_items: transition.prerequisiteWorkItems,
-              armed_at_ms: transition.armedAtMs,
-              completion_events: [
-                `release:green:${pipeline}`,
-                `green-checkpoint:red:${pipeline}`,
-                `green-checkpoint:inconclusive:${pipeline}`,
-              ],
-              note:
-                'The deliberate pause is cleared and the existing routine is due now. Its compare-and-claim starts exactly one checkpoint; no detached duplicate was spawned by this request.',
-            }),
-          }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: true,
+                launched: false,
+                scheduled: true,
+                reason:
+                  transition.status === 'armed' ? 'serializer_transition_armed' : 'serializer_transition_already_armed',
+                work_item: ownership.workItem,
+                prerequisite_work_items: transition.prerequisiteWorkItems,
+                armed_at_ms: transition.armedAtMs,
+                completion_events: [
+                  `release:green:${pipeline}`,
+                  `green-checkpoint:red:${pipeline}`,
+                  `green-checkpoint:inconclusive:${pipeline}`,
+                ],
+                note: 'The deliberate pause is cleared and the existing routine is due now. Its compare-and-claim starts exactly one checkpoint; no detached duplicate was spawned by this request.',
+              }),
+            },
+          ],
         };
       }
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: false,
-            launched: false,
-            scheduled: false,
-            reason: `serializer_transition_${transition.status}`,
-            detail: transition.status === 'refused' ? transition.detail : transition.error,
-            transition_reason: transition.status === 'refused' ? transition.reason : undefined,
-          }),
-        }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              scheduled: false,
+              reason: `serializer_transition_${transition.status}`,
+              detail: transition.status === 'refused' ? transition.detail : transition.error,
+              transition_reason: transition.status === 'refused' ? transition.reason : undefined,
+            }),
+          },
+        ],
       };
     }
 
@@ -513,25 +513,27 @@ export default defineTool({
         ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       });
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: false,
-            launched: false,
-            reason: held ? 'manual_run_authority_withheld' : 'manual_run_authority_unreadable',
-            governing_ref: held?.governingRef,
-            blocking_items: held?.blockingItems,
-            note: held
-              ? `NOT launched: ${held.governingRef} withholds manual release:checkpoint-run authority. ` +
-                `${held.reason ?? ''} ORDINARY SCHEDULED gate fires are unaffected by this hold — a cron fire is not a ` +
-                'manual launch — so the gate continues to produce verdicts on its own; await the next one. ' +
-                'force, replaceStale and waitForEligibility cannot bypass this authority boundary. To lift it, record a ' +
-                'newer decision granting manual authority and clear the hold with release:checkpoint-config { op:"unhold", scope:"manual-run" }.'
-              : 'NOT launched: the manual-run authority token could not be read, so this tool cannot prove a recorded ' +
-                'decision does not forbid this launch. It fails closed before spending a ~55min suite; retry after the ' +
-                `authority read recovers (${unreadable}).`,
-          }),
-        }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: held ? 'manual_run_authority_withheld' : 'manual_run_authority_unreadable',
+              governing_ref: held?.governingRef,
+              blocking_items: held?.blockingItems,
+              note: held
+                ? `NOT launched: ${held.governingRef} withholds manual release:checkpoint-run authority. ` +
+                  `${held.reason ?? ''} ORDINARY SCHEDULED gate fires are unaffected by this hold — a cron fire is not a ` +
+                  'manual launch — so the gate continues to produce verdicts on its own; await the next one. ' +
+                  'force, replaceStale and waitForEligibility cannot bypass this authority boundary. To lift it, record a ' +
+                  'newer decision granting manual authority and clear the hold with release:checkpoint-config { op:"unhold", scope:"manual-run" }.'
+                : 'NOT launched: the manual-run authority token could not be read, so this tool cannot prove a recorded ' +
+                  'decision does not forbid this launch. It fails closed before spending a ~55min suite; retry after the ' +
+                  `authority read recovers (${unreadable}).`,
+            }),
+          },
+        ],
       };
     }
 
@@ -539,51 +541,10 @@ export default defineTool({
     // agentRoles note above). Access control is the invoke allowlist; any invoke-allowed red-fixer
     // may fire a fresh green verdict.
     //
-    // WI-6946: preflight pending migrations BEFORE spawning the detached suite, not after. The
-    // detached run's OWN internal preflight (green-checkpoint.ts, EI-18757975681519069) already
-    // fails CLOSED — aborting as `green: null, reason: 'migrations-pending'` — the moment it finds
-    // a migration it cannot apply, rather than judging staging against a schema known to be behind
-    // it (a red made of missing-column failures reading as unrelated flakes, not a real verdict).
-    // That is the RIGHT call. The defect this closes is entirely on the CALLER side of that: this
-    // tool used to report `launched:true` + "up to ~55 min" — and, with `paths`, the reassuring
-    // "✓ the judged candidate carries all N file(s) you named" — for a run that then aborted
-    // INCONCLUSIVE ~60s later, with nothing telling the caller short of `cat`-ing a `/tmp` log the
-    // tool's own note never mentions. Measured 2026-08-02: an agent read the ~55min ETA at face
-    // value and waited ~18 minutes for a verdict from a run that had already exited at minute one.
-    // Reusing applyPendingMigrationsNow() HERE — the exact same idempotent, retry-on-contention
-    // function (EI-19320461261471579: 3 attempts, 400ms→2s backoff, closing the transient
-    // lock_timeout case this bug was first measured against) the detached run itself calls as its
-    // own preflight — means: (a) a transient contention failure is very likely already resolved by
-    // the time this returns, so the common case now just launches normally with nothing pending
-    // left for the detached run to trip over; (b) a genuinely-broken migration is caught HERE,
-    // before the systemd unit is even created, so the caller gets an immediate, honest
-    // `{ok:false, reason:'migrations-pending', pending:[...]}` instead of a misleading launch
-    // receipt for a run about to self-abort.
-    const migrationPreflight = await applyPendingMigrationsNow();
-    if (migrationPreflight && migrationPreflight.failed.length > 0) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              launched: false,
-              reason: 'migrations-pending',
-              pending: migrationPreflight.failed,
-              note:
-                `NOT launched: ${migrationPreflight.failed.length} migration(s) failed to apply to the dev PG ` +
-                '(left pending). Launching the suite now would judge staging against a schema known to be behind ' +
-                'it — a red made of missing-column failures that reads as unrelated flakes, not a real verdict on ' +
-                'your code — so this refuses rather than repeat the WI-6946 defect (launched:true + a ~55min ETA ' +
-                'for a run that then aborts INCONCLUSIVE ~60s later with no way for the caller to know). A ' +
-                'transient lock_timeout is ALREADY retried automatically inside this same call (3 attempts, ' +
-                'backoff to 2s) — if you are seeing this, the failure(s) below are not that. Fix the migration ' +
-                `and call this again. Pending: ${migrationPreflight.failed.map((f) => `${f.file}: ${f.error}`).join('; ')}`,
-            }),
-          },
-        ],
-      };
-    }
+    // WI-41490: migration application belongs to the detached run after it has resolved and
+    // prepared the exact candidate. Applying here used the request process's ambient sql-dir
+    // resolution before assessPreLaunchExclusion/quiet-cut/frozen-queue selection, creating a
+    // TOCTOU in which one tree's migrations could be applied for a different judged candidate.
     // P-007 (gate-ownership-condition-singleton-2026-08-03): stand down when a LIVE peer is
     // already on this incident.
     //
@@ -711,9 +672,7 @@ export default defineTool({
       if (peerHeld && callerOwnerId && ownership.takenBy && ownership.workItem) {
         const livePeerStandDown = shouldStandDownForLivePeer(ownership, callerOwnerId);
         const needsSharedRecoveryRead = !criticalProgressLease.expired && (!livePeerStandDown || shouldWakeOwner);
-        const recoveryModule = needsSharedRecoveryRead
-          ? await import('../work_items/release-force-guard')
-          : null;
+        const recoveryModule = needsSharedRecoveryRead ? await import('../work_items/release-force-guard') : null;
         const recovery = recoveryModule
           ? await recoveryModule.assessForceRelease({
               callerOwnerId,
@@ -723,7 +682,7 @@ export default defineTool({
             })
           : null;
         const automaticBasis = criticalProgressLease.expired
-          ? 'critical-claim-progress-expired' as const
+          ? ('critical-claim-progress-expired' as const)
           : recovery?.allowed &&
               recovery.basis &&
               [
@@ -738,9 +697,7 @@ export default defineTool({
         if (automaticBasis) {
           const [{ claimWorkItem }, forceTransition] = await Promise.all([
             import('../../work-items'),
-            recoveryModule
-              ? Promise.resolve(recoveryModule)
-              : import('../work_items/release-force-guard'),
+            recoveryModule ? Promise.resolve(recoveryModule) : import('../work_items/release-force-guard'),
           ]);
           const transferred = await claimWorkItem(ownership.workItem, callerOwnerId, {
             harness: operatorHomeHarnessSlug(),
@@ -755,17 +712,19 @@ export default defineTool({
               ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
             });
             return {
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  ok: false,
-                  launched: false,
-                  reason: 'condition_takeover_race',
-                  work_item: ownership.workItem,
-                  expected_holder: ownership.takenBy,
-                  note: 'NOT launched: the abandoned-owner CAS lost because ownership changed during recovery. Re-read gate ownership before acting.',
-                }),
-              }],
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    ok: false,
+                    launched: false,
+                    reason: 'condition_takeover_race',
+                    work_item: ownership.workItem,
+                    expected_holder: ownership.takenBy,
+                    note: 'NOT launched: the abandoned-owner CAS lost because ownership changed during recovery. Re-read gate ownership before acting.',
+                  }),
+                },
+              ],
             };
           }
           const takeoverReason =
@@ -778,15 +737,18 @@ export default defineTool({
             harness: transferred.harness ?? operatorHomeHarnessSlug(),
             replacementAssignee: callerOwnerId,
           });
-          await forceTransition.notifyForceTransition({ ownerId: callerOwnerId }, {
-            itemId: ownership.workItem,
-            holder: ownership.takenBy,
-            basis: automaticBasis,
-            reason: takeoverReason,
-            harness: transferred.harness ?? operatorHomeHarnessSlug(),
-            operation: 'claim',
-            replacementAssignee: callerOwnerId,
-          });
+          await forceTransition.notifyForceTransition(
+            { ownerId: callerOwnerId },
+            {
+              itemId: ownership.workItem,
+              holder: ownership.takenBy,
+              basis: automaticBasis,
+              reason: takeoverReason,
+              harness: transferred.harness ?? operatorHomeHarnessSlug(),
+              operation: 'claim',
+              replacementAssignee: callerOwnerId,
+            },
+          );
           ctx.metadata?.({
             standDown: 'condition_ownership_transferred',
             standDownWorkItem: ownership.workItem,
@@ -796,23 +758,24 @@ export default defineTool({
             ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
           });
           return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                ok: true,
-                launched: false,
-                scheduled: false,
-                ownership_transferred: true,
-                reason: 'condition_ownership_transferred',
-                work_item: ownership.workItem,
-                prior_holder: ownership.takenBy,
-                taken_by: callerOwnerId,
-                transfer_basis: automaticBasis,
-                progress_lease: criticalProgressLease,
-                note:
-                  'Ownership transferred by expected-holder CAS, but NO checkpoint was launched. Finish and terminally verify the named repairs, then call release:checkpoint-run with resumePausedRoutine:true and prerequisiteWorkItems; only that atomic transition may schedule the routine.',
-              }),
-            }],
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ok: true,
+                  launched: false,
+                  scheduled: false,
+                  ownership_transferred: true,
+                  reason: 'condition_ownership_transferred',
+                  work_item: ownership.workItem,
+                  prior_holder: ownership.takenBy,
+                  taken_by: callerOwnerId,
+                  transfer_basis: automaticBasis,
+                  progress_lease: criticalProgressLease,
+                  note: 'Ownership transferred by expected-holder CAS, but NO checkpoint was launched. Finish and terminally verify the named repairs, then call release:checkpoint-run with resumePausedRoutine:true and prerequisiteWorkItems; only that atomic transition may schedule the routine.',
+                }),
+              },
+            ],
           };
         }
       }
@@ -884,20 +847,21 @@ export default defineTool({
           ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
         });
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              launched: false,
-              reason: 'condition_claimed_unconfirmed',
-              work_item: ownership.workItem,
-              taken_by: ownership.takenBy,
-              holder_session_state: ownership.holderSessionState,
-              wake_confirmed: false,
-              note:
-                'NOT launched: the required wake missed, but the shared progress/liveness guard did not authorize a transfer. Re-read ownership rather than launching beside an unresolved claim.',
-            }),
-          }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                reason: 'condition_claimed_unconfirmed',
+                work_item: ownership.workItem,
+                taken_by: ownership.takenBy,
+                holder_session_state: ownership.holderSessionState,
+                wake_confirmed: false,
+                note: 'NOT launched: the required wake missed, but the shared progress/liveness guard did not authorize a transfer. Re-read ownership rather than launching beside an unresolved claim.',
+              }),
+            },
+          ],
         };
       }
     }
@@ -933,18 +897,20 @@ export default defineTool({
     const storedQualification = await readStoredQualification(qualificationTarget);
     if (storedQualification.status === 'unreadable') {
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: false,
-            launched: false,
-            reason: 'qualification_transaction_unreadable',
-            error: storedQualification.error,
-            note:
-              'NOT launched: the durable logical qualification transaction could not be read. ' +
-              'Unknown transaction state fails closed because a second physical runner cannot be proven safe.',
-          }),
-        }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: 'qualification_transaction_unreadable',
+              error: storedQualification.error,
+              note:
+                'NOT launched: the durable logical qualification transaction could not be read. ' +
+                'Unknown transaction state fails closed because a second physical runner cannot be proven safe.',
+            }),
+          },
+        ],
       };
     }
     const logicalAttemptId =
@@ -969,31 +935,33 @@ export default defineTool({
     if (!qualificationMutationContinues(qualificationBegin)) {
       const transaction = 'transaction' in qualificationBegin ? qualificationBegin.transaction : null;
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: false,
-            launched: false,
-            reason:
-              qualificationBegin.status === 'terminal'
-                ? 'qualification_transaction_terminal'
-                : qualificationBegin.status === 'conflict'
-                  ? 'qualification_transaction_conflict'
-                  : 'qualification_transaction_unavailable',
-            logical_attempt_id: transaction?.attemptId ?? logicalAttemptId,
-            phase: transaction?.phase ?? null,
-            outcome: transaction?.outcome ?? null,
-            repair_queue_reconciliation:
-              'repairQueueReconciliation' in qualificationBegin
-                ? qualificationBegin.repairQueueReconciliation
-                : undefined,
-            error: 'error' in qualificationBegin ? qualificationBegin.error : undefined,
-            note:
-              qualificationBegin.status === 'terminal'
-                ? 'NOT launched: this exact candidate/request already produced a terminal logical outcome. A real red or code-inconclusive verdict is never auto-retried; a newer candidate starts a new attempt.'
-                : 'NOT launched: another non-terminal logical qualification owns the singleton transaction, the predecessor repair queue was not safe to retire, or the store is unavailable.',
-          }),
-        }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason:
+                qualificationBegin.status === 'terminal'
+                  ? 'qualification_transaction_terminal'
+                  : qualificationBegin.status === 'conflict'
+                    ? 'qualification_transaction_conflict'
+                    : 'qualification_transaction_unavailable',
+              logical_attempt_id: transaction?.attemptId ?? logicalAttemptId,
+              phase: transaction?.phase ?? null,
+              outcome: transaction?.outcome ?? null,
+              repair_queue_reconciliation:
+                'repairQueueReconciliation' in qualificationBegin
+                  ? qualificationBegin.repairQueueReconciliation
+                  : undefined,
+              error: 'error' in qualificationBegin ? qualificationBegin.error : undefined,
+              note:
+                qualificationBegin.status === 'terminal'
+                  ? 'NOT launched: this exact candidate/request already produced a terminal logical outcome. A real red or code-inconclusive verdict is never auto-retried; a newer candidate starts a new attempt.'
+                  : 'NOT launched: another non-terminal logical qualification owns the singleton transaction, the predecessor repair queue was not safe to retire, or the store is unavailable.',
+            }),
+          },
+        ],
       };
     }
 
@@ -1024,10 +992,7 @@ export default defineTool({
         attemptId: logicalAttemptId,
         reason,
         blockers: [{ code, detail, clearEvents }],
-        evidenceRefs: [
-          'tool:release:checkpoint-run',
-          ...(launchCandidate ? [`candidate:${launchCandidate}`] : []),
-        ],
+        evidenceRefs: ['tool:release:checkpoint-run', ...(launchCandidate ? [`candidate:${launchCandidate}`] : [])],
       });
 
     let qualificationWait: StoredQualificationMutation | null = null;
@@ -1039,9 +1004,7 @@ export default defineTool({
       );
     } else if (frozenRepairQueuePreflight && !frozenRepairQueuePreflight.proceed) {
       qualificationWait = await recordLogicalWait(
-        frozenRepairQueuePreflight.reason === 'queue-unreadable'
-          ? 'repair-queue-unreadable'
-          : 'repair-in-progress',
+        frozenRepairQueuePreflight.reason === 'queue-unreadable' ? 'repair-queue-unreadable' : 'repair-in-progress',
         'frozen-repair-queue',
         frozenRepairQueuePreflight.detail ?? frozenRepairQueuePreflight.reason,
       );
@@ -1056,16 +1019,18 @@ export default defineTool({
     }
     if (qualificationWait && !qualificationMutationContinues(qualificationWait)) {
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: false,
-            launched: false,
-            reason: `qualification_wait_${qualificationWait.status}`,
-            logical_attempt_id: logicalAttemptId,
-            error: 'error' in qualificationWait ? qualificationWait.error : undefined,
-          }),
-        }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: `qualification_wait_${qualificationWait.status}`,
+              logical_attempt_id: logicalAttemptId,
+              error: 'error' in qualificationWait ? qualificationWait.error : undefined,
+            }),
+          },
+        ],
       };
     }
     // WI-37618: the refusal below is returned to the CALLER and recorded NOWHERE else.
@@ -1319,18 +1284,20 @@ export default defineTool({
     if (!qualificationMutationContinues(qualificationReservation)) {
       const transaction = 'transaction' in qualificationReservation ? qualificationReservation.transaction : null;
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: false,
-            launched: false,
-            reason: `qualification_reservation_${qualificationReservation.status}`,
-            logical_attempt_id: logicalAttemptId,
-            active_runner: transaction?.currentPhysicalRunner ?? null,
-            outcome: transaction?.outcome ?? null,
-            error: 'error' in qualificationReservation ? qualificationReservation.error : undefined,
-          }),
-        }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: `qualification_reservation_${qualificationReservation.status}`,
+              logical_attempt_id: logicalAttemptId,
+              active_runner: transaction?.currentPhysicalRunner ?? null,
+              outcome: transaction?.outcome ?? null,
+              error: 'error' in qualificationReservation ? qualificationReservation.error : undefined,
+            }),
+          },
+        ],
       };
     }
     const result = await launchDetachedCheckpoint({
@@ -1339,7 +1306,10 @@ export default defineTool({
       ...(launchCandidate ? { candidate: launchCandidate } : {}),
       logicalAttemptId,
     });
-    if (!result.launched && !(result.reason === 'already_running' && qualificationReservation.status === 'idempotent')) {
+    if (
+      !result.launched &&
+      !(result.reason === 'already_running' && qualificationReservation.status === 'idempotent')
+    ) {
       const normalizedReason = (result.reason ?? '').trim().replaceAll('_', '-');
       const typedReason: PreSuiteNoVerdictReason = [
         'probe-failed',
@@ -1347,7 +1317,7 @@ export default defineTool({
         'cancelled',
         'deadline-exceeded',
       ].includes(normalizedReason)
-        ? normalizedReason as PreSuiteNoVerdictReason
+        ? (normalizedReason as PreSuiteNoVerdictReason)
         : 'launch-refused';
       const launchWait = await recordLogicalWait(
         typedReason,
@@ -1356,15 +1326,17 @@ export default defineTool({
       );
       if (!qualificationMutationContinues(launchWait)) {
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              launched: false,
-              reason: `qualification_wait_${launchWait.status}`,
-              logical_attempt_id: logicalAttemptId,
-            }),
-          }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                reason: `qualification_wait_${launchWait.status}`,
+                logical_attempt_id: logicalAttemptId,
+              }),
+            },
+          ],
         };
       }
     }
@@ -1482,7 +1454,7 @@ export default defineTool({
             question: 'Does the in-flight run judge a candidate that contains your change?',
             because:
               'This run is held by a DIFFERENT process (the cron tick) and has published no in-flight-retriage or ' +
-              'in-flight-candidate marker, so the only candidate available is the checkpoint checkout\'s live HEAD ' +
+              "in-flight-candidate marker, so the only candidate available is the checkpoint checkout's live HEAD " +
               're-read after the fact — an inference about a process this tool cannot observe, which changes ' +
               'silently between reads.',
             insteadRead:
@@ -1496,7 +1468,8 @@ export default defineTool({
             // a log read and, on the cron path this branch usually describes, an INFERENCE from the
             // checkpoint checkout's live HEAD. Prefer the observation — same precedence
             // `mapCheckpointRunInFlight` already applies for dev:pipeline_position.
-            candidateSha: liveRetriage?.marker.refiringCandidate ?? liveCandidateMarker?.candidate ?? a.candidate ?? null,
+            candidateSha:
+              liveRetriage?.marker.refiringCandidate ?? liveCandidateMarker?.candidate ?? a.candidate ?? null,
             tipSha: a.current_head ?? null,
             paths: args.paths,
           });
@@ -1624,31 +1597,31 @@ export default defineTool({
                     : '') +
                   `Wait for the verdict: checkpoint:await, then release:trace.`
                 : a.held_externally
-                ? // WI-5685: the shared run-lock (cron + manual serialize on the SAME lock) is held by a
-                  // process that is NOT this root's manual unit — almost certainly the hourly cron tick.
-                  // force:true would still spawn (this proactive check is the only thing standing in the
-                  // way), but that new process would just lose the exact same lock race a second later and
-                  // produce no verdict either — force/replaceStale are BOTH useless here, unlike the
-                  // manual-vs-manual collision case below. The only real lever is to wait for the verdict:
-                  // it covers your commit too as long as your commit is an ancestor of whatever it judges
-                  // (release:trace confirms after waking if you didn't pass candidateSha).
-                  // EI-18695275971973546: `candidate` above is (best-effort) the REAL judged sha, read
-                  // straight from the isolated checkpoint checkout's own HEAD — trust IT for "what is this
-                  // run testing", never `current_candidate`/`candidate_stale` below, which describe a
-                  // HYPOTHETICAL run started fresh right now, not the one actually in flight.
-                  `A checkpoint run for this root is already in flight, held by a DIFFERENT process than the manual unit (almost certainly the hourly cron tick — it runs as a plain child process, not this unit, so this tool cannot see or control it directly). ${a.candidate ? `The checkpoint checkout's HEAD currently reads ${a.candidate.slice(0, 12)} — that is an INFERENCE about which sha this run is judging, NOT an observation of it: the checkout can move between two reads, and an in-process auto-refire advances the candidate while pid/started_at stay fixed. This run published no in-flight-retriage marker, so its candidate is genuinely undetermined here. Do NOT verify your fix against that sha on this basis alone — read gate_health->'inFlightRetriage' in harness_shared.routines (what the running process publishes about ITSELF, scoping BOTH install_slug and workspace_id), or wait for the verdict, which names its own candidate. It is certainly not current_candidate below.` : "This run's exact candidate could not be resolved (the checkpoint checkout wasn't readable) — do not assume it matches current_candidate below, which is only what a NEW run would pick if launched now."} force:true and replaceStale CANNOT free this slot — a forced launch would just spawn a second process that loses the identical run-lock race a moment later and silently produces no verdict (the exact failure this check exists to prevent). Wait for it instead: checkpoint:await (omit candidateSha to wake on this run\'s verdict regardless of exact sha, then release:trace to confirm your commit is included).`
-                : replaceDecision.replace
-                  ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging; it is OLD enough that it should have verdicted by now AND it has not published the `delivering` phase (EI-9672: the genuine wedged-salvage case). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
-                  : replaceDecision.reason === 'delivering'
-                    ? // EI-18757736867106199: the case that used to read "pass replaceStale:true".
-                      // A run here has FINISHED its suite and is in the verdict path — it may be
-                      // re-triaging a stale red and auto-refiring onto a newer tip, which is the
-                      // gate repairing itself. Age cannot distinguish this from wedged; the phase
-                      // can, and it is decisive.
-                      'A checkpoint run for this root is already in flight and has published the `delivering` phase: its SUITE IS DONE and it is in the verdict path (stale-red re-triage → auto-refire → prefix salvage). It is seconds-to-minutes from a verdict, and may VOID a stale red and re-fire itself onto a newer tip — this is the gate self-healing, not a wedge. It is NOT replaceable at any age: replaceStale:true will be refused (replace_refused_delivering), and killing it out-of-band DISCARDS the salvage (that is exactly how four consecutive runs died on 2026-07-27 with nothing actually broken). Wait for it: checkpoint:await, then release:trace to confirm your commit is included.'
-                    : replaceDecision.reason === 'young'
-                      ? `A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Judge liveness from current_phase + progress_at; eta_sec is only the remaining systemd backstop when eta_basis is full-suite, not a measured time-to-verdict. replaceStale only unlocks once the run is ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old AND not delivering.`
-                      : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
+                  ? // WI-5685: the shared run-lock (cron + manual serialize on the SAME lock) is held by a
+                    // process that is NOT this root's manual unit — almost certainly the hourly cron tick.
+                    // force:true would still spawn (this proactive check is the only thing standing in the
+                    // way), but that new process would just lose the exact same lock race a second later and
+                    // produce no verdict either — force/replaceStale are BOTH useless here, unlike the
+                    // manual-vs-manual collision case below. The only real lever is to wait for the verdict:
+                    // it covers your commit too as long as your commit is an ancestor of whatever it judges
+                    // (release:trace confirms after waking if you didn't pass candidateSha).
+                    // EI-18695275971973546: `candidate` above is (best-effort) the REAL judged sha, read
+                    // straight from the isolated checkpoint checkout's own HEAD — trust IT for "what is this
+                    // run testing", never `current_candidate`/`candidate_stale` below, which describe a
+                    // HYPOTHETICAL run started fresh right now, not the one actually in flight.
+                    `A checkpoint run for this root is already in flight, held by a DIFFERENT process than the manual unit (almost certainly the hourly cron tick — it runs as a plain child process, not this unit, so this tool cannot see or control it directly). ${a.candidate ? `The checkpoint checkout's HEAD currently reads ${a.candidate.slice(0, 12)} — that is an INFERENCE about which sha this run is judging, NOT an observation of it: the checkout can move between two reads, and an in-process auto-refire advances the candidate while pid/started_at stay fixed. This run published no in-flight-retriage marker, so its candidate is genuinely undetermined here. Do NOT verify your fix against that sha on this basis alone — read gate_health->'inFlightRetriage' in harness_shared.routines (what the running process publishes about ITSELF, scoping BOTH install_slug and workspace_id), or wait for the verdict, which names its own candidate. It is certainly not current_candidate below.` : "This run's exact candidate could not be resolved (the checkpoint checkout wasn't readable) — do not assume it matches current_candidate below, which is only what a NEW run would pick if launched now."} force:true and replaceStale CANNOT free this slot — a forced launch would just spawn a second process that loses the identical run-lock race a moment later and silently produces no verdict (the exact failure this check exists to prevent). Wait for it instead: checkpoint:await (omit candidateSha to wake on this run\'s verdict regardless of exact sha, then release:trace to confirm your commit is included).`
+                  : replaceDecision.replace
+                    ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging; it is OLD enough that it should have verdicted by now AND it has not published the `delivering` phase (EI-9672: the genuine wedged-salvage case). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
+                    : replaceDecision.reason === 'delivering'
+                      ? // EI-18757736867106199: the case that used to read "pass replaceStale:true".
+                        // A run here has FINISHED its suite and is in the verdict path — it may be
+                        // re-triaging a stale red and auto-refiring onto a newer tip, which is the
+                        // gate repairing itself. Age cannot distinguish this from wedged; the phase
+                        // can, and it is decisive.
+                        'A checkpoint run for this root is already in flight and has published the `delivering` phase: its SUITE IS DONE and it is in the verdict path (stale-red re-triage → auto-refire → prefix salvage). It is seconds-to-minutes from a verdict, and may VOID a stale red and re-fire itself onto a newer tip — this is the gate self-healing, not a wedge. It is NOT replaceable at any age: replaceStale:true will be refused (replace_refused_delivering), and killing it out-of-band DISCARDS the salvage (that is exactly how four consecutive runs died on 2026-07-27 with nothing actually broken). Wait for it: checkpoint:await, then release:trace to confirm your commit is included.'
+                      : replaceDecision.reason === 'young'
+                        ? `A checkpoint run is in flight and its candidate trails current staging — that is NORMAL for a young run on a busy tree (the tip moves faster than the ~20-55 min suite runs; the NEXT run picks up the newer tip). Do NOT replace it: serial replaceStale calls are the EI-11667 replace-storm that starves the gate of every verdict. Judge liveness from current_phase + progress_at; eta_sec is only the remaining systemd backstop when eta_basis is full-suite, not a measured time-to-verdict. replaceStale only unlocks once the run is ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old AND not delivering.`
+                        : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },
         ],

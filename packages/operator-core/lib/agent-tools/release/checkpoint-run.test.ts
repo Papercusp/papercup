@@ -9,15 +9,6 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// WI-6946: the handler now preflights pending migrations (applyPendingMigrationsNow) BEFORE
-// launching, so every test needs this mocked or it would open a REAL Postgres connection.
-// Default: nothing pending, matching what every pre-existing test in this file assumes.
-// Hoisted (vi.mock, not vi.doMock) so it applies to every test unless a specific test
-// overrides it with its own vi.doMock after vi.resetModules().
-vi.mock('../../db-boot-migrate', () => ({
-  applyPendingMigrationsNow: vi.fn(async () => ({ applied: 0, failed: [] })),
-}));
-
 vi.mock('../../release/checkpoint-serializer-authority', () => ({
   readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'routine-not-paused' })),
   armPausedCheckpointTransition: vi.fn(async () => ({ status: 'unreadable', error: 'not configured in this test' })),
@@ -66,7 +57,7 @@ function qualificationTransaction(input: Record<string, unknown>, phase = 'ready
 }
 
 const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
-  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides } as never);
+  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides }) as never;
 
 function parse(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
@@ -130,12 +121,6 @@ beforeEach(() => {
     status: 'updated',
     transaction: qualificationTransaction(input, 'running'),
   }));
-  // afterEach removes per-case migration overrides. Reinstall the hermetic
-  // default after every reset so test 2 onward never falls through to the live
-  // dev PG and turns pending hosted-schema migrations into unrelated failures.
-  vi.doMock('../../db-boot-migrate', () => ({
-    applyPendingMigrationsNow: vi.fn(async () => ({ applied: 0, failed: [] })),
-  }));
   // afterEach removes per-case authority overrides; reinstall the ordinary
   // no-serializer baseline before every import so later tests never open live PG.
   vi.doMock('../../release/checkpoint-serializer-authority', () => ({
@@ -168,7 +153,6 @@ afterEach(() => {
   vi.doUnmock('../../release-checkpoint-launch');
   vi.doUnmock('../../release/in-flight-retriage');
   vi.doUnmock('../../release/in-flight-candidate');
-  vi.doUnmock('../../db-boot-migrate');
   vi.doUnmock('../../coord/gate-ownership');
   vi.doUnmock('../coordination/inbox-wake');
   vi.doUnmock('../coordination/identity');
@@ -203,7 +187,10 @@ const CRON_HELD_RUN = {
 
 /** Stub ONLY the PG read; `describeRefireBudget`/`attributeRetriageToRun` stay real, so these
  *  cases exercise the genuine budget + attribution logic rather than a restatement of it. */
-async function mockRefire(marker: Record<string, unknown> | null, alreadyRunning: Record<string, unknown> = CRON_HELD_RUN) {
+async function mockRefire(
+  marker: Record<string, unknown> | null,
+  alreadyRunning: Record<string, unknown> = CRON_HELD_RUN,
+) {
   vi.doMock('../../release/in-flight-retriage', async (orig) => ({
     ...(await orig()),
     readInFlightRetriage: vi.fn(async () => marker),
@@ -290,7 +277,7 @@ describe('EI-19343516395023183: an in-flight auto-refire is surfaced on the alre
     expect(String(b.note)).toMatch(/DIFFERENT process/); // falls through to the pre-existing branch
   });
 
-  it('says so plainly when attribution is UNCONFIRMED rather than asserting the marker is this run\'s', async () => {
+  it("says so plainly when attribution is UNCONFIRMED rather than asserting the marker is this run's", async () => {
     const b = await mockRefire(MARKER, { ...CRON_HELD_RUN, started_at: null });
     expect(String(b.note)).toMatch(/STAND DOWN/);
     expect(String(b.note)).toMatch(/Attribution UNCONFIRMED/);
@@ -302,63 +289,6 @@ describe('EI-19343516395023183: an in-flight auto-refire is surfaced on the alre
     expect(b.in_flight_retriage).toBeNull();
     expect(String(b.note)).toMatch(/DIFFERENT process/);
     expect(String(b.note)).not.toMatch(/AUTO-REFIRE/);
-  });
-});
-
-/**
- * WI-6946: "release:checkpoint-run reports ok:true + launched:true + a ~55min ETA for a run
- * that aborts INCONCLUSIVE ('migrations-pending') seconds later — the caller waits out a
- * suite that is not running." Fix: preflight applyPendingMigrationsNow() BEFORE ever calling
- * launchDetachedCheckpoint, so a migration that fails to apply refuses immediately instead of
- * spawning a detached unit that will self-abort ~60s later with no way for the caller to know.
- */
-describe('WI-6946: pending-migration preflight refuses BEFORE launching, not after', () => {
-  it('a migration that fails to apply refuses immediately — launchDetachedCheckpoint is never called', async () => {
-    vi.doMock('../../db-boot-migrate', () => ({
-      applyPendingMigrationsNow: vi.fn(async () => ({
-        applied: 0,
-        failed: [{ file: '723-some-migration.sql', error: 'relation "x" does not exist' }],
-      })),
-    }));
-    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
-    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
-      ...(await orig()),
-      launchDetachedCheckpoint: launchSpy,
-      checkpointCandidateContainment: NO_CONTAINMENT,
-    }));
-
-    const { default: tool } = await import('./checkpoint-run');
-    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
-
-    expect(launchSpy).not.toHaveBeenCalled(); // never even attempted the launch
-    expect(b).toMatchObject({
-      ok: false,
-      launched: false,
-      reason: 'migrations-pending',
-      pending: [{ file: '723-some-migration.sql', error: 'relation "x" does not exist' }],
-    });
-    expect(String(b.note)).toMatch(/NOT launched/);
-    expect(String(b.note)).toContain('723-some-migration.sql');
-    expect(String(b.note)).toMatch(/WI-6946/);
-    // The reply must never claim a launch/ETA it didn't deliver — the exact defect this closes.
-    expect(String(b.note)).not.toMatch(/~55 min/);
-  });
-
-  it('nothing pending (the common case, incl. a transient contention failure already retried inside applyPendingMigrationsNow) → launches normally', async () => {
-    // Uses the file-level default mock (applied: 0, failed: []) — no override needed, proving
-    // the ordinary path is unaffected by this preflight.
-    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
-    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
-      ...(await orig()),
-      launchDetachedCheckpoint: launchSpy,
-      checkpointCandidateContainment: NO_CONTAINMENT,
-    }));
-
-    const { default: tool } = await import('./checkpoint-run');
-    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
-
-    expect(launchSpy).toHaveBeenCalledTimes(1);
-    expect(b).toMatchObject({ ok: true, launched: true });
   });
 });
 
@@ -491,7 +421,11 @@ describe('release:checkpoint-run', () => {
     const result = await tool.handler({}, MAKE_CTX());
 
     expect(launchSpy).toHaveBeenCalledTimes(1);
-    expect(parse(result as never)).toMatchObject({ ok: true, launched: true, unit: 'papercup-green-checkpoint-manual' });
+    expect(parse(result as never)).toMatchObject({
+      ok: true,
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+    });
   });
 
   it('WI-5124: warns loudly in `note` when the quiet-cut excluded fresh commits (the "my fix was silently excluded" trap)', async () => {
@@ -603,7 +537,13 @@ describe('release:checkpoint-run', () => {
       unit: 'papercup-green-checkpoint-manual',
       argv: [],
       logPath: '/tmp/papercup-green-checkpoint-manual.log',
-      willJudge: { candidate: 'aaaaaaa', tip: 'aaaaaaa', quietCutApplied: false, quietCutSec: 240, excludedCommits: [] },
+      willJudge: {
+        candidate: 'aaaaaaa',
+        tip: 'aaaaaaa',
+        quietCutApplied: false,
+        quietCutSec: 240,
+        excludedCommits: [],
+      },
     }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
       ...(await orig()),
@@ -653,10 +593,10 @@ describe('release:checkpoint-run', () => {
         logPath: '/tmp/papercup-green-checkpoint-manual.log',
       }));
       vi.doMock('../../release-checkpoint-launch', async (orig) => ({
-      ...(await orig()),
-      launchDetachedCheckpoint: launchSpy,
-      checkpointCandidateContainment: NO_CONTAINMENT,
-    }));
+        ...(await orig()),
+        launchDetachedCheckpoint: launchSpy,
+        checkpointCandidateContainment: NO_CONTAINMENT,
+      }));
 
       const { default: tool } = await import('./checkpoint-run');
       const b = parse((await tool.handler({}, MAKE_CTX(role))) as never);
@@ -671,7 +611,16 @@ describe('release:checkpoint-run', () => {
     const roles = (tool as { agentRoles?: readonly string[] }).agentRoles ?? [];
     // The specific pipeline roles the watchdog observed hitting the structural error, plus the
     // wider red-fix cohort, must be invoke-allowed (EI-7426).
-    for (const r of ['worker', 'scoper', 'validator', 'reviewer', 'debugger', 'cup', 'release-fixer', 'release-manager']) {
+    for (const r of [
+      'worker',
+      'scoper',
+      'validator',
+      'reviewer',
+      'debugger',
+      'cup',
+      'release-fixer',
+      'release-manager',
+    ]) {
       expect(roles).toContain(r);
     }
   });
@@ -709,10 +658,12 @@ describe('release:checkpoint-run', () => {
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
 
-    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
-      force: undefined,
-      logicalAttemptId: expect.any(String),
-    }));
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        force: undefined,
+        logicalAttemptId: expect.any(String),
+      }),
+    );
     expect(b).toMatchObject({
       ok: false,
       already_running: true,
@@ -950,10 +901,12 @@ describe('release:checkpoint-run', () => {
     const { default: tool } = await import('./checkpoint-run');
     await tool.handler({ force: true }, MAKE_CTX());
 
-    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
-      force: true,
-      logicalAttemptId: expect.any(String),
-    }));
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        force: true,
+        logicalAttemptId: expect.any(String),
+      }),
+    );
   });
 
   /* ----------------------------------------------------------------------- *
@@ -1304,7 +1257,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
       ...(await orig()),
       assessPreLaunchExclusion: vi.fn(async () => ({
-        ...await PRELAUNCH_OPEN(),
+        ...(await PRELAUNCH_OPEN()),
         candidate: CURRENT,
         tip: CURRENT,
       })),
@@ -1402,10 +1355,12 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
 
-    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
-      candidate: QUEUE_HEAD,
-      logicalAttemptId: expect.any(String),
-    }));
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidate: QUEUE_HEAD,
+        logicalAttemptId: expect.any(String),
+      }),
+    );
     expect(b).toMatchObject({
       ok: true,
       willJudge: {
@@ -1511,13 +1466,13 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     }));
     const ancestrySpy = vi.fn((_root: string, _required: string, candidate: string) => ({
       ok: candidate === CURRENT,
-      reason: candidate === CURRENT ? 'contained' as const : 'not-ancestor' as const,
+      reason: candidate === CURRENT ? ('contained' as const) : ('not-ancestor' as const),
       requiredAncestor: REQUIRED,
       candidate,
     }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
       ...(await orig()),
-      assessPreLaunchExclusion: vi.fn(async () => ({ ...await PRELAUNCH_OPEN(), candidate: CURRENT })),
+      assessPreLaunchExclusion: vi.fn(async () => ({ ...(await PRELAUNCH_OPEN()), candidate: CURRENT })),
       currentCheckpointCandidate: vi.fn(() => ({
         current_head: CURRENT,
         current_candidate: CURRENT,
@@ -1558,7 +1513,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     const ancestrySpy = vi.fn();
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
       ...(await orig()),
-      assessPreLaunchExclusion: vi.fn(async () => ({ ...await PRELAUNCH_OPEN(), candidate: CURRENT })),
+      assessPreLaunchExclusion: vi.fn(async () => ({ ...(await PRELAUNCH_OPEN()), candidate: CURRENT })),
       currentCheckpointCandidate: vi.fn(() => ({
         current_head: CURRENT,
         current_candidate: CURRENT,
@@ -1669,15 +1624,22 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     }));
 
     const { default: tool } = await import('./checkpoint-run');
-    const b = parse((await tool.handler({
-      requiredAncestorSha: REQUIRED,
-      paths: ['packages/operator-core/lib/mine.ts'],
-    }, MAKE_CTX())) as never);
+    const b = parse(
+      (await tool.handler(
+        {
+          requiredAncestorSha: REQUIRED,
+          paths: ['packages/operator-core/lib/mine.ts'],
+        },
+        MAKE_CTX(),
+      )) as never,
+    );
 
-    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
-      candidate: CURRENT,
-      logicalAttemptId: expect.any(String),
-    }));
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidate: CURRENT,
+        logicalAttemptId: expect.any(String),
+      }),
+    );
     expect(b).toMatchObject({
       ok: true,
       candidateBinding: {
@@ -1698,6 +1660,16 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       },
     });
     expect(String(b.note)).toMatch(/CANDIDATE BINDING EXACT/);
+  });
+});
+
+describe('WI-41490: request-side launch never applies ambient migrations', () => {
+  const SOURCE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), './checkpoint-run.ts');
+
+  it('leaves candidate-exact migration application to the detached checkpoint runner', () => {
+    const source = readFileSync(SOURCE_PATH, 'utf8');
+    expect(source).not.toContain('applyPendingMigrationsNow');
+    expect(source).not.toContain("from '../../db-boot-migrate'");
   });
 });
 
@@ -1837,9 +1809,7 @@ describe('release:checkpoint-run routes to the state plane (P-002)', () => {
     );
 
     expect(p.some((x) => x.tool === 'release:deploy' && x.selector?.includes("op: 'status'"))).toBe(true);
-    expect(
-      p.some((x) => x.tool === 'state:read' && x.selector?.includes('gate.greenCheckpoint.ownership')),
-    ).toBe(true);
+    expect(p.some((x) => x.tool === 'state:read' && x.selector?.includes('gate.greenCheckpoint.ownership'))).toBe(true);
     expect(p.find((x) => x.tool === 'work_items:get')?.selector).toBe("{ id: 'WI-38026' }");
     const handoff = p.find((x) => x.tool === 'coord:send');
     expect(handoff?.selector).toContain("to: ['su-live-holder']");
@@ -1937,7 +1907,13 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
   });
 
   it('CONTROL: launches normally when the gate does not fire', async () => {
-    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => ({ ...REFUSAL, refuse: false, proceedReason: 'declared-paths-in-candidate' })) });
+    const launchSpy = mockLaunch({
+      assessPreLaunchExclusion: vi.fn(async () => ({
+        ...REFUSAL,
+        refuse: false,
+        proceedReason: 'declared-paths-in-candidate',
+      })),
+    });
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({ paths: [MINE] }, MAKE_CTX())) as never);
     expect(launchSpy).toHaveBeenCalledTimes(1);
@@ -2221,11 +2197,16 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     });
 
     const { default: tool } = await import('./checkpoint-run');
-    const b = parse((await tool.handler({}, MAKE_CTX('operator', {
-      uiClientId: 'su-caller',
-      workspaceId: 'papercusp-workspace',
-      metadata: vi.fn(),
-    }))) as never);
+    const b = parse(
+      (await tool.handler(
+        {},
+        MAKE_CTX('operator', {
+          uiClientId: 'su-caller',
+          workspaceId: 'papercusp-workspace',
+          metadata: vi.fn(),
+        }),
+      )) as never,
+    );
 
     expect(wakeRecipients).toHaveBeenCalledTimes(1);
     expect(assessForceRelease).not.toHaveBeenCalled();
@@ -2267,15 +2248,20 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     }));
 
     const { default: tool } = await import('./checkpoint-run');
-    const b = parse((await tool.handler({
-      resumePausedRoutine: true,
-      prerequisiteWorkItems: ['WI-41117'],
-      reason: 'repairs terminal',
-    }, MAKE_CTX('operator', {
-      uiClientId: 'su-caller',
-      workspaceId: 'papercusp-workspace',
-      metadata: vi.fn(),
-    }))) as never);
+    const b = parse(
+      (await tool.handler(
+        {
+          resumePausedRoutine: true,
+          prerequisiteWorkItems: ['WI-41117'],
+          reason: 'repairs terminal',
+        },
+        MAKE_CTX('operator', {
+          uiClientId: 'su-caller',
+          workspaceId: 'papercusp-workspace',
+          metadata: vi.fn(),
+        }),
+      )) as never,
+    );
 
     expect(armPausedCheckpointTransition).toHaveBeenCalledWith({
       callerOwnerId: 'su-caller',
@@ -2310,7 +2296,9 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     });
     const { default: tool } = await import('./checkpoint-run');
     const started = Date.now();
-    const b = parse((await tool.handler({ paths: [MINE], waitForEligibility: true, requiredAncestorSha }, MAKE_CTX())) as never);
+    const b = parse(
+      (await tool.handler({ paths: [MINE], waitForEligibility: true, requiredAncestorSha }, MAKE_CTX())) as never,
+    );
 
     expect(Date.now() - started).toBeLessThan(1000);
     expect(scheduleSpy).toHaveBeenCalledWith(
@@ -2339,7 +2327,11 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       logical_attempt_id: expect.any(String),
       pending_id: 'pending-1',
       workflow_id: 'checkpoint-eligibility:pending-1',
-      completion_events: ['release:green:papercusp', 'green-checkpoint:red:papercusp', 'green-checkpoint:inconclusive:papercusp'],
+      completion_events: [
+        'release:green:papercusp',
+        'green-checkpoint:red:papercusp',
+        'green-checkpoint:inconclusive:papercusp',
+      ],
     });
     expect(String(b.note)).toMatch(/durable eligibility waiter/);
   });

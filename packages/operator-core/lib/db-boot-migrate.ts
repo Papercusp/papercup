@@ -312,6 +312,15 @@ export interface BootMigrateResult {
   failed: { file: string; error: string }[];
 }
 
+export interface ApplyPendingMigrationsNowOptions {
+  /**
+   * Exact migration directory to apply. Callers that have already pinned and
+   * prepared a candidate must pass its sql directory instead of re-resolving
+   * from this process's ambient cwd/env (WI-41490).
+   */
+  sqlDir?: string;
+}
+
 /** Apply pending sql/*.sql on operator boot (native box). Idempotent per
  *  process (the schema_migrations tracker also makes a re-run a no-op).
  *  Never throws — a failure leaves migrations pending, it never wedges boot. */
@@ -334,8 +343,10 @@ export async function applyPendingMigrationsAtBoot(): Promise<BootMigrateResult 
  * can never drift far enough behind to red-pin the gate on missing-column
  * failures again. Same idempotent runner (the schema_migrations tracker
  * makes a re-run with nothing pending a fast no-op); never throws. */
-export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | null> {
-  const sqlDir = resolveSqlDir();
+export async function applyPendingMigrationsNow(
+  options: ApplyPendingMigrationsNowOptions = {},
+): Promise<BootMigrateResult | null> {
+  const sqlDir = options.sqlDir ?? resolveSqlDir();
   if (!sqlDir) {
     // EI-18737837917400418: this used to be a console.warn — easy to miss on a
     // packaged/headless boot where nobody is watching the console, and the

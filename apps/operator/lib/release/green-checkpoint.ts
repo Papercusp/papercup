@@ -152,6 +152,13 @@ export interface CheckpointSetupOptions {
   workspaceDirs?: string[];
 }
 
+export interface CheckpointMigrationInput {
+  /** Immutable candidate whose source tree supplied sqlDir. */
+  candidate: string;
+  /** Absolute migration directory inside the prepared candidate checkout. */
+  sqlDir: string;
+}
+
 export interface CheckpointExecutionContext {
   candidate: string;
   headAtStart?: string;
@@ -605,8 +612,9 @@ export interface CheckpointDeps {
     payload: unknown;
     cancelSiblingKeysFor?: string[];
   }): Promise<void>;
-  /** EI-13992: apply any pending `libs/papercusp/libs/db/sql/*.sql` migrations to the
-   *  live dev PG the suite is about to run against, BEFORE runGreen — breaks the
+  /** EI-13992/WI-41490: apply pending migrations from the exact prepared candidate to
+   *  the live dev PG the suite is about to run against, BEFORE dependency materialization
+   *  and again before runGreen — breaks the
    *  self-sustaining deadlock "gate red → main frozen → boot-only migration apply
    *  never re-fires → dev PG drifts behind → tests asserting new columns fail →
    *  gate stays red" (this gate run happens on its own schedule regardless of
@@ -615,8 +623,8 @@ export interface CheckpointDeps {
    *  (schema_migrations tracker makes a no-op re-run cheap; a failed migration is
    *  logged and left pending, same as the boot-time apply). Optional so existing
    *  test stubs need not provide it; realCheckpointDeps wires it to the real
-   *  applyPendingMigrationsNow(). */
-  ensureMigrationsCurrent?(): Promise<{
+   *  applyPendingMigrationsNow() with the explicit candidate sqlDir. */
+  ensureMigrationsCurrent?(input: CheckpointMigrationInput): Promise<{
     applied: number;
     failed: { file: string; error: string }[];
   } | null>;
@@ -1018,7 +1026,9 @@ export function buildTerminalFailureCheckpointResult(opts: {
     detail.includes("dependency-generation.sh") &&
     detail.includes("exited 75") &&
     (detail.includes("refusing a torn snapshot") ||
-      detail.includes("live node_modules changed while pinning an existing generation"));
+      detail.includes(
+        "live node_modules changed while pinning an existing generation",
+      ));
 
   if (!materializationDeferred && !dependencySnapshotChanged)
     return buildCrashCheckpointResult(opts);
@@ -2162,7 +2172,9 @@ export async function emitTerminalCheckpointResult(
   },
 ): Promise<void> {
   deps.writeHuman(result);
-  deps.writeMarker(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(result)}`);
+  deps.writeMarker(
+    `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(result)}`,
+  );
   if (
     result.green === null &&
     result.candidateSource !== "pinned" &&
@@ -7069,7 +7081,8 @@ async function runGreenCheckpointInner(
         renewalChain = renewalChain.then(async () => {
           if (reservationLost) return;
           try {
-            const renewed = await renewFrozenRepairFixerReservation(dispatchQueue);
+            const renewed =
+              await renewFrozenRepairFixerReservation(dispatchQueue);
             if (!renewed) {
               reservationLost = true;
               return;
@@ -7111,7 +7124,7 @@ async function runGreenCheckpointInner(
         `frozen repair dispatch reservation was lost during preparation — holding without launch${
           reservationLoss
             ? `: ${reservationLoss instanceof Error ? reservationLoss.message : reservationLoss}`
-            : ''
+            : ""
         }`,
       );
       return { queue: null, fired: null, reservationBlocked: true };
@@ -7811,18 +7824,101 @@ async function runGreenCheckpointInner(
     pid: process.pid,
   });
 
-  // WI-41251 / P-007: source selection happens before the expensive dependency
-  // generation + pc-heavy exclusive materialization. Optional seams preserve the
-  // historical full path for older/custom harnesses. Every missing, throwing, empty,
-  // zero-evidence, or unsafe selector result fails WIDE by leaving setupOptions undefined.
+  const candidateMigrationInput: CheckpointMigrationInput = {
+    candidate,
+    sqlDir: path.join(
+      cfg.checkpointRoot,
+      "libs",
+      "papercusp",
+      "libs",
+      "db",
+      "sql",
+    ),
+  };
+  const runCandidateMigrationPreflight = async (
+    stage: "pre-materialization" | "post-materialization-backstop",
+  ): Promise<{ file: string; error: string }[]> => {
+    if (!deps.ensureMigrationsCurrent) return [];
+    try {
+      const migrated = await deps.ensureMigrationsCurrent(
+        candidateMigrationInput,
+      );
+      if (migrated && migrated.applied > 0) {
+        deps.log(
+          `migration preflight (${stage}): applied ${migrated.applied} pending migration(s) ` +
+            `from candidate ${candidate.slice(0, 8)} to the dev PG`,
+        );
+      }
+      return migrated?.failed ?? [];
+    } catch (e) {
+      // Preserve the existing unknown-state policy: an exception means the
+      // schema state is unknown, not affirmatively behind. The later backstop
+      // retries after setup and the suite remains the final verdict.
+      deps.log(
+        `migration preflight (${stage}) skipped (${e instanceof Error ? e.message : e})`,
+      );
+      return [];
+    }
+  };
+  const pendingMigrationsResult = (
+    pending: { file: string; error: string }[],
+    stage: "pre-materialization" | "post-materialization-backstop",
+  ): CheckpointResult => {
+    const detail = pending.map((f) => `${f.file}: ${f.error}`).join("; ");
+    deps.log(
+      `migration preflight (${stage}): ${pending.length} migration(s) failed to apply (left pending) — ` +
+        `ABORTING this run as INCONCLUSIVE rather than judging ${candidate.slice(0, 8)} against a schema known to be ` +
+        `behind it. A red from a stale schema is not a verdict about the code, and its failing tests read as ` +
+        `unrelated flakes. Fix the migration (or let it retry — a transient lock_timeout usually clears) and the ` +
+        `next run judges normally. Pending: ${detail}`,
+    );
+    return {
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green: null,
+      reason: "migrations-pending",
+      summary:
+        `migration preflight ABORTED this run during ${stage} — ${pending.length} migration(s) are pending and ` +
+        `could not apply, so no verdict was rendered about the code. NO run is coming until they apply. Pending: ${detail}`,
+    };
+  };
+
+  // WI-41251 / P-007: prepare exact candidate source before the expensive dependency
+  // generation + pc-heavy exclusive materialization. WI-41490 also applies that candidate's
+  // migrations at this point, eliminating the request-time/candidate-selection TOCTOU.
+  // Optional seams preserve the historical full path for older/custom harnesses. Every
+  // missing, throwing, empty, zero-evidence, or unsafe selector result fails WIDE.
   let setupOptions: CheckpointSetupOptions | undefined;
-  if (lastReady && deps.prepareSource && deps.selectMaterializationClosure) {
+  if (deps.prepareSource) {
     deps.reportProgress?.("phase:preselecting");
     try {
       await deps.prepareSource(candidate);
-      // Even a fail-wide selector result can reuse the exact source tree just
-      // prepared above; only dependency narrowing is withheld.
       setupOptions = { preparedSource: true };
+    } catch (e) {
+      deps.log(
+        `pre-materialization source preparation failed (${e instanceof Error ? e.message : e}) — ` +
+          "falling back to the full setup path",
+      );
+    }
+  }
+  if (setupOptions?.preparedSource) {
+    const pendingBeforeMaterialization = await runCandidateMigrationPreflight(
+      "pre-materialization",
+    );
+    if (pendingBeforeMaterialization.length > 0) {
+      return pendingMigrationsResult(
+        pendingBeforeMaterialization,
+        "pre-materialization",
+      );
+    }
+  }
+  if (
+    lastReady &&
+    setupOptions?.preparedSource &&
+    deps.selectMaterializationClosure
+  ) {
+    try {
       const selection = normalizeCheckpointMaterializationSelection(
         await deps.selectMaterializationClosure({
           candidate,
@@ -7914,53 +8010,14 @@ async function runGreenCheckpointInner(
   // preflight means the schema state is UNKNOWN (dev PG unreachable, no answer
   // either way), and unknown is not a reason to stop judging — that path keeps
   // today's behaviour. Only an affirmative `failed.length > 0` is knowledge.
-  if (deps.ensureMigrationsCurrent) {
-    let pendingAfterPreflight: { file: string; error: string }[] = [];
-    try {
-      const migrated = await deps.ensureMigrationsCurrent();
-      if (migrated && migrated.applied > 0) {
-        deps.log(
-          `migration preflight: applied ${migrated.applied} pending migration(s) to the dev PG before judging`,
-        );
-      }
-      if (migrated && migrated.failed.length > 0) {
-        pendingAfterPreflight = migrated.failed;
-      }
-    } catch (e) {
-      deps.log(
-        `migration preflight skipped (${e instanceof Error ? e.message : e})`,
-      );
-    }
-    if (pendingAfterPreflight.length > 0) {
-      const detail = pendingAfterPreflight
-        .map((f) => `${f.file}: ${f.error}`)
-        .join("; ");
-      deps.log(
-        `migration preflight: ${pendingAfterPreflight.length} migration(s) failed to apply (left pending) — ` +
-          `ABORTING this run as INCONCLUSIVE rather than judging ${candidate.slice(0, 8)} against a schema known to be ` +
-          `behind it. A red from a stale schema is not a verdict about the code, and its failing tests read as ` +
-          `unrelated flakes. Fix the migration (or let it retry — a transient lock_timeout usually clears) and the ` +
-          `next run judges normally. Pending: ${detail}`,
-      );
-      // EI-19405864032365760: carry the pending-migration detail ON THE VERDICT, not only into
-      // the log. `summary` is what reaches every downstream reader — the pipeline event's detail,
-      // the `green-checkpoint:inconclusive` event payload, and (new, same EI) the
-      // `gate_health.inconclusive` blob `dev:pipeline_position` renders. Without it the abort is
-      // legible ONLY to whoever tails this run's stdout, which is nobody during the hours it
-      // matters: measured 2026-08-03, a 727-pending freeze left the fleet reading a stale red for
-      // ~2.5h while the real blocker (one migration failing its NOT NULL backfill) was named
-      // nowhere a reader looks.
-      return {
-        advanced: false,
-        candidate,
-        from: lastReady,
-        green: null,
-        reason: "migrations-pending",
-        summary:
-          `migration preflight ABORTED this run — ${pendingAfterPreflight.length} migration(s) are pending and ` +
-          `could not apply, so no verdict was rendered about the code. NO run is coming until they apply. Pending: ${detail}`,
-      };
-    }
+  const pendingAfterMaterialization = await runCandidateMigrationPreflight(
+    "post-materialization-backstop",
+  );
+  if (pendingAfterMaterialization.length > 0) {
+    return pendingMigrationsResult(
+      pendingAfterMaterialization,
+      "post-materialization-backstop",
+    );
   }
   // EI-18666996942859193: tree-drift preflight — name a drifted checkpoint tree as its
   // own distinct signal BEFORE judging, so a red caused by it reads as "tree drift" up
@@ -8210,7 +8267,8 @@ async function runGreenCheckpointInner(
     candidateAgeAtVerdictMs != null &&
     candidateAgeAtVerdictMs > CANDIDATE_FOSSIL_AGE_MS
   ) {
-    const ageHours = Math.round((candidateAgeAtVerdictMs / 3_600_000) * 10) / 10;
+    const ageHours =
+      Math.round((candidateAgeAtVerdictMs / 3_600_000) * 10) / 10;
     const fossilSummary =
       `candidate-fossil: green-checkpoint withheld a red verdict for candidate ${candidate.slice(0, 8)}: ` +
       `the candidate was already ${ageHours}h old when the suite result was ready to publish ` +
@@ -12362,10 +12420,10 @@ export function realCheckpointDeps(
     // CheckpointDeps.ensureMigrationsCurrent doc) — applies to the SAME dev PG
     // db-boot-migrate targets at operator boot, just without its once-per-process
     // `_ran` guard (a gate run is its own per-invocation caller).
-    async ensureMigrationsCurrent() {
+    async ensureMigrationsCurrent(input) {
       const { applyPendingMigrationsNow } =
         await import("@papercusp/operator-core/lib/db-boot-migrate");
-      return applyPendingMigrationsNow();
+      return applyPendingMigrationsNow({ sqlDir: input.sqlDir });
     },
     // EI-18666996942859193: real wiring for the tree-drift preflight (see
     // CheckpointDeps.checkTreeDrift doc) — scoped to `cfg.checkpointRoot`, the ISOLATED

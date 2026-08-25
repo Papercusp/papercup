@@ -65,11 +65,8 @@ vi.mock('./agent-tools/coordination/messages', async () => {
   return { ...actual, sendMessage: (...args: unknown[]) => h.sendMessage(...args) };
 });
 
-const {
-  applyPendingMigrationsAtBoot,
-  applyPendingMigrationsNow,
-  reconcileMigrationReservations,
-} = await import('./db-boot-migrate');
+const { applyPendingMigrationsAtBoot, applyPendingMigrationsNow, reconcileMigrationReservations } =
+  await import('./db-boot-migrate');
 
 let rootSql: postgres.Sql;
 let bootClient: postgres.Sql;
@@ -97,12 +94,14 @@ async function seedMigrationReservations(filenames: readonly string[]): Promise<
   const rows = filenames.flatMap((filename) => {
     const match = /^(\d+)-/.exec(filename);
     return match
-      ? [{
-          num: Number(match[1]),
-          filename,
-          reserved_by: 'db-boot-migrate.integration.test.ts',
-          intent: 'integration fixture reservation',
-        }]
+      ? [
+          {
+            num: Number(match[1]),
+            filename,
+            reserved_by: 'db-boot-migrate.integration.test.ts',
+            intent: 'integration fixture reservation',
+          },
+        ]
       : [];
   });
   if (rows.length === 0) return;
@@ -126,6 +125,7 @@ beforeEach(() => {
   const p = join(tmpdir(), `a1-boot-cooldown-default-${randomBytes(4).toString('hex')}.json`);
   hermeticCooldownFiles.push(p);
   process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = p;
+  h.sendMessage?.mockClear();
 });
 afterEach(() => {
   delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE;
@@ -213,18 +213,14 @@ describe('boot-apply runner mechanics (§A1)', () => {
 
   it('the DEFAULT (fail-loud) runner THROWS on a broken migration', async () => {
     const dir = makeSqlDir({ '920-bad.sql': 'CREATE TABLE no_such_schema_xyz.bad2 (id int);' });
-    await expect(
-      applyPendingMigrations({ client: bootClient, sqlDir: dir, log: () => {} }),
-    ).rejects.toThrow();
+    await expect(applyPendingMigrations({ client: bootClient, sqlDir: dir, log: () => {} })).rejects.toThrow();
   });
 
   it('a POOLED (max>1) client rejects the raw BEGIN;…COMMIT; — why boot uses max:1', async () => {
     const pooled = postgres(dbUrl, { max: 2, onnotice: () => {} });
     try {
       const dir = makeSqlDir({ '930-good.sql': 'CREATE TABLE harness_shared.boot_test_d (id int);' });
-      await expect(
-        applyPendingMigrations({ client: pooled, sqlDir: dir, log: () => {} }),
-      ).rejects.toThrow(/unsafe/i);
+      await expect(applyPendingMigrations({ client: pooled, sqlDir: dir, log: () => {} })).rejects.toThrow(/unsafe/i);
     } finally {
       await pooled.end({ timeout: 5 });
     }
@@ -263,6 +259,22 @@ describe('boot-apply runner mechanics (§A1)', () => {
 });
 
 describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
+  it('applyPendingMigrationsNow honors an explicit candidate sqlDir over ambient resolution', async () => {
+    h.bootSqlDir = makeSqlDir({});
+    const candidateSqlDir = makeSqlDir({
+      '954-candidate-exact.sql': 'CREATE TABLE harness_shared.boot_candidate_exact (id int);',
+    });
+    await seedMigrationReservations(['954-candidate-exact.sql']);
+
+    const result = await applyPendingMigrationsNow({ sqlDir: candidateSqlDir });
+
+    expect(result).toMatchObject({ applied: 1, failed: [] });
+    const rows = await rootSql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations
+       WHERE filename = '954-candidate-exact.sql'`;
+    expect(rows.map((r) => r.filename)).toEqual(['954-candidate-exact.sql']);
+  });
+
   it('applies pending files, collects the broken one in failed, broadcasts, and does not throw', async () => {
     // The wired entry resolves resolveSqlDir() → this dir and builds its own
     // max:1 client from getHarnessAdminUrl() → the test DB (both mocked above).
@@ -336,11 +348,13 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       const deadline = Date.now() + 10_000;
       let waiting = false;
       while (Date.now() < deadline) {
-        const activity = await rootSql<{
-          wait_event_type: string | null;
-          wait_event: string | null;
-          query: string;
-        }[]>`
+        const activity = await rootSql<
+          {
+            wait_event_type: string | null;
+            wait_event: string | null;
+            query: string;
+          }[]
+        >`
           SELECT wait_event_type, wait_event, query
             FROM pg_stat_activity
            WHERE datname = current_database()
@@ -348,9 +362,7 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
              AND state = 'active'
              AND query ILIKE '%pg_advisory_lock%'
            ORDER BY query_start DESC`;
-        waiting = activity.some(
-          (row) => row.wait_event_type === 'Lock' && row.wait_event === 'advisory',
-        );
+        waiting = activity.some((row) => row.wait_event_type === 'Lock' && row.wait_event === 'advisory');
         if (waiting) break;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
@@ -520,24 +532,24 @@ describe('migration reservation reconciliation (WI-38354)', () => {
       )`);
     await rootSql.unsafe('TRUNCATE harness_shared.migration_reservations');
     await rootSql.unsafe('TRUNCATE harness_shared.schema_migrations');
-    await rootSql.unsafe(
-      'INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ($1, $2)',
-      ['999999-reconcile-regression.sql', '0'.repeat(64)],
-    );
+    await rootSql.unsafe('INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ($1, $2)', [
+      '999999-reconcile-regression.sql',
+      '0'.repeat(64),
+    ]);
 
     const logs: string[] = [];
     const count = await reconcileMigrationReservations(rootSql, (message) => logs.push(message));
 
     expect(count).toBe(1);
-    expect(logs).toEqual([
-      expect.stringContaining('reconciled 1 migration_reservations row(s)'),
-    ]);
-    const rows = await rootSql<{
-      num: number;
-      filename: string;
-      reserved_by: string;
-      intent: string;
-    }[]>`
+    expect(logs).toEqual([expect.stringContaining('reconciled 1 migration_reservations row(s)')]);
+    const rows = await rootSql<
+      {
+        num: number;
+        filename: string;
+        reserved_by: string;
+        intent: string;
+      }[]
+    >`
       SELECT num, filename, reserved_by, intent
         FROM harness_shared.migration_reservations
        WHERE num = 999999`;
@@ -554,15 +566,12 @@ describe('migration reservation reconciliation (WI-38354)', () => {
   it('does not re-emit conflicts for applied filenames removed after a collision was repaired', async () => {
     await rootSql.unsafe('TRUNCATE harness_shared.migration_reservations');
     await rootSql.unsafe('TRUNCATE harness_shared.schema_migrations');
-    await rootSql.unsafe(
-      'INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ($1, $2), ($3, $4)',
-      [
-        '528-restore-fed-hlc-insert-stamp.sql',
-        '0'.repeat(64),
-        '528-restore-work-items-local-fed-hlc-stamp.sql',
-        '1'.repeat(64),
-      ],
-    );
+    await rootSql.unsafe('INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ($1, $2), ($3, $4)', [
+      '528-restore-fed-hlc-insert-stamp.sql',
+      '0'.repeat(64),
+      '528-restore-work-items-local-fed-hlc-stamp.sql',
+      '1'.repeat(64),
+    ]);
     await rootSql.unsafe(
       'INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent) VALUES ($1, $2, $3, $4)',
       [528, '528-restore-fed-hlc-insert-stamp.sql', 'integration-test', 'collision repair'],

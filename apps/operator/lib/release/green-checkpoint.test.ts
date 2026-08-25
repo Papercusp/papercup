@@ -2312,9 +2312,9 @@ describe("EI-213458 candidate-source normalization", () => {
       checkpointCandidateSourceFromCli("a".repeat(40), undefined, true),
     ).toBe("tip");
     expect(checkpointCandidateSourceFromCli("a".repeat(40), "tip")).toBe("tip");
-    expect(checkpointCandidateSourceFromCli("a".repeat(40), "pinned", true)).toBe(
-      "pinned",
-    );
+    expect(
+      checkpointCandidateSourceFromCli("a".repeat(40), "pinned", true),
+    ).toBe("pinned");
     expect(checkpointCandidateSourceFromCli(undefined, undefined)).toBe("tip");
     expect(() =>
       checkpointCandidateSourceFromCli("a".repeat(40), "unknown"),
@@ -2374,6 +2374,12 @@ describe("P-007 pre-materialization related-test selection", () => {
     deps.prepareSource = async (ref) => {
       calls.push(`prepare:${ref.slice(0, 7)}`);
     };
+    const migrationInputs: Array<{ candidate: string; sqlDir: string }> = [];
+    deps.ensureMigrationsCurrent = async (input) => {
+      migrationInputs.push(input);
+      calls.push(`migrate:${input.candidate.slice(0, 7)}`);
+      return { applied: 0, failed: [] };
+    };
     deps.selectMaterializationClosure = async (input) => {
       calls.push(
         `select:${input.base.slice(0, 7)}:${input.candidate.slice(0, 7)}`,
@@ -2405,12 +2411,73 @@ describe("P-007 pre-materialization related-test selection", () => {
     expect(calls).toContain(
       `setup:${candidate.slice(0, 7)}:true:apps/operator,packages/operator-core`,
     );
+    expect(migrationInputs).toEqual([
+      {
+        candidate,
+        sqlDir: join(repo, "libs", "papercusp", "libs", "db", "sql"),
+      },
+      {
+        candidate,
+        sqlDir: join(repo, "libs", "papercusp", "libs", "db", "sql"),
+      },
+    ]);
     expect(calls.indexOf("phase:preselecting")).toBeLessThan(
       calls.indexOf("phase:materializing"),
     );
     expect(calls.indexOf(`prepare:${candidate.slice(0, 7)}`)).toBeLessThan(
       calls.indexOf("phase:materializing"),
     );
+    expect(calls.indexOf(`migrate:${candidate.slice(0, 7)}`)).toBeLessThan(
+      calls.indexOf("phase:materializing"),
+    );
+    expect(
+      calls.lastIndexOf(`migrate:${candidate.slice(0, 7)}`),
+    ).toBeGreaterThan(calls.findIndex((call) => call.startsWith("setup:")));
+    expect(calls.lastIndexOf(`migrate:${candidate.slice(0, 7)}`)).toBeLessThan(
+      calls.indexOf("runGreen"),
+    );
+  });
+
+  it("fails closed on a candidate migration before dependency materialization", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps, calls } = stubDeps(true);
+    deps.prepareSource = async (ref) => {
+      calls.push(`prepare:${ref.slice(0, 7)}`);
+    };
+    deps.ensureMigrationsCurrent = async (input) => {
+      calls.push(`migrate:${input.candidate.slice(0, 7)}`);
+      return {
+        applied: 0,
+        failed: [
+          {
+            file: "900-candidate-only.sql",
+            error: "relation x does not exist",
+          },
+        ],
+      };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      green: null,
+      reason: "migrations-pending",
+    });
+    expect(result.summary).toContain("pre-materialization");
+    expect(calls).toEqual([
+      `prepare:${candidate.slice(0, 7)}`,
+      `migrate:${candidate.slice(0, 7)}`,
+    ]);
+    expect(calls).not.toContain("phase:materializing");
+    expect(calls.some((call) => call.startsWith("setup:"))).toBe(false);
+    expect(calls).not.toContain("runGreen");
   });
 
   it("reuses prepared source but fails wide when the selector has no positive evidence", async () => {
@@ -2732,7 +2799,7 @@ describe("runGreenCheckpoint", () => {
     expect(calls).not.toContain("ensureMigrationsCurrent");
   });
 
-  it("EI-13992: ensureMigrationsCurrent runs AFTER setupTree and BEFORE runGreen when provided", async () => {
+  it("EI-13992: the post-materialization migration backstop remains when source-only preparation is unavailable", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
     const c2 = await commit("a", "2", "c2");
@@ -3122,9 +3189,7 @@ describe("runGreenCheckpoint", () => {
       (caught: unknown) => caught,
     );
     expect(hardTimeout).toBeInstanceOf(Error);
-    expect(String(hardTimeout)).toContain(
-      "exceeded hard timeout after 1200ms",
-    );
+    expect(String(hardTimeout)).toContain("exceeded hard timeout after 1200ms");
     expect(String(hardTimeout)).toContain("still-alive");
   });
 
@@ -4771,7 +4836,8 @@ describe("runGreenCheckpoint", () => {
         calls.push("runChangedFileTypecheckPreflight");
         return {
           status: "failed" as const,
-          summary: "thing.ts(1,1): error TS2322: Type 'string' is not assignable.",
+          summary:
+            "thing.ts(1,1): error TS2322: Type 'string' is not assignable.",
           failingSignatures: ["lint:tsc"],
         };
       };
