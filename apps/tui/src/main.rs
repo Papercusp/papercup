@@ -588,6 +588,8 @@ async fn run<B: Backend>(
                 turn.abort();
             }
             app.reset_agent_chat_binding();
+            app.agent_chat_role = "operator".to_string();
+            app.agent_chat_summaries.clear();
             tokio::spawn(agent_chat_load(app.harness.clone(), None, tx.clone()));
         }
         if plans_arrived && app.pinned == Some(app::Tab::PlansBoard) {
