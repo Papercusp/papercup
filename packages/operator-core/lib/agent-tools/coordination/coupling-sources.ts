@@ -28,8 +28,10 @@
 import type {
   CouplingDerivationSources,
   ObligationEdge,
+  ObligationLiveness,
   PlanBlockingEdge,
 } from '../../coord/coupling-derivation';
+import { resolveSessionStates } from './liveness-oracle';
 import { fetchPresencePathInterests } from './presence-snapshot';
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { readPlanBySlug } from '../plans/source';
@@ -226,7 +228,7 @@ export async function fetchConsultObligations(selfOwnerId: string): Promise<Obli
        ORDER BY cs.created_at ASC
        LIMIT ${COUPLING_OBLIGATION_ROW_CAP}
     `;
-    const out: ObligationEdge[] = [];
+    const pending: PendingObligation[] = [];
     for (const r of rows) {
       const requester = (r.requester_id ?? '').trim();
       const responder = (r.responder_id ?? '').trim();
@@ -244,7 +246,7 @@ export async function fetchConsultObligations(selfOwnerId: string): Promise<Obli
       const iAmRequester = requester === self;
       const counterpart = iAmRequester ? responder : requester;
       if (counterpart === self) continue;
-      out.push({
+      pending.push({
         ownerId: counterpart,
         // The requester is OWED the reply; the responder OWES it. Direction is read off
         // which side of the stored pair the caller sits on — never inferred from state.
@@ -254,10 +256,64 @@ export async function fetchConsultObligations(selfOwnerId: string): Promise<Obli
         handle,
       });
     }
-    return out;
+    if (pending.length === 0) return [];
+    // P-011 — one BATCHED oracle call for every counterpart, after the loop rather than
+    // inside it. Per-edge resolution would issue N point-reads on a hot presence path.
+    const liveness = await resolveCounterpartLiveness(pending.map((p) => p.ownerId));
+    return pending.map((p) => ({
+      ...p,
+      counterpartLiveness: liveness.get(p.ownerId) ?? 'unknown',
+    }));
   } catch {
     return [];
   }
+}
+
+/** An obligation with everything but its P-011 liveness verdict, which is resolved in one
+ *  batch after the row loop. `Omit` rather than a restated shape so a new required field
+ *  on `ObligationEdge` breaks HERE instead of being quietly dropped from the spread. */
+type PendingObligation = Omit<ObligationEdge, 'counterpartLiveness'>;
+
+/**
+ * Resolve each counterpart's CURRENT liveness through the shared oracle (P-011).
+ *
+ * ⚠ THE ORACLE, NOT THE HEARTBEAT COLUMN. `coord_presence.heartbeat_at` is not liveness:
+ * a warm-dead session reads a fresh heartbeat with `sessionState: 'ended'`, so reading the
+ * column directly reports the OPPOSITE of the truth on precisely the rows that matter —
+ * a counterpart that died while still holding your debt. `resolveSessionStates` is the
+ * same derivation `coord:presence` and `fleet:assignments` serve, so an obligation line
+ * and the roster can never disagree about whether an agent is alive.
+ *
+ * ⚠ THIS IS A PRESENT-TENSE QUESTION, WHICH IS WHY `coord_presence` IS THE RIGHT SOURCE
+ * HERE. D-007 established the converse rule — a PAST-tense liveness question ("was this
+ * responder alive when it was routed?") must read `consult_state.routing`, persisted at
+ * route time, because presence answers only NOW and is TTL-reaped. P-011 asks the now
+ * question, so presence is correct; do not "fix" this to read routing.
+ *
+ * `hydratePerId` fills each subject's heartbeat/host/pid legs from its own presence row,
+ * so a bare-id verdict is as strict as a roster one. THREE distinct paths land on
+ * `'unknown'`, and all three are real: no row in the map, a row whose `sessionState` is
+ * `null` (the oracle's in-band "not measured", D-038 axis 2), and a thrown oracle. None
+ * may render as `'live'`.
+ */
+async function resolveCounterpartLiveness(
+  ownerIds: readonly string[],
+): Promise<Map<string, ObligationLiveness>> {
+  const ids = [...new Set(ownerIds)].filter(Boolean);
+  const out = new Map<string, ObligationLiveness>();
+  if (ids.length === 0) return out;
+  try {
+    const verdicts = await resolveSessionStates(
+      ids.map((ownerId) => ({ ownerId })),
+      { hydratePerId: true },
+    );
+    for (const id of ids) out.set(id, verdicts.get(id)?.sessionState ?? 'unknown');
+  } catch {
+    // Fail-soft, like every read in this module — but note the degradation is to
+    // 'unknown', never to a silently-omitted field. The obligation still surfaces.
+    for (const id of ids) out.set(id, 'unknown');
+  }
+  return out;
 }
 
 /**

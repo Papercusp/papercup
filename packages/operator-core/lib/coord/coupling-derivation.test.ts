@@ -710,6 +710,7 @@ const OBLIGATION: ObligationEdge = {
   what: 'a consult reply',
   since: '2026-08-25T05:00:00.000Z',
   handle: 'mt85cgso-0000-ce7a',
+  counterpartLiveness: 'live',
 };
 /** 14 minutes after the obligation was entered — an exact age, no frozen clock needed. */
 const NOW = Date.parse('2026-08-25T05:14:00.000Z');
@@ -746,6 +747,23 @@ function obligationContractViolations(render: ObligationRenderer): string[] {
   for (const [part, edge] of partials) {
     if (render(edge, NOW) !== null) problems.push(`emits a phrase with no ${part}`);
   }
+
+  // P-011. The counterpart's liveness is part of the line, and — unlike the three parts
+  // above — a MISSING one must NOT suppress the edge. The debt is real whether or not we
+  // can see the peer; suppressing it would hide an outstanding obligation because of a gap
+  // in our own instrumentation. So the requirement is that it renders, that it renders
+  // DIFFERENTLY per verdict, and above all that an unmeasurable counterpart never reads as
+  // alive — which is the precise failure P-011 was written against.
+  const ended = render({ ...OBLIGATION, counterpartLiveness: 'ended' }, NOW);
+  const unknown = render({ ...OBLIGATION, counterpartLiveness: 'unknown' }, NOW);
+  if (!ended?.includes('ended')) problems.push('drops a dead counterpart’s liveness');
+  if (!unknown?.includes('unknown')) problems.push('drops an unmeasured counterpart’s liveness');
+  if (unknown?.includes('live') && !unknown.includes('unknown')) {
+    problems.push('renders an unmeasured counterpart as live');
+  }
+  if (ended && unknown && ended === unknown) {
+    problems.push('renders every liveness verdict identically');
+  }
   return problems;
 }
 
@@ -771,13 +789,13 @@ const directionBlindRenderer: ObligationRenderer = (edge, nowMs) => {
 describe('P-003 — the obligation `because` renders direction + age + handle', () => {
   it('renders all three parts, and the age as a duration a reader thinks in', () => {
     expect(obligationPhrase(OBLIGATION, NOW)).toBe(
-      'they owe you a consult reply, open 14m (mt85cgso-0000-ce7a)',
+      'they owe you a consult reply, open 14m, counterpart live (mt85cgso-0000-ce7a)',
     );
   });
 
   it('flips the reading with the direction, keeping age and handle intact', () => {
     expect(obligationPhrase({ ...OBLIGATION, direction: 'i-owe' }, NOW)).toBe(
-      'you owe them a consult reply, open 14m (mt85cgso-0000-ce7a)',
+      'you owe them a consult reply, open 14m, counterpart live (mt85cgso-0000-ce7a)',
     );
   });
 
@@ -797,6 +815,85 @@ describe('P-003 — the obligation `because` renders direction + age + handle', 
     expect(obligationContractViolations(directionBlindRenderer)).toContain(
       'renders both directions identically',
     );
+  });
+});
+
+/**
+ * ── P-011: THE COUNTERPART'S LIVENESS, ON THE LINE ──────────────────────────────────
+ *
+ * The owner's originating question, verbatim (2026-08-25 02:21:27Z): "How do we improve
+ * our system so you can readily see that status of the peer of your consult". An age
+ * alone cannot answer it — a 4-hour-old debt owed BY a live agent and one owed by an
+ * agent that died two hours ago are the same line, and only one of them is worth waiting
+ * on. Live proof this is not hypothetical: at implementation time, one of the two open
+ * consult obligations in this workspace has `su-b9ddacb7` as a party — a session that
+ * died at the context wall — and another is owed by `su-e40dceb1`, which has no
+ * coord_presence row at all.
+ *
+ * ⚠ THE ASYMMETRY THAT MATTERS. A missing age or handle SUPPRESSES the edge (see P-003
+ * above); a missing LIVENESS must NOT. The debt is real whether or not our instruments
+ * can see the peer, so suppressing it would hide something the reader is owed because of
+ * a gap on our side. Liveness therefore degrades — visibly, to `unknown` — rather than
+ * silencing the line.
+ */
+describe('P-011 — an obligation line carries the counterpart’s liveness, never silence', () => {
+  it('renders a DEAD counterpart’s verdict inline — the case an age alone cannot express', () => {
+    expect(obligationPhrase({ ...OBLIGATION, counterpartLiveness: 'ended' }, NOW)).toBe(
+      'they owe you a consult reply, open 14m, counterpart ended (mt85cgso-0000-ce7a)',
+    );
+  });
+
+  it('renders an UNMEASURED counterpart as an explicit unknown, not as live', () => {
+    const line = obligationPhrase({ ...OBLIGATION, counterpartLiveness: 'unknown' }, NOW);
+    expect(line).toContain('counterpart unknown');
+    // The whole point: "I could not measure this peer" must never be indistinguishable
+    // from "this peer is fine".
+    expect(line).not.toContain('counterpart live');
+  });
+
+  it('still EMITS the line when liveness is absent — degrades, never suppresses', () => {
+    // A JS caller (or a row that crossed a boundary the compiler does not police) can
+    // omit the field the type requires. That must cost confidence, not the obligation:
+    // suppressing it would hide a real debt behind our own instrumentation gap.
+    const noLiveness = { ...OBLIGATION } as Record<string, unknown>;
+    delete noLiveness['counterpartLiveness'];
+    const line = obligationPhrase(noLiveness as unknown as ObligationEdge, NOW);
+    expect(line).toContain('counterpart unknown');
+    expect(line).toContain('14m');
+    expect(line).toContain(OBLIGATION.handle);
+  });
+
+  it('degrades an UNRECOGNISED verdict to unknown rather than passing it through', () => {
+    const line = obligationPhrase(
+      { ...OBLIGATION, counterpartLiveness: 'probably-fine' as never },
+      NOW,
+    );
+    expect(line).toContain('counterpart unknown');
+    expect(line).not.toContain('probably-fine');
+  });
+
+  it('carries liveness through the derivation, per edge', () => {
+    const derived = deriveCouplingsFromObligations(
+      'su-me',
+      [
+        { ...OBLIGATION, ownerId: 'su-dead', counterpartLiveness: 'ended' },
+        { ...OBLIGATION, ownerId: 'su-live', counterpartLiveness: 'live' },
+      ],
+      NOW,
+    );
+    // Two peers, two DIFFERENT verdicts — a derivation that resolved liveness once and
+    // reused it would collapse these into one reading.
+    expect(derived.find((d) => d.ownerId === 'su-dead')?.because).toContain('counterpart ended');
+    expect(derived.find((d) => d.ownerId === 'su-live')?.because).toContain('counterpart live');
+  });
+
+  it('CONTROL: a renderer that ignores liveness is CAUGHT by the contract', () => {
+    // `bestEffortRenderer` predates P-011 and never mentions liveness at all — exactly
+    // the "omitted field that reads as live" shape the item forbids. If the contract
+    // check ever stops catching it, these assertions have stopped measuring anything.
+    const found = obligationContractViolations(bestEffortRenderer);
+    expect(found).toContain('drops a dead counterpart’s liveness');
+    expect(found).toContain('drops an unmeasured counterpart’s liveness');
   });
 });
 
