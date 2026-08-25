@@ -41,7 +41,6 @@ import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-ite
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
-import { findLiveHost, sessionClassForHost } from '../../events/await/psu-pty-discovery';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
@@ -249,38 +248,14 @@ function shortOwnerLabel(id: string): string {
 }
 
 /**
- * B (cold-with-carry-activation-2026-07-20, owner-directed): the arm-time carry
- * DEFAULT when the caller passes no explicit `carry`. A HEADLESS session
- * (host.bridgeTty===false ⇒ sessionClassForHost 'claude-headless') defaults to
- * 'cold' — an unattended AUTO loop should shed its transcript to its carry-note
- * each wake, not re-wake the SAME warm session until context overflows and dies
- * uncleanly (WI-5557 / the fa10eeb7 warm-to-974k-death incident). An INTERACTIVE /
- * human-present session ALWAYS stays warm (D-005 never-cold-a-human).
- *
- * Flag-gated (HEADLESS_LOOPS_COLD_BY_DEFAULT, default ON) and FAIL-SOFT: any
- * resolution failure — flag store down, no live host discovery record — yields
- * 'warm' (the historical default), so this can only ADD cold on a CONFIDENTLY
- * headless session, never surprise-cold anything. Layered under SU_COLD_AUTO: even
- * a cold-armed loop only actually colds when that master gate is on AND a carry-note
- * exists (decideColdWake), so this is a DEFAULT change, not a new cold path.
+ * EI-21424742792137469: carry is an owner/fleet launch policy, not a property of
+ * whether this process happens to have a TTY. A headless fleet launched with the
+ * standing warm default must not silently become cold when a member later calls
+ * loop:arm without repeating that option. Fresh arms therefore always default to
+ * warm. Cold remains available only as an explicit opt-in, while a re-arm with an
+ * active prior loop preserves that loop's already-chosen carry below.
  */
-/** The PURE B decision (exported for unit test): given the flag state and the loop
- *  owner's live host, the arm-time carry default. 'cold' ONLY when the flag is on
- *  AND the host classifies headless (sessionClassForHost 'claude-headless',
- *  i.e. bridgeTty===false); 'warm' otherwise (flag off, interactive, or no host). */
-export function decideDefaultCarry(flagOn: boolean, host: Parameters<typeof sessionClassForHost>[0]): 'warm' | 'cold' {
-  if (!flagOn) return 'warm';
-  return host && sessionClassForHost(host) === 'claude-headless' ? 'cold' : 'warm';
-}
-
-async function resolveDefaultCarry(ownerId: string): Promise<'warm' | 'cold'> {
-  try {
-    const flagOn = await getFlag(FLAGS.HEADLESS_LOOPS_COLD_BY_DEFAULT, 'system');
-    return decideDefaultCarry(flagOn, findLiveHost(ownerId));
-  } catch {
-    return 'warm'; // fail-soft to the historical warm default
-  }
-}
+const FRESH_LOOP_DEFAULT_CARRY = 'warm' as const;
 
 /** Normalize free text for a loose goal-containment check (case/whitespace-insensitive). */
 function normalizeLoopText(s: string): string {
@@ -322,7 +297,7 @@ export interface LoopOverwriteNote {
  *     `{goal}`, so an interval-only / carry / mode retune — the normal in-turn re-arm —
  *     keeps the goal and is NOT flagged).
  * Only a goal SWAP (new goal not represented in the prior kickoff) surfaces the note. Pure
- * + exported for unit tests, mirroring decideDefaultCarry / computeLoopStall.
+ * + exported for unit tests, mirroring computeLoopStall.
  */
 export function computeLoopOverwriteNote(
   prior: PriorLoopFacts | null,
@@ -465,7 +440,7 @@ export default defineTool({
       .enum(['warm', 'cold'])
       .optional()
       .describe(
-        "Loop lifecycle (su-cold-auto-mode-2026-07-03). DEFAULT (cold-with-carry-activation-2026-07-20): a HEADLESS/unattended session defaults to 'cold', an INTERACTIVE session to 'warm' — pass this only to OVERRIDE that default. 'warm' = each fire re-wakes THIS same warm session in place, context carried (an unbounded warm loop can hit the ceiling and die — WI-5557). 'cold' = the fresh-context lifecycle for an UNATTENDED AUTO loop: each fire RESETs the session to its carry-note (a periodic RECYCLE every Nth wake) instead of a warm turn, so the transcript never grows unbounded. Cold requires a carry-note anchor and the cold-auto master gate (decideColdWake). NEVER use 'cold' for an interactive/human-present session (D-005).",
+        "Loop lifecycle (su-cold-auto-mode-2026-07-03). DEFAULT: 'warm' for every fresh arm, including headless/fleet sessions; choose 'cold' explicitly when you want fresh-context wakes. A re-arm that omits carry preserves an active prior loop's already-chosen carry. 'warm' = each fire re-wakes THIS same session in place, context carried (an unbounded warm loop can hit the ceiling and die — WI-5557). 'cold' = the fresh-context lifecycle for an UNATTENDED AUTO loop: each fire RESETs the session to its carry-note (a periodic RECYCLE every Nth wake) instead of a warm turn, so the transcript never grows unbounded. Cold requires a carry-note anchor and the cold-auto master gate (decideColdWake). NEVER use 'cold' for an interactive/human-present session (D-005).",
       ),
     continuation: z
       .enum(['settle', 'gated'])
@@ -617,7 +592,7 @@ export default defineTool({
       (prior?.active
         ? prior.carry
         : !explicitWorkItem && !monitorAuthorityWorkItem
-          ? await resolveDefaultCarry(ownerId)
+          ? FRESH_LOOP_DEFAULT_CARRY
           : undefined);
     const autoDetectedWorkItemForScope =
       !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(rawGoal) ?? undefined) : undefined;
@@ -846,16 +821,15 @@ export default defineTool({
     const intervalSec = backoff.intervalSec;
 
     // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over
-    // B (cold-with-carry-activation-2026-07-20): an unspecified carry on a FRESH arm
-    // (no active prior loop for this owner) RESOLVES a default — 'cold' for an
-    // unattended headless session, 'warm' otherwise (see resolveDefaultCarry). An
-    // unspecified carry on a RE-ARM of an already-ACTIVE loop instead PRESERVES that
+    // EI-21424742792137469: an unspecified carry on a FRESH arm always defaults
+    // WARM. Session/headless detection must not override the fleet/owner launch
+    // policy. An unspecified carry on a RE-ARM of an already-ACTIVE loop PRESERVES that
     // loop's current carry (EI-18792078711601844) — a re-arm's whole point is to
     // retune ONE field (usually intervalSec), not to re-decide the lifecycle. An
     // explicit args.carry always wins either way. `carry` from here on is the
     // RESOLVED value, threaded into materializeLoop + the kickoff + response.
     const carryPreservedFromPrior = args.carry == null && Boolean(prior?.active);
-    const carry = args.carry ?? (prior?.active ? prior.carry : (carryForScope ?? (await resolveDefaultCarry(ownerId))));
+    const carry = args.carry ?? (prior?.active ? prior.carry : (carryForScope ?? FRESH_LOOP_DEFAULT_CARRY));
     const resolvedMode = requestedMode;
 
     // WI-5557 TIER 1 — an unattended warm-carry WORK loop with neither dead-man guard set
@@ -1091,19 +1065,12 @@ export default defineTool({
     // on it. A silently-capped interval would be worse than no cap at all.
     const backoffNote = backoff.note ? ` ${backoff.note}` : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
-    // B (cold-with-carry-activation-2026-07-20): disclose when the headless default
-    // kicked in, so the arming agent knows its loop will go COLD (transcript reset to
-    // the carry-note each wake) and must keep loop:checkpoint fresh — and how to
-    // override if it wants warm. EI-18792078711601844: a RE-ARM that PRESERVED the
-    // prior loop's carry (rather than recomputing a fresh default) gets its own,
-    // distinct disclosure — "defaulted" would misstate what happened, and this is
-    // exactly the surfacing the filed bug's "minimum viable" fix asked for (carry
-    // shown prominently on re-arm so an omission is never silent).
-    const coldDefaultNote = carryPreservedFromPrior
+    // EI-18792078711601844: a RE-ARM that PRESERVED the prior loop's carry gets
+    // an explicit disclosure, so an omitted carry is never mistaken for a fresh
+    // default. Fresh arms are warm and need no exceptional lifecycle warning.
+    const carryResolutionNote = carryPreservedFromPrior
       ? ` (carry '${carry}' PRESERVED from the loop's prior config — pass carry explicitly to change it.)`
-      : args.carry == null && carry === 'cold'
-        ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
-        : '';
+      : '';
     // EI-19326580626849271 — invert the monitor-loop default toward PUSH.
     //
     // P-009 shipped fleet-transition events so a leader could react to pushes
@@ -1126,7 +1093,7 @@ export default defineTool({
         ? ' 📡 Monitor loop armed — but prefer PUSH wherever the thing you are watching already emits. A fleet leader can park on fleet:member-dead · fleet:claim-released · fleet:item-completed · fleet:context-critical via events:await { event, timeout_sec, on_timeout:"wake" }, which wakes you ON the transition instead of N times between transitions. Keep THIS loop as the slow backstop (a longer intervalSec) rather than the primary watcher. events:catalog lists the full set.'
         : '';
     const note =
-      baseNote + overwriteNoteText + backoffNote + claimNote + warningNote + coldDefaultNote + monitorPushNote;
+      baseNote + overwriteNoteText + backoffNote + claimNote + warningNote + carryResolutionNote + monitorPushNote;
 
     return {
       content: [

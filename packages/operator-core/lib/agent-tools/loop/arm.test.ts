@@ -24,7 +24,6 @@ vi.mock('@papercusp/flags/server', () => ({
 vi.mock('@papercusp/flags', () => ({
   FLAGS: {
     LOOPS: 'papercusp-loops',
-    HEADLESS_LOOPS_COLD_BY_DEFAULT: 'papercusp-headless-loops-cold-by-default',
     SCOPED_SUPERUSER_CLAMP: 'papercusp-scoped-superuser-clamp',
   },
 }));
@@ -106,15 +105,6 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
-// B (cold-with-carry-activation-2026-07-20): findLiveHost drives the headless carry
-// default. Mock it (default null ⇒ warm, so the WI-1471 identity tests are unchanged)
-// with the REAL sessionClassForHost logic so per-test hosts classify correctly.
-vi.mock('../../events/await/psu-pty-discovery', () => ({
-  findLiveHost: vi.fn(() => null),
-  sessionClassForHost: (host: { bridgeTty?: boolean } | null | undefined) =>
-    host?.bridgeTty === false ? 'claude-headless' : 'claude-interactive',
-}));
-
 import {
   materializeLoop,
   buildLoopWakePrompt,
@@ -125,10 +115,9 @@ import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-ite
 import { admitWorkItemForFleetTarget } from '../../scheduler/fleet-scope-admission';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { resolveHomePotSlug } from '../pot/_resolve';
 import { admitMonitorArm, prepareMonitorConfig } from '../../harness/routines/monitor-policy';
-import { decideDefaultCarry, computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
+import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 import {
   mockResolvedOnceTyped,
   mockResolvedTyped,
@@ -146,7 +135,6 @@ const getWiM = vi.mocked(getWorkItem);
 const admitM = vi.mocked(admitWorkItemForFleetTarget);
 const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
-const findHostM = vi.mocked(findLiveHost);
 const homePotM = vi.mocked(resolveHomePotSlug);
 const monitorAdmissionM = vi.mocked(admitMonitorArm);
 const briefM = vi.mocked((await import('../../session-brief')).getSessionBrief);
@@ -831,49 +819,26 @@ describe('loop:arm — WI-5557 TIER 1: unbounded warm-carry WORK loop warning (a
   });
 });
 
-// B (cold-with-carry-activation-2026-07-20): headless loops default to cold carry.
-describe('decideDefaultCarry (pure B decision)', () => {
-  const headless = { bridgeTty: false };
-  const interactive = { bridgeTty: true };
-  it('flag OFF ⇒ warm even for a headless host', () => {
-    expect(decideDefaultCarry(false, headless)).toBe('warm');
-  });
-  it('flag ON + headless host ⇒ cold', () => {
-    expect(decideDefaultCarry(true, headless)).toBe('cold');
-  });
-  it('flag ON + interactive host ⇒ warm (D-005 never-cold-a-human)', () => {
-    expect(decideDefaultCarry(true, interactive)).toBe('warm');
-  });
-  it('flag ON + no live host ⇒ warm (fail-soft)', () => {
-    expect(decideDefaultCarry(true, null)).toBe('warm');
-  });
-});
-
-describe('loop:arm headless carry default (B, through the handler)', () => {
-  beforeEach(() => {
-    findHostM.mockReturnValue(null); // default: no host ⇒ warm
-  });
-  it('a HEADLESS caller with no explicit carry materializes the loop COLD + discloses it', async () => {
-    findHostM.mockReturnValue({ bridgeTty: false } as never);
-    const b = body(await call({}));
-    expect(b.loop.carry).toBe('cold');
-    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'cold' }));
-    expect(b.note).toContain('COLD carry');
-    // a cold loop is not an unbounded-warm loop ⇒ no WI-5557 warning
-    expect(b.unboundedWarmLoopWarning).toBeNull();
-  });
-  it('an INTERACTIVE caller with no explicit carry stays WARM', async () => {
-    findHostM.mockReturnValue({ bridgeTty: true } as never);
+describe('loop:arm fresh carry default (EI-21424742792137469)', () => {
+  it('a fresh caller with no explicit carry materializes the loop WARM', async () => {
     const b = body(await call({}));
     expect(b.loop.carry).toBe('warm');
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'warm' }));
-    expect(b.note).not.toContain('COLD carry');
+    expect(b.note).not.toContain('Defaulted to COLD carry');
+    expect(b.unboundedWarmLoopWarning).toContain('unattended warm-carry WORK loop');
   });
-  it('an EXPLICIT carry:"warm" overrides the headless default', async () => {
-    findHostM.mockReturnValue({ bridgeTty: false } as never);
+
+  it('an EXPLICIT carry:"warm" remains warm', async () => {
     const b = body(await call({ carry: 'warm' }));
     expect(b.loop.carry).toBe('warm');
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'warm' }));
+  });
+
+  it('an EXPLICIT carry:"cold" still opts into the cold lifecycle', async () => {
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.loop.carry).toBe('cold');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ carry: 'cold' }));
+    expect(b.unboundedWarmLoopWarning).toBeNull();
   });
 });
 
@@ -1021,13 +986,6 @@ describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler
 // The playbook's own prescribed remedy for a blocked loop — "re-loop:arm with a larger
 // intervalSec" — passes only intervalSec, so this is exactly the call the bug's repro hit.
 describe('loop:arm — EI-18792078711601844 carry preserved on re-arm', () => {
-  beforeEach(() => {
-    // Force the fresh-default resolution path to 'warm' whenever it's reached, so a test
-    // asserting 'cold' survives can ONLY be passing because of preservation, never a
-    // coincidental default. Interactive (no live host) always resolves 'warm'.
-    findHostM.mockReturnValue(null);
-  });
-
   it('an active prior loop with carry cold + carry omitted ⇒ re-arm PRESERVES cold (not the fresh warm default)', async () => {
     priorLoopM.mockResolvedValue(priorLoop({ carry: 'cold' }) as never);
     const b = body(await call({ intervalSec: 1200, goal: 'watch WI-5672 for the next fire' }));
@@ -1061,12 +1019,11 @@ describe('loop:arm — EI-18792078711601844 carry preserved on re-arm', () => {
     expect(b.note).not.toContain('PRESERVED from the');
   });
 
-  it('no prior loop at all ⇒ NOT preserved — falls through to the fresh default (cold, headless host)', async () => {
-    findHostM.mockReturnValue({ bridgeTty: false } as never);
+  it('no prior loop at all ⇒ NOT preserved — falls through to the fresh warm default', async () => {
     priorLoopM.mockResolvedValue(null as never);
     const b = body(await call({}));
-    expect(b.loop.carry).toBe('cold');
-    expect(b.note).toContain('Defaulted to COLD carry');
+    expect(b.loop.carry).toBe('warm');
+    expect(b.note).not.toContain('Defaulted to COLD carry');
     expect(b.note).not.toContain('PRESERVED from the');
   });
 
