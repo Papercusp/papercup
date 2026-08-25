@@ -490,15 +490,17 @@ describe('P-004 — completion authority round-trips through both family views',
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'latch', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(bug.id, 'resolved', { by: 'agC', completionRef: 'cycle one' });
     const latchKey = `work-item:done:${bug.id}`;
-    // Both the settled-emit (latching) and the reopen-clear are fire-and-forget
-    // chains of real async PG round-trips — poll rather than assume a tick.
+    // The settled emit is intentionally detached, so wait for the first cycle's
+    // latch before exercising the reopen boundary.
     await vi.waitFor(async () => {
       expect(await getKeyFireLatch(latchKey)).not.toBeNull();
     });
     await wi.setWorkItemState(bug.id, 'open', { by: 'agC' });
-    await vi.waitFor(async () => {
-      expect(await getKeyFireLatch(latchKey)).toBeNull();
-    });
+    // EI-21463649981229718: reopening is not complete while the old terminal
+    // latch remains readable. A caller can immediately arm work-item:await after
+    // this promise resolves, so polling here would hide the stale already_done
+    // race the lifecycle contract must prevent.
+    expect(await getKeyFireLatch(latchKey)).toBeNull();
   });
 
   it('a close with no authority supplied stays null — D-008, no writer invents a judgement', async () => {

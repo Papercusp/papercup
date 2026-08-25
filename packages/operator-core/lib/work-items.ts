@@ -3714,10 +3714,14 @@ export async function setWorkItemState(
     // `fired_undeclared` against a LIVE (reopened) item and makes the done-gate
     // look already-satisfied. Bounded to latches recorded before this
     // transition so a fast close→reopen→close cannot erase the NEW cycle's
-    // row. Fire-and-forget + lazy import, same shape as the emits below.
+    // row. Unlike the notifications below, this clear is part of the reopen
+    // completion boundary: work-item:await may run immediately after this
+    // promise resolves, and its registration latch must not observe the retired
+    // terminal cycle (EI-21463649981229718). Keep the lazy import to avoid the
+    // work-items-events cycle, but await the bounded delete before returning.
     if (isSettledWorkItemState(prevState ?? '')) {
       const reopenedAtMs = Date.now();
-      void trackDetached(import('./events/await/store'))
+      await trackDetached(import('./events/await/store'))
         .then((m) => m.clearKeyFire(`work-item:done:${id}`, { firedBefore: reopenedAtMs }))
         .catch(() => {});
     }
