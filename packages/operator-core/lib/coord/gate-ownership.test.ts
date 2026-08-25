@@ -114,6 +114,7 @@ describe('gate ownership assessment truth table', () => {
     ],
     ['no object', { claimState: 'no-object', holderSessionState: null, duplicates: [] }, 'unowned'],
     ['claimable', { claimState: 'claimable', holderSessionState: null, duplicates: [] }, 'claimable'],
+    ['hold-blocked', { claimState: 'hold-blocked', holderSessionState: null, duplicates: [] }, 'hold-blocked'],
     ['expired', { claimState: 'lease-expired', holderSessionState: 'ended', duplicates: [] }, 'lease-expired'],
     ['live', { claimState: 'held', holderSessionState: 'live', duplicates: [] }, 'held-live'],
     ['parked', { claimState: 'held', holderSessionState: 'parked', duplicates: [] }, 'held-live'],

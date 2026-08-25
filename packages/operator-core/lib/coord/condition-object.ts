@@ -50,7 +50,7 @@ import { coordSql, coordWorkspaceId, coordHasPgFastPath } from '../agent-tools/c
 import { WORK_ITEM_TAG_SRC_KIND } from '../agent-tools/coordination/coupled-topic-sources';
 import { EVENT_SUBSCRIPTION_KIND } from '../agent-tools/coordination/event-subscriptions';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { linkWorkItem, unlinkWorkItem } from '../work-items';
+import { linkWorkItem, readWorkItemClaimHoldProvenance, unlinkWorkItem } from '../work-items';
 
 /**
  * The rel that joins a work-item to the condition it concerns. Existing
@@ -69,9 +69,11 @@ export const CONDITION_OBJECT_ROW_CAP = 200;
  * the enum is `held` vs `lease-expired`: both have a non-null `takenBy`, and a
  * reader that treats "someone is on it" as `takenBy != null` will report a dead
  * agent's abandoned lease as live ownership — which is worse than reporting no
- * owner at all, because it suppresses the next agent from picking it up.
+ * owner at all, because it suppresses the next agent from picking it up. A
+ * `hold-blocked` row is a deliberate claim exclusion, using the same attributed
+ * provenance that `claim-hold-guard.ts` enforces, even when it is unassigned.
  */
-export type ConditionClaimState = 'no-object' | 'claimable' | 'held' | 'lease-expired';
+export type ConditionClaimState = 'no-object' | 'claimable' | 'held' | 'lease-expired' | 'hold-blocked';
 
 /** One work-item linked to a condition key. */
 export interface ConditionWorkItemRow {
@@ -83,6 +85,8 @@ export interface ConditionWorkItemRow {
   /** Genuine item-scoped progress, distinct from the holder's process heartbeat. */
   lastProgressAt: string | null;
   expiresAt: string | null;
+  /** Persisted work-item payload used to apply the claim-hold guard's provenance predicate. */
+  payload?: unknown;
 }
 
 /** The resolved ownership of one condition key. */
@@ -135,12 +139,15 @@ export function resolveConditionObject(
     };
   }
 
-  // Prefer a row that is genuinely HELD as the canonical one: if any agent is
-  // live on this condition, that is the answer the caller needs, regardless of
-  // which row happens to be oldest. Otherwise the caller's ordering (oldest
+  // Prefer an active hold or a genuinely HELD row as the canonical one: a
+  // deliberate claim exclusion or an active owner must not be masked by an
+  // older unheld duplicate. Among protected rows the caller's ordering (oldest
   // first) stands, so the canonical item is stable across calls.
-  const held = rows.find((r) => r.takenBy && !leaseExpired(r, nowMs));
-  const canonical = held ?? rows[0];
+  const protectedRow = rows.find((r) => {
+    const state = claimStateOf(r, nowMs);
+    return state === 'hold-blocked' || state === 'held';
+  });
+  const canonical = protectedRow ?? rows[0];
   const duplicates = rows.filter((r) => r.workItem !== canonical.workItem).map((r) => r.workItem);
 
   return {
@@ -164,8 +171,14 @@ export function leaseExpired(row: ConditionWorkItemRow, nowMs: number): boolean 
   return Number.isFinite(t) && t <= nowMs;
 }
 
+/** PURE. Does the row carry attributed claim-hold provenance enforced by the claim guard? */
+export function claimHoldBlocked(row: ConditionWorkItemRow): boolean {
+  return readWorkItemClaimHoldProvenance(row.payload).attributed;
+}
+
 /** PURE. The claim state of a single linked row (never `no-object` — the row exists). */
 export function claimStateOf(row: ConditionWorkItemRow, nowMs: number): ConditionClaimState {
+  if (claimHoldBlocked(row)) return 'hold-blocked';
   if (!row.takenBy) return 'claimable';
   return leaseExpired(row, nowMs) ? 'lease-expired' : 'held';
 }
@@ -233,6 +246,7 @@ export async function findConditionObjects(
         taken_at: string | null;
         last_progress_at: string | null;
         expires_at: string | null;
+        payload: unknown;
       }[]
     >`
       SELECT l.dst_ref     AS condition_key,
@@ -242,7 +256,8 @@ export async function findConditionObjects(
              w.taken_by    AS taken_by,
              w.taken_at    AS taken_at,
              w.last_progress_at AS last_progress_at,
-             w.expires_at  AS expires_at
+             w.expires_at  AS expires_at,
+             w.payload     AS payload
         FROM harness_shared.coord_links l
         JOIN harness_shared.work_items w
           ON w.feature_id = l.src_ref
@@ -267,6 +282,7 @@ export async function findConditionObjects(
         takenAt: r.taken_at ?? null,
         lastProgressAt: r.last_progress_at ?? null,
         expiresAt: r.expires_at ?? null,
+        payload: r.payload ?? null,
       };
       if (list) list.push(row);
       else byKey.set(r.condition_key, [row]);

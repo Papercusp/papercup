@@ -609,6 +609,12 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
         meaning: 'An owning work-item exists and nobody holds it.',
         safeAction: 'Claim it, then work it.',
       },
+      'hold-blocked': {
+        meaning:
+          'The owning work-item carries attributed claim-hold provenance, so the claim path deliberately refuses it with claim_hold_blocked.',
+        safeAction:
+          'Do not claim it. Coordinate with the recorded holder, or clear/unpark the hold (`work_items:hold_open { clear:true }` or `work_items:release { claimHold:false }`) before claiming it.',
+      },
       'lease-expired': {
         meaning: "The claim's lease has lapsed.",
         safeAction: "Re-claim it — the previous holder's lease no longer protects their work.",

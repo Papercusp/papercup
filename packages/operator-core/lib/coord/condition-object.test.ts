@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveConditionObject,
   claimStateOf,
+  claimHoldBlocked,
   leaseExpired,
   CONDITION_LINK_REL,
   type ConditionWorkItemRow,
@@ -35,6 +36,7 @@ function row(over: Partial<ConditionWorkItemRow> = {}): ConditionWorkItemRow {
     takenAt: null,
     lastProgressAt: null,
     expiresAt: null,
+    payload: null,
     ...over,
   };
 }
@@ -97,6 +99,39 @@ describe('resolveConditionObject', () => {
     const got = resolveConditionObject(KEY, [row({ takenBy: 'su-abc', expiresAt: 'not-a-date' })], NOW);
     expect(got.claimState).toBe('held');
   });
+
+  it('reports hold-blocked for an attributed durable claim hold', () => {
+    const got = resolveConditionObject(
+      KEY,
+      [
+        row({
+          payload: {
+            _claimHold: true,
+            claim_hold_by: 'su-parker',
+            claim_hold_reason: 'keep unassigned until explicit resume',
+          },
+        }),
+      ],
+      NOW,
+    );
+    expect(got.claimState).toBe('hold-blocked');
+    expect(got.takenBy).toBeNull();
+  });
+
+  it('uses the same held-open provenance convention as the claim guard', () => {
+    expect(
+      claimHoldBlocked(
+        row({
+          payload: {
+            _claimHold: 'true',
+            held_open_by: 'su-holder',
+            held_open_reason: 'owner gate',
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(claimHoldBlocked(row({ payload: { _claimHold: true } }))).toBe(false);
+  });
 });
 
 describe('duplicate filings — the condition this plan exists to remove', () => {
@@ -135,6 +170,37 @@ describe('duplicate filings — the condition this plan exists to remove', () =>
     expect(got.claimState).toBe('claimable');
   });
 
+  it('lets an attributed hold row outrank an older unheld duplicate', () => {
+    const got = resolveConditionObject(
+      KEY,
+      [
+        row({ workItem: 'EI-unheld' }),
+        row({
+          workItem: 'EI-held-open',
+          payload: { _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'parked' },
+        }),
+      ],
+      NOW,
+    );
+    expect(got.workItem).toBe('EI-held-open');
+    expect(got.claimState).toBe('hold-blocked');
+    expect(got.duplicates).toEqual(['EI-unheld']);
+  });
+
+  it('lets an active held row outrank an older unheld duplicate', () => {
+    const got = resolveConditionObject(
+      KEY,
+      [
+        row({ workItem: 'EI-unheld' }),
+        row({ workItem: 'EI-held', takenBy: 'su-live', expiresAt: '2026-08-03T02:00:00Z' }),
+      ],
+      NOW,
+    );
+    expect(got.workItem).toBe('EI-held');
+    expect(got.claimState).toBe('held');
+    expect(got.duplicates).toEqual(['EI-unheld']);
+  });
+
   it('reports every duplicate rather than silently collapsing them', () => {
     // Six agents filed one condition on 2026-08-02/03 and none saw the others.
     // Until P-002's partial unique index lands, duplicates are REAL and must be
@@ -150,6 +216,19 @@ describe('claimStateOf / leaseExpired', () => {
   it('never returns no-object for an existing row', () => {
     expect(claimStateOf(row(), NOW)).toBe('claimable');
     expect(claimStateOf(row({ takenBy: 'x' }), NOW)).toBe('held');
+  });
+
+  it('returns hold-blocked before lease/claim state when attributed hold provenance exists', () => {
+    expect(
+      claimStateOf(
+        row({
+          takenBy: 'su-holder',
+          expiresAt: '2026-08-03T00:30:00Z',
+          payload: { _claimHold: true, held_open_by: 'su-holder' },
+        }),
+        NOW,
+      ),
+    ).toBe('hold-blocked');
   });
 
   it('an unclaimed row has no lease to expire', () => {

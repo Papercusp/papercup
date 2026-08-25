@@ -179,6 +179,7 @@ export type GateOwnershipAssessment =
   | 'duplicate-owners'
   | 'unowned'
   | 'claimable'
+  | 'hold-blocked'
   | 'lease-expired'
   | 'held-live'
   | 'held-needs-confirmation'
@@ -205,6 +206,8 @@ export function assessGateOwnership(input: {
       return 'unowned';
     case 'claimable':
       return 'claimable';
+    case 'hold-blocked':
+      return 'hold-blocked';
     case 'lease-expired':
       return 'lease-expired';
     case 'held':
