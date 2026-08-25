@@ -47,20 +47,28 @@ export type DesignGateFailureKind = (typeof DESIGN_GATE_FAILURE_KINDS)[number];
  * is not evidence, and reporting it as anything softer is how a gate passes on
  * a record it never read.
  */
-export type DesignGateFailureReason =
-  | 'no-evidence'
-  | 'superseded-revision'
-  | 'unreadable-schema'
-  | 'engine-invalid'
-  | 'diff-exceeds-policy'
-  | 'no-required-cases'
+export const DESIGN_GATE_FAILURE_REASONS = [
+  'no-evidence',
+  'superseded-revision',
+  'unreadable-schema',
+  'engine-invalid',
+  'diff-exceeds-policy',
+  'no-required-cases',
   // D-020 class 4: evidence exists at the right environment, but it is a
   // capture of a DIFFERENT surface. Distinguished from `no-evidence` because
   // the remedy is opposite: not "run a comparison" — one was run, and it may
   // even have passed at diff ratio 0 — but "capture the surface this case is
   // actually about". Reporting it as missing would send someone to re-run the
   // exact comparison that produced the misleading pass.
-  | 'wrong-surface';
+  'wrong-surface',
+] as const;
+
+/**
+ * A runtime array rather than a bare type union, so the documentation guard can
+ * DERIVE the vocabulary instead of restating it. A hand-maintained second copy
+ * of this list is exactly the drift the doc-claims judge exists to catch.
+ */
+export type DesignGateFailureReason = (typeof DESIGN_GATE_FAILURE_REASONS)[number];
 
 export interface DesignGateFailure {
   readonly caseId: string;
