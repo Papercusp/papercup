@@ -111,7 +111,7 @@ function resolvesRevision(revision) {
  * what `HEAD` should have meant for that file all along.
  */
 let submodulePrefixesCache = null;
-function submodulePrefixes() {
+export function submodulePrefixes() {
   if (submodulePrefixesCache) return submodulePrefixesCache;
   const out = git(['config', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$'], {
     allowFail: true,
@@ -158,7 +158,7 @@ export function submoduleRevisionAt(base, prefix) {
  * Returns null when the file has no version there (new file, or a base that repo lacks) —
  * the same contract the caller already handles by skipping the candidate.
  */
-function showAtBase(file, base) {
+export function showAtBase(file, base) {
   const prefix = submoduleFor(file, submodulePrefixes());
   const repositoryBase = prefix ? submoduleRevisionAt(base, prefix) : base;
   if (!repositoryBase) return null;
@@ -167,6 +167,65 @@ function showAtBase(file, base) {
     allowFail: true,
     cwd: resolve(ROOT, prefix),
   });
+}
+
+function parseNameStatus(text, prefix = '') {
+  return text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [status, ...rest] = line.split('\t');
+      const file = rest[rest.length - 1];
+      return { status, file: prefix ? `${prefix}/${file}` : file };
+    });
+}
+
+/**
+ * Resolve the TypeScript candidates a strand guard must compare against a SUPERPROJECT
+ * revision. Both strand guards consume this helper so a submodule root forwarded by
+ * affected-tests cannot mean "directory" to one guard and "changed files" to the other.
+ *
+ * A declared submodule root is the real gate shape: the superproject diff can name only the
+ * gitlink, while the files that changed live in the submodule repository. Expand that root
+ * against the gitlink recorded at `base`. Declared ordinary files retain their exact scope.
+ * In inferred mode, combine the superproject TypeScript diff with each submodule's own diff.
+ *
+ * Returns null only when the superproject diff itself could not be resolved. An unavailable
+ * individual submodule contributes no candidates, so the caller's existing NOT_CHECKED
+ * verdict remains the fail-closed outcome.
+ */
+export function typeScriptCandidatesAtBase(base, declaredFiles = null) {
+  const candidates = [];
+  const prefixes = submodulePrefixes();
+
+  const addSubmoduleDiff = (prefix) => {
+    const submoduleBase = submoduleRevisionAt(base, prefix);
+    if (!submoduleBase) return;
+    const subStatus = git(['diff', '--name-status', submoduleBase, '--', '*.ts', '*.tsx'], {
+      allowFail: true,
+      cwd: resolve(ROOT, prefix),
+    });
+    if (subStatus !== null) candidates.push(...parseNameStatus(subStatus, prefix));
+  };
+
+  if (declaredFiles !== null) {
+    for (const file of declaredFiles) {
+      const prefix = submoduleFor(file, prefixes);
+      if (prefix && file === prefix) addSubmoduleDiff(prefix);
+      else candidates.push({ status: 'M', file });
+    }
+  } else {
+    const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], {
+      allowFail: true,
+    });
+    if (nameStatus === null) return null;
+    candidates.push(...parseNameStatus(nameStatus));
+    for (const prefix of prefixes) addSubmoduleDiff(prefix);
+  }
+
+  // A caller can explicitly name both a submodule root and one of its files. Preserve the
+  // first status while preventing duplicate parsing/findings for the same effective path.
+  return [...new Map(candidates.map((candidate) => [candidate.file, candidate])).values()];
 }
 
 const isExported = (node) =>
@@ -454,48 +513,16 @@ function main() {
   const explicitFiles = parseExplicitFiles(argv);
   const declaredFiles = explicitFiles == null ? null : [...explicitFiles];
 
-  let candidates;
-  if (declaredFiles) {
-    candidates = declaredFiles.map((file) => ({ status: 'M', file }));
-  } else {
-    // Changed .ts/.tsx files vs the base. A file with no base version is skipped: a brand-new
-    // exported interface has no pre-existing construction sites, so it cannot strand anything.
-    const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
-    if (nameStatus === null) {
-      console.error(`check-required-field-strands: cannot diff against '${base}'`);
-      // A base we cannot diff against means we examined nothing — the one thing
-      // this must never report as a clean bill (EI-20095543794921181).
-      process.exit(EXIT_NOT_CHECKED);
-    }
-    const parseNameStatus = (text, prefix = '') =>
-      text
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          const [status, ...rest] = line.split('\t');
-          const file = rest[rest.length - 1];
-          return { status, file: prefix ? `${prefix}/${file}` : file };
-        });
-
-    candidates = parseNameStatus(nameStatus);
-
-    // The superproject diff above lists a changed submodule as a single GITLINK entry, never
-    // the .ts files inside it — so without this the inferred mode silently skips every
-    // submodule edit (EI-20020054576584970). Ask each submodule about its own working tree.
-    // The base is a superproject revision, so first follow its gitlink to the corresponding
-    // submodule commit. Passing the superproject SHA directly is invalid in that repository
-    // and produces one misleading `fatal: bad revision` per submodule (EI-21350226746257830).
-    // allowFail per submodule: an uninitialised checkout, or a `base` that repo does not
-    // have, must degrade to "examined nothing here" rather than abort the whole run.
-    for (const prefix of submodulePrefixes()) {
-      const submoduleBase = submoduleRevisionAt(base, prefix);
-      if (!submoduleBase) continue;
-      const subStatus = git(['diff', '--name-status', submoduleBase, '--', '*.ts', '*.tsx'], {
-        allowFail: true,
-        cwd: resolve(ROOT, prefix),
-      });
-      if (subStatus) candidates.push(...parseNameStatus(subStatus, prefix));
-    }
+  // Changed .ts/.tsx files vs the base. A file with no base version is skipped: a brand-new
+  // exported interface has no pre-existing construction sites, so it cannot strand anything.
+  // `typeScriptCandidatesAtBase` also expands a DECLARED submodule root — the exact path shape
+  // affected-tests forwards from a superproject diff — into that submodule's internal diff.
+  const candidates = typeScriptCandidatesAtBase(base, declaredFiles);
+  if (candidates === null) {
+    console.error(`check-required-field-strands: cannot diff against '${base}'`);
+    // A base we cannot diff against means we examined nothing — the one thing
+    // this must never report as a clean bill (EI-20095543794921181).
+    process.exit(EXIT_NOT_CHECKED);
   }
 
   const findings = [];
