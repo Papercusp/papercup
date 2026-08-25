@@ -321,6 +321,6 @@ describe('sessions:list historical bounded census', () => {
     const { parsed, txCalls } = await run({ since: 'yesterday-ish' }, []);
     expect(txCalls).toBe(0);
     expect(parsed.ok).toBe(false);
-    expect(JSON.stringify(parsed)).toMatch(/relative window like "45m", "12h", "7d"/);
+    expect(JSON.stringify(parsed)).toMatch(/relative window like \\"45m\\", \\"12h\\", \\"7d\\"/);
   });
 });
