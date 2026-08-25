@@ -141,8 +141,16 @@ export default function ReviewReportShell({
     initialSelection(groups, defaultSelected),
   );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const reportRef = useRef<HTMLElement>(null);
   const applyButtonRef = useRef<HTMLButtonElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
+  const rowNodes = useRef(new Map<string, HTMLLIElement>());
+  const groupToggleNodes = useRef(new Map<string, HTMLButtonElement>());
+  const focusedGroupContent = useRef<{
+    element: HTMLElement;
+    rowId: string | null;
+    groupId: string;
+  } | null>(null);
   const restoreActionFocusAfterBusy = useRef<"apply" | "dismiss" | null>(null);
   const wasBusy = useRef(busy);
 
@@ -193,6 +201,32 @@ export default function ReviewReportShell({
     target?.focus({ preventScroll: true });
   }, [busy, groups, liveSelected.size]);
 
+  useLayoutEffect(() => {
+    const previous = focusedGroupContent.current;
+    if (
+      previous === null ||
+      previous.element.isConnected ||
+      document.activeElement !== document.body
+    ) {
+      return;
+    }
+
+    const row = previous.rowId
+      ? rowNodes.current.get(previous.rowId)
+      : undefined;
+    const group = groupToggleNodes.current.get(previous.groupId);
+    const dismiss = dismissButtonRef.current;
+    const target =
+      row ??
+      group ??
+      (dismiss && !dismiss.disabled ? dismiss : reportRef.current);
+
+    // Clear before focusing: the capture handler records the new surviving
+    // context, which must not be overwritten after focus() returns.
+    focusedGroupContent.current = null;
+    target?.focus({ preventScroll: true });
+  }, [groups]);
+
   const toggleRow = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -230,9 +264,34 @@ export default function ReviewReportShell({
 
   return (
     <section
+      ref={reportRef}
       className="review-report"
       data-testid="review-report"
       aria-busy={busy || undefined}
+      tabIndex={-1}
+      onFocusCapture={(event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const group = target.closest<HTMLElement>("[data-review-group-id]");
+        if (!group?.dataset.reviewGroupId) {
+          focusedGroupContent.current = null;
+          return;
+        }
+        const row = target.closest<HTMLElement>("[data-review-row-id]");
+        focusedGroupContent.current = {
+          element: target,
+          rowId: row?.dataset.reviewRowId ?? null,
+          groupId: group.dataset.reviewGroupId,
+        };
+      }}
+      onBlurCapture={(event) => {
+        const next = event.relatedTarget;
+        if (next instanceof Node && reportRef.current?.contains(next)) return;
+        // Removing a focused subtree emits focusout with no related target in
+        // Chromium. Preserve that context for the layout-effect fallback, but
+        // forget it when focus deliberately moves to a concrete outside node.
+        if (next !== null) focusedGroupContent.current = null;
+      }}
     >
       <header className="review-report__head">
         <div className="review-report__identity">
@@ -317,6 +376,7 @@ export default function ReviewReportShell({
               id={`review-report-group-${index}`}
               className="review-report__group"
               data-testid={`review-group-${group.id}`}
+              data-review-group-id={group.id}
             >
               <header className="review-report__group-head">
                 <Checkbox
@@ -328,6 +388,10 @@ export default function ReviewReportShell({
                   onChange={() => toggleGroup(group)}
                 />
                 <button
+                  ref={(node) => {
+                    if (node) groupToggleNodes.current.set(group.id, node);
+                    else groupToggleNodes.current.delete(group.id);
+                  }}
                   type="button"
                   className="review-report__group-toggle"
                   data-testid={`review-group-toggle-${group.id}`}
@@ -362,9 +426,15 @@ export default function ReviewReportShell({
                     const selectable = rowSelectable(row);
                     return (
                       <li
+                        ref={(node) => {
+                          if (node) rowNodes.current.set(row.id, node);
+                          else rowNodes.current.delete(row.id);
+                        }}
                         key={row.id}
                         className={`review-report__row review-report__row--${status}`}
                         data-testid={`review-row-${row.id}`}
+                        data-review-row-id={row.id}
+                        tabIndex={-1}
                       >
                         <span className="review-report__row-check-slot">
                           {selectable ? (
