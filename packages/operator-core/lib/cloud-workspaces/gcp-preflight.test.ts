@@ -223,7 +223,9 @@ describe('GCP workspace-host preflight', () => {
     const iam = report.checks.find((check) => check.id === 'iam.project');
     expect(iam?.remediation?.code).toBe('grant-project-permissions');
     expect(iam?.remediation?.missingPermissions).toContain('iap.tunnelInstances.accessViaIAP');
+    expect(iam?.remediation?.missingPermissions).toContain('compute.routers.update');
     expect(iam?.remediation?.suggestedRoles).toContain('roles/iap.tunnelResourceAccessor');
+    expect(iam?.remediation?.suggestedRoles).toContain('roles/compute.networkAdmin');
     expect(report.checks.find((check) => check.id === 'quotas')?.remediation?.code).toBe('increase-quota');
   });
 
