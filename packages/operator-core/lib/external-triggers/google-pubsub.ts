@@ -332,15 +332,25 @@ export async function provisionGoogleGmailPubSub(
     topic = 'created';
   }
 
+  // Pub/Sub v1 exposes topics.getIamPolicy as a GET; only setIamPolicy is a
+  // POST. A POST here matches no API method, so Google answers with its generic
+  // HTML 404 page rather than a JSON API error — which request() folds into the
+  // 404 branch, producing a falsy value and a domain error about the policy
+  // (WI-41682). The verb is load-bearing, not stylistic.
   const policyResult = await request<IamPolicy>(
     fetchImpl,
     auth,
     'get_topic_iam_policy',
     `${topicUrl}:getIamPolicy`,
-    'POST',
-    {},
+    'GET',
   );
-  if (!policyResult.value) throw new Error('google_pubsub_topic_iam_policy_missing');
+  // The topic demonstrably exists by this point — it was either fetched above or
+  // just created — and a topic with no bindings still answers 200 with an etag.
+  // So a 404 here is never "the policy is absent"; it means the request did not
+  // reach topics.getIamPolicy at all. Say that, instead of blaming the policy.
+  if (!policyResult.value) {
+    throw new Error(`google_pubsub_get_topic_iam_policy_unroutable:${topicName}`);
+  }
   const merged = withGmailPublisher(policyResult.value);
   let publisherGrant: GooglePubSubProvisionResult['publisherGrant'] = 'existing';
   if (merged.changed) {
