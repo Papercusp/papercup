@@ -31,6 +31,7 @@ import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
   ROUTINES_LOOP_QUEUE,
+  ROUTINES_TRIGGERS_QUEUE,
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
@@ -92,7 +93,21 @@ const routinesLoopQueue = idempotentWorkflowQueue(
   ROUTINES_LOOP_QUEUE,
   () => new WorkflowQueue(ROUTINES_LOOP_QUEUE, { concurrency: queueConcurrency(4) }),
 );
-export const ROUTINE_FIRE_QUEUES = [routinesQueue.name, routinesCriticalQueue.name, routinesLoopQueue.name] as const;
+// WI-41662: external-source polls (gmail/calendar/pr/vault) are quick and run per-minute,
+// but their latency IS the product behaviour — an inbound email is not ingested until the
+// poll executes. On the shared lane they sat FIFO behind green-checkpoint's hourly ~25m
+// fire for 4–18min, every hour, 13 times in one measured day. Bounded lane, same principle
+// as routines-loop above.
+const routinesTriggersQueue = idempotentWorkflowQueue(
+  ROUTINES_TRIGGERS_QUEUE,
+  () => new WorkflowQueue(ROUTINES_TRIGGERS_QUEUE, { concurrency: queueConcurrency(4) }),
+);
+export const ROUTINE_FIRE_QUEUES = [
+  routinesQueue.name,
+  routinesCriticalQueue.name,
+  routinesLoopQueue.name,
+  routinesTriggersQueue.name,
+] as const;
 
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
 export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;
