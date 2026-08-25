@@ -1952,7 +1952,10 @@ export async function setLoopCarryNote(
     { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
     note,
   );
-  await notifyAgentOrdersChanged(ref.ownerId);
+  // The carry row is already durable. Orders-panel invalidation is a best-effort
+  // derived-read push and must not extend the write's response deadline when the
+  // sync bus or its PG notify path is degraded (EI-21390376601596579).
+  void notifyAgentOrdersChanged(ref.ownerId).catch(() => {});
   return stored;
 }
 
@@ -1979,7 +1982,10 @@ export async function setLoopCarryNoteWithPrior(
   // and this ref carries the ownerId the panel is keyed by — so the push is exact.
   // A `guard`-BLOCKED write wrote nothing, so it must not push: `blockedReason` is
   // the producer-side signal a carry_notes row trigger could not have seen.
-  if (!result.blockedReason) await notifyAgentOrdersChanged(ref.ownerId);
+  // The durable write has committed before this point. Keep the derived Orders
+  // invalidation detached so a stalled sync bus cannot turn a successful carry
+  // write into an MCP request timeout (EI-21390376601596579).
+  if (!result.blockedReason) void notifyAgentOrdersChanged(ref.ownerId).catch(() => {});
   return result;
 }
 

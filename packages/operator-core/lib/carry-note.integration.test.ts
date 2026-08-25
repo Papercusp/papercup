@@ -22,10 +22,14 @@ const priorLoopLockTimeout = process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
 process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS = '100';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const ordersNotify = vi.hoisted(() => ({
+  notifyAgentOrdersChanged: vi.fn(async (_ownerId: string | null | undefined) => {}),
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+vi.mock('./agent-orders-notify', () => ordersNotify);
 vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
@@ -71,6 +75,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  ordersNotify.notifyAgentOrdersChanged.mockClear();
   await db.sql`DELETE FROM harness_shared.carry_notes`;
 });
 
@@ -95,6 +100,29 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     await setLoopCarryNote(LOOP, 'reconstruct: mid-Phase-2, psu-host verbs half-wired');
     // A "cold" reader is just a fresh read on the same (harness, ownerId).
     expect(await getLoopCarryNote(LOOP)).toBe('reconstruct: mid-Phase-2, psu-host verbs half-wired');
+  });
+
+  it('returns after commit when the derived Orders invalidation never settles (EI-21390376601596579)', async () => {
+    let release!: () => void;
+    const stalledNotification = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ordersNotify.notifyAgentOrdersChanged.mockImplementationOnce(() => stalledNotification);
+
+    let timer!: ReturnType<typeof setTimeout>;
+    const result = await Promise.race([
+      setLoopCarryNoteWithPrior(LOOP, 'near-limit carry anchor').then(() => 'settled' as const),
+      new Promise<'timed_out'>((resolve) => {
+        timer = setTimeout(() => resolve('timed_out'), 250);
+      }),
+    ]);
+    clearTimeout(timer);
+
+    // Release the deliberately stalled best-effort push so the test leaves no
+    // pending promise behind, then verify the write itself completed.
+    release();
+    expect(result).toBe('settled');
+    expect(await getLoopCarryNote(LOOP)).toBe('near-limit carry anchor');
   });
 
   it('the structured shape round-trips end-to-end (render → store → read → parse)', async () => {
