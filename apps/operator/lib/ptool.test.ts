@@ -36,6 +36,7 @@ import {
   isLoopPressureShed,
   callToolWithPressureRetry,
   connectWithLocalRetry,
+  shouldRediscoverOperatorUrl,
   formatOperatorConnectFailure,
   isExplicitHttpConnectFailure,
   isRetryableLocalHttpConnectFailure,
@@ -382,6 +383,38 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     ).resolves.toBe(client);
     expect(connectOnce).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('rediscovers a moved local operator port before retrying', async () => {
+    const client = { close: vi.fn() };
+    const connectOnce = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValue(client);
+    const rediscover = vi.fn(() => 'http://127.0.0.1:2222');
+    const onRebase = vi.fn();
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:1111', {}, {
+        maxAttempts: 2,
+        sleep,
+        rediscover,
+        onRebase,
+      }),
+    ).resolves.toBe(client);
+    expect(connectOnce.mock.calls.map((call) => call[0])).toEqual([
+      'http://127.0.0.1:1111',
+      'http://127.0.0.1:2222',
+    ]);
+    expect(rediscover).toHaveBeenCalledTimes(1);
+    expect(onRebase).toHaveBeenCalledWith('http://127.0.0.1:2222');
+  });
+
+  it('keeps explicit --url and environment pins out of rediscovery', () => {
+    expect(shouldRediscoverOperatorUrl({ url: 'http://127.0.0.1:1111' }, {})).toBe(false);
+    expect(shouldRediscoverOperatorUrl({}, { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1111' })).toBe(false);
+    expect(shouldRediscoverOperatorUrl({}, {})).toBe(true);
   });
 
   it('does not retry a remote operator connection failure', async () => {

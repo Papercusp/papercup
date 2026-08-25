@@ -67,7 +67,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
-import { resolveOperatorBase } from './operator-discovery.mjs';
+import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
 /** @typedef {{name: string, description?: string, inputSchema?: Record<string, unknown>}} ToolCatalogEntry */
@@ -75,6 +75,16 @@ import { resolveOperatorBase } from './operator-discovery.mjs';
 // env → ~/.papercusp/operator.json (packaged installs run the operator on a
 // per-boot dynamic port; :3070 is dev-box-only) → dev fallback.
 const OPERATOR_URL = resolveOperatorBase({}, process.env);
+
+/**
+ * Whether the operator URL came from implicit local discovery and may follow a
+ * packaged operator that restarts onto a different port. Explicit CLI/env
+ * URLs are pins: changing them behind the caller's back would violate the
+ * caller's transport choice (and could route a request to the wrong host).
+ */
+export function shouldRediscoverOperatorUrl(args = {}, env = process.env) {
+  return !args.url && !env.PAPERCUSP_OPERATOR_URL;
+}
 
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
 
@@ -848,6 +858,15 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 195_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-21305071238818431: coord:orient declares a 120s server-side dispatch budget.
+// Its handler-local 50s aggregate fence does not cover time spent before/after the
+// composition body (dispatch contention and result shaping/serialization); the
+// invocation ledger contains successful calls lasting 68s. A 60s ptool deadline
+// therefore abandons a server call that is still within its documented budget and
+// later completes successfully. Keep the client outside the full server budget,
+// with response-delivery margin, so the tool's typed result wins the race.
+export const PTOOL_COORD_ORIENT_TIMEOUT_MS = 130_000;
+
 // `events:await` performs a write-side registration after several bounded,
 // best-effort state/catalog probes. Under a busy operator those probes can
 // legitimately outlive ptool's ordinary 30s deadline; abandoning the call
@@ -862,6 +881,13 @@ export const PTOOL_EVENTS_AWAIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // wrapped read into an ambiguous tools:invoke timeout. Keep the client deadline above
 // the observed proxy path without changing the ordinary deadline for unrelated tools.
 export const PTOOL_PLANS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+
+// `plans:new` writes the plan under a slug lock and opts into idempotent
+// completion because the write may finish after the MCP transport's ~55s
+// boundary. The ordinary 30s ptool deadline can abandon that committed write
+// before its truthful success/slug_exists response arrives, leaving callers
+// with an outcome-unknown result and encouraging an unnecessary replay.
+export const PTOOL_PLANS_NEW_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
 // `work_items:get` performs several independent checkpoint, holder, plan-lane,
 // prior-work, and lifecycle reads. Under a busy fleet that compound read can
@@ -903,6 +929,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['computer:provision_desktop', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
+  ['plans:new', PTOOL_PLANS_NEW_TIMEOUT_MS],
   // EI-21360596114670049: the idempotent plan lifecycle writer evaluates the
   // full completion/audit/spec/rubric gate before taking the plan lock. Under
   // operator pressure that valid pre-write path can outlive the flat 30s
@@ -950,13 +977,19 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['loop:end', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['loop:status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['improvements:capture', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21391922294549625: directed coordination sends can perform durable
+  // delivery, close-notification, and wake work before returning. Under local
+  // operator pressure the valid response can outlive the ordinary 30s client
+  // deadline; preserve the typed receipt instead of surfacing a transport
+  // timeout that invites an unsafe replay.
+  ['coord:send', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.
   // Keep the client deadline above the server transport cap so the caller
   // observes the orient result or its structured fallback instead of an
   // ambiguous client-side -32001 timeout.
-  ['coord:orient', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['coord:orient', PTOOL_COORD_ORIENT_TIMEOUT_MS],
   // `release:trace` composes candidate, gate, deploy, and await reads. Under
   // operator pressure that read-only bundle can outlive the ordinary 30s
   // client budget even though it is still progressing; keep the typed trace
@@ -1239,9 +1272,12 @@ export async function connectWithLocalRetry(
     attemptTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     totalTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    rediscover = null,
+    onRebase = null,
   } = {},
 ) {
-  const hostname = new URL(operatorUrl).hostname;
+  let liveOperatorUrl = operatorUrl;
+  const hostname = new URL(liveOperatorUrl).hostname;
   const local = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
   const startedAt = Date.now();
   let lastError;
@@ -1255,7 +1291,7 @@ export async function connectWithLocalRetry(
         ? Math.min(attemptTimeoutMs, remainingTotalMs ?? attemptTimeoutMs)
         : remainingTotalMs;
       const connection = connectOnce(
-        operatorUrl,
+        liveOperatorUrl,
         scope,
         local && effectiveAttemptTimeoutMs ? { timeoutMs: effectiveAttemptTimeoutMs } : undefined,
       );
@@ -1279,6 +1315,24 @@ export async function connectWithLocalRetry(
         (remainingTotalMs !== null && remainingTotalMs <= 0)
       ) {
         throw error;
+      }
+      if (rediscover) {
+        try {
+          const freshBase = rediscover();
+          const rebased = freshBase ? rebaseUrl(liveOperatorUrl, freshBase) : null;
+          if (rebased) {
+            // ptool stores an operator BASE URL; avoid turning the root path
+            // from rebaseUrl into a double slash when buildMcpUrl appends /api.
+            liveOperatorUrl = rebased.replace(/\/$/, '');
+            try {
+              onRebase?.(String(freshBase).replace(/\/$/, ''));
+            } catch {
+              /* a discovery notice must never break connection recovery */
+            }
+          }
+        } catch {
+          /* discovery must never break the bounded retry loop */
+        }
       }
       await sleep(Math.min(retryDelayMs, remainingTotalMs ?? retryDelayMs));
     } finally {
@@ -1560,15 +1614,18 @@ async function main() {
     console.log(PTOOL_USAGE);
     return;
   }
-  const operatorUrl = args.url || OPERATOR_URL;
+  let operatorUrl = args.url || OPERATOR_URL;
   const workspace = resolveWorkspaceScope({ workspace: args.workspace });
   const harness = resolveHarnessScope({ harness: args.harness });
   const scope = { workspace, harness, tokenFile: args.tokenFile };
-  let client = await connectWithLocalRetry(
-    connect,
-    operatorUrl,
-    scope,
-  );
+  const rediscover = shouldRediscoverOperatorUrl(args, process.env) ? discoverOperatorUrl : null;
+  const connectOperator = () => connectWithLocalRetry(connect, operatorUrl, scope, {
+    rediscover,
+    onRebase: (freshBase) => {
+      operatorUrl = freshBase;
+    },
+  });
+  let client = await connectOperator();
   try {
     const tools = await listAllTools(client);
     const grouped = groupTools(tools);
@@ -1675,7 +1732,7 @@ async function main() {
         }),
         {
           timeoutMs: timeoutForTool(toolName, callArgs),
-          reconnect: () => connectWithLocalRetry(connect, operatorUrl, scope),
+          reconnect: () => connectOperator(),
         },
       );
       client = recovered.client;

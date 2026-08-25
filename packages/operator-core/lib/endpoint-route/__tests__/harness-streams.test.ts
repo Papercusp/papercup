@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type CapturedSink = {
   event(name: string, data: unknown): void;
@@ -74,8 +74,16 @@ vi.mock('../../session-timeline-parsers', () => ({
   createOmpTimelineParser: vi.fn(() => ({ parseLine: () => [], flush: () => [] })),
 }));
 
+// Resolve the async partial mock before the route starts both DB reads in
+// Promise.all; otherwise Vitest can race the two first dynamic imports and
+// one branch falls through to the route's best-effort empty result.
+beforeAll(async () => {
+  await import('@papercusp/db-org');
+});
+
 import {
   default as streamRoutes,
+  backfillFromSessionParts,
   backfillFromSessionTurns,
   parseAgentTimelineChunks,
   capEntryText,
@@ -551,10 +559,17 @@ describe('live session DB fallback (WI-41527)', () => {
     expect(routeProbe.setup).not.toBeNull();
 
     resolverProbe.codexByUuid.mockResolvedValueOnce(null);
+    const concurrent = await Promise.all([
+      backfillFromSessionParts({ sourceKind: 'codex', sessionId: 'missing-transcript' }),
+      backfillFromSessionTurns({ sourceKind: 'codex', sessionId: 'missing-transcript' }),
+    ]);
+    expect(concurrent[1]).not.toBeNull();
     await routeProbe.setup!();
 
     const directTurns = await backfillFromSessionTurns({ sourceKind: 'codex', sessionId: 'missing-transcript' });
     expect(directTurns).not.toBeNull();
+    expect(getOrgPgProbe).toHaveBeenCalledTimes(2);
+    expect(dbSql).toHaveBeenCalledTimes(3);
 
     expect(resolverProbe.codexByUuid).toHaveBeenCalledWith('missing-transcript');
     expect(routeProbe.events).toContainEqual({
