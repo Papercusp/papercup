@@ -103,6 +103,15 @@ export interface FileLockUnavailable {
   error: string;
 }
 
+/** A final-write race is retryable, not confirmed holder contention. */
+export interface FileLockRetryable {
+  acquired: false;
+  busy: AcquireBusy[];
+  reader?: CellReader;
+  reason: 'upsert_race';
+  retryable: true;
+}
+
 /**
  * Resolve a raw file path (absolute or cwd-relative) to the repo-relative POSIX
  * form the lock store keys on — mirroring the PreToolUse hook's computation.
@@ -156,6 +165,7 @@ export async function guardFileLock<T>(
 ): Promise<
   | { acquired: true; result: T; coordinated: boolean }
   | { acquired: false; busy: AcquireBusy[]; reader?: CellReader }
+  | FileLockRetryable
   | FileLockUnavailable
 > {
   // EI-20881501070735530: this was `ctx.projectDir ?? process.cwd()`, which broke the
@@ -242,6 +252,15 @@ export async function guardFileLock<T>(
     // resolved here and nowhere downstream, and P-026's holder context is
     // reader-relative, so without it `fileLockedResult` would have to default the
     // audience — which fails open. Absent ⇒ no context, never a wider one.
+    if ('retryable' in acquired && acquired.retryable) {
+      return {
+        acquired: false,
+        busy: acquired.busy,
+        reader: { ownerId },
+        reason: acquired.reason,
+        retryable: true,
+      };
+    }
     return { acquired: false, busy: acquired.busy, reader: { ownerId } };
   }
 
@@ -286,7 +305,28 @@ export async function guardFileLock<T>(
 export async function fileLockedResult(
   busy: AcquireBusy[],
   reader?: CellReader,
+  reason?: 'upsert_race',
 ): Promise<ToolResultLike> {
+  if (reason === 'upsert_race') {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            reason,
+            transient: true,
+            retryable: true,
+            holder: 'unknown',
+            busy: await enrichBusy(busy, reader),
+            advice:
+              'The lock changed during the final acquire write and no stable holder snapshot was confirmed. Retry the operation from scratch; do NOT treat this as a confirmed file holder.',
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
   return {
     content: [
       {
@@ -323,6 +363,10 @@ export function withFileLock<A, C extends FileLockCtx>(
     const rawPaths = extractPaths(args, ctx);
     const outcome = await guardFileLock<ToolResultLike>(ctx, rawPaths, spec, async () => handler(args, ctx));
     if (outcome.acquired) return outcome.result;
-    return fileLockedResult(outcome.busy, outcome.reader);
+    return fileLockedResult(
+      outcome.busy,
+      outcome.reader,
+      'reason' in outcome && outcome.reason === 'upsert_race' ? outcome.reason : undefined,
+    );
   };
 }

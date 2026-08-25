@@ -402,6 +402,14 @@ export default defineTool({
       );
     }
 
+    // A final-write race is not ordinary holder contention. The competing
+    // row may have disappeared before the snapshot, so busy=[] is expected
+    // and must remain an explicit retryable outcome rather than entering the
+    // wake queue or rendering "held by another agent" with no holder.
+    if ('retryable' in first && first.retryable) {
+      return await upsertRace(first.busy);
+    }
+
     // ── wake_on_grant: queue + sleep instead of block/poll ──────────────
     // (await-event-primitive-2026-06-05 D-005/P-008.) Insert a long-window
     // waiter ticket + a one-shot wake await on its grant key, return NOW.
@@ -915,6 +923,29 @@ function workspaceContended() {
   };
 }
 
+/** The final upsert result changed under us before a stable holder snapshot
+ * could be observed. This is safe to retry, but is not safe to interpret as
+ * a confirmed file holder (especially when `busy` is empty). */
+async function upsertRace(busyRows: AcquireBusy[]) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: false,
+          reason: 'upsert_race',
+          transient: true,
+          retryable: true,
+          holder: 'unknown',
+          busy: await enrichBusy(busyRows),
+          advice:
+            'The lock changed during the final acquire write and no stable holder snapshot was confirmed. Retry the acquire from scratch; do NOT queue wake_on_grant for this response.',
+        }),
+      },
+    ],
+  };
+}
+
 /** EI-19324204900062056: a blocking wait's DB connection dropped (pgbouncer
  * transaction-pooling reclaim / a PG-server-side reset) and did not
  * reconnect in time to confirm the final state. Distinct, structured
@@ -998,5 +1029,8 @@ function decodeRemoteAcquire(
       intent: '',
       expires_ts: fallbackExpiry,
     })),
+    ...(r.retryable && r.reason
+      ? { reason: r.reason, retryable: true }
+      : {}),
   };
 }

@@ -74,12 +74,20 @@ export interface FileLockQueueParams {
   coordinationDomain: string;
 }
 
+/** A final-write race is not holder contention. The requester should retry
+ * the acquire from scratch; the busy snapshot can be empty by the time it is
+ * read. */
+export type FileLockAcquireRetryReason = 'upsert_race';
+
 export interface FileLockAcquireResult {
   ok: boolean;
   lockId?: string;
   expiresTs?: string;
   /** paths that were busy when ok=false. */
   busy?: Array<{ path: string; owner: string }>;
+  /** Present when the authority could not establish a stable holder snapshot. */
+  reason?: FileLockAcquireRetryReason;
+  retryable?: boolean;
   /** Paths newly acquired by this call. Same-owner refreshes can return a
    * subset (or an empty list), so automatic guards never release a
    * deliberate lock that merely overlaps their edit. */

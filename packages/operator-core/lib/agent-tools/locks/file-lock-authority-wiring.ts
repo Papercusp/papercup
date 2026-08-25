@@ -105,7 +105,13 @@ export function adaptSuLockStore(): FileLockCoordinator {
           newlyHeld: r.newly_held,
         };
       }
-      return { ok: false, busy: r.busy.map((b) => ({ path: b.path, owner: b.owner })) };
+      return {
+        ok: false,
+        busy: r.busy.map((b) => ({ path: b.path, owner: b.owner })),
+        ...('retryable' in r && r.retryable
+          ? { reason: r.reason, retryable: true }
+          : {}),
+      };
     },
 
     async release(p) {
