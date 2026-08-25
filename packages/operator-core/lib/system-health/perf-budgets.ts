@@ -484,7 +484,16 @@ function withCgroupCpuAttribution(
   reason: string,
   attribution: PerfVerdict['cgroupCpuAttribution'],
 ): string {
-  const owner = attribution?.top[0];
+  const depth = (path: string): number => path.split('/').filter(Boolean).length;
+  const owner = attribution?.top.reduce<NonNullable<PerfVerdict['cgroupCpuAttribution']>['top'][number] | null>(
+    (best, row) =>
+      !best ||
+      depth(row.path) > depth(best.path) ||
+      (depth(row.path) === depth(best.path) && row.cpuPct > best.cpuPct)
+        ? row
+        : best,
+    null,
+  );
   if (!owner) {
     return `${reason}; cgroup CPU attribution unavailable — pressure owner unconfirmed`;
   }

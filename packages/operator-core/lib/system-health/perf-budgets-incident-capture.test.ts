@@ -290,8 +290,8 @@ describe('capture-signals cgroup memory attribution', () => {
       'root=sys.argv[2]; child=root+"/user.slice/user@1000.service/papercup-vm-win.service"',
       'samples={root:[100,4200],child:[100,300]}',
       'read_usage=lambda path:samples[path].pop(0)',
-      'clock=iter([0.0,0.0,0.0,0.0,1.0,1.0,1.0])',
-      'read=lambda: next(clock)',
+      'clock=[0]',
+      'read=lambda: (clock.__setitem__(0,clock[0]+1) or (0.0 if clock[0] <= 6 else 1.0))',
       'captured=m.cgroup_cpu(root=root,budget_sec=10,max_scanned=10,top_n=2,sample_sec=0,usage_reader=read_usage,monotonic_fn=read,sleep_fn=lambda _:None)',
       'print(json.dumps(captured))',
     ].join(';');
