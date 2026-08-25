@@ -43,6 +43,10 @@ import {
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
+import {
+  detectEphemeralDeliverableReferences,
+  type EphemeralDeliverableReference,
+} from './turn-end-tracking';
 
 export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_missing'
@@ -57,6 +61,10 @@ export type PlanAcceptanceGateCode =
   | 'acceptance_unaudited'
   | 'audit_coverage_stale'
   | 'audit_citations_unresolved'
+  // A plan cannot ship a report that exists only in a session/account-local
+  // presentation surface. The URL/path detector is shared with the advisory
+  // turn-end warnings; this code is the completion-time enforcement leg.
+  | 'ephemeral_deliverable_unbacked'
   // first-class-spec-clauses-…-2026-08-20 P-008 — the spec-proof half of code truth.
   | 'spec_proof_stale'
   // …P-013 widened it: a clause with NO evidence at any revision now refuses too. Both
@@ -126,6 +134,58 @@ export interface PlanAcceptanceGateOpts {
 export const ACCEPTANCE_VERDICT_REQUIRED_AFTER = '2026-08-21T00:00:00.000Z';
 
 /**
+ * Labels used when a plan records where the durable copy of a delivered report
+ * lives. A bare Artifact URL is deliberately insufficient: the independent
+ * acceptance grader must have a repository/PG work-item reference it can
+ * resolve after the publishing session or account-local presentation expires.
+ */
+const DURABLE_COMPANION_LABEL_RE =
+  /(?:durable\s+(?:companion|source)|source(?:\s+path)?|persisted\s+(?:at|in)|stored\s+(?:at|in)|committed\s+(?:at|in)|repository\s+(?:path|file)|work[- ]item(?:\s+(?:record|comment|source))?)\s*[:=]?\s*(?:`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|([^\s,;.)>]+))/gi;
+
+/**
+ * Extract explicit durable companion references from plan prose. This is
+ * intentionally narrower than “does the plan contain any repo path?” — code
+ * citations elsewhere in a plan do not prove that the cited deliverable was
+ * persisted. The marker must name the companion/source itself, and the value
+ * must not be another ephemeral reference.
+ */
+export function findDurableDeliverableCompanions(content: string): string[] {
+  const companions: string[] = [];
+  const seen = new Set<string>();
+  DURABLE_COMPANION_LABEL_RE.lastIndex = 0;
+  for (const match of String(content ?? '').matchAll(DURABLE_COMPANION_LABEL_RE)) {
+    const candidate = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? '').trim();
+    if (!candidate || detectEphemeralDeliverableReferences(candidate).length > 0) continue;
+    // A companion must identify a resolvable path or durable record, not a
+    // sentence fragment such as “source: verified” or another presentation URL.
+    const isDurableLocator =
+      candidate.startsWith('WI-') ||
+      candidate.startsWith('EI-') ||
+      candidate.startsWith('plan:') ||
+      candidate.includes('/') ||
+      candidate.includes('\\') ||
+      /\.(?:md|mdx|html?|csv|txt|pdf)$/i.test(candidate);
+    if (!isDurableLocator) continue;
+    const key = candidate.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    companions.push(candidate);
+  }
+  return companions;
+}
+
+/** The completion-time durability check, kept pure for focused gate tests. */
+export function evaluateEphemeralDeliverableDurability(content: string): {
+  references: EphemeralDeliverableReference[];
+  companions: string[];
+  satisfied: boolean;
+} {
+  const references = detectEphemeralDeliverableReferences(content);
+  const companions = findDurableDeliverableCompanions(content);
+  return { references, companions, satisfied: references.length === 0 || companions.length > 0 };
+}
+
+/**
  * Evaluate the acceptance gate for a plan about to be marked shipped/complete.
  * Never throws — an infrastructure failure inside a check degrades toward the
  * feature's default posture for that check (the flag read fails toward ON;
@@ -146,18 +206,26 @@ export async function evaluatePlanAcceptanceGate(
   // Read once, for two purposes: the exemption test below, and the harness slug the
   // spec-coverage census needs to scope its clause read (P-008).
   let planHarnessSlug: string | null = null;
+  let planContent: string | null = null;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<
-      { plan_slug: string; harness_slug: string | null; template: string | null; template_slug: string | null }[]
+      {
+        plan_slug: string;
+        harness_slug: string | null;
+        template: string | null;
+        template_slug: string | null;
+        content: string | null;
+      }[]
     >`
-      SELECT plan_slug, harness_slug, template, template_slug
+      SELECT plan_slug, harness_slug, template, template_slug, content
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
        LIMIT 1`;
     const row = rows.find((r) => r.plan_slug === planSlug);
     planHarnessSlug = row?.harness_slug ?? null;
+    planContent = row?.content ?? null;
     if (row?.template === RUBRIC_TEMPLATE_NAME) return { satisfied: true, skipped: 'rubric-template-plan' };
     if (row?.template_slug) return { satisfied: true, skipped: 'template-instance' };
   } catch {
@@ -170,6 +238,29 @@ export async function evaluatePlanAcceptanceGate(
   // the plan still has unbuilt items would send the agent to the wrong repair.
   const forcedChecks: PlanAcceptanceGateCode[] = [];
   const force = opts.force;
+
+  // A plan's Now/decision prose is the durable hand-off read by the independent
+  // grader. Refuse a ship when it cites only a scratch path, loopback preview, or
+  // Claude Artifact URL and never names the durable companion that survives that
+  // presentation surface. This is intentionally NOT part of `force`: force is
+  // scoped to code-truth evidence waivers, while this guard protects the grader's
+  // ability to inspect the promised deliverable at all.
+  const deliverableDurability = evaluateEphemeralDeliverableDurability(planContent ?? '');
+  if (!deliverableDurability.satisfied) {
+    const listed = deliverableDurability.references
+      .map(({ kind, reference }) => `${kind} '${reference}'`)
+      .join(', ');
+    return {
+      satisfied: false,
+      code: 'ephemeral_deliverable_unbacked',
+      message:
+        `plan '${planSlug}' cannot be marked shipped: its content cites ${listed} without an explicit durable ` +
+        `companion/source reference. Persist the report in committed repository, plan, or work-item storage, then ` +
+        `record it in the plan as \`durable source: <path>\` (or \`work-item: EI-/WI-id\`). An Artifact URL, ` +
+        `scratch path, or loopback preview alone is not a grader-readable deliverable. This refusal is not waived by ` +
+        `force: { reason }.`,
+    };
+  }
 
   const itemGate = await getFlag(FLAGS.PLAN_ITEM_COMPLETION_GATE, 'system').catch(() => true);
   if (itemGate) {
