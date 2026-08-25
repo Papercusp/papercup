@@ -127,6 +127,41 @@ pub fn model_pick(id: &str) -> Option<String> {
     }
 }
 
+// ───────────────────────── effort ─────────────────────────
+
+pub const EFFORT_INHERIT: &str = "__inherit_effort";
+pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+pub fn effort_options() -> Vec<PickerOption> {
+    std::iter::once(PickerOption {
+        id: EFFORT_INHERIT.to_string(),
+        label: "Model/default effort".to_string(),
+        hint: Some(
+            "Keep the selected model tier's effort suffix, or let the provider choose."
+                .to_string(),
+        ),
+        disabled: false,
+    })
+    .chain(EFFORT_LEVELS.into_iter().map(|effort| PickerOption {
+        id: effort.to_string(),
+        label: effort.to_string(),
+        hint: Some(
+            "The provider validates whether this model supports the requested effort."
+                .to_string(),
+        ),
+        disabled: false,
+    }))
+    .collect()
+}
+
+pub fn effort_pick(id: &str) -> Option<String> {
+    if id == EFFORT_INHERIT || id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
 // ───────────────────────── account ─────────────────────────
 
 /// Gateway AUTO routing — the ABSENCE of a dynamic pin, as a pickable value.
@@ -277,6 +312,27 @@ pub fn account_options(pool: &[AccountRow], launch_account: Option<&str>) -> Vec
     out
 }
 
+/// Account rows for a native chat turn. The selected pool id rides directly on
+/// the next owned-loop request; it is not an external agent-session pin.
+pub fn chat_account_options(pool: &[AccountRow]) -> Vec<PickerOption> {
+    let mut out = account_options(pool, None);
+    if let Some(auto) = out.first_mut() {
+        auto.hint = Some(
+            "No request pin; the inference gateway auto-routes and can fail over."
+                .to_string(),
+        );
+    }
+    out
+}
+
+pub fn chat_account_pick(id: &str) -> Option<String> {
+    if id == ACCOUNT_AUTO || id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
 /// What applying a pick actually requires — the three values are not three of a
 /// kind, so the caller cannot treat "set the account" as one operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,7 +424,9 @@ pub fn describe_pin_outcome(reply: &serde_json::Value, picked_label: &str) -> Pi
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerAxis {
+    Session,
     Model,
+    Effort,
     Account,
 }
 
@@ -392,8 +450,10 @@ impl SessionPicker {
 
     pub fn title(&self) -> &'static str {
         match self.axis {
+            PickerAxis::Session => " Agent / role / session — Enter select · Esc close ",
             PickerAxis::Model => " Model — Enter select · Esc close ",
-            PickerAxis::Account => " Account — Enter select · Esc close ",
+            PickerAxis::Effort => " Effort — Enter select · Esc close ",
+            PickerAxis::Account => " Account route — Enter select · Esc close ",
         }
     }
 
