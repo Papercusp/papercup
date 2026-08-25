@@ -367,3 +367,12 @@ export {
   assertWorkspaceHostRemoteInitializerArgv,
   buildWorkspaceHostInitializationCanaryEvidence,
 } from "./workspace-host-remote-initializer";
+// The CLI is the program PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT points at, so the bin file
+// that wires it lives OUTSIDE this package. The package `exports` map exposes "." alone, which
+// makes a deep import of the CLI module unresolvable — without these two names the entrypoint
+// could never be wired at all.
+export type { WorkspaceHostRemoteInitializerCliIo } from "./workspace-host-remote-initializer-cli";
+export {
+  readAllStdin,
+  runWorkspaceHostRemoteInitializerCli,
+} from "./workspace-host-remote-initializer-cli";

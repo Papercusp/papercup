@@ -891,6 +891,26 @@ describe('runWorkspaceHostRemoteInitializerCli', () => {
   });
 });
 
+describe('package entry reachability', () => {
+  it('exposes the CLI from the package entry, where a bin file can actually reach it', async () => {
+    // The bin file that PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT points at lives outside this
+    // package, and the `exports` map publishes "." alone — so a deep import of the CLI module is
+    // unresolvable. Dropping these names would leave the initializer built but unwireable, which
+    // no other test in this file would notice.
+    const entry = await import('./index');
+    expect(typeof entry.runWorkspaceHostRemoteInitializerCli).toBe('function');
+    expect(typeof entry.readAllStdin).toBe('function');
+    expect(entry.WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION).toBe(PROTOCOL);
+
+    // Positive control for the instrument itself: a name the entry does NOT publish must read as
+    // undefined here. Without it, a namespace object that resolved every property to a function
+    // would satisfy the assertions above while proving nothing about what is exported.
+    expect(
+      (entry as Record<string, unknown>).runWorkspaceHostRemoteInitializerCliThatDoesNotExist,
+    ).toBeUndefined();
+  });
+});
+
 describe('readAllStdin', () => {
   it('concatenates string and Buffer chunks in order', async () => {
     expect(await readAllStdin(streamOf('{"a"', Buffer.from(':1}')))).toBe('{"a":1}');
