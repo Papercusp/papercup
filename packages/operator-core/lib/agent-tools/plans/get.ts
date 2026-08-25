@@ -56,21 +56,33 @@ interface PlanHarnessMismatch {
   callerHarness: string;
   reportedHarness?: string;
   availableHarnesses: string[];
+  /** Whether the caller NAMED the searched harness, or inherited it from the session. */
+  harnessSource: "explicit" | "ambient";
   warning: string;
 }
 
 /**
- * Explain a miss caused by an ambient harness that does not own the exact slug.
+ * Explain a miss caused by a concrete harness that does not own the exact slug.
  *
- * A resumed/cold loop can retain a concrete harness from an earlier task. Do
- * not silently rebind the read across a hive boundary, but do use the exact
- * slug index to make the miss actionable. The lookup is best-effort: if the
- * index is unavailable, the ordinary not_found result remains unchanged.
+ * A resumed/cold loop can retain a concrete harness from an earlier task, and a
+ * carried checkpoint can name the wrong one outright. Do not silently rebind the
+ * read across a hive boundary, but do use the exact slug index to make the miss
+ * actionable. The lookup is best-effort: if the index is unavailable, the
+ * ordinary not_found result remains unchanged.
+ *
+ * EI-21449048020722730: this disclosure used to be withheld whenever the caller
+ * passed `harness` explicitly, so the MORE specific call was told LESS — an
+ * explicit miss returned a bare `not_found`, which reads as "this plan does not
+ * exist" when the truth is "it exists, in another harness". Both sources get the
+ * disclosure now; only the wording differs, because the fix differs (an explicit
+ * caller re-passes the right harness or omits it to auto-resolve, while an
+ * ambient caller has to name one to escape the inherited scope).
  */
-async function ambientHarnessMismatch(
+async function harnessMismatchForMiss(
   ctx: unknown,
   callerHarness: string,
   slug: string,
+  harnessSource: "explicit" | "ambient",
 ): Promise<PlanHarnessMismatch | null> {
   try {
     const decision = await recoverHarnessFromSlugs(ctx, [slug]);
@@ -82,14 +94,21 @@ async function ambientHarnessMismatch(
     const target = reportedHarness
       ? `harness '${reportedHarness}'`
       : `harnesses ${availableHarnesses.map((h) => `'${h}'`).join(", ")}`;
+    const suggested = reportedHarness ?? availableHarnesses[0];
+    const searched =
+      harnessSource === "explicit"
+        ? `plans:get searched harness '${callerHarness}' because you passed harness:'${callerHarness}' for '${slug}', `
+        : `plans:get searched ambient harness '${callerHarness}' for '${slug}', `;
+    const remedy =
+      harnessSource === "explicit"
+        ? `Pass harness:'${suggested}' instead, or omit harness to auto-resolve the owning harness from the slug.`
+        : `Pass harness:'${suggested}' to read that plan explicitly.`;
     return {
       callerHarness,
       ...(reportedHarness ? { reportedHarness } : {}),
       availableHarnesses,
-      warning:
-        `plans:get searched ambient harness '${callerHarness}' for '${slug}', ` +
-        `but the exact slug is stored under ${target}. ` +
-        `Pass harness:'${reportedHarness ?? availableHarnesses[0]}' to read that plan explicitly.`,
+      harnessSource,
+      warning: `${searched}but the exact slug is stored under ${target}. ${remedy}`,
     };
   } catch {
     return null;
@@ -449,6 +468,11 @@ export default defineTool({
     const opts = await ctxToPlanSourceOpts(sctx);
     const ambientCallerHarness =
       !args.harness && scope.kind === "harness" ? scope.slug : null;
+    // An EXPLICIT harness is checked AFTER the read, not before it like the
+    // ambient case: a named harness is usually the right one, so a hit must not
+    // pay an extra slug-index round-trip. Only the miss is explained.
+    const explicitCallerHarness =
+      args.harness && scope.kind === "harness" ? scope.slug : null;
     const requestedItemIds = args.items
       ? [...new Set(args.items)]
       : null;
@@ -471,7 +495,12 @@ export default defineTool({
         // slug is known to live elsewhere, return a loud, actionable miss
         // instead of a bare not_found or an implicit cross-hive read.
         if (ambientCallerHarness) {
-          const mismatch = await ambientHarnessMismatch(ctx, ambientCallerHarness, slug);
+          const mismatch = await harnessMismatchForMiss(
+            ctx,
+            ambientCallerHarness,
+            slug,
+            "ambient",
+          );
           if (mismatch) {
             ctxAny.metadata?.({
               slug,
@@ -848,6 +877,29 @@ export default defineTool({
       },
       { keyOf: (slug) => ({ slug }) },
     );
+    // EI-21449048020722730: explain an explicit-harness miss the same way the
+    // ambient one is explained. A bare `not_found` for a slug that exists in
+    // another harness reads as "no such plan" and gets filed as a broken tool;
+    // the slug index knows better and says so. Post-read so hits pay nothing,
+    // and only for results the read itself missed.
+    if (explicitCallerHarness) {
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== false || result.error !== "not_found") continue;
+        if (result.harnessMismatch) continue;
+        const slug = typeof result.slug === "string" ? result.slug : null;
+        if (!slug) continue;
+        const mismatch = await harnessMismatchForMiss(
+          ctx,
+          explicitCallerHarness,
+          slug,
+          "explicit",
+        );
+        if (!mismatch) continue;
+        ctxAny.metadata?.({ slug, searchedHarness: explicitCallerHarness, harnessMismatch: mismatch });
+        result.harness = explicitCallerHarness;
+        result.harnessMismatch = mismatch;
+      }
+    }
     return bulkContent(env);
   },
 });

@@ -12,9 +12,12 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
-const M = vi.hoisted(() => ({
-  planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
-  readPlanBySlug: vi.fn(async (slug: string) => ({
+const M = vi.hoisted(() => {
+  // The real readPlanBySlug (source.ts:1419) returns `{…} | null` — null IS the
+  // miss. Keeping the fixture's return type honest lets a test install a miss
+  // without an `as never`, which would silently stop typechecking this fixture
+  // against the real signature.
+  const planFixture = (slug: string) => ({
     parsed: {
       isLegacy: false,
       slug,
@@ -81,7 +84,11 @@ const M = vi.hoisted(() => ({
         },
       },
     },
-  })),
+  });
+  type PlanRead = ReturnType<typeof planFixture> | null;
+  return {
+  planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
+  readPlanBySlug: vi.fn(async (slug: string): Promise<PlanRead> => planFixture(slug)),
   ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string }) => ({
     harnessSlug: ctx.harnessSlug ?? "papercup",
   })),
@@ -113,7 +120,8 @@ const M = vi.hoisted(() => ({
     findings: [],
     summary: "code truth verified",
   })),
-}));
+  };
+});
 
 vi.mock("./source", async (orig) => {
   const actual = await orig<typeof import("./source")>();
@@ -230,7 +238,7 @@ describe("plans:get — cache wiring", () => {
   });
 
   it("does not cache a not_found result when a later read succeeds", async () => {
-    M.readPlanBySlug.mockResolvedValueOnce(null as never);
+    M.readPlanBySlug.mockResolvedValueOnce(null);
 
     const missing = await run({ slug: "eventually-present" });
     expect(missing.results[0]).toMatchObject({
@@ -269,6 +277,61 @@ describe("plans:get — cache wiring", () => {
       "Pass harness:'papercusp'",
     );
     expect(M.readPlanBySlug).not.toHaveBeenCalled();
+  });
+
+  /**
+   * EI-21449048020722730. The disclosure above used to be gated on `!args.harness`,
+   * so naming the harness EXPLICITLY — what a carried checkpoint tells you to do —
+   * returned a bare `not_found`. That reads as "no such plan" when the plan exists
+   * in another harness, and it got the tool filed as broken. The more specific call
+   * must not be the less informative one.
+   */
+  it("explains an EXPLICIT-harness miss instead of a bare not_found", async () => {
+    M.readPlanBySlug.mockResolvedValueOnce(null);
+    M.planHarnessesForSlugs.mockResolvedValueOnce(
+      new Map([["foreign-plan", ["papercusp"]]]),
+    );
+
+    const body = await run(
+      { slug: "foreign-plan", harness: "sb-devboard-hive" },
+      "ws-get",
+      "sb-devboard-hive",
+    );
+
+    expect(body.results[0]).toMatchObject({
+      ok: false,
+      slug: "foreign-plan",
+      error: "not_found",
+      harness: "sb-devboard-hive",
+      harnessMismatch: {
+        callerHarness: "sb-devboard-hive",
+        reportedHarness: "papercusp",
+        availableHarnesses: ["papercusp"],
+        harnessSource: "explicit",
+      },
+    });
+    // The remedy differs from the ambient one: an explicit caller can also just
+    // drop the arg and let the slug index resolve the owner.
+    expect((body.results[0]?.harnessMismatch as { warning: string }).warning).toContain(
+      "omit harness to auto-resolve",
+    );
+    // Unlike the ambient pre-read check, the read IS attempted first.
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Falsifiability control for the check's PLACEMENT (post-read, not pre-read).
+   * If the explicit disclosure were hoisted to a pre-read check like the ambient
+   * one, every explicit plans:get — the common case — would pay an uncached
+   * slug-index round-trip ahead of a cache that exists to avoid exactly that.
+   * This test fails if that happens; the test above cannot detect it.
+   */
+  it("an explicit-harness HIT consults no slug index", async () => {
+    const body = await run({ slug: "alpha", harness: "papercup" }, "ws-get", "papercup");
+
+    expect(body.results[0]).toMatchObject({ ok: true, slug: "alpha" });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
+    expect(M.planHarnessesForSlugs).not.toHaveBeenCalled();
   });
 
   it("a harness_plans write BUSTS the entry (tag invalidation rebuilds)", async () => {
