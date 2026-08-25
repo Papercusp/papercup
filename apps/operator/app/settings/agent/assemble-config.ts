@@ -22,16 +22,15 @@ import {
   defaultCompactionLimitForTier,
   isValidModelSpec,
   type AgentBackend,
-  type InteractiveClient,
   type ModelTier,
   type SurfaceKey,
-} from '@papercusp/operator-core/lib/agent-config-constants';
+} from "@papercusp/operator-core/lib/agent-config-constants";
 
 /** Mid-edit tier rows. `backend: ''` = inherit the global agent command. */
 export interface TierRow {
   name: string;
   spec: string;
-  backend: '' | AgentBackend;
+  backend: "" | AgentBackend;
   /** When the queen should pick this tier — injected into her launch prompt. */
   when: string;
   /** Soft compaction limit (tokens) as edited text; ''/absent = model-derived
@@ -47,24 +46,36 @@ export interface TierRow {
 export const tierToRow = (t: ModelTier): TierRow => ({
   name: t.name,
   spec: t.spec,
-  backend: t.backend ?? '',
-  when: t.when ?? '',
-  compactionLimit: t.compactionLimit != null ? String(t.compactionLimit) : '',
-  ...(t.contextWindow != null ? { contextWindow: t.contextWindow, contextWindowSpec: t.spec } : {}),
+  backend: t.backend ?? "",
+  when: t.when ?? "",
+  compactionLimit: t.compactionLimit != null ? String(t.compactionLimit) : "",
+  ...(t.contextWindow != null
+    ? { contextWindow: t.contextWindow, contextWindowSpec: t.spec }
+    : {}),
 });
 
 /** Bare cloud model aliases that are recognized without a vendor prefix.
     Includes Anthropic (haiku, sonnet, opus, fable) verified against the installed
     Claude CLI (2026-06-11: `claude -p --model <x>` — `fable5`/`opush` are rejected)
     and OpenAI GPT-5.6 (sol, terra, luna) for codex backend (WI-4639). */
-const KNOWN_CLOUD_ALIASES_SETTINGS = new Set(['haiku', 'sonnet', 'opus', 'fable', 'sol', 'terra', 'luna']);
+const KNOWN_CLOUD_ALIASES_SETTINGS = new Set([
+  "haiku",
+  "sonnet",
+  "opus",
+  "fable",
+  "sol",
+  "terra",
+  "luna",
+]);
 
 /** Model-id half of a `<modelId>[:<effort>]` spec. */
 export function specId(spec: string): string {
-  const lastColon = spec.lastIndexOf(':');
+  const lastColon = spec.lastIndexOf(":");
   if (lastColon <= 0) return spec;
   const suffix = spec.slice(lastColon + 1);
-  return (MODEL_EFFORT_LEVELS as readonly string[]).includes(suffix) ? spec.slice(0, lastColon) : spec;
+  return (MODEL_EFFORT_LEVELS as readonly string[]).includes(suffix)
+    ? spec.slice(0, lastColon)
+    : spec;
 }
 
 /**
@@ -79,7 +90,8 @@ export function specId(spec: string): string {
 export function modelSpecError(spec: string): string | null {
   const s = spec.trim();
   if (!s) return null; // empty = inherit/unset — the row-level checks own "required"
-  if (!isValidModelSpec(s)) return 'invalid spec — shape is <modelId>[:<effort>], no spaces';
+  if (!isValidModelSpec(s))
+    return "invalid spec — shape is <modelId>[:<effort>], no spaces";
   const id = specId(s);
   if (/^[a-z][a-z0-9]*$/.test(id) && !KNOWN_CLOUD_ALIASES_SETTINGS.has(id)) {
     return `"${id}" is not a known model alias (haiku · sonnet · opus · fable · sol · terra · luna) — use a full model id like claude-opus-4-8 or gpt-5.6-luna if intentional`;
@@ -96,23 +108,23 @@ export function modelsJsonError(draft: string): string | null {
   } catch (err) {
     return `invalid JSON: ${(err as Error).message}`;
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return 'must be a JSON object of { "role": "model" }';
   }
   for (const [k, v] of Object.entries(parsed)) {
-    if (typeof v !== 'string' || !v.trim()) return `"${k}" must map to a model id string`;
+    if (typeof v !== "string" || !v.trim())
+      return `"${k}" must map to a model id string`;
     const err = modelSpecError(v);
     if (err) return `"${k}": ${err}`;
   }
   return null;
 }
 
-export type GlobalBackend = 'auto' | AgentBackend;
-export type SurfaceChoice = 'inherit' | AgentBackend;
+export type GlobalBackend = "auto" | AgentBackend;
+export type SurfaceChoice = "inherit" | AgentBackend;
 
 /** The wire shape POSTed to /api/agent-config. */
 export interface PersistableAgentConfig {
-  interactiveClient: InteractiveClient;
   backend: GlobalBackend;
   cmd: string;
   models: Record<string, string>;
@@ -134,7 +146,6 @@ export interface LastValidSections {
 }
 
 export interface AssembleInput {
-  interactiveClient: InteractiveClient;
   backend: GlobalBackend;
   cmd: string;
   /** Committed (blur-validated) per-role models JSON text. */
@@ -164,10 +175,14 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
   if (input.modelsJson.trim()) {
     const err = modelsJsonError(input.modelsJson);
     if (err) {
-      problems.push(`per-role models: ${err} — keeping the last saved overrides until fixed`);
+      problems.push(
+        `per-role models: ${err} — keeping the last saved overrides until fixed`,
+      );
     } else {
       models = Object.fromEntries(
-        Object.entries(JSON.parse(input.modelsJson) as Record<string, string>).map(([k, v]) => [k, v.trim()]),
+        Object.entries(
+          JSON.parse(input.modelsJson) as Record<string, string>,
+        ).map(([k, v]) => [k, v.trim()]),
       );
       lastValid.models = models;
     }
@@ -180,14 +195,14 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
   const roleBackends: Record<string, AgentBackend> = {};
   for (const [role, choice] of Object.entries(input.roleBackends)) {
     const key = role.trim();
-    if (key && choice !== 'inherit') roleBackends[key] = choice;
+    if (key && choice !== "inherit") roleBackends[key] = choice;
   }
 
   // ── Per-surface backend + model ─────────────────────────────────────────────
   const backends: Partial<Record<SurfaceKey, AgentBackend>> = {};
   for (const k of SURFACE_KEYS) {
     const choice = input.surfaceBackends[k];
-    if (choice !== 'inherit') backends[k] = choice;
+    if (choice !== "inherit") backends[k] = choice;
   }
   let surfaceModelsOut: Partial<Record<SurfaceKey, string>> = {};
   let surfaceModelsValid = true;
@@ -197,7 +212,9 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
     const err = modelSpecError(m);
     if (err) {
       surfaceModelsValid = false;
-      problems.push(`model for "${k}": ${err} — keeping the last saved surface models until fixed`);
+      problems.push(
+        `model for "${k}": ${err} — keeping the last saved surface models until fixed`,
+      );
       continue;
     }
     surfaceModelsOut[k] = m;
@@ -236,17 +253,19 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
     let compactionLimit: number | undefined;
     const contextWindow =
       row.contextWindowSpec === spec &&
-      typeof row.contextWindow === 'number' &&
+      typeof row.contextWindow === "number" &&
       Number.isFinite(row.contextWindow) &&
       row.contextWindow > 0
         ? Math.floor(row.contextWindow)
         : undefined;
-    const limitText = (row.compactionLimit ?? '').trim();
+    const limitText = (row.compactionLimit ?? "").trim();
     if (limitText) {
       const n = Number(limitText);
       const cap = defaultCompactionLimitForTier({ spec, contextWindow });
       if (!Number.isFinite(n) || !Number.isInteger(n)) {
-        problems.push(`tier "${name}": compaction limit must be a whole number of tokens (or blank for the model default)`);
+        problems.push(
+          `tier "${name}": compaction limit must be a whole number of tokens (or blank for the model default)`,
+        );
         tiersValid = false;
         continue;
       }
@@ -271,11 +290,14 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
   }
   // Store [] when the rows still equal the committed defaults — an untouched
   // menu keeps tracking future default changes instead of freezing a copy.
-  const isDefaultMenu = JSON.stringify(cleanedTiers) === JSON.stringify(DEFAULT_MODEL_TIERS);
+  const isDefaultMenu =
+    JSON.stringify(cleanedTiers) === JSON.stringify(DEFAULT_MODEL_TIERS);
   let tiersOut = isDefaultMenu ? [] : cleanedTiers;
   if (!tiersValid) {
     tiersOut = lastValid.tiers;
-    problems.push('tier menu has invalid rows — keeping the last saved menu until fixed');
+    problems.push(
+      "tier menu has invalid rows — keeping the last saved menu until fixed",
+    );
   } else {
     lastValid.tiers = tiersOut;
   }
@@ -284,7 +306,12 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
   // ([] = default menu, so ceilings may name the default tiers too.)
   const persistedNames = tiersValid
     ? new Set(cleanedTiers.map((t) => t.name.toLowerCase()))
-    : new Set((lastValid.tiers.length > 0 ? lastValid.tiers : [...DEFAULT_MODEL_TIERS]).map((t) => t.name.toLowerCase()));
+    : new Set(
+        (lastValid.tiers.length > 0
+          ? lastValid.tiers
+          : [...DEFAULT_MODEL_TIERS]
+        ).map((t) => t.name.toLowerCase()),
+      );
   let ceilingsOut: Record<string, string> = {};
   let ceilingsValid = true;
   for (const [role, tier] of Object.entries(input.tierCeilings)) {
@@ -293,7 +320,9 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
       // Backstop — the page remaps ceilings on tier rename and cascades them
       // on tier remove, so a dangling name here means out-of-band drift.
       ceilingsValid = false;
-      problems.push(`ceiling for "${role}" names unknown tier "${tier}" — keeping the last saved ceilings until fixed`);
+      problems.push(
+        `ceiling for "${role}" names unknown tier "${tier}" — keeping the last saved ceilings until fixed`,
+      );
       continue;
     }
     ceilingsOut[role] = tier;
@@ -303,7 +332,6 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
 
   return {
     persistable: {
-      interactiveClient: input.interactiveClient,
       backend: input.backend,
       cmd: input.cmd,
       models,

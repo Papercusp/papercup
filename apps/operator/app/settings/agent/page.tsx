@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * Agent backend settings — pick which CLI (claude-code or omp) the
@@ -23,25 +23,23 @@
  * take effect for in-process spawns immediately (the route mirrors into
  * process.env; empty values restore the host's boot env — EI-337).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { toast } from 'sonner';
-import { useDebouncedSave } from '../../harness/useDebouncedSave';
-import { DraftInput, FormField } from '@/lib/forms';
-import { useLexicon } from '@/lib/useLexicon';
-import { Select } from '../../harness/Select';
-import { agentRoleLabel, agentTermKey } from '../../harness/agent-display';
-import { ROLE_ROUTING_ROWS } from './role-routing-rows';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import { useDebouncedSave } from "../../harness/useDebouncedSave";
+import { DraftInput, FormField } from "@/lib/forms";
+import { useLexicon } from "@/lib/useLexicon";
+import { Select } from "../../harness/Select";
+import { agentRoleLabel, agentTermKey } from "../../harness/agent-display";
+import { ROLE_ROUTING_ROWS } from "./role-routing-rows";
 import {
   AGENT_BACKENDS,
-  DEFAULT_INTERACTIVE_CLIENT,
   DEFAULT_MODEL_TIERS,
   defaultCompactionLimitForSpec,
   type AgentBackend,
-  type InteractiveClient,
   type ModelTier,
   type SurfaceKey,
   SURFACE_KEYS,
-} from '@papercusp/operator-core/lib/agent-config-constants';
+} from "@papercusp/operator-core/lib/agent-config-constants";
 import {
   assembleAgentConfig,
   modelSpecError,
@@ -50,16 +48,15 @@ import {
   type LastValidSections,
   type SurfaceChoice,
   type TierRow,
-} from './assemble-config';
+} from "./assemble-config";
 
 /** Options for a backend pick that may also inherit (per-surface, per-tier). */
 const BACKEND_CHOICE_OPTIONS = [
-  { value: 'inherit', label: 'Inherit global' },
+  { value: "inherit", label: "Inherit global" },
   ...AGENT_BACKENDS.map((b) => ({ value: b, label: b })),
 ];
 
 interface AgentConfig {
-  interactiveClient?: InteractiveClient;
   backend: GlobalBackend;
   cmd: string;
   models: Record<string, string>;
@@ -98,7 +95,7 @@ interface CodexHomeDiagnostics {
   } | null;
   latestRolloutId: string | null;
   latestRolloutPath: string | null;
-  resumeStrategy: 'codex-resume-last-in-code-home';
+  resumeStrategy: "codex-resume-last-in-code-home";
   resumeCommand: string;
   error: string | null;
 }
@@ -114,7 +111,11 @@ interface ConfigSnapshot {
   binaries: DetectedBinaries;
   codexDiagnostics: CodexSettingsDiagnostics | null;
   effectiveBackend: AgentBackend;
-  envOverrides: { AGENT_BACKEND: string | null; AGENT_CMD: string | null; CLAUDE_CMD: string | null };
+  envOverrides: {
+    AGENT_BACKEND: string | null;
+    AGENT_CMD: string | null;
+    CLAUDE_CMD: string | null;
+  };
 }
 
 interface TestResult {
@@ -127,22 +128,31 @@ interface TestResult {
 
 const ROLE_ROUTING_ROLES = ROLE_ROUTING_ROWS.map((row) => row.role);
 
-function filteredRoleModels(models: Record<string, string> | undefined): Record<string, string> {
+function filteredRoleModels(
+  models: Record<string, string> | undefined,
+): Record<string, string> {
   const allowed = new Set<string>(ROLE_ROUTING_ROLES);
   return Object.fromEntries(
-    Object.entries(models ?? {}).filter(([role, model]) => allowed.has(role) && typeof model === 'string' && model.trim()),
+    Object.entries(models ?? {}).filter(
+      ([role, model]) =>
+        allowed.has(role) && typeof model === "string" && model.trim(),
+    ),
   );
 }
 
 function roleModelsJson(models: Record<string, string>): string {
-  const entries = ROLE_ROUTING_ROWS
-    .map((row) => [row.role, models[row.role]?.trim()] as const)
-    .filter(([, model]) => model);
-  return entries.length > 0 ? JSON.stringify(Object.fromEntries(entries), null, 2) : '';
+  const entries = ROLE_ROUTING_ROWS.map(
+    (row) => [row.role, models[row.role]?.trim()] as const,
+  ).filter(([, model]) => model);
+  return entries.length > 0
+    ? JSON.stringify(Object.fromEntries(entries), null, 2)
+    : "";
 }
 
 function initialRoleBackends(): Record<string, SurfaceChoice> {
-  return Object.fromEntries(ROLE_ROUTING_ROWS.map((row) => [row.role, 'inherit'])) as Record<string, SurfaceChoice>;
+  return Object.fromEntries(
+    ROLE_ROUTING_ROWS.map((row) => [row.role, "inherit"]),
+  ) as Record<string, SurfaceChoice>;
 }
 
 export default function AgentSettingsPage() {
@@ -157,26 +167,40 @@ export default function AgentSettingsPage() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [interactiveClient, setInteractiveClient] = useState<InteractiveClient>(DEFAULT_INTERACTIVE_CLIENT);
-  const [backend, setBackend] = useState<GlobalBackend>('omp');
-  const [cmd, setCmd] = useState('');
+  const [backend, setBackend] = useState<GlobalBackend>("omp");
+  const [cmd, setCmd] = useState("");
   const [roleModels, setRoleModels] = useState<Record<string, string>>({});
-  const [roleBackends, setRoleBackends] = useState<Record<string, SurfaceChoice>>(initialRoleBackends);
+  const [roleBackends, setRoleBackends] =
+    useState<Record<string, SurfaceChoice>>(initialRoleBackends);
   // Per-surface backend overrides. 'inherit' means "omit from the map" (use
   // the global backend above). Mid-edit draft, so plain useState rather than
   // nuqs — it's wiped on reload from the fetched config like the other fields.
-  const [surfaceBackends, setSurfaceBackends] = useState<Record<SurfaceKey, SurfaceChoice>>(
-    () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
+  const [surfaceBackends, setSurfaceBackends] = useState<
+    Record<SurfaceKey, SurfaceChoice>
+  >(
+    () =>
+      Object.fromEntries(SURFACE_KEYS.map((k) => [k, "inherit"])) as Record<
+        SurfaceKey,
+        SurfaceChoice
+      >,
   );
   // Per-surface model overrides (OQ3 companion to surfaceBackends). '' = inherit
   // the surface's own default model.
-  const [surfaceModels, setSurfaceModels] = useState<Record<SurfaceKey, string>>(
-    () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, ''])) as Record<SurfaceKey, string>,
+  const [surfaceModels, setSurfaceModels] = useState<
+    Record<SurfaceKey, string>
+  >(
+    () =>
+      Object.fromEntries(SURFACE_KEYS.map((k) => [k, ""])) as Record<
+        SurfaceKey,
+        string
+      >,
   );
   // Model-tier menu rows, ordered weakest → strongest (the order IS the
   // strength ranking the spawn clamp uses). Empty list = the committed
   // defaults apply at resolution time; the editor seeds them for visibility.
-  const [tierRows, setTierRows] = useState<TierRow[]>(DEFAULT_MODEL_TIERS.map(tierToRow));
+  const [tierRows, setTierRows] = useState<TierRow[]>(
+    DEFAULT_MODEL_TIERS.map(tierToRow),
+  );
   const [tiersCustomized, setTiersCustomized] = useState(false);
   // Per-role ceiling: '' = no ceiling (strongest tier allowed).
   const [tierCeilings, setTierCeilings] = useState<Record<string, string>>({});
@@ -187,7 +211,12 @@ export default function AgentSettingsPage() {
   // Last server-acknowledged value of each holdable section — what assembly
   // substitutes while a section is invalid, so a bad edit can never delete a
   // stored setting (assemble-config.ts has the full story).
-  const lastValidRef = useRef<LastValidSections>({ models: {}, surfaceModels: {}, tiers: [], tierCeilings: {} });
+  const lastValidRef = useRef<LastValidSections>({
+    models: {},
+    surfaceModels: {},
+    tiers: [],
+    tierCeilings: {},
+  });
 
   // Hydrate-once guard: StrictMode (and any remount) runs load() twice with
   // BOTH fetches in flight — a late second resolution must not re-apply
@@ -197,13 +226,12 @@ export default function AgentSettingsPage() {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/api/agent-config');
+      const r = await fetch("/api/agent-config");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = (await r.json()) as ConfigSnapshot;
       if (hydrationAppliedRef.current) return;
       hydrationAppliedRef.current = true;
       setSnapshot(d);
-      setInteractiveClient(d.config.interactiveClient ?? DEFAULT_INTERACTIVE_CLIENT);
       setBackend(d.config.backend);
       setCmd(d.config.cmd);
       const nextRoleModels = filteredRoleModels(d.config.models);
@@ -218,19 +246,31 @@ export default function AgentSettingsPage() {
       setRoleBackends({
         ...initialRoleBackends(),
         ...Object.fromEntries(
-          ROLE_ROUTING_ROWS
-            .map((row) => [row.role, fetchedRoleBackends[row.role] ?? 'inherit'] as const),
+          ROLE_ROUTING_ROWS.map(
+            (row) =>
+              [row.role, fetchedRoleBackends[row.role] ?? "inherit"] as const,
+          ),
         ),
       });
       setSurfaceBackends(
-        Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
+        Object.fromEntries(SURFACE_KEYS.map((k) => [k, "inherit"])) as Record<
+          SurfaceKey,
+          SurfaceChoice
+        >,
       );
       setSurfaceModels(
-        Object.fromEntries(SURFACE_KEYS.map((k) => [k, ''])) as Record<SurfaceKey, string>,
+        Object.fromEntries(SURFACE_KEYS.map((k) => [k, ""])) as Record<
+          SurfaceKey,
+          string
+        >,
       );
       const fetchedTiers = d.config.tiers ?? [];
       setTiersCustomized(fetchedTiers.length > 0);
-      setTierRows((fetchedTiers.length > 0 ? fetchedTiers : DEFAULT_MODEL_TIERS).map(tierToRow));
+      setTierRows(
+        (fetchedTiers.length > 0 ? fetchedTiers : DEFAULT_MODEL_TIERS).map(
+          tierToRow,
+        ),
+      );
       setTierCeilings(d.config.tierCeilings ?? {});
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
@@ -239,7 +279,9 @@ export default function AgentSettingsPage() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   // ── Assemble the persistable config + inline problems ──────────────────────
   // All inputs here are COMMITTED values (DraftInput gates keystrokes behind
@@ -248,7 +290,6 @@ export default function AgentSettingsPage() {
   const modelsJson = useMemo(() => roleModelsJson(roleModels), [roleModels]);
   const { persistable, problems } = useMemo(() => {
     const result = assembleAgentConfig({
-      interactiveClient,
       backend,
       cmd,
       modelsJson,
@@ -261,7 +302,16 @@ export default function AgentSettingsPage() {
     });
     lastValidRef.current = result.lastValid;
     return result;
-  }, [interactiveClient, backend, cmd, modelsJson, roleBackends, surfaceBackends, surfaceModels, tierRows, tierCeilings]);
+  }, [
+    backend,
+    cmd,
+    modelsJson,
+    roleBackends,
+    surfaceBackends,
+    surfaceModels,
+    tierRows,
+    tierCeilings,
+  ]);
 
   const hydrated = !loading && snapshot != null;
   const { saving, lastSavedAt } = useDebouncedSave(
@@ -273,14 +323,17 @@ export default function AgentSettingsPage() {
       if (lastSavedRef.current === body) return;
       // keepalive: the pagehide flush in useDebouncedSave must survive a
       // full reload/navigation, not just an SPA unmount.
-      const r = await fetch('/api/agent-config', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
+      const r = await fetch("/api/agent-config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
         body,
         keepalive: true,
       });
       if (!r.ok) {
-        const detail = await r.json().then((d) => (d as { error?: string }).error).catch(() => null);
+        const detail = await r
+          .json()
+          .then((d) => (d as { error?: string }).error)
+          .catch(() => null);
         throw new Error(detail ?? `HTTP ${r.status}`);
       }
       lastSavedRef.current = body;
@@ -290,7 +343,8 @@ export default function AgentSettingsPage() {
       // discrete choice. Once page state changes, it is already a committed edit;
       // persist it immediately so tier/ceiling menus do not lag behind the UI.
       ms: 0,
-      onError: (err) => toast.error(`auto-save failed: ${(err as Error).message}`),
+      onError: (err) =>
+        toast.error(`auto-save failed: ${(err as Error).message}`),
     },
   );
   // Seed the no-op guard with the server's view once hydrated.
@@ -305,11 +359,14 @@ export default function AgentSettingsPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await fetch('/api/agent-config/test', { method: 'POST' });
+      const r = await fetch("/api/agent-config/test", { method: "POST" });
       const d = (await r.json()) as TestResult;
       setTestResult(d);
-      if (d.ok) toast.success(`Backend OK (${d.durationMs}ms, ${d.finalText.slice(0, 40)})`);
-      else toast.error(`Test failed: ${d.error ?? 'no output'}`);
+      if (d.ok)
+        toast.success(
+          `Backend OK (${d.durationMs}ms, ${d.finalText.slice(0, 40)})`,
+        );
+      else toast.error(`Test failed: ${d.error ?? "no output"}`);
     } catch (err) {
       toast.error(`test request failed: ${(err as Error).message}`);
     } finally {
@@ -317,65 +374,74 @@ export default function AgentSettingsPage() {
     }
   };
 
-  if (loading) return <div><h1>AI backend</h1><p className="pc-settings-loading">Loading…</p></div>;
-  if (!snapshot) return <div><h1>AI backend</h1><p style={{ color: 'var(--bad)' }}>Failed to load config.</p></div>;
+  if (loading)
+    return (
+      <div>
+        <h1>AI backend</h1>
+        <p className="pc-settings-loading">Loading…</p>
+      </div>
+    );
+  if (!snapshot)
+    return (
+      <div>
+        <h1>AI backend</h1>
+        <p style={{ color: "var(--bad)" }}>Failed to load config.</p>
+      </div>
+    );
 
   const { binaries, effectiveBackend, envOverrides } = snapshot;
   const codexDiagnostics = snapshot.codexDiagnostics;
-  const defaultCmd = backend === 'omp' || backend === 'auto' ? 'omp -p' : backend === 'codex' ? 'codex exec' : 'claude -p';
+  const defaultCmd =
+    backend === "omp" || backend === "auto"
+      ? "omp -p"
+      : backend === "codex"
+        ? "codex exec"
+        : "claude -p";
 
   return (
     <div>
-      <h1 style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+      <h1 style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
         AI backend
-        <span style={{ fontSize: 12, fontWeight: 400, color: saving ? 'var(--accent)' : 'var(--fg-mute)' }}>
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 400,
+            color: saving ? "var(--accent)" : "var(--fg-mute)",
+          }}
+        >
           {saving
-            ? 'Saving…'
+            ? "Saving…"
             : lastSavedAt
               ? `✓ Saved ${lastSavedAt.toLocaleTimeString()}`
-              : 'Fields validate and save when you finish editing'}
+              : "Fields validate and save when you finish editing"}
         </span>
       </h1>
       <p className="pc-settings-intro">
-        Which agent CLI the operator and {t('pot', { lower: true })} drive. Two backends are
-        supported: <code>claude-code</code> (Anthropic <code>claude</code>)
-        and <code>omp</code> (<a
+        Which agent CLI the operator and {t("pot", { lower: true })} drive. Two
+        backends are supported: <code>claude-code</code> (Anthropic{" "}
+        <code>claude</code>) and <code>omp</code> (
+        <a
           href="https://github.com/can1357/oh-my-pi"
           target="_blank"
           rel="noreferrer"
-          style={{ color: 'var(--accent)' }}
-        >oh-my-pi</a>) — the multi-provider option. Every change on this page
-        saves automatically: text fields validate and commit when you leave
-        them (Enter also commits), toggles and menus save immediately.
+          style={{ color: "var(--accent)" }}
+        >
+          oh-my-pi
+        </a>
+        ) — the multi-provider option. Every change on this page saves
+        automatically: text fields validate and commit when you leave them
+        (Enter also commits), toggles and menus save immediately.
       </p>
 
-      <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
-        <h2>Interactive client</h2>
-        <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginTop: 4 }}>
-          The terminal UI opened by a bare interactive <code>psu</code>. D-028 records the
-          deployed GREEN worker-parity gate, so owned PUI is now the default; scripted,
-          fleet, and resume launches keep their native engine path.
-        </p>
-        <Select
-          value={interactiveClient}
-          onChange={(value) => setInteractiveClient(value as InteractiveClient)}
-          ariaLabel="Interactive client"
-          options={[
-            { value: 'pui', label: 'Owned PUI (default)' },
-            { value: 'legacy', label: 'Legacy native clients (escape hatch)' },
-          ]}
-        />
-        <p style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 8, marginBottom: 0 }}>
-          Escape hatch: <code>psu --client=legacy</code> keeps the Claude, OMP, and Codex
-          picker reachable. To pin OMP directly, use{' '}
-          <code>psu --client=legacy --agent=omp</code>.
-        </p>
-      </section>
-
       {problems.length > 0 && (
-        <section className="pc-card" style={{ padding: 12, marginTop: 12, borderColor: 'var(--bad)' }}>
+        <section
+          className="pc-card"
+          style={{ padding: 12, marginTop: 12, borderColor: "var(--bad)" }}
+        >
           {problems.map((p, i) => (
-            <div key={`p${i}`} style={{ fontSize: 12, color: 'var(--bad)' }}>✗ {p}</div>
+            <div key={`p${i}`} style={{ fontSize: 12, color: "var(--bad)" }}>
+              ✗ {p}
+            </div>
           ))}
         </section>
       )}
@@ -385,44 +451,79 @@ export default function AgentSettingsPage() {
         <h2>Detected on PATH</h2>
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
           <li>
-            <code>claude</code>: {binaries.claude
-              ? <span style={{ color: 'var(--good)' }}>✓ {binaries.claude}</span>
-              : <span style={{ color: 'var(--bad)' }}>✗ not found</span>}
+            <code>claude</code>:{" "}
+            {binaries.claude ? (
+              <span style={{ color: "var(--good)" }}>✓ {binaries.claude}</span>
+            ) : (
+              <span style={{ color: "var(--bad)" }}>✗ not found</span>
+            )}
           </li>
           <li>
-            <code>codex</code>: {binaries.codex
-              ? <span style={{ color: 'var(--good)' }}>✓ {binaries.codex}</span>
-              : <span style={{ color: 'var(--bad)' }}>✗ not found</span>}
+            <code>codex</code>:{" "}
+            {binaries.codex ? (
+              <span style={{ color: "var(--good)" }}>✓ {binaries.codex}</span>
+            ) : (
+              <span style={{ color: "var(--bad)" }}>✗ not found</span>
+            )}
           </li>
           <li>
-            <code>omp</code>: {binaries.omp
-              ? <span style={{ color: 'var(--good)' }}>✓ {binaries.omp}</span>
-              : <span style={{ color: 'var(--fg-mute)' }}>not found ({' '}
-                  <code>bun add -g @oh-my-pi/pi-coding-agent</code>
-                {' '})</span>}
+            <code>omp</code>:{" "}
+            {binaries.omp ? (
+              <span style={{ color: "var(--good)" }}>✓ {binaries.omp}</span>
+            ) : (
+              <span style={{ color: "var(--fg-mute)" }}>
+                not found ( <code>bun add -g @oh-my-pi/pi-coding-agent</code> )
+              </span>
+            )}
           </li>
           {binaries.pi && binaries.pi !== binaries.omp && (
             <li>
-              <code>pi</code>: <span style={{ color: 'var(--good)' }}>✓ {binaries.pi}</span>
-              {' '}<span style={{ color: 'var(--fg-mute)' }}>(alias of omp)</span>
+              <code>pi</code>:{" "}
+              <span style={{ color: "var(--good)" }}>✓ {binaries.pi}</span>{" "}
+              <span style={{ color: "var(--fg-mute)" }}>(alias of omp)</span>
             </li>
           )}
         </ul>
-        <p style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 8, marginBottom: 0 }}>
+        <p
+          style={{
+            fontSize: 12,
+            color: "var(--fg-mute)",
+            marginTop: 8,
+            marginBottom: 0,
+          }}
+        >
           Effective backend right now: <code>{effectiveBackend}</code>
-          {(envOverrides.AGENT_BACKEND || envOverrides.AGENT_CMD || envOverrides.CLAUDE_CMD) && (
+          {(envOverrides.AGENT_BACKEND ||
+            envOverrides.AGENT_CMD ||
+            envOverrides.CLAUDE_CMD) && (
             <>
-              {' '}· env overrides active:
-              {envOverrides.AGENT_BACKEND && <> <code>AGENT_BACKEND={envOverrides.AGENT_BACKEND}</code></>}
-              {envOverrides.AGENT_CMD && <> <code>AGENT_CMD={envOverrides.AGENT_CMD}</code></>}
-              {envOverrides.CLAUDE_CMD && <> <code>CLAUDE_CMD={envOverrides.CLAUDE_CMD}</code></>}
+              {" "}
+              · env overrides active:
+              {envOverrides.AGENT_BACKEND && (
+                <>
+                  {" "}
+                  <code>AGENT_BACKEND={envOverrides.AGENT_BACKEND}</code>
+                </>
+              )}
+              {envOverrides.AGENT_CMD && (
+                <>
+                  {" "}
+                  <code>AGENT_CMD={envOverrides.AGENT_CMD}</code>
+                </>
+              )}
+              {envOverrides.CLAUDE_CMD && (
+                <>
+                  {" "}
+                  <code>CLAUDE_CMD={envOverrides.CLAUDE_CMD}</code>
+                </>
+              )}
             </>
           )}
         </p>
       </section>
 
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
-        <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <h2 style={{ display: "flex", alignItems: "center", gap: 8 }}>
           Codex diagnostics
           <span className="pc-settings-status-pill">Advanced</span>
         </h2>
@@ -432,56 +533,93 @@ export default function AgentSettingsPage() {
               <dt>Tracked session</dt>
               <dd>
                 <code>#{codexDiagnostics.sessionId}</code>
-                {codexDiagnostics.ownerId ? <> · <code>{codexDiagnostics.ownerId}</code></> : null}
+                {codexDiagnostics.ownerId ? (
+                  <>
+                    {" "}
+                    · <code>{codexDiagnostics.ownerId}</code>
+                  </>
+                ) : null}
               </dd>
             </div>
             <div>
               <dt>CODEX_HOME</dt>
-              <dd><code>{codexDiagnostics.home.codexHome}</code></dd>
+              <dd>
+                <code>{codexDiagnostics.home.codexHome}</code>
+              </dd>
             </div>
             <div>
               <dt>Resume command</dt>
-              <dd><code>{codexDiagnostics.home.resumeCommand}</code></dd>
+              <dd>
+                <code>{codexDiagnostics.home.resumeCommand}</code>
+              </dd>
             </div>
             <div>
               <dt>Rollout</dt>
-              <dd>{codexDiagnostics.home.latestRolloutId ? <code>{codexDiagnostics.home.latestRolloutId}</code> : 'Not recorded yet'}</dd>
+              <dd>
+                {codexDiagnostics.home.latestRolloutId ? (
+                  <code>{codexDiagnostics.home.latestRolloutId}</code>
+                ) : (
+                  "Not recorded yet"
+                )}
+              </dd>
             </div>
             <div>
               <dt>Artifacts</dt>
               <dd>
                 {[
-                  codexDiagnostics.home.agentsExists ? 'AGENTS.md' : null,
-                  codexDiagnostics.home.configExists ? 'config.toml' : null,
-                  codexDiagnostics.home.hooksExists ? 'hooks.json' : null,
-                  codexDiagnostics.home.authExists ? 'auth.json' : null,
-                  codexDiagnostics.home.promptsExists ? 'prompts' : null,
-                ].filter(Boolean).join(' · ') || 'No generated artifacts found'}
+                  codexDiagnostics.home.agentsExists ? "AGENTS.md" : null,
+                  codexDiagnostics.home.configExists ? "config.toml" : null,
+                  codexDiagnostics.home.hooksExists ? "hooks.json" : null,
+                  codexDiagnostics.home.authExists ? "auth.json" : null,
+                  codexDiagnostics.home.promptsExists ? "prompts" : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "No generated artifacts found"}
               </dd>
             </div>
             <div>
               <dt>Lock status</dt>
               <dd>
-                {codexDiagnostics.home.diagnostics?.lockEnforcement ?? 'Unknown'}
-                {codexDiagnostics.home.diagnostics?.requiresExplicitPapercuspLocks ? ' · explicit Papercusp locks required' : ''}
+                {codexDiagnostics.home.diagnostics?.lockEnforcement ??
+                  "Unknown"}
+                {codexDiagnostics.home.diagnostics
+                  ?.requiresExplicitPapercuspLocks
+                  ? " · explicit Papercusp locks required"
+                  : ""}
               </dd>
             </div>
           </dl>
         ) : (
-          <p style={{ fontSize: 13, margin: 0, color: 'var(--fg-mute)' }}>
-            No tracked Codex session has been launched yet. Once one exists, this panel shows its per-session
+          <p style={{ fontSize: 13, margin: 0, color: "var(--fg-mute)" }}>
+            No tracked Codex session has been launched yet. Once one exists,
+            this panel shows its per-session
             <code> CODEX_HOME </code> artifacts and resume path.
           </p>
         )}
       </section>
 
-      <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div
+        style={{
+          marginTop: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
         <FormField
           label="Backend (sets AGENT_BACKEND)"
-          description={"The CLI the orchestrator + " + t('pot', { lower: true }) + " drive. 'omp' is the default. 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."}
+          description={
+            "The CLI the orchestrator + " +
+            t("pot", { lower: true }) +
+            " drive. 'omp' is the default. 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."
+          }
         >
-          <div role="radiogroup" aria-label="Agent backend" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            {(['auto', 'claude-code', 'omp', 'codex'] as const).map((b) => (
+          <div
+            role="radiogroup"
+            aria-label="Agent backend"
+            style={{ display: "flex", gap: 12, flexWrap: "wrap" }}
+          >
+            {(["auto", "claude-code", "omp", "codex"] as const).map((b) => (
               <button
                 key={b}
                 type="button"
@@ -491,11 +629,15 @@ export default function AgentSettingsPage() {
                 onClick={() => setBackend(b)}
               >
                 <code>{b}</code>
-                {b === 'omp' && !binaries.omp && (
-                  <span style={{ color: 'var(--bad)', fontSize: 11 }}>(binary not found)</span>
+                {b === "omp" && !binaries.omp && (
+                  <span style={{ color: "var(--bad)", fontSize: 11 }}>
+                    (binary not found)
+                  </span>
                 )}
-                {b === 'claude-code' && !binaries.claude && (
-                  <span style={{ color: 'var(--bad)', fontSize: 11 }}>(binary not found)</span>
+                {b === "claude-code" && !binaries.claude && (
+                  <span style={{ color: "var(--bad)", fontSize: 11 }}>
+                    (binary not found)
+                  </span>
                 )}
               </button>
             ))}
@@ -508,21 +650,41 @@ export default function AgentSettingsPage() {
         >
           <DraftInput
             type="text"
-            placeholder={backend === 'omp' || backend === 'auto' ? 'omp -p' : backend === 'codex' ? 'codex exec' : 'claude -p --dangerously-skip-permissions'}
+            placeholder={
+              backend === "omp" || backend === "auto"
+                ? "omp -p"
+                : backend === "codex"
+                  ? "codex exec"
+                  : "claude -p --dangerously-skip-permissions"
+            }
             className="pc-input"
             value={cmd}
             onCommit={setCmd}
           />
-          <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {(['omp -p', 'codex exec', 'claude -p', 'claude -p --dangerously-skip-permissions', ''] as const).map((preset) => (
+          <div
+            style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}
+          >
+            {(
+              [
+                "omp -p",
+                "codex exec",
+                "claude -p",
+                "claude -p --dangerously-skip-permissions",
+                "",
+              ] as const
+            ).map((preset) => (
               <button
-                key={preset || 'clear'}
+                key={preset || "clear"}
                 type="button"
                 className="pc-btn pc-btn-secondary"
-                style={{ fontSize: 11, padding: '2px 8px' }}
+                style={{ fontSize: 11, padding: "2px 8px" }}
                 onClick={() => setCmd(preset)}
               >
-                {preset === '' ? 'clear' : preset === 'claude -p --dangerously-skip-permissions' ? 'claude -p (skip perms)' : preset}
+                {preset === ""
+                  ? "clear"
+                  : preset === "claude -p --dangerously-skip-permissions"
+                    ? "claude -p (skip perms)"
+                    : preset}
               </button>
             ))}
           </div>
@@ -530,37 +692,65 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Model tiers (weakest → strongest)"
-          description={`The effort-level menu per-task model picks resolve against: the ${t('brain', { lower: true })} passes a tier name on cup:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the ${t('brain', { lower: true })} — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. 'Compact @' is the soft compaction limit (tokens) sessions on the tier are seeded with — blank uses the model-derived default, (window − 10k) ÷ 1.2, so an agent overshooting its soft limit by ~20% still fits the hard window. Leave as-is to track the built-in menu.`}
+          description={`The effort-level menu per-task model picks resolve against: the ${t("brain", { lower: true })} passes a tier name on cup:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the ${t("brain", { lower: true })} — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. 'Compact @' is the soft compaction limit (tokens) sessions on the tier are seeded with — blank uses the model-derived default, (window − 10k) ÷ 1.2, so an agent overshooting its soft limit by ~20% still fits the hard window. Leave as-is to track the built-in menu.`}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--fg-mute)' }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                fontSize: 11,
+                color: "var(--fg-mute)",
+              }}
+            >
               <span style={{ width: 14 }} />
               <span style={{ width: 110 }}>Tier</span>
               <span style={{ width: 170 }}>Model spec</span>
               <span style={{ width: 130 }}>Backend</span>
               <span style={{ width: 100 }}>Compact @</span>
-              <span>When to use (the {t('brain', { lower: true })}&apos;s rubric)</span>
+              <span>
+                When to use (the {t("brain", { lower: true })}&apos;s rubric)
+              </span>
             </div>
             {tierRows.map((row, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                <span style={{ fontSize: 11, color: 'var(--fg-mute)', width: 14, textAlign: 'right', paddingTop: 4 }}>{i + 1}</span>
+              <div
+                key={i}
+                style={{ display: "flex", gap: 8, alignItems: "flex-start" }}
+              >
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "var(--fg-mute)",
+                    width: 14,
+                    textAlign: "right",
+                    paddingTop: 4,
+                  }}
+                >
+                  {i + 1}
+                </span>
                 <DraftInput
                   className="pc-input"
                   wrapperStyle={{ width: 110 }}
-                  style={{ fontSize: 13, padding: '2px 6px' }}
+                  style={{ fontSize: 13, padding: "2px 6px" }}
                   placeholder="tier name"
                   aria-label={`Tier ${i + 1} name`}
                   value={row.name}
                   onCommit={(name) => {
                     const oldName = row.name.trim().toLowerCase();
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, name } : r)));
+                    setTierRows((prev) =>
+                      prev.map((r, j) => (j === i ? { ...r, name } : r)),
+                    );
                     // A rename follows through to ceilings that referenced the
                     // old name — otherwise they dangle and would be dropped.
                     if (oldName && name.trim()) {
                       setTierCeilings((prev) =>
                         Object.fromEntries(
-                          Object.entries(prev).map(([role, t]) => [role, t.toLowerCase() === oldName ? name.trim() : t]),
+                          Object.entries(prev).map(([role, t]) => [
+                            role,
+                            t.toLowerCase() === oldName ? name.trim() : t,
+                          ]),
                         ),
                       );
                     }
@@ -569,57 +759,83 @@ export default function AgentSettingsPage() {
                 <DraftInput
                   className="pc-input"
                   wrapperStyle={{ width: 170 }}
-                  style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
+                  style={{
+                    fontSize: 13,
+                    padding: "2px 6px",
+                    fontFamily: "monospace",
+                  }}
                   placeholder="model[:effort], e.g. opus:high"
                   aria-label={`Tier ${i + 1} model spec`}
                   value={row.spec}
                   validate={modelSpecError}
                   onCommit={(spec) => {
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, spec } : r)));
+                    setTierRows((prev) =>
+                      prev.map((r, j) => (j === i ? { ...r, spec } : r)),
+                    );
                   }}
                 />
                 <Select
-                  value={row.backend || 'inherit'}
+                  value={row.backend || "inherit"}
                   ariaLabel={`Tier ${i + 1} backend`}
                   options={BACKEND_CHOICE_OPTIONS}
                   triggerStyle={{ fontSize: 13 }}
                   onChange={(v) => {
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) =>
-                      j === i ? { ...r, backend: v === 'inherit' ? '' : (v as AgentBackend) } : r,
-                    ));
+                    setTierRows((prev) =>
+                      prev.map((r, j) =>
+                        j === i
+                          ? {
+                              ...r,
+                              backend:
+                                v === "inherit" ? "" : (v as AgentBackend),
+                            }
+                          : r,
+                      ),
+                    );
                   }}
                 />
                 <DraftInput
                   className="pc-input"
                   wrapperStyle={{ width: 100 }}
-                  style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
-                  placeholder={String(defaultCompactionLimitForSpec(row.spec.trim() || null))}
+                  style={{
+                    fontSize: 13,
+                    padding: "2px 6px",
+                    fontFamily: "monospace",
+                  }}
+                  placeholder={String(
+                    defaultCompactionLimitForSpec(row.spec.trim() || null),
+                  )}
                   aria-label={`Tier ${i + 1} soft compaction limit (tokens)`}
-                  value={row.compactionLimit ?? ''}
+                  value={row.compactionLimit ?? ""}
                   onCommit={(compactionLimit) => {
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, compactionLimit } : r)));
+                    setTierRows((prev) =>
+                      prev.map((r, j) =>
+                        j === i ? { ...r, compactionLimit } : r,
+                      ),
+                    );
                   }}
                 />
                 <DraftInput
                   className="pc-input"
                   wrapperStyle={{ flex: 1, minWidth: 180 }}
-                  style={{ fontSize: 13, padding: '2px 6px' }}
-                  placeholder={`when the ${t('brain', { lower: true })} should pick this tier`}
+                  style={{ fontSize: 13, padding: "2px 6px" }}
+                  placeholder={`when the ${t("brain", { lower: true })} should pick this tier`}
                   aria-label={`Tier ${i + 1} when-to-use guidance`}
                   maxLength={300}
                   value={row.when}
                   onCommit={(when) => {
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, when } : r)));
+                    setTierRows((prev) =>
+                      prev.map((r, j) => (j === i ? { ...r, when } : r)),
+                    );
                   }}
                 />
                 <button
                   type="button"
                   className="pc-btn pc-btn-secondary"
-                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  style={{ fontSize: 11, padding: "2px 8px" }}
                   onClick={() => {
                     const removed = row.name.trim().toLowerCase();
                     setTiersCustomized(true);
@@ -628,7 +844,11 @@ export default function AgentSettingsPage() {
                     // cascade away instead of dangling.
                     if (removed) {
                       setTierCeilings((prev) =>
-                        Object.fromEntries(Object.entries(prev).filter(([, t]) => t.toLowerCase() !== removed)),
+                        Object.fromEntries(
+                          Object.entries(prev).filter(
+                            ([, t]) => t.toLowerCase() !== removed,
+                          ),
+                        ),
                       );
                     }
                   }}
@@ -637,14 +857,23 @@ export default function AgentSettingsPage() {
                 </button>
               </div>
             ))}
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: "flex", gap: 6 }}>
               <button
                 type="button"
                 className="pc-btn pc-btn-secondary"
-                style={{ fontSize: 11, padding: '2px 8px' }}
+                style={{ fontSize: 11, padding: "2px 8px" }}
                 onClick={() => {
                   setTiersCustomized(true);
-                  setTierRows((prev) => [...prev, { name: '', spec: '', backend: '', when: '', compactionLimit: '' }]);
+                  setTierRows((prev) => [
+                    ...prev,
+                    {
+                      name: "",
+                      spec: "",
+                      backend: "",
+                      when: "",
+                      compactionLimit: "",
+                    },
+                  ]);
                 }}
               >
                 + add tier
@@ -652,22 +881,34 @@ export default function AgentSettingsPage() {
               <button
                 type="button"
                 className="pc-btn pc-btn-secondary"
-                style={{ fontSize: 11, padding: '2px 8px' }}
+                style={{ fontSize: 11, padding: "2px 8px" }}
                 onClick={() => {
                   setTiersCustomized(false);
                   setTierRows(DEFAULT_MODEL_TIERS.map(tierToRow));
                   // Ceilings referencing custom tier names that no longer
                   // exist in the default menu cascade away with the reset.
-                  const defaultNames = new Set(DEFAULT_MODEL_TIERS.map((t) => t.name.toLowerCase()));
+                  const defaultNames = new Set(
+                    DEFAULT_MODEL_TIERS.map((t) => t.name.toLowerCase()),
+                  );
                   setTierCeilings((prev) =>
-                    Object.fromEntries(Object.entries(prev).filter(([, t]) => defaultNames.has(t.toLowerCase()))),
+                    Object.fromEntries(
+                      Object.entries(prev).filter(([, t]) =>
+                        defaultNames.has(t.toLowerCase()),
+                      ),
+                    ),
                   );
                 }}
               >
                 reset to defaults
               </button>
               {!tiersCustomized && (
-                <span style={{ fontSize: 11, color: 'var(--fg-mute)', alignSelf: 'center' }}>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "var(--fg-mute)",
+                    alignSelf: "center",
+                  }}
+                >
                   built-in menu (not stored — tracks future defaults)
                 </span>
               )}
@@ -677,17 +918,18 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Role backend, model, and tier ceiling"
-          description={`One row per operational AI role. Backend chooses the CLI for that role, model pins its default model, and tier ceiling caps the strongest tier the ${t('brain')} may choose for that role. Empty model and no ceiling inherit the built-in default.`}
+          description={`One row per operational AI role. Backend chooses the CLI for that role, model pins its default model, and tier ceiling caps the strongest tier the ${t("brain")} may choose for that role. Empty model and no ceiling inherit the built-in default.`}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div
               style={{
-                display: 'grid',
-                gridTemplateColumns: '150px minmax(220px, 1fr) 150px 170px 150px',
+                display: "grid",
+                gridTemplateColumns:
+                  "150px minmax(220px, 1fr) 150px 170px 150px",
                 gap: 8,
-                alignItems: 'center',
+                alignItems: "center",
                 fontSize: 11,
-                color: 'var(--fg-mute)',
+                color: "var(--fg-mute)",
               }}
             >
               <span>Role</span>
@@ -700,24 +942,33 @@ export default function AgentSettingsPage() {
               <div
                 key={row.role}
                 style={{
-                  display: 'grid',
-                  gridTemplateColumns: '150px minmax(220px, 1fr) 150px 170px 150px',
+                  display: "grid",
+                  gridTemplateColumns:
+                    "150px minmax(220px, 1fr) 150px 170px 150px",
                   gap: 8,
-                  alignItems: 'flex-start',
+                  alignItems: "flex-start",
                   fontSize: 13,
                 }}
               >
                 <div>
                   <code>{displayLabel(row)}</code>
                   {row.label !== row.role && (
-                    <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--fg-mute)",
+                        marginTop: 2,
+                      }}
+                    >
                       role: <code>{row.role}</code>
                     </div>
                   )}
                 </div>
-                <div style={{ color: 'var(--fg-mute)', lineHeight: 1.35 }}>{row.description}</div>
+                <div style={{ color: "var(--fg-mute)", lineHeight: 1.35 }}>
+                  {row.description}
+                </div>
                 <Select
-                  value={roleBackends[row.role] ?? 'inherit'}
+                  value={roleBackends[row.role] ?? "inherit"}
                   ariaLabel={`Backend for ${displayLabel(row)}`}
                   triggerStyle={{ fontSize: 13 }}
                   options={BACKEND_CHOICE_OPTIONS}
@@ -731,10 +982,14 @@ export default function AgentSettingsPage() {
                 <DraftInput
                   className="pc-input"
                   wrapperStyle={{ width: 170 }}
-                  style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
+                  style={{
+                    fontSize: 13,
+                    padding: "2px 6px",
+                    fontFamily: "monospace",
+                  }}
                   placeholder="model (optional)"
                   aria-label={`Model for ${displayLabel(row)}`}
-                  value={roleModels[row.role] ?? ''}
+                  value={roleModels[row.role] ?? ""}
                   validate={modelSpecError}
                   onCommit={(m) =>
                     setRoleModels((prev) => {
@@ -747,17 +1002,19 @@ export default function AgentSettingsPage() {
                   }
                 />
                 <Select
-                  value={tierCeilings[row.role] ?? 'none'}
+                  value={tierCeilings[row.role] ?? "none"}
                   ariaLabel={`Tier ceiling for ${displayLabel(row)}`}
                   triggerStyle={{ fontSize: 13 }}
                   options={[
-                    { value: 'none', label: 'No ceiling' },
-                    ...tierRows.filter((t) => t.name.trim()).map((t) => ({ value: t.name, label: t.name })),
+                    { value: "none", label: "No ceiling" },
+                    ...tierRows
+                      .filter((t) => t.name.trim())
+                      .map((t) => ({ value: t.name, label: t.name })),
                   ]}
                   onChange={(v) =>
                     setTierCeilings((prev) => {
                       const next = { ...prev };
-                      if (v && v !== 'none') next[row.role] = v;
+                      if (v && v !== "none") next[row.role] = v;
                       else delete next[row.role];
                       return next;
                     })
@@ -768,14 +1025,14 @@ export default function AgentSettingsPage() {
           </div>
         </FormField>
 
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: "flex", gap: 8 }}>
           <button
             type="button"
             className="pc-btn"
             onClick={runTest}
             disabled={testing}
           >
-            {testing ? 'Testing…' : 'Test current backend'}
+            {testing ? "Testing…" : "Test current backend"}
           </button>
         </div>
       </div>
@@ -787,21 +1044,30 @@ export default function AgentSettingsPage() {
           style={{
             padding: 16,
             marginTop: 16,
-            borderColor: testResult.ok ? 'var(--good)' : 'var(--bad)',
+            borderColor: testResult.ok ? "var(--good)" : "var(--bad)",
           }}
         >
           <h2>
-            {testResult.ok ? '✓ Backend test passed' : '✗ Backend test failed'}
+            {testResult.ok ? "✓ Backend test passed" : "✗ Backend test failed"}
           </h2>
           {testResult.ok ? (
             <p style={{ fontSize: 13, margin: 0 }}>
-              Reply: <code>{testResult.finalText.slice(0, 200)}</code>
-              {' '}· {testResult.durationMs}ms
-              {testResult.costUsd > 0 && <> · ${testResult.costUsd.toFixed(4)}</>}
+              Reply: <code>{testResult.finalText.slice(0, 200)}</code> ·{" "}
+              {testResult.durationMs}ms
+              {testResult.costUsd > 0 && (
+                <> · ${testResult.costUsd.toFixed(4)}</>
+              )}
             </p>
           ) : (
-            <pre style={{ fontSize: 12, color: 'var(--bad)', whiteSpace: 'pre-wrap', margin: 0 }}>
-              {testResult.error ?? '(no error message)'}
+            <pre
+              style={{
+                fontSize: 12,
+                color: "var(--bad)",
+                whiteSpace: "pre-wrap",
+                margin: 0,
+              }}
+            >
+              {testResult.error ?? "(no error message)"}
             </pre>
           )}
         </section>
@@ -809,17 +1075,21 @@ export default function AgentSettingsPage() {
 
       {/* Headless caveat */}
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
-        <h2>Headless {t('pot', { lower: true })} runs</h2>
+        <h2>Headless {t("pot", { lower: true })} runs</h2>
         <p style={{ fontSize: 13, margin: 0 }}>
-          When you run the {t('pot', { lower: true })} orchestrator from a terminal directly
-          (outside the operator), it does NOT inherit settings from this
-          page — it reads <code>$AGENT_BACKEND</code>/<code>$AGENT_CMD</code>{' '}
-          from the shell instead. Either set them before invoking:
+          When you run the {t("pot", { lower: true })} orchestrator from a
+          terminal directly (outside the operator), it does NOT inherit settings
+          from this page — it reads <code>$AGENT_BACKEND</code>/
+          <code>$AGENT_CMD</code> from the shell instead. Either set them before
+          invoking:
         </p>
-        <pre className="pc-code" style={{ marginTop: 8 }}>{`export AGENT_BACKEND=${backend === 'auto' ? 'omp' : backend}
+        <pre
+          className="pc-code"
+          style={{ marginTop: 8 }}
+        >{`export AGENT_BACKEND=${backend === "auto" ? "omp" : backend}
 export AGENT_CMD='${defaultCmd}'`}</pre>
-        <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: 0 }}>
-          …or rely on the binary auto-inference (the orchestrator detects{' '}
+        <p style={{ fontSize: 12, color: "var(--fg-mute)", margin: 0 }}>
+          …or rely on the binary auto-inference (the orchestrator detects{" "}
           <code>omp</code>/<code>pi</code> in the command name).
         </p>
       </section>

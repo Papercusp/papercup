@@ -26,28 +26,6 @@ export const AGENT_BACKENDS = ['claude-code', 'omp', 'codex'] as const;
 export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 
 /**
- * Interactive client selected by the `psu` front door. `legacy` is the
- * existing native Claude/OMP/Codex picker; `pui` is Papercusp's owned
- * Ratatui client (`pui chat`). The persisted preference is intentionally
- * separate from the agent backend above: the client is the UI, while the
- * backend is the model/tool execution substrate behind a session.
- *
- * D-015/D-026: the setting may be stored and displayed before cutover, but
- * callers must keep activation fail-closed until the deployed parity gate is
- * explicitly green. P-013 prepares the seam; P-012 flips the default later.
- */
-export const INTERACTIVE_CLIENTS = ['legacy', 'pui'] as const;
-export type InteractiveClient = (typeof INTERACTIVE_CLIENTS)[number];
-
-/** REVERTED (owner directive 2026-08-24): the D-028/P-012 cutover that made
- * owned PUI the bare-interactive default was a mistake — `psu` must keep
- * working exactly as it did before PUI existed. `legacy` (the native
- * Claude/OMP/Codex picker) is the default again; `pui` stays fully wired and
- * launchable via `psu --client=pui` (or the settings toggle) as its own
- * standalone client while it is rebuilt as its own TUI. */
-export const DEFAULT_INTERACTIVE_CLIENT: InteractiveClient = 'legacy';
-
-/**
  * The in-app brain surfaces that support a per-surface backend override. Keep in
  * sync with the call sites that pass `surfaceBackend('<key>')` and the
  * /settings/agent per-surface table.
@@ -877,8 +855,7 @@ export function resolveBulkResolverLaunch(
   }
   const carry = rawCarry as BulkResolverCarryMode;
 
-  const rawAccount =
-    typeof p.account === 'string' ? p.account.trim() : DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE.account;
+  const rawAccount = typeof p.account === 'string' ? p.account.trim() : DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE.account;
   if (!rawAccount || !isLaunchAccountValue(rawAccount)) {
     return {
       ok: false,

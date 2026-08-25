@@ -9,7 +9,6 @@ import {
   parseTiers,
   parseTierCeilings,
   parseTerminalEmulator,
-  parseInteractiveClient,
   bulkResolverLaunchProfilesProblem,
   agentCmdBootWarning,
   type AgentConfig,
@@ -37,7 +36,7 @@ describe('readAgentConfig default backend (no stored row)', () => {
     readOperatorStateMock.mockResolvedValueOnce(null);
     const c = await readAgentConfig();
     expect(c.backend).toBe('claude-code');
-    expect(c.interactiveClient).toBe('pui');
+    expect(c).not.toHaveProperty('interactiveClient');
     expect(effectiveBackend(c)).toBe('claude-code');
     expect(c.resolverProfiles).toEqual({
       'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
@@ -49,14 +48,10 @@ describe('readAgentConfig default backend (no stored row)', () => {
     readOperatorStateMock.mockResolvedValueOnce({ backend: 'gemini' });
     expect((await readAgentConfig()).backend).toBe('claude-code');
   });
-});
 
-describe('parseInteractiveClient', () => {
-  it('preserves the explicit legacy escape hatch and defaults old/unknown rows to PUI', () => {
-    expect(parseInteractiveClient('pui')).toBe('pui');
-    expect(parseInteractiveClient('legacy')).toBe('legacy');
-    expect(parseInteractiveClient('unknown')).toBe('pui');
-    expect(parseInteractiveClient(null)).toBe('pui');
+  it('ignores a stale stored interactiveClient field so it cannot reactivate the cutover', async () => {
+    readOperatorStateMock.mockResolvedValueOnce({ backend: 'claude-code', interactiveClient: 'pui' });
+    expect(await readAgentConfig()).not.toHaveProperty('interactiveClient');
   });
 });
 

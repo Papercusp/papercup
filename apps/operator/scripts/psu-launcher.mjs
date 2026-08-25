@@ -105,9 +105,6 @@ import {
 } from "@papercusp/orchestrator/omp-gateway-config";
 
 export const AGENTS = ["claude", "omp", "codex"];
-export const INTERACTIVE_CLIENTS = ["legacy", "pui"];
-/** Mirrored from agent-config-constants.ts; pinned by psu-launcher.test.ts. */
-export const DEFAULT_INTERACTIVE_CLIENT = "pui";
 
 /**
  * The side-effect-free CLI reference shown by `psu --help`.
@@ -123,7 +120,6 @@ scripted launch.
 
 Session selection:
   -h, --help                         Show this help and exit
-  --client=<legacy|pui>              UI to open (bare interactive psu defaults to owned PUI)
   --resume[=<id>] [id]               Resume a tracked or native session
   --fork, --fork-session             Fork the selected session (with --resume)
   --brain                            Show the retired brain-session message
@@ -548,7 +544,8 @@ export function proxyOverloadRetryDelayMs(
   maxMs = MCP_PROXY_OVERLOAD_MAX_RETRY_MS,
 ) {
   const raw = Array.isArray(value) ? value[0] : value;
-  const seconds = typeof raw === "string" || typeof raw === "number" ? Number(raw) : NaN;
+  const seconds =
+    typeof raw === "string" || typeof raw === "number" ? Number(raw) : NaN;
   if (!Number.isFinite(seconds) || seconds < 0) return fallbackMs;
   return Math.min(maxMs, seconds * 1_000);
 }
@@ -557,7 +554,10 @@ export function proxyOverloadRetryDelayMs(
  * bare application 429 without Retry-After is returned to the caller unchanged. */
 export function isRetryableMcpProxyOverload(response) {
   if (response?.status !== 429) return false;
-  return typeof response?.headers?.get === "function" && response.headers.get("retry-after") != null;
+  return (
+    typeof response?.headers?.get === "function" &&
+    response.headers.get("retry-after") != null
+  );
 }
 
 /**
@@ -574,7 +574,10 @@ export async function bootstrapReplayDirective(response) {
     return null;
   }
   if (response.status === 502 && body?.error === "mcp_proxy_upstream_error") {
-    return { kind: "upstream-silent", delayMs: BOOTSTRAP_REPLAY_DEFAULT_DELAY_MS };
+    return {
+      kind: "upstream-silent",
+      delayMs: BOOTSTRAP_REPLAY_DEFAULT_DELAY_MS,
+    };
   }
   if (response.status === 409 && body?.error === "bootstrap_in_progress") {
     return {
@@ -613,7 +616,6 @@ export function parseArgs(argv) {
     resume: false,
     resumeId: null,
     fork: false,
-    client: null,
     agent: null,
     role: null,
     feature: null,
@@ -670,7 +672,6 @@ export function parseArgs(argv) {
   // pattern below: the flag token arms a `pending*` latch, the NEXT token
   // (verbatim, even if it happens to start with `--`) is taken as the value.
   let pendingRole = false;
-  let pendingClient = false;
   let pendingAgent = false;
   let pendingWorkspace = false;
   let pendingFeature = false;
@@ -693,11 +694,6 @@ export function parseArgs(argv) {
     if (pendingRole) {
       pendingRole = false;
       out.role = a;
-      continue;
-    }
-    if (pendingClient) {
-      pendingClient = false;
-      out.client = a;
       continue;
     }
     if (pendingAgent) {
@@ -838,9 +834,6 @@ export function parseArgs(argv) {
     // Default ON for scripted plan launches; this flag restores the old open-at-an-
     // empty-prompt behavior. (Interactive picker launches never auto-kickoff.)
     else if (a === "--no-kickoff") out.kickoff = false;
-    else if (a === "--client") pendingClient = true;
-    else if (a.startsWith("--client="))
-      out.client = a.slice("--client=".length);
     else if (a === "--agent") pendingAgent = true;
     else if (a.startsWith("--agent=")) out.agent = a.slice("--agent=".length);
     else if (a === "--role") pendingRole = true;
@@ -1021,11 +1014,6 @@ export function parseArgs(argv) {
       );
     }
   }
-  if (out.client != null && !INTERACTIVE_CLIENTS.includes(out.client)) {
-    throw new Error(
-      `--client must be one of ${INTERACTIVE_CLIENTS.join("|")} (got ${out.client || "empty"})`,
-    );
-  }
   // Model-family/backend coupling: a supplied native cloud model selects its
   // backend when --agent is omitted, and an explicit mismatch fails before any
   // wrapper/terminal opens. OMP stays exempt because it is multi-provider.
@@ -1035,80 +1023,6 @@ export function parseArgs(argv) {
   if (!pairing.ok) throw new Error(pairing.message);
   out.model = normalizeModelSpecForAgent(out.agent, out.model);
   return out;
-}
-
-/** Flags that make an invocation a native/session-engine launch rather than
- * the bare interactive front door. The stored UI preference never rewrites
- * automation, fleet launches, or resumes into PUI. */
-export function puiClientConflicts(args) {
-  return [
-    args.resume ? "--resume" : null,
-    args.fork ? "--fork" : null,
-    args.brain ? "--brain" : null,
-    args.agent ? "--agent" : null,
-    args.role ? "--role" : null,
-    args.feature ? "--feature" : null,
-    args.workspace ? "--workspace" : null,
-    args.harness ? "--harness" : null,
-    args.plan || args.noPlan ? "--plan/--no-plan" : null,
-    args.model ? "--model" : null,
-    args.account ? "--account" : null,
-    args.fleet ? "--fleet" : null,
-    args.headless ? "--headless" : null,
-    args.launchContext ? "--launch-context" : null,
-    args.kickoffPromptText ? "--kickoff" : null,
-    args.passthrough?.length ? "-- passthrough" : null,
-  ].filter(Boolean);
-}
-
-/**
- * Resolve P-012's interactive default. Explicit `--client` always wins.
- * Scripted/session-bearing invocations retain the legacy engine path so this
- * UI cutover cannot break fleets or resumes. A bare interactive invocation
- * reads the canonical saved preference; an unreachable/old operator inherits
- * the shipped PUI default rather than silently undoing the cutover.
- */
-export async function resolveInteractiveClient(
-  args,
-  {
-    fetchImpl = fetch,
-    operatorUrl = OPERATOR_URL,
-    timeoutMs = 1500,
-  } = {},
-) {
-  if (args.client != null) return args.client;
-  if (args.picker === false || puiClientConflicts(args).length > 0) return "legacy";
-
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const base = String(operatorUrl || "").replace(/\/$/, "");
-    const response = await fetchImpl(`${base}/api/agent-config`, { signal: ac.signal });
-    if (!response?.ok) return DEFAULT_INTERACTIVE_CLIENT;
-    const body = await response.json();
-    const saved = body?.config?.interactiveClient;
-    return saved === "legacy" || saved === "pui"
-      ? saved
-      : DEFAULT_INTERACTIVE_CLIENT;
-  } catch {
-    return DEFAULT_INTERACTIVE_CLIENT;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Launch the owned chat dock, rejecting native-session flags instead of
- * silently ignoring them. `--client=legacy` returns null and preserves the
- * Claude/OMP/Codex escape-hatch path. */
-export function puiClientCommand(args) {
-  if (args.client !== "pui") return null;
-  const conflicts = puiClientConflicts(args);
-  if (conflicts.length > 0) {
-    throw new Error(
-      `--client=pui opens the owned interactive client and cannot combine with legacy session flags: ${conflicts.join(", ")}. Use --client=legacy for those flags.`,
-    );
-  }
-  return { command: "pui", args: ["chat"] };
 }
 
 /**
@@ -5226,7 +5140,10 @@ export async function fetchWithResilience(
         const remaining = overloadDeadline - now();
         const retryAfter = response.headers.get("retry-after");
         const delayMs = proxyOverloadRetryDelayMs(retryAfter);
-        if (overloadAttempts < MCP_PROXY_OVERLOAD_MAX_ATTEMPTS && remaining >= delayMs) {
+        if (
+          overloadAttempts < MCP_PROXY_OVERLOAD_MAX_ATTEMPTS &&
+          remaining >= delayMs
+        ) {
           if (!announcedOverloadRetry) {
             onNotice(
               `psu: the MCP proxy is overloaded; retrying in ${Math.ceil(delayMs / 1_000)}s ` +
@@ -8117,9 +8034,13 @@ export function runWrapper({
         // WI-38054: the managed-PTY path had no `signal` parameter at all, which is
         // where the owner's reaped agents lost the only evidence they were killed.
         onExit: (code, killedBySignal = null) => {
-          void reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, code, {
-            killedBySignal,
-          }).finally(() => process.exit(code ?? 0));
+          void reportSessionEndedImpl(
+            env.PAPERCUSP_ADV_SESSION_ID || null,
+            code,
+            {
+              killedBySignal,
+            },
+          ).finally(() => process.exit(code ?? 0));
         },
       }).catch((e) => {
         // The pty was already spawned (the promise only rejects on an unforeseen
@@ -8369,217 +8290,219 @@ async function launchResume(
     resumeClaimed = true;
   }
   try {
-  if (addDir.length && session.agent === "omp") {
-    console.error(
-      "psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.",
-    );
-  }
-  // omp re-loads the coordination extension per invocation; claude/codex don't
-  // use -e. Stable path, only added when actually installed.
-  const coordExt = join(homedir(), ".papercusp", "papercusp-coord.ts");
-  const coordExtPath =
-    session.agent === "omp" && existsSync(coordExt) ? coordExt : undefined;
-  const injectHookPath = resolveOmpInjectHookPath(session.agent);
-
-  // Identity + workspace scope survive the resume (see resumeEnvFor) — except a
-  // FORK, which deliberately takes a fresh coord identity + no adv-row link so it
-  // can run alongside the still-live original it branched from. `accountEnv` re-pins
-  // the inference-gateway account (spawn-env only, otherwise lost on resume); the
-  // agent-session marker arms the hook-level scheduler guard (bash gate / omp
-  // coord-hook) for the brain only — never the owner's own sessions (D-003).
-  const env = buildResumeEnv(session, { fork, brain, accountEnv });
-  // In-place resumes have no bootstrap POST. Apply the same bounded mode payload
-  // through the existing admin mode:set seam; forks target the freshly minted SID
-  // from buildResumeEnv rather than mutating the original session.
-  if (launchMode)
-    await syncResumeLaunchMode(env.PAPERCUSP_SID || null, launchMode);
-  // OMP's native id is scoped to its data root. A fresh tracked launch writes
-  // under session-<adv id>; without restoring that root here, the exact id we
-  // read from adv_sessions is looked up in ~/.omp and falsely appears missing.
-  Object.assign(env, ompTrackedResumeEnv(session));
-  // EI-155: a claude session launched with per-session transcript isolation wrote
-  // its transcript under an isolated CLAUDE_CONFIG_DIR (keyed by coord owner id),
-  // NOT the shared ~/.claude — point the resume back at it or `claude --resume
-  // <uuid>` finds "No conversation found". `session.configDir` (an untracked
-  // isolated session resolved by findUntrackedSession) wins; else derive from the
-  // tracked row's coordOwnerId. Only when it exists — sessions launched before
-  // EI-155 used the shared store and want no override.
-  if (session.agent === "claude") {
-    // context-trimming parity for RESUMES (P-006 follow-on): claude silently disables tool
-    // search whenever ANTHROPIC_BASE_URL is set (it can't assume a proxy forwards
-    // tool_reference blocks — both of ours do, they are pass-throughs), so a routed session
-    // boots with EVERY schema inline (~106k vs ~60k measured, context-trimming-tiers P-031).
-    // The FRESH path forces it back on; the resume path never did, so every resumed
-    // gateway-routed session has been silently paying that. Force it here too — otherwise
-    // routing default-account sessions through the cache proxy would spread the same defect.
-    if (
-      session.agent === "claude" &&
-      env.ANTHROPIC_BASE_URL &&
-      env.ENABLE_TOOL_SEARCH === undefined
-    ) {
-      env.ENABLE_TOOL_SEARCH = "true";
-    }
-    const dir =
-      session.configDir ||
-      (session.coordOwnerId
-        ? sessionClaudeConfigDir(session.coordOwnerId)
-        : null);
-    if (dir && existsSync(dir)) {
-      env.CLAUDE_CONFIG_DIR = dir;
-      // EI-12938: creds are not account state. The reheal below fixes
-      // `.credentials.json`; `.claude.json` (oauthAccount / onboarding / trust /
-      // the user-level MCP servers) only ever comes from the interactive mirror,
-      // and a dir restored from the archive (transcript only) or built for a
-      // headless bee (creds symlink only) has none — so an interactive resume
-      // lands in the first-run wizard. Re-ensure it server-side (ONE mirror
-      // implementation) BEFORE the reheal + the settings merge below, so those
-      // read the materialized dir rather than re-creating a stub over it.
-      // No-op + no round-trip when the dir is already healthy.
-      await ensureInteractiveConfigViaOperator(session.coordOwnerId, dir);
-      // psu-resume-relogin fix: a fresh launch re-heals this dir's
-      // .credentials.json (writeInteractiveClaudeConfig's reconcile-before-
-      // mirror); a raw resume did not, so an in-session OAuth refresh that
-      // forked the symlink into a now-stale real file made a default-account
-      // resume "launch logged out". Re-point it at the global CLI login before
-      // spawn. Skipped for a gateway-pinned account (auths via ANTHROPIC_BASE_URL).
-      // P-006: the CACHE PROXY also sets ANTHROPIC_BASE_URL but carries the SYSTEM login
-      // through verbatim — it is precisely the "default account" case this reheal exists for,
-      // so it must NOT be treated as a gateway route here (skipping it would resurrect the
-      // "default-account resume launches logged out" bug for every default session).
-      if (!env.ANTHROPIC_BASE_URL || isCacheProxyUrl(env.ANTHROPIC_BASE_URL))
-        rehealResumeCredentials(dir);
-    }
-  }
-  // codex resumes from its per-session CODEX_HOME — derived from the session id
-  // (that home still holds the session's history; only re-launching the SAME
-  // session rebuilds it). The home's config.toml carries the baked superuser
-  // bearer, so no PAPERCUSP_SU_TOKEN is needed. An explicit `codexHome`
-  // (WI-3884: a tracked home recovered by disk scan, not row id) wins — it is
-  // the home the rollout was actually FOUND in.
-  if (
-    session.agent === "codex" &&
-    session.codexHome &&
-    existsSync(session.codexHome)
-  ) {
-    env.CODEX_HOME = session.codexHome;
-  } else if (session.agent === "codex" && session.id != null) {
-    env.CODEX_HOME = join(
-      homedir(),
-      ".papercusp",
-      "su-codex-homes",
-      `session-${session.id}`,
-    );
-  }
-  let resumeModel = model;
-  if (session.agent === "omp") {
-    resumeModel = applyOmpResumeAccountRoute({
-      session,
-      env,
-      accountRoute: accountEnv,
-      model,
-    });
-    const requestedResumeModel = resumeModel;
-    resumeModel = normalizeOmpModelSpec(requestedResumeModel);
-    const resumeModelNotice = ompModelCompatibilityNotice(requestedResumeModel);
-    if (resumeModelNotice) console.error(resumeModelNotice);
-  }
-  if (session.agent === "codex" && env.CODEX_HOME) {
-    // WI-38706 — REBUILD BEFORE PATCHING. The claude branch above re-ensures its
-    // config dir server-side on every resume; codex never did, so a home whose
-    // config.toml had been deleted (or reduced to codex's trust-only stub) went
-    // straight into the patch below, which happily wrote a gateway-less config
-    // into the hole and left `codex resume` to fail on the missing provider.
-    // The provider THIS thread is bound to decides both halves below: the rebuild
-    // must re-emit that provider's table, and the patch must not then remove it.
-    // A resume with no explicit --account resolves to mode 'default'
-    // (chooseResumeAccount does not inherit the session's original pin), so an
-    // unguarded patch strips the very `[model_providers.…]` table the rollout names.
-    const rollout = findCodexRollout(
-      join(env.CODEX_HOME, "sessions"),
-      session.sessionId ?? "",
-    );
-    const boundProvider = rollout ? codexRolloutModelProvider(rollout) : null;
-    await ensureCodexHomeViaOperator(
-      session.coordOwnerId ?? null,
-      env.CODEX_HOME,
-      session.id ?? null,
-      {
-        requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
-      },
-    );
-    applyCodexGatewayRoute(env.CODEX_HOME, {
-      mode: accountEnv?.mode ?? "default",
-      id: accountEnv?.id ?? null,
-      ownerId: session.coordOwnerId ?? null,
-      keepExistingWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
-    });
-    // AFTER the gateway patch, which re-orders the file around its own markers —
-    // see codexContextWindowConfigPatch for why these root keys must land first.
-    // A resume that names no model resolves it from the home itself, which is
-    // what stops a resumed session falling back to codex's 272k default (P-004).
-    applyCodexContextWindow(env.CODEX_HOME, resumeModel);
-  }
-
-  const { bin, args } = resumeArgsFor(session, {
-    coordExtPath,
-    injectHookPath,
-    fork,
-    addDir,
-    allowSubagents,
-    model: resumeModel,
-  });
-  if (brain && session.agent === "claude")
-    args.push(NATIVE_SCHEDULER_DENY_FLAG);
-  // notify-send lockout rides resumeArgsFor for claude already; nothing extra here.
-  // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
-  if (passthrough.length) args.push(...passthrough);
-
-  // Surface the successfully resolved account route. Unavailable explicit
-  // auto/pin choices already threw, so this can never describe a silent fallback.
-  if (accountEnv?.notice) console.error(`psu: account — ${accountEnv.notice}`);
-  // IDENTITY-LEAK FIX (su-resume-inherits-role-mcp-json, 2026-06-30): a resumed SU claude/omp session
-  // PATH-DISCOVERS <cwd>/.mcp.json and the resume path adds NO --strict-mcp-config — so a role-scoped
-  // .mcp.json a co-located role spawn left in the session's cwd is inherited, giving the SU resume
-  // that role's principal (e.g. system:sentinel, read-only) instead of user-level papercusp-su. This
-  // is exactly the mis-launch that stranded session e424229c as system:sentinel. Park it for an SU
-  // (non-role) resume; a ROLE resume (coordOwnerId 'role-…') keeps its own config. parkRoleScopedMcpJson
-  // only moves ROLE-scoped files (leaves the SU's own papercusp-su alone) and role launches recreate
-  // .mcp.json fresh — so parking is safe + needs no restore. Mirrors the fresh-SU park above.
-  if (
-    (session.agent === "claude" || session.agent === "omp") &&
-    !String(session.coordOwnerId || "").startsWith("role-")
-  ) {
-    const parked = parkRoleScopedMcpJson(session.cwd);
-    if (parked)
+    if (addDir.length && session.agent === "omp") {
       console.error(
-        `psu: parked a stale role-scoped ${session.cwd}/.mcp.json (an SU resume must use user-level papercusp-su, not a co-located role server)`,
+        "psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.",
       );
-  }
-  console.error(
-    `psu: ${fork ? "forking" : "resuming"} ${session.agent} in ${session.cwd}  (${bin} ${args.join(" ")})`,
-  );
-  // P-011/D-008: seed the first turn of a SCRIPTED resume/fork — the managed-pty
-  // host injects it once the child settles at its prompt. Provenance-tagged like
-  // the fresh path's kickoff so the resumed session's prompt hook classifies it as
-  // machine-origin (fleet-kickoff), never as the owner typing.
-  if (kickoff) {
+    }
+    // omp re-loads the coordination extension per invocation; claude/codex don't
+    // use -e. Stable path, only added when actually installed.
+    const coordExt = join(homedir(), ".papercusp", "papercusp-coord.ts");
+    const coordExtPath =
+      session.agent === "omp" && existsSync(coordExt) ? coordExt : undefined;
+    const injectHookPath = resolveOmpInjectHookPath(session.agent);
+
+    // Identity + workspace scope survive the resume (see resumeEnvFor) — except a
+    // FORK, which deliberately takes a fresh coord identity + no adv-row link so it
+    // can run alongside the still-live original it branched from. `accountEnv` re-pins
+    // the inference-gateway account (spawn-env only, otherwise lost on resume); the
+    // agent-session marker arms the hook-level scheduler guard (bash gate / omp
+    // coord-hook) for the brain only — never the owner's own sessions (D-003).
+    const env = buildResumeEnv(session, { fork, brain, accountEnv });
+    // In-place resumes have no bootstrap POST. Apply the same bounded mode payload
+    // through the existing admin mode:set seam; forks target the freshly minted SID
+    // from buildResumeEnv rather than mutating the original session.
+    if (launchMode)
+      await syncResumeLaunchMode(env.PAPERCUSP_SID || null, launchMode);
+    // OMP's native id is scoped to its data root. A fresh tracked launch writes
+    // under session-<adv id>; without restoring that root here, the exact id we
+    // read from adv_sessions is looked up in ~/.omp and falsely appears missing.
+    Object.assign(env, ompTrackedResumeEnv(session));
+    // EI-155: a claude session launched with per-session transcript isolation wrote
+    // its transcript under an isolated CLAUDE_CONFIG_DIR (keyed by coord owner id),
+    // NOT the shared ~/.claude — point the resume back at it or `claude --resume
+    // <uuid>` finds "No conversation found". `session.configDir` (an untracked
+    // isolated session resolved by findUntrackedSession) wins; else derive from the
+    // tracked row's coordOwnerId. Only when it exists — sessions launched before
+    // EI-155 used the shared store and want no override.
+    if (session.agent === "claude") {
+      // context-trimming parity for RESUMES (P-006 follow-on): claude silently disables tool
+      // search whenever ANTHROPIC_BASE_URL is set (it can't assume a proxy forwards
+      // tool_reference blocks — both of ours do, they are pass-throughs), so a routed session
+      // boots with EVERY schema inline (~106k vs ~60k measured, context-trimming-tiers P-031).
+      // The FRESH path forces it back on; the resume path never did, so every resumed
+      // gateway-routed session has been silently paying that. Force it here too — otherwise
+      // routing default-account sessions through the cache proxy would spread the same defect.
+      if (
+        session.agent === "claude" &&
+        env.ANTHROPIC_BASE_URL &&
+        env.ENABLE_TOOL_SEARCH === undefined
+      ) {
+        env.ENABLE_TOOL_SEARCH = "true";
+      }
+      const dir =
+        session.configDir ||
+        (session.coordOwnerId
+          ? sessionClaudeConfigDir(session.coordOwnerId)
+          : null);
+      if (dir && existsSync(dir)) {
+        env.CLAUDE_CONFIG_DIR = dir;
+        // EI-12938: creds are not account state. The reheal below fixes
+        // `.credentials.json`; `.claude.json` (oauthAccount / onboarding / trust /
+        // the user-level MCP servers) only ever comes from the interactive mirror,
+        // and a dir restored from the archive (transcript only) or built for a
+        // headless bee (creds symlink only) has none — so an interactive resume
+        // lands in the first-run wizard. Re-ensure it server-side (ONE mirror
+        // implementation) BEFORE the reheal + the settings merge below, so those
+        // read the materialized dir rather than re-creating a stub over it.
+        // No-op + no round-trip when the dir is already healthy.
+        await ensureInteractiveConfigViaOperator(session.coordOwnerId, dir);
+        // psu-resume-relogin fix: a fresh launch re-heals this dir's
+        // .credentials.json (writeInteractiveClaudeConfig's reconcile-before-
+        // mirror); a raw resume did not, so an in-session OAuth refresh that
+        // forked the symlink into a now-stale real file made a default-account
+        // resume "launch logged out". Re-point it at the global CLI login before
+        // spawn. Skipped for a gateway-pinned account (auths via ANTHROPIC_BASE_URL).
+        // P-006: the CACHE PROXY also sets ANTHROPIC_BASE_URL but carries the SYSTEM login
+        // through verbatim — it is precisely the "default account" case this reheal exists for,
+        // so it must NOT be treated as a gateway route here (skipping it would resurrect the
+        // "default-account resume launches logged out" bug for every default session).
+        if (!env.ANTHROPIC_BASE_URL || isCacheProxyUrl(env.ANTHROPIC_BASE_URL))
+          rehealResumeCredentials(dir);
+      }
+    }
+    // codex resumes from its per-session CODEX_HOME — derived from the session id
+    // (that home still holds the session's history; only re-launching the SAME
+    // session rebuilds it). The home's config.toml carries the baked superuser
+    // bearer, so no PAPERCUSP_SU_TOKEN is needed. An explicit `codexHome`
+    // (WI-3884: a tracked home recovered by disk scan, not row id) wins — it is
+    // the home the rollout was actually FOUND in.
+    if (
+      session.agent === "codex" &&
+      session.codexHome &&
+      existsSync(session.codexHome)
+    ) {
+      env.CODEX_HOME = session.codexHome;
+    } else if (session.agent === "codex" && session.id != null) {
+      env.CODEX_HOME = join(
+        homedir(),
+        ".papercusp",
+        "su-codex-homes",
+        `session-${session.id}`,
+      );
+    }
+    let resumeModel = model;
+    if (session.agent === "omp") {
+      resumeModel = applyOmpResumeAccountRoute({
+        session,
+        env,
+        accountRoute: accountEnv,
+        model,
+      });
+      const requestedResumeModel = resumeModel;
+      resumeModel = normalizeOmpModelSpec(requestedResumeModel);
+      const resumeModelNotice =
+        ompModelCompatibilityNotice(requestedResumeModel);
+      if (resumeModelNotice) console.error(resumeModelNotice);
+    }
+    if (session.agent === "codex" && env.CODEX_HOME) {
+      // WI-38706 — REBUILD BEFORE PATCHING. The claude branch above re-ensures its
+      // config dir server-side on every resume; codex never did, so a home whose
+      // config.toml had been deleted (or reduced to codex's trust-only stub) went
+      // straight into the patch below, which happily wrote a gateway-less config
+      // into the hole and left `codex resume` to fail on the missing provider.
+      // The provider THIS thread is bound to decides both halves below: the rebuild
+      // must re-emit that provider's table, and the patch must not then remove it.
+      // A resume with no explicit --account resolves to mode 'default'
+      // (chooseResumeAccount does not inherit the session's original pin), so an
+      // unguarded patch strips the very `[model_providers.…]` table the rollout names.
+      const rollout = findCodexRollout(
+        join(env.CODEX_HOME, "sessions"),
+        session.sessionId ?? "",
+      );
+      const boundProvider = rollout ? codexRolloutModelProvider(rollout) : null;
+      await ensureCodexHomeViaOperator(
+        session.coordOwnerId ?? null,
+        env.CODEX_HOME,
+        session.id ?? null,
+        {
+          requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
+        },
+      );
+      applyCodexGatewayRoute(env.CODEX_HOME, {
+        mode: accountEnv?.mode ?? "default",
+        id: accountEnv?.id ?? null,
+        ownerId: session.coordOwnerId ?? null,
+        keepExistingWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
+      });
+      // AFTER the gateway patch, which re-orders the file around its own markers —
+      // see codexContextWindowConfigPatch for why these root keys must land first.
+      // A resume that names no model resolves it from the home itself, which is
+      // what stops a resumed session falling back to codex's 272k default (P-004).
+      applyCodexContextWindow(env.CODEX_HOME, resumeModel);
+    }
+
+    const { bin, args } = resumeArgsFor(session, {
+      coordExtPath,
+      injectHookPath,
+      fork,
+      addDir,
+      allowSubagents,
+      model: resumeModel,
+    });
+    if (brain && session.agent === "claude")
+      args.push(NATIVE_SCHEDULER_DENY_FLAG);
+    // notify-send lockout rides resumeArgsFor for claude already; nothing extra here.
+    // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
+    if (passthrough.length) args.push(...passthrough);
+
+    // Surface the successfully resolved account route. Unavailable explicit
+    // auto/pin choices already threw, so this can never describe a silent fallback.
+    if (accountEnv?.notice)
+      console.error(`psu: account — ${accountEnv.notice}`);
+    // IDENTITY-LEAK FIX (su-resume-inherits-role-mcp-json, 2026-06-30): a resumed SU claude/omp session
+    // PATH-DISCOVERS <cwd>/.mcp.json and the resume path adds NO --strict-mcp-config — so a role-scoped
+    // .mcp.json a co-located role spawn left in the session's cwd is inherited, giving the SU resume
+    // that role's principal (e.g. system:sentinel, read-only) instead of user-level papercusp-su. This
+    // is exactly the mis-launch that stranded session e424229c as system:sentinel. Park it for an SU
+    // (non-role) resume; a ROLE resume (coordOwnerId 'role-…') keeps its own config. parkRoleScopedMcpJson
+    // only moves ROLE-scoped files (leaves the SU's own papercusp-su alone) and role launches recreate
+    // .mcp.json fresh — so parking is safe + needs no restore. Mirrors the fresh-SU park above.
+    if (
+      (session.agent === "claude" || session.agent === "omp") &&
+      !String(session.coordOwnerId || "").startsWith("role-")
+    ) {
+      const parked = parkRoleScopedMcpJson(session.cwd);
+      if (parked)
+        console.error(
+          `psu: parked a stale role-scoped ${session.cwd}/.mcp.json (an SU resume must use user-level papercusp-su, not a co-located role server)`,
+        );
+    }
     console.error(
-      "psu: kickoff — seeding the resumed session's first turn (suppress with --no-kickoff)",
+      `psu: ${fork ? "forking" : "resuming"} ${session.agent} in ${session.cwd}  (${bin} ${args.join(" ")})`,
     );
-  }
-  runWrapper({
-    wrapperBin: bin,
-    args,
-    cwd: session.cwd,
-    // A resume MUST run in the recorded cwd so `claude --resume` finds the
-    // transcript under its cwd-encoded projects dir (EI-10938's state-dir
-    // redirect would send it to the checkout → "No conversation found").
-    preserveCwd: true,
-    envelopeEnv: env,
-    kickoff: kickoff
-      ? tagKickoffProvenance(kickoff, env.PAPERCUSP_SID || null)
-      : null,
-  });
+    // P-011/D-008: seed the first turn of a SCRIPTED resume/fork — the managed-pty
+    // host injects it once the child settles at its prompt. Provenance-tagged like
+    // the fresh path's kickoff so the resumed session's prompt hook classifies it as
+    // machine-origin (fleet-kickoff), never as the owner typing.
+    if (kickoff) {
+      console.error(
+        "psu: kickoff — seeding the resumed session's first turn (suppress with --no-kickoff)",
+      );
+    }
+    runWrapper({
+      wrapperBin: bin,
+      args,
+      cwd: session.cwd,
+      // A resume MUST run in the recorded cwd so `claude --resume` finds the
+      // transcript under its cwd-encoded projects dir (EI-10938's state-dir
+      // redirect would send it to the checkout → "No conversation found").
+      preserveCwd: true,
+      envelopeEnv: env,
+      kickoff: kickoff
+        ? tagKickoffProvenance(kickoff, env.PAPERCUSP_SID || null)
+        : null,
+    });
   } catch (error) {
     // Everything above runWrapper is post-claim setup. A config repair, model
     // route, argv build, or synchronous spawn failure must not leave the
@@ -10699,16 +10622,6 @@ async function main() {
     clearClaudeTokenFlow();
     return;
   }
-  // P-012 / D-028: the deployed parity gate is GREEN, so the bare interactive
-  // front door now consults the saved preference (default PUI). Explicit
-  // legacy/session-bearing invocations keep the native client path.
-  args.client = await resolveInteractiveClient(args);
-  const puiClient = puiClientCommand(args);
-  if (puiClient) {
-    const code = await runInstallerInherit(puiClient);
-    process.exitCode = code;
-    return;
-  }
   // --fork only has meaning when resuming an existing session — warn (don't fail)
   // so a stray `psu --fork` on a fresh launch doesn't silently look honored.
   if (args.fork && !args.resume) {
@@ -10862,7 +10775,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   const res = await api("/api/agent-mcp/console/bootstrap-su", {
     method: "POST",
     body: JSON.stringify(
-      freshSuBootstrapBody(selections, args, { brain, bootstrapIdempotencyKey }),
+      freshSuBootstrapBody(selections, args, {
+        brain,
+        bootstrapIdempotencyKey,
+      }),
     ),
     // Only the key-bearing bootstrap request is replay-safe. api() strips this
     // internal option before calling fetch.

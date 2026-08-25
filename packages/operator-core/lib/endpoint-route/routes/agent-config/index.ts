@@ -24,7 +24,6 @@ import {
   bulkResolverLaunchProfilesProblem,
   parseBackends,
   parseBulkResolverLaunchProfiles,
-  parseInteractiveClient,
   parseRoleBackends,
   parseSurfaceModels,
   parseTiers,
@@ -94,12 +93,6 @@ export default [
       // surface, so an unrelated model edit cannot silently reset it.
       const current = await readAgentConfig();
       const next: AgentConfig = {
-        // Older full-body clients omit this additive field. Preserve the
-        // stored preference exactly as terminal/resolver preferences do.
-        interactiveClient:
-          body.interactiveClient === undefined
-            ? current.interactiveClient
-            : parseInteractiveClient(body.interactiveClient),
         backend:
           body.backend === 'claude-code' || body.backend === 'omp' || body.backend === 'codex' ? body.backend : 'auto',
         cmd: typeof body.cmd === 'string' ? body.cmd : '',
@@ -129,13 +122,6 @@ export default [
         Array.isArray(v) ? v.length : v && typeof v === 'object' ? Object.keys(v).length : 0;
       if (body.models != null && sentCount(body.models) !== Object.keys(next.models).length) {
         dropped.push('models: every value must be a non-empty model id string');
-      }
-      if (
-        body.interactiveClient !== undefined &&
-        body.interactiveClient !== 'legacy' &&
-        body.interactiveClient !== 'pui'
-      ) {
-        dropped.push('interactiveClient: must be legacy or pui');
       }
       if (body.roleBackends != null && sentCount(body.roleBackends) !== Object.keys(next.roleBackends ?? {}).length) {
         dropped.push('roleBackends: every value must be a concrete backend');
@@ -206,10 +192,7 @@ export default [
       const current = await readAgentConfig();
       const problem = bulkResolverLaunchProfilesProblem(body.resolverProfiles, current.resolverProfiles);
       if (problem) {
-        return Response.json(
-          { error: `config rejected — resolverProfiles: ${problem}` },
-          { status: 422 },
-        );
+        return Response.json({ error: `config rejected — resolverProfiles: ${problem}` }, { status: 422 });
       }
       const next: AgentConfig = {
         ...current,

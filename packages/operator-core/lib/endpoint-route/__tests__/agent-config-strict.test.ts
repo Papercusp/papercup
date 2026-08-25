@@ -12,7 +12,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { writeMock, readMock, listResumableSessionsMock, readCodexHomeDiagnosticsMock } = vi.hoisted(() => ({
   writeMock: vi.fn(async (cfg: unknown) => cfg),
   readMock: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
-    interactiveClient: 'legacy',
     backend: 'claude-code',
     cmd: '',
     models: {},
@@ -105,7 +104,6 @@ async function callPatch(body: unknown): Promise<Response> {
 }
 
 const VALID_BODY = {
-  interactiveClient: 'legacy',
   backend: 'claude-code',
   cmd: 'claude -p',
   models: { worker: 'haiku' },
@@ -125,7 +123,6 @@ const VALID_BODY = {
 beforeEach(() => {
   vi.clearAllMocks();
   readMock.mockResolvedValue({
-    interactiveClient: 'legacy',
     backend: 'claude-code',
     cmd: '',
     models: {},
@@ -170,17 +167,10 @@ describe('GET /agent-config diagnostics', () => {
 });
 
 describe('POST /agent-config strict save', () => {
-  it('persists a valid interactive-client preference', async () => {
+  it('does not persist the retired interactiveClient field from stale clients', async () => {
     const res = await callPost({ ...VALID_BODY, interactiveClient: 'pui' });
     expect(res.status).toBe(200);
-    expect((writeMock.mock.calls[0][0] as { interactiveClient: string }).interactiveClient).toBe('pui');
-  });
-
-  it('rejects an unknown interactive client instead of silently falling back', async () => {
-    const res = await callPost({ ...VALID_BODY, interactiveClient: 'other' });
-    expect(res.status).toBe(422);
-    expect(writeMock).not.toHaveBeenCalled();
-    expect((await res.json()).error).toMatch(/interactiveClient/);
+    expect(writeMock.mock.calls[0][0]).not.toHaveProperty('interactiveClient');
   });
 
   it('persists a fully valid body verbatim', async () => {
@@ -237,18 +227,6 @@ describe('POST /agent-config strict save', () => {
     });
   });
 
-  it('preserves the interactive-client preference when an older full-body client omits it', async () => {
-    readMock.mockResolvedValueOnce({
-      ...VALID_BODY,
-      interactiveClient: 'pui',
-      resolverProfiles: VALID_BODY.resolverProfiles,
-    });
-    const { interactiveClient: _omitted, ...legacyBody } = VALID_BODY;
-    const res = await callPost(legacyBody);
-    expect(res.status).toBe(200);
-    expect((writeMock.mock.calls[0][0] as { interactiveClient: string }).interactiveClient).toBe('pui');
-  });
-
   it('rejects invalid resolver settings instead of normalizing them away', async () => {
     const res = await callPost({
       ...VALID_BODY,
@@ -264,7 +242,6 @@ describe('PATCH /agent-config resolver profiles', () => {
   it('merges one pane profile without replacing unrelated configuration or the other pane', async () => {
     readMock.mockResolvedValueOnce({
       ...VALID_BODY,
-      interactiveClient: 'pui',
       terminal: 'alacritty',
       resolverProfiles: {
         'inbox-resolve': { model: null, effort: null, account: 'default', carry: 'warm' },
@@ -280,7 +257,6 @@ describe('PATCH /agent-config resolver profiles', () => {
 
     expect(res.status).toBe(200);
     const written = writeMock.mock.calls[0][0] as typeof VALID_BODY & { terminal: string };
-    expect(written.interactiveClient).toBe('pui');
     expect(written.models).toEqual(VALID_BODY.models);
     expect(written.terminal).toBe('alacritty');
     expect(written.resolverProfiles).toEqual({

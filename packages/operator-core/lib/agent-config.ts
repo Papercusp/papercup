@@ -29,7 +29,6 @@ import {
   AGENT_BACKENDS,
   BULK_RESOLVER_CARRY_MODES,
   BULK_RESOLVER_PROFILE_KINDS,
-  DEFAULT_INTERACTIVE_CLIENT,
   MODEL_EFFORT_LEVELS,
   SURFACE_KEYS,
   defaultBulkResolverLaunchProfiles,
@@ -37,7 +36,6 @@ import {
   isValidModelSpec,
   clampCompactionLimitForTier,
   type AgentBackend,
-  type InteractiveClient,
   type BulkResolverLaunchProfile,
   type BulkResolverLaunchProfiles,
   type BulkResolverProfileKind,
@@ -53,7 +51,6 @@ import {
 export { AGENT_BACKENDS, SURFACE_KEYS };
 export type {
   AgentBackend,
-  InteractiveClient,
   BulkResolverLaunchProfile,
   BulkResolverLaunchProfiles,
   BulkResolverProfileKind,
@@ -62,10 +59,6 @@ export type {
 };
 
 export interface AgentConfig {
-  /** Preferred UI for a bare interactive `psu` launch. D-028 records the
-      deployed GREEN parity verdict that activated PUI in P-012; callers may
-      still persist `legacy` as the explicit native-client escape hatch. */
-  interactiveClient?: InteractiveClient;
   /** Which backend to drive. 'auto' lets resolveBackend infer from the
       binary name; explicit values force-select. */
   backend: AgentBackend | 'auto';
@@ -128,7 +121,6 @@ const DEFAULT_CONFIG: AgentConfig = {
   // omp agents in any freshly-created workspace (e.g. the New-Plan button —
   // launch-su.ts resolves an agent-less launch via effectiveBackend(readAgentConfig())),
   // ignoring the configured/boot backend. Owner ask 2026-06-18.
-  interactiveClient: DEFAULT_INTERACTIVE_CLIENT,
   backend: 'claude-code',
   cmd: '',
   models: {},
@@ -145,7 +137,6 @@ export async function readAgentConfig(): Promise<AgentConfig> {
   const raw = await readOperatorState<Partial<AgentConfig>>('operator_agent_config');
   if (!raw) return { ...DEFAULT_CONFIG, resolverProfiles: defaultBulkResolverLaunchProfiles() };
   return {
-    interactiveClient: parseInteractiveClient(raw.interactiveClient),
     backend: validBackend(raw.backend) ?? DEFAULT_CONFIG.backend,
     cmd: typeof raw.cmd === 'string' ? raw.cmd : '',
     models:
@@ -164,12 +155,6 @@ export async function readAgentConfig(): Promise<AgentConfig> {
     terminal: parseTerminalEmulator(raw.terminal),
     resolverProfiles: parseBulkResolverLaunchProfiles(raw.resolverProfiles),
   };
-}
-
-/** Normalize the `psu` UI preference. An explicit legacy choice survives the
- * cutover; absent/unknown pre-cutover rows inherit P-012's owned-PUI default. */
-export function parseInteractiveClient(raw: unknown): InteractiveClient {
-  return raw === 'legacy' ? 'legacy' : DEFAULT_INTERACTIVE_CLIENT;
 }
 
 /** Normalize one stored resolver profile without letting one malformed field

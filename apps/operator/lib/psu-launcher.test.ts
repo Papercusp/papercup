@@ -23,7 +23,6 @@ import {
 import {
   parseArgs,
   PSU_HELP_TEXT,
-  DEFAULT_INTERACTIVE_CLIENT,
   planValue,
   parkRoleScopedMcpJson,
   ompDefaultModelAdvisory,
@@ -144,9 +143,6 @@ import {
   usePtyHost,
   PTY_DEFAULT_ON,
   AGENTS,
-  INTERACTIVE_CLIENTS,
-  resolveInteractiveClient,
-  puiClientCommand,
   NO_PLAN,
   NATIVE_SCHEDULER_DENY_FLAG,
   NO_SUBAGENTS_DENY_FLAG,
@@ -763,10 +759,9 @@ describe("OMP ox-alpha title mitigation (EI-21258695702342582)", () => {
     ).toContain("--no-title");
     expect(suWrapperExtraArgs("omp", { model })).toContain("--no-title");
     expect(
-      resumeArgsFor(
-        { agent: "omp", cwd: "/x", ompThreadId: "thr-1" },
-        { model } as unknown as Parameters<typeof resumeArgsFor>[1],
-      ).args,
+      resumeArgsFor({ agent: "omp", cwd: "/x", ompThreadId: "thr-1" }, {
+        model,
+      } as unknown as Parameters<typeof resumeArgsFor>[1]).args,
     ).toContain("--no-title");
   });
 
@@ -777,10 +772,9 @@ describe("OMP ox-alpha title mitigation (EI-21258695702342582)", () => {
     ).not.toContain("--no-title");
     expect(suWrapperExtraArgs("omp", { model })).not.toContain("--no-title");
     expect(
-      resumeArgsFor(
-        { agent: "omp", cwd: "/x", ompThreadId: "thr-1" },
-        { model } as unknown as Parameters<typeof resumeArgsFor>[1],
-      ).args,
+      resumeArgsFor({ agent: "omp", cwd: "/x", ompThreadId: "thr-1" }, {
+        model,
+      } as unknown as Parameters<typeof resumeArgsFor>[1]).args,
     ).not.toContain("--no-title");
   });
 });
@@ -2162,7 +2156,6 @@ describe("psu-launcher arg parsing", () => {
       resume: false,
       resumeId: null,
       fork: false,
-      client: null,
       agent: null,
       role: null,
       feature: null,
@@ -2210,97 +2203,23 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
-  it("keeps explicit owned and legacy client routes", () => {
-    expect(INTERACTIVE_CLIENTS).toEqual(["legacy", "pui"]);
-    expect(DEFAULT_INTERACTIVE_CLIENT).toBe("pui");
-    expect(puiClientCommand(parseArgs([]))).toBeNull();
-    expect(puiClientCommand(parseArgs(["--client=legacy"]))).toBeNull();
-    expect(puiClientCommand(parseArgs(["--client=pui"]))).toEqual({
-      command: "pui",
-      args: ["chat"],
-    });
-    expect(parseArgs(["--client", "pui"]).client).toBe("pui");
-    expect(() => parseArgs(["--client=unknown"])).toThrow(/legacy\|pui/);
-  });
-
-  it("resolves bare psu from the saved preference and defaults to PUI after D-028", async () => {
-    const savedLegacy = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({ config: { interactiveClient: "legacy" } }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
-    );
-    expect(
-      await resolveInteractiveClient(parseArgs([]), {
-        fetchImpl: savedLegacy,
-        operatorUrl: "http://operator.test",
-      }),
-    ).toBe("legacy");
-    expect(savedLegacy).toHaveBeenCalledWith(
-      "http://operator.test/api/agent-config",
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-
-    const savedPui = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({ config: { interactiveClient: "pui" } }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
-    );
-    expect(
-      await resolveInteractiveClient(parseArgs([]), {
-        fetchImpl: savedPui,
-        operatorUrl: "http://operator.test/",
-      }),
-    ).toBe("pui");
-
-    const unavailable = vi.fn(async () => {
-      throw new Error("operator unavailable");
-    });
-    expect(
-      await resolveInteractiveClient(parseArgs([]), { fetchImpl: unavailable }),
-    ).toBe("pui");
-  });
-
-  it("does not apply the interactive PUI default to scripted/session launches", async () => {
-    const fetchImpl = vi.fn();
-    expect(
-      await resolveInteractiveClient(
-        parseArgs(["--no-picker", "--agent=omp", "--harness=papercusp", "--no-plan"]),
-        { fetchImpl },
-      ),
-    ).toBe("legacy");
-    expect(
-      await resolveInteractiveClient(parseArgs(["--client=pui"]), { fetchImpl }),
-    ).toBe("pui");
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("fails loud when an owned-PUI launch carries legacy session flags", () => {
-    expect(() =>
-      puiClientCommand(parseArgs(["--client=pui", "--agent=omp", "--plan=p"])),
-    ).toThrow(/--client=legacy/);
-  });
-
-  it("executes the explicit owned client as `pui chat` without entering the legacy picker", () => {
-    const root = mkdtempSync(join(tmpdir(), "psu-owned-client-"));
-    const launcher = join(__dirname, "..", "scripts", "psu-launcher.mjs");
-    const fakePui = join(root, "pui");
-    writeFileSync(fakePui, '#!/bin/sh\nprintf "pui-argv:%s\\n" "$*"\n', { mode: 0o755 });
+  it("keeps PUI outside the PSU command surface", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const result = spawnSync(process.execPath, [launcher, "--client=pui"], {
-        cwd: process.cwd(),
-        env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ""}` },
-        encoding: "utf8",
-        timeout: 10_000,
-      });
-      expect(result.error).toBeUndefined();
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain("pui-argv:chat");
-      expect(result.stderr).not.toContain("Agent");
+      expect(parseArgs(["--client=pui"])).not.toHaveProperty("client");
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining("unrecognized flag"),
+      );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      spy.mockRestore();
     }
+    expect(PSU_HELP_TEXT).not.toContain("--client");
+    const launcher = readFileSync(
+      join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+      "utf8",
+    );
+    expect(launcher).not.toContain("resolveInteractiveClient");
+    expect(launcher).not.toContain("puiClientCommand");
   });
 
   it("parses --allow-subagents / --no-subagents (owner mandate 2026-07-02); defaults null (⇒ deny)", () => {
@@ -2348,7 +2267,6 @@ describe("psu-launcher arg parsing", () => {
       resume: false,
       resumeId: null,
       fork: false,
-      client: null,
       agent: "claude",
       role: null,
       feature: null,
@@ -3006,12 +2924,23 @@ describe("psu-launcher arg parsing", () => {
   });
 
   it("freshSuBootstrapBody carries a stable replay key only when the fresh launcher supplies one", () => {
-    const selections = { agent: "codex", workspace: "ws1", harness: "h1", plan: "p1" };
-    const keyed = freshSuBootstrapBody(selections, {}, {
-      bootstrapIdempotencyKey: "bootstrap-key-1",
-    });
+    const selections = {
+      agent: "codex",
+      workspace: "ws1",
+      harness: "h1",
+      plan: "p1",
+    };
+    const keyed = freshSuBootstrapBody(
+      selections,
+      {},
+      {
+        bootstrapIdempotencyKey: "bootstrap-key-1",
+      },
+    );
     expect(keyed.bootstrap_idempotency_key).toBe("bootstrap-key-1");
-    expect("bootstrap_idempotency_key" in freshSuBootstrapBody(selections, {})).toBe(false);
+    expect(
+      "bootstrap_idempotency_key" in freshSuBootstrapBody(selections, {}),
+    ).toBe(false);
   });
 
   it("freshSuBootstrapBody forwards --label so bootstrap-su stamps adv_sessions.label (docs-agent reuse)", () => {
@@ -7420,7 +7349,9 @@ describe("spawnInherit — plain fallback owns and cleans up the backend process
     const processExit = vi.fn();
     const signalSource = new EventEmitter();
     const report = vi.fn(async () => undefined);
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
 
     spawnInherit({
       wrapperBin: "codex-su",
@@ -8501,7 +8432,9 @@ describe("launchResume wiring — claim before setup or spawn", () => {
   });
 
   it("wraps every post-claim setup failure in launch-failed cleanup", () => {
-    const cleanupHelper = body.indexOf("const cleanupResumeClaim = async () => {");
+    const cleanupHelper = body.indexOf(
+      "const cleanupResumeClaim = async () => {",
+    );
     const cleanupGuard = body.indexOf(
       "if (!resumeClaimed || session.id == null) return;",
       cleanupHelper,
@@ -8780,7 +8713,8 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
       formatApiFailureMessage(
         {
           error: "mcp_proxy_overloaded",
-          detail: "proxy already has 192 request(s) in flight — shed before forwarding",
+          detail:
+            "proxy already has 192 request(s) in flight — shed before forwarding",
           retryAfterSec: 2,
         },
         429,
@@ -8798,8 +8732,15 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
         headers: new Headers({ "retry-after": "2" }),
       }),
     ).toBe(true);
-    expect(isRetryableMcpProxyOverload({ status: 429, headers: new Headers() })).toBe(false);
-    expect(isRetryableMcpProxyOverload({ status: 503, headers: new Headers({ "retry-after": "2" }) })).toBe(false);
+    expect(
+      isRetryableMcpProxyOverload({ status: 429, headers: new Headers() }),
+    ).toBe(false);
+    expect(
+      isRetryableMcpProxyOverload({
+        status: 503,
+        headers: new Headers({ "retry-after": "2" }),
+      }),
+    ).toBe(false);
     expect(proxyOverloadRetryDelayMs("2")).toBe(2_000);
     expect(proxyOverloadRetryDelayMs("99")).toBe(5_000);
     expect(proxyOverloadRetryDelayMs("garbage")).toBe(1_000);
@@ -8809,7 +8750,9 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
     const attempts = Array.from({ length: 30 }, () => 0);
     const results = await Promise.all(
       attempts.map(async (_unused, index) => {
-        const body = JSON.stringify({ bootstrap_idempotency_key: `key-${index}` });
+        const body = JSON.stringify({
+          bootstrap_idempotency_key: `key-${index}`,
+        });
         return fetchWithResilience(
           "http://op/api/agent-mcp/console/bootstrap-su",
           { method: "POST", body },
@@ -8822,7 +8765,8 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
                   attempts[index] === 1
                     ? {
                         error: "mcp_proxy_upstream_error",
-                        detail: "upstream silent for 8000ms (no response headers)",
+                        detail:
+                          "upstream silent for 8000ms (no response headers)",
                       }
                     : { status: "ok", sessionId: index + 1 },
                 ),
