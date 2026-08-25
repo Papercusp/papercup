@@ -864,6 +864,28 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
     // toFeatureValue above — mig 708 now stamps `closed_ts` into the
     // issue-family jsonb_build_object explicitly too.
     closed_ts: numOrNull(row.closed_ts),
+    // EI-21467654382027859 (mig 965) — nine columns the federated-column-completeness
+    // guard caught landing NULL on every peer. Per-column reasoning lives in mig 965's
+    // header; the load-bearing one is `admission`: the issue claim gate is
+    // `(admission IS DISTINCT FROM 'pending')`, so an absent column arrives NULL and
+    // reads as ADMITTED — a born-pending item became claimable on every peer.
+    // `goal_id` and `redundancy` are deliberately NOT here (NOT_FEDERATED).
+    admission: strOrNull(row.admission),
+    admitted_at: strOrNull(row.admitted_at),
+    admitted_by: strOrNull(row.admitted_by),
+    // mig 896 built the RECEIVING half of this years before it had a sender: the
+    // stamp trigger COALESCEs a supplied value on INSERT and preserves a distinct
+    // one across a status change. Unsent, every peer stamps its own arrival instant
+    // and a chronically-parked item reads as freshly transitioned.
+    state_changed_at: strOrNull(row.state_changed_at),
+    // jsonb + text[] pass through opaquely, exactly like `payload` above.
+    tags: row.tags ?? null,
+    parent_id: strOrNull(row.parent_id),
+    source_plan_slug: strOrNull(row.source_plan_slug),
+    source_plan_item_ids: Array.isArray(row.source_plan_item_ids)
+      ? row.source_plan_item_ids.filter((s): s is string => typeof s === 'string')
+      : null,
+    expected_cost_cents: numOrNull(row.expected_cost_cents),
   };
 }
 
