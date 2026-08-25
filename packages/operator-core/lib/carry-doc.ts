@@ -44,6 +44,7 @@ import {
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import { modeImpliesAutonomy } from './modes/registry';
 import type { RecordedTurnClass } from './turn-provenance/turn-ref';
+import type { AutomaticCompactionRecovery } from './agent-tools/coordination/compaction-recovery';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -154,6 +155,9 @@ export interface CarryDocContinuation {
 export interface CarryDoc {
   /** The standing continuity brief (loop note, held checkpoints, walls, facts…). */
   brief: CarryBrief;
+  /** D-017: rich recovery is pushed with the boundary document. Optional keeps
+   *  legacy/test literals readable; absence deliberately renders the fallback. */
+  automaticRecovery?: AutomaticCompactionRecovery | null;
   identity: CarryDocIdentity;
   sessionMode: CarryDocSessionMode;
   planItems: CarryDocPlanItem[];
@@ -183,11 +187,11 @@ export const SELF_RECALL_POINTER =
   "mode:'verbatim', query:'<what you remember>' } finds the exact pre-boundary quote with its " +
   "surrounding turns; sessions:read { session:'self' } reads the tail.";
 
-/** The one-line re-orient banner every carry document opens with. */
+/** Boundary contract: delivery first, orient only as a conditional fallback. */
 export const REORIENT_BANNER =
-  'This is a stale snapshot of a live system. Before acting on any fleet / claim / liveness ' +
-  'statement below, re-run coord:orient { afterCompaction: true } and reconcile — the recovery ' +
-  "block re-delivers your held work-items' checkpoints, armed-loop status, and the self-recall pointer.";
+  'This is a stale snapshot of a live system, but its post-compaction recovery is pushed ' +
+  'automatically below. A complete marker means do not re-fetch it; use the named fallback ' +
+  'exactly once only when the marker is absent, incomplete, or control-generation-mismatched.';
 
 // ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -219,6 +223,11 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   boundarySelfRequested?: boolean;
   // Test seams — each defaults to the real reader (or a best-effort empty leg).
   buildCarryBriefFn?: (ownerId: string, opts: BuildCarryBriefOpts) => Promise<CarryBrief>;
+  buildAutomaticRecoveryFn?: (
+    ownerId: string,
+    workspaceId: string,
+    opts: { sessionHarness?: string | null; heldItems?: CarryBrief['heldItems'] },
+  ) => Promise<AutomaticCompactionRecovery>;
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
   getPlanItemsFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocPlanItem[]>;
   getAsksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocAsk[]>;
@@ -403,6 +412,23 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   );
   const ws = opts.workspaceId ?? 'default';
 
+  const buildAutomaticRecovery =
+    opts.buildAutomaticRecoveryFn ??
+    (async (
+      id: string,
+      workspaceId: string,
+      recoveryOpts: { sessionHarness?: string | null; heldItems?: CarryBrief['heldItems'] },
+    ) => {
+      const { buildAutomaticCompactionRecovery } = await import(
+        './agent-tools/coordination/compaction-recovery'
+      );
+      return buildAutomaticCompactionRecovery(id, workspaceId, recoveryOpts);
+    });
+  const automaticRecovery = await buildAutomaticRecovery(ownerId, ws, {
+    sessionHarness: opts.harness ?? brief.loop?.harness ?? null,
+    heldItems: brief.heldItems,
+  }).catch(() => null);
+
   const getModes = opts.getModesFn ?? defaultGetModes;
   const modes = await getModes(ws, ownerId).catch(() => [] as CarryDocMode[]);
 
@@ -420,6 +446,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
 
   return {
     brief,
+    automaticRecovery,
     identity: {
       ownerId,
       ownerLabel: opts.ownerLabel ?? null,
@@ -619,6 +646,7 @@ export interface CarryDocSlotAudit {
  * mechanically on the next wake/pickup, so the pointer loses nothing.
  */
 export const CARRY_DOC_SLOTS: readonly CarryDocSlotAudit[] = Object.freeze([
+  { slot: 'automaticRecovery', kind: 'snapshot', boundedBy: 'one marker + compact live recovery summary' },
   { slot: 'identity', kind: 'snapshot', boundedBy: 'fixed identity fields' },
   { slot: 'sessionMode', kind: 'snapshot', boundedBy: 'active modes + loop flags' },
   { slot: 'planItems', kind: 'top-k', boundedBy: `CARRY_DOC_MAX_PLAN_ITEMS=${CARRY_DOC_MAX_PLAN_ITEMS}` },
@@ -689,10 +717,45 @@ function cap(s: string, max: number): string {
  */
 export function renderBuiltAtStamp(now: number): string {
   return (
-    `> Carry document built at ${new Date(now).toISOString()} — if it is now meaningfully later than that, treat any "currently working on / waiting on" claim below as UNVERIFIED until coord:orient reconciles it (a queued carry-respawn can deliver up to 30 minutes after it was built).\n` +
+    `> Carry document built at ${new Date(now).toISOString()} — if it is now meaningfully later than that, treat any "currently working on / waiting on" claim below as UNVERIFIED until the live turn-start Orientation/CTRL delta reconciles it (a queued carry-respawn can deliver up to 30 minutes after it was built).\n` +
     `> ⚠ BLIND WINDOW: this document is a snapshot of what was known AT BUILD TIME, not of everything the pre-respawn session actually did — it may have kept working (and completing real artifacts) after this stamp, right up until it died. Before starting or re-doing anything below, check the filesystem / work-item for evidence newer than this stamp; do not assume this document is complete.\n` +
     `> ⚠ RETRACTED CLAIMS RIDE THE SAME WINDOW: a finding/framing below may have been corrected or WITHDRAWN by your predecessor (a coord:send correction, a work-item comment, a loop:checkpoint) after this stamp — this document cannot know that and will restate the ORIGINAL claim with more apparent authority than the correction had. Before repeating, re-broadcasting, or resuming work on ANY finding described below, check coord:feed / the relevant work-item's comments for a correction newer than this stamp; do not treat this document as the authority on what you last concluded.`
   );
+}
+
+/** Render the marker that lets a successor distinguish automatic delivery from
+ *  the fail-soft fallback. This block is always kept by the carry budget. */
+export function renderAutomaticCompactionRecovery(
+  delivery: AutomaticCompactionRecovery | null | undefined,
+): string {
+  if (!delivery) {
+    return (
+      '## Post-compaction recovery — FALLBACK REQUIRED\n' +
+      'No automatic recovery marker arrived. Call `coord:orient { afterCompaction: true }` exactly once, then continue.'
+    );
+  }
+  const { marker, recovery } = delivery;
+  const lines = [
+    `⟦post-compaction-recovery⟧ ${JSON.stringify(marker)}`,
+    marker.complete
+      ? 'Automatic recovery is complete for the stamped control generation. Do NOT call coord:orient to re-fetch it; declare your actual lane with `coord:declare-intent { intent, planItems }`.'
+      : 'Automatic recovery is incomplete. Call `coord:orient { afterCompaction: true }` exactly once, then continue.',
+    `- recovery coverage: selfSession=${recovery.coverage.selfSession} control=${recovery.coverage.control} heldItems=${recovery.coverage.heldItems} staleness=${recovery.coverage.staleness ?? 'not-applicable'}`,
+    `- held checkpoints automatically delivered below: ${recovery.checkpoints?.length ?? 0}`,
+    `- self-recall: ${recovery.selfRecall}`,
+  ];
+  if (recovery.control) {
+    lines.push(`- control generation ${recovery.control.generation}: ${JSON.stringify(recovery.control.state)}`);
+  }
+  if (recovery.staleness_warnings?.warnings.length) {
+    lines.push(
+      `- changes after the prior summary (${recovery.staleness_warnings.summaryAt}): ${recovery.staleness_warnings.warnings.join(' · ')}`,
+    );
+  }
+  lines.push(
+    'If a later ⟦CTRL:…⟧ block carries a different generation than the marker above, use the fallback orient exactly once; otherwise the recovery already arrived.',
+  );
+  return `## Post-compaction recovery (automatically delivered)\n${lines.join('\n')}`;
 }
 
 function renderIdentity(id: CarryDocIdentity): string {
@@ -804,7 +867,7 @@ function renderContinuation(cont: CarryDocContinuation): string {
       : cont.deliberate
         ? '- Boundary: CLEAN but WATCHDOG-INITIATED (the session crossed its context limit and was cut ' +
           'at an idle point — it did NOT request this cut, so pre-cut flushes are NOT guaranteed: ' +
-          'verify checkpoint/fact freshness via coord:orient before trusting them. The tail itself is complete.)'
+          'verify checkpoint/fact freshness against the automatic recovery + live turn-start delta before trusting them. The tail itself is complete.)'
         : '- Boundary: FORCED (the watchdog/window-guard seized a saturated session mid-flight — the ' +
           'tail may be truncated mid-reply AND nothing was flushed; trust both less and re-verify via ' +
           'the self-recall pointer).',
@@ -891,6 +954,7 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   const head = [
     '# Carry document (deterministic — assembled from the DB, no LLM)',
     `> ${REORIENT_BANNER}`,
+    renderAutomaticCompactionRecovery(doc.automaticRecovery),
     // EI-18697157970421032: a carry-respawn control message can sit busy-gate
     // deferred + rearm-retried for up to CARRY_RESPAWN_MAX_AGE_MS (30min
     // default, psu-pty-host.mjs) before actual delivery — its content (this

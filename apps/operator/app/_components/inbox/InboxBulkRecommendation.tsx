@@ -145,6 +145,7 @@ export default function InboxBulkRecommendation({
               value={draft}
               rows={3}
               aria-label="Edit the drafted reply"
+              disabled={busy || accepting}
               onChange={(e) => setDraft(e.target.value)}
             />
           ) : (
@@ -183,6 +184,7 @@ export default function InboxBulkRecommendation({
             type="button"
             className="op-inbox__rec-ghost"
             data-testid={`inbox-bulk-edit-${rec.itemId}`}
+            disabled={busy || accepting}
             onClick={() => setEditing((v) => !v)}
           >
             <Pencil size={12} aria-hidden="true" />
@@ -195,6 +197,7 @@ export default function InboxBulkRecommendation({
             type="button"
             className="op-inbox__rec-ghost"
             data-testid={`inbox-bulk-discuss-${rec.itemId}`}
+            disabled={busy || accepting}
             onClick={onDiscuss}
           >
             <MessageCircle size={11} aria-hidden="true" />
