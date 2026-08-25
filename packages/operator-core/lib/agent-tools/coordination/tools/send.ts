@@ -1467,8 +1467,9 @@ async function sendOne(
       const loud = wakeMode === 'required' || !msg.backstop;
       // FF#3: force each missed addressee's FRESH session state into the result so a
       // transfer to a long-dead agent reads `ended`, not a silent woken:0. Miss-path only.
+      let liveness: MissedRecipientLiveness[] = [];
       try {
-        const liveness = await describeMissedRecipients(fan.targets, {
+        liveness = await describeMissedRecipients(fan.targets, {
           workspaceId: identity.workspaceId,
         });
         if (liveness.length > 0) wake.recipient_liveness = liveness;
