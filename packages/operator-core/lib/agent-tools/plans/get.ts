@@ -52,6 +52,50 @@ import { splitPlanSections } from "./plan-sections";
  */
 const PLANS_GET_SOFT_TTL_MS = 45_000;
 
+interface PlanHarnessMismatch {
+  callerHarness: string;
+  reportedHarness?: string;
+  availableHarnesses: string[];
+  warning: string;
+}
+
+/**
+ * Explain a miss caused by an ambient harness that does not own the exact slug.
+ *
+ * A resumed/cold loop can retain a concrete harness from an earlier task. Do
+ * not silently rebind the read across a hive boundary, but do use the exact
+ * slug index to make the miss actionable. The lookup is best-effort: if the
+ * index is unavailable, the ordinary not_found result remains unchanged.
+ */
+async function ambientHarnessMismatch(
+  ctx: unknown,
+  callerHarness: string,
+  slug: string,
+): Promise<PlanHarnessMismatch | null> {
+  try {
+    const decision = await recoverHarnessFromSlugs(ctx, [slug]);
+    if (decision.status !== "resolved") return null;
+    const availableHarnesses = decision.ambiguous[slug] ?? [decision.harnessSlug];
+    if (availableHarnesses.includes(callerHarness)) return null;
+    const reportedHarness =
+      availableHarnesses.length === 1 ? availableHarnesses[0] : undefined;
+    const target = reportedHarness
+      ? `harness '${reportedHarness}'`
+      : `harnesses ${availableHarnesses.map((h) => `'${h}'`).join(", ")}`;
+    return {
+      callerHarness,
+      ...(reportedHarness ? { reportedHarness } : {}),
+      availableHarnesses,
+      warning:
+        `plans:get searched ambient harness '${callerHarness}' for '${slug}', ` +
+        `but the exact slug is stored under ${target}. ` +
+        `Pass harness:'${reportedHarness ?? availableHarnesses[0]}' to read that plan explicitly.`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
 // + worker/cup (EI-939): a pipeline worker or generic Hive worker told to "mark plan
@@ -403,6 +447,8 @@ export default defineTool({
       sctx = harnessScopedCtx(args.harness, ctx);
     }
     const opts = await ctxToPlanSourceOpts(sctx);
+    const ambientCallerHarness =
+      !args.harness && scope.kind === "harness" ? scope.slug : null;
     const requestedItemIds = args.items
       ? [...new Set(args.items)]
       : null;
@@ -420,8 +466,29 @@ export default defineTool({
         : null;
     const env = await runBulk(
       slugs,
-      async (slug) =>
-        cachedRead(
+      async (slug) => {
+        // A concrete ambient harness is part of the read scope. If the exact
+        // slug is known to live elsewhere, return a loud, actionable miss
+        // instead of a bare not_found or an implicit cross-hive read.
+        if (ambientCallerHarness) {
+          const mismatch = await ambientHarnessMismatch(ctx, ambientCallerHarness, slug);
+          if (mismatch) {
+            ctxAny.metadata?.({
+              slug,
+              searchedHarness: ambientCallerHarness,
+              harnessMismatch: mismatch,
+            });
+            return {
+              ok: false as const,
+              slug,
+              error: "not_found",
+              harness: ambientCallerHarness,
+              harnessMismatch: mismatch,
+            };
+          }
+        }
+
+        return cachedRead(
           ctx as CachedReadCtx,
           {
             tool: "plans:get",
@@ -777,7 +844,8 @@ export default defineTool({
                 : structured;
             return { ok: true as const, ...payload };
           },
-        ),
+        );
+      },
       { keyOf: (slug) => ({ slug }) },
     );
     return bulkContent(env);
