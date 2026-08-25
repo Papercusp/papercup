@@ -61,6 +61,32 @@ const ALL_PROVISIONAL_ROWS = DB_ROWS.map((row) => ({
 
 let rowsForQuery = DB_ROWS;
 
+const RUBRIC_DEFINITION = {
+  rubricId: 'test-rubric',
+  workspaceId: 'test-workspace',
+  kind: 'standard',
+  characteristic: 'test-quality',
+  title: 'Test rubric',
+  description: 'Definition payload fixture',
+  criteria: [
+    {
+      key: 'alpha',
+      title: 'Alpha',
+      model: 'Expected alpha behavior',
+      method: 'Run the alpha test',
+      driftMarkers: 'The alpha test fails',
+    },
+  ],
+  ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+  methodRef: null,
+  status: 'active',
+  createdBy: 'agent-a',
+  proposedBy: 'agent-a',
+  ratifiedBy: 'agent-b',
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-01T00:00:00.000Z',
+} as const;
+
 const sqlTag = Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
   const text = strings.join(' ? ');
   if (text.includes('FROM harness_shared.engineer_issues')) {
@@ -81,7 +107,7 @@ vi.mock('./issues-engineer', () => ({
 }));
 
 vi.mock('./rubrics', () => ({
-  getRubric: async () => null,
+  getRubric: async () => RUBRIC_DEFINITION,
   rubricInstrumentContract: () => null,
 }));
 
@@ -109,6 +135,19 @@ describe('scorecardTrend — provisional cards are excluded and the exclusion re
     expect(alpha.distribution).toEqual({ healthy: 2 });
     expect(alpha.direction).toBe('stable');
     expect(alpha.latest.at).toBe('2026-08-03T00:00:00.000Z');
+  });
+
+  it('includes the already-resolved rubric definition only when requested', async () => {
+    const { scorecardTrend } = await import('./scorecards');
+
+    const compact = await scorecardTrend({ rubricRef: 'test-rubric' });
+    const definitionAware = await scorecardTrend({
+      rubricRef: 'test-rubric',
+      includeDefinition: true,
+    });
+
+    expect(compact.definition).toBeUndefined();
+    expect(definitionAware.definition).toEqual(RUBRIC_DEFINITION);
   });
 
   it('names a provisional-only window instead of claiming the rubric was never graded', async () => {

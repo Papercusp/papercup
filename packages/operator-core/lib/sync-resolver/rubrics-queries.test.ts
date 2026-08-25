@@ -138,7 +138,10 @@ describe('rubrics.* / scorecards.* resolvers', () => {
 
     const out = await r('rubrics.trend', { rubricRef: 'r-1' });
     expect(out).toEqual([trend]);
-    expect(scorecardTrend).toHaveBeenCalledWith({ rubricRef: 'r-1' });
+    expect(scorecardTrend).toHaveBeenCalledWith({
+      rubricRef: 'r-1',
+      includeDefinition: true,
+    });
   });
 
   it('is bridged for SSE invalidation off both backing tables', () => {

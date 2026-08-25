@@ -1301,7 +1301,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { scorecardTrend } = await import('../scorecards');
       const { rubricRef } = args as { rubricRef: string };
-      return [await scorecardTrend({ rubricRef })] as unknown[];
+      // Definition-aware detail read (learning-rubric-definition-display-2026-08-24
+      // D-001): scorecardTrend already resolves the full rubric once for its scale and
+      // history boundary, so this opt-in returns that same object without a second read.
+      return [await scorecardTrend({ rubricRef, includeDefinition: true })] as unknown[];
     },
   },
 
