@@ -104,6 +104,7 @@ function fleet(overrides: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
     leaderOwnerId: OWNER,
     colorScheme: null,
     controlState: 'active',
+    fleetType: 'single',
     controlReason: null,
     controlBy: null,
     controlAt: null,

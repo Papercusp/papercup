@@ -54,6 +54,12 @@ export default defineTool({
       .describe(
         'Optional planned member count for the FOLLOW-ON desktop launch. `fleet:create` itself does not open terminals; this only returns a non-blocking sizing advisory when the requested member count exceeds healthy account-pool headroom.',
       ),
+    type: z
+      .enum(['single', 'paired'])
+      .optional()
+      .describe(
+        "Fleet TYPE (D-008). 'single' (default) is today's fleet, unchanged — N independent members. 'paired' is a directed-pair fleet: N director↔implementer pairs, where the director judges and completes while the implementer edits and cannot self-direct. The type is stored on the durable registry row, so members read it at orient; it also selects which LAUNCH OPTION SHAPE fleet:launch-on-plan accepts (flat for single, per-role groups for paired).",
+      ),
   }),
   async handler(args, ctx) {
     const { identity, ownerId, workspaceId } = resolveFleetCaller(ctx);
@@ -66,7 +72,15 @@ export default defineTool({
       description: args.description ?? null,
       owner: ownerId,
       leaderOwnerId: ownerId,
+      fleetType: args.type,
     });
+
+    // createFleetIfAbsent is idempotent, so a `type` handed to an ALREADY-EXISTING
+    // fleet does not apply. Say so out loud rather than returning a record whose
+    // type silently contradicts what the caller asked for — the launch surface
+    // branches on this value (D-009), so a wrong belief about it is expensive.
+    const typeRequestIgnored =
+      !created && args.type != null && args.type !== record.fleetType;
 
     // Mirror the AUTHORITATIVE registry leader onto the caller's presence label. On a
     // fresh create that's `leader` (record.leaderOwnerId === caller). If the slug already
@@ -102,9 +116,19 @@ export default defineTool({
       role,
       control,
       scheme: record.colorScheme,
+      type: record.fleetType,
       requested: args.count ?? null,
       sizingAdvisory,
       ...(sizingAdvisory ? { message: sizingAdvisory.message } : {}),
+      ...(typeRequestIgnored
+        ? {
+            typeRequestIgnored: {
+              requested: args.type,
+              actual: record.fleetType,
+              why: 'fleet:create is idempotent — the fleet already existed, so its stored type was left unchanged. Re-type it deliberately (fleet:reconfigure / updateFleetMeta) or launch under a new fleet name.',
+            },
+          }
+        : {}),
       ...(role === 'member'
         ? { note: 'fleet already existed under another leader — call fleet:take-leadership to drive it' }
         : {}),
