@@ -32,6 +32,7 @@ import {
   type ClassCalibration,
   ENGINES,
   type EngineId,
+  LOST_PIXEL_DEFAULT_ENGINE,
   type MaterialisedCorpus,
   SEPARATION_FLOOR,
   calibrate,
@@ -39,6 +40,12 @@ import {
   materialiseCorpus,
   pairDiffPath,
 } from './corpus/harness';
+
+/**
+ * The engine every calibration number in this file is measured on. See the
+ * "engine fitness" block below for why it is not the lost-pixel default.
+ */
+const CALIBRATION_ENGINE: EngineId = 'pixelmatch';
 
 let workDir: string;
 let corpus: MaterialisedCorpus;
@@ -92,32 +99,68 @@ const calibrationFor = (engine: EngineId, referenceClass: string): ClassCalibrat
     ratioFor(engine, `${referenceClass}/drifted`),
   );
 
-describe('the calibration statistic behaves as a discriminator', () => {
-  it('reports a finite, positive noise floor for every class on every engine', () => {
-    // If a faithful implementation produced a zero diff, the class would be
-    // trivially gateable and the corpus would not be modelling anything real.
-    // Every class must have a genuine noise floor for the measurement to mean
-    // anything.
-    for (const engine of ENGINES) {
-      for (const referenceClass of CALIBRATED_CLASSES) {
-        const faithful = ratioFor(engine, `${referenceClass}/faithful`);
-        expect(faithful).toBeGreaterThan(0);
-        expect(Number.isFinite(faithful)).toBe(true);
-      }
+describe('engine fitness: calibration runs on pixelmatch, and why', () => {
+  /**
+   * Calibration is measured on pixelmatch ONLY. This is not a preference; odiff
+   * as lost-pixel invokes it is unfit to carry this measurement at all.
+   *
+   * `engine-proof.test.ts` pins the mechanism: odiff runs at its own default
+   * colour-distance threshold, which lost-pixel never configures, so a whole-image
+   * shift of up to 45/255 per channel reads as a perfect match. The noise a
+   * commensurable reference class legitimately produces — antialiasing on glyph
+   * edges — lives entirely inside that blind spot.
+   *
+   * The consequence for calibration is stark: on odiff the measured noise floor
+   * for a commensurable class is exactly ZERO, not because the implementations
+   * agree but because the engine cannot see where they disagree. A floor of zero
+   * makes the separation statistic degenerate, and a gate calibrated against it
+   * would be calibrated against nothing.
+   */
+  it('odiff is wholly blind to the finest class, and under-measures every class', () => {
+    // The blindness is a threshold effect, not a constant: differences below
+    // odiff's colour tolerance vanish completely, and differences that straddle it
+    // are partially counted. Both behaviours disqualify it as a calibration
+    // instrument, but they disqualify it in different ways and the distinction
+    // matters when reading the table below.
+    //
+    // artifact-capture is two browser renders of the same DOM, so its only
+    // disagreement is antialiasing — entirely inside the tolerance. odiff reports
+    // exactly zero: the floor is not small, it is INVISIBLE.
+    expect(ratioFor('odiff', 'artifact-capture/faithful')).toBe(0);
+
+    // figma-export carries heavier rasterisation differences that DO cross the
+    // tolerance, so odiff counts them — and counts MORE of them than pixelmatch
+    // does, because pixelmatch is suppressing the same pixels as antialiasing
+    // (see the includeAA proof in engine-proof.test.ts).
+    //
+    // So neither engine dominates the other. They disagree in BOTH directions on
+    // the same corpus, because each applies a different unversioned noise
+    // heuristic. That is the real disqualifier: not that one under-counts, but
+    // that "the number of differing pixels" is not a single well-defined quantity
+    // across the two engines a gate might be pointed at.
+    expect(ratioFor('odiff', 'figma-export/faithful')).toBeGreaterThan(
+      ratioFor(CALIBRATION_ENGINE, 'figma-export/faithful'),
+    );
+  });
+
+  it('pixelmatch reports a finite, positive noise floor for every class', () => {
+    // The property odiff fails. A faithful implementation must produce a small but
+    // real difference, or the corpus is not modelling anything and the separation
+    // statistic has no denominator.
+    for (const referenceClass of CALIBRATED_CLASSES) {
+      const faithful = ratioFor(CALIBRATION_ENGINE, `${referenceClass}/faithful`);
+      expect(faithful).toBeGreaterThan(0);
+      expect(Number.isFinite(faithful)).toBe(true);
     }
   });
 
-  it('is engine-agnostic in direction, even though engines disagree in magnitude', () => {
-    // Whatever else differs between odiff and pixelmatch, a class that separates
-    // on one must separate on the other. A calibration verdict that flipped with
-    // engine choice would be unusable.
-    for (const referenceClass of CALIBRATED_CLASSES) {
-      const viaOdiff = calibrationFor('odiff', referenceClass);
-      const viaPixelmatch = calibrationFor('pixelmatch', referenceClass);
-      expect(`${referenceClass}:${viaOdiff.gateable}`).toBe(
-        `${referenceClass}:${viaPixelmatch.gateable}`,
-      );
-    }
+  it('records that the adapter must SELECT pixelmatch rather than inherit the default', () => {
+    // lost-pixel's dispatcher falls through to odiff unless compareEngine is
+    // exactly 'pixelmatch', and no config in this repo sets it. So the engine that
+    // cannot measure is the engine that runs today.
+    expect(LOST_PIXEL_DEFAULT_ENGINE).toBe('odiff');
+    expect(CALIBRATION_ENGINE).toBe('pixelmatch');
+    expect(CALIBRATION_ENGINE).not.toBe(LOST_PIXEL_DEFAULT_ENGINE);
   });
 });
 
@@ -128,13 +171,10 @@ describe('D-007: commensurable classes admit a threshold', () => {
   // comfortably between them.
   for (const referenceClass of ['artifact-capture', 'figma-export'] as const) {
     it(`${referenceClass}: a regression is at least ${SEPARATION_FLOOR}x the noise floor`, () => {
-      for (const engine of ENGINES) {
-        const result = calibrationFor(engine, referenceClass);
-        expect(`${engine}/${referenceClass} drifted`).toBe(`${engine}/${referenceClass} drifted`);
-        expect(result.driftedRatio).toBeGreaterThan(result.faithfulRatio);
-        expect(result.separation).toBeGreaterThanOrEqual(SEPARATION_FLOOR);
-        expect(result.gateable).toBe(true);
-      }
+      const result = calibrationFor(CALIBRATION_ENGINE, referenceClass);
+      expect(result.driftedRatio).toBeGreaterThan(result.faithfulRatio);
+      expect(result.separation).toBeGreaterThanOrEqual(SEPARATION_FLOOR);
+      expect(result.gateable).toBe(true);
     });
   }
 });
@@ -145,10 +185,7 @@ describe('D-007: an incommensurable class admits no threshold', () => {
     // mockup still disagrees with it across a large fraction of the canvas,
     // because the mockup hallucinates letterform positions, shifts the palette of
     // every fill and tints the background. The noise floor is not small.
-    for (const engine of ENGINES) {
-      const faithful = ratioFor(engine, 'raster-mockup/faithful');
-      expect(faithful).toBeGreaterThan(0.05);
-    }
+    expect(ratioFor(CALIBRATION_ENGINE, 'raster-mockup/faithful')).toBeGreaterThan(0.05);
   });
 
   it('raster-mockup: the regression is NOT separable from the noise floor', () => {
@@ -156,21 +193,17 @@ describe('D-007: an incommensurable class admits no threshold', () => {
     // There is no threshold that passes the faithful implementation and fails the
     // drifted one with any margin — which is precisely D-007's claim, and the
     // reason this class must not be wired to a gate.
-    for (const engine of ENGINES) {
-      const result = calibrationFor(engine, 'raster-mockup');
-      expect(result.separation).toBeLessThan(SEPARATION_FLOOR);
-      expect(result.gateable).toBe(false);
-    }
+    const result = calibrationFor(CALIBRATION_ENGINE, 'raster-mockup');
+    expect(result.separation).toBeLessThan(SEPARATION_FLOOR);
+    expect(result.gateable).toBe(false);
   });
 
   it('raster-mockup noise floor dwarfs the gateable classes noise floors', () => {
     // States the contrast directly: the thing that makes this class ungateable is
     // not that its regressions are subtle, but that its FLOOR is high.
-    for (const engine of ENGINES) {
-      const mockupFloor = ratioFor(engine, 'raster-mockup/faithful');
-      const artifactFloor = ratioFor(engine, 'artifact-capture/faithful');
-      expect(mockupFloor).toBeGreaterThan(artifactFloor * 10);
-    }
+    const mockupFloor = ratioFor(CALIBRATION_ENGINE, 'raster-mockup/faithful');
+    const artifactFloor = ratioFor(CALIBRATION_ENGINE, 'artifact-capture/faithful');
+    expect(mockupFloor).toBeGreaterThan(artifactFloor * 10);
   });
 
   it('a derived reference is the documented escape hatch, not a lower threshold', () => {
@@ -179,9 +212,9 @@ describe('D-007: an incommensurable class admits no threshold', () => {
     // of the mockup, once ratified as a reference in its own right, is an
     // `artifact-capture` and calibrates as gateable. Nothing about the threshold
     // changed — the reference did.
-    const derived = calibrationFor('odiff', 'artifact-capture');
+    const derived = calibrationFor(CALIBRATION_ENGINE, 'artifact-capture');
     expect(derived.gateable).toBe(true);
-    expect(calibrationFor('odiff', 'raster-mockup').gateable).toBe(false);
+    expect(calibrationFor(CALIBRATION_ENGINE, 'raster-mockup').gateable).toBe(false);
   });
 });
 
@@ -191,6 +224,7 @@ describe('recorded calibration and runtime data (P-002 deliverable)', () => {
     for (const engine of ENGINES) {
       for (const referenceClass of CALIBRATED_CLASSES) {
         const result = calibrationFor(engine, referenceClass);
+        const blind = engine !== CALIBRATION_ENGINE && result.faithfulRatio === 0;
         rows.push(
           [
             engine.padEnd(10),
@@ -198,14 +232,17 @@ describe('recorded calibration and runtime data (P-002 deliverable)', () => {
             `floor=${(result.faithfulRatio * 100).toFixed(3)}%`.padEnd(16),
             `regression=${(result.driftedRatio * 100).toFixed(3)}%`.padEnd(22),
             `separation=${result.separation.toFixed(2)}x`.padEnd(20),
-            result.gateable ? 'GATEABLE' : 'ADVISORY-ONLY',
+            blind ? 'UNFIT (blind floor)' : result.gateable ? 'GATEABLE' : 'ADVISORY-ONLY',
           ].join(' '),
         );
       }
     }
     // Printed so the measurement is recoverable from a CI log, not only from a
-    // passing assertion.
-    console.info(`\nP-002 calibration (SEPARATION_FLOOR=${SEPARATION_FLOOR}x)\n${rows.join('\n')}`);
+    // passing assertion. Both engines are shown deliberately: the odiff rows are
+    // the evidence for excluding it, not leftovers.
+    console.info(
+      `\nP-002 calibration (SEPARATION_FLOOR=${SEPARATION_FLOOR}x, calibrated on ${CALIBRATION_ENGINE})\n${rows.join('\n')}`,
+    );
     expect(rows).toHaveLength(ENGINES.length * CALIBRATED_CLASSES.length);
   });
 

@@ -12,17 +12,22 @@
  * That is the point: they are executable descriptions of hazards the adapter has
  * to defend against, and each one names the defence in its own body.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { CORPUS_IMAGES } from './corpus/cases';
+import committedDigests from './corpus/digests.json';
+import { type RGB, createRaster, encodePng, rasterDigest } from './corpus/synthesize';
+
+const COMMITTED_DIGESTS = committedDigests as unknown as Record<string, string>;
 import {
   ENGINES,
   LOST_PIXEL_DEFAULT_ENGINE,
   type MaterialisedCorpus,
+  comparePixelmatchDirect,
   compareWithEngine,
   engineVersions,
   lostPixelCompare,
@@ -254,6 +259,172 @@ describe('HAZARD: unequal dimensions', () => {
   });
 });
 
+describe('HAZARD: pixelmatch silently suppresses antialiasing differences', () => {
+  /**
+   * The mirror of the odiff finding, and the reason neither engine's raw output is
+   * a versioned policy.
+   *
+   * pixelmatch's `includeAA` option defaults to FALSE, which means its
+   * antialiasing DETECTOR is active and every pixel it judges to be an
+   * antialiasing artifact is skipped rather than counted (`pixelmatch/index.js`
+   * line 60). lost-pixel invokes it as `pixelmatch(..., { threshold: 0 })` and
+   * never sets `includeAA`, so that suppression is always on and cannot be reached
+   * through lost-pixel's comparator signature.
+   *
+   * This is not obviously WRONG — tolerating antialiasing is usually what a visual
+   * gate wants. The problem is that it is IMPLICIT: the effective noise policy is
+   * a third-party heuristic that Papercusp neither chose, recorded, nor versioned,
+   * while D-004 requires the gate to derive from a versioned policy. So the
+   * suppression has to be measured and stated, not inherited silently.
+   */
+  it('counts far fewer differing pixels than are actually different', () => {
+    const suppressed = comparePixelmatchDirect(
+      pathFor('figma/reference'),
+      pathFor('figma/faithful'),
+      { threshold: 0, includeAA: false },
+    );
+    const counted = comparePixelmatchDirect(
+      pathFor('figma/reference'),
+      pathFor('figma/faithful'),
+      { threshold: 0, includeAA: true },
+    );
+
+    // Both are measuring the same two files at the same colour threshold. The only
+    // difference is whether the antialiasing detector is allowed to drop pixels.
+    expect(counted.pixelDifference).toBeGreaterThan(suppressed.pixelDifference);
+    // The suppression is large, not marginal — most of the real difference is
+    // discarded before Papercusp ever sees a number.
+    expect(suppressed.pixelDifference).toBeLessThan(counted.pixelDifference / 2);
+  });
+
+  it('is the setting lost-pixel actually runs, so the suppressed number is the one in play', async () => {
+    // What lost-pixel's comparator returns must equal the includeAA:false direct
+    // call. If these ever diverge, lost-pixel has started passing options and this
+    // whole finding needs re-deriving.
+    const viaLostPixel = await compareWithEngine(
+      'pixelmatch',
+      pathFor('figma/reference'),
+      pathFor('figma/faithful'),
+      diffPath('aa-via-lost-pixel'),
+      { threshold: 0 },
+    );
+    const direct = comparePixelmatchDirect(pathFor('figma/reference'), pathFor('figma/faithful'), {
+      threshold: 0,
+      includeAA: false,
+    });
+    expect(viaLostPixel.pixelDifference).toBe(direct.pixelDifference);
+  });
+
+  it('neither engine exposes its noise-suppression knob through lost-pixel', () => {
+    // Stated as an executable fact about the comparator surface: it takes a
+    // threshold and three paths. There is no parameter for includeAA and none for
+    // odiff's colour tolerance, so a policy expressed in those terms cannot be
+    // passed through this API at all.
+    expect(lostPixelCompare.compareImagesViaPixelmatch).toHaveLength(4);
+    expect(lostPixelCompare.compareImagesViaOdiff).toHaveLength(4);
+  });
+});
+
+describe('HAZARD: odiff applies an unconfigurable colour tolerance', () => {
+  /**
+   * The finding that decides which engine the adapter may use.
+   *
+   * odiff carries its own per-pixel colour-distance threshold, defaulting to 0.1.
+   * lost-pixel's `compareImagesViaOdiff` builds its options object literally as
+   * `{ failOnLayoutDiff: false }` and never forwards a colour threshold, so odiff
+   * always runs at that default and there is NO configuration path to change it
+   * through lost-pixel.
+   *
+   * Measured consequence: a uniform shift of up to 45/255 on a channel — roughly
+   * 18% — across the ENTIRE image is reported as a perfect match, zero differing
+   * pixels. pixelmatch, which lost-pixel invokes at per-pixel `{ threshold: 0 }`,
+   * counts every one of those pixels.
+   *
+   * So the two engines are not interchangeable implementations of one comparison;
+   * they measure different things. And the engine that is BLIND is the one that
+   * runs by default in this repo.
+   *
+   * DEFENCE: the adapter selects pixelmatch explicitly rather than inheriting the
+   * default, and records the engine id on every result. Selecting the engine is
+   * the only lever available — the tolerance itself cannot be reached through
+   * lost-pixel's comparator.
+   */
+  const flat = (colour: RGB, width = 40): string => {
+    const raster = createRaster(width, 40, colour);
+    const target = path.join(workDir, `flat-${colour.join('_')}-${width}.png`);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, encodePng(raster));
+    return target;
+  };
+
+  const BASE: RGB = [128, 128, 128];
+
+  it.each([
+    { delta: 1 },
+    { delta: 12 },
+    { delta: 30 },
+    { delta: 45 },
+  ])('odiff reports a PERFECT MATCH for a whole-image delta of $delta/255', async ({ delta }) => {
+    const reference = flat(BASE);
+    const shifted = flat([128 + delta, 128, 128]);
+
+    const viaOdiff = await compareWithEngine(
+      'odiff',
+      reference,
+      shifted,
+      diffPath(`tolerance-odiff-${delta}`),
+      { threshold: 0 },
+    );
+    // Every pixel in the image differs, and odiff reports none of them.
+    expect(viaOdiff.pixelDifference).toBe(0);
+    expect(viaOdiff.engineReportedWithinThreshold).toBe(true);
+
+    // pixelmatch, same two files, same threshold: every pixel counted.
+    const viaPixelmatch = await compareWithEngine(
+      'pixelmatch',
+      reference,
+      shifted,
+      diffPath(`tolerance-pixelmatch-${delta}`),
+      { threshold: 0 },
+    );
+    expect(viaPixelmatch.pixelDifference).toBe(40 * 40);
+  });
+
+  it('locates the tolerance boundary between 45 and 48', async () => {
+    // Pinned so an odiff upgrade that moves its default threshold is caught here
+    // rather than silently changing what the gate can see.
+    const blind = await compareWithEngine(
+      'odiff',
+      flat(BASE),
+      flat([128 + 45, 128, 128]),
+      diffPath('boundary-blind'),
+      { threshold: 0 },
+    );
+    const detected = await compareWithEngine(
+      'odiff',
+      flat(BASE),
+      flat([128 + 48, 128, 128]),
+      diffPath('boundary-detected'),
+      { threshold: 0 },
+    );
+    expect(blind.pixelDifference).toBe(0);
+    expect(detected.pixelDifference).toBe(40 * 40);
+  });
+
+  it('pixelmatch has no such blind spot at any delta', async () => {
+    for (const delta of [1, 12, 30, 45]) {
+      const measured = await compareWithEngine(
+        'pixelmatch',
+        flat(BASE),
+        flat([128 + delta, 128, 128]),
+        diffPath(`pm-sensitive-${delta}`),
+        { threshold: 0 },
+      );
+      expect(`delta=${delta} diff=${measured.pixelDifference}`).toBe(`delta=${delta} diff=1600`);
+    }
+  });
+});
+
 describe('HAZARD: engine failures escape as unstructured, inconsistent throws', () => {
   /**
    * Measured matrix of what each engine actually throws for broken inputs.
@@ -359,6 +530,29 @@ describe('repeatability', () => {
 });
 
 describe('corpus determinism', () => {
+  it('matches the committed per-image pixel digests', () => {
+    // The cross-environment pin. Within-run determinism (next test) proves the
+    // generator is not itself random; this proves the corpus is the SAME corpus
+    // the calibration numbers in the plan were measured against. A change here
+    // means every recorded ratio needs re-deriving, which is exactly the moment
+    // someone should be forced to notice.
+    for (const image of CORPUS_IMAGES) {
+      const expected = COMMITTED_DIGESTS[image.key];
+      expect(`${image.key}:${expected ? 'pinned' : 'MISSING FROM digests.json'}`).toBe(
+        `${image.key}:pinned`,
+      );
+      expect(`${image.key}:${rasterDigest(image.render())}`).toBe(`${image.key}:${expected}`);
+    }
+  });
+
+  it('pins every corpus image, with no stale entries left behind', () => {
+    const pinned = Object.keys(COMMITTED_DIGESTS)
+      .filter((key) => !key.startsWith('_'))
+      .sort();
+    const actual = CORPUS_IMAGES.map((image) => image.key).sort();
+    expect(pinned).toEqual(actual);
+  });
+
   it('renders every image identically on repeated generation', () => {
     const second = materialiseCorpus(path.join(workDir, 'corpus-again'));
     for (const image of CORPUS_IMAGES) {
