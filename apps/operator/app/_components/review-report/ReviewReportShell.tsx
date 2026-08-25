@@ -27,6 +27,7 @@
  * live (selection self-intersects with what is still pending).
  */
 import {
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -137,6 +138,7 @@ export default function ReviewReportShell({
   onApply,
   onDismiss,
 }: ReviewReportShellProps) {
+  const titleId = useId();
   const [selected, setSelected] = useState<Set<string>>(() =>
     initialSelection(groups, defaultSelected),
   );
@@ -268,6 +270,7 @@ export default function ReviewReportShell({
       className="review-report"
       data-testid="review-report"
       aria-busy={busy || undefined}
+      aria-labelledby={titleId}
       tabIndex={-1}
       onFocusCapture={(event) => {
         const target = event.target;
@@ -305,7 +308,9 @@ export default function ReviewReportShell({
             </span>
           ) : null}
           <div className="review-report__head-text">
-            <h2 className="review-report__title">{title}</h2>
+            <h2 id={titleId} className="review-report__title">
+              {title}
+            </h2>
             {subtitle != null && (
               <div className="review-report__subtitle">{subtitle}</div>
             )}

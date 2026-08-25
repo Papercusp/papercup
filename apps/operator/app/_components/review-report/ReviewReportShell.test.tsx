@@ -100,6 +100,11 @@ describe("rendering", () => {
     const report = screen.getByTestId("review-report");
     const responsiveRow = screen.getByTestId("review-row-f1");
     expect(screen.getByText("Plan clean-up report")).toBeTruthy();
+    const titleId = report.getAttribute("aria-labelledby");
+    expect(titleId).toBeTruthy();
+    expect(document.getElementById(titleId!)?.textContent).toBe(
+      "Plan clean-up report",
+    );
     expect(screen.getByTestId("review-report-icon")).toBeTruthy();
     expect(screen.getByText("run #7")).toBeTruthy();
     expect(screen.getByText("Flip to done")).toBeTruthy();
