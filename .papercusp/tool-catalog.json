@@ -6229,7 +6229,7 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Pass `afterCompaction:true` on the first post-compaction call.",
+        "when": "At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds while keeping assignments, inbox, and declaration. Inspect the ⟦post-compaction-recovery⟧ marker already delivered in the carry context. If it is complete and its controlGeneration matches the latest ⟦CTRL:…⟧ generation, recovery already arrived: do not call coord:orient; declare your actual lane with coord:declare-intent { intent, current_plan_slug, items }. Call coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, generation-mismatched, or you deliberately need live data excluded from the injected block.",
         "notWhen": "A human status display or full presence roster; use coord:glance or coord:presence. Do not immediately re-call folds returned here.",
         "chaining": "Prefer over separate bootstrap calls. A close `recipes` hit → recipes:run it. Then work_items:pickup { id, intent }; claimable[] is advisory (EI-6468)."
       }
