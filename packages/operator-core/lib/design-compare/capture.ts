@@ -23,7 +23,9 @@
  *  2. There is no device-scale, color-scheme or font control in this repo at
  *     all. The context is `browser.newContext(shotItem.browserConfig)` (line 15)
  *     and `browserConfig` comes only from a `configureBrowser` hook that none of
- *     the three `lostpixel.config.ts` files defines.
+ *     the five `lostpixel.config.ts` files defines. (Five, not three: D-015
+ *     corrects a census D-014 recorded from a remembered subset. The count is
+ *     now pinned by `lostpixel-config-census.test.ts` so it cannot drift here.)
  *  3. Shots are full-page by default (line 118), so image height is
  *     document-determined — right for build-to-build regression, wrong as the
  *     only mode for a fixed-geometry fidelity reference.
@@ -33,7 +35,7 @@
  * imports lost-pixel's own `getIframeUrl`, not restated in a comment), and its
  * `animations: 'disabled'` and consecutive-identical-hash stability retry.
  *
- * What is NOT touched: the three `lostpixel.config.ts` files, and lost-pixel's
+ * What is NOT touched: any of the five `lostpixel.config.ts` files, and lost-pixel's
  * module-scoped config singleton. Existing build-to-build visual regression runs
  * exactly as it does today; this path is additive and separately invoked.
  *

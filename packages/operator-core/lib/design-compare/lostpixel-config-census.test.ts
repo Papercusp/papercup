@@ -23,24 +23,50 @@
  * an engine, fails the build next to the decisions it invalidates rather than
  * quietly making them false.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { globSync } from 'tinyglobby';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
 
+const SKIP_DIRECTORIES = new Set([
+  'node_modules',
+  // Green-candidate checkouts of this same tree. Counting them would inflate
+  // the census with copies of files already counted.
+  '.papercusp',
+  '.git',
+  'dist',
+  'build',
+  'storybook-static',
+  'coverage',
+]);
+
+const CONFIG_NAMES = new Set([
+  'lostpixel.config.ts',
+  'lostpixel.config.js',
+  'lostpixel.config.cjs',
+  'lostpixel.config.mjs',
+]);
+
 /**
- * Every canonical Lost Pixel config. `.papercusp/worktrees` holds
- * green-candidate checkouts of this same tree — counting them would inflate the
- * census with copies of the files already counted.
+ * Every canonical Lost Pixel config, found by walking rather than by glob.
+ *
+ * Deliberately no glob library: operator-core does not declare one, and
+ * reaching through a transitive copy is the same borrowing this plan refused
+ * for the browser driver. One filename does not justify a dependency.
  */
-function findConfigs(): string[] {
-  return globSync(['**/lostpixel.config.{ts,js,cjs,mjs}'], {
-    cwd: REPO_ROOT,
-    ignore: ['**/node_modules/**', '.papercusp/**', '**/dist/**', '**/storybook-static/**'],
-  }).sort();
+function findConfigs(directory = REPO_ROOT, relative = ''): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (SKIP_DIRECTORIES.has(entry.name)) continue;
+      found.push(...findConfigs(path.join(directory, entry.name), path.join(relative, entry.name)));
+    } else if (CONFIG_NAMES.has(entry.name)) {
+      found.push(path.join(relative, entry.name));
+    }
+  }
+  return found.sort();
 }
 
 describe('Lost Pixel configuration census (pins D-010, D-014, D-015)', () => {
