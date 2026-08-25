@@ -589,7 +589,7 @@ function printExactFileRecovery(paths) {
   );
   errSync(`For exact files use: ${exactFileCommand(paths)}`);
   errSync(
-    "Put any additional Vitest arguments after a second `--` (for example: npm run test:file -- path/to/a.test.ts -- -t \"case name\").",
+    'Put any additional Vitest arguments after a second `--` (for example: npm run test:file -- path/to/a.test.ts -- -t "case name").',
   );
 }
 const unknownFlags = args.filter(

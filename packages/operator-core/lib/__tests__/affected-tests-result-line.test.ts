@@ -236,8 +236,9 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
         'unexpected positional argument(s): packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts, packages/operator-core/lib/__tests__/affected-tests-changed-path-provenance.test.ts',
       );
       expect(narrowed.stderr).toContain(
-        'pass --changed-paths as one comma-delimited value rather than separate positional paths',
+        'For exact files use: npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts packages/operator-core/lib/__tests__/affected-tests-changed-path-provenance.test.ts',
       );
+      expect(narrowed.stderr).not.toContain('pass --changed-paths as one comma-delimited value');
       expect(narrowed.stdout).not.toContain('AFFECTED_DERIVATION');
       expect(narrowed.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
     });
