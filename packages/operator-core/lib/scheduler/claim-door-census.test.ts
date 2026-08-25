@@ -223,6 +223,24 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
     },
   ],
   [
+    'coord/condition-object.ts#claimHoldBlocked',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'PURE predicate feeding claimStateOf (same file, its only caller): takes an already-fetched ' +
+        'row, returns a boolean, selects and serves nothing. Worth recording WHY its agreement with ' +
+        'the real floor is not self-evident, since this is the D-007 preview-vs-door shape: it never ' +
+        'reads `_claimHold` at all, while the SQL floor (claimHoldExclusionSql) keys on `_claimHold` ' +
+        'ALONE and ignores attribution. It reports attribution instead — so a row holding a BARE, ' +
+        'unattributed `_claimHold` would be excluded by every door yet reported `claimable` here ' +
+        '(condition-object.test.ts pins exactly that: bare `_claimHold` ⇒ false). The two agree in ' +
+        'practice only because ensureClaimHoldAttribution (EI-18698328828208444) stamps provenance ' +
+        'at write time, so the unattributed state cannot persist — measured 2026-08-25: 343 held ' +
+        'rows across 4 harnesses, 0 anonymous. That makes this correct BY COMPOSITION, dependent on ' +
+        'an invariant enforced in another module rather than on reading the same field.',
+    },
+  ],
+  [
     'coord/condition-object.ts#claimStateOf',
     {
       klass: 'not-a-work-item-door',
