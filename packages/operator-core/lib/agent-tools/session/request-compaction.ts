@@ -199,6 +199,16 @@ export default defineTool({
       .describe(
         'Deprecated no-op: a carry-respawn always resumes (the successor launches with a first prompt). Accepted for wire-compat with older callers.',
       ),
+    // EI-21441319994873793: an older caller sent resumeMode:"same". The
+    // boundary now always resumes the same logical session via carry-respawn,
+    // so preserve that exact stale literal as a bounded wire-compat no-op
+    // instead of widening the strict schema to arbitrary mode strings.
+    resumeMode: z
+      .literal('same')
+      .optional()
+      .describe(
+        'Deprecated no-op: carry-respawn always resumes the same logical session. Accepted only as the legacy literal "same" for wire compatibility.',
+      ),
     // EI-20252809455491677: some generic boundary callers annotate the request
     // with `reason`. This boundary has no reason-dependent behavior, but rejecting
     // the annotation at the schema edge causes a needless failed compaction at the

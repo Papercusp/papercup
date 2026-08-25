@@ -379,6 +379,14 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(b).toMatchObject({ ok: true, respawn: 'queued' });
   });
 
+  it('legacy resumeMode:"same" is a bounded wire-compat no-op: stale callers still queue the cut', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const b = body(await call({ focus: 'x', resumeMode: 'same' }));
+    expect(injected().mode).toBe('carry-respawn');
+    expect(b).toMatchObject({ ok: true, respawn: 'queued' });
+    expect(() => parse({ focus: 'x', resumeMode: 'fresh' })).toThrow();
+  });
+
   it('legacy reason is a bounded wire-compat no-op: callers can annotate the request without blocking the cut (EI-20252809455491677)', async () => {
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({ focus: 'x', reason: 'clean stopping point' }));
